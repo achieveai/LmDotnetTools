@@ -355,7 +355,7 @@ public sealed class SubAgentModelResolverTests
             Model(InUseModelId, CopilotModelTransport.Responses),
             Model("claude-opus-5", CopilotModelTransport.Anthropic),
             Model("gpt-5.6-terra", CopilotModelTransport.Responses),
-            Model("gpt-6-sol", CopilotModelTransport.Responses),
+            Model("gpt-6.1-sol", CopilotModelTransport.Responses),
             Model("gemini-3.8-flash", CopilotModelTransport.ChatCompletions),
             Model("gpt-6-astra", CopilotModelTransport.Responses)
         );
@@ -393,7 +393,7 @@ public sealed class SubAgentModelResolverTests
             Model(InUseModelId, CopilotModelTransport.Responses),
             Model("claude-opus-5", CopilotModelTransport.Anthropic),
             Model("gpt-5.6-terra", CopilotModelTransport.Responses),
-            Model("gpt-6-sol", CopilotModelTransport.Responses),
+            Model("gpt-6.1-sol", CopilotModelTransport.Responses),
             Model("gemini-3.8-flash", CopilotModelTransport.ChatCompletions),
             Model("gpt-6-astra", CopilotModelTransport.Responses)
         );
@@ -415,9 +415,9 @@ public sealed class SubAgentModelResolverTests
     [InlineData(0, "gpt-6-luna", ReasoningEffort.High)]
     [InlineData(1, "gpt-6-luna", ReasoningEffort.Xhigh)]
     [InlineData(2, "gemini-3.8-flash", ReasoningEffort.High)]
-    [InlineData(3, "gpt-6-sol", ReasoningEffort.Medium)]
-    [InlineData(4, "gpt-6-sol", ReasoningEffort.High)]
-    [InlineData(5, "gpt-6-sol", ReasoningEffort.Xhigh)]
+    [InlineData(3, "gpt-6.1-sol", ReasoningEffort.Medium)]
+    [InlineData(4, "gpt-6.1-sol", ReasoningEffort.High)]
+    [InlineData(5, "gpt-6.1-sol", ReasoningEffort.Xhigh)]
     [InlineData(6, "gpt-6-astra", ReasoningEffort.High)]
     public void Appsettings_EachTierResolvesToTheOwnerApprovedModelAndEffort(
         int tier,
@@ -441,7 +441,7 @@ public sealed class SubAgentModelResolverTests
             Model("gpt-6-luna", CopilotModelTransport.Responses),
             Model("gemini-3.8-flash", CopilotModelTransport.ChatCompletions),
             Model("gpt-5.6-terra", CopilotModelTransport.Responses),
-            Model("gpt-6-sol", CopilotModelTransport.Responses),
+            Model("gpt-6.1-sol", CopilotModelTransport.Responses),
             Model("gpt-6-astra", CopilotModelTransport.Responses)
         );
 

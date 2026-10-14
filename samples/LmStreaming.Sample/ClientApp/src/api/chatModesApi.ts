@@ -53,12 +53,26 @@ async function classifyFailure(response: Response, operation: string): Promise<E
 /**
  * Fetches all chat modes from the backend.
  */
-export async function listChatModes(): Promise<ChatMode[]> {
-  const response = await apiFetch('/api/chat-modes');
+export async function listChatModes(workspaceId = 'default'): Promise<{
+  modes: ChatMode[];
+  canActivateMiniWebApps: boolean;
+}> {
+  const response = await apiFetch(`/api/chat-modes?workspace=${encodeURIComponent(workspaceId)}`);
   if (!response.ok) {
     throw new Error(`Failed to fetch chat modes: ${response.statusText}`);
   }
-  return response.json();
+  return {
+    modes: await response.json(),
+    canActivateMiniWebApps: response.headers?.get('X-Mini-Web-App-Activation') === 'available',
+  };
+}
+
+export async function activateMiniWebApps(workspaceId: string): Promise<void> {
+  const response = await apiFetch(
+    `/api/chat-modes/mini-web-app-builder/activate?workspace=${encodeURIComponent(workspaceId)}`,
+    { method: 'POST' }
+  );
+  if (!response.ok) throw new Error('Mini Web Apps are unavailable for this workspace.');
 }
 
 /**

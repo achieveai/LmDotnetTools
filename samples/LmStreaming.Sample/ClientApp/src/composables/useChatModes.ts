@@ -22,6 +22,8 @@ export function useChatModes() {
   const isLoading = ref(false);
   const isToolsLoading = ref(false);
   const error = ref<string | null>(null);
+  const canActivateMiniWebApps = ref(false);
+  let loadGeneration = 0;
 
   /**
    * The currently selected mode.
@@ -47,16 +49,30 @@ export function useChatModes() {
   /**
    * Loads all chat modes from the backend.
    */
-  async function loadModes(): Promise<void> {
+  async function loadModes(workspaceId = 'default'): Promise<void> {
+    const generation = ++loadGeneration;
     isLoading.value = true;
     error.value = null;
+    modes.value = modes.value.filter((mode) => mode.id !== 'mini-web-app-builder');
+    canActivateMiniWebApps.value = false;
+    if (currentModeId.value === 'mini-web-app-builder') currentModeId.value = DEFAULT_MODE_ID;
     try {
-      modes.value = await listChatModes();
+      const loaded = await listChatModes(workspaceId);
+      if (generation !== loadGeneration) return;
+      modes.value = loaded.modes;
+      canActivateMiniWebApps.value = loaded.canActivateMiniWebApps;
+      if (!loaded.modes.some((mode) => mode.id === currentModeId.value)) {
+        currentModeId.value = DEFAULT_MODE_ID;
+      }
     } catch (e) {
+      if (generation !== loadGeneration) return;
+      modes.value = [];
+      canActivateMiniWebApps.value = false;
+      currentModeId.value = DEFAULT_MODE_ID;
       error.value = e instanceof Error ? e.message : 'Failed to load chat modes';
       console.error('Failed to load chat modes:', e);
     } finally {
-      isLoading.value = false;
+      if (generation === loadGeneration) isLoading.value = false;
     }
   }
 
@@ -176,6 +192,7 @@ export function useChatModes() {
     isLoading,
     isToolsLoading,
     error,
+    canActivateMiniWebApps,
 
     // Computed
     currentMode,

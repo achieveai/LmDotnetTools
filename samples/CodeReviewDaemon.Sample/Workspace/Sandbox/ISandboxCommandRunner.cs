@@ -9,7 +9,18 @@ namespace CodeReviewDaemon.Sample.Workspace.Sandbox;
 /// <param name="Argv">The executable and its arguments (e.g. <c>["git", "clone", url]</c>). Must be
 /// non-empty.</param>
 /// <param name="WorkingDirectory">Optional absolute sandbox path to run in.</param>
-internal sealed record SandboxCommand(IReadOnlyList<string> Argv, string? WorkingDirectory = null);
+/// <param name="Environment">Optional environment overlay for the command's process, applied by the
+/// gateway on top of the sandbox's own environment. <c>null</c> sends nothing.</param>
+/// <param name="Timeout">Optional per-command deadline. <c>null</c> uses the runner's configured
+/// per-command timeout (<c>SandboxLimits.CommandTimeout</c>). When set, it bounds BOTH the runner's
+/// client-side wait and the gateway's execution timeout for this one operation, so a command known to run
+/// long (a skill's setup) is not cut off by the default meant for short git commands.</param>
+internal sealed record SandboxCommand(
+    IReadOnlyList<string> Argv,
+    string? WorkingDirectory = null,
+    IReadOnlyDictionary<string, string>? Environment = null,
+    TimeSpan? Timeout = null
+);
 
 /// <summary>The captured outcome of a <see cref="SandboxCommand"/>.</summary>
 /// <param name="ExitCode">Process exit code (0 = success).</param>

@@ -1,6 +1,14 @@
 using System.Collections.Immutable;
 using System.Net;
 using System.Net.Http.Json;
+using System.Runtime.CompilerServices;
+using System.Text.Json;
+using AchieveAi.LmDotnetTools.CopilotSdkProvider.Agents;
+using AchieveAi.LmDotnetTools.CopilotSdkProvider.Configuration;
+using AchieveAi.LmDotnetTools.CopilotSdkProvider.Models;
+using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
@@ -297,10 +305,12 @@ public sealed class SystemPromptCompositionTests
     /// proving the call site is reachable for any sandbox-capable mode, not merely a hard-coded id.
     /// </remarks>
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
     public async Task SandboxCapableModeCopy_StillReceivesTheWorkspaceSuffix_ThroughTheRealAgentFactory(
-        bool restrictSandboxTools
+        bool restrictSandboxTools,
+        bool useCopilot
     )
     {
         // Isolated user-mode store so CopyModeAsync's write does not touch the shared production
@@ -316,6 +326,8 @@ public sealed class SystemPromptCompositionTests
         try
         {
             string? promptTheModelReceived = null;
+            bool? rawBrowserReceived = null;
+            var copilotClient = new RecordingCopilotClient();
             var responder = ScriptedSseResponder
                 .New()
                 .ForRole(
@@ -323,6 +335,7 @@ public sealed class SystemPromptCompositionTests
                     ctx =>
                     {
                         promptTheModelReceived ??= ctx.SystemPrompt;
+                        rawBrowserReceived ??= ctx.HasTool("Browser");
                         return true;
                     }
                 )
@@ -431,11 +444,25 @@ public sealed class SystemPromptCompositionTests
                         Program.SandboxMcpTransportHandlerKey,
                         mcpTransportHandler
                     );
+                    if (useCopilot)
+                    {
+                        services.RemoveAll<IFileSystemProbe>();
+                        services.AddSingleton<IFileSystemProbe>(new CopilotProbe());
+                        Func<CopilotSdkOptions, ILogger?, ICopilotSdkClient> clientFactory = (_, _) => copilotClient;
+                        services.AddKeyedSingleton(Program.CopilotSdkClientFactoryKey, clientFactory);
+                    }
                 }
             );
 
             var threadId = $"f004-{Guid.NewGuid():N}";
-            var socket = await factory.ConnectWebSocketAsync(threadId, copiedMode.Id);
+            var socket = useCopilot
+                ? await factory
+                    .Server.CreateWebSocketClient()
+                    .ConnectAsync(
+                        new Uri($"ws://localhost/ws?threadId={threadId}&modeId={copiedMode.Id}&providerId=copilot"),
+                        CancellationToken.None
+                    )
+                : await factory.ConnectWebSocketAsync(threadId, copiedMode.Id);
             await using var client = new WebSocketTestClient(socket);
             await client.SendUserMessageAsync("begin the review");
             using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(30));
@@ -445,6 +472,31 @@ public sealed class SystemPromptCompositionTests
             // vacuously-satisfied assertion — if any real dependency were still live and unreachable,
             // the run would error out before the model ever replied.
             frames.ConcatText().Should().Contain("ack");
+            if (useCopilot)
+            {
+                copilotClient.StartOptions.Should().NotBeNull();
+                promptTheModelReceived = copilotClient.StartOptions!.DeveloperInstructions;
+                var tools = copilotClient.StartOptions.Tools!.Select(t => t.Name).ToList();
+                tools.Should().Contain("Read");
+                rawBrowserReceived = tools.Contains("Browser");
+                copilotClient
+                    .StartOptions.McpServers.Should()
+                    .BeNullOrEmpty("the CLI must not receive an unfiltered gateway endpoint");
+                var denied = await copilotClient.Executor!(
+                    new() { Tool = "Browser", Arguments = JsonSerializer.SerializeToElement(new { }) },
+                    CancellationToken.None
+                );
+                denied.Success.Should().BeFalse("an unadvertised Browser call must also be denied at runtime");
+                var read = await copilotClient.Executor!(
+                    new() { Tool = "Read", Arguments = JsonSerializer.SerializeToElement(new { }) },
+                    CancellationToken.None
+                );
+                read.Success.Should().BeTrue();
+                read.ContentItems.Should().Contain(i => i.Text != null && i.Text.Contains("probe"));
+            }
+            rawBrowserReceived
+                .Should()
+                .BeFalse("sandbox:* and named subsets must never expose the raw gateway Browser tool");
             promptTheModelReceived
                 .Should()
                 .NotBeNull(
@@ -531,6 +583,7 @@ public sealed class SystemPromptCompositionTests
         builder.WebHost.UseTestServer();
         builder.Logging.ClearProviders();
         builder.Services.AddMcpServerFromFunctionProviders();
+        builder.Services.AddSingleton<IFunctionProvider>(new BrowserProbeProvider());
 
         var app = builder.Build();
         app.MapMcpFunctionProviders();
@@ -538,6 +591,101 @@ public sealed class SystemPromptCompositionTests
 
         var testServer = (TestServer)app.Services.GetRequiredService<Microsoft.AspNetCore.Hosting.Server.IServer>();
         return (app, testServer.CreateHandler());
+    }
+
+    private sealed class BrowserProbeProvider : IFunctionProvider
+    {
+        public string ProviderName => "SandboxProbe";
+        public int Priority => 100;
+
+        public IEnumerable<FunctionDescriptor> GetFunctions() =>
+            new[] { "Read", "Browser" }.Select(name => new FunctionDescriptor
+            {
+                Contract = new FunctionContract
+                {
+                    Name = name,
+                    Description = "Gateway selection probe.",
+                    Parameters = [],
+                },
+                ProviderName = ProviderName,
+                Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("probe")),
+            });
+    }
+
+    private sealed class CopilotProbe : IFileSystemProbe
+    {
+        public bool IsExecutableOnPath(string executableBaseName) => executableBaseName == "copilot";
+
+        public bool FileExists(string path) => true;
+    }
+
+    private sealed class RecordingCopilotClient : ICopilotSdkClient
+    {
+        public CopilotBridgeInitOptions? StartOptions { get; private set; }
+        public Func<CopilotDynamicToolCallRequest, CancellationToken, Task<CopilotDynamicToolCallResponse>>? Executor
+        {
+            get;
+            private set;
+        }
+        public bool IsRunning { get; private set; }
+        public string? CurrentCopilotSessionId => "filtered-copilot";
+        public string DependencyState => "ready";
+
+        public void ConfigureDynamicToolExecutor(
+            Func<CopilotDynamicToolCallRequest, CancellationToken, Task<CopilotDynamicToolCallResponse>>? executor
+        ) => Executor = executor;
+
+        public Task StartOrResumeSessionAsync(CopilotBridgeInitOptions options, CancellationToken ct = default)
+        {
+            StartOptions = options;
+            IsRunning = true;
+            return Task.CompletedTask;
+        }
+
+        public Task EnsureStartedAsync(CopilotBridgeInitOptions options, CancellationToken ct = default) =>
+            StartOrResumeSessionAsync(options, ct);
+
+        public async IAsyncEnumerable<CopilotTurnEventEnvelope> RunStreamingAsync(
+            string input,
+            [EnumeratorCancellation] CancellationToken ct = default
+        )
+        {
+            await Task.Yield();
+            yield return new()
+            {
+                Type = "event",
+                RequestId = "1",
+                Event = JsonSerializer.SerializeToElement(
+                    new
+                    {
+                        type = "session/update",
+                        update = new
+                        {
+                            sessionUpdate = "agent_message_chunk",
+                            content = new { type = "text", text = "ack" },
+                        },
+                    }
+                ),
+            };
+            yield return new()
+            {
+                Type = "event",
+                RequestId = "2",
+                Event = JsonSerializer.SerializeToElement(
+                    new { type = "session/prompt/completed", stopReason = "end_turn" }
+                ),
+            };
+        }
+
+        public Task InterruptTurnAsync(CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task ShutdownAsync(TimeSpan? timeout = null, CancellationToken ct = default)
+        {
+            IsRunning = false;
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     /// <summary>

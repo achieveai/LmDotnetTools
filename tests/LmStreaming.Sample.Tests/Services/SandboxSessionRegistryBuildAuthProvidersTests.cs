@@ -546,24 +546,12 @@ public class SandboxSessionRegistryBuildAuthProvidersTests
     [Fact]
     public async Task Sample_config_emits_only_approved_documentation_hosts()
     {
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
-        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "LmDotnetTools.sln")))
-        {
-            directory = directory.Parent;
-        }
-
-        directory.Should().NotBeNull("the checked-in sample configuration must be tested");
-        var options = new SandboxGatewayOptions();
-        new ConfigurationBuilder()
-            .AddJsonFile(Path.Combine(directory!.FullName, "samples", "LmStreaming.Sample", "appsettings.json"))
-            .Build()
-            .GetSection("SandboxGateway")
-            .Bind(options);
+        var options = BindSampleGatewayOptions();
         await using var registry = CreateRegistry(new AuthOptions(), options: options);
 
         var (providers, network) = registry.BuildAuthProvidersForTest();
         providers.Should().BeNull();
-        var rule = network.Should().ContainSingle().Subject;
+        var rule = network.Should().ContainSingle(r => r.Id == "public-docs").Subject;
         rule.Hosts.Should()
             .BeEquivalentTo(
                 "developer.apple.com",
@@ -582,6 +570,87 @@ public class SandboxSessionRegistryBuildAuthProvidersTests
         rule.Methods.Should().Equal("GET");
         rule.Ports.Should().Equal(443);
         rule.AuthProvider.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Sample_config_allows_receipt_downloads_without_injecting_the_graph_token(bool configureM365)
+    {
+        var auth = new AuthOptions();
+        if (configureM365)
+        {
+            auth.M365.ClientId = "test-client";
+            auth.M365.ClientSecret = "test-secret";
+        }
+
+        await using var registry = CreateRegistry(auth, options: BindSampleGatewayOptions());
+        var (providers, network) = registry.BuildAuthProvidersForTest();
+
+        var download = network.Should().ContainSingle(r => r.Id == "m365-downloads").Subject;
+        network.Should().HaveCount(configureM365 ? 3 : 2);
+        download.Action.Should().Be("allow");
+        download.Hosts.Should().Equal("mcqdbdev-my.sharepoint.com");
+        download.Ports.Should().Equal(443);
+        download.Methods.Should().BeEquivalentTo("GET", "HEAD");
+        download.Paths.Should().Equal("*");
+        download.AuthProvider.Should().BeNull("Graph download redirects are preauthenticated");
+        download.RequiredScopes.Should().BeEmpty();
+
+        OAuthProviderHosts.IsAllowed("m365", "mcqdbdev-my.sharepoint.com").Should().BeFalse();
+        OAuthProviderHosts.IsAllowed("m365", "graph.microsoft.com").Should().BeTrue();
+        if (configureM365)
+        {
+            providers.Should().ContainSingle().Which.Id.Should().Be("m365-auth");
+            var graph = network.Should().ContainSingle(r => r.Id == "m365").Subject;
+            graph.Hosts.Should().Equal("graph.microsoft.com");
+            graph.AuthProvider.Should().Be("m365-auth");
+        }
+        else
+        {
+            providers.Should().BeNull();
+            network.Should().NotContain(r => r.Id == "m365");
+        }
+    }
+
+    [Fact]
+    public async Task Sample_receipt_download_rule_can_be_disabled_without_disabling_graph_auth()
+    {
+        var options = BindSampleGatewayOptions(
+            new Dictionary<string, string?> { ["SandboxGateway:Network:Rules:m365-downloads:Enabled"] = "false" }
+        );
+        var auth = new AuthOptions
+        {
+            M365 = new M365AuthOptions { ClientId = "test-client", ClientSecret = "test-secret" },
+        };
+        await using var registry = CreateRegistry(auth, options: options);
+        var (providers, network) = registry.BuildAuthProvidersForTest();
+
+        network.Should().NotContain(r => r.Id == "m365-downloads");
+        network.Should().ContainSingle(r => r.Id == "m365").Which.AuthProvider.Should().Be("m365-auth");
+        providers.Should().ContainSingle().Which.Id.Should().Be("m365-auth");
+    }
+
+    private static SandboxGatewayOptions BindSampleGatewayOptions(Dictionary<string, string?>? overrides = null)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "LmDotnetTools.sln")))
+        {
+            directory = directory.Parent;
+        }
+
+        directory.Should().NotBeNull("the checked-in sample configuration must be tested");
+        var configuration = new ConfigurationBuilder().AddJsonFile(
+            Path.Combine(directory!.FullName, "samples", "LmStreaming.Sample", "appsettings.json")
+        );
+        if (overrides is not null)
+        {
+            configuration.AddInMemoryCollection(overrides);
+        }
+
+        var options = new SandboxGatewayOptions();
+        configuration.Build().GetSection("SandboxGateway").Bind(options);
+        return options;
     }
 
     /// <summary>Binds an in-memory <c>SandboxGateway</c>-shaped configuration onto fresh options.</summary>

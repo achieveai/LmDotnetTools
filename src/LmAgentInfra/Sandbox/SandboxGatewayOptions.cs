@@ -203,6 +203,21 @@ public sealed class SandboxGatewayOptions
     public string? PluginsDirs { get; set; }
 
     /// <summary>
+    /// Host directory containing global plugin mount paths. Forwarded as PLUGINS_BASE_PATH when this
+    /// app spawns the gateway. An adopted gateway must configure PLUGINS_BASE_PATH itself.
+    /// </summary>
+    public string? PluginsBasePath { get; set; }
+
+    /// <summary>
+    /// Administrator-selected read-only directories mounted in each NEW sandbox session. Existing
+    /// sessions keep their original mounts. This is separate from marketplace plugin selection.
+    /// Example configuration: <c>"PluginMounts": [{"Path":"sandbox-apps","Name":"sandbox-apps","Origin":"global"}]</c>
+    /// with <c>"PluginsBasePath":"C:\\sandbox-plugins"</c> mounts the existing host directory
+    /// <c>C:\\sandbox-plugins\\sandbox-apps</c> inside the sandbox at <c>/plugins/sandbox-apps</c>.
+    /// </summary>
+    public List<SandboxPluginMountOptions> PluginMounts { get; set; } = [];
+
+    /// <summary>
     /// Optional subset of marketplace aliases to activate per sandbox session, as a comma-separated
     /// list (e.g. <c>"official,claude_plugins"</c>). The aliases are the canonical names the gateway
     /// derives from <see cref="PluginsDirs"/>; the authoritative set can be read from the gateway's
@@ -252,4 +267,12 @@ public sealed class SandboxGatewayOptions
 
     /// <summary>Host path to the MITM CA private key (the egress proxy's <c>CA_KEY_PATH</c>).</summary>
     public string? CaKeyPath { get; set; }
+}
+
+/// <summary>Configuration-bound plugin mount entry; validated by the SDK when creating a session.</summary>
+public sealed class SandboxPluginMountOptions
+{
+    public string Path { get; set; } = string.Empty;
+    public string? Name { get; set; }
+    public string Origin { get; set; } = "global";
 }

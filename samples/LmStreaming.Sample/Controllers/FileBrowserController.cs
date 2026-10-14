@@ -10,7 +10,8 @@ using LmStreaming.Sample.FileBrowser;
 using LmStreaming.Sample.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
-using Microsoft.Net.Http.Headers;
+using ResolvedTarget = LmStreaming.Sample.FileBrowser.WorkspacePathResolver.Target;
+using ResolveFailure = LmStreaming.Sample.FileBrowser.WorkspacePathResolver.Failure;
 
 namespace LmStreaming.Sample.Controllers;
 
@@ -39,29 +40,6 @@ public sealed class FileBrowserController(
     ILogger<FileBrowserController> logger
 ) : ControllerBase
 {
-    private enum ResolveFailure
-    {
-        None,
-        NotFound,
-        Ambiguous,
-        NotADirectory,
-        InvalidPath,
-    }
-
-    private readonly record struct ResolvedTarget(
-        bool Success,
-        string ServerPath,
-        SandboxEntryType Type,
-        long? Size,
-        ResolveFailure Failure
-    )
-    {
-        public static ResolvedTarget Ok(string serverPath, SandboxEntryType type, long? size) =>
-            new(true, serverPath, type, size, ResolveFailure.None);
-
-        public static ResolvedTarget Fail(ResolveFailure failure) => new(false, string.Empty, default, null, failure);
-    }
-
     private readonly record struct SessionContext(
         bool Ok,
         SandboxSession? Session,
@@ -1297,60 +1275,8 @@ public sealed class FileBrowserController(
     /// returned type is the server's — client-supplied types/flags are never trusted. The empty path is the
     /// workspace root.
     /// </summary>
-    private async Task<ResolvedTarget> ResolveTargetAsync(string sessionId, string requestedPath, CancellationToken ct)
-    {
-        // Do NOT treat '\' as a separator. On the POSIX sandbox a backslash is a LEGAL filename character,
-        // so rewriting it to '/' would split a literal name like `a\b` into `a`/`b` and resolve a DIFFERENT
-        // object (or make the real `a\b` unreachable). The wire path separator is '/' only, so any backslash
-        // is an invalid path rather than a separator.
-        if (requestedPath.Contains('\\', StringComparison.Ordinal))
-        {
-            return ResolvedTarget.Fail(ResolveFailure.InvalidPath);
-        }
-
-        var components = requestedPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        var serverParts = new List<string>(components.Length);
-        var currentDir = string.Empty;
-        var currentType = SandboxEntryType.Directory;
-        long? currentSize = null;
-
-        for (var i = 0; i < components.Length; i++)
-        {
-            var component = components[i];
-            if (component is "." or ".." || component.Contains('\0'))
-            {
-                return ResolvedTarget.Fail(ResolveFailure.InvalidPath);
-            }
-
-            var entries = await fileBrowser.ListWorkspaceDirectoryAsync(sessionId, currentDir, ct);
-            var matches = entries
-                .Where(e => !e.NameLossy && string.Equals(e.Name, component, StringComparison.Ordinal))
-                .ToList();
-            if (matches.Count == 0)
-            {
-                return ResolvedTarget.Fail(ResolveFailure.NotFound);
-            }
-
-            if (matches.Count > 1)
-            {
-                return ResolvedTarget.Fail(ResolveFailure.Ambiguous);
-            }
-
-            var matched = matches[0];
-            var isLast = i == components.Length - 1;
-            if (!isLast && matched.Type != SandboxEntryType.Directory)
-            {
-                return ResolvedTarget.Fail(ResolveFailure.NotADirectory);
-            }
-
-            serverParts.Add(matched.Name);
-            currentDir = string.Join('/', serverParts);
-            currentType = matched.Type;
-            currentSize = matched.Size;
-        }
-
-        return ResolvedTarget.Ok(currentDir, currentType, currentSize);
-    }
+    private Task<ResolvedTarget> ResolveTargetAsync(string sessionId, string requestedPath, CancellationToken ct) =>
+        WorkspacePathResolver.ResolveAsync(fileBrowser, sessionId, requestedPath, ct);
 
     // -------- Helpers --------
 
@@ -1515,24 +1441,8 @@ public sealed class FileBrowserController(
     /// <see cref="FileBrowserLimits.WorkspaceGrantLifetime"/>, and the grant reads one conversation's
     /// workspace and nothing else.
     /// </remarks>
-    private void ApplyRawHeaders(string contentType, string fileName, bool attachment)
-    {
-        Response.Headers["X-Content-Type-Options"] = "nosniff";
-        Response.Headers.CacheControl = "private, no-store";
-        Response.Headers["Referrer-Policy"] = "no-referrer";
-
-        if (WorkspaceContentTypes.IsActiveDocument(contentType))
-        {
-            Response.Headers.ContentSecurityPolicy = WorkspaceContentTypes.SandboxPolicy;
-        }
-
-        // Set by hand rather than through File(..., fileDownloadName:), which can only produce `attachment`.
-        // SetHttpFileName writes both `filename` and the RFC 5987 `filename*`, so a non-ASCII workspace file
-        // name survives instead of being mangled or dropped.
-        var disposition = new ContentDispositionHeaderValue(attachment ? "attachment" : "inline");
-        disposition.SetHttpFileName(fileName);
-        Response.Headers.ContentDisposition = disposition.ToString();
-    }
+    private void ApplyRawHeaders(string contentType, string fileName, bool attachment) =>
+        WorkspaceContentTypes.ApplyHeaders(Response, contentType, fileName, attachment);
 
     private SandboxCredential? TryBuildCallerCredential()
     {

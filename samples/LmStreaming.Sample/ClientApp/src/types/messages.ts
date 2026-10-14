@@ -781,13 +781,26 @@ export function isLifecycleMessage(msg: IMessage): boolean {
 }
 
 /**
+ * Where a display item sits in the SERVER's stored history. Separate from `id`, which is the client's
+ * display/merge key and must not change.
+ * - `persistedId`: the stored message id (the last stored row merged into this item). Absent on a live
+ *   message until the client learns it; fork actions that name a message need it.
+ * - `seq`: the highest stored `seq` among the rows that make up this item. Used to place the branch
+ *   switcher, whose fork point can be a row the transcript does not render (a tool result, usage).
+ */
+export interface PersistedIdentity {
+  persistedId?: string | null;
+  seq?: number | null;
+}
+
+/**
  * Display item types for rendering the chat UI
  */
 export type DisplayItem =
-  | { type: 'user-message'; id: string; content: TextMessage; status: 'pending' | 'active' | 'completed'; timestamp: number }
-  | { type: 'assistant-message'; id: string; content: TextMessage; runId?: string | null; parentRunId?: string | null; messageOrderIdx?: number | null }
-  | { type: 'pill'; id: string; items: Array<ReasoningMessage | ToolsCallMessage>; runId?: string | null; parentRunId?: string | null; messageOrderIdx?: number | null }
-  | { type: 'notification'; id: string; notification: NotificationDisplayData; runId?: string | null };
+  | ({ type: 'user-message'; id: string; content: TextMessage; status: 'pending' | 'active' | 'completed'; timestamp: number } & PersistedIdentity)
+  | ({ type: 'assistant-message'; id: string; content: TextMessage; runId?: string | null; parentRunId?: string | null; messageOrderIdx?: number | null } & PersistedIdentity)
+  | ({ type: 'pill'; id: string; items: Array<ReasoningMessage | ToolsCallMessage>; runId?: string | null; parentRunId?: string | null; messageOrderIdx?: number | null } & PersistedIdentity)
+  | ({ type: 'notification'; id: string; notification: NotificationDisplayData; runId?: string | null } & PersistedIdentity);
 
 /**
  * Status for tracking message lifecycle

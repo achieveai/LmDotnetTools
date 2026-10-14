@@ -98,6 +98,9 @@ public sealed class FileConversationStore
             return;
         }
 
+        // Read before taking the lock: ForkHistory takes the per-thread gate itself.
+        var forkPoint = await ForkHistory.ForkPointAsync(this, threadId, ct);
+
         var gate = GetDirectoryGate(GetThreadDirectory(threadId));
         await gate.WaitAsync(ct);
         try
@@ -111,7 +114,7 @@ public sealed class FileConversationStore
             // The store owns Seq. A file written before the column existed has rows without one;
             // the first append numbers them in load order and writes them back, so the thread reads
             // the same before and after and the watermark becomes meaningful from here on.
-            var allMessages = MessageSequence.Append(existingMessages, messages);
+            var allMessages = MessageSequence.Append(existingMessages, messages, forkPoint);
             await WriteJsonFileAsync(messagesFile, allMessages, ct);
         }
         finally
@@ -125,18 +128,21 @@ public sealed class FileConversationStore
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
+        long own;
         var gate = GetDirectoryGate(GetThreadDirectory(threadId));
         await gate.WaitAsync(ct);
         try
         {
             var messagesFile = Path.Combine(GetThreadDirectory(threadId), MessagesFileName);
             var messages = await LoadMessagesFromFileAsync(messagesFile, ct);
-            return messages.Count == 0 ? 0 : MessageSequence.Watermark(messages);
+            own = messages.Count == 0 ? 0 : MessageSequence.Watermark(messages);
         }
         finally
         {
             _ = gate.Release();
         }
+
+        return await ForkHistory.WatermarkAsync(this, threadId, own, ct);
     }
 
     /// <inheritdoc />
@@ -150,13 +156,48 @@ public sealed class FileConversationStore
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
+        return await ForkHistory.RangeAsync(
+            this,
+            threadId,
+            fromSeq,
+            toSeq,
+            limit,
+            async (from, to, max) =>
+            {
+                var gate = GetDirectoryGate(GetThreadDirectory(threadId));
+                await gate.WaitAsync(ct);
+                try
+                {
+                    var messagesFile = Path.Combine(GetThreadDirectory(threadId), MessagesFileName);
+                    var messages = await LoadMessagesFromFileAsync(messagesFile, ct);
+                    return MessageSequence.Range(messages, from, to, max);
+                }
+                finally
+                {
+                    _ = gate.Release();
+                }
+            },
+            ct
+        );
+    }
+
+    /// <inheritdoc />
+    public async Task NumberLegacyMessagesAsync(string threadId, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+
         var gate = GetDirectoryGate(GetThreadDirectory(threadId));
         await gate.WaitAsync(ct);
         try
         {
             var messagesFile = Path.Combine(GetThreadDirectory(threadId), MessagesFileName);
-            var messages = await LoadMessagesFromFileAsync(messagesFile, ct);
-            return MessageSequence.Range(messages, fromSeq, toSeq, limit);
+            var existingMessages = await LoadMessagesFromFileAsync(messagesFile, ct);
+            if (existingMessages.All(m => m.Seq is not null))
+            {
+                return;
+            }
+
+            await WriteJsonFileAsync(messagesFile, MessageSequence.Append(existingMessages, []), ct);
         }
         finally
         {
@@ -189,6 +230,7 @@ public sealed class FileConversationStore
             {
                 Timestamp = existing[idx].Timestamp,
                 Seq = existing[idx].Seq,
+                ParentMessageId = existing[idx].ParentMessageId,
             };
             await WriteJsonFileAsync(messagesFile, existing, ct);
         }
@@ -206,19 +248,20 @@ public sealed class FileConversationStore
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
+        List<PersistedMessage> own;
         var gate = GetDirectoryGate(GetThreadDirectory(threadId));
         await gate.WaitAsync(ct);
         try
         {
             var messagesFile = Path.Combine(GetThreadDirectory(threadId), MessagesFileName);
-            var messages = await LoadMessagesFromFileAsync(messagesFile, ct);
-
-            return MessageSequence.Order(messages);
+            own = MessageSequence.Order(await LoadMessagesFromFileAsync(messagesFile, ct));
         }
         finally
         {
             _ = gate.Release();
         }
+
+        return await ForkHistory.LoadAsync(this, threadId, own, ct);
     }
 
     /// <inheritdoc />

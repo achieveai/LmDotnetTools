@@ -34,6 +34,12 @@ internal static class SpawnCapabilityCodes
     public const string EmptyInheritedToolset = "empty_inherited_toolset";
 
     /// <summary>
+    /// A <c>model</c> id the host does not know. It was dropped, so the sub-agent runs on its
+    /// tier/template/parent model instead of the one the caller named.
+    /// </summary>
+    public const string UnknownModel = "unknown_model";
+
+    /// <summary>
     /// The <c>add_tools</c> grammar, stated once and used by BOTH the warning line and the receipt's
     /// next action so a caller reading either is told the same thing.
     /// </summary>
@@ -55,6 +61,11 @@ internal static class SpawnCapabilityCodes
     internal const string EmptyToolsetNextAction =
         "This sub-agent inherited no parent tool at all; widen the template's tools list or add_tools, "
         + "or do the work without delegating.";
+
+    internal const string UnknownModelNextAction =
+        "The requested model id is not available here, so it was ignored. 'model', when present, names "
+        + "the effective model; queued spawns have not resolved it yet. Use an id from the Agent tool's "
+        + "'model' list, or omit it.";
 }
 
 /// <summary>
@@ -108,13 +119,17 @@ internal sealed record SpawnCapabilityRecord(
     /// </summary>
     internal const string ProjectedSource = "projected";
 
+    /// <summary>See <see cref="SpawnCapabilityCodes.UnknownModel"/>. Null when no model id was dropped.</summary>
+    internal string? UnknownModel { get; init; }
+
     /// <summary>True when at least one requested capability did not land as the caller wrote it.</summary>
     internal bool HasMismatch =>
         UnmatchedAddTools.Count > 0
         || UnremovableTools.Count > 0
         || RemoveToolsWithheldNothing.Count > 0
         || RestoredByRequiredTools.Count > 0
-        || EmptyInheritedToolset;
+        || EmptyInheritedToolset
+        || UnknownModel is not null;
 
     /// <summary>
     /// The next valid action for each mismatch present, or null when there is none. A code names what
@@ -153,6 +168,11 @@ internal sealed record SpawnCapabilityRecord(
             if (EmptyInheritedToolset)
             {
                 parts.Add(SpawnCapabilityCodes.EmptyToolsetNextAction);
+            }
+
+            if (UnknownModel is not null)
+            {
+                parts.Add(SpawnCapabilityCodes.UnknownModelNextAction);
             }
 
             return string.Join(" ", parts);

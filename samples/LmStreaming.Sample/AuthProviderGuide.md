@@ -384,12 +384,24 @@ the sandbox-create request:
   - **github** → `github.com`, `api.github.com`, `codeload.github.com`
   - **ado** → `dev.azure.com`, `*.dev.azure.com`, `*.visualstudio.com`
   - **m365** → `graph.microsoft.com`
+- The sample's **m365-downloads** rule permits HTTPS GET/HEAD to
+  `mcqdbdev-my.sharepoint.com` without injecting a credential. Microsoft Graph's `/content`
+  response redirects to a preauthenticated download URL, so keep the M365 bearer token on
+  `graph.microsoft.com`. The same M365 sign-in supports Graph requests for OneDrive and
+  SharePoint files; the download redirect needs no bearer token. See
+  [Microsoft's download documentation](https://learn.microsoft.com/en-us/graph/api/driveitem-get-content?view=graph-rest-1.0).
+  Direct SharePoint REST API calls need a token issued for SharePoint, which this rule does not supply.
+
+  To change tenants, override `SandboxGateway__Network__Rules__m365-downloads__Hosts`.
+  To disable downloads, set `SandboxGateway__Network__Rules__m365-downloads__Enabled=false`.
+  Existing sandboxes keep their creation policy; restart the app with the updated configuration
+  and recreate the affected workspace sandbox before retrying a fresh Graph download URL.
 - **`env`** — the merged workspace/mode/provision per-sandbox environment map (see
   [SandboxWorkspaceGuide.md](SandboxWorkspaceGuide.md#per-sandbox-environment-variables)), omitted
   entirely when empty.
 
-When **no** provider is configured, both blocks are omitted entirely and the plain workspace sandbox
-is created as before.
+When **no** provider is configured, `auth_providers` is omitted. Configured network-only rules
+remain active, including the sample's documentation and receipt-download rules.
 
 ### Loopback / SSRF allowlist
 

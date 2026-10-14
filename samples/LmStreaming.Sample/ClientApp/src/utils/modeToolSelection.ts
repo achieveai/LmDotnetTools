@@ -55,7 +55,7 @@ export interface ToolGroupView {
   key: string;
   label: string;
   tools: ToolDefinition[];
-  /** True for `sandbox` / `subagents` / `workflow`. */
+  /** True for `sandbox` / `miniapp-debug` / `subagents` / `workflow`. */
   qualified: boolean;
   /** The `group:*` row, when this group has one. */
   wildcard?: ToolDefinition;

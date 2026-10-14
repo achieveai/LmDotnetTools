@@ -4,6 +4,9 @@ using AchieveAi.LmDotnetTools.LmTestUtils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests;
 
+// The memory budgets measure the process heap. Other test collections must finish
+// before these measurements, or their retained allocations can look like handler leaks.
+[Collection(nameof(MockHttpHandlerBenchmarkCollection))]
 public class MockHttpHandlerBuilderBenchmarks
 {
     private const int RequestsPerRun = 1000;
@@ -149,3 +152,6 @@ public class MockHttpHandlerBuilderBenchmarks
         ) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("OK") });
     }
 }
+
+[CollectionDefinition(nameof(MockHttpHandlerBenchmarkCollection), DisableParallelization = true)]
+public sealed class MockHttpHandlerBenchmarkCollection;

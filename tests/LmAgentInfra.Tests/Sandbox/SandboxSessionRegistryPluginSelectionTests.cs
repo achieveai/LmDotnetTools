@@ -24,6 +24,45 @@ public class SandboxSessionRegistryPluginSelectionTests
     private const string AppIdHeader = "X-Sbx-App-Id";
 
     [Fact]
+    public async Task ConfiguredPluginMountsReachInitialAndReplacementSandboxCreates()
+    {
+        await using var registry = CreateRegistryWithFakeGateway(
+            out var gateway,
+            pluginMounts:
+            [
+                new SandboxPluginMountOptions
+                {
+                    Path = "sandbox-apps",
+                    Name = "sandbox-apps",
+                    Origin = "global",
+                },
+            ]
+        );
+        _ = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1"));
+        var partition = registry.SnapshotPluginSelectionPartitions("ws-1").Single();
+        _ = await registry.CreatePluginSelectionCandidateAsync(
+            new WorkspaceRef("ws-1", PluginSelection: [new SandboxPluginRef("official", "code-review")]),
+            partition,
+            CancellationToken.None
+        );
+
+        var creates = gateway
+            .Requests.Where(call =>
+                call.Method == HttpMethod.Post && call.Path.EndsWith("/sandboxes", StringComparison.Ordinal)
+            )
+            .ToArray();
+        creates.Should().HaveCount(2);
+        foreach (var create in creates)
+        {
+            using var document = JsonDocument.Parse(create.Body!);
+            var mount = document.RootElement.GetProperty("plugins")[0];
+            mount.GetProperty("path").GetString().Should().Be("sandbox-apps");
+            mount.GetProperty("name").GetString().Should().Be("sandbox-apps");
+            mount.GetProperty("origin").GetString().Should().Be("global");
+        }
+    }
+
+    [Fact]
     public async Task SnapshotPluginSelectionPartitions_ReturnsOnePartitionPerCallerAppId()
     {
         // Sessions are partitioned by (workspace, caller app) — one workspace can be live under several
@@ -637,13 +676,19 @@ public class SandboxSessionRegistryPluginSelectionTests
         int failCreateAfter = int.MaxValue,
         bool failDelete = false,
         string? marketplaces = null,
-        bool omitPluginResolution = false
+        bool omitPluginResolution = false,
+        IReadOnlyList<SandboxPluginMountOptions>? pluginMounts = null
     )
     {
         var fake = new FakeGateway(failCreateAfter, failDelete, omitPluginResolution);
         gateway = fake;
 
-        var options = new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl, Marketplaces = marketplaces };
+        var options = new SandboxGatewayOptions
+        {
+            BaseUrl = GatewayBaseUrl,
+            Marketplaces = marketplaces,
+            PluginMounts = pluginMounts?.ToList() ?? [],
+        };
         var lifetime = new SandboxGatewayLifetime(
             options,
             NullLogger<SandboxGatewayLifetime>.Instance,

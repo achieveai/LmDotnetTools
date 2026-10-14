@@ -183,7 +183,9 @@ Rules implemented by `ResolveBatchParent` and all loops:
 
 This is distinct from per-provider **session resume** (`--resume <id>` on Claude,
 `session/load` on Copilot, `thread/resume` on Codex), which attaches a NEW run to an EXISTING
-provider-side session. Resume threads through `initialSessionId`/`AssignSessionId` on the loop;
+provider-side session. Resume threads through `initialSessionId`/`AssignSessionId` on the loop,
+and a store-backed loop also restores its own session on recovery (Claude reads it from
+`ThreadMetadata.SessionMappings`, so a restarted host resumes without the caller passing an id);
 fork threads through `SendAsync(parentRunId: ...)` on individual inputs. They compose:
 a forked run can also resume, but the two are independently controlled signals.
 

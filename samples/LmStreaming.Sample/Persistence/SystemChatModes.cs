@@ -27,6 +27,8 @@ public static class SystemChatModes
     /// </summary>
     public const string WorkspaceAgentModeId = "workspace-agent";
 
+    public const string MiniWebAppBuilderModeId = "mini-web-app-builder";
+
     /// <summary>
     /// The workflow author mode ID.
     /// </summary>

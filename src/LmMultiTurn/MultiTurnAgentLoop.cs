@@ -65,6 +65,14 @@ public sealed class MultiTurnAgentLoop
     private IStreamingAgent _agent;
     private IDictionary<string, ToolHandler> _toolHandlers;
 
+    // Image evidence is available during its run, including provider retries. History and
+    // persistence keep text only. Bound the run-local cache across parallel tool completions.
+    private readonly object _toolImagesLock = new();
+    private readonly Dictionary<string, IList<ToolResultContentBlock>> _toolImages = new(StringComparer.Ordinal);
+    private long _toolImageBytes;
+    private string? _toolImagesRunId;
+    private const long MaxToolImageBytes = 8 * 1024 * 1024;
+
     // The bare provider this loop OWNS, when a reconfiguration said so (AgentReconfiguration.
     // OwnsProviderAgent) or the host initialized OwnsProviderAgent for the one supplied at construction;
     // null for one the host keeps alive itself. Released exactly once: by the commit that supersedes it,
@@ -1392,6 +1400,10 @@ public sealed class MultiTurnAgentLoop
         CancellationToken ct
     )
     {
+        lock (_toolImagesLock)
+        {
+            _toolImagesRunId = assignment.RunId;
+        }
         try
         {
             // Execute turns - poll for new input between turns
@@ -1476,6 +1488,15 @@ public sealed class MultiTurnAgentLoop
                 errorCode: (ex as ContextOverflowException)?.Reason,
                 ct: ct
             );
+        }
+        finally
+        {
+            lock (_toolImagesLock)
+            {
+                _toolImages.Clear();
+                _toolImageBytes = 0;
+                _toolImagesRunId = null;
+            }
         }
     }
 
@@ -2012,9 +2033,10 @@ public sealed class MultiTurnAgentLoop
 
             // The wrap-up reads the same view a turn would (an active checkpoint stays in force) but
             // never runs the policy: it is not a place a compaction may start (spec 679 §5.1).
-            var messagesToSend = (_compaction?.BuildView() ?? GetMessagesWithSystemPrompt()).Concat([
-                wrapUpInstruction,
-            ]);
+            var messagesToSend = (_compaction?.BuildView() ?? GetMessagesWithSystemPrompt())
+                .Concat([wrapUpInstruction])
+                .ToList();
+            AddToolImagesToRequest(messagesToSend);
 
             IAsyncEnumerable<IMessage> stream;
             try
@@ -2612,6 +2634,8 @@ public sealed class MultiTurnAgentLoop
             messagesToSend.Add(continuationInstruction);
         }
 
+        AddToolImagesToRequest(messagesToSend);
+
         // Report the discovered context this request carries, read back out of the snapshot that is
         // about to go out. This is the last point at which "what the model will receive" is both
         // knowable and settled — earlier is a guess, later is history.
@@ -3061,9 +3085,8 @@ public sealed class MultiTurnAgentLoop
 
         await PublishToolCompletedAsync(result, toolCall, runId, generationId, elapsed, wasDeferred: false, ct);
 
-        // Non-deferred result. Add text-only version to LLM history (captions are in the
-        // text for id:// referencing); publish full version with ContentBlocks to
-        // subscribers (for image data resolution).
+        // Keep bounded image evidence in this run's provider requests, but never history.
+        RememberToolImages(result, runId);
         var historyResult = result.ContentBlocks != null ? result with { ContentBlocks = null } : result;
         AddToHistory(historyResult);
         await PublishToAllAsync(result, ct);
@@ -3075,6 +3098,80 @@ public sealed class MultiTurnAgentLoop
         );
 
         return result;
+    }
+
+    private void RememberToolImages(ToolCallResultMessage result, string runId)
+    {
+        if (result.ToolCallId is null || result.ContentBlocks is null)
+        {
+            return;
+        }
+
+        lock (_toolImagesLock)
+        {
+            if (_toolImagesRunId != runId)
+            {
+                return;
+            }
+            List<ToolResultContentBlock> images = [];
+            foreach (var image in result.ContentBlocks.OfType<ImageToolResultBlock>())
+            {
+                var bytes = Encoding.UTF8.GetByteCount(image.Data);
+                if (
+                    bytes > 4 * 1024 * 1024
+                    || bytes > MaxToolImageBytes - _toolImageBytes
+                    || image.MimeType is not ("image/png" or "image/jpeg" or "image/webp" or "image/gif")
+                )
+                {
+                    Logger.LogWarning(
+                        "Tool image for {ToolCallId} omitted from provider request: unsupported MIME or image budget",
+                        result.ToolCallId
+                    );
+                    continue;
+                }
+                images.Add(image);
+                _toolImageBytes += bytes;
+            }
+            if (images.Count > 0)
+            {
+                _toolImages[result.ToolCallId] = images;
+            }
+        }
+    }
+
+    private void AddToolImagesToRequest(List<IMessage> messages)
+    {
+        lock (_toolImagesLock)
+        {
+            for (var i = 0; i < messages.Count; i++)
+            {
+                if (
+                    messages[i] is ToolCallResultMessage single
+                    && single.ToolCallId is { } id
+                    && _toolImages.TryGetValue(id, out var images)
+                )
+                {
+                    messages[i] = single with { ContentBlocks = images };
+                }
+                else if (messages[i] is ToolsCallResultMessage batch)
+                {
+                    messages[i] = batch with
+                    {
+                        ToolCallResults =
+                        [
+                            .. batch.ToolCallResults.Select(r =>
+                                r.ToolCallId is { } callId && _toolImages.TryGetValue(callId, out var blocks)
+                                    ? r with
+                                    {
+                                        ContentBlocks = blocks,
+                                    }
+                                    : r
+                            ),
+                        ],
+                    };
+                }
+            }
+        }
     }
 
     /// <summary>

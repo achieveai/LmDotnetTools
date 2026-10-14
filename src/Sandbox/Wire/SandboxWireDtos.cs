@@ -20,7 +20,14 @@ internal sealed record CreateSandboxRequestDto(
     [property: JsonPropertyName("pluginSelection")] IReadOnlyList<PluginRefDto>? PluginSelection = null,
     // Per-sandbox environment variables (gateway PR #183 / v0.1.11). Omitted entirely when the
     // caller's request has none, matching this SDK's nulls-omitted REST convention.
-    [property: JsonPropertyName("env")] IReadOnlyDictionary<string, string>? Env = null
+    [property: JsonPropertyName("env")] IReadOnlyDictionary<string, string>? Env = null,
+    [property: JsonPropertyName("plugins")] IReadOnlyList<PluginMountDto>? Plugins = null
+);
+
+internal sealed record PluginMountDto(
+    [property: JsonPropertyName("path")] string Path,
+    [property: JsonPropertyName("name")] string? Name,
+    [property: JsonPropertyName("origin")] string Origin
 );
 
 internal sealed record PluginRefDto(
