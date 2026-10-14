@@ -13,10 +13,11 @@ import { countTodoTasks } from "@/utils/todoBoard";
 import TodoBoardPanel from "./TodoBoardPanel.vue";
 import SubAgentListPanel from "./SubAgentListPanel.vue";
 import FileBrowser from "./FileBrowser.vue";
+import SandboxPanel from "./SandboxPanel.vue";
 import PanelSplitter from "./PanelSplitter.vue";
 import { listSandboxApps, type SandboxApp } from "@/api/sandboxAppsApi";
 
-type InspectorSection = "work" | "files" | "apps" | "agents";
+type InspectorSection = "work" | "files" | "apps" | "sandbox" | "agents";
 type PreviewTab = { id: string; label: string; path: string };
 const props = withDefaults(
   defineProps<{
@@ -81,6 +82,9 @@ const filesOpen = ref(false);
 // the scroll position and any in-flight upload rather than aborting them.
 const filesMounted = ref(false);
 const appsOpen = ref(false);
+// Sandbox starts collapsed and mounts on first open, like Files, so idle conversations make no calls.
+const sandboxOpen = ref(false);
+const sandboxMounted = ref(false);
 const apps = ref<SandboxApp[]>([]);
 const appsError = ref(false);
 const resizing = ref(false);
@@ -119,8 +123,13 @@ function toggleSection(section: InspectorSection): void {
   if (section === "work") workOpen.value = !workOpen.value;
   else if (section === "files") setFilesOpen(!filesOpen.value);
   else if (section === "apps") appsOpen.value = !appsOpen.value;
+  else if (section === "sandbox") setSandboxOpen(!sandboxOpen.value);
   else agentsOpen.value = !agentsOpen.value;
   emit("selectSection", section);
+}
+function setSandboxOpen(open: boolean): void {
+  sandboxOpen.value = open;
+  if (open) sandboxMounted.value = true;
 }
 function setFilesOpen(open: boolean): void {
   filesOpen.value = open;
@@ -134,6 +143,7 @@ function revealSection(section: InspectorSection): void {
   if (section === "work") workOpen.value = true;
   else if (section === "files") setFilesOpen(true);
   else if (section === "apps") appsOpen.value = true;
+  else if (section === "sandbox") setSandboxOpen(true);
   else agentsOpen.value = true;
   void nextTick(() =>
     (section === "files" ? filesButton.value : rootEl.value?.querySelector<HTMLButtonElement>(`#inspector-tab-${section}`))?.focus(),
@@ -441,6 +451,24 @@ onBeforeUnmount(() => {
                 >Open</button>
               </li>
             </ul>
+          </div>
+        </section>
+        <section v-if="filesThreadId" class="inspector-section" data-testid="workspace-sandbox-section">
+          <h3>
+            <button
+              id="inspector-tab-sandbox"
+              :aria-expanded="sandboxOpen"
+              aria-controls="inspector-panel-sandbox"
+              @click="toggleSection('sandbox')"
+            >Sandbox</button>
+          </h3>
+          <div
+            id="inspector-panel-sandbox"
+            v-show="sandboxOpen"
+            class="inspector-content"
+            :inert="!sandboxOpen || undefined"
+          >
+            <SandboxPanel v-if="sandboxMounted" :thread-id="filesThreadId" />
           </div>
         </section>
         <section class="inspector-section">

@@ -11,6 +11,10 @@
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
   <ItemGroup>
+    <!-- Client half only (no hosting): the browser MCP relay factory returns an McpClient. -->
+    <PackageReference Include="ModelContextProtocol.Core" Version="1.3.0" />
+  </ItemGroup>
+  <ItemGroup>
     <InternalsVisibleTo Include="AchieveAi.LmDotnetTools.Sandbox.Tests" />
   </ItemGroup>
 </Project>

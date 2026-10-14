@@ -5,7 +5,8 @@ namespace AchieveAi.LmDotnetTools.Sandbox.Command;
 /// The id is the gateway's idempotency key for the operations API (ADR 0031 / issue #119): resubmitting
 /// the same id with an identical request replays the existing operation rather than running it again. It
 /// is validated against the gateway's <c>validate_operation_id</c> grammar EXACTLY (trim, then non-empty,
-/// at most <see cref="MaxOperationIdLength"/> chars, not <c>.</c> or <c>..</c>, and only ASCII
+/// at most <see cref="MaxOperationIdLength"/> chars, not <c>.</c>, <c>..</c>, or the reserved route names
+/// <c>stream</c>/<c>capabilities</c>, and only ASCII
 /// <c>[A-Za-z0-9._-]</c>) and the trimmed canonical form is stored/submitted — the gateway trims before
 /// comparing, so canonicalizing locally keeps "what we submit == what we correlate == what the gateway
 /// returns". The gateway (not this SDK) owns the request fingerprint that decides whether a same-id
@@ -56,6 +57,16 @@ internal static class CommandOperation
         if (canonical is "." or "..")
         {
             throw new ArgumentException("Operation id must not be '.' or '..'.", paramName);
+        }
+
+        // The gateway's fixed /operations/stream and /operations/capabilities routes shadow these ids, so an
+        // operation named either could never be polled or deleted; the gateway refuses them (exact match).
+        if (canonical is "stream" or "capabilities")
+        {
+            throw new ArgumentException(
+                $"Operation id '{canonical}' is reserved by the gateway's /operations/{canonical} route.",
+                paramName
+            );
         }
 
         foreach (var ch in canonical)

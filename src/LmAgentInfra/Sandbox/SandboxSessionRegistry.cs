@@ -48,13 +48,23 @@ public sealed record SubAgentSessionBinding(MutableSubAgentTemplateSource Source
 /// same session (today: a plugin-selection migration) can reproduce its marketplace scope instead of
 /// re-deriving it from whatever the global default happens to be by then. <see langword="null"/> when
 /// the create omitted the field and let the gateway pick its own default.</param>
+/// <param name="Image">The image ref the gateway acknowledged on create (its default when the workspace
+/// named none); <see langword="null"/> from a gateway that predates client images.</param>
+/// <param name="ImageDigest">The resolved image digest, when the gateway could resolve one.</param>
+/// <param name="ImageReport">The gateway's conformance report for the image, including its warnings.</param>
+/// <param name="WorkspaceHome">The workspace-relative home the gateway acknowledged, or
+/// <see langword="null"/> for the workspace root.</param>
 public sealed record SandboxSession(
     string WorkspaceId,
     string SessionId,
     string WorkspaceRelPath,
     string HostPath,
     SandboxPluginResolution? PluginResolution = null,
-    IReadOnlyList<string>? Marketplaces = null
+    IReadOnlyList<string>? Marketplaces = null,
+    string? Image = null,
+    string? ImageDigest = null,
+    SandboxImageReport? ImageReport = null,
+    string? WorkspaceHome = null
 );
 
 /// <summary>
@@ -83,12 +93,18 @@ public sealed record SandboxSession(
 /// also wants an app layer applied must top the recreated session up itself via
 /// <c>EnsureSessionEnvAsync</c> after acquiring it.
 /// </param>
+/// <param name="Image">Client image ref for the sandbox (gateway allow-list applies), or <see langword="null"/>
+/// for the gateway default. See <see cref="SandboxCreateRequest.Image"/>.</param>
+/// <param name="Home">Workspace-relative working directory for the sandbox, or <see langword="null"/> for
+/// the workspace root. See <see cref="SandboxCreateRequest.Home"/>.</param>
 public sealed record WorkspaceRef(
     string Id,
     string? DirectoryRelPath = null,
     IReadOnlyList<string>? Marketplaces = null,
     IReadOnlyList<SandboxPluginRef>? PluginSelection = null,
-    IReadOnlyDictionary<string, string>? Env = null
+    IReadOnlyDictionary<string, string>? Env = null,
+    string? Image = null,
+    string? Home = null
 );
 
 /// <summary>
@@ -1309,10 +1325,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// stamp, the creating credential
     /// (releasing its per-credential client refcount), and the persisted webhook secret. Both the
     /// liveness-eviction path (<see cref="InvalidateSessionAsync"/>) and the explicit-teardown path
-    /// (<see cref="DestroyWorkspaceSessionAsync"/>) funnel through here so a new per-session collection
+    /// (<see cref="DestroyWorkspaceSessionsCoreAsync"/>) funnel through here so a new per-session collection
     /// can never be wired into one lifecycle path and silently forgotten by the other. Deliberately does
     /// NOT touch the <see cref="_sessions"/> creation slot (its removal differs per caller) and does NOT
-    /// issue the gateway DELETE — only <see cref="DestroyWorkspaceSessionAsync"/> does that, and it calls
+    /// issue the gateway DELETE — only <see cref="DestroyWorkspaceSessionsCoreAsync"/> does that, and it calls
     /// this AFTER the DELETE so the session's creating credential is still resolvable for it.
     /// </summary>
     /// <remarks>
@@ -1441,7 +1457,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             pluginMounts:
             [
                 .. _options.PluginMounts.Select(mount => new SandboxPluginMount(mount.Path, mount.Name, mount.Origin)),
-            ]
+            ],
+            image: workspaceRef.Image,
+            home: workspaceRef.Home
         );
 
         if (createRequest.Env.Count > 0)
@@ -1539,8 +1557,11 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 // A success status with an unusable body (missing session id or malformed JSON), which the
                 // SDK classifies as Protocol. Mirrors the pre-SDK "success but no session id"
                 // InvalidOperationException.
+                // The SDK message is carried because it is the only place that says WHICH part was unusable
+                // (no session id, or a home the gateway did not acknowledge — a sandbox it already deleted).
                 throw new InvalidOperationException(
-                    $"Sandbox gateway returned a success status but no session id for workspace '{workspaceId}'.",
+                    $"Sandbox gateway returned a success status but an unusable response for workspace "
+                        + $"'{workspaceId}': {ex.Message}",
                     ex
                 );
             }
@@ -1550,15 +1571,20 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 // surfaces the gateway body, so the previous body-in-log/message diagnostic is dropped in
                 // favour of the status code; the observable outcome (SandboxSessionUnavailableException
                 // carrying the gateway status) is unchanged.
+                // The gateway's machine-readable error_code (e.g. image_not_allowed) names the reason without
+                // echoing the free-text body, so it is safe to log and to surface.
                 _logger.LogError(
-                    "Sandbox create failed for workspace {WorkspaceId}: {StatusCode}",
+                    "Sandbox create failed for workspace {WorkspaceId}: {StatusCode} {ErrorCode}",
                     workspaceId,
-                    ex.StatusCode
+                    ex.StatusCode,
+                    ex.ErrorCode
                 );
                 throw new SandboxSessionUnavailableException(
                     workspaceId,
                     ex.StatusCode,
-                    $"Sandbox gateway returned {ex.StatusCode} creating a session for " + $"workspace '{workspaceId}'."
+                    $"Sandbox gateway returned {ex.StatusCode}"
+                        + (ex.ErrorCode is { } errorCode ? $" ({errorCode})" : string.Empty)
+                        + $" creating a session for workspace '{workspaceId}'."
                 );
             }
 
@@ -1574,7 +1600,11 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 info.PluginResolution,
                 // The EFFECTIVE list resolved above, so a replacement session can be created with the
                 // same marketplace scope without re-reading the global default.
-                marketplaces
+                marketplaces,
+                info.Image,
+                info.ImageDigest,
+                info.ImageReport,
+                info.WorkspaceHome
             );
 
             // The gateway session now exists remotely. Publish its maps and persist its secret as one
@@ -1684,14 +1714,121 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// swallowed so run teardown never throws. Cancellation is observed only BEFORE each entry is
     /// removed from the cache (the point of no return); once an entry is committed to teardown its
     /// remote DELETE + secret removal run under <see cref="CancellationToken.None"/> so a cancellation
-    /// can never orphan the remote session or its persisted secret.
+    /// can never orphan the remote session or its persisted secret. A creation still in flight is awaited
+    /// and then destroyed, never skipped: skipped, it would finish into a removed slot and live on untracked.
     /// </summary>
-    public async Task DestroyWorkspaceSessionAsync(string workspaceId, CancellationToken ct = default)
+    public Task DestroyWorkspaceSessionAsync(string workspaceId, CancellationToken ct = default) =>
+        DestroyWorkspaceSessionsCoreAsync(workspaceId, appId: null, ct);
+
+    /// <summary>
+    /// As <see cref="DestroyWorkspaceSessionAsync(string, CancellationToken)"/>, but only for the sessions created
+    /// under <paramref name="appId"/>: other apps' sandboxes on the same workspace are left running.
+    /// </summary>
+    public Task DestroyWorkspaceSessionAsync(string workspaceId, string appId, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(appId);
+        return DestroyWorkspaceSessionsCoreAsync(workspaceId, appId, ct);
+    }
+
+    /// <summary>
+    /// Stops this app's sandboxes on <paramref name="workspaceId"/> and confirms each one is gone, for a caller
+    /// that needs the workspace free (a backup restore). Unlike
+    /// <see cref="DestroyWorkspaceSessionAsync(string, string, CancellationToken)"/> it is not best-effort: a
+    /// session is forgotten only after its DELETE succeeds (a <c>404</c> counts as gone). A session whose DELETE
+    /// fails stays cached, so a retry deletes it, and the call then throws.
+    /// </summary>
+    /// <exception cref="SandboxException">At least one sandbox could not be stopped; it is still tracked.</exception>
+    public async Task ReleaseWorkspaceSessionsAsync(string workspaceId, string appId, CancellationToken ct = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(appId);
+
+        var entries = _sessions
+            .Where(entry =>
+                entry.Key.WorkspaceId == workspaceId && string.Equals(entry.Key.AppId, appId, StringComparison.Ordinal)
+            )
+            .ToList();
+        var failures = 0;
+        SandboxException? lastFailure = null;
+        foreach (var entry in entries)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!entry.Value.IsValueCreated)
+            {
+                // A create that has not started yet: there is no sandbox to stop.
+                continue;
+            }
+
+            SandboxSession session;
+            try
+            {
+                session = await entry.Value.Value.ConfigureAwait(false);
+            }
+            catch
+            {
+                // A create that failed or was cancelled left no sandbox.
+                continue;
+            }
+
+            try
+            {
+                await ClientFor(CredentialFor(session.SessionId))
+                    .DeleteAsync(session.SessionId, ct)
+                    .ConfigureAwait(false);
+            }
+            catch (SandboxException ex) when (ex.StatusCode == 404)
+            {
+                // Already gone (deleted elsewhere, expired, or purged).
+            }
+            catch (SandboxException ex)
+            {
+                _logger.LogWarning(
+                    "Sandbox release returned {StatusCode} for session {SessionId}; it stays tracked for a retry",
+                    ex.StatusCode,
+                    session.SessionId
+                );
+                failures++;
+                lastFailure = ex;
+                continue;
+            }
+
+            _logger.LogInformation("Released sandbox session {SessionId}", session.SessionId);
+            // Confirmed gone. Exact removal, so a slot republished meanwhile is kept.
+            if (_sessions.TryRemove(entry))
+            {
+                _ = _replacedSessions.TryRemove(entry.Key, out _);
+            }
+            await EvictSessionStateAsync(session).ConfigureAwait(false);
+        }
+
+        if (lastFailure is not null)
+        {
+            throw new SandboxException(
+                lastFailure.Kind,
+                $"{failures} sandbox(es) on workspace '{workspaceId}' could not be stopped: {lastFailure.Message}",
+                lastFailure.StatusCode,
+                lastFailure
+            )
+            {
+                ErrorCode = lastFailure.ErrorCode,
+                Retryable = lastFailure.Retryable,
+                RetryAfter = lastFailure.RetryAfter,
+            };
+        }
+    }
+
+    private async Task DestroyWorkspaceSessionsCoreAsync(string workspaceId, string? appId, CancellationToken ct)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
 
-        var matchingKeys = _sessions.Keys.Where(key => key.WorkspaceId == workspaceId).ToList();
+        var matchingKeys = _sessions
+            .Keys.Where(key =>
+                key.WorkspaceId == workspaceId
+                && (appId is null || string.Equals(key.AppId, appId, StringComparison.Ordinal))
+            )
+            .ToList();
 
         foreach (var key in matchingKeys)
         {
@@ -1708,12 +1845,23 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             // rather than as the successor of one the caller asked to be destroyed.
             _ = _replacedSessions.TryRemove(key, out _);
 
-            if (!_sessions.TryRemove(key, out var lazy) || !lazy.IsValueCreated || !lazy.Value.IsCompletedSuccessfully)
+            if (!_sessions.TryRemove(key, out var lazy) || !lazy.IsValueCreated)
             {
                 continue;
             }
 
-            var session = lazy.Value.Result;
+            SandboxSession session;
+            try
+            {
+                // Usually already complete. When a create is still in flight, wait for it: skipped, the create
+                // would finish into the removed slot and leave a gateway sandbox nothing here tracks.
+                session = await lazy.Value.ConfigureAwait(false);
+            }
+            catch
+            {
+                // A create that failed or was cancelled left no session to tear down.
+                continue;
+            }
 
             // The cache entry is now removed — teardown is COMMITTED. Run the gateway DELETE and the
             // per-session state eviction under CancellationToken.None so a cancellation cannot orphan the

@@ -105,6 +105,9 @@ const submitting = ref(false);
 // Create form state
 const createName = ref('');
 const createDirectory = ref('');
+/** Optional client image and workspace home; set at create time only (a live sandbox cannot change them). */
+const createImage = ref('');
+const createHome = ref('');
 const directoryTouched = ref(false);
 const createMarketplaces = ref<string[]>([]);
 /** Tri-state, exactly as on the wire — `null` = legacy "all plugins", `[]` = none. Never `?? []`. */
@@ -419,6 +422,8 @@ function openCreateForm(): void {
   formError.value = null;
   createName.value = '';
   createDirectory.value = '';
+  createImage.value = '';
+  createHome.value = '';
   directoryTouched.value = false;
   createMarketplaces.value = [];
   // A new workspace starts with no preference, i.e. legacy "all plugins" — NOT "no plugins".
@@ -496,6 +501,10 @@ function submitCreate(): void {
   if (Object.keys(createEnv.value).length > 0) {
     payload.env = { ...createEnv.value };
   }
+  const image = createImage.value.trim();
+  if (image) payload.image = image;
+  const home = createHome.value.trim();
+  if (home) payload.home = home;
   // Keep the form open and mark it in-flight. The parent awaits the API call and
   // calls closeForm() on success or showFormError() on failure (which re-renders
   // the inline error). Closing here would unmount the error element before the
@@ -886,6 +895,26 @@ watch(
               type="text"
               placeholder="my-workspace"
               @input="onDirectoryInput"
+            />
+          </label>
+          <label class="field">
+            <span class="field-label">Sandbox image (optional)</span>
+            <input
+              v-model="createImage"
+              class="field-input"
+              data-testid="workspace-create-image"
+              type="text"
+              placeholder="gateway default, e.g. debian:bookworm-slim"
+            />
+          </label>
+          <label class="field">
+            <span class="field-label">Home directory (optional)</span>
+            <input
+              v-model="createHome"
+              class="field-input"
+              data-testid="workspace-create-home"
+              type="text"
+              placeholder="workspace root, e.g. worktrees/issue-1"
             />
           </label>
           <div class="field">

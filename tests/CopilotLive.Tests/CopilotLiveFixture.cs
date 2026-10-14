@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 
 namespace AchieveAi.LmDotnetTools.CopilotLive.Tests;
 
@@ -13,6 +14,7 @@ public sealed class CopilotLiveFixture
 {
     private readonly SemaphoreSlim _modelsGate = new(1, 1);
     private IReadOnlyList<CopilotCatalogEntry>? _catalog;
+    private IReadOnlyList<CopilotModelInfo> _modelInfos = [];
 
     public CopilotLiveFixture()
     {
@@ -74,6 +76,7 @@ public sealed class CopilotLiveFixture
             _ = response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            _modelInfos = CopilotModelCatalogParser.Parse(json);
             _catalog = ParseCatalog(json);
             return _catalog;
         }
@@ -81,6 +84,17 @@ public sealed class CopilotLiveFixture
         {
             _ = _modelsGate.Release();
         }
+    }
+
+    /// <summary>
+    ///     The production catalog parser's view of <paramref name="modelId"/> (transport, adaptive-thinking
+    ///     flag), so a test can send exactly what the provider would send for that model. Null when the
+    ///     catalog does not list it (e.g. an env-overridden id).
+    /// </summary>
+    public async Task<CopilotModelInfo?> GetModelInfoAsync(string modelId, CancellationToken cancellationToken)
+    {
+        _ = await GetCatalogAsync(cancellationToken).ConfigureAwait(false);
+        return _modelInfos.FirstOrDefault(m => string.Equals(m.Id, modelId, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>

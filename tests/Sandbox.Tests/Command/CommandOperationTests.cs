@@ -24,6 +24,19 @@ public class CommandOperationTests
         act.Should().Throw<ArgumentException>();
     }
 
+    [Theory]
+    [InlineData("stream")]
+    [InlineData("capabilities")]
+    [InlineData("  stream  ")] // the gateway trims before its reserved-id check
+    public void ValidateAndCanonicalize_RejectsIdsShadowedByFixedOperationRoutes(string operationId)
+    {
+        // GET/DELETE .../operations/stream|capabilities hit the fixed routes, so such an operation could never
+        // be polled or deleted; the gateway (api/operations.rs RESERVED_OPERATION_IDS) refuses them on submit.
+        var act = () => new SandboxCommand(["true"], operationId: operationId);
+
+        act.Should().Throw<ArgumentException>().WithMessage("*reserved*");
+    }
+
     [Fact]
     public void ValidateAndCanonicalize_RejectsTooLong()
     {
