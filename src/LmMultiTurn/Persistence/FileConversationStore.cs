@@ -1141,7 +1141,9 @@ public sealed class FileConversationStore
                     ?? throw new IOException("The admission publication gate did not settle.");
                 await using (gate)
                 {
-                    if (await ReadAcceptanceFileAsync(acceptanceFile, ct) is { } existing)
+                    // One attempt only: waiting out an unreadable name here would hold the gate, and with it
+                    // the thread directory, open for the whole settle budget. The arm below waits gate-free.
+                    if (await ReadAcceptanceFileAsync(acceptanceFile, ct, waitToSettle: false) is { } existing)
                     {
                         return existing;
                     }
@@ -1307,7 +1309,11 @@ public sealed class FileConversationStore
         }
     }
 
-    private async Task<InputAcceptance?> ReadAcceptanceFileAsync(string acceptanceFile, CancellationToken ct)
+    private async Task<InputAcceptance?> ReadAcceptanceFileAsync(
+        string acceptanceFile,
+        CancellationToken ct,
+        bool waitToSettle = true
+    )
     {
         var started = _time.GetTimestamp();
         while (true)
@@ -1348,7 +1354,7 @@ public sealed class FileConversationStore
                 // A Windows delete-pending name is transient; a real permission failure outlives the budget.
             }
 
-            if (_time.GetElapsedTime(started) >= AcceptanceSettleTimeout)
+            if (!waitToSettle || _time.GetElapsedTime(started) >= AcceptanceSettleTimeout)
             {
                 throw new IOException($"The admission record '{acceptanceFile}' exists but never became readable.");
             }

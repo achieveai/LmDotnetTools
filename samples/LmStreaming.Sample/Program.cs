@@ -655,6 +655,13 @@ try
     // Microsoft.Data.Sqlite opens but does NOT create the database file's parent directory (unlike the
     // former FileConversationStore, which created its root in its constructor). A configured path whose
     // parent does not exist (a per-test temp dir, a fresh deploy) fails to open otherwise.
+    // The former FileConversationStore lived in conversations/ beside the binaries, and an upgrade
+    // carries that directory forward. Nothing imports it, so refuse to start over it unannounced.
+    LegacyConversationStoreGuard.EnsureNoUnimportedStore(
+        Path.Combine(AppContext.BaseDirectory, "conversations"),
+        conversationDbPath,
+        builder.Configuration.GetValue<bool>(LegacyConversationStoreGuard.AcknowledgeKey)
+    );
     var conversationDbDir = Path.GetDirectoryName(Path.GetFullPath(conversationDbPath));
     if (!string.IsNullOrEmpty(conversationDbDir))
     {
@@ -1774,32 +1781,19 @@ try
                                 sandboxRegistry,
                                 sandboxSession.SessionId
                             );
-                    var sandboxClients = caps.SandboxToolAllowList is { } sandboxAllowList
-                        ? ConnectFilteredHttpMcpClient(
-                            filteredRegistry,
-                            "sandbox",
-                            $"{sandboxLifetime.GatewayBaseUrl}/mcp",
-                            sandboxMcpHeaders,
-                            loggerFactory,
-                            toolNames: sandboxAllowList,
-                            omitServerPrefix: true,
-                            handlerDecorator: SandboxToolHealth.Wrap,
-                            transportHandler: sandboxTransportHandler,
-                            existingClient: keptSandboxClient,
-                            namedHandlerDecorator: cwdDecorator
-                        )
-                        : ConnectHttpMcpClient(
-                            filteredRegistry,
-                            "sandbox",
-                            $"{sandboxLifetime.GatewayBaseUrl}/mcp",
-                            sandboxMcpHeaders,
-                            loggerFactory,
-                            omitServerPrefix: true,
-                            handlerDecorator: SandboxToolHealth.Wrap,
-                            transportHandler: sandboxTransportHandler,
-                            existingClient: keptSandboxClient,
-                            namedHandlerDecorator: cwdDecorator
-                        );
+                    var sandboxClients = ConnectFilteredHttpMcpClient(
+                        filteredRegistry,
+                        "sandbox",
+                        $"{sandboxLifetime.GatewayBaseUrl}/mcp",
+                        sandboxMcpHeaders,
+                        loggerFactory,
+                        toolNames: caps.SandboxToolAllowList,
+                        omitServerPrefix: true,
+                        handlerDecorator: SandboxToolHealth.Wrap,
+                        transportHandler: sandboxTransportHandler,
+                        existingClient: keptSandboxClient,
+                        namedHandlerDecorator: cwdDecorator
+                    );
 
                     if (sandboxClients.Count > 0)
                     {

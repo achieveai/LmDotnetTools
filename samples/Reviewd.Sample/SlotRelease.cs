@@ -14,11 +14,17 @@ internal static class SlotRelease
     internal static string OwnerKey(string workspace, string repository, int slot) =>
         "reviewd/slot-owner/" + Digest(workspace + "/" + repository + "/" + slot);
 
+    /// <summary>
+    ///     Claims the slot owner row and saves <paramref name="owner"/>, stamped with the claim token and
+    ///     <c>cleanupState</c>, as the attempt at <paramref name="attemptKey"/> in the same transaction. A crash
+    ///     can therefore never leave a durable claim whose attempt reconcile-slot cannot find.
+    /// </summary>
     internal static async Task<string> ClaimAsync(
         SqliteConnection connection,
         string key,
         JsonObject owner,
         string? retainedToken,
+        string attemptKey,
         CancellationToken ct
     )
     {
@@ -28,7 +34,14 @@ internal static class SlotRelease
         read.CommandText = "SELECT value FROM cache WHERE key=@key";
         read.Parameters.AddWithValue("@key", key);
         var current = await read.ExecuteScalarAsync(ct) as string;
-        var existing = current is null ? null : JsonNode.Parse(current)!;
+        var existing = current is null ? null : JsonNode.Parse(current);
+        using var write = connection.CreateCommand();
+        write.Transaction = transaction;
+        write.CommandText =
+            "INSERT INTO cache(key,value) VALUES(@key,@value) ON CONFLICT(key) DO UPDATE SET value=excluded.value";
+        write.Parameters.AddWithValue("@key", key);
+        write.Parameters.AddWithValue("@value", "");
+        string token;
         if (existing is not null && existing["state"]?.GetValue<string>() != "released")
         {
             if (
@@ -40,21 +53,25 @@ internal static class SlotRelease
                 throw new InvalidOperationException(
                     "Selected slot has a durable owner; no admission or reset allowed."
                 );
-            transaction.Commit();
-            return retainedToken;
+            token = retainedToken;
         }
-        if (retainedToken is not null)
-            throw new InvalidOperationException("Retained claim is no longer current; no cleanup or replay allowed.");
-        var token = Guid.NewGuid().ToString("N");
-        var claim = owner.DeepClone().AsObject();
-        claim["claimToken"] = token;
-        claim["state"] = "owned";
-        using var write = connection.CreateCommand();
-        write.Transaction = transaction;
-        write.CommandText =
-            "INSERT INTO cache(key,value) VALUES(@key,@value) ON CONFLICT(key) DO UPDATE SET value=excluded.value";
-        write.Parameters.AddWithValue("@key", key);
-        write.Parameters.AddWithValue("@value", claim.ToJsonString());
+        else
+        {
+            if (retainedToken is not null)
+                throw new InvalidOperationException(
+                    "Retained claim is no longer current; no cleanup or replay allowed."
+                );
+            token = Guid.NewGuid().ToString("N");
+            var claim = owner.DeepClone().AsObject();
+            claim["claimToken"] = token;
+            claim["state"] = "owned";
+            write.Parameters["@value"].Value = claim.ToJsonString();
+            await write.ExecuteNonQueryAsync(ct);
+        }
+        owner["claimToken"] = token;
+        owner["cleanupState"] ??= "owned";
+        write.Parameters["@key"].Value = attemptKey;
+        write.Parameters["@value"].Value = owner.ToJsonString();
         await write.ExecuteNonQueryAsync(ct);
         transaction.Commit();
         return token;
@@ -267,10 +284,12 @@ internal static class SlotRelease
             )
                 throw new InvalidOperationException("Send failure evidence does not match the retained attempt.");
         }
+        // "selected" is the stage the claim commits with: nothing has been dispatched yet, so it
+        // settles exactly like an interrupted prepare.
         else if (
             !retired
             && (
-                owner["stage"]?.GetValue<string>() != "prepare-pending"
+                owner["stage"]?.GetValue<string>() is not ("prepare-pending" or "selected")
                 || owner["threadId"] is not null
                 || owner["reviewIdempotencyKey"] is not null
                 || proof["preparationSettled"]?.GetValue<bool>() != true
@@ -297,6 +316,13 @@ internal static class SlotRelease
         query.Transaction = transaction;
         if ((await query.ExecuteScalarAsync(ct) as string) != attempt)
             throw new InvalidOperationException("Attempt changed during reconciliation.");
+        var ownerReleased = await ReleaseCertifiedOwnerAsync(
+            connection,
+            transaction,
+            OwnerKey(owner["workspaceId"]!.GetValue<string>(), repo.NormalizedKey, owner["slot"]!.GetValue<int>()),
+            owner["claimToken"]?.GetValue<string>(),
+            ct
+        );
         using var insert = connection.CreateCommand();
         insert.Transaction = transaction;
         insert.CommandText = "INSERT INTO cache(key,value) VALUES(@key,@value)";
@@ -304,7 +330,50 @@ internal static class SlotRelease
         insert.Parameters.AddWithValue("@value", proof.ToJsonString());
         await insert.ExecuteNonQueryAsync(ct);
         transaction.Commit();
-        Console.WriteLine("Slot release recorded; original attempt retained. No replay or reset performed.");
+        Console.WriteLine(
+            ownerReleased
+                ? "Slot release recorded and the certified owner claim released; original attempt retained. No replay or reset performed."
+                : "Slot release recorded; no owner claim was held. Original attempt retained. No replay or reset performed."
+        );
         return 0;
+    }
+
+    /// <summary>
+    ///     Releases the slot owner row only when it is still held by the certified attempt's exact claim.
+    ///     Unlike <see cref="ReleaseAsync"/> it leaves the attempt untouched, so the retained attempt keeps
+    ///     its interrupted state for inspection. A row held under any other claim belongs to a newer owner
+    ///     and refuses the whole reconciliation.
+    /// </summary>
+    /// <returns>True when a held claim was released; false when no claim was held.</returns>
+    private static async Task<bool> ReleaseCertifiedOwnerAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string ownerKey,
+        string? attemptToken,
+        CancellationToken ct
+    )
+    {
+        using var read = connection.CreateCommand();
+        read.Transaction = transaction;
+        read.CommandText = "SELECT value FROM cache WHERE key=@key";
+        read.Parameters.AddWithValue("@key", ownerKey);
+        var raw = await read.ExecuteScalarAsync(ct) as string;
+        var claim = raw is null ? null : JsonNode.Parse(raw)?.AsObject();
+        if (claim is null || claim["state"]?.GetValue<string>() == "released")
+            return false;
+        if (attemptToken is not { Length: > 0 } || claim["claimToken"]?.GetValue<string>() != attemptToken)
+            throw new InvalidOperationException(
+                "Slot is owned by a different claim than the certified attempt; reconciliation refused."
+            );
+        claim["state"] = "released";
+        using var write = connection.CreateCommand();
+        write.Transaction = transaction;
+        write.CommandText = "UPDATE cache SET value=@value WHERE key=@key AND value=@old";
+        write.Parameters.AddWithValue("@key", ownerKey);
+        write.Parameters.AddWithValue("@old", raw);
+        write.Parameters.AddWithValue("@value", claim.ToJsonString());
+        if (await write.ExecuteNonQueryAsync(ct) != 1)
+            throw new InvalidOperationException("Slot claim changed during reconciliation.");
+        return true;
     }
 }

@@ -681,16 +681,12 @@ public class PricingCatalogTests
     {
         var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
 
-        var resolver = ResolverFrom(configuration);
-        resolver.Resolve(modelId).Should().NotBeNull($"'{modelId}' is billed by the sample today");
+        var pricing = ResolverFrom(configuration).Resolve(modelId);
+        pricing.Should().NotBeNull($"'{modelId}' is billed by the sample today");
+        // gpt-6.1-sol has its own entry; an alias of it on another entry would make the name
+        // ambiguous, and the resolver drops ambiguous names (Resolve returns null).
         if (modelId == "gpt-6.1-sol")
-            resolver
-                .Resolve(modelId)
-                .Should()
-                .BeEquivalentTo(
-                    resolver.Resolve("gpt-6-sol"),
-                    options => options.Excluding(pricing => pricing!.ModelId)
-                );
+            pricing!.CacheReadPerMillion.Should().Be(0.1m, "gpt-6.1-sol caches at 5% of input, not gpt-6-sol's 10%");
         CapacityFrom(configuration).Resolve(modelId)!.WindowTokens.Should().BeLessThanOrEqualTo(196_000);
     }
 

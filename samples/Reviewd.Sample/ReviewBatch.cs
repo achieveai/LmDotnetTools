@@ -170,7 +170,9 @@ internal static class ReviewBatch
                         throw new InvalidOperationException("Invalid or duplicate selected PR.");
                     var slot = slots[index++ % slots.Length];
                     var attempt = await ReadAsync(database, AttemptKey(repo, pr));
-                    if (attempt is not null && attempt["slot"]!.GetValue<int>() != slot)
+                    // A released attempt no longer owns its slot, so a round-robin assignment to a
+                    // different slot is free to run; only a still-owning attempt pins the PR.
+                    if (attempt is not null && !Reusable(attempt) && attempt["slot"]!.GetValue<int>() != slot)
                         throw new InvalidOperationException(
                             "Legacy batch slot assignment conflicts with retained ownership; reconcile before admission."
                         );

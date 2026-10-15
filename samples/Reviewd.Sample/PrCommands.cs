@@ -238,10 +238,12 @@ internal static class PrCommands
         {
             throw new ArgumentException("Specify exactly one of --repo or --repos.");
         }
-        return (options.Has("repo") ? [options.Required("repo")] : options.Required("repos").Split(','))
-            .Select(ParseRepo)
-            .DistinctBy(repo => repo.NormalizedKey)
-            .ToArray();
+        return
+        [
+            .. (options.Has("repo") ? [options.Required("repo")] : options.Required("repos").Split(','))
+                .Select(ParseRepo)
+                .DistinctBy(repo => repo.NormalizedKey),
+        ];
     }
 
     internal static RepoIdentity ParseRepo(string value)

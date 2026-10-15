@@ -543,7 +543,7 @@ public sealed class ReviewdRunnerTests
                 ["repositories"] = new JsonObject { [Repo] = rows },
                 ["lanes"] = new JsonObject
                 {
-                    [Repo] = new JsonArray([.. slots.Select(slot => (JsonNode)JsonValue.Create(slot)!)]),
+                    [Repo] = new JsonArray([.. slots.Select(slot => (JsonNode)JsonValue.Create(slot))]),
                 },
             }.ToJsonString();
         }
@@ -572,7 +572,7 @@ public sealed class ReviewdRunnerTests
                     "--provider",
                     "test",
                     "--execute",
-                    .. (ReasoningEffort is null ? [] : new string[] { "--reasoning-effort", ReasoningEffort }),
+                    .. ReasoningEffort is null ? [] : new string[] { "--reasoning-effort", ReasoningEffort },
                 ]),
                 _config,
                 _selection,
@@ -682,16 +682,27 @@ public sealed class ReviewdRunnerTests
             await connection.OpenAsync();
             var owner = new JsonObject { ["prId"] = "17", ["sessionId"] = "session" };
             var key = SlotRelease.OwnerKey("workspace", "repo", 0);
-            var first = await SlotRelease.ClaimAsync(connection, key, owner, null, CancellationToken.None);
-            var duplicate = () => SlotRelease.ClaimAsync(connection, key, owner, null, CancellationToken.None);
+            var first = await SlotRelease.ClaimAsync(
+                connection,
+                key,
+                owner,
+                null,
+                "attempt/17",
+                CancellationToken.None
+            );
+            var duplicate = () =>
+                SlotRelease.ClaimAsync(connection, key, owner, null, "attempt/17", CancellationToken.None);
             await duplicate.Should().ThrowAsync<InvalidOperationException>();
-            (await SlotRelease.ClaimAsync(connection, key, owner, first, CancellationToken.None)).Should().Be(first);
+            (await SlotRelease.ClaimAsync(connection, key, owner, first, "attempt/17", CancellationToken.None))
+                .Should()
+                .Be(first);
             await SlotRelease.ReleaseAsync(connection, key, first, "attempt/17", owner, CancellationToken.None);
             var next = await SlotRelease.ClaimAsync(
                 connection,
                 key,
                 new JsonObject { ["prId"] = "18", ["sessionId"] = "session" },
                 null,
+                "attempt/18",
                 CancellationToken.None
             );
             next.Should().NotBe(first);
@@ -750,6 +761,207 @@ public sealed class ReviewdRunnerTests
     }
 
     [Fact]
+    public async Task Slot_claim_and_its_attempt_commit_together_or_not_at_all()
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-claim-attempt-{Guid.NewGuid():N}.db");
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            _ = new SqliteKvStore(connection);
+            await connection.OpenAsync();
+            var key = SlotRelease.OwnerKey("workspace", "repo", 0);
+            using (var failAttempt = connection.CreateCommand())
+            {
+                failAttempt.CommandText =
+                    "CREATE TRIGGER fail_attempt BEFORE INSERT ON cache WHEN NEW.key = 'attempt/17' BEGIN SELECT RAISE(ABORT, 'attempt write failed'); END";
+                await failAttempt.ExecuteNonQueryAsync();
+            }
+            var claim = () =>
+                SlotRelease.ClaimAsync(
+                    connection,
+                    key,
+                    new JsonObject
+                    {
+                        ["prId"] = "17",
+                        ["sessionId"] = "session",
+                        ["stage"] = "selected",
+                    },
+                    null,
+                    "attempt/17",
+                    CancellationToken.None
+                );
+            await claim.Should().ThrowAsync<Microsoft.Data.Sqlite.SqliteException>();
+            (await ReadRawAsync(connection, key)).Should().BeNull("a claim whose attempt was not saved must roll back");
+            using (var repair = connection.CreateCommand())
+            {
+                repair.CommandText = "DROP TRIGGER fail_attempt";
+                await repair.ExecuteNonQueryAsync();
+            }
+            var token = await claim();
+            var attempt = JsonNode.Parse((await ReadRawAsync(connection, "attempt/17"))!)!;
+            attempt["claimToken"]!.GetValue<string>().Should().Be(token);
+            attempt["cleanupState"]!.GetValue<string>().Should().Be("owned");
+            attempt["stage"]!.GetValue<string>().Should().Be("selected");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Reconcile_releases_the_exact_certified_claim_so_another_PR_can_take_the_slot(bool newerOwner)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"reviewd-reconcile-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var database = Path.Combine(directory, "reviewd.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/17";
+        var ownerKey = SlotRelease.OwnerKey("workspace", repo.NormalizedKey, 2);
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            var store = new SqliteKvStore(connection);
+            await connection.OpenAsync();
+            // A run that stopped right after claiming: its attempt is still at "selected".
+            await SlotRelease.ClaimAsync(
+                connection,
+                ownerKey,
+                new JsonObject
+                {
+                    ["repository"] = repo.DisplayName,
+                    ["prId"] = "17",
+                    ["slot"] = 2,
+                    ["workspaceId"] = "workspace",
+                    ["sessionId"] = "session",
+                    ["stage"] = "selected",
+                },
+                null,
+                attemptKey,
+                CancellationToken.None
+            );
+            if (newerOwner)
+            {
+                var newer = (await store.GetAsync<JsonObject>(ownerKey))!;
+                newer["claimToken"] = "newer-claim";
+                await store.SetAsync(ownerKey, newer);
+            }
+            var attempt = (await ReadRawAsync(connection, attemptKey))!;
+            var ownerBefore = await ReadRawAsync(connection, ownerKey);
+            var evidencePath = Path.Combine(directory, "evidence.txt");
+            await File.WriteAllTextAsync(evidencePath, "Runner stopped before prepare was dispatched.");
+            var proof = JsonNode.Parse(attempt)!.AsObject();
+            proof["schemaVersion"] = 1;
+            proof["attemptDigest"] = SlotRelease.Digest(attempt);
+            proof["classification"] = "preparation-settled-before-review";
+            proof["noAdmission"] = true;
+            proof["preparationSettled"] = true;
+            proof["threadQuiescent"] = true;
+            proof["nativeQuiescent"] = true;
+            proof["operatorReason"] = "Runner stopped before prepare.";
+            proof["evidence"] = new JsonArray(
+                new JsonObject
+                {
+                    ["path"] = evidencePath,
+                    ["sha256"] = Convert.ToHexString(
+                        System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(evidencePath))
+                    ),
+                }
+            );
+            var proofPath = Path.Combine(directory, "proof.json");
+            await File.WriteAllTextAsync(proofPath, proof.ToJsonString());
+            var reconcile = () =>
+                SlotRelease.RunAsync(
+                    CliOptions.Parse([
+                        "review",
+                        "reconcile-slot",
+                        "--repo",
+                        repo.DisplayName,
+                        "--pr",
+                        "17",
+                        "--db",
+                        database,
+                        "--evidence",
+                        proofPath,
+                        "--execute",
+                    ]),
+                    CancellationToken.None
+                );
+            if (newerOwner)
+            {
+                await reconcile.Should().ThrowAsync<InvalidOperationException>().WithMessage("*different claim*");
+                (await ReadRawAsync(connection, ownerKey)).Should().Be(ownerBefore);
+                (await ReadRawAsync(connection, SlotRelease.Key(attempt))).Should().BeNull();
+            }
+            else
+            {
+                (await reconcile()).Should().Be(0);
+                JsonNode.Parse((await ReadRawAsync(connection, ownerKey))!)!["state"]!
+                    .GetValue<string>()
+                    .Should()
+                    .Be("released");
+                (await ReadRawAsync(connection, SlotRelease.Key(attempt))).Should().NotBeNull();
+                var next = await SlotRelease.ClaimAsync(
+                    connection,
+                    ownerKey,
+                    new JsonObject { ["prId"] = "18", ["sessionId"] = "session" },
+                    null,
+                    $"reviewd/review-attempt/{repo.NormalizedKey}/18",
+                    CancellationToken.None
+                );
+                next.Should().NotBeNullOrEmpty();
+            }
+            (await ReadRawAsync(connection, attemptKey)).Should().Be(attempt, "the original attempt is retained as is");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(0, 'd', true)]
+    [InlineData(1, 'd', true)]
+    [InlineData(1, 'a', false)]
+    public async Task Batch_runs_a_new_head_fresh_after_a_released_review_in_any_slot(
+        int retainedSlot,
+        char reviewedHead,
+        bool runs
+    )
+    {
+        using var batch = new BatchFixture(0, 1);
+        // PR 1 is assigned slot 0. Its earlier review finished and released whichever slot it used.
+        var released = new JsonObject
+        {
+            ["slot"] = retainedSlot,
+            ["stage"] = "completed-verified",
+            ["cleanupState"] = "released",
+            ["claimToken"] = "earlier-claim",
+            ["reviewedHeadSha"] = new string(reviewedHead, 40),
+            ["artifactCommit"] = new JsonObject { ["status"] = "committed", ["commit"] = new string('c', 40) },
+        };
+        batch.PutAttempt("1", released);
+        batch.Put("reviewd/review-run/" + PrCommands.ParseRepo("org/project/Nova").NormalizedKey + "/1", released);
+        await batch.ExecuteAsync();
+        if (runs)
+            batch.Runs.Should().Contain("1:fresh");
+        else
+            batch.Runs.Should().NotContain(run => run.StartsWith("1:", StringComparison.Ordinal));
+    }
+
+    private static async Task<string?> ReadRawAsync(Microsoft.Data.Sqlite.SqliteConnection connection, string key)
+    {
+        using var read = connection.CreateCommand();
+        read.CommandText = "SELECT value FROM cache WHERE key=@key";
+        read.Parameters.AddWithValue("@key", key);
+        return await read.ExecuteScalarAsync() as string;
+    }
+
+    [Fact]
     public void Parallel_leases_allow_distinct_PRs_and_slots_but_reject_duplicates()
     {
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-lease-{Guid.NewGuid():N}");
@@ -782,10 +994,27 @@ public sealed class ReviewdRunnerTests
     [InlineData("wrong-claim")]
     [InlineData("wrong-session")]
     [InlineData("cleanup-failure")]
+    [InlineData("terminal-descendants")]
+    [InlineData("running-descendant")]
+    [InlineData("unknown-descendant")]
     public async Task Failed_owner_cleanup_is_exact_get_only_and_preserves_history_without_inventing_success(
         string scenario
     )
     {
+        var succeeds = scenario is "success" or "terminal-descendants";
+        static string Child(string id, string state, string? failure = null) =>
+            $$"""{"agentId":"{{id}}","threadId":"{{id}}-thread","parentThreadId":"original","depth":1,"template":"reviewer","status":"{{state}}"{{(
+                failure is null ? "" : $$""","failureCode":"{{failure}}" """
+            )}}}""";
+        var descendants = scenario switch
+        {
+            // A failed review leaves failed children behind; once nothing is running they are settled.
+            "terminal-descendants" => Child("errored", "error", "model_error") + "," + Child("stopped", "stopped"),
+            "running-descendant" => Child("errored", "error", "model_error") + "," + Child("busy", "running"),
+            "unknown-descendant" => Child("errored", "error", "model_error") + "," + Child("odd", "mystery"),
+            _ => "",
+        };
+        var waits = 0;
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-failed-cleanup-{Guid.NewGuid():N}.db");
         var repo = PrCommands.ParseRepo("org/project/Nova");
         var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/17";
@@ -806,7 +1035,7 @@ public sealed class ReviewdRunnerTests
                 """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
             )
             .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
-            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+            .OnJson(HttpMethod.Get, "/subagents?", $$"""{"schemaVersion":1,"nodes":[{{descendants}}]}""");
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
         var client = new LmStreamingS2SClient(http, null, null, null);
         using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
@@ -893,16 +1122,19 @@ public sealed class ReviewdRunnerTests
                     client,
                     Sandbox,
                     CancellationToken.None,
-                    _ => Task.CompletedTask
+                    // A running descendant never settles; bound the wait so the test sees it keep waiting.
+                    _ => ++waits > 20 ? throw new TimeoutException("Descendant still running.") : Task.CompletedTask
                 );
-            if (scenario == "success")
+            if (succeeds)
                 await run();
+            else if (scenario == "running-descendant")
+                await run.Should().ThrowAsync<TimeoutException>();
             else
                 await run.Should().ThrowAsync<InvalidOperationException>();
             handler.Requests.Should().NotContain(r => r.Method != HttpMethod.Get);
             var after = (await store.GetAsync<JsonObject>(attemptKey))!;
             var owner = (await store.GetAsync<JsonObject>(ownerKey))!;
-            if (scenario == "success")
+            if (succeeds)
             {
                 phases.Should().Equal("cleanup");
                 after["stage"]!.GetValue<string>().Should().Be("failed-released");
@@ -987,8 +1219,8 @@ public sealed class ReviewdRunnerTests
                 "--provider",
                 "test",
                 "--execute",
-                .. (requested is null ? [] : new string[] { "--reasoning-effort", requested }),
-                .. (resume ? new string[] { "--resume" } : []),
+                .. requested is null ? [] : new string[] { "--reasoning-effort", requested },
+                .. resume ? new string[] { "--resume" } : [],
             ]);
         var sandboxCalls = 0;
         Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token)

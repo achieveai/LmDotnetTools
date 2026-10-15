@@ -106,9 +106,11 @@ public sealed class IndexedConversationStoreTests : IDisposable
         // This fixture owns the empty snapshot. Replace its target with a directory to force rename failure.
         File.Delete(Path.Combine(_directory, ".index.json"));
         Directory.CreateDirectory(Path.Combine(_directory, ".index.json"));
-        await Assert.ThrowsAnyAsync<IOException>(() =>
+        // Renaming onto a directory is an IOException on Linux but UnauthorizedAccessException on Windows.
+        var publication = await Record.ExceptionAsync(() =>
             store.SaveMetadataAsync("subagent-child", Child("subagent-child", "root"))
         );
+        publication.Should().Match(e => e is IOException || e is UnauthorizedAccessException);
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.ReadChildrenAsync("root", true));
         Directory.Delete(Path.Combine(_directory, ".index.json"));
         await store.SaveMetadataAsync("unrelated", new ThreadMetadata { ThreadId = "unrelated", LastUpdated = 0 });

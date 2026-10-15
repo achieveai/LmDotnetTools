@@ -357,7 +357,7 @@ internal static class ReviewRunner
         {
             if (!cleanupOnly)
                 await client.EnsureConversationBindingAsync(thread, workspace, provider, mode, ct);
-            await WaitAsync(client, thread, null, delay, ct);
+            await WaitAsync(client, thread, null, delay, ct, terminalFailuresSettle: failedCleanup);
         }
         var ownerThreads = new HashSet<string>(StringComparer.Ordinal);
         var adoptedHistory = new List<string>();
@@ -441,21 +441,10 @@ internal static class ReviewRunner
             receipt["reasoningEffort"] = reasoningEffort;
         if (resume || cleanupOnly)
             receipt = attempt!.DeepClone().AsObject();
-        var ownerKey = SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot);
-        var claimToken = await SlotRelease.ClaimAsync(
-            connection,
-            ownerKey,
-            receipt,
-            (resume || cleanupOnly) ? receipt["claimToken"]?.GetValue<string>() : null,
-            ct
-        );
-        receipt["claimToken"] = claimToken;
-        receipt["cleanupState"] ??= "owned";
-        args["claimToken"] = claimToken;
         if (cleanupOnly && attempt!["claimToken"] is null)
             receipt["legacyCleanupAdoption"] = true;
-        args["adopt"] = receipt["legacyCleanupAdoption"]?.GetValue<bool>() == true;
-        var store = new SqliteKvStore(connection);
+        // Archive the attempt the claim below overwrites before claiming, so the overwrite is never
+        // the only copy of it.
         if (resume || cleanupOnly || attempt?["stage"]?.GetValue<string>() == "failed-released")
         {
             query.Parameters["@key"].Value = attemptKey;
@@ -466,7 +455,18 @@ internal static class ReviewRunner
             archive.Parameters.AddWithValue("@value", raw);
             await archive.ExecuteNonQueryAsync(ct);
         }
-        await SaveAsync();
+        var ownerKey = SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot);
+        var claimToken = await SlotRelease.ClaimAsync(
+            connection,
+            ownerKey,
+            receipt,
+            (resume || cleanupOnly) ? receipt["claimToken"]?.GetValue<string>() : null,
+            attemptKey,
+            ct
+        );
+        args["claimToken"] = claimToken;
+        args["adopt"] = receipt["legacyCleanupAdoption"]?.GetValue<bool>() == true;
+        var store = new SqliteKvStore(connection);
         try
         {
             if (cleanupResume || failedCleanup)
@@ -635,7 +635,7 @@ internal static class ReviewRunner
                 );
             // This is outgoing-owner cleanup. Review success stays committed even if drain/reset fails.
             if (thread is not null)
-                await WaitAsync(client, thread, null, delay, ct);
+                await WaitAsync(client, thread, null, delay, ct, terminalFailuresSettle: failedCleanup);
             await SlotRelease.AssertCurrentAsync(connection, ownerKey, claimToken, ct);
             receipt["cleanupState"] = "pending";
             var operation = Guid.NewGuid().ToString("N");
@@ -721,14 +721,23 @@ internal static class ReviewRunner
             || (logical.IndexOf('/') is var separator && separator > 0 && logical[(separator + 1)..] == leaf)
         );
 
+    /// <remarks>
+    ///     <c>terminalFailuresSettle</c> is for failed-owner cleanup only: Error and Stopped descendants
+    ///     count as settled rather than as a failure, so cleanup can drain a review that already failed.
+    ///     Unknown still throws and Running still waits.
+    /// </remarks>
     internal static async Task<S2SStatusResult?> WaitAsync(
         LmStreamingS2SClient client,
         string thread,
         string? input,
         Func<CancellationToken, Task> delay,
-        CancellationToken ct
+        CancellationToken ct,
+        bool terminalFailuresSettle = false
     )
     {
+        bool Settled(ReviewSubAgentNode node) =>
+            node.Status == ReviewSubAgentStatus.Completed
+            || (terminalFailuresSettle && node.Status is ReviewSubAgentStatus.Error or ReviewSubAgentStatus.Stopped);
         string? candidate = null;
         var busyReads = 0;
         while (true)
@@ -756,11 +765,12 @@ internal static class ReviewRunner
             }
             if (
                 tree.Nodes.Any(n =>
-                    n.Status
-                        is ReviewSubAgentStatus.Error
-                            or ReviewSubAgentStatus.Stopped
-                            or ReviewSubAgentStatus.Unknown
-                    || n.FailureCode is not null
+                    n.Status == ReviewSubAgentStatus.Unknown
+                    || (
+                        n.Status is ReviewSubAgentStatus.Error or ReviewSubAgentStatus.Stopped
+                        && !terminalFailuresSettle
+                    )
+                    || (n.FailureCode is not null && !(terminalFailuresSettle && Settled(n)))
                 )
             )
             {
@@ -770,7 +780,7 @@ internal static class ReviewRunner
                 !global.IsInProgress
                 && global.CurrentRunId is null
                 && (status is null || status.Status.Equals("completed", StringComparison.OrdinalIgnoreCase))
-                && tree.Nodes.All(n => n.Status == ReviewSubAgentStatus.Completed);
+                && tree.Nodes.All(Settled);
             var signature = JsonSerializer.Serialize(
                 new
                 {

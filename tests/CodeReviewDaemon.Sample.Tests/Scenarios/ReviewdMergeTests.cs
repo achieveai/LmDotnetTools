@@ -310,6 +310,7 @@ public sealed class ReviewdMergeTests
         public void Dispose()
         {
             _http.Dispose();
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             File.Delete(Database);
         }
     }
