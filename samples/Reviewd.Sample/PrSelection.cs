@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
 
 namespace Reviewd.Sample;
@@ -39,7 +40,19 @@ internal static class PrSelection
                 }
                 var review = await ReadAsync($"reviewd/review-run/{prefix}/{entry.Name}");
                 var thread = await ReadAsync($"reviewd/pr-thread/{prefix}/{entry.Name}");
-                if (IsEligible(pr, review, thread is not null, observedAt))
+                if (
+                    IsEligible(pr, review, thread is not null, observedAt)
+                    && (
+                        options.Get("max-age-hours") is not { } age
+                        || IsWithinCreationAge(
+                            pr.TryGetProperty("CreatedAt", out var created)
+                                ? JsonNode.Parse(created.GetRawText())
+                                : null,
+                            int.Parse(age, System.Globalization.CultureInfo.InvariantCulture),
+                            observedAt
+                        )
+                    )
+                )
                 {
                     selected.Add(
                         new
@@ -58,6 +71,11 @@ internal static class PrSelection
             Console.WriteLine(JsonSerializer.Serialize(row));
         }
         Console.Error.WriteLine($"Picked {selected.Count} eligible PR(s) from saved snapshots; no reviews started.");
+        if (options.Get("selection-out") is { } selectionOut)
+        {
+            await WriteSelectionAsync(selectionOut, selected, options.Get("max-age-hours"), observedAt, ct);
+            Console.Error.WriteLine($"Wrote batch selection {selectionOut}: every repo uses lanes 0-5.");
+        }
         return 0;
 
         async Task<JsonElement?> ReadAsync(string key)
@@ -69,6 +87,77 @@ internal static class PrSelection
             var value = await command.ExecuteScalarAsync(ct);
             return value is string json ? JsonSerializer.Deserialize<JsonElement>(json) : null;
         }
+    }
+
+    internal static bool IsWithinCreationAge(JsonNode? createdAt, int hours, DateTimeOffset now)
+    {
+        if (hours <= 0 || createdAt is not JsonValue value || !value.TryGetValue<string>(out var text))
+            return false;
+        // Require an explicit RFC3339 offset. DateTimeOffset alone also accepts local/offset-free dates.
+        if (
+            !System.Text.RegularExpressions.Regex.IsMatch(
+                text,
+                @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})$",
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant
+            )
+            || !DateTimeOffset.TryParse(
+                text,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.None,
+                out var created
+            )
+        )
+            return false;
+        var age = now - created;
+        return age >= TimeSpan.Zero && age.TotalHours <= hours;
+    }
+
+    /// <summary>
+    /// Writes a <c>review batch</c> selection for the picked PRs, giving every repo all six lanes. The file
+    /// is replaced atomically because a running batch re-reads it every few seconds.
+    /// </summary>
+    private static async Task WriteSelectionAsync(
+        string path,
+        IEnumerable<object> selected,
+        string? maxAgeHours,
+        DateTimeOffset observedAt,
+        CancellationToken ct
+    )
+    {
+        var lanes = new JsonObject();
+        var repositories = new JsonObject();
+        foreach (var row in selected.Select(row => JsonSerializer.SerializeToNode(row)!))
+        {
+            var repo = row["repository"]!.GetValue<string>();
+            if (repositories[repo] is not JsonArray queue)
+            {
+                repositories[repo] = queue = [];
+                lanes[repo] = new JsonArray(0, 1, 2, 3, 4, 5);
+            }
+            queue.Add(
+                new JsonObject
+                {
+                    ["repository"] = repo,
+                    ["prId"] = row["current"]!["PrId"]!.ToString(),
+                    ["headSha"] = row["current"]!["HeadSha"]!.GetValue<string>(),
+                }
+            );
+        }
+        var selection = new JsonObject
+        {
+            ["requestId"] = $"pick-{observedAt:yyyyMMddHHmmss}",
+            ["lanes"] = lanes,
+            ["repositories"] = repositories,
+        };
+        if (maxAgeHours is not null)
+            selection["maxAgeHours"] = int.Parse(maxAgeHours, System.Globalization.CultureInfo.InvariantCulture);
+        var temporary = path + ".tmp";
+        await File.WriteAllTextAsync(
+            temporary,
+            selection.ToJsonString(new JsonSerializerOptions { WriteIndented = true }),
+            ct
+        );
+        File.Move(temporary, path, overwrite: true);
     }
 
     internal static bool IsEligible(JsonElement pr, JsonElement? review, bool hasThread, DateTimeOffset now)

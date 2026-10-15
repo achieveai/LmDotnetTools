@@ -67,6 +67,14 @@ try
     {
         return await SlotRelease.RunAsync(options, cancellation.Token);
     }
+    if (options.Command == "review reclaim-slot")
+    {
+        return await ReclaimSlotCommand.RunAsync(options, config, cancellation.Token);
+    }
+    if (options.Command == "review reap-slots")
+    {
+        return await SlotReaper.RunAsync(options, config, cancellation.Token);
+    }
     if (options.Command == "review batch")
     {
         return await ReviewBatch.RunAsync(options, config, cancellation.Token);

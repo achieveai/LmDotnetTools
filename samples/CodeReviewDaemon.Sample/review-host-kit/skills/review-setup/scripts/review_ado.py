@@ -802,6 +802,19 @@ def render_context_markdown(report: dict) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+class PullRequestNotActive(ReviewError):
+    """Confirmed terminal ADO PR; callers may skip it without preparing a slot."""
+
+    def __init__(self, pr: int, status: str):
+        super().__init__(
+            f"PR_NOT_ACTIVE: ADO PR {pr} is {status}; skip this PR. "
+            "No Git preparation was attempted.",
+            code=4,
+        )
+        self.pr = pr
+        self.status = status
+
+
 class AdoProvider:
     """Azure DevOps provider: resolves a PR to a provider-neutral identity
     and supplies Git transport auth. Never fetches Git."""
@@ -811,6 +824,12 @@ class AdoProvider:
 
     def resolve(self, pr: int, repo_hint: str | None = None) -> ResolvedPullRequest:
         pr_payload = fetch_pr(self._transport, pr)
+        status = pr_payload[1].get("status")
+        if status in ("completed", "abandoned"):
+            repository = pr_payload[1].get("repository") or {}
+            if repo_hint is not None and repo_hint.casefold() != str(repository.get("name", "")).casefold():
+                raise ReviewError("Requested repository does not match the resolved PR; refusing to skip a different repository.")
+            raise PullRequestNotActive(pr_payload[0], status)
         snapshot = resolve_pr(self._transport, pr, pr_payload=pr_payload)
         repository = snapshot["repository"]
         if repo_hint is not None and repo_hint.casefold() != repository["name"].casefold():

@@ -8,6 +8,12 @@ namespace Reviewd.Sample;
 
 internal static class ReviewRunner
 {
+    /// <summary>
+    /// A definitive refusal before any slot claim or host admission: the PR is simply skipped, and the
+    /// lane's slot was never touched, so it says nothing about the lane's health.
+    /// </summary>
+    internal sealed class ReviewNotAdmittedException(string message) : InvalidOperationException(message);
+
     internal sealed class SettledSandboxException(string phase, string message) : InvalidOperationException(message)
     {
         internal string Phase { get; } = phase;
@@ -81,7 +87,7 @@ internal static class ReviewRunner
         );
     }
 
-    private static async Task<JsonObject> ExecuteSandboxAsync(
+    internal static async Task<JsonObject> ExecuteSandboxAsync(
         SandboxClient sandbox,
         string session,
         string phase,
@@ -102,9 +108,18 @@ internal static class ReviewRunner
         );
         if (result.ExitCode != 0)
         {
+            // Surface the sandbox's own diagnostics (tail of stderr, falling back to stdout) so a failure
+            // is actionable without a separate artifact fetch.
+            var detail = string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError;
+            detail = (detail ?? string.Empty).TrimEnd();
+            if (detail.Length > 1200)
+            {
+                detail = "…" + detail[^1200..];
+            }
             throw new SettledSandboxException(
                 phase,
                 $"Sandbox {phase} failed (exit {result.ExitCode}, operation {operation}); inspect retained output."
+                    + (detail.Length > 0 ? $"\n--- sandbox output tail ---\n{detail}" : string.Empty)
             );
         }
         return JsonNode.Parse(result.StandardOutput)?.AsObject()
@@ -117,7 +132,8 @@ internal static class ReviewRunner
         LmStreamingS2SClient client,
         Func<string, JsonObject, string, CancellationToken, Task<JsonObject>> sandbox,
         CancellationToken ct,
-        Func<CancellationToken, Task>? delay = null
+        Func<CancellationToken, Task>? delay = null,
+        Func<DateTimeOffset>? now = null
     )
     {
         var repo = PrCommands.ParseRepo(options.Required("repo"));
@@ -128,6 +144,10 @@ internal static class ReviewRunner
         var provider = options.Required("provider");
         var mode = options.Get("mode") ?? config.ModeId;
         var reasoningEffort = options.Get("reasoning-effort");
+        var maxAgeHours = options.Get("max-age-hours") is { } age
+            ? int.Parse(age, System.Globalization.CultureInfo.InvariantCulture)
+            : (int?)null;
+        now ??= () => DateTimeOffset.UtcNow;
         var key = $"reviewd/review-run/{repo.NormalizedKey}/{pr}";
         var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/{pr}";
         delay ??= token => Task.Delay(TimeSpan.FromSeconds(1), token);
@@ -236,22 +256,57 @@ internal static class ReviewRunner
             );
         }
         var thread = await PrThreadBindings.GetAsync(database, repo, pr, ct);
-        if (thread is not null && reasoningEffort is not null && !cleanupOnly)
-            throw new InvalidOperationException(
-                "Existing conversation reasoning effort cannot be verified by the binding API; no prompt sent."
-            );
+        // Durable, cross-run reuse: when this pending db has no local binding (a fresh/next batch),
+        // the host itself remembers the PR's conversation via its title "{repo}-{pr}-{sha}". Reuse
+        // that conversation instead of refusing or provisioning a blank one. Provider is reconciled
+        // (switched if needed) on the reuse path below, so a different model is not a blocker.
+        if (thread is null && !resume && !cleanupOnly)
+        {
+            var match = await client.FindConversationByTitlePrefixAsync($"{repo.RepoName}-{pr}-", workspace, mode, ct);
+            if (match is not null)
+            {
+                thread = match.ThreadId;
+                // Cache the host-resolved thread in this db for the fast path on subsequent steps.
+                await PrThreadBindings.SetAsync(database, repo, pr, thread, ct);
+            }
+        }
+        // True when this review continues an existing conversation (prior revision of this PR) rather
+        // than a freshly-provisioned blank one. Drives the incremental re-review prompt below: the
+        // conversation already holds the earlier review's full message history.
+        var reusedConversation = thread is not null && !resume && !cleanupOnly;
+        // A prior conversation without a receipt in THIS db is only a risk if it is still running: its
+        // receipt may live in whichever db ran it. Ask the host, not our bookkeeping.
+        // The host is also the cross-db record of what was already admitted: a conversation titled for this
+        // exact head means this revision was reviewed from another db, and re-admitting it would post
+        // duplicate PR comments.
+        if (
+            !resume
+            && !cleanupOnly
+            && successful is null
+            && current["HeadSha"]?.GetValue<string>() is { Length: >= 8 } liveHead
+            && await client.FindConversationByTitlePrefixAsync(
+                $"{repo.RepoName}-{pr}-{liveHead[..8]}",
+                workspace,
+                mode,
+                ct
+            )
+                is not null
+        )
+            throw new ReviewNotAdmittedException("PR head was already reviewed by another run; skipped.");
+        var threadInFlight =
+            thread is not null && !resume && !cleanupOnly && (await client.GetRunStateAsync(thread, ct)).IsInProgress;
         if (
             !resume
             && !cleanupOnly
             && !PrSelection.IsEligible(
                 JsonSerializer.SerializeToElement(current),
                 successful is null ? null : JsonSerializer.SerializeToElement(successful),
-                thread is not null,
+                threadInFlight,
                 DateTimeOffset.UtcNow
             )
         )
         {
-            throw new InvalidOperationException("PR is not eligible for review.");
+            throw new ReviewNotAdmittedException("PR is not eligible for review.");
         }
         if (
             resume
@@ -344,7 +399,7 @@ internal static class ReviewRunner
                             "review and publish through S2S",
                             "same-thread confirmation",
                             "verify publication",
-                            "review_commit (no push)",
+                            "review_commit and publish review branch (top-level review repo only; no submodule push)",
                         },
                     }
                 )
@@ -356,7 +411,15 @@ internal static class ReviewRunner
         if (thread is not null)
         {
             if (!cleanupOnly)
-                await client.EnsureConversationBindingAsync(thread, workspace, provider, mode, ct);
+            {
+                // Resume keeps strict identity (its provider already matches the retained attempt).
+                // A fresh re-review of an existing conversation reconciles the provider instead of
+                // refusing: if the conversation runs a different model, switch it to the current one.
+                if (resume)
+                    await client.EnsureConversationBindingAsync(thread, workspace, provider, mode, ct);
+                else
+                    await client.EnsureConversationReusableAsync(thread, workspace, provider, mode, ct);
+            }
             await WaitAsync(client, thread, null, delay, ct);
         }
         var ownerThreads = new HashSet<string>(StringComparer.Ordinal);
@@ -424,6 +487,9 @@ internal static class ReviewRunner
         {
             await WaitAsync(client, ownerThread, null, delay, ct);
         }
+        // Only validated admitted resumes and outgoing-owner cleanup bypass fresh-admission age checks.
+        if (!resume && !cleanupOnly)
+            await EnsureCreationAgeAsync();
         var receipt = new JsonObject
         {
             ["repository"] = repo.DisplayName,
@@ -452,6 +518,13 @@ internal static class ReviewRunner
         receipt["claimToken"] = claimToken;
         receipt["cleanupState"] ??= "owned";
         args["claimToken"] = claimToken;
+        // A model turn can outlast the lease window, so renew the lease on every wait poll too; otherwise
+        // the reaper mistakes a live review for a dead one between checkpoints.
+        async Task LeasedDelayAsync(CancellationToken token)
+        {
+            await delay(token);
+            _ = await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, token);
+        }
         if (cleanupOnly && attempt!["claimToken"] is null)
             receipt["legacyCleanupAdoption"] = true;
         args["adopt"] = receipt["legacyCleanupAdoption"]?.GetValue<bool>() == true;
@@ -519,8 +592,20 @@ internal static class ReviewRunner
                     },
                 }
             );
+            var reReviewPreamble = reusedConversation
+                ? $"""
+                    This conversation already reviewed an earlier revision of this same PR — your prior
+                    findings, replies and summary are in the message history above. The PR has since been
+                    updated to head {args["head"]}. Re-read your earlier review first, then focus on what
+                    changed since you last reviewed it: confirm whether prior findings are now addressed,
+                    withdraw any that no longer apply, and assess only the new/changed code. Still
+                    re-verify live PR state before posting, and reply to existing finding threads instead
+                    of duplicating them.
+
+                    """
+                : "";
             var prompt = $"""
-                Review {repo.DisplayName} PR #{pr} in slot {repo.RepoName}-{slot}.
+                {reReviewPreamble}Review {repo.DisplayName} PR #{pr} in slot {repo.RepoName}-{slot}.
                 Setup is already complete. Read prepared context at {contextPath} (absolute path inside the sandbox).
                 Do not reset or rerun setup. Expected source head {args["head"]}; prepared merge {args["merge"]}.
                 Use pr-context-gatherer for remaining context. Use Bluebird for source/wiki searches; grep for branch-specific changes.
@@ -542,7 +627,7 @@ internal static class ReviewRunner
                     client,
                     thread!,
                     receipt["reviewInputId"]!.GetValue<string>(),
-                    delay,
+                    LeasedDelayAsync,
                     ct
                 );
                 receipt["reviewResponse"] = existing?.ResponseText;
@@ -553,7 +638,7 @@ internal static class ReviewRunner
             await SaveAsync();
             if (resume && receipt["confirmationInputId"]?.GetValue<string>() is { Length: > 0 } confirmation)
             {
-                var existing = await WaitAsync(client, thread!, confirmation, delay, ct);
+                var existing = await WaitAsync(client, thread!, confirmation, LeasedDelayAsync, ct);
                 receipt["confirmationResponse"] = existing?.ResponseText;
                 receipt["stage"] = "confirmation-completed";
                 await SaveAsync();
@@ -564,7 +649,7 @@ internal static class ReviewRunner
                     "Can you confirm if the PR feedback and replies to any discussion where you could add value have been posted. Audit and report existing publication receipts; do not post duplicates. Report your final verdict on the PR, with a brief rationale and any unresolved blockers. If the review is incomplete or blocked, state that explicitly rather than inferring approval. You MUST return a non-empty final text response. End your response with a standalone line in exactly this format: verdict: <APPROVE | APPROVE_WITH_COMMENTS | REQUEST_CHANGES | BLOCKED | INCOMPLETE>. Choose exactly one value, do not leave the placeholder, and put nothing after this verdict line."
                 );
             receipt["verifiedPublication"] = await StepAsync("verify");
-            await WaitAsync(client, thread!, null, delay, ct);
+            await WaitAsync(client, thread!, null, LeasedDelayAsync, ct);
             receipt["artifactCommit"] = await StepAsync("commit");
             var commit = receipt["artifactCommit"]!;
             if (
@@ -612,7 +697,9 @@ internal static class ReviewRunner
                     Console.Error.WriteLine($"Owner recovery held its lane: {cleanupFailure.Message}");
                 }
             }
-            // Keep the pending phase and previous successful receipt. Unknown outcomes require inspection.
+            // Keep the pending phase and previous successful receipt so a live run can resume and finish
+            // publication without redoing the review. The slot stays leased, so if this process dies the
+            // lease reaper reclaims it within the lease window — retention never becomes a permanent block.
             await store.SetAsync(attemptKey, receipt, CancellationToken.None);
             Console.Error.WriteLine(
                 $"Review stopped at {receipt["stage"]}; retained {attemptKey}. No automatic retry or cleanup."
@@ -625,7 +712,13 @@ internal static class ReviewRunner
             query.Parameters["@key"].Value = name;
             return await query.ExecuteScalarAsync(ct) is string json ? JsonNode.Parse(json) : null;
         }
-        Task SaveAsync() => store.SetAsync(attemptKey, receipt, ct);
+        async Task SaveAsync()
+        {
+            await store.SetAsync(attemptKey, receipt, ct);
+            // Extend the slot lease on every progress checkpoint so a live review is never mistaken for
+            // a dead one by the reaper. A lost claim (already reclaimed) is a no-op, never a failure.
+            _ = await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, ct);
+        }
         async Task CleanupAsync()
         {
             // A dispatched reset can outlive this process. Pending cleanup is never replayed blindly.
@@ -670,9 +763,28 @@ internal static class ReviewRunner
             await SaveAsync();
             return result;
         }
+        async Task EnsureCreationAgeAsync()
+        {
+            if (maxAgeHours is not { } hours)
+                return;
+            var live = await sandbox("eligibility", args, Guid.NewGuid().ToString("N"), ct);
+            if (
+                live["prId"]?.GetValue<string>() != pr
+                || live["status"]?.GetValue<string>() != "active"
+                || live["isDraft"]?.GetValue<bool>() != false
+                || live["headSha"]?.GetValue<string>() != args["head"]!.GetValue<string>()
+                || !PrSelection.IsWithinCreationAge(live["createdAt"], hours, now())
+            )
+                throw new InvalidOperationException(
+                    "PR creation age is outside the configured limit or unavailable; no fresh admission allowed."
+                );
+        }
+
         async Task SendAndWaitAsync(string phase, string text)
         {
             await sandbox("inspect", args, Guid.NewGuid().ToString("N"), ct);
+            if (phase == "review")
+                await EnsureCreationAgeAsync();
             var idempotency = "reviewd-" + Guid.NewGuid().ToString("N");
             receipt[phase + "IdempotencyKey"] = idempotency;
             receipt["stage"] = phase + "-send-pending";
@@ -681,7 +793,7 @@ internal static class ReviewRunner
             receipt[phase + "InputId"] = input;
             receipt["stage"] = phase + "-running";
             await SaveAsync();
-            var status = await WaitAsync(client, thread!, input, delay, ct);
+            var status = await WaitAsync(client, thread!, input, LeasedDelayAsync, ct);
             receipt[phase + "Response"] = status?.ResponseText;
             receipt["stage"] = phase + "-completed";
             await SaveAsync();
@@ -721,6 +833,21 @@ internal static class ReviewRunner
             || (logical.IndexOf('/') is var separator && separator > 0 && logical[(separator + 1)..] == leaf)
         );
 
+    // An Unknown sub-agent node is treated as settled only once its activity timestamp has stood still
+    // for the whole window (and re-blocks if it moves again, because settlement is re-evaluated every poll).
+    // This prevents both a premature abort on a transient Unknown and an unbounded block on an abandoned
+    // one. Mirrors ReviewSubAgentCompletion.IsQuiescedUnknown.
+    private static readonly TimeSpan UnknownQuiescence = TimeSpan.FromSeconds(90);
+
+    private static bool IsSettledNode(ReviewSubAgentNode node, DateTimeOffset now) =>
+        node.Status == ReviewSubAgentStatus.Completed
+        || (
+            node.Status == ReviewSubAgentStatus.Unknown
+            && UnknownQuiescence > TimeSpan.Zero
+            && node.LastActivityUtc is { } lastActivity
+            && now - lastActivity >= UnknownQuiescence
+        );
+
     internal static async Task<S2SStatusResult?> WaitAsync(
         LmStreamingS2SClient client,
         string thread,
@@ -754,23 +881,26 @@ internal static class ReviewRunner
             {
                 throw new InvalidOperationException($"Review input ended with {status.Status}; not success.");
             }
+            // Genuine descendant failures: a node that errored, was stopped, or carries a failure code.
+            // Unknown is deliberately NOT fatal here. Unknown means the source could not resolve the node's
+            // status on this poll (a child mid-spawn/handoff), not that it failed — a node flickers Unknown
+            // and then resolves. Throwing on it abandoned Nova reviews whose sub-agents (the publisher
+            // included) then completed. Instead keep waiting on Unknown and only stop blocking on it once it
+            // has been inactive for the quiescence window (mirrors ReviewSubAgentCompletion.IsQuiescedUnknown).
             if (
                 tree.Nodes.Any(n =>
-                    n.Status
-                        is ReviewSubAgentStatus.Error
-                            or ReviewSubAgentStatus.Stopped
-                            or ReviewSubAgentStatus.Unknown
-                    || n.FailureCode is not null
+                    n.Status is ReviewSubAgentStatus.Error or ReviewSubAgentStatus.Stopped || n.FailureCode is not null
                 )
             )
             {
-                throw new InvalidOperationException("Review descendants failed or have unknown status; not success.");
+                throw new InvalidOperationException("Review descendants failed; not success.");
             }
+            var now = DateTimeOffset.UtcNow;
             var idle =
                 !global.IsInProgress
                 && global.CurrentRunId is null
                 && (status is null || status.Status.Equals("completed", StringComparison.OrdinalIgnoreCase))
-                && tree.Nodes.All(n => n.Status == ReviewSubAgentStatus.Completed);
+                && tree.Nodes.All(n => IsSettledNode(n, now));
             var signature = JsonSerializer.Serialize(
                 new
                 {

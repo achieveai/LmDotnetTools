@@ -69,6 +69,50 @@ public sealed class IndexedConversationStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task ChangingEpoch_ReportsRetryExhaustionWithoutPendingPublication()
+    {
+        var inner = new Mock<IConversationStore>();
+        inner
+            .Setup(s =>
+                s.ListThreadsAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<ConversationListOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([]);
+        inner
+            .Setup(s =>
+                s.SaveMetadataAsync(It.IsAny<string>(), It.IsAny<ThreadMetadata>(), It.IsAny<CancellationToken>())
+            )
+            .Returns(Task.CompletedTask);
+        inner
+            .Setup(s => s.LoadMetadataAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ThreadMetadata?)null);
+        var store = Create(inner.Object);
+        inner
+            .Setup(s => s.LoadMetadataAsync("root", It.IsAny<CancellationToken>()))
+            .Returns(async () =>
+            {
+                await store.SaveMetadataAsync(
+                    "unrelated",
+                    new ThreadMetadata { ThreadId = "unrelated", LastUpdated = 0 }
+                );
+                return new ThreadMetadata { ThreadId = "root", LastUpdated = 0 };
+            });
+
+        var busy = await Assert.ThrowsAsync<IndexedConversationStore.HierarchyBusyException>(() =>
+            store.ReadChildrenAsync("root", true)
+        );
+
+        busy.Reason.Should().Be("retry_exhausted");
+        busy.Attempts.Should().Be(3);
+        busy.PendingCount.Should().Be(0);
+        busy.CurrentEpoch.Should().BeGreaterThan(busy.SnapshotEpoch);
+    }
+
+    [Fact]
     public async Task StorageAliases_PreserveCanonicalChildIdentityThroughReparentingAndDeletion()
     {
         var inner = new FileConversationStore(_directory, null, strictMetadataReads: true);
@@ -142,9 +186,13 @@ public sealed class IndexedConversationStoreTests : IDisposable
         try
         {
             entered.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
-            await Assert.ThrowsAsync<IndexedConversationStore.HierarchyBusyException>(() =>
+            var busy = await Assert.ThrowsAsync<IndexedConversationStore.HierarchyBusyException>(() =>
                 store.ReadChildrenAsync("root", true)
             );
+            busy.Reason.Should().Be("pending_publication");
+            busy.PendingCount.Should().Be(1);
+            busy.Attempts.Should().Be(1);
+            busy.SnapshotEpoch.Should().Be(busy.CurrentEpoch);
             await using var pool = ConversationsControllerTests.CreatePool();
             var controller = ConversationsControllerTests.CreateController(
                 store,

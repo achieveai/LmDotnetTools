@@ -35,7 +35,7 @@ internal sealed class CliOptions
         {
             "pr list" => new[] { "repo", "repos", "db" },
             "pr check" => ["repo", "repos", "db"],
-            "pr pick" => ["repo", "repos", "db"],
+            "pr pick" => ["repo", "repos", "db", "max-age-hours", "selection-out"],
             "review run" =>
             [
                 "repo",
@@ -47,6 +47,7 @@ internal sealed class CliOptions
                 "provider",
                 "mode",
                 "reasoning-effort",
+                "max-age-hours",
                 "execute",
                 "resume",
                 "cleanup-only",
@@ -61,11 +62,14 @@ internal sealed class CliOptions
                 "provider",
                 "mode",
                 "reasoning-effort",
+                "max-age-hours",
                 "listen",
                 "callback",
                 "execute",
             ],
             "review reconcile-slot" => ["repo", "pr", "db", "evidence", "execute"],
+            "review reclaim-slot" => ["repo", "pr", "slot", "db", "workspace", "session", "execute"],
+            "review reap-slots" => ["db", "workspace", "session", "include-undated", "execute"],
             "review capacity" => ["repos", "db", "workspace", "session", "evidence"],
             "merge resolve" => ["request", "db", "session", "workspace", "provider", "execute"],
             "merge push" => ["request", "db", "session", "workspace", "provider", "result", "execute"],
@@ -133,6 +137,21 @@ internal sealed class CliOptions
 
         if (result.Get("reasoning-effort") is { } effort && effort is not ("low" or "medium" or "high" or "xhigh"))
             throw new ArgumentException("--reasoning-effort must be low, medium, high or xhigh.");
+
+        if (result.Get("max-age-hours") is { } age)
+        {
+            if (
+                !int.TryParse(
+                    age,
+                    System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var hours
+                )
+                || hours <= 0
+            )
+                throw new ArgumentException("--max-age-hours must be a positive integer.");
+            result._values["max-age-hours"] = hours.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
 
         if (command.StartsWith("pr ", StringComparison.Ordinal))
         {
@@ -216,7 +235,8 @@ internal sealed class CliOptions
 
         pr list  (--repo <org/project/repo> | --repos <comma-separated-repos>) [--db <path>]
         pr check (--repo <org/project/repo> | --repos <comma-separated-repos>) [--db <path>]
-        pr pick  (--repo <org/project/repo> | --repos <comma-separated-repos>) [--db <path>]
+        pr pick  (--repo <org/project/repo> | --repos <comma-separated-repos>) [--db <path>] [--max-age-hours <positive-integer>]
+                 [--selection-out <file>]   (writes a review batch selection: all picked PRs, lanes 0-5)
         pr bind-thread --repo <org/project/repo> --pr <id> --thread <conversation-id> [--db <path>]
         auth serve [--listen <url>] [--callback <gateway-reachable-url>]
         auth run [--listen <url>] [--callback <gateway-reachable-url>] -- <local-program> [args...]
@@ -231,9 +251,9 @@ internal sealed class CliOptions
                     [--mode <id>] [--wait] [--timeout <seconds>] [--repo <org/project/repo> --pr <id> [--db <path>]]
 
         review run --repo <org/project/repo> --pr <id> --slot <0-5> --db <pending.db>
-                   --session <sandbox-session-id> --workspace <host-workspace-id> --provider <id> [--mode <id>] [--reasoning-effort <low|medium|high|xhigh>] [--execute] [--resume] [--cleanup-only]
+                   --session <sandbox-session-id> --workspace <host-workspace-id> --provider <id> [--mode <id>] [--reasoning-effort <low|medium|high|xhigh>] [--max-age-hours <positive-integer>] [--execute] [--resume] [--cleanup-only]
         review batch --selection <json> --db <pending.db> --session <id> --workspace <id> --provider <id>
-                     [--mode <id>] [--reasoning-effort <low|medium|high|xhigh>] [--listen <url>] [--callback <url>] --execute
+                     [--mode <id>] [--reasoning-effort <low|medium|high|xhigh>] [--max-age-hours <positive-integer>] [--listen <url>] [--callback <url>] --execute
         Batch resumes its fixed selected queue; failed PRs requeue, ambiguous owners hold slots. No automatic new PR discovery.
         review capacity --repos <comma-separated-org/project/repo> --db <path> --workspace <id> --session <id>
                         --evidence <native-and-thread-quiescence.json>

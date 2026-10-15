@@ -114,6 +114,9 @@ internal sealed record PullRequestDescriptor
     /// </summary>
     public DateTimeOffset? CreatedAt { get; init; }
 
+    /// <summary>Whether the provider explicitly identifies this PR as a draft. Null when unknown.</summary>
+    public bool? IsDraft { get; init; }
+
     /// <summary>
     /// The PR's last-activity time, if the provider exposes it (GitHub <c>updated_at</c>). ADO's PR list
     /// has no last-activity field, so it is left null there and the recency filter falls back to

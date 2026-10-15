@@ -126,7 +126,9 @@ public sealed class AuthWebhookController(
         var defer = false;
         try
         {
-            var token = await tokenProvider.GetAccessTokenAsync(body.RequiredScopes, ct);
+            var token = tokenProvider is AdoOAuthProvider ado
+                ? await ado.GetWebhookAccessTokenAsync(ct)
+                : await tokenProvider.GetAccessTokenAsync(body.RequiredScopes, ct);
             if (KeyRevisionChanged(tokenProvider, keyRevision))
             {
                 logger.LogWarning(
@@ -222,6 +224,12 @@ public sealed class AuthWebhookController(
                     body.DestinationHost
                 );
                 await TryNotifyAuthCompletedAsync(capturedTarget, tokenProvider.ProviderId);
+                // Policy polling is ordinary acquisition. Check ADO after any awaited notification.
+                if (tokenProvider is AdoOAuthProvider ado)
+                {
+                    resolved = await ado.GetWebhookAccessTokenAsync(ct);
+                }
+
                 return Ok(BuildAllow(tokenProvider, keyRevision, body.DestinationHost, resolved));
             }
 

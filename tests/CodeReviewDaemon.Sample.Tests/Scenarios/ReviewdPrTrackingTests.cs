@@ -10,6 +10,105 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
 public sealed class ReviewdPrTrackingTests
 {
+    [Theory]
+    [InlineData("2026-10-04T22:00:00Z", true)]
+    [InlineData("2026-10-04T21:59:59Z", false)]
+    [InlineData("2026-10-05T00:00:00+02:00", true)]
+    [InlineData("2026-10-07T22:00:01Z", false)]
+    [InlineData("2026-10-07T21:00:00", false)]
+    [InlineData("garbage", false)]
+    [InlineData(null, false)]
+    public void Creation_age_requires_explicit_offset_and_inclusive_rolling_boundary(string? created, bool eligible)
+    {
+        PrSelection
+            .IsWithinCreationAge(
+                System.Text.Json.Nodes.JsonValue.Create(created),
+                72,
+                DateTimeOffset.Parse("2026-10-07T22:00:00Z")
+            )
+            .Should()
+            .Be(eligible);
+        PrSelection
+            .IsWithinCreationAge(System.Text.Json.Nodes.JsonValue.Create(72), 72, DateTimeOffset.UtcNow)
+            .Should()
+            .BeFalse();
+    }
+
+    [Fact]
+    public async Task Ado_poll_snapshot_preserves_draft_and_creation_metadata_for_rolling_selection()
+    {
+        var now = DateTimeOffset.Parse("2026-10-13T06:00:00Z");
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-eligibility-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/repo");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/pullrequests?",
+            """
+            {"count":4,"value":[
+              {"pullRequestId":17,"status":"active","isDraft":false,"creationDate":"2026-10-10T08:00:00+02:00","lastMergeSourceCommit":{"commitId":"head-17"}},
+              {"pullRequestId":18,"status":"active","isDraft":true,"creationDate":"2026-10-13T05:00:00Z","lastMergeSourceCommit":{"commitId":"head-18"}},
+              {"pullRequestId":19,"status":"active","creationDate":"2026-10-13T05:00:00Z","lastMergeSourceCommit":{"commitId":"head-19"}},
+              {"pullRequestId":20,"status":"active","isDraft":false,"creationDate":"2026-10-10T05:59:59Z","lastMergeSourceCommit":{"commitId":"head-20"}}
+            ]}
+            """
+        );
+        using var http = new HttpClient(handler);
+        var provider = new AdoPrProvider(
+            http,
+            new FakeOAuthTokenProvider("ado"),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<AdoPrProvider>.Instance
+        );
+        try
+        {
+            await PrCommands.RunAsync(
+                CliOptions.Parse(["pr", "check", "--repo", repo.DisplayName, "--db", database]),
+                provider,
+                CancellationToken.None
+            );
+            using var connection = PrThreadBindings.Connection(database);
+            var store = new SqliteKvStore(connection);
+            var snapshot = (
+                await store.GetAsync<Dictionary<string, PrCommands.PrObservation>>(
+                    $"reviewd/pr-snapshot/{repo.NormalizedKey}"
+                )
+            )!;
+            var current = System.Text.Json.JsonSerializer.SerializeToElement(snapshot["17"]);
+            current.GetProperty("IsDraft").GetBoolean().Should().BeFalse();
+            current
+                .GetProperty("CreatedAt")
+                .GetDateTimeOffset()
+                .Should()
+                .Be(DateTimeOffset.Parse("2026-10-10T08:00:00+02:00"));
+            current.GetProperty("CreatedAt").GetString().Should().EndWith("+02:00");
+            var picked = snapshot
+                .Where(entry =>
+                {
+                    var pr = System.Text.Json.JsonSerializer.SerializeToElement(entry.Value);
+                    return PrSelection.IsEligible(pr, null, false, now)
+                        && PrSelection.IsWithinCreationAge(
+                            System.Text.Json.Nodes.JsonNode.Parse(pr.GetProperty("CreatedAt").GetRawText()),
+                            72,
+                            now
+                        );
+                })
+                .Select(entry => entry.Key);
+            picked.Should().Equal("17");
+            handler.CountRequests("/pushes?").Should().Be(0);
+            var legacy = System.Text.Json.JsonSerializer.Deserialize<PrCommands.PrObservation>(
+                """{"PrId":"21","Lifecycle":"Open","HeadSha":"head-21","Title":"legacy"}"""
+            )!;
+            PrSelection
+                .IsEligible(System.Text.Json.JsonSerializer.SerializeToElement(legacy), null, false, now)
+                .Should()
+                .BeFalse();
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
     [Fact]
     public async Task Polls_preserve_bindings_detect_comment_changes_and_save_only_complete_repositories()
     {

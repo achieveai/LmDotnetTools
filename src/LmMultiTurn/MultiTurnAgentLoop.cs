@@ -58,7 +58,8 @@ public sealed class MultiTurnAgentLoop
         ISubAgentContextSink,
         ISpawnSuppressingAgent,
         IManualCompactionAgent,
-        IReconfigurableAgent
+        IReconfigurableAgent,
+        IFreezableAgent
 {
     // The provider-dependent half of this loop. Replaced wholesale by Reconfigure (build-then-assign),
     // never mutated in place; the conversation-owned collaborators below it are kept across a switch.
@@ -244,6 +245,15 @@ public sealed class MultiTurnAgentLoop
     // drain the coordinator, which is where the actual work is.
     private readonly object _wakeLock = new();
     private bool _wakeScheduled;
+
+    // Freeze/unfreeze (IFreezableAgent). _frozenGate is non-null exactly while frozen; its Task completes
+    // on unfreeze. A frozen loop is quiesced WITHOUT teardown: the two continuation choke points
+    // (the turn loop in ExecuteRunTurnsAsync, and the cause-dequeue in RunLoopAsync) await this gate, so
+    // any in-flight turn settles its tool results into history first, then the loop simply stops advancing
+    // until unfrozen. This is deliberately NOT cancellation — _internalCts/LifetimeToken are untouched, so
+    // the loop task stays alive and resumable (contrast StopAsync, which tears the loop down).
+    private readonly object _freezeLock = new();
+    private TaskCompletionSource<bool>? _frozenGate;
 
     // The requesting run whose delayed continuation must retain a prior no-spawn guarantee.
     // The coordinator owns delayed-result state; this lock owns only the suppression marker.
@@ -1207,6 +1217,11 @@ public sealed class MultiTurnAgentLoop
         {
             while (!ct.IsCancellationRequested)
             {
+                // Freeze choke point (continuation side): while frozen, do not dequeue a delayed cause,
+                // process queued input, or start a run. A cause resolved while frozen stays in the
+                // coordinator; unfreeze stirs the loop so it drains here.
+                await WaitWhileFrozenAsync(ct);
+
                 // Delayed results outrank queued input. A result that resolved after its run had
                 // already ended is carried by its own child run, and until every one of them has
                 // been carried the conversation is not in a state that can be sent anywhere: the
@@ -1724,6 +1739,10 @@ public sealed class MultiTurnAgentLoop
         while (turnCount < MaxTurnsPerRun)
         {
             ct.ThrowIfCancellationRequested();
+
+            // Freeze choke point (turn side): the previous turn has already settled its tool tasks, so
+            // their results are in history; a freeze here captures them and stops before the next turn.
+            await WaitWhileFrozenAsync(ct);
 
             // POLL: Check for new inputs before each turn (skip resume sentinels — they're
             // not real injected messages, they only exist to wake the channel).
@@ -4789,6 +4808,77 @@ public sealed class MultiTurnAgentLoop
         catch (Exception ex) when (!IsRunCancellation(ex, ct))
         {
             Logger.LogWarning(ex, "Manual compaction for thread {ThreadId} failed on the idle loop", ThreadId);
+        }
+    }
+
+    /// <inheritdoc />
+    public bool IsFrozen
+    {
+        get
+        {
+            lock (_freezeLock)
+            {
+                return _frozenGate != null;
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    public void Freeze()
+    {
+        lock (_freezeLock)
+        {
+            // Idempotent: a second freeze keeps the existing gate so one unfreeze releases exactly it.
+            _frozenGate ??= new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        Logger.LogInformation("Conversation {ThreadId} frozen", ThreadId);
+    }
+
+    /// <inheritdoc />
+    public void Unfreeze()
+    {
+        TaskCompletionSource<bool>? gate;
+        lock (_freezeLock)
+        {
+            gate = _frozenGate;
+            _frozenGate = null;
+        }
+
+        if (gate == null)
+        {
+            return; // Not frozen: no-op.
+        }
+
+        _ = gate.TrySetResult(true);
+        Logger.LogInformation("Conversation {ThreadId} unfrozen", ThreadId);
+        // A continuation (delayed cause, or an input that arrived while frozen) may be waiting with the
+        // loop parked at the freeze gate rather than on the input channel; nudge it so it drains.
+        ScheduleLoopWake();
+    }
+
+    /// <summary>
+    /// Blocks while the loop is frozen, returning as soon as it is unfrozen (or throwing if
+    /// <paramref name="ct"/> is cancelled). A no-op when not frozen. Called at the two continuation choke
+    /// points so a frozen loop captures a completing turn's tool results but does not advance.
+    /// </summary>
+    private async Task WaitWhileFrozenAsync(CancellationToken ct)
+    {
+        while (true)
+        {
+            Task gate;
+            lock (_freezeLock)
+            {
+                if (_frozenGate == null)
+                {
+                    return;
+                }
+
+                gate = _frozenGate.Task;
+            }
+
+            // Unfreeze completes the gate; ct cancels the wait. Re-loop to re-read under the lock in case
+            // a freeze/unfreeze raced between the unlock above and the await.
+            await gate.WaitAsync(ct);
         }
     }
 

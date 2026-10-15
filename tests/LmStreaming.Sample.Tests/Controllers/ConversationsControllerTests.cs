@@ -72,6 +72,57 @@ public class ConversationsControllerTests
     }
 
     [Fact]
+    public async Task List_UsesOptionalListingRowsWithoutFullMetadataReads()
+    {
+        var store = new Mock<IConversationStore>(MockBehavior.Strict);
+        var listing = store.As<IConversationListingStore>();
+        listing
+            .Setup(s =>
+                s.ListConversationRowsAsync(
+                    It.Is<IReadOnlySet<string>>(keys =>
+                        keys.SetEquals(
+                            new[]
+                            {
+                                "title",
+                                "preview",
+                                MultiTurnAgentPool.ProviderPropertyKey,
+                                MultiTurnAgentPool.WorkspacePropertyKey,
+                                MultiTurnAgentPool.ModePropertyKey,
+                            }
+                        )
+                    ),
+                    null,
+                    30,
+                    0,
+                    It.IsAny<ConversationListOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([
+                new ConversationListingRow
+                {
+                    ThreadId = "canonical",
+                    LastUpdated = 42,
+                    Properties = new Dictionary<string, string?>
+                    {
+                        ["title"] = "Projected title",
+                        ["preview"] = "Projected preview",
+                    },
+                },
+            ]);
+        await using var pool = CreatePool();
+        var controller = CreateController(store.Object, pool, ModeStoreResolvingSystemModes());
+        var response = Assert.IsType<OkObjectResult>(await controller.List());
+        var row = Assert.IsType<List<ConversationSummary>>(response.Value).Single();
+        row.ThreadId.Should().Be("canonical");
+        row.Title.Should().Be("Projected title");
+        row.Preview.Should().Be("Projected preview");
+        row.CanShare.Should().BeTrue();
+        listing.VerifyAll();
+        store.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task SwitchMode_ReturnsConflict_WhenRunIsInProgress()
     {
         await using var pool = CreatePool();
@@ -542,12 +593,43 @@ public class ConversationsControllerTests
     /// nothing anywhere to notice. The same reasoning covers the paging bounds - a negative offset
     /// that quietly became zero would serve page 1 while the client believed it had gone backwards.
     /// </remarks>
+    [Fact]
+    public async Task List_AllowsOneThousandSummariesWithoutIncludingAgentOwnedThreads()
+    {
+        var store = new InMemoryConversationStore();
+        for (var index = 0; index < 1001; index++)
+        {
+            var threadId = $"thread-{index:D4}";
+            await store.SaveMetadataAsync(threadId, new ThreadMetadata { ThreadId = threadId, LastUpdated = index });
+        }
+
+        await store.SaveMetadataAsync(
+            "subagent-newer",
+            new ThreadMetadata { ThreadId = "subagent-newer", LastUpdated = 10_000 }
+        );
+        await using var pool = CreatePool();
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var first = await controller.List(limit: 1000) as OkObjectResult;
+        var second = await controller.List(limit: 1000, offset: 1000) as OkObjectResult;
+
+        first.Should().NotBeNull();
+        second.Should().NotBeNull();
+        var page = ((IEnumerable<ConversationSummary>)first!.Value!).ToList();
+        page.Should().HaveCount(1000);
+        page.Should().OnlyContain(summary => !SubAgentSummary.IsAgentOwnedThreadId(summary.ThreadId));
+        page.Select(summary => summary.ThreadId)
+            .Concat(((IEnumerable<ConversationSummary>)second!.Value!).Select(summary => summary.ThreadId))
+            .Should()
+            .Equal(Enumerable.Range(0, 1001).Reverse().Select(index => $"thread-{index:D4}"));
+    }
+
     [Theory]
     [InlineData(30, 0, "lastUsedish")]
     [InlineData(30, 0, "createdAt")]
     [InlineData(30, -1, null)]
     [InlineData(0, 0, null)]
-    [InlineData(101, 0, null)]
+    [InlineData(1001, 0, null)]
     public async Task List_ReturnsBadRequest_ForAnUnusableQuery(int limit, int offset, string? sort)
     {
         var store = new InMemoryConversationStore();

@@ -17,7 +17,8 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
         IConversationOwnershipStore,
         IRunLedgerStore,
         IRunLifecycleStore,
-        IInputAcceptanceStore
+        IInputAcceptanceStore,
+        IConversationListingStore
 {
     private readonly SemaphoreSlim _initialize = new(1, 1);
     private readonly SemaphoreSlim _publish = new(1, 1);
@@ -33,7 +34,14 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
     private bool _faulted;
 
     public sealed class HierarchyBusyException()
-        : InvalidOperationException("Hierarchy metadata is changing; retry discovery.");
+        : InvalidOperationException("Hierarchy metadata is changing; retry discovery.")
+    {
+        public string Reason { get; init; } = "unspecified";
+        public int PendingCount { get; init; }
+        public int Attempts { get; init; }
+        public long SnapshotEpoch { get; init; }
+        public long CurrentEpoch { get; init; }
+    }
 
     private T Capability<T>() =>
         inner is T capability
@@ -184,6 +192,16 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
         // authoritative metadata; later successful mutations cannot clear the fault.
     }
 
+    /// <inheritdoc />
+    public Task<IReadOnlyList<ConversationListingRow>> ListConversationRowsAsync(
+        IReadOnlySet<string> propertyKeys,
+        ConversationListScope? scope = null,
+        int limit = 50,
+        int offset = 0,
+        ConversationListOptions? options = null,
+        CancellationToken ct = default
+    ) => inner.ListConversationRowsAsync(propertyKeys, scope, limit, offset, options, ct);
+
     /// <summary>Reads current, tenant-eligible persisted nodes without a historical corpus scan.</summary>
     public async Task<IReadOnlyList<SubAgentSummary>> ReadChildrenAsync(
         string rootThreadId,
@@ -192,6 +210,9 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
     )
     {
         await InitializeAsync(ct);
+        long lastSnapshotEpoch = 0;
+        long lastCurrentEpoch = 0;
+        var lastPendingCount = 0;
         for (var attempt = 0; attempt < 3; attempt++)
         {
             long epoch;
@@ -203,7 +224,14 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
                         "Hierarchy discovery has an unresolved metadata publication failure."
                     );
                 if (_pending != 0)
-                    throw new HierarchyBusyException();
+                    throw new HierarchyBusyException
+                    {
+                        Reason = "pending_publication",
+                        PendingCount = _pending,
+                        Attempts = attempt + 1,
+                        SnapshotEpoch = _epoch,
+                        CurrentEpoch = _epoch,
+                    };
                 epoch = _epoch;
                 var queue = new Queue<string>();
                 var visited = new HashSet<string>(StringComparer.Ordinal) { rootThreadId };
@@ -261,9 +289,19 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
                             .ThenBy(n => n.ParentThreadId, StringComparer.Ordinal)
                             .ThenBy(n => n.ThreadId, StringComparer.Ordinal),
                     ];
+                lastSnapshotEpoch = epoch;
+                lastCurrentEpoch = _epoch;
+                lastPendingCount = _pending;
             }
         }
-        throw new HierarchyBusyException();
+        throw new HierarchyBusyException
+        {
+            Reason = "retry_exhausted",
+            PendingCount = lastPendingCount,
+            Attempts = 3,
+            SnapshotEpoch = lastSnapshotEpoch,
+            CurrentEpoch = lastCurrentEpoch,
+        };
     }
 
     public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>

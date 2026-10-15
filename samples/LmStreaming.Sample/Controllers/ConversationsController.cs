@@ -497,7 +497,7 @@ public class ConversationsController(
     /// applied.
     /// </para>
     /// </remarks>
-    /// <param name="limit">Page size, 1..100. Defaults to the client's page size.</param>
+    /// <param name="limit">Page size, 1..1000. Defaults to the sidebar's page size.</param>
     /// <param name="offset">Rows to skip. Must not be negative.</param>
     /// <param name="sort"><c>lastUsed</c> (default) or <c>created</c>, case-insensitive.</param>
     /// <param name="ct">Cancellation token.</param>
@@ -508,6 +508,26 @@ public class ConversationsController(
         string? sort = null,
         CancellationToken ct = default
     )
+    {
+        try
+        {
+            return await ListCoreAsync(limit, offset, sort, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            logger.LogInformation(
+                "Conversation list canceled: request aborted {RequestAborted}, action token canceled {ActionTokenCanceled}, "
+                    + "response started {ResponseStarted}, request {RequestId}",
+                HttpContext?.RequestAborted.IsCancellationRequested ?? false,
+                ct.IsCancellationRequested,
+                HttpContext?.Response.HasStarted ?? false,
+                HttpContext?.TraceIdentifier
+            );
+            throw;
+        }
+    }
+
+    private async Task<IActionResult> ListCoreAsync(int limit, int offset, string? sort, CancellationToken ct)
     {
         if (limit is < MinListLimit or > MaxListLimit)
         {
@@ -540,9 +560,21 @@ public class ConversationsController(
         };
 
         var scope = await authorizer.CreateListScopeAsync(ct);
-        var threads = scope is null
-            ? await store.ListThreadsAsync(limit, offset, options, ct)
-            : await store.ListThreadsAsync(scope, limit, offset, options, ct);
+        var threads = await store.ListConversationRowsAsync(
+            new HashSet<string>(StringComparer.Ordinal)
+            {
+                "title",
+                "preview",
+                MultiTurnAgentPool.ProviderPropertyKey,
+                MultiTurnAgentPool.WorkspacePropertyKey,
+                MultiTurnAgentPool.ModePropertyKey,
+            },
+            scope,
+            limit,
+            offset,
+            options,
+            ct
+        );
 
         // NOTE: there is deliberately no .Where(!IsAgentOwnedThreadId) here. That post-filter is
         // what `options` above replaces, and reinstating it would not be redundant - it would be
@@ -619,10 +651,10 @@ public class ConversationsController(
     private const int MinListLimit = 1;
 
     /// <summary>
-    /// Largest page the sidebar may ask for. A bound, not a preference: without one a caller can
-    /// make every listing read the whole store, and the file store has no offset index to soften it.
+    /// Bound summary response size while allowing the inbox to avoid repeated full metadata scans.
+    /// The file store reads the whole metadata corpus for every page, regardless of this limit.
     /// </summary>
-    private const int MaxListLimit = 100;
+    private const int MaxListLimit = 1000;
 
     /// <summary>
     /// Resolves the <c>sort</c> query parameter, rejecting anything it does not recognise.
@@ -823,7 +855,15 @@ public class ConversationsController(
             return UnknownThread(threadId);
         }
 
-        var descendants = await descendantScanner.ScanAsync(threadId, ct);
+        IReadOnlyList<SubAgentSummary> descendants;
+        try
+        {
+            descendants = await descendantScanner.ScanAsync(threadId, ct);
+        }
+        catch (IndexedConversationStore.HierarchyBusyException ex)
+        {
+            return HierarchyBusy(threadId, ex);
+        }
         var agentIdByThread = descendants.ToDictionary(d => d.ThreadId, d => d.AgentId, StringComparer.Ordinal);
         var parentByThread = descendants.ToDictionary(d => d.ThreadId, d => d.ParentThreadId, StringComparer.Ordinal);
         var roster = descendants
@@ -1015,10 +1055,25 @@ public class ConversationsController(
             var (rows, isKnown, _) = await _hierarchy.BuildAsync(threadId, viewer, ct);
             return isKnown ? Ok(rows.ToArray()) : UnknownThread(threadId);
         }
-        catch (IndexedConversationStore.HierarchyBusyException)
+        catch (IndexedConversationStore.HierarchyBusyException ex)
         {
-            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { code = "hierarchy_busy" });
+            return HierarchyBusy(threadId, ex);
         }
+    }
+
+    private ObjectResult HierarchyBusy(string rootThreadId, IndexedConversationStore.HierarchyBusyException ex)
+    {
+        logger.LogInformation(
+            "Hierarchy discovery busy for {RootThreadId}: {BusyReason}, pending {PendingCount}, attempts {Attempts}, "
+                + "snapshot epoch {SnapshotEpoch}, current epoch {CurrentEpoch}",
+            rootThreadId,
+            ex.Reason,
+            ex.PendingCount,
+            ex.Attempts,
+            ex.SnapshotEpoch,
+            ex.CurrentEpoch
+        );
+        return StatusCode(StatusCodes.Status503ServiceUnavailable, new { code = "hierarchy_busy" });
     }
 
     /// <summary>
@@ -1224,6 +1279,69 @@ public class ConversationsController(
     {
         logger.LogInformation("Manual compaction refused for thread {ThreadId}: {Reason}", threadId, reason);
         return Conflict(new ManualCompactionRefusalResponse { Reason = reason });
+    }
+
+    /// <summary>
+    /// Freezes a conversation we own: the loop finishes its in-flight turn (capturing tool results) then
+    /// stops advancing until unfrozen, making it quiescent so a held resource (e.g. a review slot) can be
+    /// reclaimed. Guarded exactly like <see cref="RequestCompaction"/> (agent-owned threads refused, write
+    /// access decided before the unknown-thread 404). Idempotent.
+    /// </summary>
+    [HttpPost("{threadId}/freeze")]
+    public Task<IActionResult> Freeze(string threadId, CancellationToken ct = default) =>
+        SetFrozenAsync(threadId, frozen: true, ct);
+
+    /// <summary>Resumes a conversation frozen by <see cref="Freeze"/>. Idempotent; a no-op if not frozen.</summary>
+    [HttpPost("{threadId}/unfreeze")]
+    public Task<IActionResult> Unfreeze(string threadId, CancellationToken ct = default) =>
+        SetFrozenAsync(threadId, frozen: false, ct);
+
+    private async Task<IActionResult> SetFrozenAsync(string threadId, bool frozen, CancellationToken ct)
+    {
+        var operation = frozen ? "Freeze" : "Unfreeze";
+
+        if (SubAgentSummary.IsAgentOwnedThreadId(threadId))
+        {
+            return StatusCode(
+                StatusCodes.Status403Forbidden,
+                new { error = "forbidden", code = AgentOwnedThreadWriteCode }
+            );
+        }
+
+        var metadata = await store.LoadMetadataAsync(threadId, ct);
+
+        if (Refuse(threadId, await authorizer.AuthorizeAsync(threadId, metadata, AccessAction.Write, ct)) is { } denied)
+        {
+            return denied;
+        }
+
+        if (metadata == null)
+        {
+            return UnknownThread(threadId);
+        }
+
+        var resolved = await ResolveCurrentAgentAsync(threadId, metadata, operation, ct);
+        if (resolved.Agent is not { } agent)
+        {
+            return resolved.Refusal!;
+        }
+
+        if (agent is not IFreezableAgent freezable)
+        {
+            return StatusCode(StatusCodes.Status409Conflict, new { error = "not_freezable", threadId });
+        }
+
+        if (frozen)
+        {
+            freezable.Freeze();
+        }
+        else
+        {
+            freezable.Unfreeze();
+        }
+
+        logger.LogInformation("Conversation {ThreadId} {Operation} via API", threadId, operation);
+        return StatusCode(StatusCodes.Status202Accepted, new { threadId, frozen = freezable.IsFrozen });
     }
 
     /// <summary>

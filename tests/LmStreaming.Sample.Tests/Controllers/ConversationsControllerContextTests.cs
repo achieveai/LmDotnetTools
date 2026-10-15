@@ -220,6 +220,127 @@ public class ConversationsControllerContextTests
     }
 
     [Fact]
+    public async Task GetContext_ReturnsHierarchyBusy503DuringUnrelatedPublication_ThenRecovers()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"context-busy-{Guid.NewGuid():N}");
+        await using var pool = ConversationsControllerTests.CreatePool();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blockedInner = new Mock<IConversationStore>();
+        blockedInner
+            .Setup(s =>
+                s.ListThreadsAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<ConversationListOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([]);
+        blockedInner
+            .Setup(s => s.LoadMetadataAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 0 });
+        blockedInner
+            .Setup(s => s.SaveMetadataAsync("unrelated", It.IsAny<ThreadMetadata>(), It.IsAny<CancellationToken>()))
+            .Returns(async () =>
+            {
+                entered.SetResult();
+                await release.Task;
+            });
+        var blocked = new IndexedConversationStore(blockedInner.Object, Path.Combine(directory, ".blocked.json"));
+        var mutation = blocked.SaveMetadataAsync(
+            "unrelated",
+            new ThreadMetadata { ThreadId = "unrelated", LastUpdated = 0 }
+        );
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var result = Assert.IsType<ObjectResult>(await ControllerFor(blocked, pool).GetContext(ThreadId));
+            result.StatusCode.Should().Be(503);
+            JsonSerializer.Serialize(result.Value).Should().Be("{\"code\":\"hierarchy_busy\"}");
+        }
+        finally
+        {
+            release.TrySetResult();
+            await mutation;
+        }
+        try
+        {
+            Assert.IsType<OkObjectResult>(await ControllerFor(blocked, pool).GetContext(ThreadId));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task List_PreservesCancellationWhetherOrNotTheRequestAborted(bool requestAborted)
+    {
+        var store = new Mock<IConversationStore>();
+        var listing = store.As<IConversationListingStore>();
+        var expected = new OperationCanceledException("listing canceled");
+        listing
+            .Setup(s =>
+                s.ListConversationRowsAsync(
+                    It.IsAny<IReadOnlySet<string>>(),
+                    It.IsAny<ConversationListScope>(),
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<ConversationListOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ThrowsAsync(expected);
+        await using var pool = ConversationsControllerTests.CreatePool();
+        var controller = ControllerFor(store.Object, pool);
+        var entries = new List<KeyValuePair<string, object?>>();
+        var logger = new Mock<Microsoft.Extensions.Logging.ILogger<ConversationsController>>();
+        logger
+            .Setup(l =>
+                l.Log(
+                    It.IsAny<Microsoft.Extensions.Logging.LogLevel>(),
+                    It.IsAny<Microsoft.Extensions.Logging.EventId>(),
+                    It.IsAny<It.IsAnyType>(),
+                    It.IsAny<Exception?>(),
+                    It.IsAny<Func<It.IsAnyType, Exception?, string>>()
+                )
+            )
+            .Callback(
+                new InvocationAction(invocation =>
+                    entries.AddRange((IEnumerable<KeyValuePair<string, object?>>)invocation.Arguments[2])
+                )
+            );
+        typeof(ConversationsController)
+            .GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            .Single(f => f.FieldType == typeof(Microsoft.Extensions.Logging.ILogger<ConversationsController>))
+            .SetValue(controller, logger.Object);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext
+            {
+                RequestAborted = requestAborted ? cancellation.Token : CancellationToken.None,
+            },
+        };
+
+        var observed = await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            controller.List(ct: cancellation.Token)
+        );
+
+        observed.Should().BeSameAs(expected);
+        entries.Should().Contain(new KeyValuePair<string, object?>("RequestAborted", requestAborted));
+        entries.Should().Contain(new KeyValuePair<string, object?>("ActionTokenCanceled", true));
+        entries.Should().Contain(new KeyValuePair<string, object?>("ResponseStarted", false));
+        entries
+            .Should()
+            .Contain(new KeyValuePair<string, object?>("RequestId", controller.HttpContext.TraceIdentifier));
+    }
+
+    [Fact]
     public async Task GetContext_ReturnsTheExistenceHiding404_ForAThreadNobodyKnows()
     {
         var store = new InMemoryConversationStore();

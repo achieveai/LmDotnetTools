@@ -66,6 +66,7 @@ if phase == 'eligibility':
     payload = eligibility()
     print(json.dumps({'prId': str(pr), 'status': payload.get('status'),
                       'isDraft': payload.get('isDraft'),
+                      'createdAt': payload.get('creationDate'),
                       'headSha': (payload.get('lastMergeSourceCommit') or {}).get('commitId'),
                       'mergeSha': (payload.get('lastMergeCommit') or {}).get('commitId')}))
 elif phase == 'inspect':
@@ -154,11 +155,30 @@ elif phase == 'cleanup':
                                        run_git_read(root, ['rev-parse', 'HEAD']).stdout.strip(), pool._verified_baseline())
             previous = {'claimToken': args['claimToken'], 'pr': pr, 'state': 'owned'}
             atomic_json(marker, previous)
-        if previous is None and args.get('failedPreparation'):
+        # An interrupted preparation can leave an orphaned 'owned' marker whose claimToken belongs to
+        # a dead attempt (e.g. the batch process was killed between claiming the slot and finishing the
+        # fetch). prepare then refuses the slot ('unreleased reviewd owner') and this cleanup refused it
+        # too ('Native claim changed'), so the slot stayed blocked forever -- violating the
+        # slot-never-blocks invariant. Under slot_lock (serialised against any live prepare), a marker
+        # with no prepared slot and no pool run is a provable orphan, so a failed-attempt reset may
+        # reclaim it. The prepared_slot/pool_run guard below still refuses to steal a genuinely prepared
+        # predecessor, and lock serialisation guarantees we never race a live in-progress prepare.
+        orphan_owned = (previous is not None and previous.get('state') == 'owned'
+                        and previous.get('claimToken') != args['claimToken'])
+        # A preparation that failed before claiming leaves the marker 'released' under an older claim:
+        # natively the slot is already free, so only the SQLite owner is stale. A failed-attempt reset or
+        # a reaper discard may adopt it under the same no-prepared-slot/no-pool-run guard.
+        released_other = (previous is not None and previous.get('state') == 'released'
+                          and previous.get('claimToken') != args['claimToken'])
+        if ((args.get('failedPreparation') and (previous is None or orphan_owned))
+                or ((args.get('failedPreparation') or args.get('discard')) and released_other)):
             if state.prepared_slot_path(pool.repo_key, slot).exists() or writable.load_pool_run(pool.repo_key, slot, dry_run=True) is not None:
                 raise ReviewError('Unclaimed native predecessor remains; no failed-attempt reset allowed.')
-            _verify_postconditions(writable, pool, outer, source,
-                                   run_git_read(root, ['rev-parse', 'HEAD']).stdout.strip(), pool._verified_baseline())
+            # A discard resets the slot to baseline below, so only a non-discarding adoption must
+            # already be clean.
+            if not args.get('discard'):
+                _verify_postconditions(writable, pool, outer, source,
+                                       run_git_read(root, ['rev-parse', 'HEAD']).stdout.strip(), pool._verified_baseline())
             previous = {'claimToken': args['claimToken'], 'pr': pr, 'state': 'owned'}
             atomic_json(marker, previous)
         if not previous or previous.get('claimToken') != args['claimToken'] or previous.get('pr') != pr or previous.get('state') != 'owned':
@@ -166,15 +186,20 @@ elif phase == 'cleanup':
         prepared_path = state.prepared_slot_path(pool.repo_key, slot)
         if prepared_path.exists() and json.loads(prepared_path.read_text()).get('pr') != pr:
             raise ReviewError('Native prepared owner changed; no reset allowed.')
-        if git_status(source, read_only=True) or git_ignored_paths(source, read_only=True):
+        discard = bool(args.get('discard'))
+        if not discard and (git_status(source, read_only=True) or git_ignored_paths(source, read_only=True)):
             raise ReviewError('Source checkout has local data; no automatic destructive cleanup allowed.')
         # Preserve all outside-source attempt artifacts with native hash/fsync verification before reset.
-        inspection = inspect_checkout_preservation(outer, protected=source)
-        preserved = preserve_checkout_generation(writable, inspection,
-                                                operation_id='reviewd-' + args['claimToken'], repository=outer)
-        binding = {'schema_version': 1, 'workspace_identity': writable.identity, 'outer': inspection}
-        verify_preservation_archive(Path(preserved['path']), expected_manifest_sha256=preserved['manifest_sha256'],
-                                    expected_generation=preservation_generation(binding), expected_binding=binding)
+        # A discard reset (a dead conversation its owner has frozen, being thrown away to reclaim the slot)
+        # keeps nothing: skip preservation and the clean-source guard, exactly like the post-checkout reset.
+        preserved = None
+        if not discard:
+            inspection = inspect_checkout_preservation(outer, protected=source)
+            preserved = preserve_checkout_generation(writable, inspection,
+                                                    operation_id='reviewd-' + args['claimToken'], repository=outer)
+            binding = {'schema_version': 1, 'workspace_identity': writable.identity, 'outer': inspection}
+            verify_preservation_archive(Path(preserved['path']), expected_manifest_sha256=preserved['manifest_sha256'],
+                                        expected_generation=preservation_generation(binding), expected_binding=binding)
         # Invoke native already-locked entry points; the exact token fence stays held through reset.
         with slot_writer_scope(writable, pool.repo_key, slot, phase='pooled-reset'):
             legacy = writable.load_pool_run(pool.repo_key, slot, dry_run=True)
@@ -184,7 +209,16 @@ elif phase == 'cleanup':
                 result = _discard_prepared_slot(writable, pool, slot, confirm='YES')
             elif legacy is not None:
                 result = reset_pool_run_locked(writable, repo, slot, mode='discard', confirm='YES', run_maintenance=False)
-            elif args.get('failedPreparation') or args.get('adopt'):
+            elif discard or args.get('failedPreparation'):
+                # No manifest to replay: hard-reset this slot's outer and source worktrees to the idle
+                # baseline, exactly as a prepared-slot discard does, so a parked or half-prepared slot
+                # can always be thrown away.
+                from review_git_prepare import _prepare_outer, _prepare_nested
+                pool._ensure_store()
+                _prepare_outer(writable, outer, run_git_read(root, ['rev-parse', 'HEAD']).stdout.strip())
+                _prepare_nested(writable, pool, source, pool._verified_baseline())
+                result = {'status': 'reset-to-baseline'}
+            elif args.get('adopt'):
                 result = {'status': 'already-idle'}
             else:
                 raise ReviewError('Native owner disappeared; inspect before release.')
@@ -193,7 +227,7 @@ elif phase == 'cleanup':
             previous['state'] = 'released'
             atomic_json(marker, previous)
             print(json.dumps({'claimToken': args['claimToken'], 'cleanBaselineVerified': True,
-                              'evidencePreserved': True, 'preservation': preserved, 'reset': result}))
+                              'evidencePreserved': preserved is not None, 'preservation': preserved, 'reset': result}))
 elif phase == 'verify':
     inspect_prepared()
     receipt = json.loads(safe_path(outer, directory + '/publication_receipts.json').read_text())

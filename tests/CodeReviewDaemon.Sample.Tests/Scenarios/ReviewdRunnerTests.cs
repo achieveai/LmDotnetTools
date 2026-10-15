@@ -85,6 +85,274 @@ public sealed class ReviewdRunnerTests
     }
 
     [Theory]
+    [InlineData("valid")]
+    [InlineData("admitted")]
+    [InlineData("send-pending")]
+    [InlineData("changed-claim")]
+    [InlineData("native-owned")]
+    [InlineData("operation-running")]
+    [InlineData("missing-operation")]
+    [InlineData("dirty-baseline")]
+    [InlineData("writers-active")]
+    [InlineData("stale-proof")]
+    [InlineData("unbound-receipt")]
+    [InlineData("existing-certificate")]
+    public async Task Never_admitted_reconciliation_atomically_releases_only_a_proven_exact_owner(string scenario)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "reviewd-release-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var database = Path.Combine(directory, "state.db");
+        var repo = PrCommands.ParseRepo("org/project/WeveNova");
+        var attemptKey = "reviewd/review-attempt/" + repo.NormalizedKey + "/17";
+        var ownerKey = SlotRelease.OwnerKey("workspace", repo.NormalizedKey, 3);
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            var store = new SqliteKvStore(connection);
+            var attempt = new JsonObject
+            {
+                ["repository"] = repo.DisplayName,
+                ["workspaceId"] = "workspace",
+                ["sessionId"] = "session",
+                ["prId"] = "17",
+                ["slot"] = 3,
+                ["stage"] = "prepare-pending",
+                ["claimToken"] = "claim",
+                ["prepareOperationId"] = "prepare",
+                ["cleanupOperationId"] = "cleanup",
+                ["cleanupState"] = "pending",
+            };
+            if (scenario == "admitted")
+                attempt["reviewInputId"] = "input";
+            if (scenario == "send-pending")
+                attempt["initialSend"] = "pending";
+            var original = attempt.ToJsonString();
+            var owner = attempt.DeepClone().AsObject();
+            owner["state"] = "owned";
+            if (scenario == "changed-claim")
+                owner["claimToken"] = "new-owner";
+            await store.SetAsync(attemptKey, attempt);
+            await store.SetAsync(ownerKey, owner);
+            var native = attempt.DeepClone().AsObject();
+            native["schemaVersion"] = 1;
+            native["attemptDigest"] = SlotRelease.Digest(original);
+            native["nativeOwnerState"] = scenario == "native-owned" ? "owned" : "released";
+            native["preparedRunAbsent"] = true;
+            native["poolRunAbsent"] = true;
+            native["writersQuiescent"] = scenario != "writers-active";
+            native["producersStopped"] = true;
+            native["cleanBaselineVerified"] = scenario != "dirty-baseline";
+            native["baselineSha"] = new string('a', 40);
+            native["sourceHeadSha"] = new string('a', 40);
+            native["checkedAt"] =
+                scenario == "stale-proof" ? DateTimeOffset.UtcNow.AddMinutes(-6) : DateTimeOffset.UtcNow;
+            native["operations"] = new JsonArray(
+                new JsonObject
+                {
+                    ["operationId"] = "prepare",
+                    ["status"] = scenario == "operation-running" ? "running" : "failed",
+                    ["exitCode"] = 1,
+                },
+                new JsonObject
+                {
+                    ["operationId"] = scenario == "missing-operation" ? "unrelated" : "cleanup",
+                    ["status"] = "failed",
+                    ["exitCode"] = 1,
+                }
+            );
+            var nativePath = Path.Combine(directory, "native.json");
+            await File.WriteAllTextAsync(nativePath, native.ToJsonString());
+            var proof = attempt.DeepClone().AsObject();
+            proof["schemaVersion"] = 1;
+            proof["attemptDigest"] = SlotRelease.Digest(original);
+            proof["classification"] = "preparation-settled-native-idle";
+            proof["noAdmission"] = true;
+            proof["preparationSettled"] = true;
+            proof["threadQuiescent"] = true;
+            proof["nativeQuiescent"] = true;
+            proof["operatorReason"] = "Never admitted; native baseline independently inspected.";
+            proof["nativeIdleReceiptPath"] = nativePath;
+            proof["evidence"] = new JsonArray(
+                new JsonObject
+                {
+                    ["path"] = nativePath,
+                    ["sha256"] = scenario == "unbound-receipt" ? "changed" : SlotRelease.Digest(native.ToJsonString()),
+                }
+            );
+            var proofPath = Path.Combine(directory, "proof.json");
+            await File.WriteAllTextAsync(proofPath, proof.ToJsonString());
+            if (scenario == "existing-certificate")
+                await store.SetAsync(SlotRelease.Key(original), new JsonObject { ["retained"] = true });
+            var options = CliOptions.Parse([
+                "review",
+                "reconcile-slot",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--db",
+                database,
+                "--evidence",
+                proofPath,
+                "--execute",
+            ]);
+            var run = () => SlotRelease.RunAsync(options, CancellationToken.None);
+            if (scenario == "valid")
+            {
+                (await run()).Should().Be(0);
+                (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("released");
+                (await store.GetAsync<JsonObject>(SlotRelease.Key(original))).Should().NotBeNull();
+                SlotRelease.Allows(proof, original, "18", "session").Should().BeTrue();
+                SlotRelease.Allows(proof, original, "17", "session").Should().BeFalse();
+                SlotRelease.Allows(proof, original, "18", "other-session").Should().BeFalse();
+                var next = attempt.DeepClone().AsObject();
+                next["prId"] = "18";
+                await SlotRelease.ClaimAsync(connection, ownerKey, next, null, CancellationToken.None);
+            }
+            else
+            {
+                await run.Should().ThrowAsync<Exception>();
+                (await store.GetAsync<JsonObject>(ownerKey))!.ToJsonString().Should().Be(owner.ToJsonString());
+                var certificate = await store.GetAsync<JsonObject>(SlotRelease.Key(original));
+                if (scenario == "existing-certificate")
+                    certificate!["retained"]!.GetValue<bool>().Should().BeTrue();
+                else
+                    certificate.Should().BeNull();
+            }
+            using var read = connection.CreateCommand();
+            read.CommandText = "SELECT value FROM cache WHERE key=@key";
+            read.Parameters.AddWithValue("@key", attemptKey);
+            (await read.ExecuteScalarAsync()).Should().Be(original);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Reset_retirement_reconciliation_releases_the_owner_and_allows_a_fresh_claim()
+    {
+        // Regression: an admitted review that was reset+archived used to keep its SQLite owner at
+        // state="owned" (certificate only), so ClaimAsync refused every fresh PR and the slot was
+        // permanently stuck. reconcile-slot must now release that owner so the slot is reusable.
+        var directory = Path.Combine(Path.GetTempPath(), "reviewd-retire-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var database = Path.Combine(directory, "state.db");
+        var repo = PrCommands.ParseRepo("org/project/WeveNova");
+        var attemptKey = "reviewd/review-attempt/" + repo.NormalizedKey + "/17";
+        var ownerKey = SlotRelease.OwnerKey("workspace", repo.NormalizedKey, 3);
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            var store = new SqliteKvStore(connection);
+            var attempt = new JsonObject
+            {
+                ["repository"] = repo.DisplayName,
+                ["workspaceId"] = "workspace",
+                ["sessionId"] = "session",
+                ["prId"] = "17",
+                ["slot"] = 3,
+                ["stage"] = "review-running",
+                ["claimToken"] = "claim",
+                ["reviewInputId"] = "input",
+                ["confirmationInputId"] = "confirm",
+            };
+            var original = attempt.ToJsonString();
+            var owner = attempt.DeepClone().AsObject();
+            owner["state"] = "owned";
+            await store.SetAsync(attemptKey, attempt);
+            await store.SetAsync(ownerKey, owner);
+
+            var digest = SlotRelease.Digest(original);
+            var now = DateTimeOffset.UtcNow;
+            var reset = new JsonObject
+            {
+                ["attemptDigest"] = digest,
+                ["workspaceId"] = "workspace",
+                ["sessionId"] = "recovery",
+                ["repository"] = repo.DisplayName,
+                ["slot"] = 3,
+                ["operationId"] = "reset-op",
+                ["status"] = "succeeded",
+                ["exitCode"] = 0,
+                ["dryRun"] = false,
+                ["cleanBaselineVerified"] = true,
+                ["writersRetiredAt"] = now.AddMinutes(-3),
+                ["startedAt"] = now.AddMinutes(-2),
+                ["finishedAt"] = now.AddMinutes(-1),
+            };
+            var archive = new JsonObject
+            {
+                ["attemptDigest"] = digest,
+                ["files"] = new JsonArray(new JsonObject { ["path"] = "f", ["sha256"] = "h" }),
+                ["verified"] = true,
+                ["finishedAt"] = now.AddMinutes(-3),
+            };
+            var resetPath = Path.Combine(directory, "reset.json");
+            var archivePath = Path.Combine(directory, "archive.json");
+            await File.WriteAllTextAsync(resetPath, reset.ToJsonString());
+            await File.WriteAllTextAsync(archivePath, archive.ToJsonString());
+
+            var proof = attempt.DeepClone().AsObject();
+            proof["schemaVersion"] = 1;
+            proof["attemptDigest"] = digest;
+            proof["classification"] = "operator-retired-after-reset";
+            proof["recoverySessionId"] = "recovery";
+            proof["writersRetired"] = true;
+            proof["producersStopped"] = true;
+            proof["threadQuiescent"] = true;
+            proof["nativeQuiescent"] = true;
+            proof["operatorReason"] = "Admitted review reset and archived; owner reclaimed for reuse.";
+            proof["resetReceiptPath"] = resetPath;
+            proof["archiveManifestPath"] = archivePath;
+            proof["evidence"] = new JsonArray(
+                new JsonObject { ["path"] = resetPath, ["sha256"] = SlotRelease.Digest(reset.ToJsonString()) },
+                new JsonObject { ["path"] = archivePath, ["sha256"] = SlotRelease.Digest(archive.ToJsonString()) }
+            );
+            var proofPath = Path.Combine(directory, "proof.json");
+            await File.WriteAllTextAsync(proofPath, proof.ToJsonString());
+
+            var options = CliOptions.Parse([
+                "review",
+                "reconcile-slot",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--db",
+                database,
+                "--evidence",
+                proofPath,
+                "--execute",
+            ]);
+            (await SlotRelease.RunAsync(options, CancellationToken.None)).Should().Be(0);
+
+            // Owner released, certificate recorded, retained attempt byte-unchanged.
+            (await store.GetAsync<JsonObject>(ownerKey))!["state"]!
+                .GetValue<string>()
+                .Should()
+                .Be("released");
+            (await store.GetAsync<JsonObject>(SlotRelease.Key(original))).Should().NotBeNull();
+            using var read = connection.CreateCommand();
+            read.CommandText = "SELECT value FROM cache WHERE key=@key";
+            read.Parameters.AddWithValue("@key", attemptKey);
+            (await read.ExecuteScalarAsync()).Should().Be(original);
+
+            // The released slot now accepts a fresh different-PR claim.
+            var next = attempt.DeepClone().AsObject();
+            next["prId"] = "18";
+            await SlotRelease.ClaimAsync(connection, ownerKey, next, null, CancellationToken.None);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Theory]
     [InlineData(503, "hierarchy_busy", 2, true)]
     [InlineData(503, "hierarchy_busy", 20, false)]
     [InlineData(503, "other", 1, false)]
@@ -371,6 +639,79 @@ public sealed class ReviewdRunnerTests
     }
 
     [Fact]
+    public async Task Batch_reviews_the_new_head_of_a_pr_this_db_already_reviewed()
+    {
+        using var batch = new BatchFixture(0);
+        batch.PutAttempt(
+            "1",
+            new JsonObject
+            {
+                ["slot"] = 0,
+                ["stage"] = "completed-verified",
+                ["cleanupState"] = "released",
+                ["claimToken"] = "earlier-claim",
+                ["reviewedHeadSha"] = new string('9', 40),
+                ["mergeSha"] = new string('9', 40),
+                ["artifactCommit"] = new JsonObject { ["status"] = "committed", ["commit"] = new string('c', 40) },
+            }
+        );
+        await batch.ExecuteAsync();
+        batch.Runs.Should().Equal("1:fresh", "2:fresh", "3:fresh");
+        batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
+    }
+
+    [Fact]
+    public async Task Batch_waits_for_a_slot_another_pr_still_owns_instead_of_burning_the_lane()
+    {
+        using var batch = new BatchFixture(0);
+        batch.Put(
+            SlotRelease.OwnerKey("workspace", PrCommands.ParseRepo("org/project/Nova").NormalizedKey, 0),
+            new JsonObject
+            {
+                ["prId"] = "99",
+                ["state"] = "owned",
+                ["claimToken"] = "earlier-batch",
+            }
+        );
+        await batch.ExecuteAsync();
+        batch.Runs.Should().BeEmpty();
+        batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "queued");
+    }
+
+    [Fact]
+    public async Task Batch_keeps_a_lane_running_past_many_prs_another_run_already_reviewed()
+    {
+        using var batch = new BatchFixture(0);
+        batch.PutSelection(7);
+        batch.OnRunAsync = () =>
+            batch.Runs[^1] != "7:fresh"
+                ? throw new ReviewRunner.ReviewNotAdmittedException(
+                    "PR head was already reviewed by another run; skipped."
+                )
+                : Task.CompletedTask;
+        await batch.ExecuteAsync();
+        batch.Runs.Should().HaveCount(7).And.EndWith("7:fresh");
+        batch.Entries().Last()["status"]!.GetValue<string>().Should().Be("verified");
+    }
+
+    [Fact]
+    public async Task Batch_skips_a_held_pr_and_keeps_its_lane_running()
+    {
+        using var batch = new BatchFixture(0);
+        batch.OnRunAsync = () =>
+            batch.Runs[^1] == "1:fresh"
+                ? throw new InvalidOperationException("PR is not eligible for review.")
+                : Task.CompletedTask;
+        await batch.ExecuteAsync();
+        batch.Runs.Should().Equal("1:fresh", "2:fresh", "3:fresh");
+        batch
+            .Entries()
+            .Select(entry => entry["status"]!.GetValue<string>())
+            .Should()
+            .Equal("held", "verified", "verified");
+    }
+
+    [Fact]
     public async Task Batch_shutdown_drains_and_same_request_restart_skips_verified_work()
     {
         using var batch = new BatchFixture(0);
@@ -503,18 +844,142 @@ public sealed class ReviewdRunnerTests
         }
     }
 
+    [Theory]
+    [InlineData("fresh", "age-excluded", 0)]
+    [InlineData("failed-released", "age-excluded", 0)]
+    [InlineData("admitted", "verified", 3)]
+    [InlineData("prepared", "held", 0)]
+    [InlineData("review-send-pending", "held", 0)]
+    public async Task Batch_creation_age_excludes_only_fresh_admission_and_preserves_retained_owners(
+        string scenario,
+        string status,
+        int runs
+    )
+    {
+        using var batch = new BatchFixture(0) { MaxAgeHours = "72" };
+        batch.SetManifestAge(JsonValue.Create(72));
+        if (scenario != "fresh")
+            batch.PutAttempt(
+                "1",
+                new JsonObject
+                {
+                    ["slot"] = 0,
+                    ["stage"] = scenario == "admitted" ? "review-running" : scenario,
+                    ["cleanupState"] = scenario == "failed-released" ? "released" : "owned",
+                    ["claimToken"] = "token",
+                    ["reviewInputId"] = scenario == "admitted" ? "original" : null,
+                }
+            );
+        batch.Eligibility = pr =>
+        {
+            var live = BatchFixture.Live(pr);
+            live["createdAt"] = batch.Now.AddHours(pr == "1" ? -73 : -1).ToString("O");
+            return live;
+        };
+        await batch.ExecuteAsync();
+        batch.Entries().First()["status"]!.GetValue<string>().Should().Be(status);
+        batch.Runs.Should().HaveCount(runs == 0 && (scenario is "fresh" or "failed-released") ? 2 : runs);
+        if (scenario is "prepared" or "review-send-pending")
+            batch.Read("reviewd/review-attempt/azure-devops/org/project/nova/1")!["cleanupState"]!
+                .GetValue<string>()
+                .Should()
+                .Be("owned");
+        if (scenario is "fresh" or "failed-released")
+            batch.Runs.Should().NotContain("1:fresh");
+        batch.RunAges.Should().NotContain(age => age != "72");
+    }
+
+    [Fact]
+    public async Task Batch_creation_age_is_rolling_forwarded_and_bound_to_immutable_scope()
+    {
+        using var batch = new BatchFixture(0) { MaxAgeHours = "72" };
+        batch.SetManifestAge(JsonValue.Create(72));
+        var created = batch.Now.AddHours(-72).ToString("O");
+        batch.Eligibility = pr =>
+        {
+            var live = BatchFixture.Live(pr);
+            live["createdAt"] = created;
+            return live;
+        };
+        batch.OnRun = () => batch.AdvanceSeconds(1);
+        await batch.ExecuteAsync();
+        batch.Runs.Should().Equal("1:fresh");
+        batch.RunAges.Should().Equal("72");
+        batch
+            .Entries()
+            .Select(e => e["status"]!.GetValue<string>())
+            .Should()
+            .Equal("verified", "age-excluded", "age-excluded");
+        batch.Read(batch.StateKey)!["scope"]!["maxAgeHours"]!.GetValue<int>().Should().Be(72);
+        batch.MaxAgeHours = "24";
+        var changed = () => batch.ExecuteAsync();
+        await changed.Should().ThrowAsync<InvalidOperationException>().WithMessage("*exactly match*");
+        batch.Runs.Should().HaveCount(1);
+    }
+
+    [Theory]
+    [InlineData(null, "72")]
+    [InlineData("72", null)]
+    [InlineData("24", "72")]
+    [InlineData("\"72\"", "72")]
+    [InlineData("72.0", "72")]
+    [InlineData("0", "72")]
+    public async Task Batch_creation_age_requires_matching_positive_integer_manifest_policy(
+        string? manifest,
+        string? option
+    )
+    {
+        using var batch = new BatchFixture(0) { MaxAgeHours = option };
+        if (manifest is not null)
+            batch.SetManifestAge(JsonNode.Parse(manifest));
+        var run = () => batch.ExecuteAsync();
+        await run.Should().ThrowAsync<InvalidOperationException>().WithMessage("*exactly match*");
+        batch.Runs.Should().BeEmpty();
+        batch.Read(batch.StateKey).Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-1")]
+    [InlineData("+72")]
+    [InlineData("1.5")]
+    [InlineData("2147483648")]
+    public void Review_cli_creation_age_requires_a_positive_integer(string value)
+    {
+        var parse = () => CliOptions.Parse(["pr", "pick", "--repo", "org/project/Nova", "--max-age-hours", value]);
+        parse.Should().Throw<ArgumentException>().WithMessage("*positive integer*");
+        CliOptions
+            .Parse(["pr", "pick", "--repo", "org/project/Nova", "--max-age-hours", "072"])
+            .Get("max-age-hours")
+            .Should()
+            .Be("72");
+    }
+
     private sealed class BatchFixture : IDisposable
     {
         private const string Repo = "org/project/Nova";
         private readonly ReviewdConfig _config = new(new ConfigurationBuilder().Build());
         private readonly string _database = Path.Combine(Path.GetTempPath(), $"reviewd-batch-{Guid.NewGuid():N}.db");
-        private readonly string _selection;
+        private string _selection;
         private long _seconds = 1_700_000_000;
         public CancellationTokenSource Cancellation { get; private set; } = new();
         public List<string> Runs { get; } = [];
         public int LiveReads { get; private set; }
         public CancellationToken SchedulingToken { get; private set; }
         public string? ReasoningEffort { get; set; }
+        public string? MaxAgeHours { get; set; }
+        public List<string?> RunAges { get; } = [];
+        public DateTimeOffset Now => DateTimeOffset.FromUnixTimeSeconds(_seconds);
+
+        public void AdvanceSeconds(int seconds) => _seconds += seconds;
+
+        public void SetManifestAge(JsonNode? value)
+        {
+            var selection = JsonNode.Parse(_selection)!.AsObject();
+            selection["maxAgeHours"] = value;
+            _selection = selection.ToJsonString();
+        }
+
         public List<string?> RunEfforts { get; } = [];
         public Func<string, JsonObject> Eligibility { get; set; } = Live;
         public Action? OnRun { get; set; }
@@ -573,6 +1038,7 @@ public sealed class ReviewdRunnerTests
                     "test",
                     "--execute",
                     .. (ReasoningEffort is null ? [] : new string[] { "--reasoning-effort", ReasoningEffort }),
+                    .. (MaxAgeHours is null ? [] : new string[] { "--max-age-hours", MaxAgeHours }),
                 ]),
                 _config,
                 _selection,
@@ -589,6 +1055,7 @@ public sealed class ReviewdRunnerTests
                     {
                         Runs.Add(pr + (options.Has("resume") ? ":resume" : ":fresh"));
                         RunEfforts.Add(options.Get("reasoning-effort"));
+                        RunAges.Add(options.Get("max-age-hours"));
                     }
                     await Task.Yield();
                     OnRun?.Invoke();
@@ -633,6 +1100,25 @@ public sealed class ReviewdRunnerTests
             Cancellation = new();
             OnRun = null;
             Eligibility = Live;
+        }
+
+        public void PutSelection(int count)
+        {
+            var selection = JsonNode.Parse(_selection)!.AsObject();
+            selection["repositories"]![Repo] = new JsonArray([
+                .. Enumerable
+                    .Range(1, count)
+                    .Select(pr =>
+                        (JsonNode)
+                            new JsonObject
+                            {
+                                ["repository"] = Repo,
+                                ["prId"] = pr.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                                ["headSha"] = new string('a', 40),
+                            }
+                    ),
+            ]);
+            _selection = selection.ToJsonString();
         }
 
         public void PutAttempt(string pr, JsonNode value) =>
@@ -940,11 +1426,297 @@ public sealed class ReviewdRunnerTests
     }
 
     [Theory]
+    [InlineData("old")]
+    [InlineData("setup-expired")]
+    [InlineData("recent")]
+    [InlineData("future")]
+    [InlineData("missing")]
+    [InlineData("no-offset")]
+    [InlineData("wrong-head")]
+    public async Task Runner_creation_age_checks_live_before_claim_and_initial_send_without_releasing_prepared_owner(
+        string scenario
+    )
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-age-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var now = DateTimeOffset.Parse("2026-10-07T22:00:00Z");
+        var clock = now;
+        var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/17";
+        var ownerKey = SlotRelease.OwnerKey("workspace", repo.NormalizedKey, 2);
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .On(
+                request =>
+                    request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
+                _ => Json("""{"threadId":"thread"}""")
+            )
+            // No prior conversation exists for this PR: the durable host-title lookup finds none.
+            .OnJson(HttpMethod.Get, "/api/conversations?", "[]")
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .OnJson(HttpMethod.Post, "/messages", """{"inputId":"original","idempotencyKeyHonored":true}""")
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        var reads = 0;
+        var phases = new List<string>();
+        Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token)
+        {
+            phases.Add(phase);
+            if (phase == "eligibility")
+            {
+                reads++;
+                var created = scenario switch
+                {
+                    "old" => now.AddHours(-73).ToString("O"),
+                    "future" => now.AddSeconds(1).ToString("O"),
+                    "missing" => null,
+                    "no-offset" => "2026-10-07T21:00:00",
+                    _ => now.AddHours(-72).ToString("O"),
+                };
+                return Task.FromResult(
+                    new JsonObject
+                    {
+                        ["prId"] = "17",
+                        ["status"] = "active",
+                        ["isDraft"] = false,
+                        ["headSha"] = new string(scenario == "wrong-head" ? 'f' : 'a', 40),
+                        ["createdAt"] = created,
+                    }
+                );
+            }
+            if (phase == "prepare")
+            {
+                if (scenario == "setup-expired")
+                    clock = now.AddSeconds(1);
+                return Task.FromResult(
+                    new JsonObject
+                    {
+                        ["mergeSha"] = new string('b', 40),
+                        ["contextPath"] = "context",
+                        ["reviewDirectory"] = "reviews",
+                        ["baselineComments"] = new JsonArray(),
+                    }
+                );
+            }
+            return Task.FromResult(new JsonObject());
+        }
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            var store = new SqliteKvStore(connection);
+            await store.SetAsync(
+                $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                new JsonObject
+                {
+                    ["17"] = new JsonObject
+                    {
+                        ["Lifecycle"] = "Open",
+                        ["IsDraft"] = false,
+                        ["HeadSha"] = new string('a', 40),
+                    },
+                }
+            );
+            var options = CliOptions.Parse([
+                "review",
+                "run",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "test",
+                "--max-age-hours",
+                "72",
+                "--execute",
+            ]);
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    options,
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ => Task.CompletedTask,
+                    () => clock
+                );
+            await run.Should().ThrowAsync<InvalidOperationException>();
+            var messages = handler.Requests.Count(r =>
+                r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal)
+            );
+            messages.Should().Be(scenario == "recent" ? 1 : 0);
+            phases.Should().NotContain("cleanup");
+            var owner = await store.GetAsync<JsonObject>(ownerKey);
+            var attempt = await store.GetAsync<JsonObject>(attemptKey);
+            if (scenario is "recent" or "setup-expired")
+            {
+                reads.Should().Be(2);
+                owner!["state"]!.GetValue<string>().Should().Be("owned");
+                if (scenario == "setup-expired")
+                    attempt!["reviewIdempotencyKey"].Should().BeNull();
+            }
+            else
+            {
+                reads.Should().Be(1);
+                owner.Should().BeNull();
+                attempt.Should().BeNull();
+                phases.Should().Equal("eligibility");
+            }
+            (await store.GetAsync<JsonObject>($"reviewd/review-run/{repo.NormalizedKey}/17")).Should().BeNull();
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, "99999999")]
+    [InlineData(true, "99999999")]
+    [InlineData(false, "aaaaaaaa")]
+    public async Task Runner_admits_pr_whose_prior_conversation_is_idle_and_refuses_one_still_running(
+        bool running,
+        string priorHead
+    )
+    {
+        // The prior review's receipt lives in whichever db ran it; this db only sees the host conversation.
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-prior-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/api/conversations?",
+                $$"""[{"threadId":"prior","title":"Nova-17-{{priorHead}}","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1}]"""
+            )
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .OnJson(HttpMethod.Post, "/messages", """{"inputId":"original","idempotencyKeyHonored":true}""")
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
+            .OnJson(
+                HttpMethod.Get,
+                "/run-state",
+                running
+                    ? """{"isInProgress":true,"currentRunId":"run"}"""
+                    : """{"isInProgress":false,"currentRunId":null}"""
+            )
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        static Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token) =>
+            Task.FromResult(
+                phase switch
+                {
+                    "eligibility" => new JsonObject
+                    {
+                        ["prId"] = "17",
+                        ["status"] = "active",
+                        ["isDraft"] = false,
+                        ["headSha"] = new string('a', 40),
+                    },
+                    "prepare" => new JsonObject
+                    {
+                        ["mergeSha"] = new string('b', 40),
+                        ["contextPath"] = "context",
+                        ["reviewDirectory"] = "reviews",
+                        ["baselineComments"] = new JsonArray(),
+                    },
+                    _ => [],
+                }
+            );
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await new SqliteKvStore(connection).SetAsync(
+                $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                new JsonObject
+                {
+                    ["17"] = new JsonObject
+                    {
+                        ["Lifecycle"] = "Open",
+                        ["IsDraft"] = false,
+                        ["HeadSha"] = new string('a', 40),
+                    },
+                }
+            );
+            var options = CliOptions.Parse([
+                "review",
+                "run",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "test",
+                "--execute",
+            ]);
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    options,
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ => Task.CompletedTask,
+                    () => DateTimeOffset.UtcNow
+                );
+            // A conversation titled for the live head means another db already reviewed this revision.
+            var sameHead = priorHead == "aaaaaaaa";
+            if (sameHead)
+                await run.Should()
+                    .ThrowAsync<InvalidOperationException>()
+                    .WithMessage("PR head was already reviewed by another run; skipped.");
+            else if (running)
+                await run.Should()
+                    .ThrowAsync<InvalidOperationException>()
+                    .WithMessage("PR is not eligible for review.");
+            else
+                (await run.Should().ThrowAsync<InvalidOperationException>())
+                    .Which.Message.Should()
+                    .NotBe("PR is not eligible for review.");
+            handler
+                .Requests.Count(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                .Should()
+                .Be(running || sameHead ? 0 : 1);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("xhigh")]
-    public async Task Runner_records_and_provisions_optional_effort_and_refuses_unverified_existing_thread(
-        string? effort
-    )
+    public async Task Runner_records_and_provisions_optional_effort_and_guards_resume_effort_mismatch(string? effort)
     {
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-effort-{Guid.NewGuid():N}.db");
         var repo = PrCommands.ParseRepo("org/project/Nova");
@@ -960,6 +1732,8 @@ public sealed class ReviewdRunnerTests
                     request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
                 _ => Json("""{"threadId":"thread","reasoningEffortAccepted":true}""")
             )
+            // No prior conversation exists for this PR: the durable host-title lookup finds none.
+            .OnJson(HttpMethod.Get, "/api/conversations?", "[]")
             .OnJson(HttpMethod.Put, "/metadata", "{}")
             .OnJson(HttpMethod.Post, "/messages", """{"inputId":"original","idempotencyKeyHonored":true}""")
             .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
@@ -1059,12 +1833,8 @@ public sealed class ReviewdRunnerTests
                     CancellationToken.None
                 );
             await mismatch.Should().ThrowAsync<InvalidOperationException>().WithMessage("*effort differs*");
-            if (effort is not null)
-            {
-                var existing = () =>
-                    ReviewRunner.RunAsync(Options(effort, true), config, client, Sandbox, CancellationToken.None);
-                await existing.Should().ThrowAsync<InvalidOperationException>().WithMessage("*cannot be verified*");
-            }
+            // The former "effort cannot be verified by the binding API" refusal is gone: a re-review now
+            // reuses the existing conversation (switching the model if needed) instead of refusing.
             handler.Requests.Should().HaveCount(requestCount);
             sandboxCalls.Should().Be(phaseCount);
         }
@@ -1390,6 +2160,91 @@ public sealed class ReviewdRunnerTests
             };
             return Task.FromResult(JsonNode.Parse(json)!.AsObject());
         }
+    }
+
+    [Fact]
+    public async Task Find_conversation_by_title_prefix_matches_repo_pr_boundary_and_picks_newest()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/api/conversations?",
+            """
+            [
+              {"threadId":"old","title":"Nova-17-aaaaaaaa","workspace":"ws","mode":"m","provider":"p1","lastUpdated":100},
+              {"threadId":"new","title":"Nova-17-bbbbbbbb","workspace":"ws","mode":"m","provider":"p2","lastUpdated":200},
+              {"threadId":"other-pr","title":"Nova-170-cccccccc","workspace":"ws","mode":"m","provider":"p1","lastUpdated":300},
+              {"threadId":"other-ws","title":"Nova-17-dddddddd","workspace":"ws2","mode":"m","provider":"p1","lastUpdated":400}
+            ]
+            """
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+
+        var match = await client.FindConversationByTitlePrefixAsync("Nova-17-", "ws", "m", CancellationToken.None);
+        match.Should().NotBeNull();
+        // Newest lastUpdated among the "Nova-17-" rows in the matching workspace/mode; the trailing dash
+        // keeps pr 17 from matching pr 170, and a different workspace is excluded.
+        match!.ThreadId.Should().Be("new");
+        match.Provider.Should().Be("p2");
+
+        (await client.FindConversationByTitlePrefixAsync("Nova-99-", "ws", "m", CancellationToken.None))
+            .Should()
+            .BeNull();
+    }
+
+    [Fact]
+    public async Task Ensure_reusable_switches_provider_when_it_differs_and_never_refuses()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/api/conversations?",
+                """[{"threadId":"t","title":"Nova-17-aaaaaaaa","workspace":"ws","mode":"m","provider":"old-model","lastUpdated":1}]"""
+            )
+            .OnJson(HttpMethod.Post, "/provider", "{}");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+
+        await client.EnsureConversationReusableAsync("t", "ws", "new-model", "m", CancellationToken.None);
+
+        var switchReq = handler
+            .Requests.Should()
+            .ContainSingle(r =>
+                r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/provider", StringComparison.Ordinal)
+            )
+            .Subject;
+        JsonNode.Parse(switchReq.Body!)!["providerId"]!.GetValue<string>().Should().Be("new-model");
+    }
+
+    [Fact]
+    public async Task Ensure_reusable_does_not_switch_when_provider_already_matches()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/api/conversations?",
+            """[{"threadId":"t","title":"Nova-17-aaaaaaaa","workspace":"ws","mode":"m","provider":"same","lastUpdated":1}]"""
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+
+        await client.EnsureConversationReusableAsync("t", "ws", "same", "m", CancellationToken.None);
+
+        handler.Requests.Should().NotContain(r => r.Uri.AbsolutePath.EndsWith("/provider", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Ensure_reusable_throws_on_workspace_or_mode_mismatch()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/api/conversations?",
+            """[{"threadId":"t","title":"Nova-17-aaaaaaaa","workspace":"ws","mode":"m","provider":"p","lastUpdated":1}]"""
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+
+        var act = () => client.EnsureConversationReusableAsync("t", "other-ws", "p", "m", CancellationToken.None);
+        await act.Should().ThrowAsync<ReviewHostContractException>().WithMessage("*workspace/mode differs*");
     }
 
     private static HttpResponseMessage Json(string value) =>

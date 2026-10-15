@@ -449,6 +449,51 @@ internal sealed class LmStreamingS2SClient
     }
 
     /// <summary>
+    /// Freezes (<paramref name="frozen"/> true) or unfreezes a conversation we own via
+    /// <c>POST api/conversations/{threadId}/freeze|unfreeze</c>. A frozen conversation finishes its in-flight
+    /// turn (capturing tool results) then stops advancing, so a held review slot can be reclaimed safely.
+    /// <para>
+    /// A host that does not know the thread (404) answers <see cref="S2SFreezeResult.Present"/> false — the
+    /// conversation is not running there, which for a reclaim is the same end state as frozen. An agent the
+    /// host refuses to freeze (409, e.g. a provider-owned session) is reported through
+    /// <see cref="S2SFreezeResult.Refusal"/> rather than thrown, so the caller decides.
+    /// </para>
+    /// </summary>
+    public async Task<S2SFreezeResult> SetFrozenAsync(string threadId, bool frozen, CancellationToken ct)
+    {
+        using var response = await ExecuteAsync(
+            HttpMethod.Post,
+            $"api/conversations/{Uri.EscapeDataString(threadId)}/{(frozen ? "freeze" : "unfreeze")}",
+            body: null,
+            ct
+        );
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return new S2SFreezeResult(Present: false, Frozen: false, Refusal: null);
+        }
+
+        if (response.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.Forbidden)
+        {
+            var refusal = await response.Content.ReadAsStringAsync(ct);
+            return new S2SFreezeResult(
+                Present: true,
+                Frozen: false,
+                // A refusal must be reported, never thrown: the body may not be the expected { error } shape
+                // (e.g. a plain text 403 page), so parse defensively and fall back to a generic reason.
+                Refusal: TryReadStringProperty(refusal, "error") ?? "refused"
+            );
+        }
+
+        _ = response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadAsStringAsync(ct);
+        using var document = JsonDocument.Parse(body);
+        var isFrozen =
+            document.RootElement.TryGetProperty("frozen", out var value) && value.ValueKind is JsonValueKind.True;
+        return new S2SFreezeResult(Present: true, Frozen: isFrozen, Refusal: null);
+    }
+
+    /// <summary>
     /// Queues a user message onto the thread and returns the input id to poll status by.
     /// <para>
     /// <paramref name="suppressSubAgentSpawning"/> asks the host to run THIS turn with no ability to start
@@ -574,6 +619,155 @@ internal sealed class LmStreamingS2SClient
             }
         }
         throw new ReviewHostContractException("Bound conversation metadata was not found; no prompt sent.");
+    }
+
+    /// <summary>
+    /// Finds the most recently-updated hosted conversation whose title starts with
+    /// <paramref name="titlePrefix"/> and whose workspace/mode match, or null if none exists. The
+    /// review client stamps each PR's conversation title as <c>{repo}-{pr}-{sha}</c>
+    /// (<see cref="UpdateMetadataAsync"/>), so the host's own conversation list is the durable,
+    /// cross-run PR→conversation mapping — no separate binding store is required. Provider is NOT
+    /// matched here: a re-review may run a different model, and the caller reconciles it via
+    /// <see cref="EnsureConversationReusableAsync"/>.
+    /// </summary>
+    public async Task<S2SConversationMatch?> FindConversationByTitlePrefixAsync(
+        string titlePrefix,
+        string workspaceId,
+        string modeId,
+        CancellationToken ct
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(titlePrefix);
+        S2SConversationMatch? best = null;
+        var bestUpdated = long.MinValue;
+        for (var offset = 0; offset < 10000; offset += 100)
+        {
+            var body = await SendReadAsync(
+                HttpMethod.Get,
+                $"api/conversations?limit=100&offset={offset}&sort=created",
+                body: null,
+                ct
+            );
+            using var document = JsonDocument.Parse(body);
+            var rows = document.RootElement;
+            if (rows.ValueKind != JsonValueKind.Array)
+            {
+                throw new ReviewHostContractException("Conversation metadata listing is invalid.");
+            }
+            foreach (var row in rows.EnumerateArray())
+            {
+                var title = row.TryGetProperty("title", out var t) ? t.GetString() : null;
+                if (title is null || !title.StartsWith(titlePrefix, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                if (
+                    (row.TryGetProperty("workspace", out var ws) ? ws.GetString() : null) != workspaceId
+                    || (row.TryGetProperty("mode", out var md) ? md.GetString() : null) != modeId
+                )
+                {
+                    continue;
+                }
+                var updated =
+                    row.TryGetProperty("lastUpdated", out var lu) && lu.ValueKind == JsonValueKind.Number
+                        ? lu.GetInt64()
+                        : 0;
+                if (best is null || updated >= bestUpdated)
+                {
+                    var threadId = row.GetProperty("threadId").GetString();
+                    if (threadId is not null)
+                    {
+                        best = new S2SConversationMatch(
+                            threadId,
+                            row.TryGetProperty("provider", out var pv) ? pv.GetString() : null
+                        );
+                        bestUpdated = updated;
+                    }
+                }
+            }
+            if (rows.GetArrayLength() < 100)
+            {
+                break;
+            }
+        }
+        return best;
+    }
+
+    /// <summary>
+    /// Switches an idle conversation's provider (model) to <paramref name="providerId"/> via
+    /// <c>POST api/conversations/{threadId}/provider</c>. The host allows this only while no run is
+    /// streaming (our re-review case — the conversation is idle between reviews) and preserves the
+    /// thread's workspace and mode.
+    /// </summary>
+    public async Task SwitchProviderAsync(string threadId, string providerId, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerId);
+        await SendAsync(
+            HttpMethod.Post,
+            $"api/conversations/{Uri.EscapeDataString(threadId)}/provider",
+            new { ProviderId = providerId },
+            ct
+        );
+    }
+
+    /// <summary>
+    /// Reuse-path counterpart to <see cref="EnsureConversationBindingAsync"/>: validates that the
+    /// conversation's bound-for-life workspace and mode match, and if its provider differs from
+    /// <paramref name="providerId"/>, switches it to the current model instead of refusing. Reasoning
+    /// effort is a provision-time property with no switch endpoint, so a reused conversation simply
+    /// continues in its original effort. Never throws on a provider difference.
+    /// </summary>
+    public async Task EnsureConversationReusableAsync(
+        string threadId,
+        string workspaceId,
+        string providerId,
+        string modeId,
+        CancellationToken ct
+    )
+    {
+        for (var offset = 0; offset < 10000; offset += 100)
+        {
+            var body = await SendReadAsync(
+                HttpMethod.Get,
+                $"api/conversations?limit=100&offset={offset}&sort=created",
+                body: null,
+                ct
+            );
+            using var document = JsonDocument.Parse(body);
+            var rows = document.RootElement;
+            if (rows.ValueKind != JsonValueKind.Array)
+            {
+                throw new ReviewHostContractException("Conversation metadata listing is invalid.");
+            }
+            foreach (var row in rows.EnumerateArray())
+            {
+                if (row.GetProperty("threadId").GetString() != threadId)
+                {
+                    continue;
+                }
+                if (
+                    row.GetProperty("workspace").GetString() != workspaceId
+                    || row.GetProperty("mode").GetString() != modeId
+                )
+                {
+                    throw new ReviewHostContractException(
+                        "Reused conversation workspace/mode differs; no prompt sent."
+                    );
+                }
+                var currentProvider = row.TryGetProperty("provider", out var pv) ? pv.GetString() : null;
+                if (!string.Equals(currentProvider, providerId, StringComparison.Ordinal))
+                {
+                    await SwitchProviderAsync(threadId, providerId, ct);
+                }
+                return;
+            }
+            if (rows.GetArrayLength() < 100)
+            {
+                break;
+            }
+        }
+        throw new ReviewHostContractException("Reused conversation metadata was not found; no prompt sent.");
     }
 
     public async Task<S2SRunState> GetRunStateAsync(string threadId, CancellationToken ct)
@@ -828,6 +1022,32 @@ internal sealed class LmStreamingS2SClient
         }
 
         throw new InvalidOperationException($"Server response did not contain a '{propertyName}' string. Body: {body}");
+    }
+
+    /// <summary>
+    /// Like <see cref="ReadStringProperty"/> but returns null instead of throwing when the body is not JSON or
+    /// the property is missing. Used for refusal bodies, which must be surfaced, not thrown.
+    /// </summary>
+    private static string? TryReadStringProperty(string body, string propertyName)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String)
+            {
+                var text = value.GetString();
+                if (!string.IsNullOrEmpty(text))
+                {
+                    return text;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // Non-JSON refusal body (e.g. a plain 403/409 page); caller falls back to a generic reason.
+        }
+
+        return null;
     }
 
     private static bool ReadBoolProperty(string body, string propertyName)
@@ -1096,6 +1316,14 @@ internal sealed record S2SWorkspace(string Id, string Name, string DirectoryRelP
 internal sealed record S2SStatusResult(string Status, string? RunId, string? ResponseText);
 
 internal sealed record S2SRunState(bool IsInProgress, string? CurrentRunId);
+
+/// <summary>A hosted conversation located by title prefix: its thread id and currently-bound provider.</summary>
+internal sealed record S2SConversationMatch(string ThreadId, string? Provider);
+
+/// <summary>Outcome of a freeze/unfreeze call. <see cref="Present"/> is false when the host does not know the
+/// thread (not running there); <see cref="Refusal"/> is set when the host refused (e.g. a provider-owned
+/// session) instead of applying it.</summary>
+internal sealed record S2SFreezeResult(bool Present, bool Frozen, string? Refusal);
 
 /// <summary>
 /// The host's answer to a manual compaction request: an accepted request's id and status (<c>queued</c> or
