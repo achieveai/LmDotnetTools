@@ -264,6 +264,105 @@ public sealed class ReviewBranchManagerRealGitTests : LoggingTestBase
         Directory.Exists(root).Should().BeFalse();
     }
 
+    [Fact]
+    public async Task Developer_event_positive_import_preserves_identical_blob_without_shared_listing_changes()
+    {
+        using var fixture = await RealGitFixture.CreateAsync();
+        var store = await fixture.CloneAsync("developer-store");
+        RealGitFixture.Write(store, "seed.txt", "seed\n");
+        await fixture.GitAsync(store, default, "add", "seed.txt");
+        await fixture.GitAsync(store, default, "commit", "-m", "seed");
+        await fixture.GitAsync(store, default, "push", "origin", "main");
+        var repo = new CodeReviewDaemon.Sample.Persistence.Models.RepoIdentity
+        {
+            Provider = "github",
+            OrgOrOwner = "example",
+            RepoName = "widgets",
+        };
+        const string path =
+            "KnowledgeBase/developers/jane-0123456789ab/event-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.md";
+        var rebuilds = 0;
+        var manager = new ReviewBranchManager(
+            new GitRunner(fixture.Runner),
+            new HostFileSystem(),
+            LoggerFactory.CreateLogger<ReviewBranchManager>(),
+            (_, _) =>
+            {
+                rebuilds++;
+                return Task.FromResult(false);
+            }
+        );
+        await manager.CheckoutReviewBranchAsync(store, repo, 7, "main", default);
+        var retained = await manager.CommitNotesAsync(
+            store,
+            new ReviewBotPublishRequest(repo, 7, new string('a', 40), "main", [new(path, "Per-event narrative\n")]),
+            default,
+            [path],
+            allowRebase: false
+        );
+        await manager
+            .Invoking(value =>
+                value.IntegrateContentOnlyAsync(
+                    store,
+                    retained.ReviewBranch,
+                    "main",
+                    retained.PushedSha!,
+                    [path.ToUpperInvariant()],
+                    default,
+                    developerLearningPath: path
+                )
+            )
+            .Should()
+            .ThrowAsync<ArgumentException>();
+        var integrated = await manager.IntegrateContentOnlyAsync(
+            store,
+            retained.ReviewBranch,
+            "main",
+            retained.PushedSha!,
+            [path],
+            default,
+            developerLearningPath: path
+        );
+        rebuilds.Should().Be(0);
+        (await fixture.GitAsync(store, default, "show", "origin/main:" + path))
+            .TrimEnd('\r', '\n')
+            .Should()
+            .Be("Per-event narrative");
+        await manager.IntegrateContentOnlyAsync(
+            store,
+            retained.ReviewBranch,
+            "main",
+            retained.PushedSha!,
+            [path],
+            default,
+            developerLearningPath: path
+        );
+        (await fixture.GitAsync(store, default, "rev-parse", "HEAD")).Trim().Should().Be(integrated);
+        RealGitFixture.Write(store, path, "Conflicting narrative\n");
+        await fixture.GitAsync(store, default, "add", path);
+        await fixture.GitAsync(store, default, "commit", "-m", "conflicting event");
+        await fixture.GitAsync(store, default, "push", "origin", "main");
+        await manager
+            .Invoking(value =>
+                value.IntegrateContentOnlyAsync(
+                    store,
+                    retained.ReviewBranch,
+                    "main",
+                    retained.PushedSha!,
+                    [path],
+                    default,
+                    developerLearningPath: path
+                )
+            )
+            .Should()
+            .ThrowAsync<InvalidOperationException>()
+            .WithMessage("*conflicts*");
+        (await fixture.GitAsync(store, default, "show", "origin/main:" + path))
+            .TrimEnd('\r', '\n')
+            .Should()
+            .Be("Conflicting narrative");
+    }
+
     private ReviewBranchManager CreateManager(RealGitFixture fixture, string repoRoot, bool wireRebuild)
     {
         var git = new GitRunner(fixture.Runner);

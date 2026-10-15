@@ -57,6 +57,115 @@ public sealed class S2SReviewSubAgentCompletionSourceTests
         handler.Requests.Should().ContainSingle();
     }
 
+    [Theory]
+    [InlineData("false", "false", true)]
+    [InlineData("true", "false", false)]
+    [InlineData("false", "true", false)]
+    public async Task GetSnapshotAsync_WithParentActivity_ReadsRunStateBeforeAndAfterRoster(
+        string before,
+        string after,
+        bool expectedIdle
+    )
+    {
+        var stateReads = 0;
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                request => request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath.EndsWith("/run-state"),
+                _ =>
+                {
+                    var active = Interlocked.Increment(ref stateReads) == 1 ? before : after;
+                    return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                    {
+                        Content = new StringContent($"{{\"threadId\":\"thread-root\",\"isInProgress\":{active}}}"),
+                    };
+                }
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "api/conversations/thread-root/subagents?recursive=true",
+                "{\"schemaVersion\":1,\"nodes\":[]}"
+            );
+        using var http = NewHttp(handler);
+        var source = new S2SReviewSubAgentCompletionSource(
+            new LmStreamingS2SClient(http, "s", "id", "key"),
+            includeParentActivity: true
+        );
+
+        var snapshot = await source.GetSnapshotAsync(TestRun(), "thread-root", CancellationToken.None);
+
+        snapshot.Nodes.Should().BeEmpty();
+        snapshot.ParentIsIdle.Should().Be(expectedIdle);
+        handler
+            .Requests.Select(request => request.Uri.PathAndQuery)
+            .Should()
+            .Equal(
+                "/api/conversations/thread-root/run-state",
+                "/api/conversations/thread-root/subagents?recursive=true",
+                "/api/conversations/thread-root/run-state"
+            );
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"threadId\":\"other-thread\",\"isInProgress\":false}")]
+    [InlineData("{\"threadId\":\"thread-root\",\"isInProgress\":\"false\"}")]
+    [InlineData("{\"threadId\":\"thread-root\",\"isInProgress\":null}")]
+    [InlineData("{\"threadId\":\"thread-root\"}")]
+    public async Task GetSnapshotAsync_WithParentActivity_RejectsMalformedInitialRunState(string invalidState)
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "api/conversations/thread-root/run-state", invalidState)
+            .OnJson(
+                HttpMethod.Get,
+                "api/conversations/thread-root/subagents?recursive=true",
+                "{\"schemaVersion\":1,\"nodes\":[]}"
+            );
+        using var http = NewHttp(handler);
+        var source = new S2SReviewSubAgentCompletionSource(
+            new LmStreamingS2SClient(http, "s", "id", "key"),
+            includeParentActivity: true
+        );
+
+        var act = () => source.GetSnapshotAsync(TestRun(), "thread-root", CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        handler.CountRequests("subagents").Should().Be(0, "an unverified parent cannot produce a safe roster");
+    }
+
+    [Fact]
+    public async Task GetSnapshotAsync_WithParentActivity_RejectsMalformedSecondRunState()
+    {
+        var calls = 0;
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                request => request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath.EndsWith("/run-state"),
+                _ => new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        Interlocked.Increment(ref calls) == 1
+                            ? "{\"threadId\":\"thread-root\",\"isInProgress\":false}"
+                            : "{\"threadId\":\"other-thread\",\"isInProgress\":false}"
+                    ),
+                }
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "api/conversations/thread-root/subagents?recursive=true",
+                "{\"schemaVersion\":1,\"nodes\":[]}"
+            );
+        using var http = NewHttp(handler);
+        var source = new S2SReviewSubAgentCompletionSource(
+            new LmStreamingS2SClient(http, "s", "id", "key"),
+            includeParentActivity: true
+        );
+
+        var act = () => source.GetSnapshotAsync(TestRun(), "thread-root", CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        calls.Should().Be(2);
+        handler.CountRequests("subagents").Should().Be(1);
+    }
+
     [Fact]
     public async Task GetSnapshotAsync_PropagatesTheClientsFailClosedException_WithoutSwallowingIt()
     {

@@ -70,6 +70,8 @@ public sealed class WorkspaceTranscriptMirrorAttachCompositionTests
         {
             // Avoids the Vite dev-server auto-spawn (matches every other in-process host test here).
             builder.UseEnvironment("Production");
+            builder.UseSetting("Identity:DatabasePath", Path.Combine(_conversationsPath, "identity.db"));
+            builder.UseSetting("LmStreaming:NotifyWaitDbPath", Path.Combine(_conversationsPath, "notify-waits.db"));
 
             builder.ConfigureTestServices(services =>
             {

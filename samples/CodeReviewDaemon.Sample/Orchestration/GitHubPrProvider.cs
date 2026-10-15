@@ -258,13 +258,26 @@ internal sealed class GitHubPrProvider : IPrProvider
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
         var pr = document.RootElement;
         var updatedAt = pr.GetProperty("updated_at").GetString() ?? string.Empty;
+        var lifecycle = MapLifecycle(pr);
+        if (
+            lifecycle == PrLifecycleState.Closed
+            && string.Equals(StringOf(pr, "state"), "closed", StringComparison.OrdinalIgnoreCase)
+            && pr.TryGetProperty("merged", out var merged)
+            && merged.ValueKind == JsonValueKind.False
+        )
+            lifecycle = PrLifecycleState.Abandoned;
         return new PullRequestDescriptor
         {
             PrId = pr.GetProperty("number").GetRawText(),
             HeadSha = pr.GetProperty("head").GetProperty("sha").GetString() ?? string.Empty,
             BaseSha = pr.GetProperty("base").GetProperty("sha").GetString() ?? string.Empty,
             TriggerWatermark = updatedAt,
-            LifecycleState = MapLifecycle(pr),
+            LifecycleState = lifecycle,
+            TargetRefName = StringOf(pr.GetProperty("base"), "ref") is { Length: > 0 } targetRef
+                ? $"refs/heads/{targetRef}"
+                : null,
+            MergeCommitSha = MapLifecycle(pr) == PrLifecycleState.Merged ? StringOf(pr, "merge_commit_sha") : null,
+            ClosedAt = ParseTimestamp(pr, "closed_at"),
             CreatedAt = ParseTimestamp(pr, "created_at"),
             UpdatedAt = ParseTimestamp(pr, "updated_at"),
             Author = LoginOf(pr, "user"),

@@ -163,6 +163,55 @@ public sealed class MigrationTests
     }
 
     [Fact]
+    public void Round_owner_migration_preserves_legacy_evidence_and_allows_independent_same_event_owners()
+    {
+        using var db = new TempSqliteDatabase();
+        using var connection = SqliteConnectionFactory.Open(db.ConnectionString);
+        MigrationRunner.Migrate(connection, [.. SchemaMigrations.All.Where(m => m.Version <= 13)]);
+        Execute(
+            connection,
+            """
+            INSERT INTO repo (provider, normalized_key, display_name, org_or_owner, repo_name, created_at)
+            VALUES ('github', 'k', 'd', 'owner', 'repo', 'now');
+            INSERT INTO review_run (repo_id, pr_id, head_sha, base_sha, trigger_watermark,
+                review_kind, variant_id, mode, stage, workflow_status, pr_lifecycle_state, created_at, updated_at)
+            VALUES (1, '7', 'head', 'base-a', 'wm', 'full', 'primary', 'collect-only',
+                'Posted', 'Completed', 'Open', 'now', 'now'),
+                   (1, '7', 'head', 'base-b', 'wm', 'full', 'primary', 'collect-only',
+                'Discovered', 'Pending', 'Open', 'now', 'now');
+            INSERT INTO workflow_round (repo_id, pr_id, head_sha, kind, event_key, frozen_input_json,
+                workflow_instance_id, outcome, completed_at, created_at, updated_at)
+            VALUES (1, '7', 'head', 'Discussion', 'window', '{"old":true}',
+                'review-round-1', 'Unknown', NULL, 'created', 'updated');
+            """
+        );
+
+        MigrationRunner.Migrate(connection);
+        MigrationRunner.Migrate(connection);
+        ReadScalar(connection, "SELECT review_run_id IS NULL FROM workflow_round WHERE id = 1;").Should().Be("1");
+        ReadScalar(connection, "SELECT frozen_input_json FROM workflow_round WHERE id = 1;")
+            .Should()
+            .Be("{\"old\":true}");
+        ReadScalar(
+                connection,
+                "SELECT workflow_instance_id || ':' || outcome || ':' || created_at || ':' || updated_at FROM workflow_round WHERE id = 1;"
+            )
+            .Should()
+            .Be("review-round-1:Unknown:created:updated");
+        Execute(
+            connection,
+            """
+            INSERT INTO workflow_round (review_run_id, repo_id, pr_id, head_sha, kind, event_key,
+                frozen_input_json, outcome, created_at, updated_at)
+            VALUES (1, 1, '7', 'head', 'Discussion', 'window', '{"base":"a"}', 'Pending', 'now', 'now'),
+                   (2, 1, '7', 'head', 'Discussion', 'window', '{"base":"b"}', 'Pending', 'now', 'now');
+            """
+        );
+        ReadScalar(connection, "SELECT COUNT(*) FROM workflow_round;").Should().Be("3");
+        ReadScalar(connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;").Should().Be("0");
+    }
+
+    [Fact]
     public void Re_running_migrate_on_a_current_database_is_a_noop()
     {
         using var db = new TempSqliteDatabase();

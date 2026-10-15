@@ -49,6 +49,8 @@ public sealed class SubAgentScanCoverageCacheCompositionTests
         {
             // Avoids the Vite dev-server auto-spawn (matches every other in-process host test here).
             builder.UseEnvironment("Production");
+            builder.UseSetting("Identity:DatabasePath", Path.Combine(_conversationsPath, "identity.db"));
+            builder.UseSetting("LmStreaming:NotifyWaitDbPath", Path.Combine(_conversationsPath, "notify-waits.db"));
 
             // The one setting under test. ConfiguredCapacity is far below
             // SubAgentScanCoverageCache.DefaultCapacity, so if Program.cs's singleton factory ever

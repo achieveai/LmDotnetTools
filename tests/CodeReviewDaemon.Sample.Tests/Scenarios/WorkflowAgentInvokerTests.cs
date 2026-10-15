@@ -263,6 +263,103 @@ public sealed class WorkflowAgentInvokerTests : IDisposable
         result.Status.Should().Be(unsettled ? WorkflowInvocationStatus.Unknown : WorkflowInvocationStatus.Failed);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Empty_structured_stage_waits_then_finalizes_once_without_actions(bool emptyFinalization)
+    {
+        var posts = 0;
+        var intentSaved = false;
+        var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var inactive = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handler = new FakeHttpMessageHandler()
+            .OnCurrentReviewHostCapabilities()
+            .On(
+                request => request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath.EndsWith("/messages"),
+                _ =>
+                {
+                    if (++posts == 2)
+                        inactive.Task.IsCompleted.Should().BeTrue();
+                    return new(System.Net.HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(
+                            JsonSerializer.Serialize(
+                                new
+                                {
+                                    inputId = "input-" + posts,
+                                    idempotencyKeyHonored = true,
+                                    spawningSuppressed = true,
+                                    actionToolsSuppressed = true,
+                                }
+                            )
+                        ),
+                    };
+                }
+            )
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/status"),
+                request =>
+                {
+                    if (posts < 2 && Uri.UnescapeDataString(request.RequestUri!.Query).Contains(":synthesis"))
+                        return new(System.Net.HttpStatusCode.NotFound)
+                        {
+                            Content = new StringContent("{\"code\":\"unknown_inputId\"}"),
+                        };
+                    return new(System.Net.HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(
+                            posts == 1 || emptyFinalization
+                                ? "{\"status\":\"Completed\",\"runId\":\"empty-run\",\"response\":{\"usage\":{\"completion_tokens\":0}}}"
+                                : "{\"status\":\"Completed\",\"runId\":\"final-run\",\"response\":{\"text\":\"{\\\"Decision\\\":true}\"}}"
+                        ),
+                    };
+                }
+            );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var invocation = Invocation() with { DeadlineUtc = DateTimeOffset.UtcNow.AddMinutes(1) };
+        var invoker = new WorkflowAgentInvoker(
+            _workspace,
+            (_, _, _) => Task.FromResult<S2SReviewAgent?>(Agent(http)),
+            async (input, thread, ct) =>
+            {
+                input.DeadlineUtc.Should().Be(invocation.DeadlineUtc);
+                thread.Should().Be("thread-parent");
+                waiting.TrySetResult();
+                await inactive.Task.WaitAsync(ct);
+                return null;
+            },
+            synthesisIntent: (_, _, save, _) =>
+            {
+                if (save)
+                    intentSaved = true;
+                return Task.FromResult(intentSaved);
+            }
+        );
+        var completion = invoker.InvokeAsync(invocation);
+        await waiting.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        completion.IsCompleted.Should().BeFalse();
+        posts.Should().Be(1);
+        inactive.SetResult();
+        var result = await completion;
+        result
+            .Status.Should()
+            .Be(emptyFinalization ? WorkflowInvocationStatus.Failed : WorkflowInvocationStatus.Completed);
+        if (!emptyFinalization)
+            result.Output.Should().Be("{\"Decision\":true}");
+        var post = handler.Requests.Last(request => request.Method == HttpMethod.Post);
+        var body = JsonNode.Parse(post.Body!)!;
+        body["suppressActionTools"]!.GetValue<bool>().Should().BeTrue();
+        body["suppressSubAgentSpawning"]!.GetValue<bool>().Should().BeTrue();
+        body["text"]!.GetValue<string>().Should().Contain(invocation.Task.OutputSchema!.ToJsonString());
+        body["idempotencyKey"]!
+            .GetValue<string>()
+            .Should()
+            .Be(WorkflowAgentInvoker.InvocationKey(invocation) + ":synthesis");
+        post.Uri.AbsolutePath.Should().Be("/api/conversations/thread-parent/messages");
+        (await invoker.ReconcileAsync(invocation)).Status.Should().Be(result.Status);
+        posts.Should().Be(2, "an accepted finalization must be reconciled, not resent");
+    }
+
     [Fact]
     public async Task Old_host_is_rejected_by_read_only_preflight_before_first_send()
     {

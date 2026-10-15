@@ -245,6 +245,8 @@ public sealed class WorkspaceThreadRegistrationCompositionTests
         {
             // Avoids the Vite dev-server auto-spawn (matches every other in-process host test here).
             builder.UseEnvironment("Production");
+            builder.UseSetting("Identity:DatabasePath", Path.Combine(_root, "identity.db"));
+            builder.UseSetting("LmStreaming:NotifyWaitDbPath", Path.Combine(_root, "notify-waits.db"));
 
             // The sandbox MCP transport builds its own HttpClient inside HttpClientTransport and dials
             // BaseUrl directly, so the fake handler below cannot intercept it. A closed loopback port

@@ -1,6 +1,7 @@
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Workspace;
 
 namespace CodeReviewDaemon.Sample.Orchestration;
 
@@ -107,6 +108,8 @@ internal static class RunSinglePrCommand
     /// </param>
     /// <param name="fresh">Explicitly supersede a settled failed run instead of resuming it.</param>
     /// <param name="canStartFresh">Validates durable failure and absence of unresolved or retained writes.</param>
+    /// <param name="streamClaim">Optional atomic slot claim for a streamed fresh admission.</param>
+    /// <param name="claimRunner">Runner that transfers the claim into the durable assignment.</param>
     public static async Task<RunSinglePrResult> AdmitAndRunAsync(
         RunSinglePrPrepareResult prepared,
         ReviewStore store,
@@ -115,7 +118,9 @@ internal static class RunSinglePrCommand
         IReadOnlyList<IReviewCommentReader>? commentReaders = null,
         Action<PrPollTarget, PullRequestDescriptor>? onIdentityRevalidated = null,
         bool fresh = false,
-        Func<ReviewRun, CancellationToken, Task<bool>>? canStartFresh = null
+        Func<ReviewRun, CancellationToken, Task<bool>>? canStartFresh = null,
+        ReviewSlotClaim? streamClaim = null,
+        ReviewWorkflowRunner? claimRunner = null
     )
     {
         ArgumentNullException.ThrowIfNull(prepared);
@@ -156,11 +161,6 @@ internal static class RunSinglePrCommand
             return RunSinglePrResult.Rejected(RunSinglePrRejectionReason.IdentityDrift);
         }
 
-        // Every identity gate has now passed twice, the second time moments ago and against the live host.
-        // This is the only point in the daemon at which an artifact-branch grant may be minted, and it is
-        // handed the very descriptor that check validated — see onIdentityRevalidated's remarks.
-        onIdentityRevalidated?.Invoke(target, descriptor);
-
         var repoId = store.EnsureRepo(target.Repo);
         var seed = new ReviewRun
         {
@@ -193,6 +193,12 @@ internal static class RunSinglePrCommand
         // describes the freshly re-read head/base, this command supersedes the completed row with a brand
         // new one (never resetting or erasing the completed row) and runs a full review through it — the
         // ordinary AlreadyCompleted path only fires when no such authorization exists or consuming it fails.
+        if (store.ListActiveWorkflowWorkspaceRuns().Any(owner => owner.RepoId == repoId && owner.PrId == seed.PrId))
+            return RunSinglePrResult.Rejected(RunSinglePrRejectionReason.AlreadyActive);
+
+        // The exact PR identity is fresh and no active review owns it. Mint branch authority only now.
+        onIdentityRevalidated?.Invoke(target, descriptor);
+
         var existing = store.FindReviewRunByIdentity(seed);
         if (fresh)
         {
@@ -255,8 +261,26 @@ internal static class RunSinglePrCommand
                     )
                     .ConfigureAwait(false);
 
-        // Reuse the ONE existing admission/slot-allocation path — never reimplemented, never bypassed.
-        var run = await orchestrator.RunAsync(seed, frozenContext, cancellationToken).ConfigureAwait(false);
+        // Reuse the existing admission path. Stream claims are transferred only when the runner
+        // persists the matching workspace assignment; rejected/no-op calls return the unused claim.
+        ReviewRun run;
+        if (streamClaim is null)
+            run = await orchestrator.RunAsync(seed, frozenContext, cancellationToken).ConfigureAwait(false);
+        else
+        {
+            if (claimRunner is null)
+                throw new InvalidOperationException("Stream slot claim requires the workflow runner.");
+            var admitted = store.CreateOrGetReviewRun(seed);
+            claimRunner.RegisterStreamClaim(admitted.Id, streamClaim);
+            try
+            {
+                run = await orchestrator.RunAsync(seed, frozenContext, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                claimRunner.UnregisterStreamClaim(admitted.Id, streamClaim);
+            }
+        }
 
         return new RunSinglePrResult
         {
@@ -445,6 +469,9 @@ internal enum RunSinglePrRejectionReason
     /// </para>
     /// </summary>
     AlreadyCompleted,
+
+    /// <summary>Another workflow already owns an active workspace for this PR.</summary>
+    AlreadyActive,
 
     /// <summary>A fresh attempt requires a settled failed workflow without retained or unresolved writes.</summary>
     FreshStartUnsafe,

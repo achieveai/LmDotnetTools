@@ -325,6 +325,116 @@ public sealed class ReviewSetupScriptRunnerTests
         commands.Commands.Should().NotContain(c => c.Argv.Contains("warm") || c.Argv.Contains("reset"));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Scoped_reset_compacts_only_when_requested_and_keeps_identity(bool compact)
+    {
+        var identity = new System.Text.Json.Nodes.JsonObject { ["assignmentId"] = new string('a', 32) };
+        var receipt = CompactReceipt(identity);
+        if (!compact)
+        {
+            receipt.Remove("compactOutput");
+            receipt["inventory"] = new System.Text.Json.Nodes.JsonArray();
+        }
+        var commands = new ScriptRunner { ScopedResetReceipt = receipt.ToJsonString() };
+        var result = await new ReviewSetupScriptRunner(commands, Assets()).ResetReviewSlotAsync(
+            identity,
+            true,
+            default,
+            compactOutput: compact
+        );
+        result.ToJsonString().Should().Be(receipt.ToJsonString());
+        var request = System.Text.Json.Nodes.JsonNode.Parse(commands.Commands.Single().Argv[^1])!;
+        (request["compactOutput"]?.GetValue<bool>() ?? false).Should().Be(compact);
+        identity.ContainsKey("compactOutput").Should().BeFalse();
+        identity.ContainsKey("apply").Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("missing-marker")]
+    [InlineData("false-marker")]
+    [InlineData("inventory")]
+    [InlineData("negative-count")]
+    [InlineData("string-count")]
+    [InlineData("missing-digest")]
+    [InlineData("short-digest")]
+    [InlineData("invalid-digest")]
+    public async Task Scoped_reset_rejects_invalid_compact_inventory_evidence(string mutation)
+    {
+        var identity = new System.Text.Json.Nodes.JsonObject { ["assignmentId"] = new string('a', 32) };
+        var receipt = CompactReceipt(identity);
+        switch (mutation)
+        {
+            case "missing-marker":
+                receipt.Remove("compactOutput");
+                break;
+            case "false-marker":
+                receipt["compactOutput"] = false;
+                break;
+            case "inventory":
+                receipt["inventory"] = new System.Text.Json.Nodes.JsonArray();
+                break;
+            case "negative-count":
+                receipt["inventoryCount"] = -1;
+                break;
+            case "string-count":
+                receipt["inventoryCount"] = "2";
+                break;
+            case "missing-digest":
+                receipt.Remove("inventorySha256");
+                break;
+            case "short-digest":
+                receipt["inventorySha256"] = "abc";
+                break;
+            case "invalid-digest":
+                receipt["inventorySha256"] = new string('g', 64);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(mutation));
+        }
+        var commands = new ScriptRunner { ScopedResetReceipt = receipt.ToJsonString() };
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            new ReviewSetupScriptRunner(commands, Assets()).ResetReviewSlotAsync(
+                identity,
+                true,
+                default,
+                compactOutput: true
+            )
+        );
+    }
+
+    [Theory]
+    [InlineData("RuntimeError: Prepared slot refused in unprepared mode", "prepared-slot-present")]
+    [InlineData("RuntimeError: Prepared identity mismatch", "prepared-identity-mismatch")]
+    [InlineData("RuntimeError: Prior reset outcome is uncertain; reconcile before retry", "reset-outcome-unknown")]
+    [InlineData("private remote output", "unclassified")]
+    [InlineData("private traceback\nRuntimeError: Prepared identity mismatch\n", "prepared-identity-mismatch")]
+    public async Task Scoped_reset_failure_preserves_safe_refusal_without_remote_output(string stderr, string reason)
+    {
+        var commands = new ScriptRunner { ScopedResetExit = 1, ScopedResetStderr = stderr };
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new ReviewSetupScriptRunner(commands, Assets()).ResetReviewSlotAsync(
+                new System.Text.Json.Nodes.JsonObject { ["assignmentId"] = new string('a', 32) },
+                true,
+                default
+            )
+        );
+        error.Message.Should().Contain($"reason={reason}").And.NotContain(stderr);
+        commands.Commands.Should().HaveCount(1);
+    }
+
+    private static System.Text.Json.Nodes.JsonObject CompactReceipt(System.Text.Json.Nodes.JsonObject identity) =>
+        new()
+        {
+            ["schema"] = 1,
+            ["status"] = "reset",
+            ["identity"] = identity.DeepClone(),
+            ["compactOutput"] = true,
+            ["inventoryCount"] = 48000,
+            ["inventorySha256"] = new string('a', 64),
+        };
+
     private static RepoIdentity Repository() =>
         new()
         {
@@ -382,11 +492,18 @@ public sealed class ReviewSetupScriptRunnerTests
         public string ResetReceipt { get; init; } =
             "{\"schema\":1,\"mode\":\"discard\",\"strict\":true,\"status\":\"already_idle\",\"slot\":\"Nova-2\"}";
         public int ResetExit { get; init; }
+        public string? ScopedResetReceipt { get; init; }
+        public int ScopedResetExit { get; init; }
+        public string ScopedResetStderr { get; init; } = "";
         public List<SandboxCommand> Commands { get; } = [];
 
         public Task<SandboxCommandResult> RunAsync(SandboxCommand command, CancellationToken cancellationToken)
         {
             Commands.Add(command);
+            if (ScopedResetExit != 0 || ScopedResetReceipt is not null)
+                return Task.FromResult(
+                    new SandboxCommandResult(ScopedResetExit, ScopedResetReceipt ?? "", ScopedResetStderr)
+                );
             if (command.Argv.Any(arg => arg.EndsWith("review_reset.py", StringComparison.Ordinal)))
                 return Task.FromResult(new SandboxCommandResult(ResetExit, ResetReceipt, ""));
             if (command.Argv.Contains(ReviewSetupScriptRunner.SlotPresenceScript))

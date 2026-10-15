@@ -171,6 +171,10 @@ internal class SubAgentState
     internal SemaphoreSlim RunTransition { get; } = new(1, 1);
     internal string? AdmittedRunId { get; set; }
 
+    // The gate for the currently admitted operation. Replaced only when another operation
+    // admits a run; the monitor captures it before settling that run's outbound effects.
+    internal FinalReportCompletionGate? FinalReportGate { get; set; }
+
     // Where this sub-agent came from, captured once at spawn time. It lives here rather than in
     // SpawnAsync's locals because a restart rebuilds the loop long after the spawning run ended:
     // by then the parent's CurrentRunId has moved on, and re-deriving lineage would attribute the

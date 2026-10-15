@@ -277,6 +277,7 @@ public sealed class RunPrArtifactBranchCompositionTests
                         new FileStream(Path.GetTempFileName(), FileMode.Open, FileAccess.ReadWrite, FileShare.None)
                     ),
                 startHostAsync: () => Task.CompletedTask,
+                recoverAsync: _ => Task.CompletedTask,
                 admitAndRunAsync: (prepared, ct) =>
                     RunSinglePrCommand.AdmitAndRunAsync(
                         prepared,

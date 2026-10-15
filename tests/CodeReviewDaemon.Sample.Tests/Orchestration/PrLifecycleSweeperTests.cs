@@ -37,7 +37,7 @@ public sealed class PrLifecycleSweeperTests
     }
 
     [Fact]
-    public async Task Abandoned_pr_deletes_its_branch_under_the_existing_lifecycle_path()
+    public async Task Abandoned_pr_runs_terminal_learning_without_deleting_its_branch()
     {
         using var fixture = new Fixture();
         var pr = Pr("43", "review/widgets-43");
@@ -45,12 +45,13 @@ public sealed class PrLifecycleSweeperTests
 
         await sweeper.SweepAsync(default);
 
-        var commands = fixture.Commands.Commands.Select(value => string.Join(' ', value.Argv)).ToList();
-        commands.Should().Contain(value => value.Contains($"branch -D {pr.Branch}", StringComparison.Ordinal));
-        commands
-            .Should()
-            .Contain(value => value.Contains($"push origin --delete {pr.Branch}", StringComparison.Ordinal));
-        fixture.WorkflowRunner.Rounds.Should().BeEmpty();
+        fixture.Commands.Commands.Should().BeEmpty("abandoned work is retained, not deleted or merged");
+        fixture.WorkflowRunner.Rounds.Should().ContainSingle();
+        fixture.WorkflowRunner.Rounds[0].EventKey.Should().StartWith("abandoned:");
+        fixture
+            .Store.GetLatestReviewRun(fixture.Store.EnsureRepo(TargetRepo), pr.PrId)!
+            .PrLifecycleState.Should()
+            .Be(PrLifecycleState.Abandoned);
     }
 
     [Fact]
@@ -67,13 +68,8 @@ public sealed class PrLifecycleSweeperTests
         await sweeper.SweepAsync(default);
         await sweeper.SweepAsync(default);
 
-        fixture
-            .Commands.Commands.Count(value =>
-                string.Join(' ', value.Argv)
-                    .Contains($"push origin --delete {abandoned.Branch}", StringComparison.Ordinal)
-            )
-            .Should()
-            .Be(1);
+        fixture.WorkflowRunner.Rounds.Should().ContainSingle().Which.PrId.Should().Be(abandoned.PrId);
+        fixture.Commands.Commands.Should().BeEmpty();
         fixture
             .Commands.Commands.Should()
             .NotContain(value => string.Join(' ', value.Argv).Contains(open.Branch, StringComparison.Ordinal));

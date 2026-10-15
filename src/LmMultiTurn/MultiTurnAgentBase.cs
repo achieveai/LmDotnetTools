@@ -1624,13 +1624,21 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// <see cref="UserInput"/>, so per-input flags (notably
     /// <see cref="UserInput.SuppressSubAgentSpawning"/>) reach the run instead of being rebuilt away.
     /// </summary>
-    public virtual ValueTask<SendReceipt> SendAsync(UserInput input, CancellationToken ct = default)
+    public virtual async ValueTask<SendReceipt> SendAsync(UserInput input, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        var receiptId = input.InputId ?? Guid.NewGuid().ToString("N");
+        using var reservation = ReserveInput(input, receiptId);
+        await PersistFinalReportBindingAsync(input, receiptId, ct).ConfigureAwait(false);
+        return await SendCoreAsync(input, receiptId, ct).ConfigureAwait(false);
+    }
+
+    private ValueTask<SendReceipt> SendCoreAsync(UserInput input, string receiptId, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(input);
         ObjectDisposedException.ThrowIf(_isDisposed, this);
 
         var inputId = input.InputId;
-        var receiptId = inputId ?? Guid.NewGuid().ToString("N");
         var queuedAt = DateTimeOffset.UtcNow;
         var suppressed = WillSuppressSpawning(input);
 
@@ -1682,6 +1690,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                     throw;
                 }
 
+                OnInputEnqueued(input, receiptId);
                 SignalIfRealInput(queued);
                 return new SendReceipt(
                     receiptId,
@@ -1693,6 +1702,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             }
         }
 
+        OnInputEnqueued(input, receiptId);
         SignalIfRealInput(queued);
         Logger.LogDebug("Message queued. ReceiptId: {ReceiptId}, InputId: {InputId}", receiptId, inputId);
 
@@ -1740,6 +1750,25 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// </summary>
     private bool WillSuppressSpawning(UserInput input) => input.SuppressSubAgentSpawning && EnforcesSpawnSuppression;
 
+    /// <summary>Marks a reserved input as enqueued; implementations must not throw.</summary>
+    protected virtual void OnInputEnqueued(UserInput input, string receiptId) { }
+
+    /// <summary>Reserves opt-in input admission before durable acceptance and enqueue.</summary>
+    protected virtual IDisposable? ReserveInput(UserInput input, string receiptId)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        if (input.FinalReportDeadlineUtc is not null)
+        {
+            throw new InvalidOperationException("This agent does not support final-report completion.");
+        }
+        return null;
+    }
+
+    private Task PersistFinalReportBindingAsync(UserInput input, string receiptId, CancellationToken ct) =>
+        input.FinalReportDeadlineUtc is { } deadline
+            ? FinalReportProof.BindAsync(Store!, ThreadId, receiptId, deadline, ct)
+            : Task.CompletedTask;
+
     /// <summary>
     /// <see cref="TrySendAsync(List{IMessage}, string?, string?, CancellationToken)"/> over a full
     /// <see cref="UserInput"/>. This is the single enqueue path, so per-input flags — notably
@@ -1754,6 +1783,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         var inputId = input.InputId;
         var receiptId = inputId ?? Guid.NewGuid().ToString("N");
         var queuedAt = DateTimeOffset.UtcNow;
+        using var reservation = ReserveInput(input, receiptId);
+        await PersistFinalReportBindingAsync(input, receiptId, ct).ConfigureAwait(false);
 
         if (RunLedgerStore != null)
         {
@@ -1805,6 +1836,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             return null;
         }
 
+        OnInputEnqueued(input, receiptId);
         SignalIfRealInput(queued);
         Logger.LogDebug(
             "Message queued via TrySendAsync. ReceiptId: {ReceiptId}, InputId: {InputId}",

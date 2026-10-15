@@ -14,14 +14,54 @@ public sealed class WorkflowRoundStoreTests
         var repoId = store.EnsureRepo(SampleRepo());
 
         var first = store.CreateOrGetWorkflowRound(
-            Discussion(repoId, "messages-108-112", "{\"through\":\"112\",\"messages\":[108,112]}")
+            Discussion(store, repoId, "messages-108-112", "{\"through\":\"112\",\"messages\":[108,112]}")
         );
         var repeated = store.CreateOrGetWorkflowRound(
-            Discussion(repoId, "messages-108-112", "{\"through\":\"113\",\"messages\":[108,112,113]}")
+            Discussion(store, repoId, "messages-108-112", "{\"through\":\"113\",\"messages\":[108,112,113]}")
         );
 
         repeated.Id.Should().Be(first.Id);
         repeated.FrozenInputJson.Should().Be("{\"through\":\"112\",\"messages\":[108,112]}");
+    }
+
+    [Fact]
+    public void Same_head_retarget_preserves_each_run_own_frozen_discussion()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+        var firstRun = store.CreateOrGetReviewRun(SampleRun(repoId));
+        var retargetedRun = store.CreateOrGetReviewRun(SampleRun(repoId) with { BaseSha = "retargeted-base" });
+        var first = store.CreateOrGetWorkflowRound(
+            Discussion(store, repoId, "same-window", "{\"base\":\"old\"}") with
+            {
+                ReviewRunId = firstRun.Id,
+            }
+        );
+        var retargeted = store.CreateOrGetWorkflowRound(
+            Discussion(store, repoId, "same-window", "{\"base\":\"new\"}") with
+            {
+                ReviewRunId = retargetedRun.Id,
+            }
+        );
+
+        retargeted.Id.Should().NotBe(first.Id);
+        first.FrozenInputJson.Should().Be("{\"base\":\"old\"}");
+        retargeted.FrozenInputJson.Should().Be("{\"base\":\"new\"}");
+        store
+            .GetPendingWorkflowRoundsForRun(firstRun.Id)
+            .Select(round => round.Id)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(first.Id);
+        store
+            .GetPendingWorkflowRoundsForRun(retargetedRun.Id)
+            .Select(round => round.Id)
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(retargeted.Id);
     }
 
     [Fact]
@@ -31,8 +71,8 @@ public sealed class WorkflowRoundStoreTests
         using var store = new ReviewStore(db.ConnectionString);
         var repoId = store.EnsureRepo(SampleRepo());
 
-        var first = store.CreateOrGetWorkflowRound(Discussion(repoId, "messages-108-112", "{\"through\":112}"));
-        var later = store.CreateOrGetWorkflowRound(Discussion(repoId, "messages-113-115", "{\"through\":115}"));
+        var first = store.CreateOrGetWorkflowRound(Discussion(store, repoId, "messages-108-112", "{\"through\":112}"));
+        var later = store.CreateOrGetWorkflowRound(Discussion(store, repoId, "messages-113-115", "{\"through\":115}"));
 
         later.Id.Should().NotBe(first.Id);
     }
@@ -44,10 +84,10 @@ public sealed class WorkflowRoundStoreTests
         using var store = new ReviewStore(db.ConnectionString);
         var repoId = store.EnsureRepo(SampleRepo());
 
-        var first = store.CreateOrGetWorkflowRound(Merged(repoId, "merge-sha-1"));
-        var repeated = store.CreateOrGetWorkflowRound(Merged(repoId, "merge-sha-1"));
+        var first = store.CreateOrGetWorkflowRound(Merged(store, repoId, "merge-sha-1"));
+        var repeated = store.CreateOrGetWorkflowRound(Merged(store, repoId, "merge-sha-1"));
         var discussion = store.CreateOrGetWorkflowRound(
-            Discussion(repoId, "merge-sha-1", "{\"window\":\"merge-sha-1\"}")
+            Discussion(store, repoId, "merge-sha-1", "{\"window\":\"merge-sha-1\"}")
         );
 
         repeated.Id.Should().Be(first.Id);
@@ -62,7 +102,7 @@ public sealed class WorkflowRoundStoreTests
         using (var store = new ReviewStore(db.ConnectionString))
         {
             var repoId = store.EnsureRepo(SampleRepo());
-            roundId = store.CreateOrGetWorkflowRound(Discussion(repoId, "window-1", "{\"window\":1}")).Id;
+            roundId = store.CreateOrGetWorkflowRound(Discussion(store, repoId, "window-1", "{\"window\":1}")).Id;
             store.TryBindWorkflowInstance(roundId, "workflow-1").Should().BeTrue();
             store.TryBindWorkflowInstance(roundId, "workflow-1").Should().BeTrue("replay is idempotent");
             store.TryBindWorkflowInstance(roundId, "workflow-2").Should().BeFalse();
@@ -81,7 +121,7 @@ public sealed class WorkflowRoundStoreTests
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
         var repoId = store.EnsureRepo(SampleRepo());
-        var round = store.CreateOrGetWorkflowRound(Discussion(repoId, "window-1", "{\"window\":1}"));
+        var round = store.CreateOrGetWorkflowRound(Discussion(store, repoId, "window-1", "{\"window\":1}"));
         store.TryBindWorkflowInstance(round.Id, "workflow-1").Should().BeTrue();
 
         store.RecordWorkflowOutcome(round.Id, "workflow-1", WorkflowRoundOutcome.Running).Should().BeTrue();
@@ -113,9 +153,9 @@ public sealed class WorkflowRoundStoreTests
         var firstRepo = store.EnsureRepo(SampleRepo());
         var secondRepo = store.EnsureRepo(SampleRepo() with { RepoName = "OtherRepo", RepoStableId = "R_other" });
 
-        var first = store.CreateOrGetWorkflowRound(Discussion(firstRepo, "window-1", "{\"window\":1}"));
-        var second = store.CreateOrGetWorkflowRound(Discussion(firstRepo, "window-2", "{\"window\":2}"));
-        _ = store.CreateOrGetWorkflowRound(Discussion(secondRepo, "window-3", "{\"window\":3}"));
+        var first = store.CreateOrGetWorkflowRound(Discussion(store, firstRepo, "window-1", "{\"window\":1}"));
+        var second = store.CreateOrGetWorkflowRound(Discussion(store, firstRepo, "window-2", "{\"window\":2}"));
+        _ = store.CreateOrGetWorkflowRound(Discussion(store, secondRepo, "window-3", "{\"window\":3}"));
 
         store.GetPendingWorkflowRounds(firstRepo).Select(item => item.Id).Should().Equal(first.Id, second.Id);
     }
@@ -126,17 +166,16 @@ public sealed class WorkflowRoundStoreTests
         using var db = new TempSqliteDatabase();
         using var store = new ReviewStore(db.ConnectionString);
         var repoId = store.EnsureRepo(SampleRepo());
-        var first = store.CreateOrGetWorkflowRound(Discussion(repoId, "window-1", "{\"window\":1}"));
+        var first = store.CreateOrGetWorkflowRound(Discussion(store, repoId, "window-1", "{\"window\":1}"));
         store.TryBindWorkflowInstance(first.Id, "workflow-1").Should().BeTrue();
         store.RecordWorkflowOutcome(first.Id, "workflow-1", WorkflowRoundOutcome.Succeeded).Should().BeTrue();
-        var latest = store.CreateOrGetWorkflowRound(Discussion(repoId, "window-2", "{\"window\":2}"));
-        _ = store.CreateOrGetWorkflowRound(Merged(repoId, "merge-1"));
+        var latest = store.CreateOrGetWorkflowRound(Discussion(store, repoId, "window-2", "{\"window\":2}"));
+        _ = store.CreateOrGetWorkflowRound(Merged(store, repoId, "merge-1"));
 
-        store
-            .GetLatestWorkflowRound(repoId, "118", "head-sha", WorkflowRoundKind.Discussion)!
-            .Id.Should()
-            .Be(latest.Id);
-        store.GetLatestWorkflowRound(repoId, "118", "other-head", WorkflowRoundKind.Discussion).Should().BeNull();
+        var run = store.CreateOrGetReviewRun(SampleRun(repoId));
+        store.GetLatestWorkflowRound(run.Id, WorkflowRoundKind.Discussion)!.Id.Should().Be(latest.Id);
+        var other = store.CreateOrGetReviewRun(SampleRun(repoId) with { HeadSha = "other-head" });
+        store.GetLatestWorkflowRound(other.Id, WorkflowRoundKind.Discussion).Should().BeNull();
     }
 
     [Fact]
@@ -192,14 +231,15 @@ public sealed class WorkflowRoundStoreTests
         using var store = new ReviewStore(db.ConnectionString);
         var repoId = store.EnsureRepo(SampleRepo());
 
-        var act = () => store.CreateOrGetWorkflowRound(Discussion(repoId, "window-1", frozenInput));
+        var act = () => store.CreateOrGetWorkflowRound(Discussion(store, repoId, "window-1", frozenInput));
 
         act.Should().Throw<ArgumentException>().WithMessage("*frozen*JSON object*");
     }
 
-    private static WorkflowRoundSeed Discussion(long repoId, string eventKey, string frozenInput) =>
+    private static WorkflowRoundSeed Discussion(ReviewStore store, long repoId, string eventKey, string frozenInput) =>
         new()
         {
+            ReviewRunId = store.CreateOrGetReviewRun(SampleRun(repoId)).Id,
             RepoId = repoId,
             PrId = "118",
             HeadSha = "head-sha",
@@ -208,9 +248,10 @@ public sealed class WorkflowRoundStoreTests
             FrozenInputJson = frozenInput,
         };
 
-    private static WorkflowRoundSeed Merged(long repoId, string mergeSha) =>
+    private static WorkflowRoundSeed Merged(ReviewStore store, long repoId, string mergeSha) =>
         new()
         {
+            ReviewRunId = store.CreateOrGetReviewRun(SampleRun(repoId)).Id,
             RepoId = repoId,
             PrId = "118",
             HeadSha = "head-sha",

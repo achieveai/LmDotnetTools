@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Security;
+using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
@@ -139,10 +140,440 @@ public sealed class WorkflowOperationDispatcherTests
             retained,
             default
         );
-        closed!["Closed"]!.GetValue<bool>().Should().BeTrue();
+        closed.Should().BeNull("retention alone cannot prove merged content integration or branch closure");
         fixture
             .Runner.Commands.Should()
             .NotContain(command => command.Argv.Contains("push") || command.Argv.Contains("merge"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [Trait("Category", "Integration")] // Real Git proves CAS deletion and durable consumer discovery without main replay.
+    public async Task Confirmed_closure_drains_only_exact_inactive_reset_and_retained_content_without_replaying_main(
+        bool freshGeneration
+    )
+    {
+        using var git = await RealGitFixture.CreateAsync();
+        var checkout = await git.CloneAsync("closure");
+        RealGitFixture.Write(checkout, "seed.md", "Seed\n");
+        await git.GitAsync(checkout, default, "add", "seed.md");
+        await git.GitAsync(checkout, default, "commit", "-m", "Seed");
+        await git.GitAsync(checkout, default, "push", "origin", "main");
+        using var database = new TempSqliteDatabase();
+        using var store = new ReviewStore(database.ConnectionString);
+        var repo = new RepoIdentity
+        {
+            Provider = "github",
+            OrgOrOwner = "example",
+            RepoName = "widgets",
+        };
+        Func<ReviewRun, ReviewRun> createRun = freshGeneration
+            ? store.InsertRerunReviewRun
+            : store.CreateOrGetReviewRun;
+        var run = createRun(
+            new ReviewRun
+            {
+                RepoId = store.EnsureRepo(repo),
+                PrId = "7",
+                HeadSha = new string('a', 40),
+                BaseSha = new string('b', 40),
+                MergeSha = new string('c', 40),
+                TriggerWatermark =
+                    $"terminal:Merged:{new string('a', 40)}:{new string('b', 40)}:{new string('c', 40)}:refs/heads/main"
+                    + (freshGeneration ? ":fresh:previous" : ""),
+                Generation = freshGeneration ? 1 : 0,
+                ReviewKind = "merged-completion",
+                VariantId = "terminal",
+                Mode = "collect-only",
+                Stage = ReviewStage.Discovered,
+                WorkflowStatus = WorkflowStatus.Pending,
+                PrLifecycleState = PrLifecycleState.Merged,
+            }
+        );
+        var round = store.CreateOrGetWorkflowRound(
+            new WorkflowRoundSeed
+            {
+                ReviewRunId = run.Id,
+                RepoId = run.RepoId,
+                PrId = run.PrId,
+                HeadSha = run.HeadSha,
+                Kind = WorkflowRoundKind.Merged,
+                EventKey = run.TriggerWatermark,
+                FrozenInputJson = new JsonObject
+                {
+                    ["Merge"] = new JsonObject
+                    {
+                        ["ParentSha"] = new string('d', 40),
+                        ["TargetRefName"] = "refs/heads/main",
+                    },
+                }.ToJsonString(),
+            }
+        );
+        var instance = $"review-round-{round.Id}";
+        store.TryBindWorkflowInstance(round.Id, instance).Should().BeTrue();
+        store.RecordWorkflowOutcome(round.Id, instance, WorkflowRoundOutcome.Failed).Should().BeTrue();
+        round = store.GetWorkflowRound(round.Id)!;
+        var files = new HostFileSystem();
+        var manager = new ReviewBranchManager(
+            new GitRunner(git.Runner),
+            files,
+            NullLogger<ReviewBranchManager>.Instance
+        );
+        var branch = ReviewBranchManager.BuildReviewBranchName(repo, 7);
+        var prefix = $"PRs/{branch["review/".Length..]}/";
+        await manager.CheckoutReviewBranchAsync(checkout, repo, 7, "main", default);
+        var original = await manager.CommitNotesAsync(
+            checkout,
+            new(repo, 7, run.HeadSha, "main", [new(prefix + "review.md", "Original review\n")]),
+            default,
+            [prefix + "review.md"],
+            false
+        );
+        var roots = Path.Combine(git.Root, "runs");
+        var directory = Path.Combine(roots, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(instance))));
+        Directory.CreateDirectory(Path.Combine(directory, "artifacts"));
+        var admission = new JsonObject
+        {
+            ["Route"] = "merged",
+            ["PrId"] = "7",
+            ["HeadSha"] = run.HeadSha,
+            ["WindowId"] = "terminal",
+        };
+        File.WriteAllText(
+            Path.Combine(directory, "scope.json"),
+            new JsonObject
+            {
+                ["ReviewRunId"] = run.Id,
+                ["WorkflowInstanceId"] = instance,
+                ["Admission"] = admission.DeepClone(),
+                ["FrozenContext"] = new JsonObject
+                {
+                    ["Merge"] = new JsonObject { ["ArtifactTipSha"] = original.PushedSha },
+                },
+            }.ToJsonString()
+        );
+        var workspace = new WorkflowWorkspace(
+            store,
+            new CodeReviewDaemonOptions(),
+            new ReviewSlotWorkspace(new ReviewSlotPool("widgets", 1, NullLogger<ReviewSlotPool>.Instance)),
+            new FakeReviewSessionProvisioner(
+                new ReviewRunSession("unused", new FakeSandboxCommandRunner(), new FakeSandboxFileSystem())
+            ),
+            (_, _, _) => throw new InvalidOperationException("Closure must not prepare a workspace."),
+            NullLoggerFactory.Instance
+        );
+        await workspace.AcquireAsync(run, instance, default);
+        var assignment = workspace.ReadAssignment(run);
+        var authorization = new HostGitPushAuthorization(false);
+        var capability = ReviewArtifactBranchCapability.Grant(
+            repo.NormalizedKey,
+            run.PrId,
+            run.HeadSha,
+            exportsFullReviewOutput: false
+        );
+        var operations = new WorkflowArtifactOperations(
+            store,
+            run,
+            repo,
+            checkout,
+            "main",
+            manager,
+            new SemaphoreSlim(1, 1),
+            capability,
+            new WorkflowKnowledgeEdits(checkout, repo, files, NullLogger.Instance),
+            pushAuthorization: authorization,
+            originalArtifactTipSha: original.PushedSha
+        );
+        var dispatcher = new WorkflowOperationDispatcher(
+            store,
+            workspace,
+            new CodeReviewDaemonOptions(),
+            roots,
+            () => capability,
+            (_, _) => Task.FromResult(operations)
+        );
+        var retainedFile = new ReviewArtifactFile(
+            prefix + "summary.json",
+            new JsonObject
+            {
+                ["SchemaVersion"] = 1,
+                ["ReviewRunId"] = run.Id,
+                ["Route"] = "merged",
+                ["KnowledgeEntryCount"] = 0,
+            }.ToJsonString()
+        );
+        using var pushScope = authorization.EnterScope();
+        authorization.AuthorizePush(branch);
+        var retained = await operations.RetainArtifactsAsync([retainedFile], default, instance);
+        var retainedSha = retained["RetainedSha"]!.GetValue<string>();
+        // Integration is confirmed independently; only branch deletion remains unfinished.
+        var mainSha = await manager.IntegrateContentOnlyAsync(
+            checkout,
+            branch,
+            "main",
+            retainedSha,
+            [retainedFile.RelativePath],
+            default,
+            original.PushedSha
+        );
+        store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactKind = "workflow-content-integration",
+                ArtifactSchemaVersion = 1,
+                Provider = "workflow",
+                Payload = new JsonObject
+                {
+                    ["WorkflowInstanceId"] = instance,
+                    ["ArtifactBranch"] = branch,
+                    ["RetainedSha"] = retainedSha,
+                    ["MainSha"] = mainSha,
+                }.ToJsonString(),
+            }
+        );
+        var bundlePath = Path.Combine(directory, "retention-bundle.json");
+        var bundle = new JsonObject
+        {
+            ["ExportSchema"] = 1,
+            ["WorkflowInstanceId"] = instance,
+            ["ReviewRunId"] = run.Id,
+            ["ExtractionHash"] = "unused",
+            ["ExportsFullReviewOutput"] = false,
+            ["Files"] = System.Text.Json.JsonSerializer.SerializeToNode(new[] { retainedFile }),
+        };
+        var originalBundle = bundle.ToJsonString();
+        File.WriteAllText(bundlePath, originalBundle);
+        var identity = new JsonObject
+        {
+            ["runId"] = run.Id,
+            ["assignmentId"] = assignment.AssignmentId,
+            ["workflowInstanceId"] = instance,
+            ["head"] = run.HeadSha,
+            ["base"] = run.BaseSha,
+        };
+        void SaveReset(JsonObject value) =>
+            store.AddArtifact(
+                new ReviewArtifact
+                {
+                    ReviewRunId = run.Id,
+                    ArtifactKind = "workflow-attempt-reset",
+                    ArtifactSchemaVersion = 1,
+                    Provider = "workflow",
+                    Payload = new JsonObject { ["status"] = "reset", ["identity"] = value.DeepClone() }.ToJsonString(),
+                }
+            );
+        SaveReset(identity);
+        await workspace.ReleaseOrRetireAsync(run.Id, instance, true, default);
+        var before = git.Commands.Count;
+        var verified = 0;
+        Task Verify(CancellationToken _)
+        {
+            verified++;
+            return Task.CompletedTask;
+        }
+        var wrong = identity.DeepClone().AsObject();
+        wrong["assignmentId"] = "foreign";
+        SaveReset(wrong);
+        (await dispatcher.FinishConfirmedClosureAsync(run, round, Verify, default)).Should().BeNull();
+        verified.Should().Be(0);
+        SaveReset(identity);
+        await dispatcher
+            .Invoking(value =>
+                value.FinishConfirmedClosureAsync(
+                    run,
+                    round,
+                    _ => throw new InvalidDataException("Provider changed"),
+                    default
+                )
+            )
+            .Should()
+            .ThrowAsync<InvalidDataException>();
+        bundle["Files"]![0]!["Content"] = retainedFile.Content + " ";
+        File.WriteAllText(bundlePath, bundle.ToJsonString());
+        (await dispatcher.FinishConfirmedClosureAsync(run, round, Verify, default)).Should().BeNull();
+        verified.Should().Be(0, "a changed bundle must fail before external identity verification");
+        File.WriteAllText(bundlePath, originalBundle);
+        (
+            await dispatcher.FinishConfirmedClosureAsync(
+                run,
+                round,
+                async token =>
+                {
+                    verified++;
+                    await git.GitAsync(
+                        git.OriginPath,
+                        token,
+                        "update-ref",
+                        "refs/heads/" + branch,
+                        mainSha,
+                        retainedSha
+                    );
+                },
+                default
+            )
+        ).Should().BeNull("a branch changed after provider verification must survive");
+        (await git.GitAsync(checkout, default, "ls-remote", "--heads", "origin", "refs/heads/" + branch))
+            .Should()
+            .StartWith(mainSha);
+        await git.GitAsync(git.OriginPath, default, "update-ref", "refs/heads/" + branch, retainedSha, mainSha);
+        (await dispatcher.FinishConfirmedClosureAsync(run, round, Verify, default))!["Closed"]!
+            .GetValue<bool>()
+            .Should()
+            .BeTrue();
+        (await dispatcher.FinishConfirmedClosureAsync(run, round, Verify, default))!["Closed"]!
+            .GetValue<bool>()
+            .Should()
+            .BeTrue();
+        var writes = git
+            .Commands.Skip(before)
+            .Where(command => command.Contains(" push ", StringComparison.Ordinal))
+            .ToArray();
+        writes
+            .Should()
+            .ContainSingle()
+            .Which.Should()
+            .Contain($"--force-with-lease=refs/heads/{branch}:{retainedSha}")
+            .And.Contain("--delete");
+        git.Commands.Skip(before)
+            .Should()
+            .NotContain(command => command.Contains(" commit ", StringComparison.Ordinal));
+        (await git.GitAsync(checkout, default, "ls-remote", "--heads", "origin", "refs/heads/main"))
+            .Should()
+            .StartWith(mainSha);
+        store.GetWorkflowRound(round.Id)!.Outcome.Should().Be(WorkflowRoundOutcome.Failed);
+
+        // The consumer must discover this already-absent branch from durable proof, not a remote inventory entry.
+        var malformed = store.CreateOrGetReviewRun(run with { Id = 0, PrId = "99", TriggerWatermark = "malformed" });
+        var malformedRound = store.CreateOrGetWorkflowRound(
+            new WorkflowRoundSeed
+            {
+                ReviewRunId = malformed.Id,
+                RepoId = malformed.RepoId,
+                PrId = malformed.PrId,
+                HeadSha = malformed.HeadSha,
+                Kind = WorkflowRoundKind.Merged,
+                EventKey = "malformed",
+                FrozenInputJson = "{}",
+            }
+        );
+        store.TryBindWorkflowInstance(malformedRound.Id, $"review-round-{malformedRound.Id}");
+        store.RecordWorkflowOutcome(
+            malformedRound.Id,
+            $"review-round-{malformedRound.Id}",
+            WorkflowRoundOutcome.Failed
+        );
+        store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = malformed.Id,
+                ArtifactKind = "workflow-content-integration",
+                ArtifactSchemaVersion = 1,
+                Provider = "workflow",
+                Payload = "malformed-json",
+            }
+        );
+        var options = new CodeReviewDaemonOptions { CrossRepoStoreUrl = git.OriginPath };
+        var target = new PrPollTarget
+        {
+            Provider = "github",
+            Repo = repo,
+            Scope = "example/widgets",
+            Mode = "post",
+        };
+        var provider = new ClosureProvider(run);
+        var runner = new ReviewWorkflowRunner(
+            Path.Combine(AppContext.BaseDirectory, ".review", "workflow.yaml"),
+            roots,
+            store,
+            new AchieveAi.LmDotnetTools.LmWorkflow.Persistence.InMemoryWorkflowStore(),
+            workspace,
+            (_, _, _, _) => throw new InvalidOperationException("Confirmed consumer closure must not invoke models.")
+        );
+        var orchestrator = new PrOrchestrator(store, runner, NullLogger<PrOrchestrator>.Instance);
+        var callbacks = 0;
+        var beforeConsumer = git.Commands.Count;
+        Task Poll() =>
+            CompleteMergedPrCommand.ProcessInventoryAsync(
+                [],
+                [target],
+                options,
+                store,
+                new GitRunner(git.Runner),
+                [provider],
+                [],
+                runner,
+                orchestrator,
+                new ForbiddenClosureSessions(),
+                authorization,
+                NullLogger.Instance,
+                default,
+                async (candidate, owner, verifier, token) =>
+                {
+                    callbacks++;
+                    candidate.Id.Should().Be(run.Id);
+                    owner.Id.Should().Be(round.Id);
+                    return await dispatcher.FinishConfirmedClosureAsync(candidate, owner, verifier, token);
+                }
+            );
+        await Poll();
+        callbacks.Should().Be(1);
+        provider.Reads.Should().Be(3, "inventory, admission and deletion independently verify source identity");
+        store.TryGetLatestArtifact(run.Id, "workflow-terminal-closure-finished").Should().NotBeNull();
+        store.GetWorkflowRound(round.Id)!.Outcome.Should().Be(WorkflowRoundOutcome.Failed);
+        store.GetReviewRun(run.Id)!.Generation.Should().Be(freshGeneration ? 1 : 0);
+        store.ListReviewRuns(ReviewStage.Discovered, 10).Count(candidate => candidate.PrId == run.PrId).Should().Be(1);
+        var beforeRepeat = git.Commands.Count;
+        await Poll();
+        callbacks.Should().Be(1);
+        provider.Reads.Should().Be(3);
+        git.Commands.Should().HaveCount(beforeRepeat, "the finished event needs no second provider or Git action");
+        git.Commands.Skip(beforeConsumer)
+            .Should()
+            .NotContain(command =>
+                command.Contains(" push ", StringComparison.Ordinal)
+                || command.Contains(" commit ", StringComparison.Ordinal)
+            );
+    }
+
+    private sealed class ClosureProvider(ReviewRun run) : IPrProvider
+    {
+        public int Reads { get; private set; }
+        public string Provider => "github";
+
+        public Task<PullRequestDescriptor?> GetPullRequestAsync(RepoIdentity repo, string prId, CancellationToken ct)
+        {
+            prId.Should().Be(run.PrId, "malformed unrelated proof must be skipped before provider access");
+            Reads++;
+            return Task.FromResult<PullRequestDescriptor?>(
+                new()
+                {
+                    PrId = run.PrId,
+                    HeadSha = run.HeadSha,
+                    BaseSha = run.BaseSha,
+                    TriggerWatermark = "closed",
+                    LifecycleState = PrLifecycleState.Merged,
+                    MergeCommitSha = run.MergeSha,
+                    TargetRefName = "refs/heads/main",
+                }
+            );
+        }
+
+        public Task<string?> GetCurrentHeadShaAsync(RepoIdentity repo, string prId, CancellationToken ct) =>
+            throw new InvalidOperationException("No head poll expected.");
+
+        public Task<PrLifecycle> GetPrStateAsync(RepoIdentity repo, string prId, CancellationToken ct) =>
+            throw new InvalidOperationException("No state poll expected.");
+
+        public Task<PullRequestPage> ListOpenPullRequestsAsync(PrPollRequest request, CancellationToken ct) =>
+            throw new InvalidOperationException("No open poll expected.");
+    }
+
+    private sealed class ForbiddenClosureSessions : IReviewSessionProvisioner
+    {
+        public Task<ReviewRunSession> GetOrCreateSharedAsync(CancellationToken ct) =>
+            throw new InvalidOperationException("Confirmed closure must not provision a remote session.");
     }
 
     [Fact]
@@ -190,12 +621,221 @@ public sealed class WorkflowOperationDispatcherTests
     }
 
     [Fact]
+    public async Task Abandoned_terminal_retention_accepts_its_exact_summary_route()
+    {
+        using var fixture = new Fixture(lifecycle: PrLifecycleState.Abandoned);
+        fixture.Admission["Route"] = "abandoned";
+        fixture.Scope["Admission"] = fixture.Admission.DeepClone();
+        fixture.SaveScope();
+
+        var retained = await fixture.Dispatcher.DispatchAsync(
+            "retain-artifacts",
+            fixture.Context,
+            fixture.RetentionInput,
+            default
+        );
+
+        retained["RetainedSha"]!.GetValue<string>().Should().HaveLength(40);
+        var bundle = JsonNode.Parse(File.ReadAllText(Path.Combine(fixture.Directory, "retention-bundle.json")))!;
+        var summaryFile = bundle["Files"]!.AsArray().Single();
+        var summary = JsonNode.Parse(summaryFile!["Content"]!.GetValue<string>())!;
+        summary["Route"]!.GetValue<string>().Should().Be("abandoned");
+        summary["ReviewRunId"]!.GetValue<long>().Should().Be(fixture.Run.Id);
+        fixture
+            .Store.GetOutboxForRun(fixture.Run.Id)
+            .Should()
+            .ContainSingle()
+            .Which.Status.Should()
+            .Be(OutboxStatus.Posted);
+        fixture.Runner.Commands.Should().NotContain(command => command.Argv.Contains("--delete"));
+    }
+
+    [Fact]
     public async Task Empty_allowlist_never_retains_scope_or_other_files()
     {
         using var fixture = new Fixture();
         await fixture.Dispatcher.DispatchAsync("retain-artifacts", fixture.Context, fixture.RetentionInput, default);
         var bundle = File.ReadAllText(Path.Combine(fixture.Directory, "retention-bundle.json"));
         bundle.Should().Contain("summary.json").And.NotContain("FrozenContext").And.NotContain("scope.json");
+    }
+
+    [Fact]
+    public async Task Publication_requires_validated_current_report_and_reconciliation_never_reposts()
+    {
+        var snapshots = new AchieveAi.LmDotnetTools.LmWorkflow.Persistence.InMemoryWorkflowStore();
+        var sends = 0;
+        using var fixture = new Fixture(
+            () => Fixture.Capability,
+            enableCommentPosting: true,
+            publishReview: (_, body, _) =>
+            {
+                sends++;
+                body.Should().Be("Final report");
+                return Task.FromResult(
+                    new JsonObject
+                    {
+                        ["Outcome"] = "published",
+                        ["Description"] = "Posted",
+                        ["Actions"] = new JsonArray(),
+                    }
+                );
+            },
+            workflowStore: snapshots
+        );
+        fixture.Admission["Route"] = "new_head";
+        fixture.Scope["Admission"] = fixture.Admission.DeepClone();
+        fixture.SaveScope();
+        fixture.Context["StepId"] = "publish:task";
+        var report = new JsonObject { ["Format"] = "markdown", ["Markdown"] = "Final report" };
+        var input = new JsonObject { ["Admission"] = fixture.Admission.DeepClone(), ["Report"] = report.DeepClone() };
+        await fixture
+            .Dispatcher.Invoking(value => value.DispatchAsync("publish-review", fixture.Context, input, default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>()
+            .WithMessage("*validated workflow*");
+        sends.Should().Be(0);
+        var snapshot = new AchieveAi.LmDotnetTools.LmWorkflow.Persistence.WorkflowInstanceSnapshot
+        {
+            InstanceId = "instance-1",
+            CurrentNodeId = "publish",
+            Inputs = (JsonObject)fixture.Admission.DeepClone(),
+            State = new JsonObject { ["FinalReview"] = report.DeepClone() },
+            Tasks =
+            [
+                new()
+                {
+                    Name = "final-review:1:final-review:task",
+                    NodeId = "final-review",
+                    TaskId = "final-review:task",
+                    Status = WorkflowTaskStatus.Validated,
+                },
+                new()
+                {
+                    Name = "publish:1:publish:task",
+                    NodeId = "publish",
+                    TaskId = "publish:task",
+                    Status = WorkflowTaskStatus.InFlight,
+                    Attempts = 0,
+                },
+            ],
+        };
+        await snapshots.SaveAsync("instance-1", snapshot);
+        var publication = await fixture.Dispatcher.DispatchAsync("publish-review", fixture.Context, input, default);
+        fixture.Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-daemon-publication").Should().NotBeNull();
+        JsonNode
+            .DeepEquals(
+                await fixture.Dispatcher.ReconcileAsync("publish-review", fixture.Context, input, default),
+                publication
+            )
+            .Should()
+            .BeTrue();
+        sends.Should().Be(1);
+        var changed = (JsonObject)input.DeepClone();
+        changed["Report"]!["Markdown"] = "Another report";
+        await fixture
+            .Dispatcher.Invoking(value => value.ReconcileAsync("publish-review", fixture.Context, changed, default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+        await fixture
+            .Dispatcher.Invoking(value => value.DispatchAsync("publish-review", fixture.Context, changed, default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+        sends.Should().Be(1);
+        await snapshots.SaveAsync(
+            "instance-1",
+            snapshot with
+            {
+                Tasks = snapshot
+                    .Tasks.Select(task =>
+                        task.NodeId == "final-review" ? task with { Status = WorkflowTaskStatus.InFlight } : task
+                    )
+                    .ToArray(),
+            }
+        );
+        await fixture
+            .Dispatcher.Invoking(value => value.DispatchAsync("publish-review", fixture.Context, input, default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+        sends.Should().Be(1);
+        fixture.FactoryCalls.Should().Be(0);
+        fixture.Runner.Commands.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Publication_without_dispatcher_artifact_reconciles_exact_external_receipt_without_send()
+    {
+        var snapshots = new AchieveAi.LmDotnetTools.LmWorkflow.Persistence.InMemoryWorkflowStore();
+        var sends = 0;
+        var reconciles = 0;
+        using var fixture = new Fixture(
+            () => Fixture.Capability,
+            enableCommentPosting: true,
+            publishReview: (_, _, _) =>
+            {
+                sends++;
+                throw new InvalidOperationException("Unexpected send");
+            },
+            reconcileReview: (_, body, _) =>
+            {
+                reconciles++;
+                body.Should().Be("Final report");
+                return Task.FromResult<JsonObject?>(
+                    new JsonObject
+                    {
+                        ["Outcome"] = "published",
+                        ["Description"] = "Existing exact provider receipt",
+                        ["Actions"] = new JsonArray(),
+                    }
+                );
+            },
+            workflowStore: snapshots
+        );
+        fixture.Admission["Route"] = "new_head";
+        fixture.Scope["Admission"] = fixture.Admission.DeepClone();
+        fixture.SaveScope();
+        fixture.Context["StepId"] = "publish:task";
+        var report = new JsonObject { ["Format"] = "markdown", ["Markdown"] = "Final report" };
+        await snapshots.SaveAsync(
+            "instance-1",
+            new AchieveAi.LmDotnetTools.LmWorkflow.Persistence.WorkflowInstanceSnapshot
+            {
+                InstanceId = "instance-1",
+                CurrentNodeId = "publish",
+                Inputs = (JsonObject)fixture.Admission.DeepClone(),
+                State = new JsonObject { ["FinalReview"] = report.DeepClone() },
+                Tasks =
+                [
+                    new()
+                    {
+                        Name = "final-review:1:final-review:task",
+                        NodeId = "final-review",
+                        TaskId = "final-review:task",
+                        Status = WorkflowTaskStatus.Validated,
+                    },
+                    new()
+                    {
+                        Name = "publish:1:publish:task",
+                        NodeId = "publish",
+                        TaskId = "publish:task",
+                        Status = WorkflowTaskStatus.InFlight,
+                        Attempts = 0,
+                    },
+                ],
+            }
+        );
+        var input = new JsonObject { ["Admission"] = fixture.Admission.DeepClone(), ["Report"] = report.DeepClone() };
+        fixture.Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-daemon-publication").Should().BeNull();
+        var result = await fixture.Dispatcher.ReconcileAsync("publish-review", fixture.Context, input, default);
+        result!["Outcome"]!.GetValue<string>().Should().Be("published");
+        sends.Should().Be(0);
+        reconciles.Should().Be(1);
+        input["Report"]!["Markdown"] = "Wrong report";
+        await fixture
+            .Dispatcher.Invoking(value => value.ReconcileAsync("publish-review", fixture.Context, input, default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+        sends.Should().Be(0);
+        reconciles.Should().Be(1);
     }
 
     [Fact]
@@ -221,6 +861,8 @@ public sealed class WorkflowOperationDispatcherTests
             }
         );
         input["KnowledgeReview"] = ReviewedKnowledgeTestExtensions.Approved((JsonArray)input["Extractions"]!);
+        input["Canonical"]!["Learnings"] = input["Extractions"]![0]!.DeepClone();
+        input["Canonical"]!["Judgment"] = input["KnowledgeReview"]!.DeepClone();
         await fixture.Dispatcher.DispatchAsync("retain-artifacts", fixture.Context, input, default);
         var bundle = File.ReadAllText(Path.Combine(fixture.Directory, "retention-bundle.json"));
         bundle.Should().Contain("KnowledgeBase/widgets/contracts.md").And.Contain("KnowledgeBase/_index.jsonl");
@@ -650,10 +1292,8 @@ public sealed class WorkflowOperationDispatcherTests
     }
 
     /// <summary>
-    /// The export is gated on the ROUTE, not only on the capability. A <c>merged</c> or <c>discussion</c>
-    /// run has no canonical review in the private store — <c>PersistCanonical</c> refuses to write one off
-    /// that route — so a Canonical node arriving in the operation input is malformed or someone else's.
-    /// Publishing it would put content on the branch that the daemon never validated and never recorded.
+    /// The full new-head review export is gated on the route, not only on the capability. Merged
+    /// assessments and discussion output must not turn into a full new-head review artifact.
     /// </summary>
     [Theory]
     [InlineData("merged")]
@@ -669,6 +1309,25 @@ public sealed class WorkflowOperationDispatcherTests
             var extractions = new JsonArray(new JsonObject { ["Edits"] = new JsonArray(), ["Description"] = "None" });
             input["Extractions"] = extractions.DeepClone();
             input["KnowledgeReview"] = ReviewedKnowledgeTestExtensions.Approved(extractions);
+            input["Canonical"] = fixture.RetentionInput["Canonical"]!.DeepClone();
+            fixture.Scope["FrozenContext"] = new JsonObject { ["Merge"] = new JsonObject { ["ParentSha"] = "base" } };
+            fixture.SaveScope();
+            fixture.Store.AddArtifact(
+                new ReviewArtifact
+                {
+                    ReviewRunId = fixture.Run.Id,
+                    ArtifactKind = "workflow-diff",
+                    ArtifactSchemaVersion = 1,
+                    Provider = "github",
+                    Payload = new JsonObject
+                    {
+                        ["Kind"] = "landed-objects",
+                        ["BaseSha"] = "base",
+                        ["HeadSha"] = fixture.Run.MergeSha,
+                        ["Diff"] = "final landed changes",
+                    }.ToJsonString(),
+                }
+            );
         }
 
         await fixture.Dispatcher.DispatchAsync("retain-artifacts", fixture.Context, input, default);
@@ -1126,21 +1785,50 @@ public sealed class WorkflowOperationDispatcherTests
                 ["KnowledgeReview"] = ReviewedKnowledgeTestExtensions.Approved(
                     new JsonArray(new JsonObject { ["Edits"] = new JsonArray(), ["Description"] = "None" })
                 ),
+                ["Canonical"] = MergedCanonical(),
             };
+
+        private static JsonObject MergedCanonical() =>
+            new()
+            {
+                ["SelfAssessment"] = new JsonObject
+                {
+                    ["Format"] = "markdown",
+                    ["Markdown"] = "Original review assessed.",
+                },
+                ["Learnings"] = new JsonObject { ["Edits"] = new JsonArray(), ["Description"] = "None" },
+                ["Judgment"] = ReviewedKnowledgeTestExtensions.Approved(
+                    new JsonArray(new JsonObject { ["Edits"] = new JsonArray(), ["Description"] = "None" })
+                ),
+            };
+
         public JsonObject Scope { get; }
         public WorkflowOperationDispatcher Dispatcher { get; }
         public int FactoryCalls { get; private set; }
 
-        public Fixture(bool exportFullReviewOutput = false, string variantId = "primary")
+        public Fixture(
+            bool exportFullReviewOutput = false,
+            string variantId = "primary",
+            PrLifecycleState lifecycle = PrLifecycleState.Merged
+        )
             : this(
                 () =>
                     exportFullReviewOutput
                         ? ReviewArtifactBranchCapability.Grant("github/example/widgets", "7", Head)
                         : Capability,
-                variantId
+                variantId,
+                lifecycle: lifecycle
             ) { }
 
-        public Fixture(Func<ReviewArtifactBranchCapability> capability, string variantId = "primary")
+        public Fixture(
+            Func<ReviewArtifactBranchCapability> capability,
+            string variantId = "primary",
+            bool enableCommentPosting = false,
+            Func<ReviewRun, string, CancellationToken, Task<JsonObject>>? publishReview = null,
+            Func<ReviewRun, string, CancellationToken, Task<JsonObject?>>? reconcileReview = null,
+            AchieveAi.LmDotnetTools.LmWorkflow.Persistence.IWorkflowStore? workflowStore = null,
+            PrLifecycleState lifecycle = PrLifecycleState.Merged
+        )
         {
             Store = new ReviewStore(_db.ConnectionString);
             var repo = new RepoIdentity
@@ -1159,11 +1847,12 @@ public sealed class WorkflowOperationDispatcherTests
                     BaseSha = "base",
                     TriggerWatermark = "1",
                     ReviewKind = "merged",
+                    MergeSha = Head,
                     VariantId = variantId,
-                    Mode = "auto",
+                    Mode = enableCommentPosting ? "post" : "auto",
                     Stage = ReviewStage.Discovered,
                     WorkflowStatus = WorkflowStatus.Pending,
-                    PrLifecycleState = PrLifecycleState.Merged,
+                    PrLifecycleState = lifecycle,
                 }
             );
             Directory = Path.Combine(_root, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("instance-1"))));
@@ -1173,7 +1862,7 @@ public sealed class WorkflowOperationDispatcherTests
                 ["ReviewRunId"] = Run.Id,
                 ["WorkflowInstanceId"] = "instance-1",
                 ["Admission"] = Admission.DeepClone(),
-                ["FrozenContext"] = new JsonObject(),
+                ["FrozenContext"] = new JsonObject { ["Merge"] = new JsonObject { ["ParentSha"] = "base" } },
             };
             SaveScope();
             Context = new JsonObject
@@ -1185,6 +1874,22 @@ public sealed class WorkflowOperationDispatcherTests
             };
             Runner.OnArgvContains("rev-parse", new SandboxCommandResult(0, new string('a', 40), ""));
             Runner.OnArgvContains("ls-remote", new SandboxCommandResult(2, "", ""));
+            Store.AddArtifact(
+                new ReviewArtifact
+                {
+                    ReviewRunId = Run.Id,
+                    ArtifactKind = "workflow-diff",
+                    ArtifactSchemaVersion = 1,
+                    Provider = "github",
+                    Payload = new JsonObject
+                    {
+                        ["Kind"] = "landed-objects",
+                        ["BaseSha"] = "base",
+                        ["HeadSha"] = Head,
+                        ["Diff"] = "final landed changes",
+                    }.ToJsonString(),
+                }
+            );
             var slot = new ReviewSlot("widgets", 0);
             Workspace = new WorkflowWorkspace(
                 Store,
@@ -1219,7 +1924,7 @@ public sealed class WorkflowOperationDispatcherTests
             Dispatcher = new WorkflowOperationDispatcher(
                 Store,
                 Workspace,
-                new CodeReviewDaemonOptions(),
+                new CodeReviewDaemonOptions { EnableCommentPosting = enableCommentPosting },
                 _root,
                 // The daemon's steady-state posture: push is authorized for this exact run, but the wider
                 // pilot export is NOT, so public git still receives only the fixed metadata summary.
@@ -1250,7 +1955,10 @@ public sealed class WorkflowOperationDispatcherTests
                             )
                         )
                     );
-                }
+                },
+                publishReview: publishReview,
+                reconcileReview: reconcileReview,
+                workflowStore: workflowStore
             );
         }
 

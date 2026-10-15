@@ -1,13 +1,20 @@
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.LmWorkflow.Model;
 using AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
 using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
+using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
+using CodeReviewDaemon.Sample.Workspace.Git;
+using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
@@ -22,7 +29,7 @@ public sealed class ReviewWorkflowRunnerTests
     [InlineData("discussion", "prepare-discussion,discussion,retain-discussion")]
     [InlineData(
         "merged",
-        "prepare-history,learnings,process-judge,additional-extraction,knowledge-safety-review,collect-statistics,retain-merged,close-artifact-branch"
+        "prepare-history,merged-self-assessment,learnings,merged-judgment,collect-statistics,retain-merged,close-artifact-branch"
     )]
     public async Task Shipped_routes_complete_from_frozen_scope_before_releasing_workspace(
         string route,
@@ -171,6 +178,356 @@ public sealed class ReviewWorkflowRunnerTests
     }
 
     [Fact]
+    public async Task Expired_startup_reconciles_original_agent_and_discards_remaining_work_without_dispatch()
+    {
+        using var fixture = new Fixture();
+        var first = new RecordingInvoker { UnknownTask = "independent-review" };
+        var runner = fixture.CreateRunner((_, _, _, _) => Task.FromResult<IWorkflowTaskInvoker>(first));
+        (await runner.RunAsync(fixture.Run, null, [], default)).Should().Be(WorkflowInvocationStatus.Unknown);
+        var owner = $"review-run-{fixture.Run.Id}";
+        var snapshot = (await fixture.WorkflowStore.LoadAsync(owner))!;
+        var pending = snapshot.Tasks.Single(task => task.Status == WorkflowTaskStatus.InFlight);
+        var deadlines = snapshot.Deadlines.ToDictionary(entry => entry.Key, entry => entry.Value);
+        deadlines[pending.Name] = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await fixture.WorkflowStore.SaveAsync(owner, snapshot with { Deadlines = deadlines });
+        var reconciler = new RecordingInvoker();
+        var recovery = fixture.CreateRunner(
+            (_, _, _, _) => Task.FromResult<IWorkflowTaskInvoker>(reconciler),
+            workspace: fixture.CreateWorkspace(),
+            resetFailedAttempts: true
+        );
+
+        await recovery.RecoverActiveWorkspacesAsync(default);
+
+        reconciler.Reconciled.Should().ContainSingle();
+        reconciler
+            .Reconciled[0]
+            .InvocationId.Should()
+            .Be(first.Invoked.Single(value => Step(value) == "independent-review").InvocationId);
+        reconciler.Invoked.Should().BeEmpty("startup must not send the never-dispatched remainder");
+        var discarded = (await fixture.WorkflowStore.LoadAsync(owner))!;
+        discarded.IsComplete.Should().BeFalse();
+        discarded.Tasks.Should().Contain(task => task.Status == WorkflowTaskStatus.Failed);
+        fixture.Store.GetReviewRun(fixture.Run.Id)!.WorkflowStatus.Should().NotBe(WorkflowStatus.Completed);
+        fixture
+            .Workspace.ReadAssignment(fixture.Run)
+            .Active.Should()
+            .BeTrue("missing cleanup proof must retain ownership");
+        fixture
+            .Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-attempt-reset-intent")
+            .Should()
+            .BeNull("inspection failed before destructive apply was authorized");
+        fixture.Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-attempt-reset").Should().BeNull();
+        fixture.Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-recovery-pending").Should().NotBeNull();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Startup_abandons_unknown_inflight_checkout_only_after_verified_reset(bool cleanupAlreadySettled)
+    {
+        using var fixture = new Fixture();
+        var first = new RecordingInvoker { UnknownTask = "prepare-independent" };
+        var initial = fixture.CreateRunner((_, _, _, _) => Task.FromResult<IWorkflowTaskInvoker>(first));
+        (await initial.RunAsync(fixture.Run, null, [], default)).Should().Be(WorkflowInvocationStatus.Unknown);
+        var owner = $"review-run-{fixture.Run.Id}";
+        var before = (await fixture.WorkflowStore.LoadAsync(owner))!;
+        var task = before.Tasks.Single();
+        task.Status.Should().Be(WorkflowTaskStatus.InFlight);
+        var assignment = fixture.Workspace.ReadAssignment(fixture.Run);
+        fixture.Store.AddArtifact(
+            new()
+            {
+                ReviewRunId = fixture.Run.Id,
+                ArtifactKind = WorkflowWorkspace.RemotePreparationArtifactKind,
+                ArtifactSchemaVersion = 1,
+                Provider = "workflow",
+                Payload = new JsonObject
+                {
+                    ["AssignmentId"] = assignment.AssignmentId,
+                    ["Settled"] = false,
+                    ["OutcomeUnknown"] = true,
+                }.ToJsonString(),
+            }
+        );
+        var unknown = fixture.Store.TryGetLatestArtifact(
+            fixture.Run.Id,
+            WorkflowWorkspace.RemotePreparationArtifactKind
+        )!;
+        fixture.Store.AddArtifact(
+            new()
+            {
+                ReviewRunId = fixture.Run.Id,
+                ArtifactKind = WorkflowWorkspace.PreparationDiagnosticArtifactKind,
+                ArtifactSchemaVersion = 1,
+                Provider = "workflow",
+                Payload = new JsonObject
+                {
+                    ["AssignmentId"] = assignment.AssignmentId,
+                    ["Phase"] = "checkout",
+                }.ToJsonString(),
+            }
+        );
+        var identity = new JsonObject
+        {
+            ["runId"] = fixture.Run.Id,
+            ["assignmentId"] = assignment.AssignmentId,
+            ["workflowInstanceId"] = owner,
+            ["repository"] = "widgets",
+            ["slot"] = 0,
+            ["pr"] = fixture.Run.PrId,
+            ["head"] = fixture.Run.HeadSha,
+            ["base"] = fixture.Run.BaseSha,
+            ["merge"] = new string('a', 40),
+            ["sourcePath"] = assignment.Slot.SourceRelativePath,
+        };
+        fixture.CommandRunner.OnArgvContains(
+            "baseline history is incomplete",
+            new SandboxCommandResult(
+                0,
+                """{"repository":"widgets","slot":0,"sourcePath":".worktrees/widgets-0/repos/widgets","sourceStore":"source-stores/widgets.git","checkoutSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","mergeBaseSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","preparedManifest":"manifest"}""",
+                ""
+            )
+        );
+        foreach (var apply in new[] { false, true })
+        {
+            var receipt = new JsonObject
+            {
+                ["schema"] = 1,
+                ["status"] = apply ? "reset" : "inspected",
+                ["identity"] = identity.DeepClone(),
+                ["compactOutput"] = true,
+                ["inventoryCount"] = 2,
+                ["inventorySha256"] = new string('a', 64),
+            };
+            fixture.CommandRunner.OnArgvContains(
+                "\"apply\":" + apply.ToString().ToLowerInvariant(),
+                new SandboxCommandResult(0, receipt.ToJsonString(), "")
+            );
+        }
+        if (cleanupAlreadySettled)
+            await fixture.Workspace.ResetSettledAttemptAsync(fixture.Run, owner, default);
+        var invoker = new RecordingInvoker();
+        var workspace = fixture.CreateWorkspace();
+        var recovery = fixture.CreateRunner(
+            (_, _, _, _) => Task.FromResult<IWorkflowTaskInvoker>(invoker),
+            workspace: workspace,
+            resetFailedAttempts: true
+        );
+        await recovery.RecoverActiveWorkspacesAsync(default);
+        var after = (await fixture.WorkflowStore.LoadAsync(owner))!;
+        after.IsComplete.Should().BeFalse();
+        var abandoned = after.Tasks.Single();
+        abandoned.Status.Should().Be(WorkflowTaskStatus.Failed);
+        abandoned.LastError.Should().Be("Preparation attempt abandoned after verified selected-slot reset.");
+        abandoned.NodeId.Should().Be(task.NodeId);
+        abandoned.TaskId.Should().Be(task.TaskId);
+        abandoned.Name.Should().Be(task.Name);
+        abandoned.Attempts.Should().Be(task.Attempts);
+        abandoned.ToolCallId.Should().Be(task.ToolCallId);
+        after.Deadlines.Should().BeEquivalentTo(before.Deadlines);
+        invoker.Invoked.Should().BeEmpty();
+        fixture.Pool.Returned.Should().Be(1);
+        fixture
+            .Store.GetArtifacts(fixture.Run.Id)
+            .Single(artifact => artifact.Id == unknown.Id)
+            .Payload.Should()
+            .Be(unknown.Payload);
+        fixture.Store.TryGetLatestArtifact(fixture.Run.Id, WorkflowWorkspace.CheckoutArtifactKind).Should().BeNull();
+        fixture
+            .Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-preparation-reset-disposition")
+            .Should()
+            .NotBeNull();
+    }
+
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(false, false, true)]
+    [InlineData(true, false, true)]
+    [InlineData(false, true, true)]
+    public async Task Startup_abandons_settled_context_failure_only_with_unchanged_evidence(
+        bool cleanupAlreadySettled,
+        bool evidenceChanged,
+        bool terminal = false
+    )
+    {
+        using var fixture = new Fixture();
+        var run = fixture.Run;
+        if (terminal)
+        {
+            fixture.Store.UpdateReviewRunState(run.Id, run.Stage, run.WorkflowStatus, PrLifecycleState.Merged);
+            run = fixture.Store.GetReviewRun(run.Id)!;
+        }
+        var frozen = new JsonObject { ["original-evidence"] = "preserved" };
+        var round = terminal ? fixture.CreateRound("merged", frozen) : null;
+        var first = new RecordingInvoker { UnknownTask = terminal ? "prepare-history" : "prepare-independent" };
+        var initial = fixture.CreateRunner((_, _, _, _) => Task.FromResult<IWorkflowTaskInvoker>(first));
+        (await initial.RunAsync(run, round, frozen, default)).Should().Be(WorkflowInvocationStatus.Unknown);
+        var owner = terminal ? $"review-round-{round!.Id}" : $"review-run-{run.Id}";
+        var before = (await fixture.WorkflowStore.LoadAsync(owner))!;
+        var assignment = fixture.Workspace.ReadAssignment(fixture.Run);
+        void Save(string kind, object payload) =>
+            fixture.Store.AddArtifact(
+                new()
+                {
+                    ReviewRunId = fixture.Run.Id,
+                    ArtifactKind = kind,
+                    ArtifactSchemaVersion = 1,
+                    Provider = "workflow",
+                    Payload = JsonSerializer.Serialize(payload),
+                }
+            );
+        if (!terminal)
+            Save(
+                WorkflowWorkspace.CheckoutArtifactKind,
+                new PreparedCheckout(
+                    assignment.Slot.WorktreeRoot,
+                    assignment.Slot.SourceRoot,
+                    $"{assignment.Slot.WorktreeRoot}/PRs/{fixture.Run.PrId}",
+                    "review/widgets-7",
+                    CheckoutSha: new string('a', 40),
+                    SourceHeadSha: fixture.Run.HeadSha,
+                    TargetBaseSha: fixture.Run.BaseSha
+                )
+            );
+        var preparation = new JsonObject
+        {
+            ["AssignmentId"] = assignment.AssignmentId,
+            ["Settled"] = true,
+            ["OutcomeUnknown"] = false,
+        };
+        Save(WorkflowWorkspace.RemotePreparationArtifactKind, preparation);
+        var originalPreparation = fixture.Store.TryGetLatestArtifact(
+            fixture.Run.Id,
+            WorkflowWorkspace.RemotePreparationArtifactKind
+        )!;
+        Save(
+            WorkflowWorkspace.PreparationDiagnosticArtifactKind,
+            new JsonObject
+            {
+                ["AssignmentId"] = assignment.AssignmentId,
+                ["Phase"] = "context-read",
+                ["WriteUnacknowledged"] = false,
+                ["Errors"] = new JsonArray(new JsonObject { ["Type"] = nameof(IOException) }),
+            }
+        );
+        var diagnostic = fixture.Store.TryGetLatestArtifact(
+            fixture.Run.Id,
+            WorkflowWorkspace.PreparationDiagnosticArtifactKind
+        )!;
+        var identity = new JsonObject
+        {
+            ["runId"] = fixture.Run.Id,
+            ["assignmentId"] = assignment.AssignmentId,
+            ["workflowInstanceId"] = owner,
+            ["repository"] = "widgets",
+            ["slot"] = 0,
+            ["pr"] = fixture.Run.PrId,
+            ["head"] = fixture.Run.HeadSha,
+            ["base"] = fixture.Run.BaseSha,
+            ["merge"] = new string('a', 40),
+            ["sourcePath"] = assignment.Slot.SourceRelativePath,
+        };
+        if (terminal)
+        {
+            identity["merge"] = null;
+            identity["mode"] = "unprepared-baseline";
+        }
+        SandboxCommandResult Receipt(bool apply, bool bound)
+        {
+            var receiptIdentity = (JsonObject)identity.DeepClone();
+            if (terminal && bound)
+            {
+                receiptIdentity["rootHead"] = new string('e', 40);
+                receiptIdentity["sourceBaseline"] = new string('d', 40);
+            }
+            return new(
+                0,
+                new JsonObject
+                {
+                    ["schema"] = 1,
+                    ["status"] = apply ? "reset" : "inspected",
+                    ["identity"] = receiptIdentity,
+                    ["rootHead"] = new string('e', 40),
+                    ["sourceBaseline"] = new string('d', 40),
+                    ["compactOutput"] = true,
+                    ["inventoryCount"] = 2,
+                    ["inventorySha256"] = new string('a', 64),
+                }.ToJsonString(),
+                ""
+            );
+        }
+        fixture.CommandRunner.OnArgvContainsSequence("\"apply\":false", Receipt(false, false), Receipt(false, true));
+        fixture.CommandRunner.OnArgvContains("\"apply\":true", Receipt(true, true));
+        if (cleanupAlreadySettled)
+            await fixture.Workspace.ResetSettledAttemptAsync(run, owner, default);
+        if (evidenceChanged)
+            fixture.CommandRunner.BeforeArgvContains(
+                "\"apply\":true",
+                () => Save(WorkflowWorkspace.RemotePreparationArtifactKind, preparation)
+            );
+        var invoker = new RecordingInvoker();
+        var recovery = fixture.CreateRunner(
+            (_, _, _, _) => Task.FromResult<IWorkflowTaskInvoker>(invoker),
+            workspace: fixture.CreateWorkspace(),
+            resetFailedAttempts: true
+        );
+        await recovery.RecoverActiveWorkspacesAsync(default);
+        var after = (await fixture.WorkflowStore.LoadAsync(owner))!;
+        after.IsComplete.Should().BeFalse();
+        after
+            .Tasks.Single()
+            .Status.Should()
+            .Be(evidenceChanged ? WorkflowTaskStatus.InFlight : WorkflowTaskStatus.Failed);
+        after.Tasks.Single().TaskId.Should().Be(before.Tasks.Single().TaskId);
+        after.Tasks.Single().Attempts.Should().Be(before.Tasks.Single().Attempts);
+        after.Tasks.Single().ToolCallId.Should().Be(before.Tasks.Single().ToolCallId);
+        after.Deadlines.Should().BeEquivalentTo(before.Deadlines);
+        invoker.Invoked.Should().BeEmpty();
+        fixture.Pool.Returned.Should().Be(evidenceChanged ? 0 : 1);
+        if (terminal)
+        {
+            fixture.Store.GetOutboxForRun(run.Id).Should().BeEmpty();
+            fixture.Store.GetLatestWorkflowRound(run.Id, WorkflowRoundKind.Merged)!.CompletedAt.Should().BeNull();
+            fixture.Store.TryGetLatestArtifact(run.Id, WorkflowWorkspace.CheckoutArtifactKind).Should().BeNull();
+        }
+        fixture
+            .Store.GetArtifacts(fixture.Run.Id)
+            .Single(artifact => artifact.Id == diagnostic.Id)
+            .Payload.Should()
+            .Be(diagnostic.Payload);
+        fixture
+            .Store.GetArtifacts(fixture.Run.Id)
+            .Single(artifact => artifact.Id == originalPreparation.Id)
+            .Payload.Should()
+            .Be(originalPreparation.Payload);
+        fixture.Store.TryGetLatestArtifact(fixture.Run.Id, WorkflowWorkspace.PreparationArtifactKind).Should().BeNull();
+        fixture.Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-attempt-reset").Should().NotBeNull();
+        var latestPreparation = fixture.Store.TryGetLatestArtifact(
+            fixture.Run.Id,
+            WorkflowWorkspace.RemotePreparationArtifactKind
+        )!;
+        latestPreparation.Payload.Should().Be(originalPreparation.Payload);
+        latestPreparation.Id.Should().BeGreaterOrEqualTo(originalPreparation.Id);
+        if (evidenceChanged)
+            latestPreparation.Id.Should().BeGreaterThan(originalPreparation.Id);
+        var disposition = fixture.Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-preparation-reset-disposition");
+        if (evidenceChanged)
+        {
+            disposition.Should().BeNull();
+            fixture.Workspace.ReadAssignment(fixture.Run).Active.Should().BeTrue();
+            fixture.Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-recovery-pending").Should().NotBeNull();
+        }
+        else
+            JsonNode.Parse(disposition!.Payload)!["Disposition"]!
+                .GetValue<string>()
+                .Should()
+                .Be("Failed context preparation abandoned after verified cleanup.");
+    }
+
+    [Fact]
     public async Task Startup_recovery_restores_every_active_assignment_before_new_admission()
     {
         using var fixture = new Fixture();
@@ -178,13 +535,18 @@ public sealed class ReviewWorkflowRunnerTests
         var restartedWorkspace = fixture.CreateWorkspace();
         var runner = fixture.CreateRunner(
             (_, _, _, _) => Task.FromResult<IWorkflowTaskInvoker>(new RecordingInvoker()),
-            workspace: restartedWorkspace
+            workspace: restartedWorkspace,
+            resetFailedAttempts: true
         );
 
         await runner.RecoverActiveWorkspacesAsync(default);
 
         fixture.Pool.Recovered.Should().Be(1);
         restartedWorkspace.ReadAssignment(fixture.Run).Active.Should().BeTrue();
+        fixture
+            .CommandRunner.Commands.Should()
+            .NotContain(command => command.Argv.Any(arg => arg.Contains("compactOutput")));
+        fixture.Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-attempt-reset-intent").Should().BeNull();
     }
 
     [Fact]
@@ -204,6 +566,191 @@ public sealed class ReviewWorkflowRunnerTests
             .Workspace.Invoking(value => value.ReadAssignment(fixture.Run))
             .Should()
             .Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")] // Real workflow persistence and SQLite fixture exercise the runner's completed fast path.
+    public async Task Completed_snapshot_with_hosted_parent_busy_does_not_release_assignment_or_resend()
+    {
+        using var fixture = new Fixture();
+        var recording = new RecordingInvoker();
+        var setup = fixture.CreateRunner(
+            (_, _, _, _) => Task.FromResult<IWorkflowTaskInvoker>(recording),
+            (_, _) =>
+                new Dictionary<string, string>
+                {
+                    ["review-parent"] = "parent-session",
+                    ["review-grader"] = "grader-session",
+                }
+        );
+        (await setup.RunAsync(fixture.Run, null, [], default)).Should().Be(WorkflowInvocationStatus.Completed);
+        var instanceId = $"review-run-{fixture.Run.Id}";
+        var snapshot = (await fixture.WorkflowStore.LoadAsync(instanceId))!;
+        var validatedAgents = snapshot
+            .Tasks.Where(occurrence =>
+                occurrence.Status == WorkflowTaskStatus.Validated
+                && snapshot
+                    .Definition!.Nodes.OfType<ProceduralNode>()
+                    .Single(node => node.Id == occurrence.NodeId)
+                    .TaskList!.Single(task => task.Id == occurrence.TaskId)
+                    .Delegate == DelegateKind.Agent
+            )
+            .ToArray();
+        validatedAgents.Should().NotBeEmpty();
+        var expiredDeadline = DateTimeOffset.UtcNow.AddMinutes(-1);
+        snapshot = snapshot with
+        {
+            Deadlines = validatedAgents.ToDictionary(entry => entry.Name, _ => expiredDeadline, StringComparer.Ordinal),
+        };
+        await fixture.WorkflowStore.SaveAsync(instanceId, snapshot); // Saved deadlines govern reconciliation.
+        var runDirectory = Path.GetDirectoryName(
+            Directory.GetFiles(fixture.RunDirectoryRoot, "scope.json", SearchOption.AllDirectories).Single()
+        )!;
+        var privateDirectory = Path.Combine(runDirectory, "private");
+        Directory.CreateDirectory(privateDirectory);
+        foreach (var occurrence in validatedAgents)
+        {
+            var task = snapshot
+                .Definition!.Nodes.OfType<ProceduralNode>()
+                .Single(node => node.Id == occurrence.NodeId)
+                .TaskList!.Single(value => value.Id == occurrence.TaskId);
+            var sessionId = snapshot.Sessions[task.Session ?? occurrence.NodeId];
+            var invocationId = occurrence.ToolCallId ?? $"{instanceId}/{occurrence.Name}/{occurrence.Attempts}";
+            var invocation = new WorkflowInvocation
+            {
+                InstanceId = instanceId,
+                InvocationId = invocationId,
+                UnitName = occurrence.Name,
+                Task = task,
+                Input = new JsonObject(),
+                SessionId = sessionId,
+                Attempt = occurrence.Attempts + 1,
+                DeadlineUtc = expiredDeadline,
+            };
+            await File.WriteAllTextAsync(
+                Path.Combine(privateDirectory, "invocation-" + Hash(invocationId) + ".json"),
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        SchemaVersion = 1,
+                        Invocation = invocation,
+                        Result = new WorkflowInvocationResult(WorkflowInvocationStatus.Completed, "{\"Done\":true}"),
+                    }
+                )
+            );
+        }
+
+        // The completed runner has already released its address. Give this saved workflow the same
+        // pinned preparation/binding shape a real completed host run retained, then reacquire its slot.
+        _ = await fixture.Workspace.AcquireAsync(fixture.Run, instanceId, default);
+        var assignment = fixture.Workspace.ReadAssignment(fixture.Run);
+        var prepared = new WorkflowWorkspacePreparation(
+            assignment.Slot,
+            null,
+            new PreparedReviewWorkspace("nova-reviews", "workspace-1", fixture.Run.PrId),
+            [],
+            assignment.AssignmentId,
+            []
+        );
+        fixture.Store.AddArtifact(
+            new()
+            {
+                ReviewRunId = fixture.Run.Id,
+                ArtifactKind = WorkflowWorkspace.PreparationArtifactKind,
+                ArtifactSchemaVersion = 1,
+                Provider = "workflow",
+                Payload = JsonSerializer.Serialize(prepared),
+            }
+        );
+        foreach (
+            var sessionId in validatedAgents
+                .Select(occurrence =>
+                {
+                    var task = snapshot
+                        .Definition!.Nodes.OfType<ProceduralNode>()
+                        .Single(node => node.Id == occurrence.NodeId)
+                        .TaskList!.Single(value => value.Id == occurrence.TaskId);
+                    return snapshot.Sessions[task.Session ?? occurrence.NodeId];
+                })
+                .Distinct(StringComparer.Ordinal)
+        )
+        {
+            fixture.Store.AddArtifact(
+                new()
+                {
+                    ReviewRunId = fixture.Run.Id,
+                    ArtifactKind = "workflow-session:" + Hash(sessionId),
+                    ArtifactSchemaVersion = 1,
+                    Provider = "provider",
+                    Payload = JsonSerializer.Serialize(
+                        new
+                        {
+                            SessionId = sessionId,
+                            ThreadId = "thread-parent",
+                            prepared.Workspace.WorkspaceId,
+                            ModeId = "code-review-daemon",
+                            PublicationPolicyVersion = 1,
+                            prepared.Workspace.WorkingDirectoryRelPath,
+                        }
+                    ),
+                }
+            );
+        }
+
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/run-state", "{\"threadId\":\"thread-parent\",\"isInProgress\":true}")
+            .OnJson(HttpMethod.Get, "/subagents?recursive=true", "{\"schemaVersion\":1,\"nodes\":[]}");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://host/") };
+        var client = new LmStreamingS2SClient(http, "secret", "app", "key");
+        var options = new CodeReviewDaemonOptions { ReviewSubAgentBarrierQuietSeconds = 1 };
+        var scopes = new WorkflowPublicationScopes(fixture.WorkflowStore, client);
+        var runner = fixture.CreateRunner(
+            (run, id, directory, _) =>
+            {
+                var dispatcher = new WorkflowOperationDispatcher(
+                    fixture.Store,
+                    fixture.Workspace,
+                    options,
+                    directory,
+                    () => ReviewArtifactBranchCapability.Denied,
+                    (_, _) => throw new InvalidOperationException("Completed fast path must not dispatch artifacts.")
+                );
+                IWorkflowTaskInvoker hosted = new ReviewWorkflowInvoker(
+                    run,
+                    id,
+                    directory,
+                    directory,
+                    new WorkflowScriptInvoker(OperatingSystem.IsWindows() ? "python" : "python3"),
+                    dispatcher,
+                    client,
+                    fixture.Workspace,
+                    fixture.Store,
+                    options,
+                    scopes,
+                    (_, _, _) => throw new InvalidOperationException("Completed fast path must not create scopes."),
+                    new UnusedGatewaySkillProbe(),
+                    NullLoggerFactory.Instance
+                );
+                return Task.FromResult(hosted);
+            }
+        );
+        var releasedBefore = fixture.Pool.Returned;
+
+        var status = await runner.RunAsync(fixture.Run, null, [], default);
+
+        status.Should().Be(WorkflowInvocationStatus.Unknown);
+        handler
+            .CountRequests("/run-state")
+            .Should()
+            .BeGreaterThanOrEqualTo(2, "the real hosted invoker checks the busy parent around the roster");
+        handler
+            .CountRequests("subagents")
+            .Should()
+            .BeGreaterThanOrEqualTo(1, "the recursive roster must also be checked");
+        handler.Requests.Should().OnlyContain(request => request.Method == HttpMethod.Get);
+        fixture.Pool.Returned.Should().Be(releasedBefore, "a busy parent keeps its workflow assignment active");
+        fixture.Workspace.ReadAssignment(fixture.Run).Active.Should().BeTrue();
+        recording.Invoked.Should().NotBeEmpty();
     }
 
     [Fact]
@@ -381,6 +928,277 @@ public sealed class ReviewWorkflowRunnerTests
         fixture.Pool.Returned.Should().Be(returnedBeforeFastPath + 2);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Failed_new_head_resets_before_release_and_bad_receipt_remains_owned_after_recovery(
+        bool invalidReceipt
+    )
+    {
+        using var fixture = new Fixture();
+        var calls = 0;
+        var invoker = new RecordingInvoker { FailedTask = "independent-review" };
+        var owner = $"review-run-{fixture.Run.Id}";
+        var runner = fixture.CreateRunner(
+            (run, instance, _, _) =>
+            {
+                instance.Should().Be(owner);
+                var assignment = fixture.Workspace.ReadAssignment(run);
+                fixture.Store.AddArtifact(
+                    new()
+                    {
+                        ReviewRunId = run.Id,
+                        ArtifactKind = WorkflowWorkspace.PreparationArtifactKind,
+                        ArtifactSchemaVersion = 1,
+                        Provider = "workflow",
+                        Payload = JsonSerializer.Serialize(
+                            new WorkflowWorkspacePreparation(
+                                assignment.Slot,
+                                new PreparedCheckout(
+                                    assignment.Slot.WorktreeRoot,
+                                    assignment.Slot.SourceRoot,
+                                    assignment.Slot.WorktreeRoot + "/PRs/7",
+                                    "review/widgets-7",
+                                    CheckoutSha: "merge"
+                                ),
+                                new PreparedReviewWorkspace("nova-reviews", "workspace-1", run.PrId),
+                                [],
+                                assignment.AssignmentId,
+                                []
+                            )
+                        ),
+                    }
+                );
+                var identity = new JsonObject
+                {
+                    ["runId"] = run.Id,
+                    ["assignmentId"] = assignment.AssignmentId,
+                    ["workflowInstanceId"] = owner,
+                    ["repository"] = "widgets",
+                    ["slot"] = 0,
+                    ["pr"] = run.PrId,
+                    ["head"] = run.HeadSha,
+                    ["base"] = run.BaseSha,
+                    ["merge"] = "merge",
+                    ["sourcePath"] = assignment.Slot.SourceRelativePath,
+                };
+                JsonObject Receipt(bool apply)
+                {
+                    var receipt = new JsonObject
+                    {
+                        ["schema"] = 1,
+                        ["status"] = apply ? "reset" : "inspected",
+                        ["identity"] = identity.DeepClone(),
+                        ["compactOutput"] = true,
+                        ["inventoryCount"] = 2,
+                        ["inventorySha256"] = new string('a', 64),
+                    };
+                    if (apply && invalidReceipt)
+                        receipt["identity"]!["slot"] = 1;
+                    return receipt;
+                }
+                fixture.CommandRunner.OnArgvContainsSequence(
+                    "\"apply\":false",
+                    new SandboxCommandResult(0, Receipt(false).ToJsonString(), "")
+                );
+                fixture.CommandRunner.OnArgvContainsSequence(
+                    "\"apply\":true",
+                    new SandboxCommandResult(0, Receipt(true).ToJsonString(), "")
+                );
+                fixture.CommandRunner.BeforeArgvContains(
+                    "compactOutput",
+                    () =>
+                    {
+                        calls++;
+                        fixture.Pool.Returned.Should().Be(0);
+                        fixture.Workspace.ReadAssignment(run).Should().Be(assignment);
+                    }
+                );
+                return Task.FromResult<IWorkflowTaskInvoker>(invoker);
+            },
+            resetFailedAttempts: true
+        );
+        if (invalidReceipt)
+            await runner
+                .Invoking(value => value.RunAsync(fixture.Run, null, [], default))
+                .Should()
+                .ThrowAsync<InvalidDataException>();
+        else
+            (await runner.RunAsync(fixture.Run, null, [], default)).Should().Be(WorkflowInvocationStatus.Failed);
+        calls.Should().Be(2);
+        fixture.Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-attempt-reset-intent").Should().NotBeNull();
+        var snapshot = (await fixture.WorkflowStore.LoadAsync(owner))!;
+        snapshot.IsComplete.Should().BeFalse();
+        snapshot
+            .Tasks.Should()
+            .Contain(task => task.NodeId == "independent-review" && task.Status == WorkflowTaskStatus.Failed);
+        if (invalidReceipt)
+        {
+            fixture.Pool.Returned.Should().Be(0);
+            fixture.Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-attempt-reset").Should().BeNull();
+            fixture.Workspace.ReadAssignment(fixture.Run).Active.Should().BeTrue();
+            var restartedWorkspace = fixture.CreateWorkspace();
+            var restartedRunner = fixture.CreateRunner(
+                (_, _, _, _) => Task.FromResult<IWorkflowTaskInvoker>(invoker),
+                workspace: restartedWorkspace,
+                resetFailedAttempts: true
+            );
+            await restartedRunner.RecoverActiveWorkspacesAsync(default);
+            fixture.Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-recovery-pending").Should().NotBeNull();
+            fixture.Pool.Recovered.Should().Be(1);
+            fixture.Pool.Returned.Should().Be(0);
+            restartedWorkspace.ReadAssignment(fixture.Run).Active.Should().BeTrue();
+        }
+        else
+        {
+            fixture.Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-attempt-reset").Should().NotBeNull();
+            fixture.Pool.Returned.Should().Be(1);
+        }
+    }
+
+    [Theory]
+    [InlineData("Open", false, false)]
+    [InlineData("Merged", false, false)]
+    [InlineData("Abandoned", false, false)]
+    [InlineData("Abandoned", true, false)]
+    [InlineData("Abandoned", false, true)]
+    public async Task Settled_root_and_terminal_cleanup_binds_baselines_before_return_and_preserves_failure(
+        string lifecycleName,
+        bool failed,
+        bool invalidReceipt
+    )
+    {
+        var lifecycle = Enum.Parse<PrLifecycleState>(lifecycleName);
+        using var fixture = new Fixture();
+        fixture.Store.UpdateReviewRunState(fixture.Run.Id, fixture.Run.Stage, fixture.Run.WorkflowStatus, lifecycle);
+        var run = fixture.Store.GetReviewRun(fixture.Run.Id)!;
+        var frozen = new JsonObject { ["original-evidence"] = "preserved" };
+        var round = lifecycle == PrLifecycleState.Open ? null : fixture.CreateRound("merged", frozen);
+        var owner = round is null ? $"review-run-{run.Id}" : $"review-round-{round.Id}";
+        var invoker = new RecordingInvoker
+        {
+            FailedTask = failed ? "merged-self-assessment" : null,
+            TerminalState = lifecycle.ToString(),
+        };
+        var requests = new List<JsonObject>();
+        var runner = fixture.CreateRunner(
+            (current, instance, _, _) =>
+            {
+                instance.Should().Be(owner);
+                var assignment = fixture.Workspace.ReadAssignment(current);
+                var identity = new JsonObject
+                {
+                    ["runId"] = run.Id,
+                    ["assignmentId"] = assignment.AssignmentId,
+                    ["workflowInstanceId"] = owner,
+                    ["repository"] = assignment.Slot.RepositoryName,
+                    ["slot"] = assignment.Slot.Index,
+                    ["pr"] = run.PrId,
+                    ["head"] = run.HeadSha,
+                    ["base"] = run.BaseSha,
+                    ["merge"] = null,
+                    ["sourcePath"] = assignment.Slot.SourceRelativePath,
+                    ["mode"] = "unprepared-baseline",
+                };
+                var bound = identity.DeepClone().AsObject();
+                bound["rootHead"] = new string('e', 40);
+                bound["sourceBaseline"] = new string('d', 40);
+                JsonObject Receipt(bool apply) =>
+                    new()
+                    {
+                        ["schema"] = 1,
+                        ["cleanupVersion"] = 2,
+                        ["status"] = apply ? "reset" : "inspected",
+                        ["identity"] = (apply ? bound : identity).DeepClone(),
+                        ["rootHead"] = new string('e', 40),
+                        ["sourceBaseline"] = new string('d', 40),
+                        ["compactOutput"] = true,
+                        ["inventoryCount"] = 33,
+                        ["inventorySha256"] = new string('a', 64),
+                    };
+                var applied = Receipt(true);
+                if (invalidReceipt)
+                    applied["identity"]!["assignmentId"] = new string('f', 32);
+                fixture.CommandRunner.OnArgvContainsSequence(
+                    "\"apply\":false",
+                    new SandboxCommandResult(0, Receipt(false).ToJsonString(), "")
+                );
+                fixture.CommandRunner.OnArgvContainsSequence(
+                    "\"apply\":true",
+                    new SandboxCommandResult(0, applied.ToJsonString(), "")
+                );
+                fixture.CommandRunner.BeforeArgvContains(
+                    "compactOutput",
+                    () =>
+                    {
+                        fixture.Pool.Returned.Should().Be(0);
+                        fixture.Workspace.ReadAssignment(current).Should().Be(assignment);
+                        var request = JsonNode.Parse(fixture.CommandRunner.Commands.Last().Argv.Last())!.AsObject();
+                        var apply = request["apply"]!.GetValue<bool>();
+                        request.Remove("apply");
+                        request.Remove("compactOutput");
+                        JsonNode.DeepEquals(request, apply ? bound : identity).Should().BeTrue();
+                        if (apply)
+                        {
+                            var intent = fixture.Store.TryGetLatestArtifact(run.Id, "workflow-attempt-reset-intent")!;
+                            JsonNode.DeepEquals(JsonNode.Parse(intent.Payload), bound).Should().BeTrue();
+                        }
+                        requests.Add(request);
+                    }
+                );
+                return Task.FromResult<IWorkflowTaskInvoker>(invoker);
+            },
+            resetFailedAttempts: true
+        );
+
+        if (invalidReceipt)
+            await runner
+                .Invoking(value => value.RunAsync(run, round, frozen, default))
+                .Should()
+                .ThrowAsync<InvalidDataException>();
+        else
+            (await runner.RunAsync(run, round, frozen, default))
+                .Should()
+                .Be(failed ? WorkflowInvocationStatus.Failed : WorkflowInvocationStatus.Completed);
+
+        requests.Should().HaveCount(2);
+        fixture.Pool.Retired.Should().Be(0);
+        fixture.Pool.Returned.Should().Be(invalidReceipt ? 0 : 1);
+        fixture.Store.TryGetLatestArtifact(run.Id, "workflow-attempt-reset-intent").Should().NotBeNull();
+        if (invalidReceipt)
+        {
+            fixture.Workspace.ReadAssignment(run).Active.Should().BeTrue();
+            fixture.Store.TryGetLatestArtifact(run.Id, "workflow-attempt-reset").Should().BeNull();
+        }
+        else
+        {
+            fixture.Store.TryGetLatestArtifact(run.Id, "workflow-attempt-reset").Should().NotBeNull();
+            fixture.Workspace.Invoking(value => value.ReadAssignment(run)).Should().Throw<InvalidOperationException>();
+        }
+        var snapshot = (await fixture.WorkflowStore.LoadAsync(owner))!;
+        snapshot.IsComplete.Should().Be(!failed);
+        if (failed)
+            snapshot
+                .Tasks.Should()
+                .Contain(task =>
+                    task.NodeId == "merged-self-assessment"
+                    && task.Status == WorkflowTaskStatus.Failed
+                    && task.LastError == "invocation failed; automatic action replay is disabled"
+                );
+        if (round is not null)
+        {
+            var stored = fixture.Store.GetWorkflowRound(round.Id)!;
+            stored.FrozenInputJson.Should().Be(round.FrozenInputJson);
+            stored
+                .Outcome.Should()
+                .Be(
+                    invalidReceipt ? WorkflowRoundOutcome.Running
+                    : failed ? WorkflowRoundOutcome.Failed
+                    : WorkflowRoundOutcome.Succeeded
+                );
+        }
+    }
+
     [Fact]
     public async Task Failed_preparation_result_stays_unfinished_but_releases_durably_settled_workspace()
     {
@@ -502,9 +1320,14 @@ public sealed class ReviewWorkflowRunnerTests
         var restartPool = new ReviewSlotPool(["widgets"], 2, NullLogger<ReviewSlotPool>.Instance);
         var recovery = fixture.CreateRunner(
             (_, _, _, _) => throw new InvalidOperationException("recovery must not dispatch"),
-            workspace: fixture.CreateWorkspace(restartPool)
+            workspace: fixture.CreateWorkspace(restartPool),
+            resetFailedAttempts: true
         );
         await recovery.RecoverActiveWorkspacesAsync(default);
+        fixture
+            .CommandRunner.Commands.Should()
+            .NotContain(command => command.Argv.Any(arg => arg.Contains("compactOutput")));
+        fixture.Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-attempt-reset-intent").Should().BeNull();
         workspace
             .ReadAssignment(fixture.Run)
             .Active.Should()
@@ -609,6 +1432,14 @@ public sealed class ReviewWorkflowRunnerTests
         }
     }
 
+    private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+
+    private sealed class UnusedGatewaySkillProbe : IGatewaySkillProbe
+    {
+        public Task<GatewaySkillSupport> ProbeAsync(IReadOnlyList<string> marketplaces, CancellationToken ct) =>
+            throw new InvalidOperationException("Completed fast path must not probe the gateway.");
+    }
+
     private sealed class Fixture : IDisposable
     {
         private readonly TempSqliteDatabase _database = new();
@@ -671,7 +1502,8 @@ public sealed class ReviewWorkflowRunnerTests
             Func<ReviewRun, string, string, CancellationToken, Task<IWorkflowTaskInvoker>> factory,
             Func<ReviewRun, WorkflowRound?, IReadOnlyDictionary<string, string>>? bindings = null,
             WorkflowWorkspace? workspace = null,
-            TimeSpan? invocationTimeout = null
+            TimeSpan? invocationTimeout = null,
+            bool resetFailedAttempts = false
         ) =>
             new(
                 WorkflowPath(),
@@ -685,13 +1517,15 @@ public sealed class ReviewWorkflowRunnerTests
                     return await factory(run, instanceId, directory, cancellationToken);
                 },
                 bindings,
-                invocationTimeout
+                invocationTimeout,
+                resetFailedAttempts: resetFailedAttempts
             );
 
         public WorkflowRound CreateRound(string route, JsonObject frozen) =>
             Store.CreateOrGetWorkflowRound(
                 new WorkflowRoundSeed
                 {
+                    ReviewRunId = Run.Id,
                     RepoId = Run.RepoId,
                     PrId = Run.PrId,
                     HeadSha = Run.HeadSha,
@@ -748,6 +1582,7 @@ public sealed class ReviewWorkflowRunnerTests
         public string? UnknownTask { get; init; }
         public string? UnknownReconcileTask { get; set; }
         public string? FailedTask { get; init; }
+        public string TerminalState { get; init; } = "Merged";
         public List<WorkflowInvocation> Invoked { get; } = [];
         public List<WorkflowInvocation> Reconciled { get; } = [];
 
@@ -780,17 +1615,28 @@ public sealed class ReviewWorkflowRunnerTests
                 : Success(stepId);
         }
 
-        private static WorkflowInvocationResult Success(string taskId) =>
+        private WorkflowInvocationResult Success(string taskId) =>
             new(
                 WorkflowInvocationStatus.Completed,
                 taskId switch
                 {
                     "prepare-independent" =>
                         """{"PrId":"7","HeadSha":"head","WindowId":"window","ContextArtifact":"context.json","PublicationMode":"collect_only"}""",
-                    "prepare-discussion" or "prepare-history" =>
+                    "prepare-discussion" =>
                         """{"PrId":"7","HeadSha":"head","WindowId":"window","ContextArtifact":"context.json"}""",
-                    "independent-review" or "independent-grade" or "collect-comments" or "assess-performance" =>
-                        """{"Format":"markdown","Markdown":"Review complete."}""",
+                    "prepare-history" => new JsonObject
+                    {
+                        ["PrId"] = "7",
+                        ["HeadSha"] = "head",
+                        ["WindowId"] = "window",
+                        ["ContextArtifact"] = "context.json",
+                        ["TerminalState"] = TerminalState,
+                    }.ToJsonString(),
+                    "independent-review"
+                    or "independent-grade"
+                    or "collect-comments"
+                    or "assess-performance"
+                    or "final-review" => """{"Format":"markdown","Markdown":"Review complete."}""",
                     "fetch-discussion" =>
                         """{"ReviewRunId":1,"HeadSha":"head","CapturedAt":"2026-01-01T00:00:00Z","CommentBaseline":[],"CommentWindow":[]}""",
                     "collect-publication" => """{"Outcome":"no_op","Description":"collect only","Actions":[]}""",
@@ -798,10 +1644,10 @@ public sealed class ReviewWorkflowRunnerTests
                     "grade" => """{"Assessments":[],"Description":"grade"}""",
                     "publish" => """{"Outcome":"no_op","Description":"nothing to publish","Actions":[]}""",
                     "discussion" => """{"Outcome":"no_op","Description":"nothing to reply","Actions":[]}""",
-                    "learnings" or "additional-extraction" => """{"Edits":[],"Description":"none"}""",
-                    "knowledge-safety-review" =>
-                        """{"Verdict":"approved","Reviewed":{"Edits":[],"Description":"none"},"Description":"reviewed"}""",
-                    "process-judge" => """{"Assessment":"ok","Description":"complete"}""",
+                    "learnings" => """{"Edits":[],"Description":"none"}""",
+                    "merged-judgment" =>
+                        """{"Verdict":"approved","Reviewed":{"Edits":[],"Description":"none"},"Description":"Evidence-backed judgment."}""",
+                    "merged-self-assessment" => """{"Format":"markdown","Markdown":"Evidence-backed assessment."}""",
                     "collect-statistics" =>
                         """{"RunId":"7","ArtifactCount":0,"ArtifactCountsByKind":{},"ReceiptCount":0,"ReceiptCountsByStatus":{}}""",
                     "retain-independent" or "retain-review" or "retain-discussion" or "retain-merged" =>

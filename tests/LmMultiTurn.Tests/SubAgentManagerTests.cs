@@ -2108,6 +2108,12 @@ public class SubAgentManagerTests : IAsyncLifetime
             );
 
         _manager = CreateManager(maxConcurrent: 1);
+        SubAgentState? child = null;
+        _manager.BeforeClassifyingRunCompletionForTest = (state, _) =>
+        {
+            child = state;
+            return Task.CompletedTask;
+        };
 
         var foregroundTask = _manager.SpawnAsync(
             "test-agent",
@@ -2152,6 +2158,16 @@ public class SubAgentManagerTests : IAsyncLifetime
             TimeSpan.FromSeconds(10),
             TimeSpan.FromMilliseconds(50),
             observed: () => $"provider calls: {Volatile.Read(ref providerCalls)}"
+        );
+
+        // Reaching the provider precedes completion classification. Queueing the next input before
+        // the latch is consumed makes that completion nonterminal for a different reason.
+        await Wait.UntilAsync(
+            () => child is not null && !child.ParkedOnQuestion,
+            "the resolution-triggered completion consumed the parked latch",
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(10),
+            observed: () => $"parked latch: {child?.ParkedOnQuestion}"
         );
 
         // Act: a second run with nothing to say. The latch is spent, so this one is terminal.

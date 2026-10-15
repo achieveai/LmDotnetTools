@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
 using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
@@ -21,7 +22,10 @@ internal sealed class WorkflowOperationDispatcher(
     string trustedRunDirectoryRoot,
     Func<ReviewArtifactBranchCapability> artifactBranchCapability,
     Func<ReviewRun, CancellationToken, Task<WorkflowArtifactOperations>> artifactOperations,
-    Func<ReviewRun, CancellationToken, Task<JsonObject>>? readDiscussion = null
+    Func<ReviewRun, CancellationToken, Task<JsonObject>>? readDiscussion = null,
+    Func<ReviewRun, string, CancellationToken, Task<JsonObject>>? publishReview = null,
+    Func<ReviewRun, string, CancellationToken, Task<JsonObject?>>? reconcileReview = null,
+    IWorkflowStore? workflowStore = null
 )
 {
     private sealed record Scope(
@@ -44,12 +48,72 @@ internal sealed class WorkflowOperationDispatcher(
         IReadOnlyList<ReviewArtifactFile> Files
     );
 
+    internal async Task<JsonObject?> FinishConfirmedClosureAsync(
+        ReviewRun run,
+        WorkflowRound round,
+        Func<CancellationToken, Task> verifyTerminalIdentity,
+        CancellationToken ct
+    )
+    {
+        var instance = $"review-round-{round.Id}";
+        var scope = await ResolveScopeAsync(
+                "close-artifact-branch",
+                new JsonObject
+                {
+                    ["RunId"] = run.Id.ToString(CultureInfo.InvariantCulture),
+                    ["StepId"] = "close-artifact-branch:task",
+                    ["Attempt"] = 1,
+                    ["RunDirectory"] = Path.Combine(
+                        Path.GetFullPath(trustedRunDirectoryRoot),
+                        InstanceDirectoryName(instance)
+                    ),
+                },
+                new JsonObject(),
+                ct
+            )
+            .ConfigureAwait(false);
+        var operations = await artifactOperations(run, ct).ConfigureAwait(false);
+        var files = await TryReadBundleAsync(scope, checkExtractions: false, ct).ConfigureAwait(false);
+        var assignmentArtifact = store.TryGetLatestArtifact(run.Id, WorkflowWorkspace.AssignmentArtifactKind);
+        var resetArtifact = store.TryGetLatestArtifact(run.Id, "workflow-attempt-reset");
+        var assignment = assignmentArtifact is null
+            ? null
+            : JsonSerializer.Deserialize<WorkflowWorkspaceAssignment>(assignmentArtifact.Payload);
+        var reset = resetArtifact is null ? null : JsonNode.Parse(resetArtifact.Payload);
+        if (
+            files is null
+            || operations.ReconcileRetention(instance, files) is null
+            || scope.InstanceId != round.WorkflowInstanceId
+            || assignment is not { Active: false }
+            || string.IsNullOrWhiteSpace(assignment.AssignmentId)
+            || assignment.WorkflowInstanceId != instance
+            || reset?["status"]?.GetValue<string>() != "reset"
+            || reset["identity"]?["assignmentId"]?.GetValue<string>() != assignment.AssignmentId
+            || reset["identity"]?["workflowInstanceId"]?.GetValue<string>() != instance
+            || reset["identity"]?["runId"]?.GetValue<long>() != run.Id
+            || reset["identity"]?["head"]?.GetValue<string>() != run.HeadSha
+            || reset["identity"]?["base"]?.GetValue<string>() != run.BaseSha
+        )
+            return null;
+        operations.ValidateRetainedFiles(files);
+        return await operations
+            .ReconcileClosureAsync(
+                ct,
+                instance,
+                [.. files.Select(file => file.RelativePath)],
+                finishConfirmedDeletion: true,
+                verifyTerminalIdentity: verifyTerminalIdentity
+            )
+            .ConfigureAwait(false);
+    }
+
     internal static bool Supports(string operation) =>
         operation
             is "prepare-review"
                 or "prepare-independent"
                 or "fetch-discussion"
                 or "collect-publication"
+                or "publish-review"
                 or "prepare-discussion"
                 or "prepare-history"
                 or "collect-statistics"
@@ -66,6 +130,14 @@ internal sealed class WorkflowOperationDispatcher(
         var scope = await ResolveScopeAsync(operation, context, input, cancellationToken).ConfigureAwait(false);
         if (operation.StartsWith("prepare-", StringComparison.Ordinal))
         {
+            if (operation == "prepare-history")
+            {
+                var existing = await workspace
+                    .ReconcilePreparationAsync(scope.Run, scope.Admission, scope.InstanceId, cancellationToken)
+                    .ConfigureAwait(false);
+                if (existing is not null)
+                    return PreparationOutput(operation, scope.Run, existing);
+            }
             var prepared = await workspace
                 .PrepareAssignedAsync(scope.Run, scope.Admission, scope.InstanceId, cancellationToken)
                 .ConfigureAwait(false);
@@ -73,6 +145,40 @@ internal sealed class WorkflowOperationDispatcher(
         }
         if (operation == "collect-publication")
             return CollectedPublication(scope.Run);
+        if (operation == "publish-review")
+        {
+            if (!options.EnableCommentPosting || scope.Run.Mode != "post" || scope.Run.VariantId == "b")
+                throw new InvalidOperationException("Review posting is not authorized for this run.");
+            var report = input["Report"];
+            if (
+                report?["Format"]?.GetValue<string>() != "markdown"
+                || string.IsNullOrWhiteSpace(report["Markdown"]?.GetValue<string>())
+            )
+                throw new InvalidDataException("Publication requires the validated final Markdown report.");
+            await RequirePublicationScopeAsync(scope, context, report, cancellationToken).ConfigureAwait(false);
+            var publication = await (
+                publishReview ?? throw new InvalidOperationException("Review poster is unavailable.")
+            )(scope.Run, report["Markdown"]!.GetValue<string>(), cancellationToken)
+                .ConfigureAwait(false);
+            store.AddArtifact(
+                new ReviewArtifact
+                {
+                    ReviewRunId = scope.Run.Id,
+                    ArtifactKind = "workflow-daemon-publication",
+                    ArtifactSchemaVersion = 1,
+                    Provider = RepoIdentity.ToPublisherNamespace(store.GetRepo(scope.Run.RepoId)!.Provider),
+                    Payload = new JsonObject
+                    {
+                        ["HeadSha"] = scope.Run.HeadSha,
+                        ["ReportHash"] = Convert.ToHexString(
+                            SHA256.HashData(Encoding.UTF8.GetBytes(report["Markdown"]!.GetValue<string>()))
+                        ),
+                        ["Publication"] = publication.DeepClone(),
+                    }.ToJsonString(),
+                }
+            );
+            return publication;
+        }
         if (operation == "fetch-discussion")
             return await CaptureDiscussionAsync(scope, cancellationToken).ConfigureAwait(false);
         JsonObject? frozenContextDigest = null;
@@ -96,11 +202,52 @@ internal sealed class WorkflowOperationDispatcher(
         };
     }
 
+    private async Task RequirePublicationScopeAsync(
+        Scope scope,
+        JsonObject context,
+        JsonNode? report,
+        CancellationToken ct
+    )
+    {
+        var assignment = workspace.ReadAssignment(scope.Run);
+        var snapshot = await (
+            workflowStore ?? throw new InvalidOperationException("Workflow store is required for posting.")
+        )
+            .LoadAsync(scope.InstanceId, ct)
+            .ConfigureAwait(false);
+        if (
+            !assignment.Active
+            || assignment.WorkflowInstanceId != scope.InstanceId
+            || context["StepId"]?.GetValue<string>() != "publish:task"
+            || snapshot is null
+            || snapshot.IsComplete
+            || snapshot.CurrentNodeId != "publish"
+            || !JsonNode.DeepEquals(snapshot.Inputs, scope.Admission)
+            || !snapshot.Tasks.Any(task => task.NodeId == "final-review" && task.Status == WorkflowTaskStatus.Validated)
+            || !snapshot.Tasks.Any(task =>
+                task.NodeId == "publish"
+                && task.Status == WorkflowTaskStatus.InFlight
+                && task.Attempts + 1 == context["Attempt"]?.GetValue<int>()
+            )
+            || !JsonNode.DeepEquals(snapshot.State["FinalReview"], report)
+        )
+            throw new InvalidOperationException(
+                "Publication requires the current validated workflow and active owner."
+            );
+    }
+
     private JsonObject PreparationOutput(string operation, ReviewRun run, JsonObject prepared)
     {
         var result = (JsonObject)prepared.DeepClone();
         if (operation == "prepare-independent")
             result["PublicationMode"] = run.Mode == "collect-only" ? "collect_only" : "post";
+        if (operation == "prepare-history")
+            result["TerminalState"] = run.PrLifecycleState switch
+            {
+                PrLifecycleState.Merged => "Merged",
+                PrLifecycleState.Abandoned => "Abandoned",
+                _ => throw new InvalidOperationException("History preparation requires a terminal PR."),
+            };
         return result;
     }
 
@@ -242,6 +389,25 @@ internal sealed class WorkflowOperationDispatcher(
         }
         if (operation == "collect-publication")
             return CollectedPublication(scope.Run);
+        if (operation == "publish-review")
+        {
+            var saved = store.TryGetLatestArtifact(scope.Run.Id, "workflow-daemon-publication");
+            await RequirePublicationScopeAsync(scope, context, input["Report"], cancellationToken)
+                .ConfigureAwait(false);
+            var text = input["Report"]?["Markdown"]?.GetValue<string>() ?? string.Empty;
+            if (saved is null)
+                return reconcileReview is null
+                    ? null
+                    : await reconcileReview(scope.Run, text, cancellationToken).ConfigureAwait(false);
+            var receipt = JsonNode.Parse(saved.Payload)!;
+            if (
+                receipt["HeadSha"]?.GetValue<string>() != scope.Run.HeadSha
+                || receipt["ReportHash"]?.GetValue<string>()
+                    != Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)))
+            )
+                throw new InvalidDataException("Publication receipt does not match the final report.");
+            return receipt["Publication"]!.DeepClone();
+        }
         if (operation == "fetch-discussion")
             return await CaptureDiscussionAsync(scope, cancellationToken).ConfigureAwait(false);
         var operations = await artifactOperations(scope.Run, cancellationToken).ConfigureAwait(false);
@@ -341,24 +507,30 @@ internal sealed class WorkflowOperationDispatcher(
             )
         )
             throw new InvalidOperationException("Run directory does not match the persisted workflow instance.");
-        var boundAdmission = operation == "retain-artifacts" ? input["Admission"] : input;
+        var boundAdmission = operation is "retain-artifacts" or "publish-review" ? input["Admission"] : input;
         JsonArray? extractions = operation == "retain-artifacts" ? input["Extractions"] as JsonArray : [];
         var route = admission["Route"]?.GetValue<string>();
         if (
-            route is not ("new_head" or "discussion" or "merged")
+            route is not ("new_head" or "discussion" or "merged" or "abandoned")
             || (
-                operation is "prepare-review" or "prepare-independent" or "fetch-discussion" or "collect-publication"
+                operation
+                    is "prepare-review"
+                        or "prepare-independent"
+                        or "fetch-discussion"
+                        or "collect-publication"
+                        or "publish-review"
                 && route != "new_head"
             )
             || (operation == "prepare-discussion" && route != "discussion")
-            || (operation is "prepare-history" or "close-artifact-branch" && route != "merged")
+            || (operation == "prepare-history" && route is not ("merged" or "abandoned"))
+            || (operation == "close-artifact-branch" && route != "merged")
             || (operation != "close-artifact-branch" && !JsonNode.DeepEquals(boundAdmission, admission))
             || extractions is null
-            || (route != "merged" && extractions.Count != 0)
+            || (route is not ("merged" or "abandoned") && extractions.Count != 0)
         )
             throw new InvalidOperationException("Operation input does not match the frozen workflow admission.");
         var review = operation == "retain-artifacts" ? input["KnowledgeReview"] as JsonObject : null;
-        if (operation == "retain-artifacts" && route == "merged")
+        if (operation == "retain-artifacts" && route is "merged" or "abandoned")
             WorkflowKnowledgeEdits.ValidateReview(extractions, review);
         return new Scope(
             run,
@@ -425,7 +597,8 @@ internal sealed class WorkflowOperationDispatcher(
                     scope.FrozenContext,
                     scope.Canonical,
                     operations.CollectRetentionInventory(),
-                    frozenContextDigest
+                    frozenContextDigest,
+                    scope.KnowledgeReview
                 )
             );
             if (notes is not null)
@@ -506,6 +679,24 @@ internal sealed class WorkflowOperationDispatcher(
             if (bundle.Files.Count(file => file.RelativePath == expectedNotesPath) != 1)
                 throw new InvalidOperationException("Retention bundle is missing its bound review notes.");
         }
+        if (bundle.ExportsFullReviewOutput && scope.Admission["Route"]?.GetValue<string>() == "merged")
+        {
+            var prefix = ReviewArtifactExport.BuildPrefix(
+                BindingFor(scope).ArtifactBranch,
+                InstanceDirectoryName(scope.InstanceId)
+            );
+            foreach (
+                var name in new[]
+                {
+                    "merged-self-assessment.md",
+                    "merged-judgment.md",
+                    "merged-lessons.md",
+                    "merged-provenance.json",
+                }
+            )
+                if (bundle.Files.Count(file => file.RelativePath == prefix + name) != 1)
+                    throw new InvalidDataException("Merged retention bundle is missing a required report.");
+        }
         foreach (var file in bundle.Files.Where(file => file.RelativePath.StartsWith("PRs/", StringComparison.Ordinal)))
             ValidatePublicArtifact(file, BindingFor(scope));
         return bundle;
@@ -547,6 +738,42 @@ internal sealed class WorkflowOperationDispatcher(
     // explicitly distinct; per-finding support does not invent a historical numeric grade.
     private JsonObject? PersistCanonical(Scope scope)
     {
+        if (scope.Admission["Route"]?.GetValue<string>() is "merged" or "abandoned")
+        {
+            var completion = scope.Canonical ?? throw new InvalidDataException("Merged reports are required.");
+            if (
+                completion["SelfAssessment"]?["Format"]?.GetValue<string>() != "markdown"
+                || string.IsNullOrWhiteSpace(completion["SelfAssessment"]?["Markdown"]?.GetValue<string>())
+                || completion["Learnings"] is not JsonObject
+                || !JsonNode.DeepEquals(completion["Judgment"], scope.KnowledgeReview)
+            )
+                throw new InvalidDataException("Terminal self-review, extraction and approved judgment are required.");
+            if (scope.Admission["Route"]?.GetValue<string>() == "abandoned")
+            {
+                Save("workflow-abandoned-completion", 1, completion);
+                return new JsonObject { ["Kind"] = "abandoned", ["Notice"] = "No code landed." };
+            }
+            var mergedDiff = JsonNode.Parse(
+                store.TryGetLatestArtifact(scope.Run.Id, "workflow-diff")?.Payload
+                    ?? throw new InvalidDataException("Merged diff evidence is missing.")
+            )!;
+            if (
+                mergedDiff["Kind"]?.GetValue<string>() != "landed-objects"
+                || mergedDiff["HeadSha"]?.GetValue<string>() != scope.Run.MergeSha
+                || !JsonNode.DeepEquals(mergedDiff["BaseSha"], scope.FrozenContext["Merge"]?["ParentSha"])
+            )
+                throw new InvalidDataException("Merged report diff does not match final provenance.");
+            Save("workflow-merged-completion", 1, completion);
+            var mergedBody = Encoding.UTF8.GetBytes(mergedDiff["Diff"]!.GetValue<string>());
+            return new JsonObject
+            {
+                ["Kind"] = "landed-objects",
+                ["ParentSha"] = mergedDiff["BaseSha"]!.DeepClone(),
+                ["LandedSha"] = mergedDiff["HeadSha"]!.DeepClone(),
+                ["Sha256"] = Convert.ToHexString(SHA256.HashData(mergedBody)),
+                ["ByteLength"] = mergedBody.Length,
+            };
+        }
         if (scope.Admission["Route"]?.GetValue<string>() != "new_head" || scope.Canonical is null)
             return null;
         var canonical = scope.Canonical;
@@ -727,7 +954,7 @@ internal sealed class WorkflowOperationDispatcher(
             || summary.Count != 4
             || summary["SchemaVersion"]?.GetValue<int>() != 1
             || summary["ReviewRunId"]?.GetValue<long>() != binding.ReviewRunId
-            || summary["Route"]?.GetValue<string>() is not ("new_head" or "discussion" or "merged")
+            || summary["Route"]?.GetValue<string>() is not ("new_head" or "discussion" or "merged" or "abandoned")
             || summary["KnowledgeEntryCount"]?.GetValue<int>() is not >= 0
         )
             throw new InvalidOperationException("Public retention permits only the fixed metadata summary schema.");

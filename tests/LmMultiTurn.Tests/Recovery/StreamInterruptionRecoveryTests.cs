@@ -256,12 +256,23 @@ public class StreamInterruptionRecoveryTests
     {
         using var cts = new CancellationTokenSource();
 
-        // A tool that never finishes. Recovery's first act is an UNCANCELLABLE wait for every tool the
-        // attempt dispatched, so entering recovery here would wedge the loop forever — which is what
-        // makes "the drain returns at all" a decisive test of the cancellation guard rather than a
-        // test that merely happens to pass because everything downstream throws anyway.
+        // Cancellation must not retry the provider, but it still drains tools already dispatched.
+        // Release the held tool after cancellation so the test does not leave owned work running forever.
+        var toolEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var toolRelease = new TaskCompletionSource<ToolHandlerResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cancellationRegistration = cts.Token.Register(() => cancelled.TrySetResult());
         var registry = new FunctionRegistry();
-        registry.AddFunction(WeatherContract(), (_, _, _) => new TaskCompletionSource<ToolHandlerResult>().Task);
+        registry.AddFunction(
+            WeatherContract(),
+            (_, _, _) =>
+            {
+                _ = toolEntered.TrySetResult();
+                return toolRelease.Task;
+            }
+        );
 
         // Byte for byte the same transport failure as the recovered cases — the only difference is
         // that the user asked the run to stop first.
@@ -283,9 +294,18 @@ public class StreamInterruptionRecoveryTests
         );
 
         var drain = RunAsync("cancelled-thread", registry, cts);
-        var finished = await Task.WhenAny(drain, Task.Delay(TimeSpan.FromSeconds(30)));
+        try
+        {
+            await toolEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            _requests.Should().HaveCount(1, "cancellation must never start a recovery request");
+        }
+        finally
+        {
+            _ = toolRelease.TrySetResult(ToolHandlerResult.FromText("released"));
+        }
 
-        finished.Should().BeSameAs(drain, "a cancelled run must not enter recovery and wait on its tools");
+        await drain.WaitAsync(TimeSpan.FromSeconds(5));
         _requests.Should().HaveCount(1, "cancellation must never be answered with a second provider request");
     }
 

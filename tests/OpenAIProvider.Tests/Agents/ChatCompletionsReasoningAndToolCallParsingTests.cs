@@ -1,8 +1,10 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
+using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
@@ -121,6 +123,117 @@ public sealed class ChatCompletionsReasoningAndToolCallParsingTests
 
         var update = Assert.Single(Assert.Single(messages.OfType<ToolsCallUpdateMessage>()).ToolCallUpdates);
         Assert.Equal("calc", update.FunctionName);
+    }
+
+    [Theory]
+    [InlineData("stop")]
+    [InlineData("length")]
+    [InlineData("model_length")]
+    [InlineData("error")]
+    [InlineData("tool_calls")]
+    [InlineData("eos")]
+    [InlineData("end_turn")]
+    public async Task Stream_standalone_empty_terminal_response_logs_reason_without_changing_output(string finishReason)
+    {
+        var logger = new ListLogger();
+        using var http = new HttpClient(
+            FakeHttpMessageHandler.CreateSimpleSseStreamHandler([
+                $$$"""{"id":"empty","choices":[{"index":0,"delta":{},"finish_reason":"{{{finishReason}}}"}],"usage":{"prompt_tokens":29534,"completion_tokens":0,"total_tokens":29534}}""",
+                "[DONE]",
+            ])
+        );
+        using var client = new OpenClient(http, BaseUrl, logger: logger);
+        var agent = new OpenClientAgent("TestAgent", client);
+        var stream = await agent.GenerateReplyStreamingAsync(
+            [new TextMessage { Role = Role.User, Text = "PRIVATE_PROMPT" }],
+            new GenerateReplyOptions { ModelId = "m" }
+        );
+        var messages = new List<IMessage>();
+        await foreach (var message in stream)
+        {
+            messages.Add(message);
+        }
+
+        Assert.IsType<UsageMessage>(Assert.Single(messages));
+        var entry = Assert.Single(
+            logger.Entries,
+            e => e.Message.StartsWith("Streaming response metadata", StringComparison.Ordinal)
+        );
+        Assert.Equal(LogLevel.Information, entry.Level);
+        Assert.Contains(
+            $"ChoiceCount: 1, FinishReason: {finishReason}, HasDelta: True, HasContent: False, HasToolCalls: False, HasReasoning: False",
+            entry.Message
+        );
+        Assert.Contains("PromptTokens: 29534, CompletionTokens: 0, TotalTokens: 29534", entry.Message);
+        Assert.All(logger.Entries, e => Assert.DoesNotContain("PRIVATE_PROMPT", e.Message));
+    }
+
+    [Fact]
+    public async Task Stream_metadata_omits_payload_and_skips_nonterminal_chunks()
+    {
+        var logger = new ListLogger();
+        using var http = new HttpClient(
+            FakeHttpMessageHandler.CreateSimpleSseStreamHandler([
+                """{"id":"c","choices":[{"index":0,"delta":{"role":"assistant","content":"PRIVATE_PARTIAL"}}]}""",
+                """{"id":"c","choices":[{"index":0,"delta":{"content":"PRIVATE_CONTENT","reasoning_content":"PRIVATE_REASONING","reasoning_details":[{"type":"reasoning.encrypted","data":"PRIVATE_SIGNATURE"}],"tool_calls":[{"index":0,"id":"t1","type":"function","function":{"name":"PRIVATE_TOOL","arguments":"PRIVATE_ARGUMENTS"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}""",
+                "[DONE]",
+            ])
+        );
+        using var client = new OpenClient(http, BaseUrl, logger: logger);
+        var request = ChatCompletionRequest.FromMessages(
+            [new TextMessage { Role = Role.User, Text = "PRIVATE_PROMPT" }],
+            new GenerateReplyOptions { ModelId = "m" }
+        );
+        var stream = client.StreamingChatCompletionsAsync(request);
+        var responses = new List<ChatCompletionResponse>();
+        await foreach (var response in stream)
+        {
+            responses.Add(response);
+        }
+
+        Assert.Equal(2, responses.Count);
+        Assert.Equal("PRIVATE_CONTENT", responses[1].Choices![0].Delta!.Content!.Get<string>());
+        var entry = Assert.Single(
+            logger.Entries,
+            e => e.Message.StartsWith("Streaming response metadata", StringComparison.Ordinal)
+        );
+        Assert.Contains(
+            "FinishReason: tool_calls, HasDelta: True, HasContent: True, HasToolCalls: True, HasReasoning: True",
+            entry.Message
+        );
+        Assert.All(logger.Entries, e => Assert.DoesNotContain("PRIVATE_", e.Message));
+    }
+
+    [Theory]
+    [InlineData("[]", "ChoiceCount: 0, FinishReason: none, HasDelta: False")]
+    [InlineData("[{\"index\":0,\"finish_reason\":\"stop\"}]", "ChoiceCount: 1, FinishReason: stop, HasDelta: False")]
+    public async Task Stream_metadata_handles_usage_only_and_missing_terminal_delta(string choices, string expected)
+    {
+        var logger = new ListLogger();
+        using var http = new HttpClient(
+            FakeHttpMessageHandler.CreateSimpleSseStreamHandler([
+                $$$"""{"id":"c","choices":{{{choices}}},"usage":{"prompt_tokens":29534,"completion_tokens":0,"total_tokens":29534}}""",
+                "[DONE]",
+            ])
+        );
+        using var client = new OpenClient(http, BaseUrl, logger: logger);
+        var request = ChatCompletionRequest.FromMessages(
+            [new TextMessage { Role = Role.User, Text = "hi" }],
+            new GenerateReplyOptions { ModelId = "m" }
+        );
+        var stream = client.StreamingChatCompletionsAsync(request);
+        var count = 0;
+        await foreach (var response in stream)
+        {
+            count++;
+        }
+
+        Assert.Equal(1, count);
+        var entry = Assert.Single(
+            logger.Entries,
+            e => e.Message.StartsWith("Streaming response metadata", StringComparison.Ordinal)
+        );
+        Assert.Contains(expected, entry.Message);
     }
 
     [Fact]

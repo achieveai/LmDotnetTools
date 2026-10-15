@@ -4354,7 +4354,7 @@ def checkpoint_pool_run(
     manifest["checkpoint_paths"] = paths
     manifest["status"] = "checkpointing"
     state.save_pool_run(manifest)
-    command(slot, ["add", "--", *paths])
+    command(slot, ["add", "--sparse", "--", *paths])
     staged = set(
         filter(
             None,

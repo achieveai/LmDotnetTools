@@ -17,6 +17,296 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
 public sealed class ReviewWorkflowInvokerTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Active_parent_blocks_cached_result_and_next_phase_without_sending(bool nextPhase)
+    {
+        using var fixture = new Fixture();
+        await fixture.PrepareAsync();
+        fixture.Handler.OnJson(
+            HttpMethod.Post,
+            "/messages",
+            "{\"inputId\":\"input-1\",\"idempotencyKeyHonored\":true}"
+        );
+        var original = AgentInvocation("completed") with { DeadlineUtc = DateTimeOffset.UtcNow.AddMinutes(-1) };
+        // Reconciliation may adopt already-completed evidence, but never sends this expired input.
+        var session =
+            "workflow-session:"
+            + Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(original.SessionId!))
+            );
+        var prepared = fixture.Workspace.Workspace.ReadPreparation(fixture.Workspace.Run).Workspace;
+        fixture.Workspace.Store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = fixture.Workspace.Run.Id,
+                ArtifactKind = session,
+                ArtifactSchemaVersion = 1,
+                Provider = "provider",
+                Payload = System.Text.Json.JsonSerializer.Serialize(
+                    new
+                    {
+                        original.SessionId,
+                        ThreadId = "thread-parent",
+                        prepared.WorkspaceId,
+                        ModeId = "code-review-daemon",
+                        PublicationPolicyVersion = 1,
+                        prepared.WorkingDirectoryRelPath,
+                    }
+                ),
+            }
+        );
+        var directory = Path.Combine(fixture.Directory, "private");
+        System.IO.Directory.CreateDirectory(directory);
+        var hash = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(original.InvocationId))
+        );
+        await File.WriteAllTextAsync(
+            Path.Combine(directory, "invocation-" + hash + ".json"),
+            System.Text.Json.JsonSerializer.Serialize(
+                new
+                {
+                    SchemaVersion = 1,
+                    Invocation = original,
+                    Result = new WorkflowInvocationResult(WorkflowInvocationStatus.Completed, "{\"Done\":true}"),
+                }
+            )
+        );
+        fixture.ParentBusy = true;
+        var current = nextPhase
+            ? AgentInvocation("next") with
+            {
+                DeadlineUtc = original.DeadlineUtc!.Value.AddMinutes(-1),
+            }
+            : original;
+        var result = await fixture.Create().InvokeAsync(current);
+        result.Status.Should().Be(WorkflowInvocationStatus.Unknown);
+        result.Error.Should().Contain("Parent or descendant");
+        fixture.Handler.Requests.Should().OnlyContain(request => request.Method == HttpMethod.Get);
+        fixture.ScopeCreations.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Missing_or_mismatched_validated_receipt_blocks_saved_workflow_preflight(bool mismatched)
+    {
+        using var fixture = new Fixture();
+        var task = AgentInvocation("missing").Task;
+        var snapshot = new WorkflowInstanceSnapshot
+        {
+            InstanceId = "instance",
+            Definition = new WorkflowDefinition
+            {
+                Objective = "review",
+                Nodes =
+                [
+                    new ProceduralNode
+                    {
+                        Id = "review",
+                        Title = "Review",
+                        Next = ["end"],
+                        TaskList = [task],
+                    },
+                ],
+            },
+            Tasks =
+            [
+                new WorkflowTaskSnapshot
+                {
+                    Name = "review:1:task",
+                    NodeId = "review",
+                    TaskId = task.Id,
+                    Status = WorkflowTaskStatus.Validated,
+                },
+            ],
+        };
+        if (mismatched)
+        {
+            var directory = Path.Combine(fixture.Directory, "private");
+            System.IO.Directory.CreateDirectory(directory);
+            var id = "instance/review:1:task/0";
+            var hash = Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(id))
+            );
+            await File.WriteAllTextAsync(
+                Path.Combine(directory, "invocation-" + hash + ".json"),
+                System.Text.Json.JsonSerializer.Serialize(
+                    new
+                    {
+                        SchemaVersion = 1,
+                        Invocation = AgentInvocation("different-input"),
+                        Result = new WorkflowInvocationResult(WorkflowInvocationStatus.Completed, "{\"Done\":true}"),
+                    }
+                )
+            );
+        }
+        var result = await fixture.Create().SettleCompletedSessionsAsync(default, snapshot: snapshot);
+        result!.Status.Should().Be(WorkflowInvocationStatus.Unknown);
+        fixture.Handler.Requests.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("idle", true)]
+    [InlineData("busy-child", false)]
+    [InlineData("queued-original", false)]
+    [InlineData("sending-receipt", false)]
+    [InlineData("mismatched-receipt", false)]
+    public async Task Expired_hosted_attempt_requires_exact_terminal_input_and_idle_tree_before_failed_classification(
+        string scenario,
+        bool mayReset
+    )
+    {
+        using var fixture = new Fixture();
+        await fixture.PrepareAsync();
+        fixture.CapabilitiesUnavailable = true;
+        var invocation = AgentInvocation("expired-classification") with
+        {
+            DeadlineUtc = DateTimeOffset.UtcNow.AddMinutes(-1),
+        };
+        var prepared = fixture.Workspace.Workspace.ReadPreparation(fixture.Workspace.Run).Workspace;
+        fixture.Workspace.Store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = fixture.Workspace.Run.Id,
+                ArtifactKind = "workflow-session:" + Hash(invocation.SessionId!),
+                ArtifactSchemaVersion = 1,
+                Provider = "provider",
+                Payload = System.Text.Json.JsonSerializer.Serialize(
+                    new
+                    {
+                        invocation.SessionId,
+                        ThreadId = "thread-parent",
+                        prepared.WorkspaceId,
+                        ModeId = "code-review-daemon",
+                        PublicationPolicyVersion = 1,
+                        prepared.WorkingDirectoryRelPath,
+                    }
+                ),
+            }
+        );
+        var key = WorkflowAgentInvoker.InvocationKey(invocation);
+        var synthesisId = AchieveAi.LmDotnetTools.LmMultiTurn.Messages.IdempotentInputId.Create(
+            key + ":synthesis",
+            true,
+            true
+        );
+        fixture.Workspace.Store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = fixture.Workspace.Run.Id,
+                ArtifactKind = "workflow-synthesis:" + Hash(invocation.InvocationId),
+                ArtifactSchemaVersion = 1,
+                Provider = "workflow",
+                Payload = new JsonObject
+                {
+                    ["InvocationId"] = invocation.InvocationId,
+                    ["WorkflowInstanceId"] = invocation.InstanceId,
+                    ["ThreadId"] = "thread-parent",
+                    ["OriginalInputId"] = AchieveAi.LmDotnetTools.LmMultiTurn.Messages.IdempotentInputId.Create(
+                        key,
+                        false,
+                        false
+                    ),
+                    ["Key"] = key + ":synthesis",
+                    ["Prompt"] = WorkflowAgentInvoker.FinalizationPrompt(invocation),
+                    ["DeadlineUtc"] = invocation.DeadlineUtc!.Value.ToString("O"),
+                    ["SuppressSubAgentSpawning"] = true,
+                    ["SuppressActionTools"] = true,
+                }.ToJsonString(),
+            }
+        );
+        fixture.StatusResponse = request =>
+            Uri.UnescapeDataString(request.RequestUri!.Query).Contains(synthesisId, StringComparison.Ordinal)
+                ? new(HttpStatusCode.NotFound) { Content = new StringContent("{\"code\":\"unknown_inputId\"}") }
+                : new(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        scenario == "queued-original"
+                            ? "{\"status\":\"Queued\",\"runId\":\"original\"}"
+                            : "{\"status\":\"Completed\",\"runId\":\"original\",\"usage\":{\"inputTokens\":10}}"
+                    ),
+                };
+        if (scenario == "busy-child")
+        {
+            fixture.ChildBusy = true;
+            fixture.SubagentsJson =
+                "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"child\",\"threadId\":\"thread-child\",\"parentThreadId\":\"thread-parent\",\"depth\":1,\"template\":\"reviewer\",\"status\":\"completed\"}]}";
+        }
+        if (scenario == "sending-receipt")
+            fixture.Workspace.Store.EnqueueOutbox(
+                new OutboxEntry
+                {
+                    ReviewRunId = fixture.Workspace.Run.Id,
+                    IdempotencyKey = "sending",
+                    Provider = "github",
+                    Operation = "post",
+                    ArtifactKind = "workflow-publication",
+                    Status = OutboxStatus.Sending,
+                }
+            );
+        string? rawPath = null;
+        string? raw = null;
+        if (scenario == "mismatched-receipt")
+        {
+            System.IO.Directory.CreateDirectory(Path.Combine(fixture.Directory, "private"));
+            rawPath = Path.Combine(
+                fixture.Directory,
+                "private",
+                "invocation-" + Hash(invocation.InvocationId) + ".json"
+            );
+            raw = System.Text.Json.JsonSerializer.Serialize(
+                new
+                {
+                    SchemaVersion = 1,
+                    Invocation = invocation with
+                    {
+                        SessionId = "foreign-session",
+                    },
+                    Result = new WorkflowInvocationResult(WorkflowInvocationStatus.Unknown),
+                }
+            );
+            await File.WriteAllTextAsync(rawPath, raw);
+        }
+
+        var result = await fixture.Create().ReconcileAsync(invocation);
+
+        result.Status.Should().Be(mayReset ? WorkflowInvocationStatus.Failed : WorkflowInvocationStatus.Unknown);
+        fixture.Handler.Requests.Should().NotContain(request => request.Method != HttpMethod.Get);
+        fixture.ScopeCreations.Should().Be(0);
+        if (scenario == "busy-child")
+            fixture
+                .Handler.Requests.Should()
+                .Contain(request => request.Uri.AbsolutePath.EndsWith("thread-child/run-state"));
+        if (mayReset)
+        {
+            result.Error.Should().Contain("Expired hosted attempt is inactive");
+            fixture
+                .Handler.Requests.Count(request => Uri.UnescapeDataString(request.Uri.Query).Contains(synthesisId))
+                .Should()
+                .Be(2);
+        }
+        if (rawPath is not null)
+        {
+            fixture.Handler.Requests.Should().BeEmpty();
+            (await File.ReadAllTextAsync(rawPath)).Should().Be(raw);
+        }
+        var receiptPath = Path.Combine(
+            fixture.Directory,
+            "private",
+            "invocation-" + Hash(invocation.InvocationId) + ".json"
+        );
+        if (mayReset)
+        {
+            var receipt = JsonNode.Parse(await File.ReadAllTextAsync(receiptPath))!;
+            receipt["Invocation"]!["DeadlineUtc"]!.GetValue<DateTimeOffset>().Should().Be(invocation.DeadlineUtc);
+        }
+    }
+
+    private static string Hash(string value) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(value)));
+
     [Fact]
     public async Task Legacy_exportable_invocation_record_requires_recovery_without_replay()
     {
@@ -264,6 +554,64 @@ public sealed class ReviewWorkflowInvokerTests
         fixture.Handler.Requests.Should().BeEmpty();
     }
 
+    [Theory]
+    [InlineData("missing", false)]
+    [InlineData("malformed", false)]
+    [InlineData("wrong-instance", false)]
+    [InlineData("wrong-branch", false)]
+    [InlineData("wrong-retained-sha", false)]
+    [InlineData("matching", true)]
+    public async Task Closure_failure_without_exact_confirmed_integration_remains_unknown(
+        string proofKind,
+        bool confirmed
+    )
+    {
+        using var fixture = new Fixture();
+        var retainedSha = new string('a', 40);
+        var invocation = AgentInvocation("uncertain-closure") with
+        {
+            Input = new JsonObject { ["ArtifactBranch"] = "review/widgets-7", ["RetainedSha"] = retainedSha },
+            Task = new WorkflowTask
+            {
+                Id = "close-artifact-branch",
+                PromptTemplate = "",
+                Delegate = DelegateKind.Script,
+                Script = "scripts/close-artifact-branch.py",
+            },
+        };
+        if (proofKind != "missing")
+        {
+            var proof = new JsonObject
+            {
+                ["WorkflowInstanceId"] = proofKind == "wrong-instance" ? "foreign" : invocation.InstanceId,
+                ["ArtifactBranch"] = proofKind == "wrong-branch" ? "review/foreign-7" : "review/widgets-7",
+                ["RetainedSha"] = proofKind == "wrong-retained-sha" ? new string('b', 40) : retainedSha,
+                ["MainSha"] = new string('c', 40),
+            };
+            fixture.Workspace.Store.AddArtifact(
+                new ReviewArtifact
+                {
+                    ReviewRunId = fixture.Workspace.Run.Id,
+                    ArtifactKind = "workflow-content-integration",
+                    ArtifactSchemaVersion = 1,
+                    Provider = "workflow",
+                    Payload = proofKind == "malformed" ? "not-json" : proof.ToJsonString(),
+                }
+            );
+        }
+        // The built-in dispatcher refuses missing scope with InvalidOperationException. The manual
+        // real-Git scenario proves the same catch also receives lost post-push confirmation.
+        var result = await fixture.Create().InvokeAsync(invocation);
+
+        result.Status.Should().Be(confirmed ? WorkflowInvocationStatus.Failed : WorkflowInvocationStatus.Unknown);
+        fixture.Handler.Requests.Should().BeEmpty();
+        fixture.ScopeCreations.Should().Be(0);
+        fixture
+            .Workspace.Store.TryGetLatestArtifact(fixture.Workspace.Run.Id, "workflow-attempt-reset")
+            .Should()
+            .BeNull();
+    }
+
     [Fact]
     public async Task Confirmed_script_failure_is_failed_without_replaying_it_on_reconciliation()
     {
@@ -437,7 +785,7 @@ public sealed class ReviewWorkflowInvokerTests
             .InvokeAsync(conflicting with { Task = conflicting.Task with { ModelId = "different-model" } });
         result.Status.Should().Be(WorkflowInvocationStatus.Failed);
         result.Error.Should().Contain("InvalidOperationException");
-        fixture.Handler.Requests.Count.Should().Be(before);
+        fixture.Handler.Requests.Skip(before).Should().OnlyContain(request => request.Method == HttpMethod.Get);
     }
 
     [Fact]
@@ -470,8 +818,8 @@ public sealed class ReviewWorkflowInvokerTests
         );
         var before = fixture.Handler.Requests.Count;
         var result = await fixture.Create().InvokeAsync(AgentInvocation("next"));
-        result.Status.Should().Be(WorkflowInvocationStatus.Failed);
-        fixture.Handler.Requests.Skip(before).Should().OnlyContain(request => request.Method == HttpMethod.Get);
+        result.Status.Should().Be(WorkflowInvocationStatus.Unknown);
+        fixture.Handler.Requests.Skip(before).Should().BeEmpty();
     }
 
     [Fact]
@@ -531,7 +879,7 @@ public sealed class ReviewWorkflowInvokerTests
                 }
             );
         result.Status.Should().Be(WorkflowInvocationStatus.Unknown);
-        result.Error.Should().Contain("Descendant work remains unresolved");
+        result.Error.Should().Contain("Parent or descendant work remains unresolved");
     }
 
     [Fact]
@@ -611,7 +959,9 @@ public sealed class ReviewWorkflowInvokerTests
         (await resumed.RunAutomaticAsync(store, "instance", fixture.Create()))
             .Should()
             .Be(WorkflowInvocationStatus.Completed);
-        (await store.LoadAsync("instance"))!.IsComplete.Should().BeTrue();
+        var completedSnapshot = (await store.LoadAsync("instance"))!;
+        completedSnapshot.IsComplete.Should().BeTrue();
+        (await fixture.Create().SettleCompletedSessionsAsync(default, snapshot: completedSnapshot)).Should().BeNull();
         foreach (var id in new[] { "prepare", "retain" })
             (await File.ReadAllTextAsync(Path.Combine(fixture.Directory, id + "-calls.txt"))).Should().Be("x");
         fixture
@@ -664,7 +1014,12 @@ public sealed class ReviewWorkflowInvokerTests
         public FakeGatewaySkillProbe GatewaySkills { get; } = new();
         public WorkflowPublicationScopes Scopes { get; }
         public bool StatusUnavailable { get; set; }
+        public bool CapabilitiesUnavailable { get; set; }
+        public bool ChildBusy { get; set; }
+        public Func<HttpRequestMessage, HttpResponseMessage>? StatusResponse { get; set; }
         public string SubagentsJson { get; set; } = "{\"schemaVersion\":1,\"nodes\":[]}";
+        public bool ParentBusy { get; set; }
+        public Action? OnParentRead { get; set; }
         private readonly HttpClient _http;
         private readonly LmStreamingS2SClient _client;
 
@@ -672,10 +1027,36 @@ public sealed class ReviewWorkflowInvokerTests
         {
             System.IO.Directory.CreateDirectory(Directory);
             Handler
-                .OnJson(
-                    HttpMethod.Get,
-                    "/capabilities",
-                    "{\"messageIdempotency\":true,\"spawnSuppression\":true,\"rootReasoningEffort\":true,\"actionToolSuppression\":true,\"workflowPublication\":true,\"sandboxEnv\":true,\"conversationWorkingDirectory\":true,\"workflowPublicationProviderId\":\"provider\",\"workflowPublicationModeId\":\"code-review-daemon\"}"
+                .On(
+                    request => request.RequestUri!.AbsolutePath.EndsWith("/run-state", StringComparison.Ordinal),
+                    request =>
+                    {
+                        var child = request.RequestUri!.AbsolutePath.Contains("thread-child", StringComparison.Ordinal);
+                        var busy = child ? ChildBusy : ParentBusy;
+                        if (!child)
+                            OnParentRead?.Invoke();
+                        return new(HttpStatusCode.OK)
+                        {
+                            Content = new StringContent(
+                                "{\"threadId\":\""
+                                    + (child ? "thread-child" : "thread-parent")
+                                    + "\",\"isInProgress\":"
+                                    + (busy ? "true" : "false")
+                                    + "}"
+                            ),
+                        };
+                    }
+                )
+                .On(
+                    request =>
+                        request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath.EndsWith("/capabilities"),
+                    _ =>
+                        new(CapabilitiesUnavailable ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.OK)
+                        {
+                            Content = new StringContent(
+                                "{\"messageIdempotency\":true,\"spawnSuppression\":true,\"rootReasoningEffort\":true,\"actionToolSuppression\":true,\"workflowPublication\":true,\"sandboxEnv\":true,\"conversationWorkingDirectory\":true,\"workflowPublicationProviderId\":\"provider\",\"workflowPublicationModeId\":\"code-review-daemon\"}"
+                            ),
+                        }
                 )
                 .On(
                     request =>
@@ -692,15 +1073,16 @@ public sealed class ReviewWorkflowInvokerTests
                     request =>
                         request.Method == HttpMethod.Get
                         && request.RequestUri!.AbsolutePath.EndsWith("/status", StringComparison.Ordinal),
-                    _ =>
+                    request =>
                         StatusUnavailable
                             ? throw new IOException("Host status response interrupted after input acceptance.")
-                            : new(HttpStatusCode.OK)
-                            {
-                                Content = new StringContent(
-                                    "{\"status\":\"Completed\",\"runId\":\"host-run\",\"response\":{\"text\":\"{\\\"Done\\\":true}\"}}"
-                                ),
-                            }
+                            : StatusResponse?.Invoke(request)
+                                ?? new(HttpStatusCode.OK)
+                                {
+                                    Content = new StringContent(
+                                        "{\"status\":\"Completed\",\"runId\":\"host-run\",\"response\":{\"text\":\"{\\\"Done\\\":true}\"}}"
+                                    ),
+                                }
                 )
                 .On(
                     request =>

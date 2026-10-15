@@ -193,6 +193,87 @@ public sealed class WorkflowKnowledgeEditsTests
             .Equal("/workspace/store/KnowledgeBase/system/shared.md", "/workspace/store/KnowledgeBase/widgets/good.md");
     }
 
+    [Fact]
+    public async Task Exact_developer_event_is_prepared_without_shared_listings_and_mixed_metadata_stays_private()
+    {
+        const string path =
+            "KnowledgeBase/developers/jane-0123456789ab/event-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.md";
+        var files = new FakeSandboxFileSystem();
+        var repo = new RepoIdentity
+        {
+            Provider = "github",
+            OrgOrOwner = "example",
+            RepoName = "widgets",
+        };
+        var helper = new WorkflowKnowledgeEdits("/trusted/store", repo, files, NullLogger.Instance, path);
+        var developer = await helper.PrepareReviewedAsync(
+            Input(path, Entry("Per-PR observation", "developers")),
+            default
+        );
+        developer.Should().ContainSingle().Which.RelativePath.Should().Be(path);
+        var mixed = Input(path, Entry("Per-PR observation", "developers"));
+        mixed[0]!["Edits"]!
+            .AsArray()
+            .Add(
+                new JsonObject
+                {
+                    ["Path"] = "KnowledgeBase/widgets/new.md",
+                    ["Content"] = Entry("Technical lesson", "widgets"),
+                }
+            );
+        var prepared = await helper.PrepareReviewedAsync(mixed, default);
+        prepared.Should().HaveCount(4);
+        prepared
+            .Single(file => file.RelativePath == "KnowledgeBase/_index.jsonl")
+            .Content.Should()
+            .Contain("Technical lesson")
+            .And.NotContain("developers/")
+            .And.NotContain("Per-PR observation");
+        prepared
+            .Single(file => file.RelativePath == "KnowledgeBase/_toc.md")
+            .Content.Should()
+            .NotContain("developers/")
+            .And.NotContain("Per-PR observation");
+        files.Writes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Developer_edits_cannot_change_author_event_profile_case_or_frontmatter_scope()
+    {
+        const string path =
+            "KnowledgeBase/developers/jane-0123456789ab/event-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.md";
+        var files = new FakeSandboxFileSystem();
+        var repo = new RepoIdentity
+        {
+            Provider = "github",
+            OrgOrOwner = "example",
+            RepoName = "widgets",
+        };
+        var helper = new WorkflowKnowledgeEdits("/trusted/store", repo, files, NullLogger.Instance, path);
+        foreach (
+            var other in new[]
+            {
+                path.ToUpperInvariant(),
+                path.Replace("jane-", "other-"),
+                path.Replace("event-", "profile-"),
+                path.Replace("aaaa", "bbbb"),
+            }
+        )
+            await helper
+                .Invoking(value => value.PrepareReviewedAsync(Input(other, Entry("Wrong", "developers")), default))
+                .Should()
+                .ThrowAsync<ArgumentException>();
+        await helper
+            .Invoking(value => value.PrepareReviewedAsync(Input(path, Entry("Wrong scope", "widgets")), default))
+            .Should()
+            .ThrowAsync<ArgumentException>();
+        await Create(files)
+            .Invoking(value => value.PrepareReviewedAsync(Input(path, Entry("No grant", "developers")), default))
+            .Should()
+            .ThrowAsync<ArgumentException>();
+        files.Writes.Should().BeEmpty();
+    }
+
     private static WorkflowKnowledgeEdits Create(FakeSandboxFileSystem files) =>
         new(
             "/trusted/store",

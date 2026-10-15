@@ -140,7 +140,95 @@ internal static class ReviewArtifactExport
         "identities.json",
         "receipts.json",
         "review-notes.json",
+        "merged-self-assessment.md",
+        "merged-judgment.md",
+        "merged-lessons.md",
+        "merged-provenance.json",
     ];
+
+    private static IReadOnlyList<ReviewArtifactFile> BuildMerged(
+        string prefix,
+        ReviewRun run,
+        RepoIdentity repo,
+        string artifactBranch,
+        JsonObject frozen,
+        JsonObject canonical,
+        JsonObject? digest,
+        JsonObject? knowledgeReview
+    )
+    {
+        var abandoned = run.PrLifecycleState == PrLifecycleState.Abandoned;
+        var provenance = frozen["Merge"] as JsonObject;
+        if (
+            !abandoned
+            && (
+                digest?["Kind"]?.GetValue<string>() != "landed-objects"
+                || digest["LandedSha"]?.GetValue<string>() != run.MergeSha
+                || provenance is null
+            )
+        )
+            throw new InvalidDataException("Merged exports require exact final-diff provenance.");
+        if (abandoned && digest?["Kind"]?.GetValue<string>() != "abandoned")
+            throw new InvalidDataException("Abandoned exports must not claim landed code.");
+        var binding = ReviewArtifactExportBinding.Build(run, repo, artifactBranch);
+        var files = new List<ReviewArtifactFile>();
+        foreach (var (name, key) in new[] { ("merged-self-assessment.md", "SelfAssessment") })
+        {
+            var text = canonical[key]?["Markdown"]?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(text))
+                throw new InvalidDataException("Required merged report is empty.");
+            files.Add(new(prefix + name, Redact(prefix + name, text) + BindingTrailer(binding)));
+        }
+        var judgment =
+            canonical["Judgment"] as JsonObject ?? throw new InvalidDataException("Terminal judgment is missing.");
+        files.Add(
+            new(
+                prefix + "merged-judgment.md",
+                Redact(
+                    prefix + "merged-judgment.md",
+                    "# Terminal learning judgment\n\n" + WorkflowMarkdown.YamlDocument(judgment)
+                ) + BindingTrailer(binding)
+            )
+        );
+        var reviewed =
+            knowledgeReview?["Reviewed"] as JsonObject
+            ?? throw new InvalidDataException("Final learning safety review is missing.");
+        WorkflowKnowledgeEdits.ValidateReview(new JsonArray(reviewed.DeepClone()), knowledgeReview);
+        files.Add(
+            new(
+                prefix + "merged-lessons.md",
+                Redact(
+                    prefix + "merged-lessons.md",
+                    "# Merged review learnings\n\n## Proposed knowledge, process and per-PR developer observations\n\n"
+                        + canonical["Learnings"]?["Description"]?.GetValue<string>()
+                        + "\n\n## Judge assessment\n\n"
+                        + judgment["Description"]?.GetValue<string>()
+                        + "\n\n## Safety-approved retention\n\n"
+                        + reviewed["Description"]!.GetValue<string>()
+                        + "\n\n"
+                        + WorkflowMarkdown.YamlDocument(knowledgeReview!)
+                        + "\n\nOnly the safety-approved edits are applied to the knowledge store. Proposed process remedies are not changes to the live review methodology. Developer observations are limited to this PR, not personal profiles."
+                ) + BindingTrailer(binding)
+            )
+        );
+        files.Add(
+            Json(
+                prefix + "merged-provenance.json",
+                binding,
+                new JsonObject
+                {
+                    ["Route"] = abandoned ? "abandoned" : "merged",
+                    ["Provenance"] = provenance?.DeepClone(),
+                    ["Diff"] = digest!.DeepClone(),
+                    ["Notice"] =
+                        "Binding HeadSha/BaseSha identify the final provider snapshot, NOT the original review or landed range. Diff identifies ParentSha to LandedSha; source body is deliberately excluded. Original reviewed identity remains in the preserved historical reports.",
+                }
+            )
+        );
+        foreach (var file in files)
+            ValidateNoSecrets(file);
+        return files;
+    }
 
     public static bool IsExportFileName(string fileName) => FileNames.Contains(fileName, StringComparer.Ordinal);
 
@@ -183,6 +271,7 @@ internal static class ReviewArtifactExport
     /// credential in it, so there is nothing in <c>receipts.json</c> to redact.
     /// </param>
     /// <param name="diffDigest">Digest and length of the diff this review was frozen against, if any.</param>
+    /// <param name="knowledgeReview">Exact independent safety review for merged learning retention.</param>
     public static IReadOnlyList<ReviewArtifactFile> Build(
         string prefix,
         ReviewRun run,
@@ -192,7 +281,8 @@ internal static class ReviewArtifactExport
         JsonObject frozenContext,
         JsonObject? canonical,
         JsonObject inventory,
-        JsonObject? diffDigest
+        JsonObject? diffDigest,
+        JsonObject? knowledgeReview = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(prefix);
@@ -207,6 +297,17 @@ internal static class ReviewArtifactExport
         // the operation input is either malformed or someone else's. Exporting it would publish content
         // the daemon never validated and never recorded. Absence of a route-appropriate canonical yields
         // no files at all rather than empty ones.
+        if (admission["Route"]?.GetValue<string>() is "merged" or "abandoned")
+            return BuildMerged(
+                prefix,
+                run,
+                repo,
+                artifactBranch,
+                frozenContext,
+                canonical ?? throw new InvalidDataException("Merged canonical reports are missing."),
+                diffDigest,
+                knowledgeReview
+            );
         if (canonical is null || admission["Route"]?.GetValue<string>() != "new_head")
         {
             return [];
@@ -624,7 +725,18 @@ internal static class ReviewArtifactExport
     {
         ArgumentNullException.ThrowIfNull(binding);
         ValidateNoSecrets(file);
-        if (fileName is "review.md" or "grade.md" or "comments.md" or "performance.md" or "discussion.md" or "setup.md")
+        if (
+            fileName
+            is "review.md"
+                or "grade.md"
+                or "comments.md"
+                or "performance.md"
+                or "discussion.md"
+                or "setup.md"
+                or "merged-self-assessment.md"
+                or "merged-judgment.md"
+                or "merged-lessons.md"
+        )
         {
             // Prose carries its binding as a trailer. Requiring the content to END with it is what makes a
             // forged trailer inside the review text harmless: the exporter appends the real one last, so

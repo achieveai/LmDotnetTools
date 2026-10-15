@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using CodeReviewDaemon.Sample.Persistence.Migrations;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace;
@@ -371,6 +372,11 @@ internal sealed class ReviewStore : IDisposable
         ValidateWorkflowRoundSeed(seed);
 
         using var gate = _gate.EnterScope();
+        var owner =
+            GetReviewRun(seed.ReviewRunId) ?? throw new InvalidOperationException("Workflow round owner is missing.");
+        if (owner.RepoId != seed.RepoId || owner.PrId != seed.PrId || owner.HeadSha != seed.HeadSha)
+            throw new InvalidOperationException("Workflow round owner does not match the PR head.");
+        RequireNoAmbiguousWorkflowRound(owner);
         var existing = FindWorkflowRoundByIdentity(seed);
         if (existing is not null)
         {
@@ -381,12 +387,13 @@ internal sealed class ReviewStore : IDisposable
         using var insert = _connection.CreateCommand();
         insert.CommandText = """
             INSERT OR IGNORE INTO workflow_round (
-                repo_id, pr_id, head_sha, kind, event_key, frozen_input_json,
+                review_run_id, repo_id, pr_id, head_sha, kind, event_key, frozen_input_json,
                 workflow_instance_id, outcome, completed_at, created_at, updated_at)
             VALUES (
-                $repoId, $prId, $headSha, $kind, $eventKey, $frozenInput,
+                $reviewRunId, $repoId, $prId, $headSha, $kind, $eventKey, $frozenInput,
                 NULL, $outcome, NULL, $now, $now);
             """;
+        _ = insert.Parameters.AddWithValue("$reviewRunId", seed.ReviewRunId);
         _ = insert.Parameters.AddWithValue("$repoId", seed.RepoId);
         _ = insert.Parameters.AddWithValue("$prId", seed.PrId);
         _ = insert.Parameters.AddWithValue("$headSha", seed.HeadSha);
@@ -411,24 +418,121 @@ internal sealed class ReviewStore : IDisposable
         return reader.Read() ? MapWorkflowRound(reader) : null;
     }
 
-    /// <summary>Returns the latest admitted round for one PR head and route, including completed rounds.</summary>
-    public WorkflowRound? GetLatestWorkflowRound(long repoId, string prId, string headSha, WorkflowRoundKind kind)
+    /// <summary>Only an exact terminal round/reset receipt can exempt its original unknown preparation from the global gate.</summary>
+    public bool HasAcceptedRoundPreparation(long runId, long preparationArtifactId, string assignmentId)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(prId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(headSha);
+        using var gate = _gate.EnterScope();
+        var acceptance = TryGetLatestArtifact(runId, "workflow-round-reset-acceptance");
+        var receipt = TryGetLatestArtifact(runId, "workflow-round-reset-receipt");
+        var assignment = TryGetLatestArtifact(runId, WorkflowWorkspace.AssignmentArtifactKind);
+        var preparation = TryGetLatestArtifact(runId, WorkflowWorkspace.RemotePreparationArtifactKind);
+        if (acceptance is null || receipt is null || assignment is null || preparation?.Id != preparationArtifactId)
+            return false;
+        try
+        {
+            var value = JsonNode.Parse(acceptance.Payload);
+            var bound = JsonSerializer.Deserialize<WorkflowWorkspaceAssignment>(assignment.Payload);
+            var remote = JsonNode.Parse(preparation.Payload);
+            if (
+                value?["schema"]?.GetValue<int>() != 1
+                || value["runId"]?.GetValue<long>() != runId
+                || value["preparationArtifactId"]?.GetValue<long>() != preparationArtifactId
+                || value["assignmentArtifactId"]?.GetValue<long>() != assignment.Id
+                || value["assignmentId"]?.GetValue<string>() != assignmentId
+                || value["originalOutcomeUnknown"]?.GetValue<bool>() != true
+                || value["disposition"]?.GetValue<string>() != "OperatorReset"
+                || remote?["AssignmentId"]?.GetValue<string>() != assignmentId
+                || remote["OutcomeUnknown"]?.GetValue<bool>() != true
+                || remote["Settled"]?.GetValue<bool>() == true
+                || bound is not { Active: false }
+                || bound.AssignmentId != assignmentId
+                || bound.WorkflowInstanceId != $"review-round-{value["roundId"]?.GetValue<long>()}"
+                || !JsonNode.DeepEquals(JsonNode.Parse(receipt.Payload)?["identity"], value["identity"])
+                || value["identity"]?["assignmentId"]?.GetValue<string>() != assignmentId
+                || value["identity"]?["workflowInstanceId"]?.GetValue<string>() != bound.WorkflowInstanceId
+                || value["identity"]?["repository"]?.GetValue<string>() != bound.Slot.RepositoryName
+                || value["identity"]?["slot"]?.GetValue<int>() != bound.Slot.Index
+                || value["identity"]?["sourcePath"]?.GetValue<string>() != bound.Slot.SourceRelativePath
+                || value["receiptSha256"]?.GetValue<string>()
+                    != Convert.ToHexString(
+                        System.Security.Cryptography.SHA256.HashData(
+                            System.Text.Encoding.UTF8.GetBytes(receipt.Payload)
+                        )
+                    )
+            )
+                return false;
+            using var command = _connection.CreateCommand();
+            command.CommandText = """
+                SELECT COUNT(*) FROM workflow_round
+                WHERE id = $round AND (review_run_id IS NULL OR review_run_id = $run)
+                  AND kind = $kind AND event_key = $event
+                  AND outcome = 'OperatorReset' AND completed_at IS NOT NULL;
+                """;
+            command.Parameters.AddWithValue("$round", value["roundId"]!.GetValue<long>());
+            command.Parameters.AddWithValue("$run", runId);
+            command.Parameters.AddWithValue("$kind", value["kind"]!.GetValue<string>());
+            command.Parameters.AddWithValue("$event", value["eventKey"]!.GetValue<string>());
+            return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) == 1;
+        }
+        catch (Exception error) when (error is JsonException or InvalidOperationException or FormatException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Legacy rounds have no proven owner and must be reconciled before this PR head advances.</summary>
+    public long? GetAmbiguousWorkflowRoundId(ReviewRun run)
+    {
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT id FROM workflow_round
+            WHERE review_run_id IS NULL AND repo_id = $repoId AND pr_id = $prId AND head_sha = $headSha
+            ORDER BY id LIMIT 1;
+            """;
+        _ = command.Parameters.AddWithValue("$repoId", run.RepoId);
+        _ = command.Parameters.AddWithValue("$prId", run.PrId);
+        _ = command.Parameters.AddWithValue("$headSha", run.HeadSha);
+        return command.ExecuteScalar() is long id ? id : null;
+    }
+
+    private void RequireNoAmbiguousWorkflowRound(ReviewRun run)
+    {
+        if (GetAmbiguousWorkflowRoundId(run) is { } roundId)
+            throw new InvalidOperationException($"Legacy workflow round {roundId} needs owner reconciliation.");
+    }
+
+    /// <summary>Returns the latest admitted round for one owning review run, including completed rounds.</summary>
+    public WorkflowRound? GetLatestWorkflowRound(long reviewRunId, WorkflowRoundKind kind)
+    {
         using var gate = _gate.EnterScope();
         using var command = _connection.CreateCommand();
         command.CommandText = """
             SELECT * FROM workflow_round
-            WHERE repo_id = $repoId AND pr_id = $prId AND head_sha = $headSha AND kind = $kind
+            WHERE review_run_id = $reviewRunId AND kind = $kind
             ORDER BY id DESC LIMIT 1;
             """;
-        _ = command.Parameters.AddWithValue("$repoId", repoId);
-        _ = command.Parameters.AddWithValue("$prId", prId);
-        _ = command.Parameters.AddWithValue("$headSha", headSha);
+        _ = command.Parameters.AddWithValue("$reviewRunId", reviewRunId);
         _ = command.Parameters.AddWithValue("$kind", kind.ToString());
         using var reader = command.ExecuteReader();
         return reader.Read() ? MapWorkflowRound(reader) : null;
+    }
+
+    /// <summary>Lists unresolved rounds of exactly one owning run; legacy ownerless rounds remain held.</summary>
+    public IReadOnlyList<WorkflowRound> GetPendingWorkflowRoundsForRun(long reviewRunId)
+    {
+        var rounds = new List<WorkflowRound>();
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT * FROM workflow_round
+            WHERE review_run_id = $reviewRunId AND completed_at IS NULL ORDER BY id;
+            """;
+        _ = command.Parameters.AddWithValue("$reviewRunId", reviewRunId);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+            rounds.Add(MapWorkflowRound(reader));
+        return rounds;
     }
 
     /// <summary>
@@ -489,7 +593,7 @@ internal sealed class ReviewStore : IDisposable
     public bool RecordWorkflowOutcome(long roundId, string workflowInstanceId, WorkflowRoundOutcome outcome)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowInstanceId);
-        if (outcome is WorkflowRoundOutcome.Pending || !Enum.IsDefined(outcome))
+        if (outcome is WorkflowRoundOutcome.Pending or WorkflowRoundOutcome.OperatorReset || !Enum.IsDefined(outcome))
         {
             throw new ArgumentOutOfRangeException(nameof(outcome), outcome, "A workflow result must be explicit.");
         }
@@ -581,16 +685,12 @@ internal sealed class ReviewStore : IDisposable
         using var command = _connection.CreateCommand();
         command.CommandText = """
             SELECT * FROM workflow_round
-            WHERE repo_id = $repoId
-              AND pr_id = $prId
-              AND head_sha = $headSha
+            WHERE review_run_id = $reviewRunId
               AND kind = $kind
               AND event_key = $eventKey
             LIMIT 1;
             """;
-        _ = command.Parameters.AddWithValue("$repoId", seed.RepoId);
-        _ = command.Parameters.AddWithValue("$prId", seed.PrId);
-        _ = command.Parameters.AddWithValue("$headSha", seed.HeadSha);
+        _ = command.Parameters.AddWithValue("$reviewRunId", seed.ReviewRunId);
         _ = command.Parameters.AddWithValue("$kind", seed.Kind.ToString());
         _ = command.Parameters.AddWithValue("$eventKey", seed.EventKey);
         using var reader = command.ExecuteReader();
@@ -599,6 +699,7 @@ internal sealed class ReviewStore : IDisposable
 
     private static void ValidateWorkflowRoundSeed(WorkflowRoundSeed seed)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(seed.ReviewRunId);
         ArgumentException.ThrowIfNullOrWhiteSpace(seed.PrId);
         ArgumentException.ThrowIfNullOrWhiteSpace(seed.HeadSha);
         ArgumentException.ThrowIfNullOrWhiteSpace(seed.EventKey);
@@ -1316,7 +1417,7 @@ internal sealed class ReviewStore : IDisposable
             FROM review_run rr
             JOIN repo r ON r.id = rr.repo_id
             WHERE rr.workflow_status {statusOperator} $status AND rr.updated_at < $staleBefore
-              AND rr.parked_at IS NULL
+              AND rr.parked_at IS NULL AND rr.review_kind <> 'merged-archive'
             ORDER BY rr.id
             LIMIT $limit;
             """;
@@ -2027,6 +2128,9 @@ internal sealed class ReviewStore : IDisposable
         new()
         {
             Id = reader.GetInt64(reader.GetOrdinal("id")),
+            ReviewRunId = reader.IsDBNull(reader.GetOrdinal("review_run_id"))
+                ? null
+                : reader.GetInt64(reader.GetOrdinal("review_run_id")),
             RepoId = reader.GetInt64(reader.GetOrdinal("repo_id")),
             PrId = reader.GetString(reader.GetOrdinal("pr_id")),
             HeadSha = reader.GetString(reader.GetOrdinal("head_sha")),
@@ -2117,11 +2221,14 @@ internal enum WorkflowRoundOutcome
     Succeeded,
     Failed,
     Unknown,
+    OperatorReset,
 }
 
 /// <summary>Immutable identity and input used to admit a supplementary workflow round.</summary>
 internal sealed record WorkflowRoundSeed
 {
+    public required long ReviewRunId { get; init; }
+
     public required long RepoId { get; init; }
 
     public required string PrId { get; init; }
@@ -2140,6 +2247,8 @@ internal sealed record WorkflowRoundSeed
 internal sealed record WorkflowRound
 {
     public required long Id { get; init; }
+
+    public long? ReviewRunId { get; init; }
 
     public required long RepoId { get; init; }
 

@@ -5,6 +5,7 @@ using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using CodeReviewDaemon.Sample.Workspace;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
@@ -491,6 +492,66 @@ public sealed class RunSinglePrCommandTests
         result.RejectionReason.Should().Be(RunSinglePrRejectionReason.NotFound);
         runner.Attempts.Should().Be(0);
         AssertNothingWasAdmitted(store);
+    }
+
+    [Fact]
+    public async Task Admit_refuses_an_already_active_PR_before_invoking_the_orchestrator()
+    {
+        using var database = new TempSqliteDatabase();
+        using var store = new ReviewStore(database.ConnectionString);
+        var provider = new MockPrProvider("github", [OpenPr()], SeedCursor());
+        var runner = new StatusRunner(WorkflowInvocationStatus.Completed);
+        var orchestrator = new PrOrchestrator(store, runner, NullLogger<PrOrchestrator>.Instance);
+        var prepared = await RunSinglePrCommand.PrepareAsync(
+            Options(RepoKey),
+            [provider],
+            NullLogger.Instance,
+            RepoKey,
+            "7",
+            "head-7",
+            "base-7",
+            default
+        );
+        var repoId = store.EnsureRepo(prepared.Target!.Repo);
+        var owner = store.CreateOrGetReviewRun(
+            new ReviewRun
+            {
+                RepoId = repoId,
+                PrId = "7",
+                HeadSha = "head-7",
+                BaseSha = "base-7",
+                TriggerWatermark = "wm-1",
+                ReviewKind = prepared.Target.ReviewKind,
+                VariantId = prepared.Target.VariantId,
+                Mode = prepared.Target.Mode,
+                Stage = ReviewStage.Discovered,
+                WorkflowStatus = WorkflowStatus.Pending,
+                PrLifecycleState = PrLifecycleState.Open,
+            }
+        );
+        store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = owner.Id,
+                ArtifactKind = "workflow-workspace-assignment",
+                ArtifactSchemaVersion = 1,
+                Provider = "workspace",
+                Payload = System.Text.Json.JsonSerializer.Serialize(
+                    new WorkflowWorkspaceAssignment(
+                        new ReviewSlot("widgets", 0),
+                        true,
+                        "assignment",
+                        $"review-run-{owner.Id}"
+                    )
+                ),
+            }
+        );
+
+        var result = await RunSinglePrCommand.AdmitAndRunAsync(prepared, store, orchestrator, default);
+
+        result.Admitted.Should().BeFalse();
+        result.RejectionReason.Should().Be(RunSinglePrRejectionReason.AlreadyActive);
+        runner.Attempts.Should().Be(0);
     }
 
     [Fact]

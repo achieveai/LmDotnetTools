@@ -121,6 +121,17 @@ internal sealed record PullRequestDescriptor
 
     public required PrLifecycleState LifecycleState { get; init; }
 
+    public string? RepositoryStableId { get; init; }
+
+    /// <summary>Provider-reported destination ref, normalized to refs/heads/ form. Not a tracking-policy decision.</summary>
+    public string? TargetRefName { get; init; }
+
+    /// <summary>Provider-reported merge result, only when merged. Never substitutes for the original reviewed head.</summary>
+    public string? MergeCommitSha { get; init; }
+
+    /// <summary>When the provider reports completion or abandonment; null means unknown.</summary>
+    public DateTimeOffset? ClosedAt { get; init; }
+
     /// <summary>
     /// When the PR was opened, if the provider's list exposes it (GitHub <c>created_at</c>, ADO
     /// <c>creationDate</c>). The recency filter (<see cref="Configuration.CodeReviewDaemonOptions.MaxPrAgeDays"/>)

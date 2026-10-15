@@ -594,8 +594,35 @@ internal sealed class AdoPrProvider : IPrProvider
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
         var pr = document.RootElement;
+        var observedPrId = pr.GetProperty("pullRequestId")
+            .GetInt64()
+            .ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (observedPrId != prId)
+            throw new InvalidDataException("Provider returned another pull request.");
+        string? repositoryStableId = null;
+        if (pr.TryGetProperty("repository", out var repository) && StringOf(repository, "id") is { } nativeId)
+        {
+            if (
+                !Guid.TryParse(nativeId, out var repositoryId)
+                || repositoryId == Guid.Empty
+                || !string.Equals(StringOf(repository, "name"), repo.RepoName, StringComparison.OrdinalIgnoreCase)
+                || !repository.TryGetProperty("project", out var repositoryProject)
+                || !string.Equals(StringOf(repositoryProject, "name"), repo.Project, StringComparison.OrdinalIgnoreCase)
+                || (
+                    repo.RepoStableId is { } expectedId
+                    && (
+                        !Guid.TryParse(expectedId, out var expectedRepositoryId) || expectedRepositoryId != repositoryId
+                    )
+                )
+            )
+                throw new InvalidDataException(
+                    "Provider repository identity does not match the requested destination."
+                );
+            repositoryStableId = repositoryId.ToString("D");
+        }
         return new PullRequestDescriptor
         {
+            RepositoryStableId = repositoryStableId,
             PrId = pr.GetProperty("pullRequestId")
                 .GetInt64()
                 .ToString(System.Globalization.CultureInfo.InvariantCulture),
@@ -603,6 +630,12 @@ internal sealed class AdoPrProvider : IPrProvider
             BaseSha = CommitId(pr, "lastMergeTargetCommit"),
             TriggerWatermark = CommitId(pr, "lastMergeSourceCommit"),
             LifecycleState = MapLifecycle(pr.GetProperty("status").GetString()),
+            TargetRefName = StringOf(pr, "targetRefName"),
+            MergeCommitSha =
+                MapLifecycle(pr.GetProperty("status").GetString()) == PrLifecycleState.Merged
+                    ? CommitId(pr, "lastMergeCommit")
+                    : null,
+            ClosedAt = ParseTimestamp(pr, "closedDate"),
             CreatedAt = ParseTimestamp(pr, "creationDate"),
             Author = UniqueNameOf(pr, "createdBy"),
             Title = StringOf(pr, "title"),

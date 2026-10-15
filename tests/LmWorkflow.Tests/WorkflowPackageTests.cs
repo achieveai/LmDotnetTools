@@ -29,34 +29,56 @@ public sealed class WorkflowPackageTests
     }
 
     [Theory]
-    [InlineData("new_head", "prepare-review,review,grade,publish,retain-review")]
+    [InlineData("new_head", "prepare-independent,review,grade,final-review,publish,retain-review")]
     [InlineData("discussion", "prepare-discussion,discussion,retain-discussion")]
     [InlineData(
         "merged",
-        "prepare-history,learnings,process-judge,additional-extraction,knowledge-safety-review,collect-statistics,retain-merged,close-artifact-branch"
+        "prepare-history,merged-self-assessment,learnings,merged-judgment,collect-statistics,retain-merged,close-artifact-branch"
+    )]
+    [InlineData(
+        "abandoned",
+        "prepare-history,merged-self-assessment,learnings,merged-judgment,collect-statistics,retain-merged"
     )]
     public void Shipped_routes_follow_the_declared_operations(string route, string expected)
     {
         var definition = Load();
-        var context = new BindingContext { Inputs = new JsonObject { ["Route"] = route } };
-        var branch = definition.Nodes.OfType<ConditionalNode>().Single();
-        var current =
-            branch
-                .Branches.FirstOrDefault(item =>
-                    ConditionEvaluator.Evaluate(
-                        item.StructuredCondition!,
-                        context,
-                        ConditionEvaluationPolicy.StrictWorkflow
-                    )
-                )
-                ?.To
-            ?? branch.Else;
-        var visited = new List<string>();
-        while (definition.Nodes.Single(node => node.Id == current) is ProceduralNode step)
+        var context = new BindingContext
         {
-            visited.Add(step.Id);
-            current = step.Next.Single();
-            visited.Count.Should().BeLessThan(30, "the production routes have no unbounded cycle");
+            Inputs = new JsonObject { ["Route"] = route },
+            State = new JsonObject
+            {
+                ["PreparedReview"] = new JsonObject { ["PublicationMode"] = "post" },
+                ["PreparedHistory"] = new JsonObject
+                {
+                    ["TerminalState"] = route == "abandoned" ? "Abandoned" : "Merged",
+                },
+            },
+        };
+        var current = "route";
+        var visited = new List<string>();
+        var transitions = 0;
+        while (definition.Nodes.Single(node => node.Id == current) is not TerminalNode)
+        {
+            var node = definition.Nodes.Single(node => node.Id == current);
+            if (node is ConditionalNode branch)
+                current =
+                    branch
+                        .Branches.FirstOrDefault(item =>
+                            ConditionEvaluator.Evaluate(
+                                item.StructuredCondition!,
+                                context,
+                                ConditionEvaluationPolicy.StrictWorkflow
+                            )
+                        )
+                        ?.To
+                    ?? branch.Else;
+            else
+            {
+                var step = (ProceduralNode)node;
+                visited.Add(step.Id);
+                current = step.Next.Single();
+            }
+            (++transitions).Should().BeLessThan(40, "the production routes have no unbounded cycle");
         }
         visited.Should().Equal(expected.Split(','));
         current.Should().Be("complete");
@@ -69,7 +91,9 @@ public sealed class WorkflowPackageTests
         var tasks = definition
             .Nodes.OfType<ProceduralNode>()
             .ToDictionary(node => node.Id, node => node.TaskList!.Single());
-        tasks["publish"].Session.Should().Be(tasks["review"].Session);
+        tasks["publish"].Delegate.Should().Be(DelegateKind.Script);
+        tasks["publish"].Script.Should().Be("scripts/publish-review.py");
+        tasks["final-review"].Session.Should().Be(tasks["review"].Session);
         tasks["discussion"].Session.Should().Be(tasks["review"].Session);
         tasks["discussion"].Tools.Should().Equal("review_reply");
         tasks["grade"].Session.Should().NotBe(tasks["review"].Session);
@@ -77,10 +101,9 @@ public sealed class WorkflowPackageTests
             .Where(pair => pair.Value.Tools?.Count > 0)
             .Select(pair => pair.Key)
             .Should()
-            .BeEquivalentTo(["publish", "discussion"]);
-        tasks["publish"]
-            .Tools.Should()
-            .BeEquivalentTo(["review_publish_summary", "review_publish_inline", "review_reply"]);
+            .BeEquivalentTo(["discussion"]);
+        tasks["publish"].Tools.Should().BeNullOrEmpty();
+        tasks["final-review"].Tools.Should().BeNullOrEmpty();
         foreach (var task in tasks.Values)
         {
             task.InputSchema.Should().NotBeNull();
@@ -118,25 +141,37 @@ public sealed class WorkflowPackageTests
                 {
                     ["Review"] = new JsonObject { ["Findings"] = new JsonArray(), ["ReviewText"] = "Draft" },
                     ["Grade"] = new JsonObject { ["Assessments"] = new JsonArray(), ["Description"] = "Grade" },
+                    ["FinalReview"] = new JsonObject { ["Format"] = "markdown", ["Markdown"] = "Final report" },
                     ["Publication"] = new JsonObject
                     {
                         ["Outcome"] = "no_op",
                         ["Description"] = "None",
                         ["Actions"] = new JsonArray(),
                     },
-                    ["KnowledgeSafety"] = new JsonObject
+                    ["MergedJudgment"] = new JsonObject
                     {
                         ["Verdict"] = "approved",
                         ["Reviewed"] = extraction.DeepClone(),
                         ["Description"] = "Reviewed",
                     },
                     ["Learnings"] = extraction.DeepClone(),
-                    ["AdditionalExtraction"] = extraction.DeepClone(),
+                    ["MergedSelfAssessment"] = new JsonObject { ["Format"] = "markdown", ["Markdown"] = "Assessment" },
                 },
             }
         );
         JsonNode.DeepEquals(bound!["Admission"], admission).Should().BeTrue();
         bound["Extractions"]!.AsArray().Should().HaveCount(expectedGroups);
+        if (expectedGroups > 0)
+        {
+            JsonNode.DeepEquals(bound["Extractions"]![0], extraction).Should().BeTrue();
+            JsonNode.DeepEquals(bound["KnowledgeReview"]!["Reviewed"], extraction).Should().BeTrue();
+            bound["Canonical"]!
+                .AsObject()
+                .Select(pair => pair.Key)
+                .Should()
+                .BeEquivalentTo("SelfAssessment", "Learnings", "Judgment");
+            bound["Canonical"]!["Judgment"]!["Verdict"]!.GetValue<string>().Should().Be("approved");
+        }
     }
 
     private static WorkflowDefinition Load() =>

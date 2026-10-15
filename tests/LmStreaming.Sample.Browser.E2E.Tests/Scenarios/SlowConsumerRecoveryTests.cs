@@ -55,17 +55,17 @@ namespace LmStreaming.Sample.Browser.E2E.Tests.Scenarios;
 public sealed class SlowConsumerRecoveryTests
 {
     /// <summary>
-    /// Per-subscriber output-channel capacity for this host. Small enough that a modest scripted turn
-    /// is guaranteed to overflow it while the pump is parked, large enough to still exercise the
-    /// "some buffered frames are delivered, then recovery" ordering rather than an empty-channel edge.
+    /// Per-subscriber output-channel capacity for this host. The parked first-turn burst exceeds it,
+    /// while the final turn's text, usage, and completion frames fit even if the replacement pump is
+    /// briefly descheduled. This forces the intended first drop without racing a second drop.
     /// </summary>
-    private const int OutputChannelCapacity = 4;
+    private const int OutputChannelCapacity = 16;
 
     /// <summary>
-    /// Words in turn 1. Any value above <see cref="OutputChannelCapacity"/> proves the point; this is an
-    /// order of magnitude above it so the overflow cannot be an accident of message batching.
+    /// Words in turn 1. The scripted provider emits ten words per text chunk, so this produces more
+    /// text updates than <see cref="OutputChannelCapacity"/> without relying on tool or usage frames.
     /// </summary>
-    private const int FirstTurnWordCount = 40;
+    private const int FirstTurnWordCount = 200;
 
     /// <summary>The final full message. Distinctive so "exactly once" is countable in the DOM.</summary>
     private const string FinalAnswer = "Recovered final answer: the run survived the dropped stream.";
@@ -139,7 +139,7 @@ public sealed class SlowConsumerRecoveryTests
         await pump.Parked.WaitForAsync("the outbound pump to park with a registered, non-draining subscriber");
 
         // 2) The provider asking for turn 2 proves turn 1 finished streaming, so all of its messages
-        //    have been published against a 4-slot channel that nothing is draining: the subscriber has
+        //    have been published against a 16-slot channel that nothing is draining: the subscriber has
         //    necessarily been evicted by now. No sleep, no polling — a counting argument.
         await heldFinalTurn.Arrived.WaitForAsync("the provider's final turn to be requested");
         var restCallsBeforeDrop = restCatchUp.Count;

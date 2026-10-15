@@ -1,4 +1,5 @@
 using CodeReviewDaemon.Sample.Agents.DeveloperLearnings;
+using CodeReviewDaemon.Sample.Persistence.Models;
 
 namespace CodeReviewDaemon.Sample.Tests.Agents;
 
@@ -10,6 +11,46 @@ public sealed class DeveloperIdentityTests
     /// twelve-hex-character fingerprint. Anything outside this cannot name a parent directory.
     /// </summary>
     private const string SafeSegment = "^[a-z0-9][a-z0-9-]*-[0-9a-f]{12}$";
+
+    [Fact]
+    public void Event_path_is_stable_but_separates_repository_pr_and_frozen_event()
+    {
+        var repo = new RepoIdentity
+        {
+            Provider = "github",
+            OrgOrOwner = "example",
+            RepoName = "widgets",
+        };
+        var run = new ReviewRun
+        {
+            RepoId = 1,
+            PrId = "7",
+            HeadSha = "head",
+            BaseSha = "base",
+            PrAuthor = "Jane Doe",
+            TriggerWatermark = "event",
+            ReviewKind = "merged-completion",
+            VariantId = "",
+            Mode = "collect-only",
+            Stage = ReviewStage.Discovered,
+            WorkflowStatus = WorkflowStatus.Pending,
+            PrLifecycleState = PrLifecycleState.Merged,
+        };
+        var path = DeveloperIdentity.BuildLearningPath(repo, run, "terminal:1");
+        path.Should().MatchRegex("^KnowledgeBase/developers/jane-doe-[0-9a-f]{12}/event-[0-9a-f]{64}\\.md$");
+        DeveloperIdentity
+            .BuildLearningPath(repo with { OrgOrOwner = "EXAMPLE" }, run with { PrAuthor = "JANE DOE" }, "terminal:1")
+            .Should()
+            .Be(path);
+        DeveloperIdentity.BuildLearningPath(repo with { OrgOrOwner = "other" }, run, "terminal:1").Should().NotBe(path);
+        DeveloperIdentity.BuildLearningPath(repo, run with { PrId = "8" }, "terminal:1").Should().NotBe(path);
+        DeveloperIdentity.BuildLearningPath(repo, run, "terminal:2").Should().NotBe(path);
+        DeveloperIdentity
+            .BuildLearningPath(repo, run with { PrAuthor = "dependabot[bot]" }, "terminal:1")
+            .Should()
+            .BeNull();
+        DeveloperIdentity.BuildLearningPath(repo, run with { PrAuthor = null }, "terminal:1").Should().BeNull();
+    }
 
     [Theory]
     [InlineData("dependabot[bot]")]

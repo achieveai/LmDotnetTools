@@ -46,6 +46,7 @@ public sealed class RunPrOrchestrationTests
                 hostStarts++;
                 return Task.CompletedTask;
             },
+            recoverAsync: _ => Task.CompletedTask,
             admitAndRunAsync: (_, _) =>
             {
                 admitCalls++;
@@ -82,6 +83,7 @@ public sealed class RunPrOrchestrationTests
                 hostStarts++;
                 return Task.CompletedTask;
             },
+            recoverAsync: _ => Task.CompletedTask,
             admitAndRunAsync: (_, _) =>
             {
                 admitCalls++;
@@ -112,6 +114,7 @@ public sealed class RunPrOrchestrationTests
                 prepareAsync: AcceptedPrepare,
                 acquireLease: Acquired,
                 startHostAsync: () => Task.CompletedTask,
+                recoverAsync: _ => Task.CompletedTask,
                 admitAndRunAsync: (_, _) => throw new InvalidOperationException("boom"),
                 stopHostAsync: () =>
                 {
@@ -135,6 +138,7 @@ public sealed class RunPrOrchestrationTests
             prepareAsync: AcceptedPrepare,
             acquireLease: Acquired,
             startHostAsync: () => Task.CompletedTask,
+            recoverAsync: _ => Task.CompletedTask,
             admitAndRunAsync: (_, ct) =>
             {
                 cts.Cancel();
@@ -166,6 +170,7 @@ public sealed class RunPrOrchestrationTests
                 prepareAsync: AcceptedPrepare,
                 acquireLease: Acquired,
                 startHostAsync: () => Task.CompletedTask,
+                recoverAsync: _ => Task.CompletedTask,
                 admitAndRunAsync: (_, _) => throw new OperationCanceledException("unrelated timeout"),
                 stopHostAsync: () =>
                 {
@@ -177,6 +182,71 @@ public sealed class RunPrOrchestrationTests
 
         await act.Should().ThrowAsync<OperationCanceledException>();
         hostStops.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task A_failed_recovery_stops_the_host_without_admitting_a_run()
+    {
+        var hostStops = 0;
+        var admissions = 0;
+
+        var act = () =>
+            RunPrOrchestration.ExecuteAsync(
+                prepareAsync: AcceptedPrepare,
+                acquireLease: Acquired,
+                startHostAsync: () => Task.CompletedTask,
+                recoverAsync: _ => throw new InvalidOperationException("Owner recovery refused."),
+                admitAndRunAsync: (_, _) =>
+                {
+                    admissions++;
+                    return Task.FromResult(new RunSinglePrResult { Admitted = true });
+                },
+                stopHostAsync: () =>
+                {
+                    hostStops++;
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None
+            );
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        admissions.Should().Be(0);
+        hostStops.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task One_shot_recovers_active_owners_before_admission()
+    {
+        var order = new List<string>();
+
+        var result = await RunPrOrchestration.ExecuteAsync(
+            prepareAsync: AcceptedPrepare,
+            acquireLease: Acquired,
+            startHostAsync: () =>
+            {
+                order.Add("start");
+                return Task.CompletedTask;
+            },
+            recoverAsync: _ =>
+            {
+                order.Add("recover");
+                return Task.CompletedTask;
+            },
+            admitAndRunAsync: (_, _) =>
+            {
+                order.Add("admit");
+                return Task.FromResult(new RunSinglePrResult { Admitted = true });
+            },
+            stopHostAsync: () =>
+            {
+                order.Add("stop");
+                return Task.CompletedTask;
+            },
+            cancellationToken: CancellationToken.None
+        );
+
+        result.Admitted.Should().BeTrue();
+        order.Should().Equal("start", "recover", "admit", "stop");
     }
 
     [Fact]
@@ -192,6 +262,7 @@ public sealed class RunPrOrchestrationTests
                 order.Add("start");
                 return Task.CompletedTask;
             },
+            recoverAsync: _ => Task.CompletedTask,
             admitAndRunAsync: (_, _) =>
             {
                 order.Add("admit");

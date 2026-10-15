@@ -276,8 +276,11 @@ for f in r['files']:
  if len(b)!=f['size'] or hashlib.sha256(b).hexdigest()!=f['sha256']: raise RuntimeError('File changed')
  out[f['path']]=base64.b64encode(b).decode()
 print(json.dumps(out))'''
-        contents = remote(export, {'root': slot['WorktreeRoot'], 'files': inspection['inventory']})
-        for row in inspection['inventory']:
+        working_files = [row for row in inspection['inventory']
+                         if row.get('kind', 'file') == 'file'
+                         and row['path'].startswith('PRs/' + str(run['pr_id']) + '/')]
+        contents = remote(export, {'root': slot['WorktreeRoot'], 'files': working_files})
+        for row in working_files:
             data = base64.b64decode(contents[row['path']]); require(digest(data) == row['sha256'], 'Working file archive mismatch')
             save(archive / 'slot-files' / row['path'], data)
         shutil.copytree(run_dir, archive / 'workflow-run'); shutil.copy2(snapshot_path, archive / 'workflow-snapshot.json')
@@ -294,31 +297,45 @@ print(json.dumps(out))'''
         purge = prefix + '''
 with lock_session(1200), state.lock(shared=True, phase='operator-archive'), state.slot_lock(pool.repo_key, number, phase='operator-archive'):
  _slot_writer_assert_quiescent(state,pool.repo_key,number,reap_stale=False,dry_run=True)
- receipt=json.loads(read_regular(receipt_path))
+ receipt=json.loads(read_regular(receipt_path,limit=32*1024*1024))
  require(receipt['status']=='reset' and receipt['identity']==identity,'Receipt mismatch')
- verify_copy(receipt['inventory']);warm()
- allowed={'receipt.json','intent.json'}|{'files/'+r['path'] for r in receipt['inventory']}
+ require(receipt.get('cleanupVersion')==2,'Unsupported reset receipt')
+ warm(receipt['rootHead'],receipt['sourceBaseline'])
+ allowed={'receipt.json','intent.json'}
  actual=set()
  for p in recovery.rglob('*'):
   plain_path(p);require(p.is_file() or p.is_dir(),'Special recovery file')
   if p.is_file():actual.add(p.relative_to(recovery).as_posix())
  require(actual==allowed,'Foreign recovery files')
- import base64
- data={n:base64.b64encode(read_regular(recovery/n)).decode() for n in sorted(actual)}
+ data={}
+ for n in sorted(actual):
+  content=read_regular(recovery/n,limit=32*1024*1024)
+  data[n]={'sha256':hashlib.sha256(content).hexdigest(),'size':len(content)}
  print(json.dumps(data))
 '''
         recovery_files = remote(purge, {**identity, 'apply': False})
-        for name, text in recovery_files.items(): save(archive / 'reset-recovery' / name, base64.b64decode(text))
-        recovery_hashes = {name: digest(base64.b64decode(text)) for name, text in recovery_files.items()}
+        require(set(recovery_files) == {'receipt.json', 'intent.json'}, 'Unexpected recovery metadata')
+        recovery_hashes = {}
+        for name, metadata in recovery_files.items():
+            relative = inspection['recoveryPath'] + '/' + name
+            content = gateway.call('GET', f'/sandboxes/{sid}/files/{mount}?path=' +
+                                   urllib.parse.quote(relative, safe=''), raw=True)
+            require(len(content) == metadata['size'] and digest(content) == metadata['sha256'],
+                    'Recovery file changed during download')
+            save(archive / 'reset-recovery' / name, content)
+            recovery_hashes[name] = metadata['sha256']
         save_json(archive / 'recovery-hashes.json', recovery_hashes); sync_tree(archive)
         purge = prefix + '\nexpected=' + repr(recovery_hashes) + '''
 with lock_session(1200), state.lock(shared=True,phase='operator-purge'), state.slot_lock(pool.repo_key,number,phase='operator-purge'):
- _slot_writer_assert_quiescent(state,pool.repo_key,number,reap_stale=False,dry_run=True);warm()
+ _slot_writer_assert_quiescent(state,pool.repo_key,number,reap_stale=False,dry_run=True)
+ receipt=json.loads(read_regular(receipt_path,limit=32*1024*1024))
+ require(receipt.get('cleanupVersion')==2 and receipt['identity']==identity,'Reset receipt mismatch')
+ warm(receipt['rootHead'],receipt['sourceBaseline'])
  require({p.relative_to(recovery).as_posix() for p in recovery.rglob('*') if p.is_file()}==set(expected),'Recovery inventory changed')
- for n,h in expected.items():require(hashlib.sha256(read_regular(recovery/n)).hexdigest()==h,'Recovery changed')
+ for n,h in expected.items():require(hashlib.sha256(read_regular(recovery/n,limit=32*1024*1024)).hexdigest()==h,'Recovery changed')
  for n in expected:(recovery/n).unlink()
  for p in sorted(recovery.rglob('*'),key=lambda p:len(p.parts),reverse=True):p.rmdir()
- recovery.rmdir();sync_directory(recovery.parent);warm()
+ recovery.rmdir();sync_directory(recovery.parent);warm(receipt['rootHead'],receipt['sourceBaseline'])
  print(json.dumps({'warm':True,'recoveryAbsent':not recovery.exists(),'notesAbsent':not (outer/'PRs'/str(request['pr'])).exists()}))
 '''
         purged = remote(purge, {**identity, 'apply': True})

@@ -37,6 +37,8 @@ internal interface IReviewWorkflowRunner
 
     Task RecoverActiveWorkspacesAsync(CancellationToken cancellationToken);
 
+    Task RecoverActiveOwnerAsync(ReviewRun run, CancellationToken cancellationToken) => Task.CompletedTask;
+
     Task<WorkflowInvocationStatus?> ReconcileActiveOwnerAsync(
         ReviewRun run,
         string requestedWorkflowInstanceId,
@@ -62,6 +64,41 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
     private readonly Func<ReviewRun, string, string, CancellationToken, Task<IWorkflowTaskInvoker>> _invokerFactory;
     private readonly Func<ReviewRun, WorkflowRound?, IReadOnlyDictionary<string, string>>? _hostSessionBindings;
     private readonly TimeSpan? _invocationTimeout;
+    private readonly bool _resetFailedAttempts;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<long, ReviewSlotClaim> _streamClaims = new();
+    private readonly AsyncLocal<bool> _reconcileOnly = new();
+    private readonly ILogger<ReviewWorkflowRunner> _logger;
+
+    private sealed class ReconcileOnlyInvoker(IWorkflowTaskInvoker inner) : IWorkflowTaskInvoker
+    {
+        public Task<WorkflowInvocationResult> InvokeAsync(
+            WorkflowInvocation invocation,
+            CancellationToken ct = default
+        ) =>
+            Task.FromResult(
+                new WorkflowInvocationResult(
+                    WorkflowInvocationStatus.Failed,
+                    Error: "Startup recovery discards the unfinished remainder instead of dispatching new work."
+                )
+            );
+
+        public Task<WorkflowInvocationResult> ReconcileAsync(
+            WorkflowInvocation invocation,
+            CancellationToken ct = default
+        ) => inner.ReconcileAsync(invocation, ct);
+    }
+
+    internal void RegisterStreamClaim(long runId, ReviewSlotClaim claim)
+    {
+        if (!_streamClaims.TryAdd(runId, claim))
+            throw new InvalidOperationException("Review already has a stream slot claim.");
+    }
+
+    internal void UnregisterStreamClaim(long runId, ReviewSlotClaim claim)
+    {
+        if (_streamClaims.TryGetValue(runId, out var registered) && ReferenceEquals(registered, claim))
+            _streamClaims.TryRemove(runId, out _);
+    }
 
     public ReviewWorkflowRunner(
         string workflowPath,
@@ -71,7 +108,9 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
         WorkflowWorkspace workspace,
         Func<ReviewRun, string, string, CancellationToken, Task<IWorkflowTaskInvoker>> invokerFactory,
         Func<ReviewRun, WorkflowRound?, IReadOnlyDictionary<string, string>>? hostSessionBindings = null,
-        TimeSpan? invocationTimeout = null
+        TimeSpan? invocationTimeout = null,
+        bool resetFailedAttempts = false,
+        ILogger<ReviewWorkflowRunner>? logger = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowPath);
@@ -88,6 +127,292 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
             throw new ArgumentOutOfRangeException(nameof(invocationTimeout), "Invocation timeout must be positive.");
         }
         _invocationTimeout = invocationTimeout;
+        _resetFailedAttempts = resetFailedAttempts;
+        _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ReviewWorkflowRunner>.Instance;
+    }
+
+    internal async Task<bool> HasStartedRoundAsync(WorkflowRound round, CancellationToken ct)
+    {
+        if (round.WorkflowInstanceId is not { } instance)
+            return false;
+        return await _workflowStore.LoadAsync(instance, ct).ConfigureAwait(false) is not null;
+    }
+
+    internal async Task<JsonObject> PrepareMergedOnlyAsync(
+        ReviewRun run,
+        WorkflowRound round,
+        JsonObject frozenContext,
+        CancellationToken ct,
+        int? slotIndex = null
+    )
+    {
+        var stored = ReadAndValidateRun(run);
+        var storedRound = ReadAndValidateRound(stored, round, frozenContext)!;
+        if (storedRound.Kind != WorkflowRoundKind.Merged)
+            throw new InvalidOperationException("Inspection requires a merged completion round.");
+        var instance = InstanceIdFor(stored, storedRound);
+        if (await _workflowStore.LoadAsync(instance, ct) is not null)
+            throw new InvalidOperationException("An executing workflow cannot be replaced by preparation inspection.");
+        var admission = BuildAdmission(stored, storedRound);
+        await WriteOrVerifyScopeAsync(RunDirectory(instance), stored.Id, instance, admission, frozenContext, ct);
+        _ = await WorkflowPackageSnapshot.PrepareAsync(_workflowPath, RunDirectory(instance), false, ct);
+        if (slotIndex is { } selectedSlot)
+            await _workspace.SelectMergedInspectionSlotAsync(stored, instance, selectedSlot, ct);
+        if (!await AcquireOrRecoverAsync(stored, instance, ct))
+            throw new WorkspaceCapacityUnavailableException();
+        var settled = false;
+        try
+        {
+            var output = await _workspace.ReconcilePreparationAsync(stored, admission, instance, ct);
+            output ??= (await _workspace.PrepareAssignedAsync(stored, admission, instance, ct)).Output;
+            settled = true;
+            return new JsonObject
+            {
+                ["Outcome"] = "prepared_only",
+                ["RunId"] = stored.Id,
+                ["RoundId"] = storedRound.Id,
+                ["Preparation"] = output.DeepClone(),
+                ["Published"] = false,
+            };
+        }
+        finally
+        {
+            await _workspace.ReleaseOrRetireAsync(stored.Id, instance, settled, CancellationToken.None);
+        }
+    }
+
+    internal async Task RecoverUnsubmittedMergedAssessmentAsync(
+        ReviewRun run,
+        WorkflowRound round,
+        JsonObject frozenContext,
+        CodeReviewDaemon.Sample.Agents.LmStreamingS2SClient client,
+        CancellationToken ct
+    )
+    {
+        run = ReadAndValidateRun(run);
+        round = ReadAndValidateRound(run, round, frozenContext)!;
+        var instance = InstanceIdFor(run, round);
+        var saved = await _workflowStore.LoadAsync(instance, ct);
+        if (saved?.CurrentNodeId != "merged-self-assessment")
+            return;
+        var failed = saved.Tasks.SingleOrDefault(t => t.NodeId == saved.CurrentNodeId);
+        if (failed?.Status != WorkflowTaskStatus.Failed)
+            return;
+        var admission = BuildAdmission(run, round);
+        ValidateSnapshot(saved, instance, admission);
+        await WriteOrVerifyScopeAsync(RunDirectory(instance), run.Id, instance, admission, frozenContext, ct);
+        _ = await WorkflowPackageSnapshot.PrepareAsync(_workflowPath, RunDirectory(instance), true, ct);
+        var failedId = failed.ToolCallId ?? $"{instance}/{failed.Name}/{failed.Attempts}";
+        var receiptPath = Path.Combine(
+            RunDirectory(instance),
+            "private",
+            "invocation-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(failedId))) + ".json"
+        );
+        var receipt = JsonNode.Parse(await File.ReadAllTextAsync(receiptPath, ct))!;
+        var invocation = JsonSerializer.Deserialize<WorkflowInvocation>(receipt["Invocation"]!)!;
+        var task = saved
+            .Definition!.Nodes.OfType<ProceduralNode>()
+            .Single(n => n.Id == saved.CurrentNodeId)
+            .TaskList?.SingleOrDefault();
+        if (
+            run.ReviewKind != "merged-completion"
+            || run.Mode != "collect-only"
+            || run.PrLifecycleState != PrLifecycleState.Merged
+            || round.Kind != WorkflowRoundKind.Merged
+            || round.CompletedAt is not null
+            || failed.Attempts != 0
+            || failed.Visit != 1
+            || failedId.Contains(":unsubmitted-recovery", StringComparison.Ordinal)
+            || _reviewStore.TryGetLatestArtifact(run.Id, "workflow-unsubmitted-recovery") is not null
+            || saved.Tasks.Count != 2
+            || !saved.Tasks.Any(t => t.NodeId == "prepare-history" && t.Status == WorkflowTaskStatus.Validated)
+            || task?.Delegate != DelegateKind.Agent
+            || task.Id != failed.TaskId
+            || invocation.InvocationId != failedId
+            || invocation.InstanceId != instance
+            || invocation.Task.Id != failed.TaskId
+            || invocation.IsCorrection
+            || invocation.SessionId != saved.Sessions.GetValueOrDefault(task.Session ?? saved.CurrentNodeId)
+            || receipt["Result"]?["Status"]?.GetValue<int>() != (int)WorkflowInvocationStatus.Failed
+            || _reviewStore.GetOutboxForRun(run.Id).Any()
+        )
+            throw new InvalidOperationException("Only an unsubmitted first merged assessment can be recovered once.");
+        var bindingKind =
+            "workflow-session:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(invocation.SessionId!)));
+        var binding = JsonNode.Parse(
+            _reviewStore.TryGetLatestArtifact(run.Id, bindingKind)?.Payload
+                ?? throw new InvalidDataException("The failed assessment session is missing.")
+        )!;
+        var prepared = JsonSerializer.Deserialize<WorkflowWorkspacePreparation>(
+            _reviewStore.TryGetLatestArtifact(run.Id, WorkflowWorkspace.PreparationArtifactKind)?.Payload
+                ?? throw new InvalidDataException("The failed assessment preparation is missing.")
+        )!;
+        var thread =
+            binding["ThreadId"]?.GetValue<string>() ?? throw new InvalidDataException("Hosted thread is missing.");
+        if (
+            binding["SessionId"]?.GetValue<string>() != invocation.SessionId
+            || binding["WorkspaceId"]?.GetValue<string>() != prepared.Workspace.WorkspaceId
+            || binding["WorkingDirectoryRelPath"]?.GetValue<string>() != prepared.Workspace.WorkingDirectoryRelPath
+        )
+            throw new InvalidDataException("The failed session does not match its prepared workspace.");
+        await client.RequireIdleAsync(thread, ct);
+        if (
+            (await client.GetConversationTranscriptAsync(thread, ct)).Count != 0
+            || (await client.GetSubAgentTreeAsync(thread, ct)).Nodes.Count != 0
+        )
+            throw new InvalidOperationException("The failed session contains work; reconcile it instead of retrying.");
+        var inputId = AchieveAi.LmDotnetTools.LmMultiTurn.Messages.IdempotentInputId.Create(
+            WorkflowAgentInvoker.InvocationKey(invocation),
+            false,
+            false
+        );
+        await client.RequireUnacceptedInputAsync(thread, inputId, ct);
+        if (!await AcquireOrRecoverAsync(run, instance, ct))
+            throw new WorkspaceCapacityUnavailableException();
+        try
+        {
+            if (await _workspace.ReconcilePreparationAsync(run, admission, instance, ct) is null)
+                throw new InvalidDataException("Prepared evidence must reconcile before recovery.");
+            var deadlines = new Dictionary<string, DateTimeOffset>(saved.Deadlines);
+            deadlines.Remove(failed.Name);
+            var outputs = (JsonObject)saved.Outputs.DeepClone();
+            outputs[failed.NodeId]?.AsObject().Remove(failed.TaskId);
+            _reviewStore.AddArtifact(
+                new ReviewArtifact
+                {
+                    ReviewRunId = run.Id,
+                    ArtifactKind = "workflow-unsubmitted-recovery",
+                    ArtifactSchemaVersion = 1,
+                    Provider = "workflow",
+                    Payload = saved.ToJson(),
+                }
+            );
+            await _workflowStore.SaveAsync(
+                instance,
+                saved with
+                {
+                    Tasks = saved
+                        .Tasks.Select(t =>
+                            t == failed
+                                ? t with
+                                {
+                                    Status = WorkflowTaskStatus.Pending,
+                                    ToolCallId = failedId + ":unsubmitted-recovery",
+                                    LastError = null,
+                                }
+                                : t
+                        )
+                        .ToArray(),
+                    Deadlines = deadlines,
+                    Outputs = outputs,
+                },
+                ct
+            );
+        }
+        finally
+        {
+            await _workspace.ReleaseOrRetireAsync(run.Id, instance, true, CancellationToken.None);
+        }
+    }
+
+    internal async Task RecoverUnstartedMergedClosureAsync(
+        ReviewRun run,
+        WorkflowRound round,
+        JsonObject frozenContext,
+        Func<string, CancellationToken, Task> verifyUnstarted,
+        CancellationToken ct
+    )
+    {
+        run = ReadAndValidateRun(run);
+        round = ReadAndValidateRound(run, round, frozenContext)!;
+        var instance = InstanceIdFor(run, round);
+        var saved = await _workflowStore.LoadAsync(instance, ct);
+        if (saved?.CurrentNodeId != "close-artifact-branch")
+            return;
+        var failed = saved.Tasks.SingleOrDefault(t => t.NodeId == saved.CurrentNodeId);
+        if (failed?.Status != WorkflowTaskStatus.Failed)
+            return;
+        var admission = BuildAdmission(run, round);
+        ValidateSnapshot(saved, instance, admission);
+        await WriteOrVerifyScopeAsync(RunDirectory(instance), run.Id, instance, admission, frozenContext, ct);
+        _ = await WorkflowPackageSnapshot.PrepareAsync(_workflowPath, RunDirectory(instance), true, ct);
+        var failedId = failed.ToolCallId ?? $"{instance}/{failed.Name}/{failed.Attempts}";
+        var receiptPath = Path.Combine(
+            RunDirectory(instance),
+            "private",
+            "invocation-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(failedId))) + ".json"
+        );
+        var receipt = JsonNode.Parse(await File.ReadAllTextAsync(receiptPath, ct))!;
+        var invocation = JsonSerializer.Deserialize<WorkflowInvocation>(receipt["Invocation"]!)!;
+        var retained = saved.State["MergedRetention"] as JsonObject;
+        var retainedSha = retained?["RetainedSha"]?.GetValue<string>();
+        var outbox = _reviewStore.GetOutboxForRun(run.Id);
+        if (
+            run.ReviewKind != "merged-completion"
+            || run.Mode != "collect-only"
+            || run.PrLifecycleState != PrLifecycleState.Merged
+            || round.Kind != WorkflowRoundKind.Merged
+            || round.CompletedAt is not null
+            || failed.Attempts != 0
+            || failed.Visit != 1
+            || failedId.Contains(":closure-recovery", StringComparison.Ordinal)
+            || _reviewStore.TryGetLatestArtifact(run.Id, "workflow-closure-recovery") is not null
+            || _reviewStore.TryGetLatestArtifact(run.Id, "workflow-content-integration") is not null
+            || saved.Tasks.Any(t => t != failed && t.Status != WorkflowTaskStatus.Validated)
+            || !saved.Tasks.Any(t => t.NodeId == "retain-merged" && t.Status == WorkflowTaskStatus.Validated)
+            || invocation.InvocationId != failedId
+            || invocation.InstanceId != instance
+            || invocation.Task.Id != failed.TaskId
+            || invocation.Task.Delegate != DelegateKind.Script
+            || invocation.Task.Script != "scripts/close-artifact-branch.py"
+            || invocation.IsCorrection
+            || !JsonNode.DeepEquals(invocation.Input, retained)
+            || receipt["Result"]?["Status"]?.GetValue<int>() != (int)WorkflowInvocationStatus.Failed
+            || retainedSha is not { Length: 40 }
+            || !retainedSha.All(Uri.IsHexDigit)
+            || retained?["ArtifactBranch"]?.GetValue<string>()
+                != frozenContext["Merge"]?["ArtifactBranch"]?.GetValue<string>()
+            || outbox.Count != 1
+            || outbox[0].Status != OutboxStatus.Posted
+            || outbox[0].Operation != "workflow_retain_artifacts"
+            || outbox[0].ProviderResponseId != retainedSha
+        )
+            throw new InvalidOperationException(
+                "Only a retained, unstarted first merged closure can be recovered once."
+            );
+        await verifyUnstarted(retainedSha, ct);
+        var deadlines = new Dictionary<string, DateTimeOffset>(saved.Deadlines);
+        deadlines.Remove(failed.Name);
+        _reviewStore.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactKind = "workflow-closure-recovery",
+                ArtifactSchemaVersion = 1,
+                Provider = "workflow",
+                Payload = saved.ToJson(),
+            }
+        );
+        await _workflowStore.SaveAsync(
+            instance,
+            saved with
+            {
+                Tasks = saved
+                    .Tasks.Select(t =>
+                        t == failed
+                            ? t with
+                            {
+                                Status = WorkflowTaskStatus.Pending,
+                                ToolCallId = failedId + ":closure-recovery",
+                                LastError = null,
+                            }
+                            : t
+                    )
+                    .ToArray(),
+                Deadlines = deadlines,
+            },
+            ct
+        );
     }
 
     public async Task<WorkflowInvocationStatus> RunAsync(
@@ -135,6 +460,31 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
         if (saved?.IsComplete == true)
         {
             ValidateSnapshot(saved, instanceId, admission);
+            var completedInvoker = await _invokerFactory(storedRun, instanceId, runDirectory, cancellationToken)
+                .ConfigureAwait(false);
+            if (completedInvoker is ReviewWorkflowInvoker completedHost)
+            {
+                var pending = await completedHost
+                    .SettleCompletedSessionsAsync(cancellationToken, snapshot: saved)
+                    .ConfigureAwait(false);
+                if (pending is not null)
+                    return pending.Status;
+            }
+            if (_resetFailedAttempts && (storedRound is null || storedRound.Kind == WorkflowRoundKind.Merged))
+            {
+                var assigned = _reviewStore.TryGetLatestArtifact(
+                    storedRun.Id,
+                    WorkflowWorkspace.AssignmentArtifactKind
+                );
+                if (assigned is not null && JsonNode.Parse(assigned.Payload)?["Active"]?.GetValue<bool>() == true)
+                {
+                    if (!await AcquireOrRecoverAsync(storedRun, instanceId, cancellationToken).ConfigureAwait(false))
+                        throw new WorkspaceCapacityUnavailableException();
+                    await _workspace
+                        .ResetSettledAttemptAsync(storedRun, instanceId, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
             CompleteAdmission(storedRun, storedRound, instanceId);
             await ReleaseSettledAssignmentIfActiveAsync(storedRun, instanceId, cancellationToken).ConfigureAwait(false);
             return WorkflowInvocationStatus.Completed;
@@ -142,9 +492,6 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
         var admittedWorkflow = await WorkflowPackageSnapshot
             .PrepareAsync(_workflowPath, runDirectory, saved is not null, cancellationToken)
             .ConfigureAwait(false);
-        if (saved is not null && storedRound is null)
-            saved = await RecoverFailedDiscussionReadAsync(storedRun, saved, admission, cancellationToken)
-                .ConfigureAwait(false);
         var runtime = saved is null
             ? CreateRuntime(admission, admittedWorkflow, cancellationToken)
             : RestoreRuntime(saved, instanceId, admission);
@@ -183,9 +530,22 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
             var invoker = await _invokerFactory(storedRun, instanceId, runDirectory, cancellationToken)
                 .ConfigureAwait(false);
             factoryCompleted = true;
-            runtimeStatus = await runtime
-                .RunAutomaticAsync(_workflowStore, instanceId, invoker, cancellationToken)
-                .ConfigureAwait(false);
+            var pending =
+                saved is not null && invoker is ReviewWorkflowInvoker hostedInvoker
+                    ? await hostedInvoker
+                        .SettleCompletedSessionsAsync(cancellationToken, snapshot: saved)
+                        .ConfigureAwait(false)
+                    : null;
+            runtimeStatus =
+                pending?.Status
+                ?? await runtime
+                    .RunAutomaticAsync(
+                        _workflowStore,
+                        instanceId,
+                        _reconcileOnly.Value ? new ReconcileOnlyInvoker(invoker) : invoker,
+                        cancellationToken
+                    )
+                    .ConfigureAwait(false);
 
             if (runtimeStatus == WorkflowInvocationStatus.Unknown)
             {
@@ -208,12 +568,46 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
                         "Workflow execution completed without a durable completion snapshot."
                     );
                 }
+                if (_resetFailedAttempts && (storedRound is null || storedRound.Kind == WorkflowRoundKind.Merged))
+                {
+                    if (invoker is ReviewWorkflowInvoker completedHost)
+                    {
+                        var unsettled = await completedHost
+                            .SettleCompletedSessionsAsync(cancellationToken, snapshot: durable)
+                            .ConfigureAwait(false);
+                        if (unsettled is not null)
+                            return WorkflowInvocationStatus.Unknown;
+                    }
+                    await _workspace
+                        .ResetSettledAttemptAsync(storedRun, instanceId, cancellationToken)
+                        .ConfigureAwait(false);
+                }
                 releaseLease = true;
                 CompleteAdmission(storedRun, storedRound, instanceId);
             }
             else
             {
                 releaseLease = IsSettled(durable);
+                if (
+                    releaseLease
+                    && _resetFailedAttempts
+                    && (storedRound is null || storedRound.Kind == WorkflowRoundKind.Merged)
+                )
+                {
+                    releaseLease = false;
+                    if (invoker is ReviewWorkflowInvoker failedHost)
+                    {
+                        var unresolved = await failedHost
+                            .SettleCompletedSessionsAsync(cancellationToken, snapshot: durable, includeFailed: true)
+                            .ConfigureAwait(false);
+                        if (unresolved is not null)
+                            return WorkflowInvocationStatus.Unknown;
+                    }
+                    await _workspace
+                        .ResetSettledAttemptAsync(storedRun, instanceId, cancellationToken)
+                        .ConfigureAwait(false);
+                    releaseLease = true;
+                }
                 if (storedRound is not null)
                 {
                     _ = _reviewStore.RecordWorkflowOutcome(storedRound.Id, instanceId, WorkflowRoundOutcome.Failed);
@@ -234,7 +628,14 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
         }
         catch
         {
-            if (hasLease && runtimeStatus != WorkflowInvocationStatus.Unknown)
+            if (
+                hasLease
+                && runtimeStatus != WorkflowInvocationStatus.Unknown
+                && !(
+                    _resetFailedAttempts
+                    && runtimeStatus is WorkflowInvocationStatus.Failed or WorkflowInvocationStatus.Completed
+                )
+            )
             {
                 releaseLease =
                     !factoryCompleted
@@ -253,68 +654,46 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
         }
     }
 
-    private async Task<WorkflowInstanceSnapshot> RecoverFailedDiscussionReadAsync(
+    internal async Task ValidateMergedResumeAsync(
         ReviewRun run,
-        WorkflowInstanceSnapshot saved,
-        JsonObject admission,
+        WorkflowRound round,
+        JsonObject frozen,
+        int? slot,
         CancellationToken ct
     )
     {
-        if (run.Mode != "collect-only" || saved.CurrentNodeId != "fetch-discussion")
-            return saved;
-        var failed = saved.Tasks.SingleOrDefault(task =>
-            task.NodeId == "fetch-discussion" && task.Status == WorkflowTaskStatus.Failed
-        );
-        if (failed is null)
-            return saved;
-        ValidateSnapshot(saved, saved.InstanceId, admission);
-        var node = saved.Definition!.Nodes.OfType<ProceduralNode>().Single(n => n.Id == "fetch-discussion");
-        var task = node.TaskList?.SingleOrDefault();
+        var stored = ReadAndValidateRun(run);
+        var storedRound = ReadAndValidateRound(stored, round, frozen)!;
+        var instance = InstanceIdFor(stored, storedRound);
+        var context = await ReadFrozenContextAsync(stored, storedRound, ct);
+        var snapshot = await _workflowStore.LoadAsync(instance, ct);
+        var admission = BuildAdmission(stored, storedRound);
+        if (snapshot is not null)
+            ValidateSnapshot(snapshot, instance, admission);
+        var assignment = _reviewStore.TryGetLatestArtifact(run.Id, WorkflowWorkspace.AssignmentArtifactKind);
+        var prepared = _reviewStore.TryGetLatestArtifact(run.Id, WorkflowWorkspace.PreparationArtifactKind);
+        var assigned = assignment is null ? null : JsonNode.Parse(assignment.Payload);
+        var preparation = prepared is null ? null : JsonNode.Parse(prepared.Payload);
         if (
-            task?.Delegate != DelegateKind.Script
-            || task.Id != failed.TaskId
-            || Path.GetFileNameWithoutExtension(task.Script) != "fetch-discussion"
-            || failed.Attempts != 0
-            || saved.Tasks.Any(t => t != failed && t.Status != WorkflowTaskStatus.Validated)
-            || new[] { "independent-review", "independent-grade", "collect-comments" }.Any(id =>
-                !saved.Tasks.Any(t => t.NodeId == id && t.Status == WorkflowTaskStatus.Validated)
-            )
-            || _reviewStore.GetOutboxForRun(run.Id).Any()
+            !JsonNode.DeepEquals(context, frozen)
+            || snapshot?.IsComplete == true
+            || snapshot?.Tasks.Any(task => task.Status == WorkflowTaskStatus.Failed) == true
+            || (snapshot is not null && snapshot.State["PreparedHistory"] is null)
+            || assigned?["WorkflowInstanceId"]?.GetValue<string>() != instance
+            || assigned?["Slot"]?["Index"]?.GetValue<int>() != slot
+            || preparation is null
+            || !JsonNode.DeepEquals(assigned?["Slot"], preparation["Slot"])
+            || !JsonNode.DeepEquals(assigned?["AssignmentId"], preparation["AssignmentId"])
+            || !JsonNode.DeepEquals(preparation["Admission"], admission)
+            || (snapshot is not null && !JsonNode.DeepEquals(preparation["Output"], snapshot.State["PreparedHistory"]))
         )
-            throw new InvalidOperationException("Only the isolated failed discussion read can be recovered.");
-        var failedId = failed.ToolCallId ?? $"{saved.InstanceId}/{failed.Name}/{failed.Attempts}";
-        var failedPath = Path.Combine(
-            RunDirectory(saved.InstanceId),
-            "private",
-            "invocation-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(failedId))) + ".json"
-        );
-        var receipt = JsonNode.Parse(await File.ReadAllTextAsync(failedPath, ct).ConfigureAwait(false));
+            throw new InvalidDataException("Merged resume requires the exact prepared round and slot.");
+        _ = await WorkflowPackageSnapshot.PrepareAsync(_workflowPath, RunDirectory(instance), true, ct);
         if (
-            receipt?["Invocation"]?["InvocationId"]?.GetValue<string>() != failedId
-            || receipt["Invocation"]?["InstanceId"]?.GetValue<string>() != saved.InstanceId
-            || receipt["Result"]?["Status"]?.GetValue<int>() != (int)WorkflowInvocationStatus.Failed
+            !await AcquireOrRecoverAsync(stored, instance, ct)
+            || await _workspace.ReconcilePreparationAsync(stored, admission, instance, ct) is null
         )
-            throw new InvalidDataException("Failed discussion receipt does not match the frozen task.");
-        await _workspace
-            .RestoreDiscussionReadAssignmentAsync(run, saved.InstanceId, admission, ct)
-            .ConfigureAwait(false);
-        var recovered = saved with
-        {
-            Tasks = saved
-                .Tasks.Select(t =>
-                    t == failed
-                        ? t with
-                        {
-                            Status = WorkflowTaskStatus.InFlight,
-                            ToolCallId = failedId + ":read-recovery",
-                            LastError = null,
-                        }
-                        : t
-                )
-                .ToArray(),
-        };
-        await _workflowStore.SaveAsync(saved.InstanceId, recovered, ct).ConfigureAwait(false);
-        return recovered;
+            throw new InvalidDataException("Merged resume cannot verify the existing remote preparation.");
     }
 
     /// <summary>Resumes a durable workflow from the immutable context stored in its scope.</summary>
@@ -424,9 +803,31 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
     }
 
     /// <summary>Restores every unresolved workspace lease before fresh polling starts.</summary>
-    public async Task RecoverActiveWorkspacesAsync(CancellationToken cancellationToken)
+    public Task RecoverActiveWorkspacesAsync(CancellationToken cancellationToken) =>
+        RecoverActiveWorkspacesAsync(cancellationToken, releaseSettled: true);
+
+    public Task RecoverActiveOwnerAsync(ReviewRun run, CancellationToken cancellationToken) =>
+        RecoverOwnersAsync([run], cancellationToken, releaseSettled: true);
+
+    internal Task RecoverActiveWorkspacesAsync(CancellationToken cancellationToken, bool releaseSettled) =>
+        RecoverOwnersAsync(_reviewStore.ListActiveWorkflowWorkspaceRuns(), cancellationToken, releaseSettled);
+
+    private async Task RecoverOwnersAsync(
+        IReadOnlyList<ReviewRun> active,
+        CancellationToken cancellationToken,
+        bool releaseSettled
+    )
     {
-        foreach (var run in _reviewStore.ListActiveWorkflowWorkspaceRuns())
+        foreach (var run in active)
+        {
+            var assignment = _workspace.ReadAssignment(run);
+            if (string.IsNullOrWhiteSpace(assignment.WorkflowInstanceId))
+                throw new InvalidDataException("Active workflow workspace assignment has no owner.");
+            _ = await _workspace
+                .RecoverAsync(run, assignment.AssignmentId, assignment.WorkflowInstanceId, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        foreach (var run in active)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var artifact = _reviewStore.TryGetLatestArtifact(run.Id, WorkflowWorkspace.AssignmentArtifactKind)!;
@@ -440,14 +841,307 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
                     throw new InvalidDataException("Active workflow workspace assignment has no owner.");
                 }
                 var owner = assignment.WorkflowInstanceId;
-                _ = await _workspace
-                    .RecoverAsync(run, assignment.AssignmentId, owner, cancellationToken)
-                    .ConfigureAwait(false);
-                if (await IsOwnerDurablySettledAsync(run, owner, cancellationToken).ConfigureAwait(false))
+                try
                 {
-                    await _workspace
-                        .ReleaseOrRetireAsync(run.Id, owner, workSettled: true, CancellationToken.None)
-                        .ConfigureAwait(false);
+                    if (releaseSettled && _resetFailedAttempts)
+                    {
+                        if (
+                            _reviewStore
+                                .GetArtifacts(run.Id)
+                                .Any(artifact =>
+                                    artifact.ArtifactKind.StartsWith("workflow-session:", StringComparison.Ordinal)
+                                    && JsonNode.Parse(artifact.Payload)?["InvocationId"] is null
+                                )
+                        )
+                            throw new InvalidOperationException(
+                                "Legacy hosted owner requires explicit inactive-tree recovery before automatic reset."
+                            );
+                        var round = ResolveRoundOwner(run, owner);
+                        var snapshot = await _workflowStore.LoadAsync(owner, cancellationToken).ConfigureAwait(false);
+                        if (
+                            run.ParkedAt is null
+                            && snapshot is not null
+                            && (round is null || round.Kind == WorkflowRoundKind.Merged)
+                        )
+                        {
+                            var inFlight = snapshot
+                                .Tasks.Where(task => task.Status == WorkflowTaskStatus.InFlight)
+                                .ToArray();
+                            var failedContext = _reviewStore.TryGetLatestArtifact(
+                                run.Id,
+                                WorkflowWorkspace.PreparationDiagnosticArtifactKind
+                            );
+                            var failedCheckout = _reviewStore.TryGetLatestArtifact(
+                                run.Id,
+                                WorkflowWorkspace.CheckoutArtifactKind
+                            );
+                            var settledPreparation = _reviewStore.TryGetLatestArtifact(
+                                run.Id,
+                                WorkflowWorkspace.RemotePreparationArtifactKind
+                            );
+                            var terminalContextOwner =
+                                round is { Kind: WorkflowRoundKind.Merged }
+                                && round.ReviewRunId == run.Id
+                                && round.WorkflowInstanceId == owner
+                                && run.PrLifecycleState is PrLifecycleState.Merged or PrLifecycleState.Abandoned
+                                && _reviewStore.GetLatestWorkflowRound(run.Id, WorkflowRoundKind.Merged)?.Id == round.Id
+                                && _reviewStore.GetOutboxForRun(run.Id).Count == 0;
+                            var contextCheckoutMatches = terminalContextOwner
+                                ? failedCheckout is null
+                                : round is null
+                                    && failedCheckout is not null
+                                    && settledPreparation is not null
+                                    && failedCheckout.Id < settledPreparation.Id
+                                    && JsonSerializer.Deserialize<PreparedCheckout>(failedCheckout.Payload)
+                                        is { } checkout
+                                    && checkout.StoreRoot == assignment.Slot.WorktreeRoot
+                                    && checkout.TargetDir == assignment.Slot.SourceRoot
+                                    && checkout.NotesDir == $"{assignment.Slot.WorktreeRoot}/PRs/{run.PrId}"
+                                    && checkout.SourceHeadSha == run.HeadSha
+                                    && checkout.TargetBaseSha == run.BaseSha
+                                    && checkout.CheckoutSha is { Length: 40 } merge
+                                    && merge.All(character => character is (>= '0' and <= '9') or (>= 'a' and <= 'f'));
+                            var settledContextFailure =
+                                settledPreparation is not null
+                                && JsonNode.Parse(settledPreparation.Payload) is JsonObject settledState
+                                && settledState["AssignmentId"]?.GetValue<string>() == assignment.AssignmentId
+                                && settledState["Settled"]?.GetValue<bool>() == true
+                                && settledState["OutcomeUnknown"]?.GetValue<bool>() == false
+                                && failedContext is not null
+                                && contextCheckoutMatches
+                                && settledPreparation.Id < failedContext.Id
+                                && JsonNode.Parse(failedContext.Payload) is JsonObject contextFailure
+                                && contextFailure["AssignmentId"]?.GetValue<string>() == assignment.AssignmentId
+                                && contextFailure["Phase"]?.GetValue<string>() == "context-read"
+                                && contextFailure["WriteUnacknowledged"]?.GetValue<bool>() == false
+                                && contextFailure["Errors"] is JsonArray { Count: > 0 } errors
+                                && errors[0]?["Type"]?.GetValue<string>() == nameof(IOException)
+                                && _reviewStore.TryGetLatestArtifact(run.Id, WorkflowWorkspace.PreparationArtifactKind)
+                                    is null
+                                && !_reviewStore
+                                    .GetArtifacts(run.Id)
+                                    .Any(artifact =>
+                                        artifact.ArtifactKind.StartsWith("workflow-session:", StringComparison.Ordinal)
+                                    );
+                            if (
+                                inFlight.Length == 1
+                                && (
+                                    (round is null && inFlight[0].NodeId == "prepare-independent")
+                                    || (
+                                        terminalContextOwner
+                                        && settledContextFailure
+                                        && inFlight[0].NodeId == "prepare-history"
+                                    )
+                                )
+                                && snapshot
+                                    .Definition!.Nodes.OfType<ProceduralNode>()
+                                    .SingleOrDefault(node => node.Id == inFlight[0].NodeId)
+                                    ?.TaskList?.SingleOrDefault()
+                                    is { Delegate: DelegateKind.Script, Script: { } script }
+                                && Path.GetFileNameWithoutExtension(script)
+                                    == (round is null ? "prepare-independent" : "prepare-history")
+                                && _reviewStore.TryGetLatestArtifact(
+                                    run.Id,
+                                    WorkflowWorkspace.RemotePreparationArtifactKind
+                                )
+                                    is { } preparation
+                                && (
+                                    JsonNode.Parse(preparation.Payload)?["OutcomeUnknown"]?.GetValue<bool>() == true
+                                    || _workspace.HasAcceptedPreparationCleanup(run, owner)
+                                    || settledContextFailure
+                                )
+                            )
+                            {
+                                if (settledContextFailure && preparation.Id != settledPreparation!.Id)
+                                    throw new InvalidOperationException(
+                                        "Failed context preparation changed before selected-attempt reset."
+                                    );
+                                ValidateSnapshot(snapshot, owner, BuildAdmission(run, round));
+                                await _workspace
+                                    .ResetSettledAttemptAsync(run, owner, cancellationToken)
+                                    .ConfigureAwait(false);
+                                var reset =
+                                    _reviewStore.TryGetLatestArtifact(run.Id, "workflow-attempt-reset")
+                                    ?? throw new InvalidDataException(
+                                        "Preparation abandonment has no cleanup receipt."
+                                    );
+                                if (
+                                    settledContextFailure
+                                    && (
+                                        _workspace.ReadAssignment(run) != assignment
+                                        || _reviewStore
+                                            .TryGetLatestArtifact(
+                                                run.Id,
+                                                WorkflowWorkspace.RemotePreparationArtifactKind
+                                            )
+                                            ?.Id != settledPreparation!.Id
+                                        || _reviewStore
+                                            .TryGetLatestArtifact(
+                                                run.Id,
+                                                WorkflowWorkspace.PreparationDiagnosticArtifactKind
+                                            )
+                                            ?.Id != failedContext!.Id
+                                        || _reviewStore
+                                            .TryGetLatestArtifact(run.Id, WorkflowWorkspace.CheckoutArtifactKind)
+                                            ?.Id != failedCheckout?.Id
+                                        || (terminalContextOwner && _reviewStore.GetOutboxForRun(run.Id).Count != 0)
+                                        || _reviewStore.TryGetLatestArtifact(
+                                            run.Id,
+                                            WorkflowWorkspace.PreparationArtifactKind
+                                        )
+                                            is not null
+                                        || _reviewStore
+                                            .GetArtifacts(run.Id)
+                                            .Any(artifact =>
+                                                artifact.ArtifactKind.StartsWith(
+                                                    "workflow-session:",
+                                                    StringComparison.Ordinal
+                                                )
+                                            )
+                                    )
+                                )
+                                    throw new InvalidOperationException(
+                                        "Failed context preparation changed during selected-attempt reset."
+                                    );
+                                _reviewStore.AddArtifact(
+                                    new ReviewArtifact
+                                    {
+                                        ReviewRunId = run.Id,
+                                        ArtifactKind = "workflow-preparation-reset-disposition",
+                                        ArtifactSchemaVersion = 1,
+                                        Provider = "workflow",
+                                        Payload = new JsonObject
+                                        {
+                                            ["WorkflowInstanceId"] = owner,
+                                            ["AssignmentId"] = assignment.AssignmentId,
+                                            ["LatestPreparationArtifactId"] = preparation.Id,
+                                            ["ResetArtifactId"] = reset.Id,
+                                            ["OriginalTask"] = JsonSerializer.SerializeToNode(inFlight[0]),
+                                            ["Disposition"] = settledContextFailure
+                                                ? "Failed context preparation abandoned after verified cleanup."
+                                                : "Failed after verified cleanup; original checkout outcome remains unknown.",
+                                        }.ToJsonString(),
+                                    }
+                                );
+                                snapshot = snapshot with
+                                {
+                                    Tasks = snapshot
+                                        .Tasks.Select(task =>
+                                            task == inFlight[0]
+                                                ? task with
+                                                {
+                                                    Status = WorkflowTaskStatus.Failed,
+                                                    LastError =
+                                                        "Preparation attempt abandoned after verified selected-slot reset.",
+                                                }
+                                                : task
+                                        )
+                                        .ToArray(),
+                                };
+                                await _workflowStore
+                                    .SaveAsync(owner, snapshot, cancellationToken)
+                                    .ConfigureAwait(false);
+                                inFlight = [];
+                            }
+                            if (
+                                inFlight.Length == 1
+                                && snapshot
+                                    .Definition!.Nodes.OfType<ProceduralNode>()
+                                    .SingleOrDefault(node => node.Id == inFlight[0].NodeId)
+                                    ?.TaskList?.SingleOrDefault()
+                                    ?.Delegate == DelegateKind.Agent
+                                && snapshot.Deadlines.TryGetValue(inFlight[0].Name, out var deadline)
+                                && deadline <= DateTimeOffset.UtcNow
+                            )
+                            {
+                                _reconcileOnly.Value = true;
+                                try
+                                {
+                                    _ = await ResumeAsync(run, round, cancellationToken).ConfigureAwait(false);
+                                }
+                                finally
+                                {
+                                    _reconcileOnly.Value = false;
+                                }
+                                if (!_workspace.HasActiveAssignment(run, owner))
+                                    continue;
+                                snapshot = await _workflowStore
+                                    .LoadAsync(owner, cancellationToken)
+                                    .ConfigureAwait(false);
+                            }
+                        }
+                        if (
+                            run.ParkedAt is null
+                            && (round is null || round.Kind == WorkflowRoundKind.Merged)
+                            && snapshot is not null
+                            && IsSettled(snapshot)
+                            && (
+                                snapshot.IsComplete
+                                || snapshot.Tasks.Any(task => task.Status == WorkflowTaskStatus.Failed)
+                            )
+                        )
+                        {
+                            ValidateSnapshot(snapshot, owner, BuildAdmission(run, round));
+                            var invoker = await _invokerFactory(run, owner, RunDirectory(owner), cancellationToken)
+                                .ConfigureAwait(false);
+                            var pending = invoker is ReviewWorkflowInvoker hosted
+                                ? await hosted
+                                    .SettleCompletedSessionsAsync(
+                                        cancellationToken,
+                                        snapshot: snapshot,
+                                        includeFailed: true
+                                    )
+                                    .ConfigureAwait(false)
+                                : null;
+                            if (pending is null)
+                            {
+                                await _workspace
+                                    .ResetSettledAttemptAsync(run, owner, cancellationToken)
+                                    .ConfigureAwait(false);
+                                if (snapshot.IsComplete)
+                                    CompleteAdmission(run, round, owner);
+                            }
+                        }
+                    }
+                    if (
+                        releaseSettled
+                        && await IsOwnerDurablySettledAsync(run, owner, cancellationToken).ConfigureAwait(false)
+                    )
+                    {
+                        await _workspace
+                            .ReleaseOrRetireAsync(run.Id, owner, workSettled: true, CancellationToken.None)
+                            .ConfigureAwait(false);
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex) when (ex is not OutOfMemoryException)
+                {
+                    _logger.LogWarning(
+                        "Workflow recovery held {RunId} {PrId} {WorkflowInstanceId} after {ErrorType}; unrelated slots continue.",
+                        run.Id,
+                        run.PrId,
+                        owner,
+                        ex.GetType().Name
+                    );
+                    _reviewStore.AddArtifact(
+                        new ReviewArtifact
+                        {
+                            ReviewRunId = run.Id,
+                            ArtifactKind = "workflow-recovery-pending",
+                            ArtifactSchemaVersion = 1,
+                            Provider = "workflow",
+                            Payload = new JsonObject
+                            {
+                                ["WorkflowInstanceId"] = owner,
+                                ["AssignmentId"] = assignment.AssignmentId,
+                                ["ErrorType"] = ex.GetType().Name,
+                                ["Disposition"] = "held; unrelated slots may continue",
+                            }.ToJsonString(),
+                        }
+                    );
                 }
             }
         }
@@ -520,6 +1214,31 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
     {
         if (run.ParkedAt is not null)
             return false;
+        var ownedRound = ResolveRoundOwner(run, instanceId);
+        if (_resetFailedAttempts && (ownedRound is null || ownedRound.Kind == WorkflowRoundKind.Merged))
+        {
+            var snapshot = await _workflowStore.LoadAsync(instanceId, cancellationToken).ConfigureAwait(false);
+            if (
+                snapshot?.Tasks.Any(task => task.Status == WorkflowTaskStatus.Failed) == true
+                || snapshot?.IsComplete == true
+            )
+            {
+                var savedReset = _reviewStore.TryGetLatestArtifact(run.Id, "workflow-attempt-reset");
+                if (savedReset is null)
+                    return false;
+                var receipt = JsonNode.Parse(savedReset.Payload)!;
+                var assignment = _workspace.ReadAssignment(run);
+                if (
+                    receipt["status"]?.GetValue<string>() != "reset"
+                    || receipt["identity"]?["runId"]?.GetValue<long>() != run.Id
+                    || receipt["identity"]?["assignmentId"]?.GetValue<string>() != assignment.AssignmentId
+                    || receipt["identity"]?["workflowInstanceId"]?.GetValue<string>() != instanceId
+                    || receipt["identity"]?["head"]?.GetValue<string>() != run.HeadSha
+                    || receipt["identity"]?["base"]?.GetValue<string>() != run.BaseSha
+                )
+                    return false;
+            }
+        }
         if (string.Equals(instanceId, InstanceIdFor(run, null), StringComparison.Ordinal))
         {
             return await IsDurablySettledAsync(instanceId, BuildAdmission(run, null), cancellationToken)
@@ -614,6 +1333,8 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
             _reviewStore.GetWorkflowRound(round.Id)
             ?? throw new InvalidOperationException("Workflow round does not exist in the configured store.");
         ValidateRoundIdentity(run, round, stored);
+        if (stored.CompletedAt is not null || stored.Outcome == WorkflowRoundOutcome.OperatorReset)
+            throw new InvalidOperationException("Terminal workflow round cannot be replayed by direct admission.");
         JsonObject storedContext;
         try
         {
@@ -634,7 +1355,9 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
     private static void ValidateRoundIdentity(ReviewRun run, WorkflowRound round, WorkflowRound stored)
     {
         if (
-            stored.RepoId != run.RepoId
+            stored.ReviewRunId != run.Id
+            || round.ReviewRunId != run.Id
+            || stored.RepoId != run.RepoId
             || !string.Equals(stored.PrId, run.PrId, StringComparison.Ordinal)
             || !string.Equals(stored.HeadSha, run.HeadSha, StringComparison.Ordinal)
             || stored.Kind != round.Kind
@@ -652,7 +1375,7 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
             {
                 null => "new_head",
                 WorkflowRoundKind.Discussion => "discussion",
-                WorkflowRoundKind.Merged => "merged",
+                WorkflowRoundKind.Merged => run.PrLifecycleState == PrLifecycleState.Abandoned ? "abandoned" : "merged",
                 _ => throw new InvalidOperationException("Unsupported workflow round kind."),
             },
             ["PrId"] = run.PrId,
@@ -706,11 +1429,13 @@ internal sealed class ReviewWorkflowRunner : IReviewWorkflowRunner
     )
     {
         var prior = _reviewStore.TryGetLatestArtifact(run.Id, WorkflowWorkspace.AssignmentArtifactKind);
+        if (_streamClaims.TryGetValue(run.Id, out var claim))
+            return await _workspace
+                .AdoptClaimAsync(run, workflowInstanceId, claim, cancellationToken)
+                .ConfigureAwait(false);
         if (prior is null)
-        {
             return await _workspace.TryAcquireAsync(run, workflowInstanceId, cancellationToken).ConfigureAwait(false)
                 is not null;
-        }
         var assignment =
             JsonSerializer.Deserialize<WorkflowWorkspaceAssignment>(prior.Payload)
             ?? throw new InvalidDataException("Workflow workspace assignment is invalid.");

@@ -13,7 +13,8 @@ internal sealed class WorkflowKnowledgeEdits(
     string repoRoot,
     RepoIdentity repo,
     ISandboxFileSystem fileSystem,
-    ILogger logger
+    ILogger logger,
+    string? developerLearningPath = null
 )
 {
     public async Task<IReadOnlyList<ReviewArtifactFile>> PrepareAsync(
@@ -40,9 +41,11 @@ internal sealed class WorkflowKnowledgeEdits(
                 var content =
                     edit?["Content"]?.GetValue<string>()
                     ?? throw new ArgumentException("Knowledge edit content is required.", nameof(extractions));
-                ValidatePath(path, repo, allowListings: false);
+                ValidatePath(path, repo, allowListings: false, developerLearningPath);
                 _ = WorkflowScriptInvoker.ResolveWorkspaceAsset(path, repoRoot);
-                path = await PreserveExistingCaseAsync(path, cancellationToken).ConfigureAwait(false);
+                var isDeveloper = string.Equals(path, developerLearningPath, StringComparison.Ordinal);
+                if (!isDeveloper)
+                    path = await PreserveExistingCaseAsync(path, cancellationToken).ConfigureAwait(false);
                 _ = WorkflowScriptInvoker.ResolveWorkspaceAsset(path, repoRoot);
                 if (!paths.Add(path))
                     throw new ArgumentException(
@@ -65,6 +68,7 @@ internal sealed class WorkflowKnowledgeEdits(
                     meta is null
                     || string.IsNullOrWhiteSpace(meta.Title)
                     || !string.Equals(meta.Scope, relative.Split('/')[0], StringComparison.OrdinalIgnoreCase)
+                    || (isDeveloper && meta.Scope != "developers")
                 )
                     throw new ArgumentException(
                         "Knowledge content requires valid frontmatter with a title and matching scope.",
@@ -87,10 +91,11 @@ internal sealed class WorkflowKnowledgeEdits(
                         nameof(extractions)
                     );
                 files.Add(new ReviewArtifactFile(path, wrapped));
-                metadata.Add(meta);
+                if (!isDeveloper)
+                    metadata.Add(meta);
             }
         }
-        if (files.Count == 0)
+        if (metadata.Count == 0)
             return files;
         var contained = new ContainedFileSystem(repoRoot, fileSystem);
         var knowledgeRoot = repoRoot.TrimEnd('/', '\\') + "/KnowledgeBase";
@@ -205,8 +210,22 @@ internal sealed class WorkflowKnowledgeEdits(
         return string.Join('/', segments);
     }
 
-    internal static void ValidatePath(string path, RepoIdentity repo, bool allowListings)
+    internal static void ValidatePath(
+        string path,
+        RepoIdentity repo,
+        bool allowListings,
+        string? developerLearningPath = null
+    )
     {
+        if (developerLearningPath is not null && string.Equals(path, developerLearningPath, StringComparison.Ordinal))
+        {
+            if (!CodeReviewDaemon.Sample.Agents.DeveloperLearnings.DeveloperIdentity.IsLearningPath(path))
+                throw new ArgumentException(
+                    "Developer learning path must be the exact host-generated event narrative.",
+                    nameof(path)
+                );
+            return;
+        }
         if (allowListings && path is "KnowledgeBase/_index.jsonl" or "KnowledgeBase/_toc.md")
             return;
         var segments = path.Split('/');

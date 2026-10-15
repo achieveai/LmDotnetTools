@@ -1,5 +1,5 @@
 version: 1
-objective: Review new code, respond to a frozen discussion window, or retain merged-PR learnings.
+objective: Review new code, respond to a frozen discussion window, or judge and retain completed or abandoned PR learnings.
 inputType: Admission
 
 types:
@@ -8,7 +8,7 @@ types:
     additionalProperties: false
     required: [Route, PrId, HeadSha, WindowId]
     properties:
-      Route: {type: string, enum: [new_head, discussion, merged]}
+      Route: {type: string, enum: [new_head, discussion, merged, abandoned]}
       PrId: {type: string, minLength: 1}
       HeadSha: {type: string, minLength: 1}
       WindowId: {type: string}
@@ -65,11 +65,19 @@ types:
   PublicationInput:
     type: object
     additionalProperties: false
-    required: [Prepared, Review, Grade]
+    required: [Admission, Prepared, Review, Grade]
     properties:
+      Admission: {$ref: '#/$defs/Admission'}
       Prepared: {$ref: '#/$defs/Prepared'}
       Review: {$ref: '#/$defs/Review'}
       Grade: {$ref: '#/$defs/Grade'}
+  PostReviewInput:
+    type: object
+    additionalProperties: false
+    required: [Admission, Report]
+    properties:
+      Admission: {$ref: '#/$defs/Admission'}
+      Report: {$ref: '#/$defs/MarkdownReport'}
   Publication:
     type: object
     additionalProperties: false
@@ -130,28 +138,49 @@ types:
       Review: {$ref: '#/$defs/Review'}
       Grade: {$ref: '#/$defs/Grade'}
       Publication: {$ref: '#/$defs/Publication'}
-  ProcessInput:
+  TerminalPrepared:
     type: object
     additionalProperties: false
-    required: [Prepared, Learnings]
+    required: [PrId, HeadSha, WindowId, ContextArtifact, TerminalState]
     properties:
-      Prepared: {$ref: '#/$defs/Prepared'}
+      PrId: {type: string}
+      HeadSha: {type: string}
+      WindowId: {type: string}
+      ContextArtifact: {type: string, minLength: 1}
+      PublicationMode: {type: string}
+      TerminalState: {type: string, enum: [Merged, Abandoned]}
+  MergedLearningInput:
+    type: object
+    additionalProperties: false
+    required: [Prepared, SelfAssessment]
+    properties:
+      Prepared: {$ref: '#/$defs/TerminalPrepared'}
+      SelfAssessment: {$ref: '#/$defs/MarkdownReport'}
+  TerminalJudgmentInput:
+    type: object
+    additionalProperties: false
+    required: [Prepared, SelfAssessment, Learnings]
+    properties:
+      Prepared: {$ref: '#/$defs/TerminalPrepared'}
+      SelfAssessment: {$ref: '#/$defs/MarkdownReport'}
       Learnings: {$ref: '#/$defs/Extraction'}
-  ProcessAssessment:
+  MergedCanonical:
     type: object
     additionalProperties: false
-    required: [Assessment, Description]
+    required: [SelfAssessment, Learnings, Judgment]
     properties:
-      Assessment: {type: string}
-      Description: {type: string}
-  AdditionalInput:
-    type: object
-    additionalProperties: false
-    required: [Prepared, Learnings, Process]
-    properties:
-      Prepared: {$ref: '#/$defs/Prepared'}
+      SelfAssessment: {$ref: '#/$defs/MarkdownReport'}
       Learnings: {$ref: '#/$defs/Extraction'}
-      Process: {$ref: '#/$defs/ProcessAssessment'}
+      Judgment: {$ref: '#/$defs/KnowledgeReview'}
+  MergedRetentionInput:
+    type: object
+    additionalProperties: false
+    required: [Admission, Extractions, KnowledgeReview, Canonical]
+    properties:
+      Admission: {$ref: '#/$defs/Admission'}
+      Extractions: {type: array, items: {$ref: '#/$defs/Extraction'}}
+      KnowledgeReview: {$ref: '#/$defs/KnowledgeReview'}
+      Canonical: {$ref: '#/$defs/MergedCanonical'}
   Statistics:
     type: object
     additionalProperties: false
@@ -375,21 +404,30 @@ steps:
     outputType: Grade
     saveAs: Grade
     maxValidationRetries: 1
-    next: publish
-  - id: publish
+    next: final-review
+  - id: final-review
     kind: agent
     session: review-parent
-    skills: [skills/publication.md]
-    tools: [review_publish_summary, review_publish_inline, review_reply]
-    prompt: Decide what to publish or reply, use scoped action tools, verify receipts, and record your result.
+    skills: [skills/collect-comments.md]
+    prompt: Incorporate the grade and return the final review in Markdown. Remove unsupported findings. Do not post, reply, investigate further or spawn agents. The daemon posts your validated report.
     inputType: PublicationInput
     input:
+      Admission: {from: inputs}
       Prepared: {from: state.PreparedReview}
       Review: {from: state.Review}
       Grade: {from: state.Grade}
+    outputType: MarkdownReport
+    saveAs: FinalReview
+    next: publish
+  - id: publish
+    kind: script
+    script: scripts/publish-review.py
+    inputType: PostReviewInput
+    input:
+      Admission: {from: inputs}
+      Report: {from: state.FinalReview}
     outputType: Publication
     saveAs: Publication
-    maxValidationRetries: 1
     next: retain-review
   - id: retain-review
     kind: script
@@ -442,57 +480,45 @@ steps:
     script: scripts/prepare-history.py
     inputType: Admission
     input: {from: inputs}
-    outputType: Prepared
+    outputType: TerminalPrepared
     saveAs: PreparedHistory
+    next: merged-self-assessment
+  - id: merged-self-assessment
+    kind: agent
+    session: merged-self-assessment
+    skills: [skills/merged-self-assessment.md]
+    prompt: Self-review the available original review and discussion against the actual completed or abandoned PR outcome. State missing evidence plainly; do not pretend abandoned code landed.
+    inputType: TerminalPrepared
+    input: {from: state.PreparedHistory}
+    outputType: MarkdownReport
+    saveAs: MergedSelfAssessment
+    maxValidationRetries: 1
     next: learnings
   - id: learnings
     kind: agent
     session: merged-learnings
     skills: [skills/learnings.md]
-    prompt: Propose structured durable knowledge edits for the retention script, or explain why none are warranted.
-    inputType: Prepared
-    input: {from: state.PreparedHistory}
+    prompt: Extract evidence-backed knowledge, developer learnings and missing review or process steps from the self-review and available evidence. Return proposed edits only.
+    inputType: MergedLearningInput
+    input:
+      Prepared: {from: state.PreparedHistory}
+      SelfAssessment: {from: state.MergedSelfAssessment}
     outputType: Extraction
     saveAs: Learnings
     maxValidationRetries: 1
-    next: process-judge
-  - id: process-judge
+    next: merged-judgment
+  - id: merged-judgment
     kind: agent
     session: merged-process-judge
-    skills: [skills/process-judge.md]
-    prompt: Independently assess the review process against the complete PR history and evidence.
-    inputType: ProcessInput
+    skills: [skills/process-judge.md, skills/knowledge-safety.md]
+    prompt: Judge the proposed knowledge, developer learnings and missing-process remedies against the raw evidence. Return one KnowledgeReview with only supported, safe edits in Reviewed; include your independently reasoned assessment in Description.
+    inputType: TerminalJudgmentInput
     input:
       Prepared: {from: state.PreparedHistory}
+      SelfAssessment: {from: state.MergedSelfAssessment}
       Learnings: {from: state.Learnings}
-    outputType: ProcessAssessment
-    saveAs: ProcessAssessment
-    maxValidationRetries: 1
-    next: additional-extraction
-  - id: additional-extraction
-    kind: agent
-    session: merged-additional-extraction
-    skills: [skills/additional-extraction.md]
-    prompt: Propose an additional structured knowledge edit for the retention script when evidence supports it.
-    inputType: AdditionalInput
-    input:
-      Prepared: {from: state.PreparedHistory}
-      Learnings: {from: state.Learnings}
-      Process: {from: state.ProcessAssessment}
-    outputType: Extraction
-    saveAs: AdditionalExtraction
-    maxValidationRetries: 1
-    next: knowledge-safety-review
-  - id: knowledge-safety-review
-    kind: agent
-    session: merged-knowledge-safety
-    skills: [skills/knowledge-safety.md]
-    prompt: Independently review and redact candidate knowledge for durable retention; reject if safe evidence cannot be preserved.
-    inputType: KnowledgeReviewInput
-    input:
-      Extractions: [{from: state.Learnings}, {from: state.AdditionalExtraction}]
     outputType: KnowledgeReview
-    saveAs: KnowledgeSafety
+    saveAs: MergedJudgment
     maxValidationRetries: 1
     next: collect-statistics
   - id: collect-statistics
@@ -506,14 +532,24 @@ steps:
   - id: retain-merged
     kind: script
     script: scripts/retain-artifacts.py
-    inputType: RetentionInput
+    inputType: MergedRetentionInput
     input:
       Admission: {from: inputs}
-      Extractions: [{from: state.KnowledgeSafety.Reviewed}]
-      KnowledgeReview: {from: state.KnowledgeSafety}
+      Extractions: [{from: state.MergedJudgment.Reviewed}]
+      KnowledgeReview: {from: state.MergedJudgment}
+      Canonical:
+        SelfAssessment: {from: state.MergedSelfAssessment}
+        Learnings: {from: state.Learnings}
+        Judgment: {from: state.MergedJudgment}
     outputType: Retention
     saveAs: MergedRetention
-    next: close-artifact-branch
+    next: terminal-outcome
+  - id: terminal-outcome
+    kind: branch
+    branches:
+      - when: state.PreparedHistory.TerminalState == "Merged"
+        goto: close-artifact-branch
+    else: complete
   - id: close-artifact-branch
     kind: script
     script: scripts/close-artifact-branch.py

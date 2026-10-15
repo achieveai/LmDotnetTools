@@ -55,6 +55,39 @@ public sealed class ScopedCommandLineTests
     }
 
     [Fact]
+    public void Round_reset_requires_an_exact_positive_id_and_explicit_confirmation()
+    {
+        var inspect = ScopedCommandLine.Parse(["--reset-review-round", "15"]);
+        var confirm = ScopedCommandLine.Parse([
+            "--reset-review-round",
+            "15",
+            "--receipt",
+            "verified.json",
+            "--confirm",
+        ]);
+
+        inspect.Kind.Should().Be(ScopedCommandKind.ResetReviewRound);
+        inspect.ResetRoundId.Should().Be(15);
+        inspect.ConfirmReset.Should().BeFalse();
+        confirm.Kind.Should().Be(ScopedCommandKind.ResetReviewRound);
+        confirm.ResetRoundId.Should().Be(15);
+        confirm.ConfirmReset.Should().BeTrue();
+        confirm.ResetReceiptPath.Should().Be("verified.json");
+        ScopedCommandLine
+            .Parse(["--reset-review-round", "15", "--confirm"])
+            .Kind.Should()
+            .Be(ScopedCommandKind.Malformed);
+        ScopedCommandLine
+            .Parse(["--reset-review-round", "0", "--confirm"])
+            .Kind.Should()
+            .Be(ScopedCommandKind.Malformed);
+        ScopedCommandLine
+            .Parse(["--reset-review-round", "15", "--confirm", "extra"])
+            .Kind.Should()
+            .Be(ScopedCommandKind.Malformed);
+    }
+
+    [Fact]
     public void Is_None_for_ordinary_daemon_startup_args()
     {
         ScopedCommandLine.Parse([]).Kind.Should().Be(ScopedCommandKind.None);

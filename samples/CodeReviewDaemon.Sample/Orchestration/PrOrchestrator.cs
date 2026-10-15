@@ -34,7 +34,8 @@ internal sealed class PrOrchestrator
     private readonly int _maxDurableRetryAttempts;
     private readonly Func<DateTimeOffset> _clock;
     private readonly IReviewParkNotifier? _parkNotifier;
-    private readonly ConcurrentDictionary<long, SemaphoreSlim> _workflowAdmissions = new();
+    private readonly ConcurrentDictionary<(long RepoId, string PrId), SemaphoreSlim> _workflowAdmissions = new();
+    private long _lastRecoveredRunId;
 
     public PrOrchestrator(
         ReviewStore store,
@@ -65,6 +66,54 @@ internal sealed class PrOrchestrator
     public Task RecoverActiveWorkspacesAsync(CancellationToken cancellationToken) =>
         _workflowRunner.RecoverActiveWorkspacesAsync(cancellationToken);
 
+    internal async Task RecoverPendingOwnersAsync(CancellationToken ct)
+    {
+        foreach (
+            var run in _store
+                .ListActiveWorkflowWorkspaceRuns()
+                .OrderBy(run => run.Id <= _lastRecoveredRunId)
+                .ThenBy(run => run.Id)
+        )
+        {
+            var gate = _workflowAdmissions.GetOrAdd((run.RepoId, run.PrId), static _ => new SemaphoreSlim(1, 1));
+            if (!await gate.WaitAsync(0, ct).ConfigureAwait(false))
+                continue;
+            try
+            {
+                if (_retryGovernor is not null && !_retryGovernor.ShouldAttempt(run.Id))
+                    continue;
+                _lastRecoveredRunId = run.Id;
+                var before = _store.TryGetLatestArtifact(run.Id, "workflow-recovery-pending")?.Id;
+                await _workflowRunner.RecoverActiveOwnerAsync(run, ct).ConfigureAwait(false);
+                if (
+                    _store.TryGetLatestArtifact(run.Id, "workflow-recovery-pending")?.Id != before
+                    && _store.ListActiveWorkflowWorkspaceRuns().Any(owner => owner.Id == run.Id)
+                )
+                    _retryGovernor?.RecordFailure(run.Id, "Selected owner recovery remains pending.");
+                return;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                _retryGovernor?.RecordFailure(run.Id, ex.GetType().Name);
+                _logger.LogWarning(
+                    "PR recovery held {RunId} {PrId} after {ErrorType}; unrelated intake continues.",
+                    run.Id,
+                    run.PrId,
+                    ex.GetType().Name
+                );
+                return;
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+    }
+
     public Task<JsonObject> ReadFrozenContextAsync(
         ReviewRun run,
         WorkflowRound? round,
@@ -79,11 +128,49 @@ internal sealed class PrOrchestrator
         ArgumentNullException.ThrowIfNull(seed);
         ArgumentNullException.ThrowIfNull(frozenContext);
         var run = _store.CreateOrGetReviewRun(seed);
-        var admission = _workflowAdmissions.GetOrAdd(run.Id, static _ => new SemaphoreSlim(1, 1));
+        var admission = _workflowAdmissions.GetOrAdd((run.RepoId, run.PrId), static _ => new SemaphoreSlim(1, 1));
         await admission.WaitAsync(cancellationToken).ConfigureAwait(false);
         long? startedAt = null;
         try
         {
+            run = _store.FindReviewRunByIdentity(seed) ?? run;
+            if (
+                run.WorkflowStatus != WorkflowStatus.Completed
+                && _store.TryGetLatestArtifact(run.Id, "workflow-attempt-reset") is { } resetArtifact
+            )
+            {
+                var receipt = JsonNode.Parse(resetArtifact.Payload)!;
+                var assignment = JsonSerializer.Deserialize<WorkflowWorkspaceAssignment>(
+                    _store.TryGetLatestArtifact(run.Id, WorkflowWorkspace.AssignmentArtifactKind)!.Payload
+                )!;
+                if (
+                    assignment.Active
+                    || receipt["status"]?.GetValue<string>() != "reset"
+                    || receipt["identity"]?["runId"]?.GetValue<long>() != run.Id
+                    || receipt["identity"]?["assignmentId"]?.GetValue<string>() != assignment.AssignmentId
+                    || receipt["identity"]?["workflowInstanceId"]?.GetValue<string>() != $"review-run-{run.Id}"
+                    || receipt["identity"]?["head"]?.GetValue<string>() != run.HeadSha
+                    || receipt["identity"]?["base"]?.GetValue<string>() != run.BaseSha
+                )
+                    throw new InvalidDataException("Fresh admission requires the selected attempt's accepted reset.");
+                if (
+                    run.Generation >= _maxDurableRetryAttempts
+                    || (_retryGovernor is not null && !_retryGovernor.ShouldAttempt(run.Id))
+                )
+                    return run;
+                run = _store.InsertRerunReviewRun(
+                    seed with
+                    {
+                        Id = 0,
+                        Generation = checked(run.Generation + 1),
+                        TriggerWatermark = $"fresh:{run.Id}",
+                        Stage = ReviewStage.Discovered,
+                        WorkflowStatus = WorkflowStatus.Pending,
+                        ParkedAt = null,
+                        GovernedFailureCount = 0,
+                    }
+                );
+            }
             if (run.ParkedAt is not null)
             {
                 await RetryOutstandingParkNoticeAsync(run).ConfigureAwait(false);
@@ -146,7 +233,7 @@ internal sealed class PrOrchestrator
     private async Task<ReviewRun> ResumeWorkflowAsync(ReviewRun seed, CancellationToken cancellationToken)
     {
         var run = _store.CreateOrGetReviewRun(seed);
-        var admission = _workflowAdmissions.GetOrAdd(run.Id, static _ => new SemaphoreSlim(1, 1));
+        var admission = _workflowAdmissions.GetOrAdd((run.RepoId, run.PrId), static _ => new SemaphoreSlim(1, 1));
         await admission.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -176,6 +263,34 @@ internal sealed class PrOrchestrator
         }
     }
 
+    internal bool ShouldAttemptTerminal(long runId) => _retryGovernor?.ShouldAttempt(runId) ?? true;
+
+    internal void RecordTerminalFailure(long runId) =>
+        _retryGovernor?.RecordFailure(runId, "Terminal workflow failed.");
+
+    internal async Task<JsonObject> RunTerminalAsync(
+        RepoIdentity repo,
+        string prId,
+        Func<CancellationToken, Task<JsonObject>> process,
+        CancellationToken cancellationToken
+    )
+    {
+        var repoId = _store.EnsureRepo(repo);
+        var admission = _workflowAdmissions.GetOrAdd((repoId, prId), static _ => new SemaphoreSlim(1, 1));
+        if (!await admission.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+            return new JsonObject { ["Outcome"] = "Deferred" };
+        try
+        {
+            if (_store.ListActiveWorkflowWorkspaceRuns().Any(run => run.RepoId == repoId && run.PrId == prId))
+                return new JsonObject { ["Outcome"] = "Deferred" };
+            return await process(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            admission.Release();
+        }
+    }
+
     /// <summary>Serializes a supplementary discussion or merged round with its new-head run.</summary>
     public async Task<WorkflowInvocationStatus> RunRoundAsync(
         ReviewRun run,
@@ -185,7 +300,9 @@ internal sealed class PrOrchestrator
     {
         ArgumentNullException.ThrowIfNull(run);
         ArgumentNullException.ThrowIfNull(round);
-        var admission = _workflowAdmissions.GetOrAdd(run.Id, static _ => new SemaphoreSlim(1, 1));
+        if (round.ReviewRunId != run.Id)
+            throw new InvalidDataException("Workflow round belongs to another review run or has no proven owner.");
+        var admission = _workflowAdmissions.GetOrAdd((run.RepoId, run.PrId), static _ => new SemaphoreSlim(1, 1));
         await admission.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {

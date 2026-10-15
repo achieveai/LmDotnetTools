@@ -217,3 +217,13 @@ ORDER BY LogCount DESC;
    - Filter logs for a failing test
    - Trace exactly what production code did during a specific test
    - Debug intermittent failures by comparing log patterns
+
+
+
+## Review Daemon
+
+1. Review Daemon's primary goal is to keep reviews going
+2. If any reveiw slot is stuck, it reset's it
+3. When caretaking Review Daemon, you can also check the staus of slots and everything in ~/Gateway/workspaces/codereview-daemon-nova-383c13b649323497/nova-reviews
+4. Where ever possible all review slots should be full
+5. Only final set of git operations should be in a lock, these are merging branch after PR complete, everything else is independent.

@@ -52,7 +52,11 @@
       "Bash(npm install:*)",
       "Bash(npm run test:run:*)",
       "Bash(lsof:*)",
-      "Bash(npx vue-tsc:*)"
+      "Bash(npx vue-tsc:*)",
+      "Bash(node *)",
+      "Bash(python3 *)",
+      "mcp__web__web_search",
+      "Bash(rg *)"
     ],
     "deny": [],
     "ask": [],
@@ -65,5 +69,20 @@
     "seq",
     "debugger",
     "duckdb"
-  ]
+  ],
+  "hooks": {
+    "FileChanged": [
+      {
+        "matcher": "AGENT_COMMS.md",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/gautamb/repos/LmDotnetTools/.claude/hooks/agent-comms-notify.sh",
+            "timeout": 10,
+            "statusMessage": "Checking agent comms channel"
+          }
+        ]
+      }
+    ]
+  }
 }

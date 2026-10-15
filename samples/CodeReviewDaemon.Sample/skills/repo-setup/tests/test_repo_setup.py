@@ -64,6 +64,38 @@ class RepoSetupTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         return result.stdout.strip()
 
+    def test_checkpoint_writes_new_output_after_sparse_slot_reset(self):
+        old = self.root / 'PRs/old/review.md'
+        old.parent.mkdir()
+        old.write_text('historical output')
+        self.git(self.root, 'add', 'PRs/old/review.md')
+        self.git(self.root, 'commit', '-m', 'historical output')
+        baseline = self.git(self.root, 'rev-parse', 'HEAD')
+        slot = self.base / 'slot'
+        self.git(self.root, 'worktree', 'add', '--detach', str(slot), baseline)
+        self.git(slot, 'sparse-checkout', 'set', '--no-cone', '/*', '!/PRs/')
+        self.git(slot, 'reset', '--hard', baseline)
+        self.assertFalse((slot / 'PRs/old/review.md').exists())
+        output = slot / 'PRs/123/review.md'
+        output.parent.mkdir(parents=True)
+        output.write_text('new review')
+        manifest = {'pr_dir': 'PRs/123', 'submodule': {'path': 'repos/Nova'}}
+        state = unittest.mock.Mock()
+        from review_common import checkpoint_pool_run
+        tip = checkpoint_pool_run(state, manifest, ['PRs/123/review.md'], slot=slot,
+                                  message='fixture checkpoint', trailer='Fixture: local-only')
+        self.assertEqual('new review', self.git(slot, 'show', f'{tip}:PRs/123/review.md'))
+        self.assertEqual('historical output', self.git(slot, 'show', f'{tip}:PRs/old/review.md'))
+        self.assertEqual('PRs/123/review.md', self.git(slot, 'diff', '--name-only', baseline, tip))
+        self.assertEqual(baseline, self.git(self.root, 'rev-parse', 'HEAD'))
+        self.assertFalse((slot / 'PRs/old/review.md').exists())
+        self.assertEqual('checkpointed', manifest['status'])
+        self.git(slot, 'reset', '--hard', baseline)
+        self.git(slot, 'sparse-checkout', 'reapply')
+        self.assertFalse(output.exists())
+        self.assertFalse((slot / 'PRs/old/review.md').exists())
+        self.assertEqual('', self.git(slot, 'status', '--porcelain'))
+
     def test_plan_read_only_apply_repeat_and_preserve_shared_slot(self):
         before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob('*'))
         plan = setup.synchronize(self.root)

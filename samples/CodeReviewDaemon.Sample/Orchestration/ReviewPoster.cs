@@ -34,6 +34,185 @@ internal sealed class ReviewPoster
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
+    internal async Task<System.Text.Json.Nodes.JsonObject> PostFinalReviewAsync(
+        ReviewRun run,
+        RepoIdentity repo,
+        string body,
+        IPrProvider provider,
+        Func<bool> isAuthorized,
+        CancellationToken ct
+    )
+    {
+        if (!isAuthorized())
+            throw new InvalidOperationException("Final review posting is not authorized.");
+        repo = await ResolveFinalReviewRepositoryAsync(run, repo, provider, ct, requireCurrent: true)
+            .ConfigureAwait(false);
+        if (!isAuthorized())
+            throw new InvalidOperationException("Final review posting is not authorized.");
+        async Task VerifyCurrentPr(CancellationToken token)
+        {
+            var current = await provider.GetPullRequestAsync(repo, run.PrId, token).ConfigureAwait(false);
+            if (
+                current is null
+                || current.PrId != run.PrId
+                || (
+                    current.RepositoryStableId is { } currentRepositoryId
+                    && !SameRepositoryId(repo.RepoStableId!, currentRepositoryId)
+                )
+                || (RepoIdentity.ToPublisherNamespace(repo.Provider) == "ado" && current.RepositoryStableId is null)
+                || current.LifecycleState != PrLifecycleState.Open
+                || current.HeadSha != run.HeadSha
+                || current.BaseSha != run.BaseSha
+            )
+                throw new InvalidOperationException("Publication requires the admitted current open PR.");
+        }
+        var outcome = await PostReviewAsync(
+                new PostReviewRequest(
+                    run.Id,
+                    new IdempotencyKeyComponents(
+                        RepoIdentity.ToPublisherNamespace(repo.Provider),
+                        repo.OrgOrOwner,
+                        repo.Project,
+                        repo.RepoStableId
+                            ?? throw new InvalidOperationException("Stable repository identity is required."),
+                        run.PrId,
+                        PostReviewCommentOperation,
+                        "review",
+                        "final-review",
+                        run.HeadSha,
+                        run.VariantId
+                    ),
+                    new ReviewCommentTarget(repo, run.PrId),
+                    body,
+                    LivePostingAuthorized: true,
+                    RequireConfirmedOutcome: true,
+                    IsStillAuthorized: isAuthorized,
+                    VerifyCurrentPr: VerifyCurrentPr
+                ),
+                ct
+            )
+            .ConfigureAwait(false);
+        return new System.Text.Json.Nodes.JsonObject
+        {
+            ["Outcome"] = "published",
+            ["Description"] = "Final graded review posted by the daemon.",
+            ["Actions"] = new System.Text.Json.Nodes.JsonArray(
+                new System.Text.Json.Nodes.JsonObject
+                {
+                    ["ActionId"] = "final-review",
+                    ["ReceiptId"] = outcome.OutboxId,
+                }
+            ),
+        };
+    }
+
+    internal async Task<System.Text.Json.Nodes.JsonObject?> ReconcileFinalReviewAsync(
+        ReviewRun run,
+        RepoIdentity repo,
+        string body,
+        CancellationToken ct,
+        IPrProvider? provider = null
+    )
+    {
+        repo = await ResolveFinalReviewRepositoryAsync(run, repo, provider, ct).ConfigureAwait(false);
+        var request = new PostReviewRequest(
+            run.Id,
+            new IdempotencyKeyComponents(
+                RepoIdentity.ToPublisherNamespace(repo.Provider),
+                repo.OrgOrOwner,
+                repo.Project,
+                repo.RepoStableId ?? throw new InvalidOperationException("Stable repository identity is required."),
+                run.PrId,
+                PostReviewCommentOperation,
+                "review",
+                "final-review",
+                run.HeadSha,
+                run.VariantId
+            ),
+            new ReviewCommentTarget(repo, run.PrId),
+            body,
+            RequireConfirmedOutcome: true
+        );
+        var key = IdempotencyKey.Build(request.Key);
+        ValidateFinalReviewReceiptKey(run, key);
+        var entry = _store.GetOutboxForRun(run.Id).SingleOrDefault(value => value.IdempotencyKey == key);
+        if (entry is null)
+            return null;
+        if (entry.BodyHash != PayloadHash(request))
+            throw new InvalidDataException("Final review receipt belongs to another report.");
+        if (entry.Status != OutboxStatus.Posted)
+        {
+            var proof = await _publisher.FindPostedCommentAsync(request.Target, key, ct).ConfigureAwait(false);
+            if (proof is null)
+                return null;
+            var id = proof.ProviderCommentId ?? proof.ProviderResponseId;
+            if (string.IsNullOrWhiteSpace(id))
+                throw new ReviewPublicationUncertainException("Provider proof has no comment identity.");
+            _store.TryTransitionOutbox(entry.Id, entry.Status, OutboxStatus.Posted, id);
+            entry = _store.GetOutbox(entry.Id)!;
+        }
+        if (entry.Status != OutboxStatus.Posted || string.IsNullOrWhiteSpace(entry.ProviderResponseId))
+            throw new ReviewPublicationUncertainException("Final review receipt is unresolved.");
+        return new System.Text.Json.Nodes.JsonObject
+        {
+            ["Outcome"] = "published",
+            ["Description"] = "Final graded review posted by the daemon.",
+            ["Actions"] = new System.Text.Json.Nodes.JsonArray(
+                new System.Text.Json.Nodes.JsonObject { ["ActionId"] = "final-review", ["ReceiptId"] = entry.Id }
+            ),
+        };
+    }
+
+    private async Task<RepoIdentity> ResolveFinalReviewRepositoryAsync(
+        ReviewRun run,
+        RepoIdentity repo,
+        IPrProvider? provider,
+        CancellationToken ct,
+        bool requireCurrent = false
+    )
+    {
+        if (repo.RepoStableId is not null)
+            return repo;
+        if (provider is null || provider.Provider != RepoIdentity.ToPublisherNamespace(repo.Provider))
+            throw new InvalidOperationException("Stable repository identity is required.");
+        var current = await provider.GetPullRequestAsync(repo, run.PrId, ct).ConfigureAwait(false);
+        if (current?.PrId != run.PrId || string.IsNullOrWhiteSpace(current.RepositoryStableId))
+            throw new InvalidOperationException("Stable repository identity is required.");
+        var resolved = repo with { RepoStableId = current.RepositoryStableId };
+        if (
+            requireCurrent
+            && !_store
+                .GetOutboxForRun(run.Id)
+                .Any(entry => entry.Operation == PostReviewCommentOperation && entry.ArtifactKind == "review")
+            && (
+                current.LifecycleState != PrLifecycleState.Open
+                || current.HeadSha != run.HeadSha
+                || current.BaseSha != run.BaseSha
+            )
+        )
+            throw new InvalidOperationException("Publication requires the admitted current open PR.");
+        return resolved;
+    }
+
+    private static bool SameRepositoryId(string expected, string observed) =>
+        Guid.TryParse(expected, out var expectedGuid) && Guid.TryParse(observed, out var observedGuid)
+            ? expectedGuid == observedGuid
+            : string.Equals(expected, observed, StringComparison.Ordinal);
+
+    private void ValidateFinalReviewReceiptKey(ReviewRun run, string key)
+    {
+        if (
+            _store
+                .GetOutboxForRun(run.Id)
+                .Any(entry =>
+                    entry.Operation == PostReviewCommentOperation
+                    && entry.ArtifactKind == "review"
+                    && entry.IdempotencyKey != key
+                )
+        )
+            throw new InvalidDataException("Final review receipt belongs to another repository identity.");
+    }
+
     /// <summary>
     /// Idempotently handles one review-comment post. Returns the disposition (posted, recorded as
     /// collect-only, or a replay no-op) plus the outbox row id and any provider response id.
@@ -44,6 +223,13 @@ internal sealed class ReviewPoster
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Body);
 
         var key = IdempotencyKey.Build(request.Key);
+        if (request.Key.ArtifactSubject == "final-review")
+        {
+            var run =
+                _store.GetReviewRun(request.ReviewRunId)
+                ?? throw new InvalidDataException("Final review run is missing.");
+            ValidateFinalReviewReceiptKey(run, key);
+        }
         var bodyHash = request.RequireConfirmedOutcome ? PayloadHash(request) : null;
 
         // First guard: idempotent enqueue. A replay re-finds the existing row with its current status.

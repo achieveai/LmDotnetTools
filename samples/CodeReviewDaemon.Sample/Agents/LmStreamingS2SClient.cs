@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace CodeReviewDaemon.Sample.Agents;
 
@@ -533,7 +534,29 @@ internal sealed class LmStreamingS2SClient
         return ParseStatus(body);
     }
 
+    internal async Task RequireUnacceptedInputAsync(string threadId, string inputId, CancellationToken ct)
+    {
+        using var response = await ExecuteAsync(
+            HttpMethod.Get,
+            $"api/conversations/{Uri.EscapeDataString(threadId)}/status?inputId={Uri.EscapeDataString(inputId)}",
+            null,
+            ct
+        );
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (
+            response.StatusCode != HttpStatusCode.NotFound
+            || JsonNode.Parse(body)?["code"]?.GetValue<string>() != "unknown_inputId"
+        )
+            throw new InvalidOperationException("The host did not confirm that this input was never accepted.");
+    }
+
     internal async Task RequireIdleAsync(string threadId, CancellationToken ct)
+    {
+        if (!await IsConversationIdleAsync(threadId, ct).ConfigureAwait(false))
+            throw new InvalidOperationException("Hosted conversation is not proven idle.");
+    }
+
+    internal async Task<bool> IsConversationIdleAsync(string threadId, CancellationToken ct)
     {
         var body = await SendReadAsync(
                 HttpMethod.Get,
@@ -545,10 +568,15 @@ internal sealed class LmStreamingS2SClient
         using var document = JsonDocument.Parse(body);
         var root = document.RootElement;
         if (
-            root.GetProperty("threadId").GetString() != threadId
-            || root.GetProperty("isInProgress").ValueKind != JsonValueKind.False
+            root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("threadId", out var identity)
+            || identity.ValueKind != JsonValueKind.String
+            || identity.GetString() != threadId
+            || !root.TryGetProperty("isInProgress", out var active)
+            || active.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
         )
-            throw new InvalidOperationException("Hosted conversation is not proven idle.");
+            throw new InvalidOperationException("Hosted conversation activity could not be verified.");
+        return active.ValueKind == JsonValueKind.False;
     }
 
     /// <summary>

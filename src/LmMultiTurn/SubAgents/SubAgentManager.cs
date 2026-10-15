@@ -253,6 +253,44 @@ public sealed class SubAgentManager : IAsyncDisposable
     public AgentCollaborationSetup? Collaboration { get; }
 
     /// <summary>
+    /// Opt-in per-input completion boundary. The owner assigns it before starting an input;
+    /// each asynchronous transition captures this instance rather than reading a later input's gate.
+    /// </summary>
+    public FinalReportCompletionGate? FinalReportGate { get; set; }
+
+    /// <summary>
+    /// Reads only in-memory child state. Call while the completion gate excludes new reservations;
+    /// transitions across the queue, run, and relay boundaries hold reservations separately.
+    /// </summary>
+    public bool HasPendingFinalReportWork()
+    {
+        if (!_queuedSpawns.IsEmpty)
+        {
+            return true;
+        }
+
+        foreach (var state in _agents.Values)
+        {
+            if (!IsTerminal(state.Status))
+            {
+                return true;
+            }
+
+            if (state.Agent is MultiTurnAgentLoop childLoop)
+            {
+                // A terminal child can already have an accepted next-turn input whose run
+                // has not yet reached AdmitRunAsync. Its status alone misses that interval.
+                if (childLoop.HasPendingLoopWork || childLoop.SubAgentManager?.HasPendingFinalReportWork() == true)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// The parent's prompt-caching mode, inherited by sub-agents whose template leaves it
     /// <see cref="PromptCachingMode.Off" /> (see <c>ResolveSubAgentOptions</c>) — without it a delegate
     /// re-bills its whole history as uncached input on every model call.
@@ -824,6 +862,55 @@ public sealed class SubAgentManager : IAsyncDisposable
         string? modelSelectionSource = null
     )
     {
+        var reportGate = FinalReportGate;
+        using var reservation = reportGate?.ReserveWork();
+        try
+        {
+            return await SpawnCoreAsync(
+                templateName,
+                task,
+                name,
+                model,
+                runInBackground,
+                addTools,
+                removeTools,
+                ct,
+                modelIntelligence,
+                spawningToolCallId,
+                role,
+                description,
+                modelSelectionSource,
+                reportGate
+            );
+        }
+        catch (Exception ex)
+        {
+            if (ex is not ArgumentException and not SubAgentQueueFullException and not SubAgentCollaborationException)
+            {
+                reportGate?.Fail();
+            }
+
+            throw;
+        }
+    }
+
+    private async Task<string> SpawnCoreAsync(
+        string templateName,
+        string task,
+        string? name,
+        string? model,
+        bool runInBackground,
+        string[]? addTools,
+        string[]? removeTools,
+        CancellationToken ct,
+        int? modelIntelligence,
+        string? spawningToolCallId,
+        string? role,
+        string? description,
+        string? modelSelectionSource,
+        FinalReportCompletionGate? reportGate
+    )
+    {
         // Snapshot the live source view so a concurrent TryRegister cannot make the
         // diagnostic Available list inconsistent with the lookup that produced template.
         var templates = _source.Templates;
@@ -921,7 +1008,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                 lineage,
                 runInBackground,
                 gateGuard,
-                ct
+                ct,
+                reportGate
             );
 
             // Past this point the monitor owns the concurrency gate; do not release it here.
@@ -967,6 +1055,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 Lineage = lineage,
                 RunInBackground = runInBackground,
                 CallerCancellation = runInBackground ? CancellationToken.None : ct,
+                FinalReportGate = reportGate,
                 SpawnCapability = ProjectSpawnCapability(template, addTools, removeTools),
             };
 
@@ -1040,7 +1129,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         AgentLineage lineage,
         bool runInBackground,
         GateReleaseGuard gateGuard,
-        CancellationToken ct
+        CancellationToken ct,
+        FinalReportCompletionGate? reportGate
     )
     {
         SubAgentState? state = null;
@@ -1087,6 +1177,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 Store = store,
                 Name = effectiveName,
                 NotifyParentOnCompletion = runInBackground,
+                FinalReportGate = reportGate,
             };
             state.SetOwnedProviderAgent(ownedProviderAgent);
 
@@ -1140,6 +1231,10 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             // Start the agent loop in the background
             ConfigureRunAdmission(state, gateGuard);
+            if (agent is MultiTurnAgentLoop { SubAgentManager: { } childManager })
+            {
+                childManager.FinalReportGate = reportGate;
+            }
             SyncCollaborationStatus(agentId, AgentCollaborationStatuses.Running);
             var cts = state.Cts;
             state.RunTask = RunUnderActorScopeAsync(agent, agentId, effectiveName, cts.Token);
@@ -1285,48 +1380,67 @@ public sealed class SubAgentManager : IAsyncDisposable
                 continue;
             }
 
-            RemoveQueuedSpawn(queued);
-            var gateGuard = new GateReleaseGuard();
+            // Reservation bridges removal from the queue registry through registration of the
+            // live state, including an asynchronous provider construction.
+            IDisposable? reportReservation;
             try
             {
-                var state = await StartWithHeldPermitAsync(
-                    queued.AgentId,
-                    queued.EffectiveName,
-                    queued.TemplateName,
-                    queued.Template,
-                    queued.Task,
-                    queued.Model,
-                    queued.AddTools,
-                    queued.RemoveTools,
-                    queued.ModelIntelligence,
-                    queued.ModelSelectionSource,
-                    queued.Lineage,
-                    queued.RunInBackground,
-                    gateGuard,
-                    queued.RunInBackground ? pumpCt : queued.CallerCancellation
-                );
-
-                if (queued.RunInBackground)
-                {
-                    // Nobody awaits a background queued spawn's completion; observe faults so a
-                    // faulted run never surfaces as an UnobservedTaskException.
-                    ObserveCompletionFaults(state);
-                }
-
-                // Unblocks a foreground caller (no-op for background, whose StateReady fault was already
-                // observed at enqueue).
-                _ = queued.StateReady.TrySetResult(state);
+                reportReservation = queued.FinalReportGate?.ReserveWork();
             }
-            catch (Exception ex)
+            catch
             {
-                // StartWithHeldPermitAsync already released the permit + rolled back registration.
-                _logger.LogError(
-                    ex,
-                    "Queued sub-agent {AgentId} (template {Template}) failed to start after dequeue.",
-                    queued.AgentId,
-                    queued.TemplateName
-                );
-                _ = queued.StateReady.TrySetException(ex);
+                _ = _concurrencyGate.Release();
+                CancelQueuedSpawn(queued, queued.CallerCancellation);
+                continue;
+            }
+
+            using (reportReservation)
+            {
+                RemoveQueuedSpawn(queued);
+                var gateGuard = new GateReleaseGuard();
+                try
+                {
+                    var state = await StartWithHeldPermitAsync(
+                        queued.AgentId,
+                        queued.EffectiveName,
+                        queued.TemplateName,
+                        queued.Template,
+                        queued.Task,
+                        queued.Model,
+                        queued.AddTools,
+                        queued.RemoveTools,
+                        queued.ModelIntelligence,
+                        queued.ModelSelectionSource,
+                        queued.Lineage,
+                        queued.RunInBackground,
+                        gateGuard,
+                        queued.RunInBackground ? pumpCt : queued.CallerCancellation,
+                        queued.FinalReportGate
+                    );
+
+                    if (queued.RunInBackground)
+                    {
+                        // Nobody awaits a background queued spawn's completion; observe faults so a
+                        // faulted run never surfaces as an UnobservedTaskException.
+                        ObserveCompletionFaults(state);
+                    }
+
+                    // Unblocks a foreground caller (no-op for background, whose StateReady fault was already
+                    // observed at enqueue).
+                    _ = queued.StateReady.TrySetResult(state);
+                }
+                catch (Exception ex)
+                {
+                    // StartWithHeldPermitAsync already released the permit + rolled back registration.
+                    _logger.LogError(
+                        ex,
+                        "Queued sub-agent {AgentId} (template {Template}) failed to start after dequeue.",
+                        queued.AgentId,
+                        queued.TemplateName
+                    );
+                    queued.FinalReportGate?.Fail();
+                    _ = queued.StateReady.TrySetException(ex);
+                }
             }
         }
 
@@ -1369,9 +1483,26 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </remarks>
     private void CancelQueuedSpawn(QueuedSpawn queued, CancellationToken cancellationToken)
     {
-        RemoveQueuedSpawn(queued);
-        RetireAgent(queued.AgentId, AgentCollaborationStatuses.Stopped);
-        _ = queued.StateReady.TrySetCanceled(cancellationToken);
+        // Cancellation can race final-report inspection. The queued entry must remain
+        // represented by either this reservation or the queue until it is fully retired.
+        IDisposable? reservation = null;
+        try
+        {
+            reservation = queued.FinalReportGate?.ReserveWork();
+        }
+        catch (InvalidOperationException)
+        {
+            // Admission was already closed or failed; still retire the queued entry.
+            queued.FinalReportGate?.Fail();
+        }
+
+        using (reservation)
+        {
+            RemoveQueuedSpawn(queued);
+            RetireAgent(queued.AgentId, AgentCollaborationStatuses.Stopped);
+            queued.FinalReportGate?.Fail();
+            _ = queued.StateReady.TrySetCanceled(cancellationToken);
+        }
     }
 
     /// <summary>
@@ -1795,6 +1926,31 @@ public sealed class SubAgentManager : IAsyncDisposable
         CancellationToken ct
     )
     {
+        var reportGate = FinalReportGate;
+        using var reservation = reportGate?.ReserveWork();
+        try
+        {
+            return await SendMessageCoreAsync(target, message, runInBackground, ct, reportGate);
+        }
+        catch (Exception ex)
+        {
+            if (ex is not ArgumentException and not SubAgentNotStartedException)
+            {
+                reportGate?.Fail();
+            }
+
+            throw;
+        }
+    }
+
+    private async Task<string> SendMessageCoreAsync(
+        string target,
+        IMessage message,
+        bool runInBackground,
+        CancellationToken ct,
+        FinalReportCompletionGate? reportGate
+    )
+    {
         ArgumentNullException.ThrowIfNull(message);
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
 
@@ -1808,6 +1964,11 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
 
         var state = _agents[agentId];
+        state.FinalReportGate = reportGate;
+        if (state.Agent is MultiTurnAgentLoop { SubAgentManager: { } childManager })
+        {
+            childManager.FinalReportGate = reportGate;
+        }
 
         // Decide how to continue this sub-agent atomically against a concurrent terminal completion and
         // any other concurrent continuation. An admitted "inject into the running loop" holds a send
@@ -2245,6 +2406,10 @@ public sealed class SubAgentManager : IAsyncDisposable
             state.ResetLifecycleCts();
             var runGeneration = state.BeginRunGeneration();
             ConfigureRunAdmission(state, gateGuard);
+            if (state.Agent is MultiTurnAgentLoop { SubAgentManager: { } childManager })
+            {
+                childManager.FinalReportGate = state.FinalReportGate;
+            }
 
             state.RunTask = RunUnderActorScopeAsync(state.Agent, state.AgentId, state.Name, cts.Token);
 
@@ -2970,6 +3135,11 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         foreach (var (_, state) in _agents)
         {
+            if (!IsTerminal(state.Status))
+            {
+                state.FinalReportGate?.Fail();
+            }
+
             // Settle a child that is still Running/Queued BEFORE anything below can fail or hang. Its run
             // will never reach a terminal transition of its own — the host is going away — so without
             // this nothing ever stamps a terminal status onto its persisted metadata, and every later
@@ -3314,6 +3484,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         public string? ModelSelectionSource { get; init; }
         public required AgentLineage Lineage { get; init; }
         public CancellationToken CallerCancellation { get; init; }
+        public FinalReportCompletionGate? FinalReportGate { get; init; }
 
         /// <summary>
         /// The capability this spawn is PROJECTED to have (#671). A queued spawn has no loop yet, so
@@ -4608,6 +4779,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     )
     {
         string? lastTextContent = null;
+        var processingReportGate = state.FinalReportGate;
 
         // The concurrency slot is released exactly once per gate-acquisition epoch via
         // gateGuard.ReleaseOnce (an Interlocked-guarded no-op past the first call). A single
@@ -4796,6 +4968,10 @@ public sealed class SubAgentManager : IAsyncDisposable
                         await beforeClassify(state, rcm);
                     }
 
+                    processingReportGate = state.FinalReportGate;
+                    // Reserve before taking RunTransition: Inspect holds the gate lock while
+                    // reading state, so reversing that order would deadlock admission.
+                    using var completionReservation = processingReportGate?.ReserveWork();
                     await state.RunTransition.WaitAsync(ct);
                     CompletionSideEffects? sideEffects;
                     try
@@ -4882,7 +5058,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                             lastTextContent,
                             awaitingQuestion,
                             awaitingAnswerText,
-                            latchedThisRun
+                            latchedThisRun,
+                            processingReportGate
                         );
                     }
                     finally
@@ -4929,7 +5106,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                                         state.LifecycleEpoch,
                                         AgentCollaborationStatuses.Error,
                                         DescendantQuestionText: null,
-                                        ParentRelayText: null
+                                        ParentRelayText: null,
+                                        FinalReportGate: processingReportGate
                                     );
                                 }
                                 else
@@ -4962,11 +5140,13 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            // Expected during shutdown
+            // A cancelled child cannot supply its final report.
+            processingReportGate?.Fail();
         }
         catch (ChannelClosedException)
         {
-            // Subscription channel closed - expected during disposal
+            // Subscription channel closed before the child could settle.
+            processingReportGate?.Fail();
         }
         catch (Exception ex)
         {
@@ -4974,6 +5154,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             // run's monitor can fault before RestartRunAsync's TryArmRunning(runGeneration) executes, and
             // that publish must observe this generation's terminal record and refuse to overwrite Error
             // with Running (which would advertise a dead run).
+            processingReportGate?.Fail();
             var faulted = state.MarkRunFaulted(runGeneration);
             state.SendToParentError = $"Monitor failed: {ex.Message}";
             _logger.LogError(ex, "Error monitoring sub-agent {AgentId}", state.AgentId);
@@ -4993,7 +5174,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                         state.LifecycleEpoch,
                         AgentCollaborationStatuses.Error,
                         DescendantQuestionText: null,
-                        ParentRelayText: null
+                        ParentRelayText: null,
+                        FinalReportGate: processingReportGate
                     ),
                     CancellationToken.None
                 );
@@ -5031,23 +5213,33 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         loop.AdmitRunAsync = async (runId, ct) =>
         {
-            await state.RunTransition.WaitAsync(ct);
+            var reportGate = state.FinalReportGate;
+            using var reservation = reportGate?.ReserveWork();
             try
             {
-                await gateGuard.AcquireIfReleasedAsync(_concurrencyGate, ct);
-                state.AdmittedRunId = runId;
-                if (state.Status != SubAgentStatus.Running)
+                await state.RunTransition.WaitAsync(ct);
+                try
                 {
-                    state.ResetCompletionIfFinished();
-                    state.ResetLifecycleCts();
-                    state.ReactivateCurrentEpoch();
-                }
+                    await gateGuard.AcquireIfReleasedAsync(_concurrencyGate, ct);
+                    state.AdmittedRunId = runId;
+                    if (state.Status != SubAgentStatus.Running)
+                    {
+                        state.ResetCompletionIfFinished();
+                        state.ResetLifecycleCts();
+                        state.ReactivateCurrentEpoch();
+                    }
 
-                SyncCollaborationStatus(state.AgentId, AgentCollaborationStatuses.Running);
+                    SyncCollaborationStatus(state.AgentId, AgentCollaborationStatuses.Running);
+                }
+                finally
+                {
+                    _ = state.RunTransition.Release();
+                }
             }
-            finally
+            catch
             {
-                _ = state.RunTransition.Release();
+                reportGate?.Fail();
+                throw;
             }
         };
     }
@@ -5078,11 +5270,13 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// does not relay on completion, or the relay was already claimed by an observer. The claim is
     /// decided under the gate, so exactly-once per completing run is settled before this is handed back.
     /// </param>
+    /// <param name="FinalReportGate">The captured per-operation gate, or null for ordinary runs.</param>
     private sealed record CompletionSideEffects(
         long LifecycleEpoch,
         string? TerminalStatus,
         string? DescendantQuestionText,
-        string? ParentRelayText
+        string? ParentRelayText,
+        FinalReportCompletionGate? FinalReportGate = null
     );
 
     /// <summary>
@@ -5101,72 +5295,91 @@ public sealed class SubAgentManager : IAsyncDisposable
         CancellationToken ct
     )
     {
-        if (effects.DescendantQuestionText is { } questionText)
+        // The monitor holds its reservation through this entire method, including
+        // the final parent enqueue. Fault recovery may call us after Fail(), when
+        // taking another reservation would be rejected.
+        var reportGate = effects.FinalReportGate;
+        try
         {
-            // Surface a descendant's pending question to the root conversation immediately (#246): the
-            // client navigates only on this distinct kind (never SubAgentCompletion/ClientNotification),
-            // and this fires regardless of NotifyParentOnCompletion — a foreground (blocking) spawn's
-            // caller is still parked awaiting the child's Task, so this is the ONLY way the human learns
-            // the conversation needs their input rather than appearing to hang. SourceToolCallId is THIS
-            // state's own agent id: a completion is handled once per level of nesting, so whichever
-            // level's direct child actually parked is the one attributed here, however deep it sits.
-            try
+            if (effects.DescendantQuestionText is { } questionText)
             {
-                await _descendantQuestionSink(
-                    NotifyMessage.Create(
+                // Surface a descendant's pending question to the root conversation immediately (#246): the
+                // client navigates only on this distinct kind (never SubAgentCompletion/ClientNotification),
+                // and this fires regardless of NotifyParentOnCompletion — a foreground (blocking) spawn's
+                // caller is still parked awaiting the child's Task, so this is the ONLY way the human learns
+                // the conversation needs their input rather than appearing to hang. SourceToolCallId is THIS
+                // state's own agent id: a completion is handled once per level of nesting, so whichever
+                // level's direct child actually parked is the one attributed here, however deep it sits.
+                try
+                {
+                    var notification = NotifyMessage.Create(
                         NotifyKinds.DescendantQuestion,
                         detail: questionText,
                         sourceToolName: "Agent",
                         sourceToolCallId: state.AgentId,
                         label: state.Name ?? state.TemplateName
-                    ),
-                    ct
-                );
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-            {
-                // Return only this delivery failure to the monitor for run-owned classification.
-                // Do not let it escape to the subscription-wide catch and fault a newer run.
-                return ex;
-            }
-        }
+                    );
+                    // Interactive deferrals are unsupported for a final-report operation. Do not
+                    // reroute this root-scoped notification through the immediate parent, or allow
+                    // an untracked question to enter the root after the operation closes.
+                    if (reportGate is not null)
+                    {
+                        throw new InvalidOperationException("A gated final-report child cannot await a question.");
+                    }
 
-        if (effects.TerminalStatus is { } terminalStatus)
-        {
-            // Push the terminal transition through the child's OWN store now, causally, rather than
-            // relying on the child's next metadata write — a background sub-agent that never receives
-            // another message never writes metadata again, and the exact terminal status/timestamp
-            // must still be persisted.
-            await PersistTerminalStateAsync(state, effects.LifecycleEpoch);
-
-            // Re-read, not carried across the await: the push above can be held by a slow store for as
-            // long as that store likes, and a follow-up run admitted in the meantime has already
-            // published Running. Publishing "completed" over it would leave every other agent in the
-            // hierarchy addressing a live delegate as finished. The directory entry stays live either
-            // way — a completed background sub-agent is still addressable, and a message restarts it.
-            await state.RunTransition.WaitAsync(ct);
-            try
-            {
-                if (state.IsCurrentLifecycleEpoch(effects.LifecycleEpoch))
+                    await _descendantQuestionSink(notification, ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
                 {
-                    SyncCollaborationStatus(state.AgentId, terminalStatus);
+                    // Return only this delivery failure to the monitor for run-owned classification.
+                    // Do not let it escape to the subscription-wide catch and fault a newer run.
+                    reportGate?.Fail();
+                    return ex;
                 }
             }
-            finally
+
+            if (effects.TerminalStatus is { } terminalStatus)
             {
-                _ = state.RunTransition.Release();
+                // Push the terminal transition through the child's OWN store now, causally, rather than
+                // relying on the child's next metadata write — a background sub-agent that never receives
+                // another message never writes metadata again, and the exact terminal status/timestamp
+                // must still be persisted.
+                await PersistTerminalStateAsync(state, effects.LifecycleEpoch);
+
+                // Re-read, not carried across the await: the push above can be held by a slow store for as
+                // long as that store likes, and a follow-up run admitted in the meantime has already
+                // published Running. Publishing "completed" over it would leave every other agent in the
+                // hierarchy addressing a live delegate as finished. The directory entry stays live either
+                // way — a completed background sub-agent is still addressable, and a message restarts it.
+                await state.RunTransition.WaitAsync(ct);
+                try
+                {
+                    if (state.IsCurrentLifecycleEpoch(effects.LifecycleEpoch))
+                    {
+                        SyncCollaborationStatus(state.AgentId, terminalStatus);
+                    }
+                }
+                finally
+                {
+                    _ = state.RunTransition.Release();
+                }
             }
-        }
 
-        if (effects.ParentRelayText is { } relayText)
+            if (effects.ParentRelayText is { } relayText)
+            {
+                // NOT epoch-gated. This reports what one specific run produced, and that debt survives the
+                // child moving on: suppressing it because a newer run started would silently drop a
+                // background sub-agent's only answer.
+                await SendToParentAsync(state, relayText, reportGate);
+            }
+
+            return null;
+        }
+        catch
         {
-            // NOT epoch-gated. This reports what one specific run produced, and that debt survives the
-            // child moving on: suppressing it because a newer run started would silently drop a
-            // background sub-agent's only answer.
-            await SendToParentAsync(state, relayText);
+            reportGate?.Fail();
+            throw;
         }
-
-        return null;
     }
 
     /// <summary>
@@ -5193,6 +5406,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// Whether the completing run is the one that ASKED the question. Distinguishes the two absorbed
     /// shapes, which have different justifications and therefore different bounds: see the branch body.
     /// </param>
+    /// <param name="reportGate">The gate captured for this completion before entering RunTransition.</param>
     /// <returns>
     /// The side effects to perform once the gate is released, or null when this completion owes none.
     /// </returns>
@@ -5202,7 +5416,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         string? lastTextContent,
         bool awaitingQuestion,
         bool awaitingAnswerText,
-        bool latchedThisRun
+        bool latchedThisRun,
+        FinalReportCompletionGate? reportGate
     )
     {
         // A run with queued input has not finished the logical work. Keep its completion latch
@@ -5239,7 +5454,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                 state.LifecycleEpoch,
                 TerminalStatus: null,
                 DescendantQuestionText: awaitingResultText,
-                ParentRelayText: state.NotifyParentOnCompletion ? awaitingResultText : null
+                ParentRelayText: state.NotifyParentOnCompletion ? awaitingResultText : null,
+                FinalReportGate: reportGate
             );
         }
 
@@ -5357,7 +5573,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             lifecycleEpoch,
             rcm.IsError ? AgentCollaborationStatuses.Error : AgentCollaborationStatuses.Completed,
             DescendantQuestionText: null,
-            relayText
+            relayText,
+            reportGate
         );
     }
 
@@ -5559,27 +5776,39 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
     }
 
-    private async Task SendToParentAsync(SubAgentState state, string text)
+    private async Task SendToParentAsync(SubAgentState state, string text, FinalReportCompletionGate? reportGate)
     {
         try
         {
             // Deliver the completion as a typed notification, not a plain user turn: the parent LLM
             // reads it as an async response to the sub-agent spawn, and the UI renders a pill. The raw
             // <sub-agent …> block stays in Detail so downstream parsers (e.g. LmWorkflow) still find it.
-            _ = await _parentAgent.SendAsync([
-                NotifyMessage.Create(
-                    NotifyKinds.SubAgentCompletion,
-                    detail: text,
-                    sourceToolName: "Agent",
-                    sourceToolCallId: state.AgentId,
-                    label: state.Name ?? state.TemplateName
-                ),
-            ]);
+            var notification = NotifyMessage.Create(
+                NotifyKinds.SubAgentCompletion,
+                detail: text,
+                sourceToolName: "Agent",
+                sourceToolCallId: state.AgentId,
+                label: state.Name ?? state.TemplateName
+            );
+            if (reportGate is not null && _parentAgent is MultiTurnAgentBase parent)
+            {
+                _ = await parent.SendAsync(new UserInput([notification]) { FinalReportOperation = reportGate });
+            }
+            else
+            {
+                if (reportGate is not null)
+                {
+                    throw new InvalidOperationException("A gated completion requires a provenance-aware parent.");
+                }
+
+                _ = await _parentAgent.SendAsync([notification]);
+            }
         }
         catch (Exception ex)
         {
             state.SendToParentFailed = true;
             state.SendToParentError = ex.Message;
+            reportGate?.Fail();
             _logger.LogError(ex, "Failed to send sub-agent result to parent");
         }
     }

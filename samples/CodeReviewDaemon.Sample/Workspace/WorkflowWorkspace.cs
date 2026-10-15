@@ -16,13 +16,21 @@ namespace CodeReviewDaemon.Sample.Workspace;
 /// <summary>The trusted preparation result, separate from the authored workflow's JSON contracts.</summary>
 internal sealed record WorkflowWorkspacePreparation(
     ReviewSlot Slot,
-    PreparedCheckout Checkout,
+    PreparedCheckout? Checkout,
     PreparedReviewWorkspace Workspace,
     JsonObject Output,
     string AssignmentId,
     JsonObject Admission,
-    IReadOnlyDictionary<string, string>? ContextDocumentHashes = null
-);
+    IReadOnlyDictionary<string, string>? ContextDocumentHashes = null,
+    string? ObjectEvidenceNotesDir = null
+)
+{
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string NotesDir =>
+        Checkout?.NotesDir
+        ?? ObjectEvidenceNotesDir
+        ?? throw new InvalidDataException("Preparation has no notes directory.");
+}
 
 /// <summary>A parent-owned resource assignment stored in the existing artifact table for scoped CLI calls.</summary>
 internal sealed record WorkflowWorkspaceAssignment(
@@ -101,12 +109,24 @@ internal sealed class WorkflowWorkspace
     }
 
     private readonly ReviewStore _store;
+    private readonly ILogger<WorkflowWorkspace> _logger;
     private readonly CodeReviewDaemonOptions _options;
     private readonly ReviewSlotWorkspace _slots;
     private readonly IReviewSessionProvisioner _sessions;
     private readonly Func<ReviewSlot, ReviewRun, CancellationToken, Task<PreparedReviewWorkspace>> _adoptWorkspace;
     private readonly Func<ReviewRun, JsonObject, ReviewRunSession, CancellationToken, Task<JsonObject>>? _contextReader;
     private readonly ConcurrentDictionary<long, WorkflowWorkspaceAssignment> _leases = new();
+
+    internal void RequireSafePreparation()
+    {
+        if (HasUnsafeRemotePreparation())
+            throw new InvalidOperationException("The shared review workspace has unsettled remote preparation.");
+    }
+
+    internal bool HasActiveAssignment(ReviewRun run, string workflowInstanceId) =>
+        _store.TryGetLatestArtifact(run.Id, AssignmentArtifactKind) is { } artifact
+        && JsonSerializer.Deserialize<WorkflowWorkspaceAssignment>(artifact.Payload) is { Active: true } assignment
+        && string.Equals(assignment.WorkflowInstanceId, workflowInstanceId, StringComparison.Ordinal);
 
     public WorkflowWorkspace(
         ReviewStore store,
@@ -119,6 +139,7 @@ internal sealed class WorkflowWorkspace
     )
     {
         _store = store;
+        _logger = loggerFactory.CreateLogger<WorkflowWorkspace>();
         _options = options;
         _slots = slots;
         _sessions = sessions;
@@ -141,6 +162,59 @@ internal sealed class WorkflowWorkspace
         string workflowInstanceId,
         CancellationToken cancellationToken
     ) => AcquireCoreAsync(run, workflowInstanceId, wait: false, cancellationToken);
+
+    internal Task<bool> AdoptClaimAsync(
+        ReviewRun run,
+        string workflowInstanceId,
+        ReviewSlotClaim claim,
+        CancellationToken cancellationToken
+    )
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        RequireSafePreparation();
+        var repository =
+            _store.GetRepo(run.RepoId) ?? throw new InvalidOperationException("Run repository is missing.");
+        var prior = _store.TryGetLatestArtifact(run.Id, AssignmentArtifactKind);
+        var previous = prior is null
+            ? null
+            : JsonSerializer.Deserialize<WorkflowWorkspaceAssignment>(prior.Payload)
+                ?? throw new InvalidDataException("Workflow workspace assignment is invalid.");
+        if (
+            !ReferenceEquals(claim.Pool, _slots.Pool)
+            || !string.Equals(claim.Slot.RepositoryName, repository.RepoName, StringComparison.OrdinalIgnoreCase)
+            || _leases.ContainsKey(run.Id)
+            || previous is { Active: true }
+            || (previous is not null && previous.Slot != claim.Slot)
+        )
+            throw new InvalidOperationException("Slot claim does not match the review assignment.");
+        var assignment = new WorkflowWorkspaceAssignment(
+            claim.Slot,
+            Active: true,
+            Guid.NewGuid().ToString("N"),
+            workflowInstanceId
+        );
+        if (!_leases.TryAdd(run.Id, assignment))
+            throw new InvalidOperationException("Review assignment was concurrently acquired.");
+        try
+        {
+            Save(run, AssignmentArtifactKind, assignment);
+        }
+        catch
+        {
+            _leases.TryRemove(run.Id, out _);
+            claim.Transfer();
+            _ = _slots.Pool.RetireAsync(claim.Slot, CancellationToken.None);
+            throw;
+        }
+        claim.Transfer();
+        _logger.LogDebug(
+            "Review slot assignment persisted {RunId} {SlotName} {WorkflowInstanceId}",
+            run.Id,
+            claim.Slot.Name,
+            workflowInstanceId
+        );
+        return Task.FromResult(true);
+    }
 
     private async Task<ReviewSlot?> AcquireCoreAsync(
         ReviewRun run,
@@ -170,6 +244,47 @@ internal sealed class WorkflowWorkspace
             previous =
                 JsonSerializer.Deserialize<WorkflowWorkspaceAssignment>(prior.Payload)
                 ?? throw new InvalidDataException("Workflow workspace assignment is invalid.");
+            if (
+                !previous.Active
+                && run.ReviewKind == "merged-completion"
+                && previous.WorkflowInstanceId == workflowInstanceId
+                && _store.TryGetLatestArtifact(run.Id, PreparationArtifactKind) is { } preparedArtifact
+            )
+            {
+                var prepared = JsonSerializer.Deserialize<WorkflowWorkspacePreparation>(preparedArtifact.Payload)!;
+                if (
+                    prepared.AssignmentId != previous.AssignmentId
+                    || prepared.Slot != previous.Slot
+                    || prepared.Checkout is not null
+                    || HasUnsettledPreparation(run.Id)
+                )
+                    throw new InvalidDataException("Merged preparation cannot be restored to this assignment.");
+                var recoveredSlot = await _slots
+                    .Pool.TryLeasePreferredAsync(previous.Slot, cancellationToken)
+                    .ConfigureAwait(false);
+                if (recoveredSlot is null)
+                    return null;
+                var restored = previous with { Active = true };
+                try
+                {
+                    if (!_leases.TryAdd(run.Id, restored))
+                        throw new InvalidOperationException("Merged inspection already owns a lease.");
+                    Save(run, AssignmentArtifactKind, restored);
+                    if (
+                        await ReconcilePreparationAsync(run, prepared.Admission, workflowInstanceId, cancellationToken)
+                            .ConfigureAwait(false)
+                        is null
+                    )
+                        throw new InvalidDataException("Merged inspection context changed; reconciliation required.");
+                    return recoveredSlot;
+                }
+                catch
+                {
+                    // Preserve durable ownership for reconciliation; never reprepare or discard these notes.
+                    await _slots.Pool.RetireAsync(recoveredSlot, CancellationToken.None).ConfigureAwait(false);
+                    throw;
+                }
+            }
             if (previous.Active)
             {
                 if (!wait)
@@ -234,62 +349,41 @@ internal sealed class WorkflowWorkspace
         }
     }
 
-    internal async Task RestoreDiscussionReadAssignmentAsync(
+    internal async Task SelectMergedInspectionSlotAsync(
         ReviewRun run,
         string instanceId,
-        JsonObject admission,
+        int index,
         CancellationToken ct
     )
     {
-        var assignment = Read<WorkflowWorkspaceAssignment>(run.Id, AssignmentArtifactKind);
-        var prepared = Read<WorkflowWorkspacePreparation>(run.Id, PreparationArtifactKind);
+        var repo = _store.GetRepo(run.RepoId) ?? throw new InvalidDataException("Repository is missing.");
+        var slot = new ReviewSlot(repo.RepoName, index);
         if (
-            assignment.WorkflowInstanceId != instanceId
-            || prepared.AssignmentId != assignment.AssignmentId
-            || prepared.Slot != assignment.Slot
-            || !JsonNode.DeepEquals(prepared.Admission, admission)
-            || prepared.Checkout.SourceHeadSha != run.HeadSha
-            || prepared.Checkout.TargetBaseSha != run.BaseSha
+            run.ReviewKind != "merged-completion"
+            || run.PrLifecycleState != PrLifecycleState.Merged
+            || !_slots.Pool.Slots.Contains(slot)
             || HasAnyUnsettledPreparation(_store)
-            || _store
-                .ListActiveWorkflowWorkspaceRuns()
-                .Any(other =>
-                    other.Id != run.Id
-                    && Read<WorkflowWorkspaceAssignment>(other.Id, AssignmentArtifactKind).Slot == assignment.Slot
-                )
+            || _leases.ContainsKey(run.Id)
+            || _store.TryGetLatestArtifact(run.Id, PreparationArtifactKind) is not null
         )
-            throw new InvalidOperationException("Failed discussion recovery cannot prove original slot ownership.");
-        var slot = assignment.Active
-            ? await RecoverAsync(run, assignment.AssignmentId, instanceId, ct).ConfigureAwait(false)
-            : await _slots.Pool.TryLeasePreferredAsync(assignment.Slot, ct).ConfigureAwait(false)
-                ?? throw new WorkspaceCapacityUnavailableException();
-        try
+            throw new InvalidOperationException("Slot selection requires an unprepared, settled merged inspection.");
+        if (_store.TryGetLatestArtifact(run.Id, AssignmentArtifactKind) is { } prior)
         {
-            var session = await _sessions.GetOrCreateSharedAsync(ct).ConfigureAwait(false);
-            await new ReviewSetupScriptRunner(session.CommandRunner, session.FileSystem, false)
-                .VerifyPreparedAsync(slot, run with { MergeSha = prepared.Checkout.CheckoutSha }, ct)
-                .ConfigureAwait(false);
-            var restored = assignment with { Active = true };
-            if (!assignment.Active)
-            {
-                if (!_leases.TryAdd(run.Id, restored))
-                    throw new InvalidOperationException("Another lease already owns this review.");
-                Save(run, AssignmentArtifactKind, restored);
-            }
-            if (await ReconcilePreparationAsync(run, admission, instanceId, ct).ConfigureAwait(false) is null)
-                throw new InvalidOperationException("Original prepared context is unavailable.");
+            var assignment = JsonSerializer.Deserialize<WorkflowWorkspaceAssignment>(prior.Payload)!;
+            if (assignment.Active || assignment.WorkflowInstanceId != instanceId)
+                throw new InvalidOperationException("Another active owner prevents slot selection.");
         }
-        catch
-        {
-            _store.TryMarkReviewRunParked(
-                run.Id,
-                DateTimeOffset.UtcNow,
-                "Discussion recovery could not verify its original workspace; ownership retained for reconciliation."
-            );
-            _leases.TryRemove(run.Id, out _);
-            await _slots.Pool.RetireAsync(slot, CancellationToken.None).ConfigureAwait(false);
-            throw;
-        }
+        if (_store.ListActiveWorkflowWorkspaceRuns().Any(other => ReadAssignment(other).Slot == slot))
+            throw new InvalidOperationException("The selected slot belongs to another run.");
+        var session = await _sessions.GetOrCreateSharedAsync(ct).ConfigureAwait(false);
+        await new ReviewSetupScriptRunner(session.CommandRunner, session.FileSystem, false)
+            .VerifyWarmAsync([slot], ct)
+            .ConfigureAwait(false);
+        Save(
+            run,
+            AssignmentArtifactKind,
+            new WorkflowWorkspaceAssignment(slot, false, Guid.NewGuid().ToString("N"), instanceId)
+        );
     }
 
     public ReviewSlot ReadAssignedSlot(ReviewRun run)
@@ -383,7 +477,7 @@ internal sealed class WorkflowWorkspace
         var session = await _sessions.GetOrCreateSharedAsync(cancellationToken).ConfigureAwait(false);
         var context = await session
             .FileSystem.ReadFileAsync(
-                $"{prepared.Checkout.NotesDir.TrimEnd('/', '\\')}/{name}",
+                $"{prepared.NotesDir.TrimEnd('/', '\\')}/{name}",
                 checked(_options.Limits.MaxArtifactPayloadChars * 4L),
                 cancellationToken
             )
@@ -414,7 +508,7 @@ internal sealed class WorkflowWorkspace
                 || document.Key.IndexOfAny(['/', '\\', ':']) >= 0
             )
                 return null;
-            var path = prepared.Checkout.NotesDir.TrimEnd('/', '\\') + "/" + document.Key;
+            var path = prepared.NotesDir.TrimEnd('/', '\\') + "/" + document.Key;
             var content = await session
                 .FileSystem.ReadFileAsync(
                     path,
@@ -450,6 +544,10 @@ internal sealed class WorkflowWorkspace
             || prepared.Admission["HeadSha"]?.GetValue<string>() != run.HeadSha
         )
             throw new InvalidOperationException("Review notes do not belong to this workflow assignment.");
+        if (prepared.Checkout is null)
+            throw new InvalidOperationException(
+                "Object-only completion retains canonical reports, not checkout notes."
+            );
         prepared.Slot.Validate();
         var session = await _sessions.GetOrCreateSharedAsync(ct).ConfigureAwait(false);
         var result = await session
@@ -660,23 +758,34 @@ internal sealed class WorkflowWorkspace
         }
         try
         {
-            var checkout = await _slots
-                .CreatePreparer(session)
-                .PrepareAsync(run, slot, repo, cancellationToken)
-                .ConfigureAwait(false);
-            // The reader can resolve exact checkout evidence through this artifact without needing a task-specific C# input type.
-            Save(run, CheckoutArtifactKind, checkout);
+            var merged = admission["Route"]?.GetValue<string>() is "merged" or "abandoned";
+            PreparedCheckout? checkout = null;
+            if (!merged)
+            {
+                checkout = await _slots
+                    .CreatePreparer(session)
+                    .PrepareAsync(run, slot, repo, cancellationToken)
+                    .ConfigureAwait(false);
+                Save(run, CheckoutArtifactKind, checkout);
+            }
+            else
+            {
+                await new ReviewSetupScriptRunner(session.CommandRunner, session.FileSystem, false)
+                    .VerifyWarmAsync([slot], cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            var notesDir = checkout?.NotesDir ?? $"{slot.WorktreeRoot}/PRs/{run.PrId}";
             phase = "context-read";
             var context = await _contextReader(run, admission, session, cancellationToken).ConfigureAwait(false);
             var name =
                 $"workflow-context-{run.Id.ToString(CultureInfo.InvariantCulture)}-{assignment.AssignmentId}.json";
-            var hostContextPath = $"{checkout.NotesDir.TrimEnd('/', '\\')}/{name}";
+            var hostContextPath = $"{notesDir.TrimEnd('/', '\\')}/{name}";
             var content = context.ToJsonString();
             cancellationToken.ThrowIfCancellationRequested();
             await WriteContextAsync(hostContextPath, content).ConfigureAwait(false);
             phase = "context-render";
             var readableName = Path.ChangeExtension(name, ".md");
-            var readablePath = $"{checkout.NotesDir.TrimEnd('/', '\\')}/{readableName}";
+            var readablePath = $"{notesDir.TrimEnd('/', '\\')}/{readableName}";
             Dictionary<string, string>? documentHashes = null;
             if (context["ContextManifestVersion"]?.GetValue<int>() == 1)
             {
@@ -701,6 +810,8 @@ internal sealed class WorkflowWorkspace
             writeUnacknowledged = false;
             phase = "workspace-adopt";
             var workspace = await _adoptWorkspace(slot, run, cancellationToken).ConfigureAwait(false);
+            if (merged)
+                workspace = workspace with { SourceRelativePath = string.Empty };
             var result = new WorkflowWorkspacePreparation(
                 slot,
                 checkout,
@@ -710,11 +821,12 @@ internal sealed class WorkflowWorkspace
                     ["PrId"] = run.PrId,
                     ["HeadSha"] = run.HeadSha,
                     ["WindowId"] = admission["WindowId"]?.DeepClone() ?? JsonValue.Create(string.Empty),
-                    ["ContextArtifact"] = $"{checkout.NotesDir}/{readableName}",
+                    ["ContextArtifact"] = $"{notesDir}/{readableName}",
                 },
                 assignment.AssignmentId,
                 (JsonObject)admission.DeepClone(),
-                documentHashes
+                documentHashes,
+                merged ? notesDir : null
             );
             if (ReadAssignment(run).AssignmentId != assignment.AssignmentId)
             {
@@ -737,6 +849,143 @@ internal sealed class WorkflowWorkspace
             RecordPreparation(run, intent, PreparationStatus.Settled);
             RecordDiagnostic(exception);
             throw;
+        }
+    }
+
+    internal async Task ResetSettledAttemptAsync(ReviewRun run, string instanceId, CancellationToken ct)
+    {
+        var assignment = ReadAssignment(run);
+        var root = instanceId == $"review-run-{run.Id}";
+        var terminalRound = run.PrLifecycleState is PrLifecycleState.Merged or PrLifecycleState.Abandoned
+            ? _store.GetLatestWorkflowRound(run.Id, WorkflowRoundKind.Merged)
+            : null;
+        if (!root && terminalRound?.WorkflowInstanceId != instanceId)
+            throw new InvalidOperationException("Reset requires the root attempt or its exact terminal round.");
+        var uncertainArtifact = _store.TryGetLatestArtifact(run.Id, RemotePreparationArtifactKind);
+        var uncertain = uncertainArtifact is null
+            ? null
+            : JsonSerializer.Deserialize<RemotePreparationState>(uncertainArtifact.Payload);
+        var resetUnknownCheckout =
+            root
+            && uncertain is { OutcomeUnknown: true, Settled: false }
+            && uncertain.AssignmentId == assignment.AssignmentId
+            && _store.TryGetLatestArtifact(run.Id, PreparationDiagnosticArtifactKind) is { } diagnostic
+            && JsonNode.Parse(diagnostic.Payload) is JsonObject detail
+            && detail["AssignmentId"]?.GetValue<string>() == assignment.AssignmentId
+            && detail["Phase"]?.GetValue<string>() == "checkout"
+            && !_store
+                .GetArtifacts(run.Id)
+                .Any(artifact => artifact.ArtifactKind.StartsWith("workflow-session:", StringComparison.Ordinal));
+        if (
+            !_leases.TryGetValue(run.Id, out var owned)
+            || owned != assignment
+            || !assignment.Active
+            || assignment.WorkflowInstanceId != instanceId
+            || (HasUnsettledPreparation(run.Id) && !resetUnknownCheckout)
+            || _store
+                .GetOutboxForRun(run.Id)
+                .Any(entry => entry.Status is not (OutboxStatus.Posted or OutboxStatus.Sent or OutboxStatus.Collected))
+        )
+            throw new InvalidOperationException("Reset requires the still-owned settled attempt.");
+        var preparedArtifact = _store.TryGetLatestArtifact(run.Id, PreparationArtifactKind);
+        var prepared = preparedArtifact is null ? null : ReadPreparation(run);
+        var checkout = prepared?.Checkout;
+        if (prepared is not null && prepared.AssignmentId != assignment.AssignmentId)
+            throw new InvalidOperationException("Reset requires the exact disposable assignment.");
+        if (checkout is null && _store.TryGetLatestArtifact(run.Id, CheckoutArtifactKind) is { } checkoutArtifact)
+            checkout = JsonSerializer.Deserialize<PreparedCheckout>(checkoutArtifact.Payload);
+        var session = await _sessions.GetOrCreateSharedAsync(ct).ConfigureAwait(false);
+        var helper = new ReviewSetupScriptRunner(session.CommandRunner, session.FileSystem, false);
+        var merge = checkout?.CheckoutSha;
+        var priorReset = _store.TryGetLatestArtifact(run.Id, "workflow-attempt-reset-intent");
+        var resetIntent = priorReset is null ? null : JsonNode.Parse(priorReset.Payload) as JsonObject;
+        var boundReset =
+            resetIntent is not null
+            && resetIntent["runId"]?.GetValue<long>() == run.Id
+            && resetIntent["assignmentId"]?.GetValue<string>() == assignment.AssignmentId
+            && resetIntent["workflowInstanceId"]?.GetValue<string>() == instanceId
+            && resetIntent["repository"]?.GetValue<string>() == assignment.Slot.RepositoryName
+            && resetIntent["slot"]?.GetValue<int>() == assignment.Slot.Index
+            && resetIntent["pr"]?.GetValue<string>() == run.PrId
+            && resetIntent["head"]?.GetValue<string>() == run.HeadSha
+            && resetIntent["base"]?.GetValue<string>() == run.BaseSha
+            && resetIntent["sourcePath"]?.GetValue<string>() == assignment.Slot.SourceRelativePath
+            && !string.IsNullOrWhiteSpace(resetIntent["merge"]?.GetValue<string>());
+        if (checkout is null && boundReset)
+            merge = resetIntent!["merge"]!.GetValue<string>();
+        if (resetUnknownCheckout)
+        {
+            // Evidence is only a reset identity, not an acknowledgment of the lost preparation.
+            if (!boundReset)
+                merge = await helper.VerifyPreparedAsync(assignment.Slot, run, ct).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(merge))
+                throw new InvalidDataException("Unknown checkout reset has no verified merge identity.");
+        }
+        var identity = new JsonObject
+        {
+            ["runId"] = run.Id,
+            ["assignmentId"] = assignment.AssignmentId,
+            ["workflowInstanceId"] = instanceId,
+            ["repository"] = assignment.Slot.RepositoryName,
+            ["slot"] = assignment.Slot.Index,
+            ["pr"] = run.PrId,
+            ["head"] = run.HeadSha,
+            ["base"] = run.BaseSha,
+            ["merge"] = merge,
+            ["sourcePath"] = assignment.Slot.SourceRelativePath,
+        };
+        if (checkout is null && !resetUnknownCheckout && !boundReset)
+        {
+            identity["mode"] = "unprepared-baseline";
+            if (
+                _store.TryGetLatestArtifact(run.Id, "workflow-attempt-reset-intent") is { } priorIntent
+                && JsonNode.Parse(priorIntent.Payload) is JsonObject prior
+                && prior["assignmentId"]?.GetValue<string>() == assignment.AssignmentId
+                && prior["workflowInstanceId"]?.GetValue<string>() == instanceId
+            )
+            {
+                identity["rootHead"] = prior["rootHead"]?.DeepClone();
+                identity["sourceBaseline"] = prior["sourceBaseline"]?.DeepClone();
+            }
+        }
+        var inspection = await helper
+            .ResetReviewSlotAsync(identity, false, ct, compactOutput: true)
+            .ConfigureAwait(false);
+        if (checkout is null && !resetUnknownCheckout && !boundReset)
+        {
+            identity["rootHead"] =
+                inspection["rootHead"]?.DeepClone()
+                ?? throw new InvalidDataException("Reset inspection omitted the outer baseline.");
+            identity["sourceBaseline"] =
+                inspection["sourceBaseline"]?.DeepClone()
+                ?? throw new InvalidDataException("Reset inspection omitted the source baseline.");
+        }
+        Save(run, "workflow-attempt-reset-intent", identity);
+        var receipt = await helper.ResetReviewSlotAsync(identity, true, ct, compactOutput: true).ConfigureAwait(false);
+        Save(run, "workflow-attempt-reset", receipt);
+        if (resetUnknownCheckout)
+        {
+            if (
+                ReadAssignment(run) != assignment
+                || _store.TryGetLatestArtifact(run.Id, RemotePreparationArtifactKind)?.Id != uncertainArtifact!.Id
+            )
+                throw new InvalidOperationException("Unknown preparation changed during selected-attempt reset.");
+            Save(
+                run,
+                "workflow-preparation-reset-acceptance",
+                new JsonObject
+                {
+                    ["AssignmentId"] = assignment.AssignmentId,
+                    ["PreparationArtifactId"] = uncertainArtifact.Id,
+                    ["Identity"] = identity.DeepClone(),
+                    ["ReceiptSha256"] = Convert.ToHexString(
+                        SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(receipt)))
+                    ),
+                    ["OriginalOutcomeUnknown"] = true,
+                    ["Basis"] = "Verified selected-attempt cleanup settled; original checkout outcome remains unknown.",
+                }
+            );
+            RecordPreparation(run, uncertain!, PreparationStatus.Settled);
         }
     }
 
@@ -782,6 +1031,12 @@ internal sealed class WorkflowWorkspace
                 ? _slots.Pool.ReturnAsync(assignment.Slot, CancellationToken.None)
                 : _slots.Pool.RetireAsync(assignment.Slot, CancellationToken.None)
         ).ConfigureAwait(false);
+        _logger.LogDebug(
+            "Review slot assignment released {RunId} {SlotName} {WorkSettled}",
+            runId,
+            assignment.Slot.Name,
+            workSettled
+        );
     }
 
     internal void CompleteOperatorPreparationReset(ReviewRun run, string assignmentId)
@@ -798,7 +1053,49 @@ internal sealed class WorkflowWorkspace
         RecordPreparation(run, state, PreparationStatus.Settled);
     }
 
-    private bool HasUnsettledPreparation(long runId) =>
+    internal bool HasAcceptedPreparationCleanup(ReviewRun run, string instanceId)
+    {
+        var assignment = ReadAssignment(run);
+        var accepted = _store.TryGetLatestArtifact(run.Id, "workflow-preparation-reset-acceptance");
+        var reset = _store.TryGetLatestArtifact(run.Id, "workflow-attempt-reset");
+        var latest = _store.TryGetLatestArtifact(run.Id, RemotePreparationArtifactKind);
+        if (accepted is null || reset is null || latest is null)
+            return false;
+        var acceptance = JsonNode.Parse(accepted.Payload);
+        var receipt = JsonNode.Parse(reset.Payload);
+        var originalId = acceptance?["PreparationArtifactId"]?.GetValue<long>();
+        var original = _store
+            .GetArtifacts(run.Id)
+            .SingleOrDefault(artifact =>
+                artifact.Id == originalId && artifact.ArtifactKind == RemotePreparationArtifactKind
+            );
+        if (original is null)
+            return false;
+        var state = JsonSerializer.Deserialize<RemotePreparationState>(original.Payload);
+        var settled = JsonSerializer.Deserialize<RemotePreparationState>(latest.Payload);
+        return state is { OutcomeUnknown: true, Settled: false }
+            && settled == state with { Settled = true, OutcomeUnknown = false }
+            && latest.Id > accepted.Id
+            && assignment.WorkflowInstanceId == instanceId
+            && state.AssignmentId == assignment.AssignmentId
+            && acceptance?["AssignmentId"]?.GetValue<string>() == assignment.AssignmentId
+            && acceptance["OriginalOutcomeUnknown"]?.GetValue<bool>() == true
+            && JsonNode.DeepEquals(acceptance["Identity"], receipt?["identity"])
+            && receipt?["status"]?.GetValue<string>() == "reset"
+            && receipt["identity"]?["runId"]?.GetValue<long>() == run.Id
+            && receipt["identity"]?["assignmentId"]?.GetValue<string>() == assignment.AssignmentId
+            && receipt["identity"]?["workflowInstanceId"]?.GetValue<string>() == instanceId
+            && receipt["identity"]?["repository"]?.GetValue<string>() == assignment.Slot.RepositoryName
+            && receipt["identity"]?["slot"]?.GetValue<int>() == assignment.Slot.Index
+            && receipt["identity"]?["pr"]?.GetValue<string>() == run.PrId
+            && receipt["identity"]?["head"]?.GetValue<string>() == run.HeadSha
+            && receipt["identity"]?["base"]?.GetValue<string>() == run.BaseSha
+            && receipt["identity"]?["sourcePath"]?.GetValue<string>() == assignment.Slot.SourceRelativePath
+            && acceptance["ReceiptSha256"]?.GetValue<string>()
+                == Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(reset.Payload)));
+    }
+
+    internal bool HasUnsettledPreparation(long runId) =>
         _store.TryGetLatestArtifact(runId, RemotePreparationArtifactKind) is { } artifact
         && JsonSerializer.Deserialize<RemotePreparationState>(artifact.Payload)?.Status != PreparationStatus.Settled;
 
@@ -808,8 +1105,12 @@ internal sealed class WorkflowWorkspace
             .ListReviewRunsWithArtifact(RemotePreparationArtifactKind)
             .Any(run =>
             {
-                var state = Read<RemotePreparationState>(run.Id, RemotePreparationArtifactKind);
-                if (state.Status == PreparationStatus.Settled)
+                var artifact = _store.TryGetLatestArtifact(run.Id, RemotePreparationArtifactKind)!;
+                var state = JsonSerializer.Deserialize<RemotePreparationState>(artifact.Payload)!;
+                if (
+                    state.Status == PreparationStatus.Settled
+                    || _store.HasAcceptedRoundPreparation(run.Id, artifact.Id, state.AssignmentId)
+                )
                     return false;
                 var assignmentArtifact = _store.TryGetLatestArtifact(run.Id, AssignmentArtifactKind);
                 var assignment = assignmentArtifact is null
@@ -825,12 +1126,12 @@ internal sealed class WorkflowWorkspace
         || store
             .ListReviewRunsWithArtifact(RemotePreparationArtifactKind)
             .Any(run =>
-                JsonSerializer
-                    .Deserialize<RemotePreparationState>(
-                        store.TryGetLatestArtifact(run.Id, RemotePreparationArtifactKind)!.Payload
-                    )
-                    ?.Status != PreparationStatus.Settled
-            );
+            {
+                var artifact = store.TryGetLatestArtifact(run.Id, RemotePreparationArtifactKind)!;
+                var state = JsonSerializer.Deserialize<RemotePreparationState>(artifact.Payload);
+                return state?.Status != PreparationStatus.Settled
+                    && (state is null || !store.HasAcceptedRoundPreparation(run.Id, artifact.Id, state.AssignmentId));
+            });
 
     private static bool IsOwner(WorkflowWorkspaceAssignment assignment, string workflowInstanceId) =>
         string.Equals(assignment.WorkflowInstanceId, workflowInstanceId, StringComparison.Ordinal);

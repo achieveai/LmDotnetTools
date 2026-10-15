@@ -60,6 +60,12 @@ public sealed class WorkspaceRawEndpointHttpTests
         {
             // Production: no Vite dev-server auto-spawn. Matches the other in-process host tests here.
             builder.UseEnvironment("Production");
+            var storeId = Guid.NewGuid().ToString("N");
+            builder.UseSetting("Identity:DatabasePath", Path.Combine(Path.GetTempPath(), $"identity_raw_{storeId}.db"));
+            builder.UseSetting(
+                "LmStreaming:NotifyWaitDbPath",
+                Path.Combine(Path.GetTempPath(), $"notify_raw_{storeId}.db")
+            );
             builder.UseSetting("SandboxGateway:BaseUrl", "http://127.0.0.1:1");
             builder.UseSetting("SandboxGateway:AutoSpawn", "false");
 

@@ -135,7 +135,7 @@ public sealed class WorkflowScriptOperationsTests
     }
 
     [Fact]
-    public async Task Retention_receipt_survives_recreation_and_closure_uses_only_own_branch()
+    public async Task Retention_receipt_survives_recreation_but_legacy_run_cannot_close_the_branch()
     {
         using var fixture = new Fixture();
         var retained = await fixture.Operations.RetainArtifactsAsync(fixture.Files, default);
@@ -149,12 +149,13 @@ public sealed class WorkflowScriptOperationsTests
         var commands = fixture.Runner.Commands.Count;
         await fixture.CreateOperations().RetainArtifactsAsync(fixture.Files, default);
         fixture.Runner.Commands.Should().HaveCount(commands, "an acknowledged retention is not blindly replayed");
-        var closed = await fixture.CreateOperations().CloseArtifactBranchAsync(default);
-        closed["ArtifactBranch"]!.GetValue<string>().Should().Be("review/widgets-7");
-        fixture
-            .Runner.Commands.Should()
-            .Contain(c => c.Argv.Contains("--delete") && c.Argv.Contains("review/widgets-7"));
-        fixture.Runner.Commands.Should().NotContain(c => c.Argv.Contains("--delete") && c.Argv.Contains("main"));
+        await fixture
+            .CreateOperations()
+            .Invoking(x => x.CloseArtifactBranchAsync(default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>()
+            .WithMessage("*exact merged retention authority*");
+        fixture.Runner.Commands.Should().NotContain(c => c.Argv.Contains("--delete"));
     }
 
     [Fact]

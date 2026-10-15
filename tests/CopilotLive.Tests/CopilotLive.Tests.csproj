@@ -4,9 +4,9 @@
     credentials the developer is already logged in with (Copilot CLI / gh / env var).
 
     #396 review: this project IS now part of LmDotnetTools.sln (mirroring Sandbox.Integration.Tests),
-    so `dotnet build`/`dotnet test LmDotnetTools.sln` builds and runs it, but its tests skip
-    themselves (rather than fail) when no Copilot credential is found, so that costs nothing in an
-    environment without one (CI included). It is still not listed in scripts/ci-test.ps1's
+    so `dotnet build`/`dotnet test LmDotnetTools.sln` builds and discovers it. Its tests skip
+    unless RUN_COPILOT_LIVE_TESTS=1 explicitly opts into credential resolution and live calls;
+    opted-in tests also skip when no Copilot credential is found. It is still not listed in scripts/ci-test.ps1's
     $extraTestProjects, because that list is only for projects the solution build does not already
     reach. To run it explicitly against a real credential:
 

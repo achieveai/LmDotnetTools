@@ -32,8 +32,8 @@ public sealed class DaemonWebAppFactory : WebApplicationFactory<Program>
     // registration in DI) keeps the production HttpClient — and its ReviewStageDeadlineMinutes-derived
     // Timeout wiring — exactly what Program.cs built, which is what DaemonS2SClientTimeoutWiringTests
     // pins.
-    private readonly HttpListener _fakeReviewHost = new();
-    private readonly int _fakeReviewHostPort = GetFreeTcpPort();
+    private readonly HttpListener _fakeReviewHost;
+    private readonly int _fakeReviewHostPort;
     private readonly CancellationTokenSource _fakeReviewHostCts = new();
 
     private const string CapabilitiesBody =
@@ -41,8 +41,26 @@ public sealed class DaemonWebAppFactory : WebApplicationFactory<Program>
 
     public DaemonWebAppFactory()
     {
-        _fakeReviewHost.Prefixes.Add($"http://127.0.0.1:{_fakeReviewHostPort}/");
-        _fakeReviewHost.Start();
+        // GetFreeTcpPort releases the port before HttpListener binds it, so a test running in parallel
+        // (or another test process) can take it in between: "conflicts with an existing registration".
+        // Retry on a fresh port rather than fail the test on that race.
+        for (var attempt = 1; ; attempt++)
+        {
+            var port = GetFreeTcpPort();
+            var listener = new HttpListener();
+            listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+            try
+            {
+                listener.Start();
+                _fakeReviewHost = listener;
+                _fakeReviewHostPort = port;
+                break;
+            }
+            catch (HttpListenerException) when (attempt < 5)
+            {
+                listener.Close();
+            }
+        }
         _ = AcceptFakeReviewHostRequestsAsync(_fakeReviewHostCts.Token);
     }
 

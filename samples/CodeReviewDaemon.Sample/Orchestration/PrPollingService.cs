@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -6,6 +7,9 @@ using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Workspace;
+using CodeReviewDaemon.Sample.Workspace.Git;
+using CodeReviewDaemon.Sample.Workspace.Sandbox;
 
 namespace CodeReviewDaemon.Sample.Orchestration;
 
@@ -47,7 +51,7 @@ internal sealed class MaintenanceSweepException(string sweepName, Exception inne
 /// The PR-watching loop. The daemon does not receive PR webhooks — it polls each configured target on
 /// an interval, advancing the opaque poll cursor (§12) and handing every discovered PR to the
 /// <see cref="PrOrchestrator"/>. Each poll cycle is isolated: a failure on one cycle is logged and the
-/// loop continues, so one transient provider error does not stop the daemon. <see cref="PollOnceAsync"/>
+/// loop continues, so one transient provider error does not stop the daemon. <see cref="PollOnceAsync(CancellationToken)"/>
 /// is the testable unit; <see cref="ExecuteAsync"/> just repeats it.
 /// </summary>
 internal sealed class PrPollingService : BackgroundService
@@ -66,6 +70,10 @@ internal sealed class PrPollingService : BackgroundService
     private readonly ReviewProgressReporter? _progress;
     private readonly int _firstReviewLookbackDays;
     private readonly IReadOnlyList<IReviewCommentReader> _commentReaders;
+    private readonly Func<CancellationToken, Task<IReadOnlyList<ReviewBranchInventoryEntry>>>? _readCompletionBacklog;
+    private readonly IReadOnlyDictionary<string, int>? _slotsByRepository;
+    private readonly HostGitPushAuthorization? _pushAuthorization;
+    private readonly Func<IReadOnlyList<ReviewBranchInventoryEntry>, CancellationToken, Task>? _processTerminal;
 
     public PrPollingService(
         IEnumerable<PrPollTarget> targets,
@@ -78,7 +86,11 @@ internal sealed class PrPollingService : BackgroundService
         TimeProvider? timeProvider = null,
         ReviewProgressReporter? progress = null,
         int? firstReviewLookbackDays = null,
-        IEnumerable<IReviewCommentReader>? commentReaders = null
+        IEnumerable<IReviewCommentReader>? commentReaders = null,
+        Func<CancellationToken, Task<IReadOnlyList<ReviewBranchInventoryEntry>>>? readCompletionBacklog = null,
+        IReadOnlyList<ReviewSlot>? slots = null,
+        HostGitPushAuthorization? pushAuthorization = null,
+        Func<IReadOnlyList<ReviewBranchInventoryEntry>, CancellationToken, Task>? processTerminal = null
     )
     {
         _targets = [.. targets];
@@ -94,6 +106,12 @@ internal sealed class PrPollingService : BackgroundService
             ? firstReviewLookbackDays.Value
             : CodeReviewDaemonOptions.DefaultFirstReviewSentinelLookbackDays;
         _commentReaders = commentReaders is null ? [.. _providers.OfType<IReviewCommentReader>()] : [.. commentReaders];
+        _readCompletionBacklog = readCompletionBacklog;
+        _pushAuthorization = pushAuthorization;
+        _processTerminal = processTerminal;
+        _slotsByRepository = slots
+            ?.GroupBy(slot => slot.RepositoryName, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -105,7 +123,16 @@ internal sealed class PrPollingService : BackgroundService
         {
             try
             {
-                await PollOnceAsync(stoppingToken);
+                // Inspect every branch before intake. Historical branches stay outside new-PR admission.
+                await _orchestrator.RecoverPendingOwnersAsync(stoppingToken).ConfigureAwait(false);
+                var branches = await ReadCompletionBacklogAsync(stoppingToken).ConfigureAwait(false);
+                await PollOnceAsync(stoppingToken, branches).ConfigureAwait(false);
+                if (
+                    !HasUnresolvedBranchIdentity(branches)
+                    && !branches.Any(entry => entry.BlocksNewIntake)
+                    && !await RunMaintenanceSweepAsync(stoppingToken).ConfigureAwait(false)
+                )
+                    break;
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -114,11 +141,6 @@ internal sealed class PrPollingService : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Poll cycle failed; continuing after the interval.");
-            }
-
-            if (!await RunMaintenanceSweepAsync(stoppingToken).ConfigureAwait(false))
-            {
-                break;
             }
 
             try
@@ -130,6 +152,46 @@ internal sealed class PrPollingService : BackgroundService
                 break;
             }
         }
+    }
+
+    /// <summary>Only an observed all-open (or empty) branch inventory permits maintenance.</summary>
+    internal async Task<bool> CompletionBacklogIsClearAsync(CancellationToken cancellationToken)
+    {
+        var entries = await ReadCompletionBacklogAsync(cancellationToken).ConfigureAwait(false);
+        return !HasUnresolvedBranchIdentity(entries) && !entries.Any(entry => entry.BlocksNewIntake);
+    }
+
+    private async Task<IReadOnlyList<ReviewBranchInventoryEntry>> ReadCompletionBacklogAsync(
+        CancellationToken cancellationToken
+    ) => _readCompletionBacklog is null ? [] : await _readCompletionBacklog(cancellationToken).ConfigureAwait(false);
+
+    private bool HasUnresolvedBranchIdentity(IReadOnlyList<ReviewBranchInventoryEntry> entries)
+    {
+        var duplicate = entries
+            .Where(entry => entry.RepositoryKey is not null && int.TryParse(entry.PrId, out _))
+            .GroupBy(entry =>
+                (entry.RepositoryKey!, int.Parse(entry.PrId!, System.Globalization.CultureInfo.InvariantCulture))
+            )
+            .FirstOrDefault(group => group.Count() != 1);
+        var unresolved = entries.FirstOrDefault(entry =>
+            entry.Status != "discovered"
+            || entry.RepositoryKey is null
+            || entry.Lifecycle is not ("Open" or "Merged" or "Abandoned")
+            || !int.TryParse(
+                entry.PrId,
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var number
+            )
+            || number <= 0
+        );
+        if (duplicate is null && unresolved is null)
+            return false;
+        _logger.LogWarning(
+            "Review branch inventory has {Reason}; holding all intake and maintenance until identity is reconciled.",
+            duplicate is not null ? "duplicate PR identity" : unresolved!.Status
+        );
+        return true;
     }
 
     /// <summary>
@@ -188,7 +250,7 @@ internal sealed class PrPollingService : BackgroundService
     /// throw.
     /// <para>
     /// Internal and separated from <see cref="ExecuteAsync"/> for the reason
-    /// <see cref="PollOnceAsync"/> is: the loop above has a delay in it, and the one thing here worth
+    /// <see cref="PollOnceAsync(CancellationToken)"/> is: the loop above has a delay in it, and the one thing here worth
     /// asserting — which sweep the failure line names — would otherwise be reachable only by starting
     /// the service and racing its interval.
     /// </para>
@@ -234,29 +296,96 @@ internal sealed class PrPollingService : BackgroundService
     /// </summary>
     internal async Task PollOnceAsync(CancellationToken cancellationToken)
     {
-        foreach (var target in _targets)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
+        var branches = await ReadCompletionBacklogAsync(cancellationToken).ConfigureAwait(false);
+        await PollOnceAsync(cancellationToken, branches).ConfigureAwait(false);
+    }
 
-            // Per-target isolation: a provider fetch (or any failure) on one target must not starve the
-            // rest of the cycle. Log and continue with the next target; the cursor is only advanced on a
-            // clean pass, so a failed fetch is retried next interval.
-            try
+    private async Task PollOnceAsync(
+        CancellationToken cancellationToken,
+        IReadOnlyList<ReviewBranchInventoryEntry> branches
+    )
+    {
+        var terminal = ProcessTerminalSafelyAsync(branches, cancellationToken);
+        if (_slotsByRepository is null)
+        {
+            foreach (var target in _targets)
             {
-                await PollTargetAsync(target, cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                await PollTargetSafelyAsync(target, null, null, branches, cancellationToken).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Poll of target {Scope} failed; continuing with the next target.", target.Scope);
-            }
+            await terminal.ConfigureAwait(false);
+            return;
+        }
+
+        var seen = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+        var lanes = _slotsByRepository.ToDictionary(
+            entry => entry.Key,
+            entry => new SemaphoreSlim(entry.Value),
+            StringComparer.OrdinalIgnoreCase
+        );
+        var targets = _targets.Select(target =>
+            PollTargetSafelyAsync(
+                target,
+                seen,
+                lanes.GetValueOrDefault(target.Repo.RepoName),
+                branches,
+                cancellationToken
+            )
+        );
+        await Task.WhenAll(targets.Append(terminal)).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+    }
+
+    private async Task ProcessTerminalSafelyAsync(
+        IReadOnlyList<ReviewBranchInventoryEntry> branches,
+        CancellationToken ct
+    )
+    {
+        if (_processTerminal is null)
+            return;
+        try
+        {
+            await _processTerminal(branches, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Terminal processing failed; unrelated PR intake continues.");
         }
     }
 
-    private async Task PollTargetAsync(PrPollTarget target, CancellationToken cancellationToken)
+    private async Task PollTargetSafelyAsync(
+        PrPollTarget target,
+        ConcurrentDictionary<string, byte>? seen,
+        SemaphoreSlim? lane,
+        IReadOnlyList<ReviewBranchInventoryEntry> branches,
+        CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            await PollTargetAsync(target, seen, lane, branches, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Poll of target {Scope} failed; leaving its cursor unchanged.", target.Scope);
+        }
+    }
+
+    private async Task PollTargetAsync(
+        PrPollTarget target,
+        ConcurrentDictionary<string, byte>? seen,
+        SemaphoreSlim? lane,
+        IReadOnlyList<ReviewBranchInventoryEntry> branches,
+        CancellationToken cancellationToken
+    )
     {
         var provider = PrPollTargetBuilder.ResolveProvider(_providers, target);
         if (provider is null)
@@ -283,65 +412,205 @@ internal sealed class PrPollingService : BackgroundService
         );
 
         var repoId = _store.EnsureRepo(target.Repo);
-        foreach (var pr in ApplyRecencyFilter(target, cutoff, page.PullRequests))
+        var pending = new List<Task<bool>>();
+        var handled = true;
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var seed = new ReviewRun
+            foreach (var pr in ApplyRecencyFilter(target, cutoff, page.PullRequests))
             {
-                RepoId = repoId,
-                PrId = pr.PrId,
-                HeadSha = pr.HeadSha,
-                BaseSha = pr.BaseSha,
-                TriggerWatermark = pr.TriggerWatermark,
-                ReviewKind = target.ReviewKind,
-                VariantId = target.VariantId,
-                Mode = target.Mode,
-                ModelId = target.ModelId,
-                Stage = ReviewStage.Discovered,
-                WorkflowStatus = WorkflowStatus.Pending,
-                PrLifecycleState = pr.LifecycleState,
-                // Captured now, while the PR is still open and the poll payload is in hand: the at-close
-                // feedback extraction runs much later, against a PR that may already be closed.
-                PrAuthor = pr.Author,
-                // The prose half of the knowledge-retrieval key, captured from the same poll payload: the
-                // Reviewed stage reads the run from the store long after this page is gone.
-                PrTitle = pr.Title,
-                PrDescription = pr.Description,
-            };
+                cancellationToken.ThrowIfCancellationRequested();
+                if (
+                    !int.TryParse(
+                        pr.PrId,
+                        System.Globalization.NumberStyles.None,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        out var prNumber
+                    )
+                    || prNumber <= 0
+                    || branches.Any(entry =>
+                        entry.RepositoryKey == target.Repo.NormalizedKey
+                        && int.TryParse(
+                            entry.PrId,
+                            System.Globalization.NumberStyles.None,
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            out var branchPr
+                        )
+                        && branchPr == prNumber
+                        && entry.BlocksNewIntake
+                    )
+                )
+                {
+                    handled = false;
+                    _logger.LogDebug(
+                        "PR {PrId} on {Scope} has a prior or uncertain review branch; retaining its cursor.",
+                        pr.PrId,
+                        target.Scope
+                    );
+                    continue;
+                }
+                if (lane is not null)
+                    await lane.WaitAsync(cancellationToken).ConfigureAwait(false);
+                var key = target.Repo.NormalizedKey + ":" + pr.PrId;
+                if (seen is not null && !seen.TryAdd(key, 0))
+                {
+                    handled = false;
+                    lane!.Release();
+                    _logger.LogDebug(
+                        "PR {PrId} on {Scope} is already admitted in this cycle; retaining its cursor.",
+                        pr.PrId,
+                        target.Scope
+                    );
+                    continue;
+                }
 
-            // Per-PR isolation: one poison PR must not abort the rest of the target's PRs. The
-            // orchestrator has already marked the failed run RetryPending before rethrowing, so it will
-            // resume from its first incomplete stage on a later poll; here we just log and move on.
+                try
+                {
+                    var seed = new ReviewRun
+                    {
+                        RepoId = repoId,
+                        PrId = pr.PrId,
+                        HeadSha = pr.HeadSha,
+                        BaseSha = pr.BaseSha,
+                        TriggerWatermark = pr.TriggerWatermark,
+                        ReviewKind = target.ReviewKind,
+                        VariantId = target.VariantId,
+                        Mode = target.Mode,
+                        ModelId = target.ModelId,
+                        Stage = ReviewStage.Discovered,
+                        WorkflowStatus = WorkflowStatus.Pending,
+                        PrLifecycleState = pr.LifecycleState,
+                        PrAuthor = pr.Author,
+                        PrTitle = pr.Title,
+                        PrDescription = pr.Description,
+                    };
+                    pending.Add(RunOneAsync(pr, seed));
+                }
+                catch
+                {
+                    lane?.Release();
+                    throw;
+                }
+            }
+        }
+        finally
+        {
+            // Host shutdown and the next poll must never race an admitted workflow.
+            var results = await Task.WhenAll(pending).ConfigureAwait(false);
+            handled &= results.All(result => result);
+        }
+        if (handled && !cancellationToken.IsCancellationRequested)
+        {
+            _store.SaveCursor(page.NextCursor);
+            _logger.LogDebug("Poll target {Scope} completed; cursor advanced.", target.Scope);
+        }
+        else
+        {
+            _logger.LogDebug("Poll target {Scope} has unfinished PR work; cursor retained.", target.Scope);
+        }
+
+        async Task<bool> RunOneAsync(PullRequestDescriptor pr, ReviewRun seed)
+        {
             try
             {
-                await RunWorkflowAsync(target, pr, seed, cancellationToken).ConfigureAwait(false);
+                var descriptor = pr;
+                {
+                    var current = await provider
+                        .GetPullRequestAsync(target.Repo, pr.PrId, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (
+                        current?.LifecycleState != PrLifecycleState.Open
+                        || current.PrId != pr.PrId
+                        || current.HeadSha != pr.HeadSha
+                        || current.BaseSha != pr.BaseSha
+                    )
+                    {
+                        _logger.LogWarning(
+                            "PR {PrId} on {Scope} changed or closed before admission; retaining the cursor.",
+                            pr.PrId,
+                            target.Scope
+                        );
+                        return false;
+                    }
+                    descriptor = current;
+                }
+                using var artifactScope = ReviewArtifactBranchCapability.EnterScope();
+                using var pushScope = _pushAuthorization?.EnterScope();
+                if (_pushAuthorization is not null)
+                {
+                    var capability = ReviewArtifactBranchCapability.Grant(
+                        target.Repo.NormalizedKey,
+                        descriptor.PrId,
+                        descriptor.HeadSha
+                    );
+                    ReviewArtifactBranchCapability.SetCurrent(capability);
+                    _pushAuthorization.AuthorizePush(capability.AuthorizedBranch(target.Repo));
+                }
+                return await RunWorkflowAsync(
+                        target,
+                        descriptor,
+                        seed with
+                        {
+                            TriggerWatermark = descriptor.TriggerWatermark,
+                            PrAuthor = descriptor.Author,
+                            PrTitle = descriptor.Title,
+                            PrDescription = descriptor.Description,
+                        },
+                        cancellationToken
+                    )
+                    .ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                throw;
+                return false;
             }
             catch (Exception ex)
             {
                 _logger.LogError(
                     ex,
-                    "Orchestrating PR {PrId} on {Scope} failed; the run is left RetryPending and polling continues.",
+                    "Orchestrating PR {PrId} on {Scope} failed; leaving the cursor unchanged for retry.",
                     pr.PrId,
                     target.Scope
                 );
+                return false;
+            }
+            finally
+            {
+                lane?.Release();
             }
         }
-
-        _store.SaveCursor(page.NextCursor);
     }
 
-    private async Task RunWorkflowAsync(
+    private async Task<bool> RunWorkflowAsync(
         PrPollTarget target,
         PullRequestDescriptor descriptor,
         ReviewRun seed,
         CancellationToken cancellationToken
     )
     {
+        var existing = _store.FindReviewRunByIdentity(seed);
+        if (_store.GetAmbiguousWorkflowRoundId(seed) is { } ambiguousRoundId)
+        {
+            _logger.LogWarning(
+                "PR {PrId} on {Scope} has round {RoundId} with ambiguous run ownership; retaining its cursor for reconciliation.",
+                seed.PrId,
+                target.Scope,
+                ambiguousRoundId
+            );
+            return false;
+        }
+        if (
+            _store
+                .ListActiveWorkflowWorkspaceRuns()
+                .Any(owner => owner.RepoId == seed.RepoId && owner.PrId == seed.PrId)
+        )
+        {
+            _logger.LogDebug(
+                "PR {PrId} on {Scope} already owns an active workspace; retaining its cursor without starting a review.",
+                seed.PrId,
+                target.Scope
+            );
+            return false;
+        }
         var run = _store.CreateOrGetReviewRun(seed);
         if (run.WorkflowStatus != WorkflowStatus.Completed)
         {
@@ -359,33 +628,23 @@ internal sealed class PrPollingService : BackgroundService
             run = await _orchestrator.RunAsync(seed, initial, cancellationToken).ConfigureAwait(false);
             if (run.WorkflowStatus != WorkflowStatus.Completed)
             {
-                return;
+                return false;
             }
-            return; // This provider snapshot is the new-head baseline; a later poll admits changes.
+            return true; // This provider snapshot is the new-head baseline; a later poll admits changes.
         }
 
-        foreach (
-            var pending in _store
-                .GetPendingWorkflowRounds(run.RepoId)
-                .Where(value => value.PrId == run.PrId && value.HeadSha == run.HeadSha)
-                .OrderBy(value => value.Id)
-        )
+        foreach (var pending in _store.GetPendingWorkflowRoundsForRun(run.Id))
         {
             if (
                 await _orchestrator.RunRoundAsync(run, pending, cancellationToken).ConfigureAwait(false)
                 != WorkflowInvocationStatus.Completed
             )
             {
-                return;
+                return false;
             }
         }
 
-        var previousRound = _store.GetLatestWorkflowRound(
-            run.RepoId,
-            run.PrId,
-            run.HeadSha,
-            WorkflowRoundKind.Discussion
-        );
+        var previousRound = _store.GetLatestWorkflowRound(run.Id, WorkflowRoundKind.Discussion);
         if (previousRound is null && !_orchestrator.HasFrozenContext(run, null))
         {
             var baseline = await ReadCommentContextAsync(
@@ -399,6 +658,7 @@ internal sealed class PrPollingService : BackgroundService
             var baselineRound = _store.CreateOrGetWorkflowRound(
                 new WorkflowRoundSeed
                 {
+                    ReviewRunId = run.Id,
                     RepoId = run.RepoId,
                     PrId = run.PrId,
                     HeadSha = run.HeadSha,
@@ -407,8 +667,8 @@ internal sealed class PrPollingService : BackgroundService
                     FrozenInputJson = baseline.ToJsonString(),
                 }
             );
-            _ = await _orchestrator.RunRoundAsync(run, baselineRound, cancellationToken).ConfigureAwait(false);
-            return;
+            return await _orchestrator.RunRoundAsync(run, baselineRound, cancellationToken).ConfigureAwait(false)
+                == WorkflowInvocationStatus.Completed;
         }
         var previousContext = await _orchestrator
             .ReadFrozenContextAsync(run, previousRound, cancellationToken)
@@ -428,12 +688,13 @@ internal sealed class PrPollingService : BackgroundService
         var window = current["CommentWindow"]!.AsArray();
         if (window.Count == 0)
         {
-            return;
+            return true;
         }
         var eventKey = BuildWindowId(window);
         var round = _store.CreateOrGetWorkflowRound(
             new WorkflowRoundSeed
             {
+                ReviewRunId = run.Id,
                 RepoId = run.RepoId,
                 PrId = run.PrId,
                 HeadSha = run.HeadSha,
@@ -442,7 +703,8 @@ internal sealed class PrPollingService : BackgroundService
                 FrozenInputJson = current.ToJsonString(),
             }
         );
-        _ = await _orchestrator.RunRoundAsync(run, round, cancellationToken).ConfigureAwait(false);
+        return await _orchestrator.RunRoundAsync(run, round, cancellationToken).ConfigureAwait(false)
+            == WorkflowInvocationStatus.Completed;
     }
 
     private Task<JsonObject> ReadCommentContextAsync(

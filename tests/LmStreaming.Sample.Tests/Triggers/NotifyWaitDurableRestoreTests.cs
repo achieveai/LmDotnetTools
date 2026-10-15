@@ -72,6 +72,7 @@ public sealed class NotifyWaitDurableRestoreTests
             // Point the #145 notify-wait store at this test's isolated db (mirrors
             // CodeReviewDaemon.Sample's CodeReviewDaemon:DatabasePath test-override via UseSetting).
             builder.UseSetting("LmStreaming:NotifyWaitDbPath", _notifyDbPath);
+            builder.UseSetting("Identity:DatabasePath", Path.Combine(_conversationsPath, "identity.db"));
 
             builder.ConfigureTestServices(services =>
             {

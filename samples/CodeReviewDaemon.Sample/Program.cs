@@ -4,10 +4,10 @@ using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
-using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
 using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using CodeReviewDaemon.Sample.Agents;
+using CodeReviewDaemon.Sample.Agents.DeveloperLearnings;
 using CodeReviewDaemon.Sample.Auth;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Eval;
@@ -53,6 +53,11 @@ int? runPrConcurrency = null;
 long? retainReviewNotesRunId = null;
 (string RepoKey, string PrId)? redoArtifactBranchRequest = null;
 var scopedCommand = ScopedCommandLine.Parse(hostArgs);
+if (scopedCommand.Kind == ScopedCommandKind.None && ScopedCommandLine.ContainsScopedCommand(processArgv))
+{
+    Console.Error.WriteLine("Invalid scoped command or profile options; no daemon was started.");
+    return 64;
+}
 if (scopedCommand.Kind == ScopedCommandKind.Malformed)
 {
     // Never fall through to ReviewProfileArgs.Extract/normal daemon startup on a fat-fingered scoped
@@ -73,6 +78,17 @@ else if (scopedCommand.Kind == ScopedCommandKind.ListCandidatePrs)
     listCandidatePrs = true;
     hostArgs = [];
 }
+else if (
+    scopedCommand.Kind
+    is ScopedCommandKind.ListReviewBranches
+        or ScopedCommandKind.CompleteMergedPr
+        or ScopedCommandKind.CompleteMergedBatch
+        or ScopedCommandKind.InspectMergedArchive
+        or ScopedCommandKind.ArchiveMergedPr
+)
+{
+    hostArgs = [];
+}
 else if (scopedCommand.Kind == ScopedCommandKind.RunPr)
 {
     // Task #81, Command B — an operator-approved, exact one-PR run. See RunSinglePrCommand.
@@ -89,7 +105,7 @@ else if (scopedCommand.Kind == ScopedCommandKind.RunPrStream)
     runPrConcurrency = scopedCommand.RunPrConcurrency;
     hostArgs = [];
 }
-else if (scopedCommand.Kind == ScopedCommandKind.ResetReviewRun)
+else if (scopedCommand.Kind is ScopedCommandKind.ResetReviewRun or ScopedCommandKind.ResetReviewRound)
 {
     hostArgs = [];
 }
@@ -109,10 +125,16 @@ else if (scopedCommand.Kind == ScopedCommandKind.RedoArtifactBranch)
 var isScopedCommand =
     workflowOperation is not null
     || listCandidatePrs
+    || scopedCommand.Kind
+        is ScopedCommandKind.ListReviewBranches
+            or ScopedCommandKind.CompleteMergedPr
+            or ScopedCommandKind.CompleteMergedBatch
+            or ScopedCommandKind.InspectMergedArchive
+            or ScopedCommandKind.ArchiveMergedPr
     || runPrRequest is not null
     || runPrConcurrency is not null
     || retainReviewNotesRunId is not null
-    || scopedCommand.Kind == ScopedCommandKind.ResetReviewRun
+    || scopedCommand.Kind is ScopedCommandKind.ResetReviewRun or ScopedCommandKind.ResetReviewRound
     || redoArtifactBranchRequest is not null;
 
 // Task #82, requirement 1 — the review-artifact branch push capability. Denied here, and there is no flag
@@ -177,6 +199,64 @@ SandboxEnvRules.Validate(daemonOptions.WorkspaceEnv, "CodeReviewDaemon:Workspace
 // Refuse startup on a malformed EnabledRepos entry, naming it — encoding the segments consistently (issue
 // #485) is not the same as validating them, and a bad entry otherwise polls the wrong repo or nothing at all.
 PrPollTargetBuilder.ValidateEnabledRepos(daemonOptions);
+
+IReadOnlyList<ScopedCommandLineResult> mergedCommands =
+    scopedCommand.Kind == ScopedCommandKind.CompleteMergedPr ? [scopedCommand] : [];
+if (scopedCommand.Kind == ScopedCommandKind.CompleteMergedBatch)
+{
+    try
+    {
+        if (
+            daemonOptions.EnablePrPolling
+            || daemonOptions.EnableCommentPosting
+            || daemonOptions.EnableGitPush
+            || daemonOptions.AutoDiscardCompletedSlotOnAdmission
+        )
+            throw new InvalidDataException(
+                "Merged batch requires polling, broad publication and automatic slot discard disabled."
+            );
+        mergedCommands = ScopedCommandLine.ReadMergedBatch(scopedCommand.MergedBatchPath!);
+        var targets = PrPollTargetBuilder.Build(
+            daemonOptions,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance
+        );
+        var identities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var slots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var command in mergedCommands)
+        {
+            var repo = targets
+                .Where(target =>
+                    string.Equals(target.Repo.DisplayName, command.RunPrRepoKey, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(
+                        target.Repo.NormalizedKey,
+                        command.RunPrRepoKey,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )
+                .Select(target => target.Repo)
+                .DistinctBy(repo => repo.NormalizedKey)
+                .Single();
+            if (
+                !identities.Add(repo.NormalizedKey + ":" + command.RunPrId)
+                || !slots.Add(repo.RepoName + ":" + command.MergedSlot)
+            )
+                throw new InvalidDataException("Merged batch contains a duplicate PR or repository slot.");
+        }
+    }
+    catch (Exception exception)
+        when (exception
+                is IOException
+                    or InvalidDataException
+                    or JsonException
+                    or InvalidOperationException
+                    or FormatException
+                    or ArgumentException
+        )
+    {
+        Console.Error.WriteLine($"Invalid merged batch ({exception.GetType().Name}); no work was admitted.");
+        return 64;
+    }
+}
 
 // `--setup-workspace` must never run in the same process as PR polling — see
 // SetupWorkspaceCommand.EnsureCanRunWithoutPolling for why. Checked here, before the host is even built,
@@ -292,6 +372,67 @@ if (daemonOptions.EnableAdoProvider)
     builder.Services.AddSingleton<IOAuthTokenProvider>(sp => sp.GetRequiredService<AdoOAuthProvider>());
 }
 
+// Inventory needs only provider credentials and read clients, not the workflow host or its database.
+if (scopedCommand.Kind == ScopedCommandKind.ListReviewBranches)
+{
+    await using var inventoryApp = builder.Build();
+    try
+    {
+        var services = inventoryApp.Services;
+        var clients = new PolicyEnforcedHttpClientFactory(
+            daemonOptions,
+            services.GetRequiredService<ILogger<OperationPolicyHandler>>(),
+            services.GetRequiredService<ILogger<RetryHandler>>()
+        );
+        using var githubClient = clients.Create("github");
+        using var adoClient = daemonOptions.EnableAdoProvider ? clients.Create("ado") : null;
+        List<IPrProvider> providers =
+        [
+            new GitHubPrProvider(
+                githubClient,
+                services.GetRequiredService<GitHubOAuthProvider>(),
+                services.GetRequiredService<ILogger<GitHubPrProvider>>()
+            ),
+        ];
+        if (adoClient is not null)
+            providers.Add(
+                new AdoPrProvider(
+                    adoClient,
+                    services.GetRequiredService<AdoOAuthProvider>(),
+                    services.GetRequiredService<ILogger<AdoPrProvider>>()
+                )
+            );
+        var git = new HostGitCommandRunner(
+            BuildHostGitCredentialsSource(services),
+            services.GetRequiredService<ILogger<HostGitCommandRunner>>(),
+            hostGitAdoOrgs,
+            pushAuthorization: new HostGitPushAuthorization(false)
+        );
+        var branches = await ListReviewBranchesCommand.RunAsync(
+            daemonOptions,
+            new GitRunner(git),
+            providers,
+            services.GetRequiredService<ILogger<Program>>(),
+            CancellationToken.None
+        );
+        Console.WriteLine(
+            JsonSerializer.Serialize(
+                branches,
+                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true }
+            )
+        );
+        return 0;
+    }
+    catch (Exception error) when (error is not OutOfMemoryException)
+    {
+        inventoryApp.Logger.LogError(
+            "Review branch inventory failed ({ErrorType}); no completion work was admitted.",
+            error.GetType().Name
+        );
+        return 1;
+    }
+}
+
 // Restore persisted sign-in state at startup so token injection reflects a prior console sign-in.
 builder.Services.AddHostedService<OAuthTokenHydrator>();
 
@@ -326,6 +467,74 @@ var databasePath = string.IsNullOrWhiteSpace(daemonOptions.DatabasePath)
     : daemonOptions.DatabasePath;
 var dbConnectionString = new SqliteConnectionStringBuilder { DataSource = databasePath }.ToString();
 
+if (scopedCommand.ResetRoundId is { } roundResetId)
+{
+    try
+    {
+        // This path opens SQLite directly at its existing version. It never constructs ReviewStore
+        // and therefore cannot migrate a live v13 database as a side effect of receipt inspection.
+        JsonObject? receipt = null;
+        if (scopedCommand.ResetReceiptPath is { } receiptPath)
+        {
+            if (new FileInfo(receiptPath).Length > 32 * 1024 * 1024)
+                throw new InvalidDataException("Reset receipt file exceeds the operator verification bound.");
+            receipt =
+                JsonNode.Parse(await File.ReadAllTextAsync(receiptPath)) as JsonObject
+                ?? throw new InvalidDataException("Reset receipt must be a JSON object.");
+        }
+        var inspection = ResetReviewRoundCommand.Inspect(roundResetId, databasePath, receipt);
+        if (!scopedCommand.ConfirmReset)
+        {
+            Console.WriteLine(inspection.ToJsonString());
+            return 0;
+        }
+        if (daemonOptions.EnablePrPolling || daemonOptions.EnableCommentPosting || daemonOptions.EnableGitPush)
+            throw new InvalidOperationException("Round acceptance requires polling and publication disabled.");
+        if (inspection["status"]?.GetValue<string>() != "ready")
+            throw new InvalidOperationException(
+                string.Join(" ", inspection["blockers"]!.AsArray().Select(x => x!.GetValue<string>()))
+            );
+        var recordedSession = inspection["recordedSessionId"]?.GetValue<string>();
+        if (string.IsNullOrWhiteSpace(recordedSession))
+            throw new InvalidOperationException(
+                "Recorded Gateway session is missing; no session may be created for verification."
+            );
+        using var resetLoggerFactory = LoggerFactory.Create(logging => logging.AddConsole());
+        var result = await ResetReviewRoundCommand.AcceptAsync(
+            roundResetId,
+            databasePath,
+            receipt!,
+            async (identity, ct) =>
+            {
+                await using var adapter = new SandboxSessionAdapter(
+                    gatewayBaseUrl,
+                    recordedSession,
+                    resetLoggerFactory.CreateLogger<SandboxSessionAdapter>(),
+                    daemonCredential,
+                    // Operator-only reinspection may return a multi-MiB inventory receipt.
+                    // Normal daemon adapters keep their configured 1 MiB stdout bound.
+                    new SandboxLimits
+                    {
+                        CommandTimeout = daemonOptions.Limits.CommandTimeout,
+                        MaxOutputChars = 32 * 1024 * 1024,
+                    }
+                );
+                return await new ReviewSetupScriptRunner(adapter, adapter, false)
+                    .ResetReviewSlotAsync(identity, apply: false, ct)
+                    .ConfigureAwait(false);
+            },
+            CancellationToken.None
+        );
+        Console.WriteLine(result.ToJsonString());
+        return 0;
+    }
+    catch (Exception error) when (error is not OutOfMemoryException)
+    {
+        Console.Error.WriteLine($"Round reset refused: {error.Message}");
+        return 1;
+    }
+}
+
 // This daemon's SQLite/workspace deployment has one coordinator. An OS-held lease rejects a
 // second host before polling; process exit releases it, so stale coordinators cannot keep writing.
 // A scoped one-shot command (workflow operation, candidate listing, an operator-approved single-PR run,
@@ -336,12 +545,8 @@ var dbConnectionString = new SqliteConnectionStringBuilder { DataSource = databa
 // rather than minutes earlier at startup. Taking it here too would self-deadlock both of them.
 using var coordinatorLease = isScopedCommand ? null : WorkflowCoordinatorLease.Acquire(databasePath);
 
-// Singleton: ReviewStore wraps one SqliteConnection. Its single accessor is still the serial
-// PrPollingService loop (each PR is orchestrated to completion before the next), so concurrent use does
-// not arise today — but the store now serializes access itself (every operation runs under an internal
-// gate held across command-plus-reader), so a future fan-out (parallel arms, a second poller) can share
-// this singleton without corrupting the connection. Isolation of the review WORKSPACES is separate and
-// already in place: each concurrent review leases its own pooled slot.
+// ReviewStore wraps one SqliteConnection and gates each command/reader pair. Bounded poller fan-out
+// shares this singleton; review workspaces remain isolated by their separate pooled slot leases.
 builder.Services.AddSingleton(_ => new ReviewStore(dbConnectionString));
 
 // The refusal ledger (#536). Every capability gate that DENIES something writes here, because the absence
@@ -446,12 +651,6 @@ builder.Services.AddSingleton<IReviewSessionProvisioner>(sp => new ReviewSession
 // Sub-agent discovery (Task 12): the executor asks for `code-reviewer:*` sub-agents through the same
 // narrow-adapter pattern as ISandboxSessionSource above, so it never depends on the registry's full
 // surface directly.
-
-// Optional conversation persistence: when ConversationStorePath is set, the S2S review host persists its
-// full message history. The daemon retains the path for log auditing references.
-IConversationStore? conversationStore = string.IsNullOrWhiteSpace(daemonOptions.ConversationStorePath)
-    ? null
-    : new FileConversationStore(daemonOptions.ConversationStorePath);
 
 // The daemon drives all reviews over the S2S REST API against a running LmStreaming.Sample review host.
 // UseS2SReviewAgent must be on — the in-process path has been removed.
@@ -759,11 +958,33 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.ResolvedStoreUrl))
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
         var repositoryNames = daemonOptions.EnabledRepos.Select(RepositoryNameRules.FromEnabledRepo).ToArray();
 
+        var poolSizes = new Dictionary<string, int>(
+            daemonOptions.ReviewPoolSizesByRepository,
+            StringComparer.OrdinalIgnoreCase
+        );
+        foreach (var command in mergedCommands.Where(command => command.MergedSlot.HasValue))
+        {
+            var selectedSlot = command.MergedSlot!.Value;
+            var target = PrPollTargetBuilder
+                .Build(daemonOptions, loggerFactory.CreateLogger<ReviewSlotPool>())
+                .Where(value =>
+                    string.Equals(value.Repo.DisplayName, command.RunPrRepoKey, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(value.Repo.NormalizedKey, command.RunPrRepoKey, StringComparison.OrdinalIgnoreCase)
+                )
+                .Select(value => value.Repo.RepoName)
+                .Distinct()
+                .Single();
+            // This one-shot process can reserve the explicitly selected existing address; config is unchanged.
+            poolSizes[target] = Math.Max(
+                poolSizes.GetValueOrDefault(target, daemonOptions.ReviewPoolSize),
+                selectedSlot + 1
+            );
+        }
         var pool = new ReviewSlotPool(
             repositoryNames,
             daemonOptions.ReviewPoolSize,
             loggerFactory.CreateLogger<ReviewSlotPool>(),
-            daemonOptions.ReviewPoolSizesByRepository
+            poolSizes
         );
         return new ReviewSlotWorkspace(
             pool,
@@ -772,100 +993,9 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.ResolvedStoreUrl))
     });
 }
 
-// Merged PRs enter the authored workflow; abandoned PRs retain the existing branch cleanup.
-if (!string.IsNullOrWhiteSpace(daemonOptions.ResolvedStoreUrl))
-{
-    builder.Services.AddSingleton(sp =>
-    {
-        var store = sp.GetRequiredService<ReviewStore>();
-        var retention = sp.GetRequiredService<HostRetentionWorkspace>();
-        var git = new GitRunner(retention.Git);
-        var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
-        var logger = loggerFactory.CreateLogger<PrLifecycleSweeper>();
-        var providers = sp.GetServices<IPrProvider>().ToList();
-        var targets = PrPollTargetBuilder.Build(daemonOptions, logger);
-        var warnedOrphans = new HashSet<string>(StringComparer.Ordinal);
-        var index = new KnowledgeIndexRegenerator(
-            retention.FileSystem,
-            loggerFactory.CreateLogger<KnowledgeIndexRegenerator>()
-        );
-        var manager = new ReviewBranchManager(
-            git,
-            retention.FileSystem,
-            loggerFactory.CreateLogger<ReviewBranchManager>(),
-            (root, token) => index.RegenerateAsync(root.TrimEnd('/', '\\') + "/KnowledgeBase", token)
-        );
-        return new PrLifecycleSweeper(
-            async ct =>
-            {
-                await using var repositoryLease = await HostRetentionWorkspace.AcquireRepositoryLockAsync(
-                    retention.RepoRoot,
-                    ct
-                );
-                var retentionPreparer = new ReviewSlotPreparer(git, retention.FileSystem);
-                await retentionPreparer.EnsureStoreAsync(retention.RepoRoot, daemonOptions.ResolvedStoreUrl, ct);
-                var rows = await store.ListReviewedPrsAsync(ct);
-                IReadOnlyList<ReviewedPr> reviewed =
-                [
-                    .. rows.Select(PrLifecycleSweepSeam.MapReviewedPr).OfType<ReviewedPr>(),
-                ];
-                var branches = await ListRemoteReviewBranchesAsync(git, retention.RepoRoot, logger, ct);
-                return OrphanBranchReconciler.Reconcile(reviewed, branches, targets, logger, warnedOrphans);
-            },
-            (pr, ct) => PrLifecycleSweepSeam.ResolveLifecycleAsync(providers, pr, ct),
-            manager,
-            retention.RepoRoot,
-            logger,
-            store,
-            sp.GetRequiredService<PrOrchestrator>(),
-            getCurrentHeadShaAsync: (pr, ct) =>
-                providers
-                    .Single(provider =>
-                        string.Equals(provider.Provider, pr.Provider, StringComparison.OrdinalIgnoreCase)
-                    )
-                    .GetCurrentHeadShaAsync(pr.Repo, pr.PrId, ct)
-        );
-    });
-}
-static async Task<IReadOnlyList<string>> ListRemoteReviewBranchesAsync(
-    GitRunner git,
-    string repoRoot,
-    ILogger logger,
-    CancellationToken cancellationToken
-)
-{
-    var result = await git.RunAsync(
-            ["-C", repoRoot, "ls-remote", "--heads", "origin", "review/*"],
-            repoRoot,
-            cancellationToken
-        )
-        .ConfigureAwait(false);
-    if (!result.Succeeded)
-    {
-        logger.LogWarning(
-            "PR-lifecycle sweep: listing review/* branches failed (exit {Exit}): {Err}; sweeping the DB set only.",
-            result.ExitCode,
-            result.Stderr
-        );
-        return [];
-    }
-
-    const string headsPrefix = "refs/heads/";
-    var branches = new List<string>();
-    foreach (
-        var line in result.Stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-    )
-    {
-        var tab = line.IndexOf('\t');
-        var refName = tab >= 0 ? line[(tab + 1)..] : line;
-        if (refName.StartsWith(headsPrefix, StringComparison.Ordinal))
-        {
-            branches.Add(refName[headsPrefix.Length..]);
-        }
-    }
-
-    return branches;
-}
+// Lifecycle catch-up is remote-branch-authoritative. Do not compose the legacy DB-union sweeper:
+// its synthetic history and unguarded cleanup cannot authorize completion of existing artifact branches.
+// The poller holds intake until the read-only inventory has no unresolved or terminal branches.
 
 // One authored workflow; the existing stores own admission, receipts and durable execution state.
 var workflowPath = Path.GetFullPath(daemonOptions.WorkflowPath, builder.Environment.ContentRootPath);
@@ -964,6 +1094,29 @@ builder.Services.AddSingleton(sp => new WorkflowOperationDispatcher(
         var repo = store.GetRepo(run.RepoId) ?? throw new InvalidOperationException("Review repository is missing.");
         var retention = sp.GetRequiredService<HostRetentionWorkspace>();
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+        var assignment = JsonSerializer.Deserialize<WorkflowWorkspaceAssignment>(
+            store.TryGetLatestArtifact(run.Id, WorkflowWorkspace.AssignmentArtifactKind)?.Payload
+                ?? throw new InvalidDataException("Workflow assignment is missing.")
+        )!;
+        var scopeDirectory = Path.Combine(
+            workflowRunRoot,
+            Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(
+                    System.Text.Encoding.UTF8.GetBytes(assignment.WorkflowInstanceId)
+                )
+            )
+        );
+        var scope = JsonNode.Parse(
+            File.ReadAllText(WorkflowScriptInvoker.ResolveWorkspaceAsset("scope.json", scopeDirectory))
+        )!;
+        if (
+            scope["ReviewRunId"]?.GetValue<long>() != run.Id
+            || scope["WorkflowInstanceId"]?.GetValue<string>() != assignment.WorkflowInstanceId
+        )
+            throw new InvalidDataException("Artifact scope does not match its assignment.");
+        var developerLearningPath = scope["Admission"]?["Route"]?.GetValue<string>() is "merged" or "abandoned"
+            ? DeveloperIdentity.BuildLearningPath(repo, run, scope["Admission"]!["WindowId"]!.GetValue<string>())
+            : null;
         var index = new KnowledgeIndexRegenerator(
             retention.FileSystem,
             loggerFactory.CreateLogger<KnowledgeIndexRegenerator>()
@@ -988,7 +1141,8 @@ builder.Services.AddSingleton(sp => new WorkflowOperationDispatcher(
                     retention.RepoRoot,
                     repo,
                     retention.FileSystem,
-                    loggerFactory.CreateLogger<WorkflowKnowledgeEdits>()
+                    loggerFactory.CreateLogger<WorkflowKnowledgeEdits>(),
+                    developerLearningPath
                 ),
                 token =>
                     ReviewSlotPreparer.VerifyStoreOriginAsync(
@@ -997,7 +1151,10 @@ builder.Services.AddSingleton(sp => new WorkflowOperationDispatcher(
                         daemonOptions.ResolvedStoreUrl
                             ?? throw new InvalidOperationException("Review store URL is required."),
                         token
-                    )
+                    ),
+                hostGitPushAuthorization,
+                developerLearningPath,
+                scope["FrozenContext"]?["Merge"]?["ArtifactTipSha"]?.GetValue<string>()
             )
         );
     },
@@ -1031,7 +1188,46 @@ builder.Services.AddSingleton(sp => new WorkflowOperationDispatcher(
         if (after is null || after.HeadSha != before.HeadSha || after.BaseSha != before.BaseSha)
             throw new InvalidDataException("PR identity changed during discussion capture.");
         return snapshot;
-    }
+    },
+    async (run, body, ct) =>
+    {
+        var store = sp.GetRequiredService<ReviewStore>();
+        var repo = store.GetRepo(run.RepoId) ?? throw new InvalidOperationException("Review repository is missing.");
+        var providerId = RepoIdentity.ToPublisherNamespace(repo.Provider);
+        var provider = sp.GetServices<IPrProvider>().Single(value => value.Provider == providerId);
+        var publisher = sp.GetServices<IReviewCommentPublisher>().Single(value => value.Provider == providerId);
+        var poster = new ReviewPoster(publisher, store, sp.GetRequiredService<ILogger<ReviewPoster>>());
+        bool IsAuthorized() =>
+            daemonOptions.EnableCommentPosting
+            && run.Mode == "post"
+            && run.VariantId != "b"
+            && JsonSerializer
+                .Deserialize<WorkflowWorkspaceAssignment>(
+                    store.TryGetLatestArtifact(run.Id, WorkflowWorkspace.AssignmentArtifactKind)?.Payload ?? "null"
+                )
+                ?.Active == true;
+        return await poster.PostFinalReviewAsync(run, repo, body, provider, IsAuthorized, ct);
+    },
+    async (run, body, ct) =>
+    {
+        var store = sp.GetRequiredService<ReviewStore>();
+        var repo = store.GetRepo(run.RepoId) ?? throw new InvalidOperationException("Review repository is missing.");
+        var publisher = sp.GetServices<IReviewCommentPublisher>()
+            .Single(value => value.Provider == RepoIdentity.ToPublisherNamespace(repo.Provider));
+        return await new ReviewPoster(
+            publisher,
+            store,
+            sp.GetRequiredService<ILogger<ReviewPoster>>()
+        ).ReconcileFinalReviewAsync(
+            run,
+            repo,
+            body,
+            ct,
+            sp.GetServices<IPrProvider>()
+                .Single(value => value.Provider == RepoIdentity.ToPublisherNamespace(repo.Provider))
+        );
+    },
+    sp.GetRequiredService<IWorkflowStore>()
 ));
 builder.Services.AddSingleton(sp => new ReviewWorkflowRunner(
     workflowPath,
@@ -1064,16 +1260,64 @@ builder.Services.AddSingleton(sp => new ReviewWorkflowRunner(
                 var providerId = RepoIdentity.ToPublisherNamespace(repo.Provider);
                 var provider = sp.GetServices<IPrProvider>().Single(p => p.Provider == providerId);
                 var publisher = sp.GetServices<IReviewCommentPublisher>().Single(p => p.Provider == providerId);
-                var diff = JsonNode.Parse(
-                    store.TryGetLatestArtifact(activeRun.Id, "workflow-diff")?.Payload
-                        ?? throw new InvalidOperationException("Review diff evidence is missing.")
-                )!;
-                if (diff["HeadSha"]?.GetValue<string>() != activeRun.HeadSha)
+                var abandonedCompletion = activeRun.ReviewKind == "abandoned-completion";
+                JsonNode diff;
+                if (abandonedCompletion)
+                {
+                    var scope = JsonNode.Parse(File.ReadAllText(Path.Combine(directory, "scope.json")))!;
+                    if (
+                        activeRun.PrLifecycleState != PrLifecycleState.Abandoned
+                        || activeRun.Mode != "collect-only"
+                        || scope["ReviewRunId"]?.GetValue<long>() != activeRun.Id
+                        || scope["WorkflowInstanceId"]?.GetValue<string>() != activeInstance
+                        || scope["Admission"]?["Route"]?.GetValue<string>() != "abandoned"
+                        || scope["Admission"]?["HeadSha"]?.GetValue<string>() != activeRun.HeadSha
+                        || scope["Admission"]?["WindowId"]?.GetValue<string>() != activeRun.TriggerWatermark
+                    )
+                        throw new InvalidOperationException("Abandoned scope differs from its terminal owner.");
+                    diff = new JsonObject
+                    {
+                        ["Diff"] = "",
+                        ["HeadSha"] = activeRun.HeadSha,
+                        ["BaseSha"] = activeRun.BaseSha,
+                    };
+                }
+                else
+                    diff = JsonNode.Parse(
+                        store.TryGetLatestArtifact(activeRun.Id, "workflow-diff")?.Payload
+                            ?? throw new InvalidOperationException("Review diff evidence is missing.")
+                    )!;
+                var mergedCompletion = activeRun.ReviewKind == "merged-completion";
+                var evidenceHead = activeRun.HeadSha;
+                if (mergedCompletion)
+                {
+                    var scope = JsonNode.Parse(File.ReadAllText(Path.Combine(directory, "scope.json")))!;
+                    var merge = scope["FrozenContext"]?["Merge"];
+                    if (
+                        activeRun.PrLifecycleState != PrLifecycleState.Merged
+                        || activeRun.Mode != "collect-only"
+                        || scope["ReviewRunId"]?.GetValue<long>() != activeRun.Id
+                        || scope["WorkflowInstanceId"]?.GetValue<string>() != activeInstance
+                        || scope["Admission"]?["Route"]?.GetValue<string>() != "merged"
+                        || scope["Admission"]?["PrId"]?.GetValue<string>() != activeRun.PrId
+                        || scope["Admission"]?["HeadSha"]?.GetValue<string>() != activeRun.HeadSha
+                        || scope["Admission"]?["WindowId"]?.GetValue<string>() != activeRun.TriggerWatermark
+                        || string.IsNullOrWhiteSpace(activeRun.MergeSha)
+                        || merge?["LandedSha"]?.GetValue<string>() != activeRun.MergeSha
+                        || string.IsNullOrWhiteSpace(merge?["ParentSha"]?.GetValue<string>())
+                        || diff["Kind"]?.GetValue<string>() != "landed-objects"
+                        || diff["HeadSha"]?.GetValue<string>() != activeRun.MergeSha
+                        || diff["BaseSha"]?.GetValue<string>() != merge?["ParentSha"]?.GetValue<string>()
+                    )
+                        throw new InvalidOperationException("Merged diff evidence does not match its frozen scope.");
+                    evidenceHead = activeRun.MergeSha;
+                }
+                else if (diff["HeadSha"]?.GetValue<string>() != activeRun.HeadSha)
                     throw new InvalidOperationException("Review diff evidence belongs to another head.");
                 var manifest = UnifiedDiffParser.Parse(
                     diff["Diff"]?.GetValue<string>(),
                     diff["BaseSha"]?.GetValue<string>(),
-                    activeRun.HeadSha
+                    evidenceHead
                 );
                 var poster = new ReviewPoster(publisher, store, sp.GetRequiredService<ILogger<ReviewPoster>>());
                 return Task.FromResult(
@@ -1084,7 +1328,11 @@ builder.Services.AddSingleton(sp => new ReviewWorkflowRunner(
                         poster,
                         provider,
                         manifest,
-                        daemonOptions.EnableCommentPosting && activeRun.Mode == "post" && activeRun.VariantId != "b",
+                        !mergedCompletion
+                            && !abandonedCompletion
+                            && daemonOptions.EnableCommentPosting
+                            && activeRun.Mode == "post"
+                            && activeRun.VariantId != "b",
                         () =>
                             JsonSerializer
                                 .Deserialize<WorkflowWorkspaceAssignment>(
@@ -1103,7 +1351,9 @@ builder.Services.AddSingleton(sp => new ReviewWorkflowRunner(
         return Task.FromResult(invoker);
     },
     (run, _) => new Dictionary<string, string> { ["review-parent"] = $"review-parent-{run.Id}" },
-    invocationTimeout: TimeSpan.FromMinutes(Math.Max(1, daemonOptions.ReviewStageDeadlineMinutes))
+    invocationTimeout: TimeSpan.FromMinutes(Math.Max(1, daemonOptions.ReviewStageDeadlineMinutes)),
+    resetFailedAttempts: !isScopedCommand,
+    logger: sp.GetRequiredService<ILogger<ReviewWorkflowRunner>>()
 ));
 
 builder.Services.AddSingleton<ReviewProgressReporter>();
@@ -1246,7 +1496,7 @@ if (EvalSweepConfiguration.Resolve(daemonOptions) is { } evalSweep)
 // structural, not just "the daemon happens not to call app.Run()") — an operator-approved exact run must
 // never race the poller's own admission for the same PR/slot. The two gates are independent and both must
 // pass: one is an operator configuration choice, the other is a property of the command being run.
-if (daemonOptions.EnablePrPolling && runPrRequest is null && runPrConcurrency is null && retainReviewNotesRunId is null)
+if (daemonOptions.EnablePrPolling && !isScopedCommand)
 {
     builder.Services.AddHostedService(sp => new PrPollingService(
         PrPollTargetBuilder.Build(daemonOptions, sp.GetRequiredService<ILogger<PrPollingService>>()),
@@ -1254,25 +1504,12 @@ if (daemonOptions.EnablePrPolling && runPrRequest is null && runPrConcurrency is
         sp.GetRequiredService<ReviewStore>(),
         sp.GetRequiredService<PrOrchestrator>(),
         sp.GetRequiredService<ILogger<PrPollingService>>(),
-        // Maintenance runs on the poller cadence: the PR-lifecycle sweep (registered by the pooled path), the
-        // deep-link retention sweep (registered by the S2S path when a window is configured), the stranded-run
-        // reconciler, and the eval corpus sweep (registered when a cadence is configured; it gates itself on
-        // its own interval rather than running on every tick). Any of them may be absent, in which case the
-        // poller keeps polling with whatever remains (design §4.5). The reconciler runs before the eval sweep
-        // so it observes the state this cycle's polls left behind, and the eval sweep runs last because it
-        // only reads: nothing downstream of it depends on when in the cycle it happened.
+        // Inventory gates intake and maintenance. Legacy lifecycle/stranded recovery can enumerate DB-only
+        // historical PRs, so neither is composed until branch-bound completion/recovery is available.
         sweepAsync: ComposeMaintenanceSweep(
-            (
-                "PR-lifecycle",
-                sp.GetService<PrLifecycleSweeper>() is { } lifecycleSweeper ? lifecycleSweeper.SweepAsync : null
-            ),
             (
                 "deep-link retention",
                 sp.GetService<DeepLinkRetentionSweeper>() is { } retentionSweeper ? retentionSweeper.SweepAsync : null
-            ),
-            (
-                "stranded-run",
-                sp.GetService<StrandedRunReconciler>() is { } strandedReconciler ? strandedReconciler.SweepAsync : null
             ),
             (
                 "eval-corpus",
@@ -1285,7 +1522,50 @@ if (daemonOptions.EnablePrPolling && runPrRequest is null && runPrConcurrency is
         // exact failure mode — a control that is present and does nothing — this check exists to catch.
         progress: sp.GetRequiredService<ReviewProgressReporter>(),
         firstReviewLookbackDays: daemonOptions.FirstReviewSentinelLookbackDays,
-        commentReaders: sp.GetServices<IReviewCommentPublisher>()
+        commentReaders: sp.GetServices<IReviewCommentPublisher>(),
+        slots: sp.GetRequiredService<ReviewSlotWorkspace>().Pool.Slots,
+        pushAuthorization: hostGitPushAuthorization,
+        readCompletionBacklog: ct =>
+            ListReviewBranchesCommand.RunAsync(
+                daemonOptions,
+                new GitRunner(
+                    new HostGitCommandRunner(
+                        BuildHostGitCredentialsSource(sp),
+                        sp.GetRequiredService<ILogger<HostGitCommandRunner>>(),
+                        hostGitAdoOrgs,
+                        pushAuthorization: new HostGitPushAuthorization(false)
+                    )
+                ),
+                sp.GetServices<IPrProvider>().ToArray(),
+                sp.GetRequiredService<ILogger<PrPollingService>>(),
+                ct
+            ),
+        processTerminal: (entries, ct) =>
+            CompleteMergedPrCommand.ProcessInventoryAsync(
+                entries,
+                PrPollTargetBuilder.Build(daemonOptions, sp.GetRequiredService<ILogger<PrPollingService>>()),
+                daemonOptions,
+                sp.GetRequiredService<ReviewStore>(),
+                new GitRunner(
+                    new HostGitCommandRunner(
+                        BuildHostGitCredentialsSource(sp),
+                        sp.GetRequiredService<ILogger<HostGitCommandRunner>>(),
+                        hostGitAdoOrgs,
+                        pushAuthorization: hostGitPushAuthorization
+                    )
+                ),
+                sp.GetServices<IPrProvider>().ToArray(),
+                sp.GetServices<IReviewCommentPublisher>().ToArray(),
+                sp.GetRequiredService<ReviewWorkflowRunner>(),
+                sp.GetRequiredService<PrOrchestrator>(),
+                sp.GetRequiredService<IReviewSessionProvisioner>(),
+                hostGitPushAuthorization,
+                sp.GetRequiredService<ILogger<PrPollingService>>(),
+                ct,
+                (run, round, verifyIdentity, token) =>
+                    sp.GetRequiredService<WorkflowOperationDispatcher>()
+                        .FinishConfirmedClosureAsync(run, round, verifyIdentity, token)
+            )
     ));
 }
 
@@ -1534,6 +1814,66 @@ app.Logger.LogInformation(
         : "(none)"
 );
 
+if (scopedCommand.Kind is ScopedCommandKind.InspectMergedArchive or ScopedCommandKind.ArchiveMergedPr)
+{
+    using var archiveLease = RunPrCoordinatorLease.TryAcquire(databasePath);
+    if (!archiveLease.IsAcquired)
+        throw new InvalidOperationException("Stop/drain the daemon before merged archive work.");
+    var retention = app.Services.GetRequiredService<HostRetentionWorkspace>();
+    var archiveClients = new PolicyEnforcedHttpClientFactory(
+        daemonOptions,
+        app.Services.GetRequiredService<ILogger<OperationPolicyHandler>>(),
+        app.Services.GetRequiredService<ILogger<RetryHandler>>()
+    );
+    using var githubArchiveClient = archiveClients.Create("github");
+    using var adoArchiveClient = daemonOptions.EnableAdoProvider ? archiveClients.Create("ado") : null;
+    var archiveProviders = new List<IPrProvider>
+    {
+        new GitHubPrProvider(
+            githubArchiveClient,
+            app.Services.GetRequiredService<GitHubOAuthProvider>(),
+            app.Services.GetRequiredService<ILogger<GitHubPrProvider>>()
+        ),
+    };
+    if (adoArchiveClient is not null)
+        archiveProviders.Add(
+            new AdoPrProvider(
+                adoArchiveClient,
+                app.Services.GetRequiredService<AdoOAuthProvider>(),
+                app.Services.GetRequiredService<ILogger<AdoPrProvider>>()
+            )
+        );
+    var git = new GitRunner(retention.Git);
+    if (scopedCommand.Kind == ScopedCommandKind.InspectMergedArchive)
+    {
+        var result = await InspectMergedArchiveCommand.RunAsync(
+            scopedCommand,
+            daemonOptions,
+            git,
+            retention.RepoRoot,
+            archiveProviders,
+            app.Logger,
+            CancellationToken.None
+        );
+        Console.WriteLine(result.ToJsonString());
+        return 0;
+    }
+    var archived = await ArchiveMergedPrCommand.RunAsync(
+        scopedCommand,
+        daemonOptions,
+        git,
+        retention.RepoRoot,
+        databasePath,
+        archiveProviders,
+        app.Services.GetRequiredService<ILoggerFactory>(),
+        () => app.Services.GetRequiredService<ReviewStore>(),
+        hostGitPushAuthorization,
+        CancellationToken.None
+    );
+    Console.WriteLine(archived.ToJsonString());
+    return archived["Outcome"]?.GetValue<string>() == "ArchivedWithoutAnalysis" ? 0 : 1;
+}
+
 if (daemonOptions.UseS2SReviewAgent)
 {
     await app
@@ -1547,7 +1887,11 @@ if (daemonOptions.UseS2SReviewAgent)
     );
 }
 
-async Task<RunSinglePrResult> AdmitApprovedAsync(RunSinglePrPrepareResult prepared, CancellationToken ct)
+async Task<RunSinglePrResult> AdmitApprovedAsync(
+    RunSinglePrPrepareResult prepared,
+    CancellationToken ct,
+    ReviewSlotClaim? streamClaim = null
+)
 {
     using var capabilityScope = ReviewArtifactBranchCapability.EnterScope();
     using var pushScope = hostGitPushAuthorization.EnterScope();
@@ -1569,7 +1913,9 @@ async Task<RunSinglePrResult> AdmitApprovedAsync(RunSinglePrPrepareResult prepar
                 hostGitPushAuthorization.AuthorizePush(capability.AuthorizedBranch(target.Repo));
             },
             fresh: scopedCommand.Fresh,
-            canStartFresh: app.Services.GetRequiredService<ReviewWorkflowRunner>().CanStartFreshAsync
+            canStartFresh: app.Services.GetRequiredService<ReviewWorkflowRunner>().CanStartFreshAsync,
+            streamClaim: streamClaim,
+            claimRunner: streamClaim is null ? null : app.Services.GetRequiredService<ReviewWorkflowRunner>()
         )
         .ConfigureAwait(false);
 }
@@ -1671,9 +2017,24 @@ if (retainReviewNotesRunId is { } notesRunId)
 
 if (runPrConcurrency is { } concurrency)
 {
-    if (daemonOptions.EnablePrPolling || daemonOptions.EnableCommentPosting || daemonOptions.EnableGitPush)
+    if (
+        daemonOptions.EnablePrPolling
+        || daemonOptions.EnableCommentPosting
+        || daemonOptions.EnableGitPush
+        || daemonOptions.AutoDiscardCompletedSlotOnAdmission
+    )
     {
-        Console.Error.WriteLine("run-pr-stream requires polling, comment posting, and blanket Git push disabled.");
+        Console.Error.WriteLine(
+            "run-pr-stream requires polling, comment posting, blanket Git push, and automatic slot discard disabled."
+        );
+        return 64;
+    }
+    var streamPool =
+        app.Services.GetRequiredService<ReviewSlotWorkspace>().Pool as ReviewSlotPool
+        ?? throw new InvalidOperationException("Stream requires the configured review slot pool.");
+    if (concurrency > streamPool.Slots.Count)
+    {
+        Console.Error.WriteLine("run-pr-stream concurrency exceeds configured review slots; no work was admitted.");
         return 64;
     }
     return await RunPrOrchestration
@@ -1682,7 +2043,62 @@ if (runPrConcurrency is { } concurrency)
             concurrency,
             () => RunPrCoordinatorLease.TryAcquire(databasePath),
             () => app.StartAsync(),
-            async (request, ct) =>
+            async ct =>
+            {
+                var runner = app.Services.GetRequiredService<ReviewWorkflowRunner>();
+                await runner.RecoverActiveWorkspacesAsync(ct).ConfigureAwait(false);
+                app.Services.GetRequiredService<WorkflowWorkspace>().RequireSafePreparation();
+            },
+            request =>
+            {
+                var matches = PrPollTargetBuilder
+                    .Build(daemonOptions, app.Services.GetRequiredService<ILogger<Program>>())
+                    .Where(target =>
+                        string.Equals(target.Repo.DisplayName, request.RepoKey, StringComparison.OrdinalIgnoreCase)
+                    )
+                    .ToArray();
+                return matches.Length == 1 ? matches[0].Repo.RepoName : null;
+            },
+            request =>
+            {
+                var matches = PrPollTargetBuilder
+                    .Build(daemonOptions, app.Services.GetRequiredService<ILogger<Program>>())
+                    .Where(target =>
+                        string.Equals(target.Repo.DisplayName, request.RepoKey, StringComparison.OrdinalIgnoreCase)
+                    )
+                    .ToArray();
+                if (matches.Length != 1)
+                    return (false, null);
+                var target = matches[0];
+                var store = app.Services.GetRequiredService<ReviewStore>();
+                var workspace = app.Services.GetRequiredService<WorkflowWorkspace>();
+                var run = store
+                    .ListReviewRunsWithArtifact(WorkflowWorkspace.AssignmentArtifactKind)
+                    .SingleOrDefault(candidate =>
+                        candidate.PrId == request.PrId
+                        && candidate.HeadSha == request.HeadSha
+                        && candidate.BaseSha == request.BaseSha
+                        && candidate.ReviewKind == target.ReviewKind
+                        && candidate.VariantId == target.VariantId
+                        && store.GetRepo(candidate.RepoId)?.NormalizedKey == target.Repo.NormalizedKey
+                        && store.FindReviewRunByIdentity(candidate)?.Id == candidate.Id
+                    );
+                if (run is null)
+                    return (false, null);
+                var artifact = store.TryGetLatestArtifact(run.Id, WorkflowWorkspace.AssignmentArtifactKind)!;
+                var assignment =
+                    JsonSerializer.Deserialize<WorkflowWorkspaceAssignment>(artifact.Payload)
+                    ?? throw new InvalidDataException("Workflow workspace assignment is invalid.");
+                if (assignment.WorkflowInstanceId != $"review-run-{run.Id}")
+                    throw new InvalidDataException("Review workspace belongs to a different instance.");
+                return (
+                    assignment.Active && workspace.HasActiveAssignment(run, assignment.WorkflowInstanceId),
+                    assignment.Active ? null : assignment.Slot
+                );
+            },
+            streamPool,
+            app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("RunPrStream"),
+            async (request, claim, ct) =>
             {
                 var prepared = await RunSinglePrCommand
                     .PrepareAsync(
@@ -1697,7 +2113,7 @@ if (runPrConcurrency is { } concurrency)
                     )
                     .ConfigureAwait(false);
                 return prepared.Accepted
-                    ? await AdmitApprovedAsync(prepared, ct).ConfigureAwait(false)
+                    ? await AdmitApprovedAsync(prepared, ct, claim).ConfigureAwait(false)
                     : RunSinglePrResult.Rejected(prepared.RejectionReason!.Value);
             },
             value => Console.WriteLine(JsonSerializer.Serialize(value, commandOutputOptions)),
@@ -1705,6 +2121,99 @@ if (runPrConcurrency is { } concurrency)
             app.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping
         )
         .ConfigureAwait(false);
+}
+
+if (scopedCommand.Kind is ScopedCommandKind.CompleteMergedPr or ScopedCommandKind.CompleteMergedBatch)
+{
+    using var mergedLease = RunPrCoordinatorLease.TryAcquire(databasePath);
+    if (!mergedLease.IsAcquired)
+        throw new InvalidOperationException("Stop/drain the daemon before merged completion.");
+    await app.StartAsync();
+    try
+    {
+        var mergedRunner = app.Services.GetRequiredService<ReviewWorkflowRunner>();
+        var mergedCancellation = app.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping;
+        // Reserve existing slots without settling or changing another run's durable ownership.
+        await mergedRunner.RecoverActiveWorkspacesAsync(mergedCancellation, releaseSettled: false);
+        Task<JsonObject> RunMergedAsync(ScopedCommandLineResult command) =>
+            CompleteMergedPrCommand.RunAsync(
+                command,
+                daemonOptions,
+                app.Services.GetRequiredService<ReviewStore>(),
+                new GitRunner(app.Services.GetRequiredService<HostRetentionWorkspace>().Git),
+                [.. app.Services.GetServices<IPrProvider>()],
+                [.. app.Services.GetServices<IReviewCommentPublisher>()],
+                mergedRunner,
+                app.Services.GetRequiredService<LmStreamingS2SClient>(),
+                hostGitPushAuthorization,
+                app.Logger,
+                mergedCancellation
+            );
+        if (scopedCommand.Kind == ScopedCommandKind.CompleteMergedPr)
+        {
+            var result = await RunMergedAsync(scopedCommand);
+            Console.WriteLine(result.ToJsonString());
+            return result["Outcome"]?.GetValue<string>() is "Completed" or "prepared_only" ? 0 : 1;
+        }
+        async Task<bool> RunReportedAsync(ScopedCommandLineResult command)
+        {
+            Console.WriteLine(
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        repository = command.RunPrRepoKey,
+                        prId = command.RunPrId,
+                        phase = command.InspectMerged ? "preparing" : "executing",
+                        at = DateTimeOffset.UtcNow,
+                    }
+                )
+            );
+            try
+            {
+                var result = await RunMergedAsync(command);
+                result["Repository"] = command.RunPrRepoKey;
+                result["PrId"] = command.RunPrId;
+                Console.WriteLine(result.ToJsonString());
+                return result["Outcome"]?.GetValue<string>() == (command.InspectMerged ? "prepared_only" : "Completed");
+            }
+            catch (Exception exception)
+            {
+                Console.WriteLine(
+                    JsonSerializer.Serialize(
+                        new
+                        {
+                            repository = command.RunPrRepoKey,
+                            prId = command.RunPrId,
+                            Outcome = "requires_reconciliation",
+                            error = exception.GetType().Name,
+                        }
+                    )
+                );
+                return false;
+            }
+        }
+        // Slot preparation has a database-wide unsettled-intent guard. Finish all admissions before overlap.
+        foreach (var command in mergedCommands.Where(command => !command.ResumeMerged))
+            if (!await RunReportedAsync(command with { InspectMerged = true, Fresh = true }))
+                return 1;
+        var active = new List<Task<bool>>();
+        foreach (var command in mergedCommands)
+        {
+            if (
+                mergedCancellation.IsCancellationRequested
+                || active.Any(task => task.IsCompletedSuccessfully && !task.Result)
+            )
+                break;
+            active.Add(RunReportedAsync(command));
+        }
+        // A failed sibling stops new dispatch, never cancels already accepted model requests.
+        var outcomes = await Task.WhenAll(active);
+        return active.Count == mergedCommands.Count && outcomes.All(outcome => outcome) ? 0 : 1;
+    }
+    finally
+    {
+        await app.StopAsync();
+    }
 }
 
 if (runPrRequest is { } approvedRun)
@@ -1750,7 +2259,15 @@ if (runPrRequest is { } approvedRun)
         // not registered for this mode (see its hosted-service registration above), so this starts exactly
         // the surface --run-pr needs — nothing polls, nothing else serves.
         startHostAsync: () => app.StartAsync(),
-        admitAndRunAsync: AdmitApprovedAsync,
+        recoverAsync: async ct =>
+        {
+            await app
+                .Services.GetRequiredService<ReviewWorkflowRunner>()
+                .RecoverActiveWorkspacesAsync(ct)
+                .ConfigureAwait(false);
+            app.Services.GetRequiredService<WorkflowWorkspace>().RequireSafePreparation();
+        },
+        admitAndRunAsync: (prepared, ct) => AdmitApprovedAsync(prepared, ct),
         stopHostAsync: () => app.StopAsync(),
         runPrCancellationToken
     );

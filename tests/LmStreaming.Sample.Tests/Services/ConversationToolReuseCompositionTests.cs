@@ -55,6 +55,8 @@ public sealed class ConversationToolReuseCompositionTests
         {
             // Avoids the Vite dev-server auto-spawn.
             builder.UseEnvironment("Production");
+            builder.UseSetting("Identity:DatabasePath", Path.Combine(_conversationsPath, "identity.db"));
+            builder.UseSetting("LmStreaming:NotifyWaitDbPath", Path.Combine(_conversationsPath, "notify-waits.db"));
 
             builder.ConfigureTestServices(services =>
             {

@@ -5,12 +5,16 @@ Smoke tests that call the **real** GitHub Copilot API
 `CopilotResponsesAgentFactory`, using whatever GitHub Copilot credential you are already logged in
 with.
 
-## Why it isn't in CI
+## Mock-first default
 
-This project is deliberately **excluded from `LmDotnetTools.sln`** and **not listed in
-`scripts/ci-test.ps1`**, so the CI build never restores, compiles, or runs it. Each test is also a
-`[SkippableFact]` that **skips itself** (rather than failing) when no Copilot credential is found —
-so even if it were ever added to a run, it stays green without credentials.
+This project is part of `LmDotnetTools.sln`, but live tests **skip unless
+`RUN_COPILOT_LIVE_TESTS=1` is explicitly set**. Without that opt-in, the shared fixture does not
+resolve credentials or call Copilot. With opt-in, tests also skip if no credential is found.
+
+The regular `CopilotAnthropicProxy.Tests` suite uses a scripted mock upstream. Its
+`Thinking_budgets_reach_the_mock_responses_model_with_the_mapped_effort` test checks low, medium,
+and high effort through the real proxy pipeline. Mock success proves translation, not live model
+compatibility.
 
 ## Prerequisites
 
@@ -24,16 +28,16 @@ Be logged in to GitHub Copilot via any one of these (checked in this order):
 
 ```bash
 # from the repo root
-dotnet test tests/CopilotLive.Tests
+RUN_COPILOT_LIVE_TESTS=1 dotnet test tests/CopilotLive.Tests
 
 # a single test
-dotnet test tests/CopilotLive.Tests --filter "FullyQualifiedName~Responses_websocket_returns_text"
+RUN_COPILOT_LIVE_TESTS=1 dotnet test tests/CopilotLive.Tests --filter "FullyQualifiedName~Responses_websocket_returns_text"
 ```
 
 See model ids and replies (xUnit captures `ITestOutputHelper`):
 
 ```bash
-dotnet test tests/CopilotLive.Tests --logger "console;verbosity=detailed"
+RUN_COPILOT_LIVE_TESTS=1 dotnet test tests/CopilotLive.Tests --logger "console;verbosity=detailed"
 ```
 
 ## What it covers
@@ -53,7 +57,7 @@ By default the suite reads `GET /models` and picks a cheap model per family (pre
 `haiku`/`sonnet` for Claude, `nano`/`mini` for GPT). Override explicitly with:
 
 ```bash
-COPILOT_ANTHROPIC_MODEL=claude-sonnet-4.5 COPILOT_OPENAI_MODEL=gpt-4.1 dotnet test tests/CopilotLive.Tests
+COPILOT_ANTHROPIC_MODEL=claude-sonnet-4.5 COPILOT_OPENAI_MODEL=gpt-4.1 RUN_COPILOT_LIVE_TESTS=1 dotnet test tests/CopilotLive.Tests
 ```
 
 ## Troubleshooting

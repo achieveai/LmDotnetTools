@@ -11,6 +11,7 @@ using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.Git;
+using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Workspace;
@@ -158,6 +159,276 @@ public sealed class WorkflowWorkspaceTests
         fixture.Pool.Returned.Should().Be(1);
         await fixture.Workspace.ReleaseOrRetireAsync(fixture.Run.Id, fixture.WorkflowInstanceId, true, default);
         fixture.Pool.Returned.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Settled_attempt_reset_keeps_ownership_until_exact_apply_receipt(bool invalidApplyReceipt)
+    {
+        using var fixture = new Fixture();
+        await fixture.Workspace.AcquireAsync(fixture.Run, fixture.WorkflowInstanceId, default);
+        var assignment = fixture.Workspace.ReadAssignment(fixture.Run);
+        fixture.Store.AddArtifact(
+            new()
+            {
+                ReviewRunId = fixture.Run.Id,
+                ArtifactKind = WorkflowWorkspace.PreparationArtifactKind,
+                ArtifactSchemaVersion = 1,
+                Provider = "workflow",
+                Payload = System.Text.Json.JsonSerializer.Serialize(
+                    new WorkflowWorkspacePreparation(
+                        fixture.Slot,
+                        new PreparedCheckout(
+                            fixture.Slot.WorktreeRoot,
+                            fixture.Slot.SourceRoot,
+                            fixture.Slot.WorktreeRoot + "/PRs/7",
+                            "review/widgets-7",
+                            CheckoutSha: "merge"
+                        ),
+                        new PreparedReviewWorkspace("nova-reviews", "workspace-1", "7"),
+                        [],
+                        assignment.AssignmentId,
+                        (JsonObject)fixture.Admission.DeepClone()
+                    )
+                ),
+            }
+        );
+        var identity = new JsonObject
+        {
+            ["runId"] = fixture.Run.Id,
+            ["assignmentId"] = assignment.AssignmentId,
+            ["workflowInstanceId"] = fixture.WorkflowInstanceId,
+            ["repository"] = "widgets",
+            ["slot"] = 0,
+            ["pr"] = "7",
+            ["head"] = "head",
+            ["base"] = "base",
+            ["merge"] = "merge",
+            ["sourcePath"] = fixture.Slot.SourceRelativePath,
+        };
+        JsonObject Receipt(bool apply)
+        {
+            var receipt = new JsonObject
+            {
+                ["schema"] = 1,
+                ["status"] = apply ? "reset" : "inspected",
+                ["identity"] = identity.DeepClone(),
+                ["compactOutput"] = true,
+                ["inventoryCount"] = 2,
+                ["inventorySha256"] = new string('a', 64),
+            };
+            if (apply && invalidApplyReceipt)
+                receipt["identity"]!["slot"] = 1;
+            return receipt;
+        }
+        fixture.CommandRunner.OnArgvContainsSequence(
+            "compactOutput",
+            new SandboxCommandResult(0, Receipt(false).ToJsonString(), ""),
+            new SandboxCommandResult(0, Receipt(true).ToJsonString(), "")
+        );
+        fixture.CommandRunner.BeforeArgvContains(
+            "compactOutput",
+            () =>
+            {
+                fixture.Pool.Leased.Should().Be(1);
+                fixture.Pool.Returned.Should().Be(0);
+                fixture.Workspace.ReadAssignment(fixture.Run).Should().Be(assignment);
+            }
+        );
+        if (invalidApplyReceipt)
+            await fixture
+                .Workspace.Invoking(value =>
+                    value.ResetSettledAttemptAsync(fixture.Run, fixture.WorkflowInstanceId, default)
+                )
+                .Should()
+                .ThrowAsync<InvalidDataException>();
+        else
+            await fixture.Workspace.ResetSettledAttemptAsync(fixture.Run, fixture.WorkflowInstanceId, default);
+        fixture.Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-attempt-reset-intent").Should().NotBeNull();
+        fixture.Pool.Returned.Should().Be(0);
+        fixture.Workspace.ReadAssignment(fixture.Run).Should().Be(assignment);
+        if (invalidApplyReceipt)
+            fixture.Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-attempt-reset").Should().BeNull();
+        else
+        {
+            fixture.Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-attempt-reset").Should().NotBeNull();
+            await fixture.Workspace.ReleaseOrRetireAsync(fixture.Run.Id, fixture.WorkflowInstanceId, true, default);
+            fixture.Pool.Returned.Should().Be(1);
+        }
+        fixture.CommandRunner.Commands.Should().HaveCount(2);
+        foreach (var command in fixture.CommandRunner.Commands)
+        {
+            var request = JsonNode.Parse(command.Argv[^1])!.AsObject();
+            request["compactOutput"]!.GetValue<bool>().Should().BeTrue();
+            request["slot"]!.GetValue<int>().Should().Be(0);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [InlineData(false, true)]
+    public async Task Unknown_checkout_reset_preserves_history_and_reenters_before_release(
+        bool invalidReceipt,
+        bool preparationChanged = false
+    )
+    {
+        using var fixture = new Fixture();
+        await fixture.Workspace.AcquireAsync(fixture.Run, fixture.WorkflowInstanceId, default);
+        fixture.Preparer.Failure = new RemoteWorkspaceOutcomeUnknownException(new IOException("checkout wait lost"));
+        await Assert.ThrowsAsync<RemoteWorkspaceOutcomeUnknownException>(() =>
+            fixture.Workspace.PrepareAssignedAsync(fixture.Run, fixture.Admission, fixture.WorkflowInstanceId, default)
+        );
+        var unknown = fixture.Store.TryGetLatestArtifact(
+            fixture.Run.Id,
+            WorkflowWorkspace.RemotePreparationArtifactKind
+        )!;
+        var assignment = fixture.Workspace.ReadAssignment(fixture.Run);
+        var identity = new JsonObject
+        {
+            ["runId"] = fixture.Run.Id,
+            ["assignmentId"] = assignment.AssignmentId,
+            ["workflowInstanceId"] = fixture.WorkflowInstanceId,
+            ["repository"] = "widgets",
+            ["slot"] = 0,
+            ["pr"] = "7",
+            ["head"] = "head",
+            ["base"] = "base",
+            ["merge"] = new string('a', 40),
+            ["sourcePath"] = fixture.Slot.SourceRelativePath,
+        };
+        JsonObject Receipt(bool apply) =>
+            new()
+            {
+                ["schema"] = 1,
+                ["status"] = apply ? "reset" : "inspected",
+                ["identity"] = identity.DeepClone(),
+                ["compactOutput"] = true,
+                ["inventoryCount"] = 2,
+                ["inventorySha256"] = new string('a', 64),
+            };
+        var applied = Receipt(true);
+        if (invalidReceipt)
+            applied["identity"]!["slot"] = 1;
+        fixture.CommandRunner.OnArgvContains(
+            "baseline history is incomplete",
+            new SandboxCommandResult(
+                0,
+                """{"repository":"widgets","slot":0,"sourcePath":".worktrees/widgets-0/repos/widgets","sourceStore":"source-stores/widgets.git","checkoutSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","mergeBaseSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","preparedManifest":"manifest"}""",
+                ""
+            )
+        );
+        fixture.CommandRunner.OnArgvContainsSequence(
+            "compactOutput",
+            new SandboxCommandResult(0, Receipt(false).ToJsonString(), ""),
+            new SandboxCommandResult(0, applied.ToJsonString(), "")
+        );
+        if (preparationChanged)
+        {
+            fixture.CommandRunner.BeforeArgvContains(
+                "\"apply\":true",
+                () =>
+                    fixture.Store.AddArtifact(
+                        new()
+                        {
+                            ReviewRunId = fixture.Run.Id,
+                            ArtifactKind = WorkflowWorkspace.RemotePreparationArtifactKind,
+                            ArtifactSchemaVersion = 1,
+                            Provider = "workflow",
+                            Payload = unknown.Payload,
+                        }
+                    )
+            );
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                fixture.Workspace.ResetSettledAttemptAsync(fixture.Run, fixture.WorkflowInstanceId, default)
+            );
+            fixture.Workspace.HasUnsettledPreparation(fixture.Run.Id).Should().BeTrue();
+            fixture
+                .Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-preparation-reset-acceptance")
+                .Should()
+                .BeNull();
+            fixture.Pool.Returned.Should().Be(0);
+        }
+        else if (invalidReceipt)
+        {
+            await Assert.ThrowsAsync<InvalidDataException>(() =>
+                fixture.Workspace.ResetSettledAttemptAsync(fixture.Run, fixture.WorkflowInstanceId, default)
+            );
+            fixture.Workspace.HasUnsettledPreparation(fixture.Run.Id).Should().BeTrue();
+            fixture
+                .Store.TryGetLatestArtifact(fixture.Run.Id, "workflow-preparation-reset-acceptance")
+                .Should()
+                .BeNull();
+        }
+        else
+        {
+            await fixture.Workspace.ResetSettledAttemptAsync(fixture.Run, fixture.WorkflowInstanceId, default);
+            fixture.Workspace.HasUnsettledPreparation(fixture.Run.Id).Should().BeFalse();
+            var restarted = fixture.CreateWorkspace();
+            await restarted.RecoverAsync(fixture.Run, assignment.AssignmentId, fixture.WorkflowInstanceId, default);
+            await restarted.ResetSettledAttemptAsync(fixture.Run, fixture.WorkflowInstanceId, default);
+            await restarted.ReleaseOrRetireAsync(fixture.Run.Id, fixture.WorkflowInstanceId, true, default);
+            fixture.Pool.Returned.Should().Be(1);
+            fixture
+                .CommandRunner.Commands.Count(command =>
+                    string.Join(" ", command.Argv).Contains("baseline history is incomplete", StringComparison.Ordinal)
+                )
+                .Should()
+                .Be(1);
+        }
+        fixture
+            .Store.GetArtifacts(fixture.Run.Id)
+            .Single(artifact => artifact.Id == unknown.Id)
+            .Payload.Should()
+            .Be(unknown.Payload);
+        fixture.Store.TryGetLatestArtifact(fixture.Run.Id, WorkflowWorkspace.CheckoutArtifactKind).Should().BeNull();
+        fixture.Pool.Retired.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("context-write", false)]
+    [InlineData("checkout", true)]
+    public async Task Unknown_reset_refuses_ambiguous_effects_or_reviewer_bindings(string phase, bool reviewerExists)
+    {
+        using var fixture = new Fixture();
+        await fixture.Workspace.AcquireAsync(fixture.Run, fixture.WorkflowInstanceId, default);
+        fixture.Preparer.Failure = new RemoteWorkspaceOutcomeUnknownException(new IOException("wait lost"));
+        await Assert.ThrowsAsync<RemoteWorkspaceOutcomeUnknownException>(() =>
+            fixture.Workspace.PrepareAssignedAsync(fixture.Run, fixture.Admission, fixture.WorkflowInstanceId, default)
+        );
+        var assignment = fixture.Workspace.ReadAssignment(fixture.Run);
+        fixture.Store.AddArtifact(
+            new()
+            {
+                ReviewRunId = fixture.Run.Id,
+                ArtifactKind = WorkflowWorkspace.PreparationDiagnosticArtifactKind,
+                ArtifactSchemaVersion = 1,
+                Provider = "workflow",
+                Payload = new JsonObject
+                {
+                    ["AssignmentId"] = assignment.AssignmentId,
+                    ["Phase"] = phase,
+                }.ToJsonString(),
+            }
+        );
+        if (reviewerExists)
+            fixture.Store.AddArtifact(
+                new()
+                {
+                    ReviewRunId = fixture.Run.Id,
+                    ArtifactKind = "workflow-session:review",
+                    ArtifactSchemaVersion = 1,
+                    Provider = "workflow",
+                    Payload = "{}",
+                }
+            );
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.Workspace.ResetSettledAttemptAsync(fixture.Run, fixture.WorkflowInstanceId, default)
+        );
+        fixture.CommandRunner.Commands.Should().BeEmpty();
+        fixture.Workspace.HasUnsettledPreparation(fixture.Run.Id).Should().BeTrue();
+        fixture.Pool.Returned.Should().Be(0);
     }
 
     [Fact]
@@ -510,6 +781,13 @@ public sealed class WorkflowWorkspaceTests
     {
         using var fixture = new Fixture();
         fixture.Admission["Route"] = route;
+        if (route == "merged")
+            fixture.Store.UpdateReviewRunState(
+                fixture.Run.Id,
+                fixture.Run.Stage,
+                fixture.Run.WorkflowStatus,
+                PrLifecycleState.Merged
+            );
         await fixture.Workspace.AcquireAsync(fixture.Run, "instance", default);
         var root = Path.Combine(Path.GetTempPath(), "workflow-preparation-" + Guid.NewGuid().ToString("N"));
         var directory = Path.Combine(root, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("instance"))));
@@ -541,13 +819,24 @@ public sealed class WorkflowWorkspaceTests
                 () => ReviewArtifactBranchCapability.Denied,
                 (_, _) => throw new InvalidOperationException("Preparation must not use artifact operations.")
             );
+            if (route == "merged")
+            {
+                fixture.CommandRunner.OnArgvContains(
+                    "python3",
+                    new SandboxCommandResult(
+                        0,
+                        """{"Repository":"widgets","Slot":0,"SourcePath":".worktrees/widgets-0/repos/widgets","SourceStore":"/workspace/store","CheckoutSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","MergeBaseSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","PreparedManifest":"manifest"}""",
+                        ""
+                    )
+                );
+            }
             (await dispatcher.ReconcileAsync(operation, context, fixture.Admission, default)).Should().BeNull();
             var prepared = await dispatcher.DispatchAsync(operation, context, fixture.Admission, default);
             JsonNode
                 .DeepEquals(await dispatcher.ReconcileAsync(operation, context, fixture.Admission, default), prepared)
                 .Should()
                 .BeTrue();
-            fixture.Preparer.Calls.Should().Be(1);
+            fixture.Preparer.Calls.Should().Be(route == "merged" ? 0 : 1);
             fixture.Pool.Leased.Should().Be(1);
         }
         finally

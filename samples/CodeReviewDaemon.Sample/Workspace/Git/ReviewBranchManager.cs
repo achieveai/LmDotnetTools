@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 
@@ -173,7 +174,8 @@ internal sealed class ReviewBranchManager
         string repoRoot,
         ReviewBotPublishRequest request,
         CancellationToken cancellationToken,
-        IReadOnlyList<string>? stagePaths = null
+        IReadOnlyList<string>? stagePaths = null,
+        bool allowRebase = true
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(repoRoot);
@@ -277,15 +279,17 @@ internal sealed class ReviewBranchManager
             );
         }
 
-        // 4. Push the review branch (never the default) with bounded rebase-retry, and KEEP the branch —
-        // no fast-forward of the default and no delete happen here.
-        var pushed = await TryPushWithRebaseAsync(repoRoot, reviewBranch, cancellationToken).ConfigureAwait(false);
+        // 4. Push only the review branch and keep it. Exact merged completion never rebases a
+        // retained branch whose historical artifact tip must stay an ancestor of the pushed commit.
+        var pushed = allowRebase
+            ? await TryPushWithRebaseAsync(repoRoot, reviewBranch, cancellationToken).ConfigureAwait(false)
+            : (await RunGitAsync(["push", "origin", reviewBranch], repoRoot, cancellationToken)).Succeeded;
         if (!pushed)
         {
             _logger.LogWarning(
                 "ReviewBot push of review branch '{ReviewBranch}' failed after {Attempts} attempts; the commit stays local for reconcile.",
                 reviewBranch,
-                MaxPushAttempts
+                allowRebase ? MaxPushAttempts : 1
             );
             return new ReviewBotPublishResult(ReviewBotPublishOutcome.GitSyncFailed, reviewBranch, PushedSha: null);
         }
@@ -417,6 +421,392 @@ internal sealed class ReviewBranchManager
 
         await DeleteBranchAsync(repoRoot, branch, cancellationToken).ConfigureAwait(false);
         return true;
+    }
+
+    /// <summary>
+    /// Imports only named, regular retained blobs onto the current remote default tree. Never merges
+    /// the review branch, removes existing files, updates source gitlinks, or deletes the review branch.
+    /// The caller must hold the host repository lock and authorize only this default-branch push.
+    /// </summary>
+    public async Task<string> IntegrateContentOnlyAsync(
+        string repoRoot,
+        string reviewBranch,
+        string defaultBranch,
+        string retainedSha,
+        IReadOnlyList<string> relativePaths,
+        CancellationToken cancellationToken,
+        string? originalTipSha = null,
+        string? developerLearningPath = null
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(repoRoot);
+        if (
+            defaultBranch != "main"
+            || (
+                developerLearningPath is not null
+                && !CodeReviewDaemon.Sample.Agents.DeveloperLearnings.DeveloperIdentity.IsLearningPath(
+                    developerLearningPath
+                )
+            )
+            || !TryParseReviewBranch(reviewBranch, out var repoSlug, out var prNumber)
+            || prNumber <= 0
+        )
+            throw new ArgumentException("Content integration requires the exact review branch and main.");
+        if (retainedSha is not { Length: 40 } || !retainedSha.All(Uri.IsHexDigit))
+            throw new ArgumentException("A full retained commit SHA is required.", nameof(retainedSha));
+        if (originalTipSha is not null && (originalTipSha.Length != 40 || !originalTipSha.All(Uri.IsHexDigit)))
+            throw new ArgumentException("The original artifact tip must be a full SHA.", nameof(originalTipSha));
+        ArgumentNullException.ThrowIfNull(relativePaths);
+        if (relativePaths.Count == 0 || relativePaths.Count > 128)
+            throw new ArgumentException(
+                "Content integration requires a bounded positive file list.",
+                nameof(relativePaths)
+            );
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in relativePaths)
+        {
+            ValidatePositivePath(path);
+            if (!paths.Add(path))
+                throw new ArgumentException("Selected file paths must be unique.", nameof(relativePaths));
+        }
+
+        void ValidatePositivePath(string path)
+        {
+            if (
+                string.IsNullOrWhiteSpace(path)
+                || path.Length > 512
+                || path.Split('/')
+                    .Any(segment =>
+                        segment.Length == 0
+                        || segment is "." or ".." or ".git"
+                        || !segment.All(character =>
+                            char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-'
+                        )
+                    )
+                || !(
+                    (path.StartsWith("PRs/", StringComparison.Ordinal) && path.Split('/').Length >= 3)
+                    || path.StartsWith("KnowledgeBase/system/", StringComparison.Ordinal)
+                    || path.StartsWith($"KnowledgeBase/{repoSlug}/", StringComparison.Ordinal)
+                    || (
+                        developerLearningPath is not null
+                        && string.Equals(path, developerLearningPath, StringComparison.Ordinal)
+                    )
+                )
+                || path is "KnowledgeBase/_index.jsonl" or "KnowledgeBase/_toc.md"
+            )
+                throw new ArgumentException(
+                    "A selected path is outside the exact PR or knowledge scope.",
+                    nameof(relativePaths)
+                );
+        }
+
+        if (
+            !string.IsNullOrEmpty(
+                (
+                    await RunGitAsync(
+                        ["status", "--porcelain=v1", "--untracked-files=all"],
+                        repoRoot,
+                        cancellationToken
+                    )
+                ).Stdout
+            )
+        )
+            throw new InvalidOperationException("The retention checkout must be clean before content integration.");
+        var remoteReview = await ReadRemoteHeadAsync(repoRoot, reviewBranch, cancellationToken);
+        var remoteMain = await ReadRemoteHeadAsync(repoRoot, defaultBranch, cancellationToken);
+        if (
+            remoteReview.Kind != RemoteRefKind.Present
+            || remoteMain.Kind != RemoteRefKind.Present
+            || !string.Equals(remoteReview.Sha, retainedSha, StringComparison.OrdinalIgnoreCase)
+        )
+            throw new InvalidOperationException("The exact retained review branch or remote main is unavailable.");
+        await RunGitAsync(["fetch", "origin"], repoRoot, cancellationToken);
+        var fetchedReview = (
+            await RunGitAsync(
+                ["rev-parse", "--verify", $"refs/remotes/origin/{reviewBranch}^{{commit}}"],
+                repoRoot,
+                cancellationToken
+            )
+        ).Stdout.Trim();
+        var fetchedMain = (
+            await RunGitAsync(
+                ["rev-parse", "--verify", $"refs/remotes/origin/{defaultBranch}^{{commit}}"],
+                repoRoot,
+                cancellationToken
+            )
+        ).Stdout.Trim();
+        if (
+            !string.Equals(fetchedReview, retainedSha, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(fetchedMain, remoteMain.Sha, StringComparison.OrdinalIgnoreCase)
+        )
+            throw new InvalidOperationException("Fetched refs do not match the remote admission.");
+        if (originalTipSha is not null)
+        {
+            var originalPrefix = $"PRs/{reviewBranch["review/".Length..]}/";
+            var originalTree = await RunGitAsync(
+                ["ls-tree", "-r", "-z", "--full-tree", originalTipSha, "--", originalPrefix],
+                repoRoot,
+                cancellationToken
+            );
+            // The host's line-oriented Git capture appends a newline after the final NUL.
+            var originals = originalTree.Stdout.TrimEnd('\r', '\n').Split('\0', StringSplitOptions.RemoveEmptyEntries);
+            if (originals.Length > 64)
+                throw new InvalidOperationException("Original artifacts exceed the bounded file list.");
+            foreach (var item in originals)
+            {
+                var tab = item.IndexOf('\t');
+                if (tab < 0)
+                    throw new InvalidOperationException("Original artifact tree is malformed.");
+                var path = item[(tab + 1)..];
+                var header = item[..tab].Split(' ');
+                ValidatePositivePath(path);
+                if (
+                    !path.StartsWith(originalPrefix, StringComparison.Ordinal)
+                    || !(
+                        path.EndsWith(".md", StringComparison.Ordinal)
+                        || path.EndsWith(".json", StringComparison.Ordinal)
+                    )
+                    || header.Length != 3
+                    || header[0] is not ("100644" or "100755")
+                    || header[1] != "blob"
+                    || header[2].Length != 40
+                    || !header[2].All(Uri.IsHexDigit)
+                )
+                    throw new InvalidOperationException("Original artifact tree contains an unsupported file.");
+                if (await ReadTreeEntryAsync(retainedSha, path) != (header[0], header[2]))
+                    throw new InvalidOperationException("A historical artifact changed on the retained branch.");
+                _ = paths.Add(path);
+            }
+            if (paths.Count > 128)
+                throw new InvalidOperationException("Historical positive import list exceeds its bound.");
+        }
+        var localMain = await RunGitAsync(
+            ["show-ref", "--verify", "--quiet", $"refs/heads/{defaultBranch}"],
+            repoRoot,
+            cancellationToken,
+            allowFailure: true
+        );
+        if (localMain.Succeeded)
+            await RunGitAsync(["checkout", defaultBranch], repoRoot, cancellationToken);
+        else
+            await RunGitAsync(
+                ["checkout", "-b", defaultBranch, "--track", $"origin/{defaultBranch}"],
+                repoRoot,
+                cancellationToken
+            );
+        var previousMain = (await RunGitAsync(["rev-parse", "HEAD"], repoRoot, cancellationToken)).Stdout.Trim();
+        if (!string.Equals(previousMain, fetchedMain, StringComparison.OrdinalIgnoreCase))
+        {
+            var ancestor = await RunGitAsync(
+                ["merge-base", "--is-ancestor", previousMain, fetchedMain],
+                repoRoot,
+                cancellationToken,
+                allowFailure: true
+            );
+            if (!ancestor.Succeeded)
+                throw new InvalidOperationException("Local main has divergent work; content integration refuses it.");
+            await RunGitAsync(["merge", "--ff-only", fetchedMain], repoRoot, cancellationToken);
+            previousMain = (await RunGitAsync(["rev-parse", "HEAD"], repoRoot, cancellationToken)).Stdout.Trim();
+            if (previousMain != fetchedMain)
+                throw new InvalidOperationException("Local main did not reach the admitted remote tip.");
+        }
+        if (
+            !string.IsNullOrEmpty(
+                (
+                    await RunGitAsync(
+                        ["status", "--porcelain=v1", "--untracked-files=all"],
+                        repoRoot,
+                        cancellationToken
+                    )
+                ).Stdout
+            )
+        )
+            throw new InvalidOperationException("Main must be clean before selected content is restored.");
+
+        var expected = new Dictionary<string, (string Mode, string Sha)>(StringComparer.Ordinal);
+        foreach (var path in paths)
+        {
+            var source = await ReadTreeEntryAsync(retainedSha, path);
+            if (source is not { Mode: "100644" or "100755" })
+                throw new InvalidOperationException("Every selected retained object must be one regular file.");
+            var existing = await ReadTreeEntryAsync(previousMain, path, required: false);
+            if (existing is not null && existing != source)
+                throw new InvalidOperationException("A selected main file conflicts with retained content.");
+            var parent = path.LastIndexOf('/');
+            while (parent >= 0)
+            {
+                var ancestor = path[..parent];
+                var entry = await RunGitAsync(
+                    ["ls-tree", "-z", "--full-tree", previousMain, "--", ancestor],
+                    repoRoot,
+                    cancellationToken
+                );
+                if (entry.Stdout.Length > 0 && !entry.Stdout.StartsWith("040000 tree ", StringComparison.Ordinal))
+                    throw new InvalidOperationException("A selected main path crosses a non-directory object.");
+                parent = ancestor.LastIndexOf('/');
+            }
+            expected.Add(path, source.Value);
+        }
+        // Re-read remote heads immediately before changing local content. A later main race is rejected by
+        // the ordinary non-force push; no rebase or conflict resolution is permitted here.
+        var reviewBeforeRestore = await ReadRemoteHeadAsync(repoRoot, reviewBranch, cancellationToken);
+        var mainBeforeRestore = await ReadRemoteHeadAsync(repoRoot, defaultBranch, cancellationToken);
+        if (
+            reviewBeforeRestore.Kind != RemoteRefKind.Present
+            || mainBeforeRestore.Kind != RemoteRefKind.Present
+            || !string.Equals(reviewBeforeRestore.Sha, retainedSha, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(mainBeforeRestore.Sha, previousMain, StringComparison.OrdinalIgnoreCase)
+        )
+            throw new InvalidOperationException("Remote provenance changed before content integration.");
+        await RunGitAsync(
+            [
+                "restore",
+                $"--source={retainedSha}",
+                "--staged",
+                "--worktree",
+                "--",
+                .. paths.Order(StringComparer.Ordinal),
+            ],
+            repoRoot,
+            cancellationToken
+        );
+        var importsKnowledge = paths.Any(path =>
+            path.StartsWith("KnowledgeBase/", StringComparison.Ordinal)
+            && !string.Equals(path, developerLearningPath, StringComparison.Ordinal)
+        );
+        if (importsKnowledge)
+        {
+            if (_rebuildDerivedKnowledgeAsync is null)
+                throw new InvalidOperationException("Knowledge integration requires a listings regenerator.");
+            var knowledgeTree = await RunGitAsync(
+                ["ls-tree", "-r", "-z", "--full-tree", previousMain, "--", "KnowledgeBase/"],
+                repoRoot,
+                cancellationToken
+            );
+            foreach (
+                var item in knowledgeTree.Stdout.TrimEnd('\r', '\n').Split('\0', StringSplitOptions.RemoveEmptyEntries)
+            )
+            {
+                var tab = item.IndexOf('\t');
+                if (tab < 0)
+                    throw new InvalidOperationException("The existing knowledge tree is malformed.");
+                var header = item[..tab].Split(' ');
+                if (header.Length != 3 || header[1] != "blob" || header[0] is not ("100644" or "100755"))
+                    throw new InvalidOperationException(
+                        "Existing knowledge contains a symlink, gitlink, or non-regular file."
+                    );
+                _ = WorkflowScriptInvoker.ResolveWorkspaceAsset(item[(tab + 1)..], repoRoot);
+            }
+            _ = WorkflowScriptInvoker.ResolveWorkspaceAsset("KnowledgeBase/_index.jsonl", repoRoot);
+            _ = WorkflowScriptInvoker.ResolveWorkspaceAsset("KnowledgeBase/_toc.md", repoRoot);
+            _ = await _rebuildDerivedKnowledgeAsync(repoRoot, cancellationToken);
+            await RunGitAsync(
+                ["add", "--", "KnowledgeBase/_index.jsonl", "KnowledgeBase/_toc.md"],
+                repoRoot,
+                cancellationToken
+            );
+        }
+        var allowedListings = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "KnowledgeBase/_index.jsonl",
+            "KnowledgeBase/_toc.md",
+        };
+        var changed = (
+            await RunGitAsync(["diff", "--cached", "--name-status", "--no-renames"], repoRoot, cancellationToken)
+        ).Stdout;
+        foreach (var line in changed.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var tab = line.IndexOf('\t');
+            if (tab < 0)
+                throw new InvalidOperationException("Integration staged an unexpected file.");
+            var name = line[(tab + 1)..].TrimEnd('\r');
+            if (
+                !(line[..tab] == "A" && paths.Contains(name))
+                && !(importsKnowledge && allowedListings.Contains(name) && (line[..tab] is "A" or "M"))
+            )
+                throw new InvalidOperationException(
+                    "Integration staged a change outside positive imports or derived listings."
+                );
+        }
+        var allowedPaths = importsKnowledge
+            ? paths.Concat(allowedListings).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : paths;
+        var worktree = (
+            await RunGitAsync(["status", "--porcelain=v1", "--untracked-files=all"], repoRoot, cancellationToken)
+        ).Stdout;
+        foreach (var line in worktree.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            if (line.Length < 4 || line[1] != ' ' || !allowedPaths.Contains(line[3..].TrimEnd('\r')))
+                throw new InvalidOperationException(
+                    "Integration modified or left an unstaged path outside its allowed files."
+                );
+        if (changed.Length > 0)
+            await RunGitAsync(
+                ["commit", "-m", $"Retain reviewed content from {reviewBranch}"],
+                repoRoot,
+                cancellationToken
+            );
+        var integrated = (await RunGitAsync(["rev-parse", "HEAD"], repoRoot, cancellationToken)).Stdout.Trim();
+        foreach (var (path, entry) in expected)
+            if (await ReadTreeEntryAsync(integrated, path) != entry)
+                throw new InvalidOperationException("Integrated content differs from the exact retained blobs.");
+        if (importsKnowledge)
+            foreach (var listing in allowedListings)
+                if (await ReadTreeEntryAsync(integrated, listing) is not { Mode: "100644" or "100755" })
+                    throw new InvalidOperationException("A regenerated knowledge listing is not a regular file.");
+        var diff = (
+            await RunGitAsync(["diff", "--name-only", previousMain, integrated], repoRoot, cancellationToken)
+        ).Stdout;
+        if (
+            diff.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Any(path => !allowedPaths.Contains(path.TrimEnd('\r')))
+        )
+            throw new InvalidOperationException("Integration changed a path outside the approved list.");
+        var mainBeforePush = await ReadRemoteHeadAsync(repoRoot, defaultBranch, cancellationToken);
+        if (
+            mainBeforePush.Kind != RemoteRefKind.Present
+            || !string.Equals(mainBeforePush.Sha, previousMain, StringComparison.OrdinalIgnoreCase)
+        )
+            throw new InvalidOperationException("Remote main moved before the exact branch push.");
+        if (integrated != previousMain)
+        {
+            var push = await RunGitAsync(["push", "origin", defaultBranch], repoRoot, cancellationToken);
+            if (!push.Succeeded)
+                throw new InvalidOperationException("The non-force main push failed; review branch remains intact.");
+        }
+        if (
+            !string.Equals(
+                (await ReadRemoteHeadAsync(repoRoot, defaultBranch, cancellationToken)).Sha,
+                integrated,
+                StringComparison.OrdinalIgnoreCase
+            )
+        )
+            throw new InvalidOperationException("Remote main does not confirm the integrated commit.");
+        return integrated;
+
+        async Task<(string Mode, string Sha)?> ReadTreeEntryAsync(string tree, string path, bool required = true)
+        {
+            var result = await RunGitAsync(
+                ["ls-tree", "-r", "-z", "--full-tree", tree, "--", path],
+                repoRoot,
+                cancellationToken
+            );
+            var entries = result.Stdout.TrimEnd('\r', '\n').Split('\0', StringSplitOptions.RemoveEmptyEntries);
+            if (entries.Length == 0 && !required)
+                return null;
+            if (entries.Length != 1)
+                throw new InvalidOperationException(
+                    "A selected Git path is missing or resolves to more than one object."
+                );
+            var tab = entries[0].IndexOf('\t');
+            if (tab < 0 || entries[0][(tab + 1)..] != path)
+                throw new InvalidOperationException(
+                    "A selected Git path is missing or resolves to more than one object."
+                );
+            var header = entries[0][..tab].Split(' ');
+            if (header.Length != 3 || header[1] != "blob" || header[2].Length != 40 || !header[2].All(Uri.IsHexDigit))
+                throw new InvalidOperationException("A selected Git path is not a regular blob.");
+            return (header[0], header[2]);
+        }
     }
 
     /// <summary>
@@ -612,7 +1002,8 @@ internal sealed class ReviewBranchManager
         string defaultBranch,
         string retainedSha,
         IReadOnlyList<string> retainedPaths,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        bool requireBranchAbsent = true
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(retainedSha);
@@ -642,6 +1033,8 @@ internal sealed class ReviewBranchManager
                 return false;
             }
         }
+        if (!requireBranchAbsent)
+            return true;
         var remote = await RunGitAsync(
                 ["ls-remote", "--exit-code", "--heads", "origin", $"refs/heads/{branch}"],
                 repoRoot,

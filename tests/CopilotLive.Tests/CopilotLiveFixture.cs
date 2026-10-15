@@ -17,6 +17,17 @@ public sealed class CopilotLiveFixture
     public CopilotLiveFixture()
     {
         var cli = new CliCredentialCopilotTokenProvider();
+        TokenProvider = cli;
+        Session = new CopilotSessionContext();
+        Options = new CopilotOptions();
+        if (!string.Equals(Environment.GetEnvironmentVariable("RUN_COPILOT_LIVE_TESTS"), "1", StringComparison.Ordinal))
+        {
+            SkipReason =
+                "Live Copilot tests require explicit opt-in: RUN_COPILOT_LIVE_TESTS=1. "
+                + "The regular proxy suite uses a scripted mock upstream.";
+            return;
+        }
+
         var token = cli.ResolveToken();
 
         Available = token is not null;
@@ -24,13 +35,9 @@ public sealed class CopilotLiveFixture
             ? string.Empty
             : "No GitHub Copilot credential found. Log in with the GitHub Copilot CLI or `gh auth login`, "
                 + "or set GITHUB_COPILOT_TOKEN / GH_TOKEN, then re-run.";
-
-        TokenProvider = cli;
-        Session = new CopilotSessionContext();
-        Options = new CopilotOptions();
     }
 
-    /// <summary>True when a Copilot credential was found and live tests should run.</summary>
+    /// <summary>True when live execution was opted into and a Copilot credential was found.</summary>
     public bool Available { get; }
 
     /// <summary>Human-readable reason shown when <see cref="Available"/> is false.</summary>

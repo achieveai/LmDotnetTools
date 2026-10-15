@@ -86,6 +86,38 @@ public sealed class TriggerRuntime : IAsyncDisposable
     private readonly ConcurrentDictionary<string, ArmedWait> _waits = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _shutdown = new();
     private int _disposed;
+    private readonly object _discardLock = new();
+    private bool _discarding;
+    private int _ownedOperations;
+    private TaskCompletionSource? _operationsDrained;
+    private Task? _discardTask;
+    private int _cleanupFailed;
+    private readonly ConcurrentDictionary<string, byte> _armingWaitIds = new(StringComparer.Ordinal);
+
+    private bool TryEnterOwnedOperation()
+    {
+        lock (_discardLock)
+        {
+            if (_discarding)
+            {
+                return false;
+            }
+
+            _ownedOperations++;
+            return true;
+        }
+    }
+
+    private void ExitOwnedOperation()
+    {
+        lock (_discardLock)
+        {
+            if (--_ownedOperations == 0)
+            {
+                _ = _operationsDrained?.TrySetResult();
+            }
+        }
+    }
 
     public TriggerRuntime(
         TriggerOptions options,
@@ -189,6 +221,32 @@ public sealed class TriggerRuntime : IAsyncDisposable
         CancellationToken ct
     )
     {
+        if (!TryEnterOwnedOperation())
+        {
+            return WaitArmResult.Reject("shutting_down", "The trigger runtime is stopped for discard.");
+        }
+
+        try
+        {
+            return await ArmOwnedAsync(waitId, kind, argsJson, timeout, label, mode, maxFires, ct);
+        }
+        finally
+        {
+            ExitOwnedOperation();
+        }
+    }
+
+    private async Task<WaitArmResult> ArmOwnedAsync(
+        string waitId,
+        string kind,
+        string argsJson,
+        string timeout,
+        string? label,
+        WaitMode mode,
+        int? maxFires,
+        CancellationToken ct
+    )
+    {
         if (Volatile.Read(ref _disposed) != 0)
         {
             return WaitArmResult.Reject("shutting_down", "The trigger runtime is disposed.");
@@ -237,6 +295,38 @@ public sealed class TriggerRuntime : IAsyncDisposable
     }
 
     private async Task<WaitArmResult> ArmCoreAsync(
+        string waitId,
+        TriggerSourceRegistration reg,
+        string argsJson,
+        string? label,
+        WaitMode mode,
+        int? maxFires,
+        DateTimeOffset armedAt,
+        DateTimeOffset deadline,
+        CancellationToken ct
+    )
+    {
+        if (!_armingWaitIds.TryAdd(waitId, 0))
+        {
+            return WaitArmResult.Reject("duplicate_wait", "This wait ID is already being armed.");
+        }
+
+        try
+        {
+            if (_waits.ContainsKey(waitId))
+            {
+                return WaitArmResult.Reject("duplicate_wait", "This wait ID is already armed.");
+            }
+
+            return await ArmCoreOwnedAsync(waitId, reg, argsJson, label, mode, maxFires, armedAt, deadline, ct);
+        }
+        finally
+        {
+            _ = _armingWaitIds.TryRemove(waitId, out _);
+        }
+    }
+
+    private async Task<WaitArmResult> ArmCoreOwnedAsync(
         string waitId,
         TriggerSourceRegistration reg,
         string argsJson,
@@ -348,6 +438,10 @@ public sealed class TriggerRuntime : IAsyncDisposable
         }
         catch (ArgumentException ex)
         {
+            if (wait.Source is not null)
+            {
+                _ = Interlocked.Exchange(ref _cleanupFailed, 1);
+            }
             // The source rejected malformed/contradictory args (e.g. a timer given both `delay`
             // and `deadline`). This is caller-correctable, so it gets its own reason distinct from
             // an unexpected internal failure.
@@ -372,6 +466,11 @@ public sealed class TriggerRuntime : IAsyncDisposable
         }
         catch (Exception ex)
         {
+            if (wait.Source is not null)
+            {
+                _ = Interlocked.Exchange(ref _cleanupFailed, 1);
+            }
+
             ReleaseGate(wait);
             _ = _waits.TryRemove(waitId, out _);
             _logger?.LogWarning(ex, "trigger.arm_failed {WaitId} kind={Kind}", waitId, reg.Kind);
@@ -385,6 +484,23 @@ public sealed class TriggerRuntime : IAsyncDisposable
     /// waits this call transitioned to <see cref="WaitState.Cancelled"/>.
     /// </summary>
     public async Task<int> CancelWaitsAsync(string? id, string? label, string? kind, CancellationToken ct)
+    {
+        if (!TryEnterOwnedOperation())
+        {
+            return 0;
+        }
+
+        try
+        {
+            return await CancelWaitsOwnedAsync(id, label, kind, ct);
+        }
+        finally
+        {
+            ExitOwnedOperation();
+        }
+    }
+
+    private async Task<int> CancelWaitsOwnedAsync(string? id, string? label, string? kind, CancellationToken ct)
     {
         List<ArmedWait> matches = [.. _waits.Values.Where(w => Matches(w, id, label, kind))];
 
@@ -445,6 +561,23 @@ public sealed class TriggerRuntime : IAsyncDisposable
     /// <c>trigger_lost_on_restart</c> so the parked run is never left hanging.
     /// </summary>
     public async Task ReconcileRestoredAsync(IReadOnlyList<RestoredWait> restored, CancellationToken ct)
+    {
+        if (!TryEnterOwnedOperation())
+        {
+            throw new InvalidOperationException("The trigger runtime is stopped for discard.");
+        }
+
+        try
+        {
+            await ReconcileRestoredOwnedAsync(restored, ct);
+        }
+        finally
+        {
+            ExitOwnedOperation();
+        }
+    }
+
+    private async Task ReconcileRestoredOwnedAsync(IReadOnlyList<RestoredWait> restored, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(restored);
 
@@ -548,6 +681,23 @@ public sealed class TriggerRuntime : IAsyncDisposable
     /// or thread is configured.
     /// </summary>
     public async Task RestoreNotifyWaitsAsync(CancellationToken ct)
+    {
+        if (!TryEnterOwnedOperation())
+        {
+            throw new InvalidOperationException("The trigger runtime is stopped for discard.");
+        }
+
+        try
+        {
+            await RestoreNotifyWaitsOwnedAsync(ct);
+        }
+        finally
+        {
+            ExitOwnedOperation();
+        }
+    }
+
+    private async Task RestoreNotifyWaitsOwnedAsync(CancellationToken ct)
     {
         var store = _options.NotifyWaitStore;
         var threadId = _options.ThreadId;
@@ -680,6 +830,23 @@ public sealed class TriggerRuntime : IAsyncDisposable
 
     private async ValueTask OnSourceFiredAsync(ArmedWait wait, TriggerFireEvent fire)
     {
+        if (!TryEnterOwnedOperation())
+        {
+            return;
+        }
+
+        try
+        {
+            await OnSourceFiredOwnedAsync(wait, fire);
+        }
+        finally
+        {
+            ExitOwnedOperation();
+        }
+    }
+
+    private async ValueTask OnSourceFiredOwnedAsync(ArmedWait wait, TriggerFireEvent fire)
+    {
         if (wait.Mode == WaitMode.Block)
         {
             var blockPayload = BuildFiredPayload(wait, fire);
@@ -770,6 +937,7 @@ public sealed class TriggerRuntime : IAsyncDisposable
         }
         catch (Exception ex)
         {
+            _ = Interlocked.Exchange(ref _cleanupFailed, 1);
             _logger?.LogDebug(ex, "trigger ceiling-timer teardown failed for {WaitId}", wait.WaitId);
         }
 
@@ -781,6 +949,7 @@ public sealed class TriggerRuntime : IAsyncDisposable
             }
             catch (Exception ex)
             {
+                _ = Interlocked.Exchange(ref _cleanupFailed, 1);
                 _logger?.LogWarning(ex, "trigger source dispose failed for {WaitId}", wait.WaitId);
             }
         }
@@ -967,7 +1136,7 @@ public sealed class TriggerRuntime : IAsyncDisposable
         wait.CeilingCts = linked;
         var token = linked.Token;
 
-        _ = Task.Run(async () =>
+        wait.CeilingTask = Task.Run(async () =>
         {
             var grace = TimeSpan.FromMilliseconds(CeilingGraceMs);
             var delay = wait.Deadline + grace - DateTimeOffset.UtcNow;
@@ -990,7 +1159,24 @@ public sealed class TriggerRuntime : IAsyncDisposable
                 return; // wait already terminated another way.
             }
 
-            _ = await FinalizeAsync(wait, WaitState.TimedOut, BuildTerminalPayload("timed_out", wait), isError: false);
+            if (!TryEnterOwnedOperation())
+            {
+                return;
+            }
+
+            try
+            {
+                _ = await FinalizeAsync(
+                    wait,
+                    WaitState.TimedOut,
+                    BuildTerminalPayload("timed_out", wait),
+                    isError: false
+                );
+            }
+            finally
+            {
+                ExitOwnedOperation();
+            }
         });
     }
 
@@ -1084,9 +1270,119 @@ public sealed class TriggerRuntime : IAsyncDisposable
         return Encoding.UTF8.GetString(bytes, 0, count);
     }
 
+    /// <summary>
+    /// Permanently stops owned trigger work and removes this thread's durable notifications.
+    /// Call outside a trigger callback, after closing the owning loop's input admission.
+    /// Ordinary disposal intentionally retains notifications for restart; discard does not.
+    /// </summary>
+    public Task StopForDiscardAsync(CancellationToken ct = default)
+    {
+        TaskCompletionSource? completion = null;
+        Task stop;
+        lock (_discardLock)
+        {
+            if (_discardTask is null)
+            {
+                _discarding = true;
+                _operationsDrained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                if (_ownedOperations == 0)
+                {
+                    _ = _operationsDrained.TrySetResult();
+                }
+
+                completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                _discardTask = completion.Task;
+            }
+            stop = _discardTask;
+        }
+        if (completion is not null)
+        {
+            _ = CompleteDiscardStopAsync(completion);
+        }
+
+        return stop.WaitAsync(ct);
+    }
+
+    private async Task CompleteDiscardStopAsync(TaskCompletionSource completion)
+    {
+        try
+        {
+            await StopForDiscardCoreAsync(_operationsDrained!.Task);
+            _ = completion.TrySetResult();
+        }
+        catch (Exception exception)
+        {
+            _ = completion.TrySetException(exception);
+        }
+    }
+
+    private async Task StopForDiscardCoreAsync(Task operationsDrained)
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            throw new InvalidOperationException("Ordinary disposal prevents verified discard stop.");
+        }
+
+        _logger?.LogInformation("Trigger discard stop started for thread {ThreadId}", _options.ThreadId);
+        await _shutdown.CancelAsync();
+        await operationsDrained;
+        if (Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _cleanupFailed) != 0)
+        {
+            throw new InvalidOperationException("Prior trigger teardown prevents verified discard stop.");
+        }
+
+        var waits = _waits.Values.ToArray();
+        foreach (var wait in waits)
+        {
+            _ = wait.TryClaim(WaitState.Cancelled);
+            wait.CancelCeiling();
+            if (wait.Source is not null)
+            {
+                await wait.Source.DisposeAsync();
+            }
+        }
+        await Task.WhenAll(waits.Select(wait => wait.CeilingTask ?? Task.CompletedTask));
+        if (_options.NotifyWaitStore is { } store && _options.ThreadId is { } threadId)
+        {
+            foreach (var row in await store.LoadActiveAsync(threadId, CancellationToken.None))
+            {
+                await store.DeleteAsync(threadId, row.WaitId, CancellationToken.None);
+            }
+
+            if ((await store.LoadActiveAsync(threadId, CancellationToken.None)).Count != 0)
+            {
+                throw new InvalidOperationException("Durable notifications remain after discard stop.");
+            }
+        }
+        foreach (var wait in waits)
+        {
+            _ = _waits.TryRemove(wait.WaitId, out _);
+            ReleaseGate(wait);
+        }
+        _logger?.LogInformation(
+            "Trigger discard stop completed for thread {ThreadId}; stopped {WaitCount} waits",
+            _options.ThreadId,
+            waits.Length
+        );
+    }
+
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        Task? discard;
+        lock (_discardLock)
+        {
+            discard = _discardTask;
+            if (discard is null && Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+        }
+        if (discard is not null)
+        {
+            await discard;
+        }
+
+        if (discard is not null && Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return;
         }
@@ -1146,6 +1442,7 @@ public sealed class TriggerRuntime : IAsyncDisposable
         public required DateTimeOffset Deadline { get; init; }
         public IArmedTrigger? Source { get; set; }
         public CancellationTokenSource? CeilingCts { get; set; }
+        public Task? CeilingTask { get; set; }
 
         public WaitState State => (WaitState)Volatile.Read(ref _state);
 

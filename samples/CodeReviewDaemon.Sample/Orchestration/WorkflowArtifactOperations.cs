@@ -22,7 +22,10 @@ internal sealed class WorkflowArtifactOperations(
     SemaphoreSlim gitGate,
     ReviewArtifactBranchCapability artifactBranchCapability,
     WorkflowKnowledgeEdits? knowledgeEdits = null,
-    Func<CancellationToken, Task>? verifyStoreOrigin = null
+    Func<CancellationToken, Task>? verifyStoreOrigin = null,
+    CodeReviewDaemon.Sample.Workspace.Sandbox.HostGitPushAuthorization? pushAuthorization = null,
+    string? developerLearningPath = null,
+    string? originalArtifactTipSha = null
 )
 {
     internal const string RetentionOperation = "workflow_retain_artifacts";
@@ -137,8 +140,8 @@ internal sealed class WorkflowArtifactOperations(
         if (extractions.Count == 0)
             return [];
         WorkflowKnowledgeEdits.ValidateReview(extractions, safetyReview);
-        if (run.PrLifecycleState != PrLifecycleState.Merged)
-            throw new InvalidOperationException("Knowledge extraction retention requires a merged PR.");
+        if (run.PrLifecycleState is not (PrLifecycleState.Merged or PrLifecycleState.Abandoned))
+            throw new InvalidOperationException("Knowledge extraction retention requires a terminal PR.");
         var helper =
             knowledgeEdits
             ?? throw new InvalidOperationException("Knowledge edit retention requires a configured scoped helper.");
@@ -244,7 +247,8 @@ internal sealed class WorkflowArtifactOperations(
                         files
                     ),
                     cancellationToken,
-                    [.. files.Select(file => file.RelativePath)]
+                    [.. files.Select(file => file.RelativePath)],
+                    allowRebase: run.ReviewKind != "merged-completion"
                 )
                 .ConfigureAwait(false);
             if (
@@ -294,23 +298,68 @@ internal sealed class WorkflowArtifactOperations(
                 ?? throw new InvalidOperationException("Required artifacts have not been retained.");
             var sha = RequireRetainedSha(receipt);
             if (
-                !await branchManager
-                    .MergeToDefaultAsync(repoRoot, ArtifactBranch, defaultBranch, cancellationToken)
-                    .ConfigureAwait(false)
+                run.ReviewKind != "merged-completion"
+                || run.Mode != "collect-only"
+                || !artifactBranchCapability.AuthorizesPush(repo, run)
+                || pushAuthorization is null
+                || retainedPaths is null
+                || retainedPaths.Count == 0
+            )
+                throw new InvalidOperationException("Content-only closure requires exact merged retention authority.");
+            using var pushScope = pushAuthorization.EnterScope();
+            pushAuthorization.AuthorizePush(defaultBranch);
+            var mainSha = await branchManager
+                .IntegrateContentOnlyAsync(
+                    repoRoot,
+                    ArtifactBranch,
+                    defaultBranch,
+                    sha,
+                    [
+                        .. retainedPaths.Where(path =>
+                            path is not ("KnowledgeBase/_index.jsonl" or "KnowledgeBase/_toc.md")
+                        ),
+                    ],
+                    cancellationToken,
+                    originalArtifactTipSha ?? run.VariantId,
+                    developerLearningPath
+                )
+                .ConfigureAwait(false);
+            store.AddArtifact(
+                new ReviewArtifact
+                {
+                    ReviewRunId = run.Id,
+                    ArtifactKind = "workflow-content-integration",
+                    ArtifactSchemaVersion = 1,
+                    Provider = "workflow",
+                    Payload = new JsonObject
+                    {
+                        ["WorkflowInstanceId"] = workflowInstanceId,
+                        ["ArtifactBranch"] = ArtifactBranch,
+                        ["RetainedSha"] = sha,
+                        ["MainSha"] = mainSha,
+                    }.ToJsonString(),
+                }
+            );
+            pushAuthorization.AuthorizeGuardedDelete(ArtifactBranch, sha);
+            var deleted = await branchManager
+                .DeleteReviewBranchAsync(repoRoot, ArtifactBranch, sha, cancellationToken)
+                .ConfigureAwait(false);
+            if (
+                deleted is not (ReviewBranchDeletionOutcome.Deleted or ReviewBranchDeletionOutcome.AlreadyAbsent)
                 || !await branchManager
                     .VerifyClosureAsync(
                         repoRoot,
                         ArtifactBranch,
                         defaultBranch,
-                        sha,
-                        retainedPaths ?? [$"PRs/{ArtifactBranch["review/".Length..]}"],
+                        mainSha,
+                        retainedPaths,
                         cancellationToken
                     )
                     .ConfigureAwait(false)
             )
-            {
-                throw new InvalidOperationException("Artifact branch closure failed; retry inputs remain retained.");
-            }
+                throw new InvalidOperationException(
+                    "Artifact branch closure is unresolved; integration proof is retained."
+                );
             return new JsonObject { ["ArtifactBranch"] = ArtifactBranch, ["Closed"] = true };
         }
         finally
@@ -338,7 +387,9 @@ internal sealed class WorkflowArtifactOperations(
     public async Task<JsonObject?> ReconcileClosureAsync(
         CancellationToken cancellationToken,
         string? workflowInstanceId = null,
-        IReadOnlyList<string>? retainedPaths = null
+        IReadOnlyList<string>? retainedPaths = null,
+        bool finishConfirmedDeletion = false,
+        Func<CancellationToken, Task>? verifyTerminalIdentity = null
     )
     {
         var retained = ReconcileRetention(workflowInstanceId);
@@ -352,12 +403,58 @@ internal sealed class WorkflowArtifactOperations(
                 .ConfigureAwait(false);
             if (verifyStoreOrigin is not null)
                 await verifyStoreOrigin(cancellationToken).ConfigureAwait(false);
+            var integrated = store.TryGetLatestArtifact(run.Id, "workflow-content-integration");
+            var proof = integrated is null ? null : JsonNode.Parse(integrated.Payload);
+            if (
+                proof is null
+                || proof["WorkflowInstanceId"]?.GetValue<string>() != workflowInstanceId
+                || proof["ArtifactBranch"]?.GetValue<string>() != ArtifactBranch
+                || proof["RetainedSha"]?.GetValue<string>() != retained["RetainedSha"]!.GetValue<string>()
+                || proof["MainSha"]?.GetValue<string>() is not { Length: 40 } mainSha
+            )
+                return null;
+            if (finishConfirmedDeletion)
+            {
+                if (
+                    pushAuthorization is null
+                    || retainedPaths is null
+                    || retainedPaths.Count == 0
+                    || !artifactBranchCapability.AuthorizesPush(repo, run)
+                    || !await branchManager
+                        .VerifyClosureAsync(
+                            repoRoot,
+                            ArtifactBranch,
+                            defaultBranch,
+                            mainSha,
+                            retainedPaths,
+                            cancellationToken,
+                            requireBranchAbsent: false
+                        )
+                        .ConfigureAwait(false)
+                )
+                    return null;
+                if (verifyTerminalIdentity is null)
+                    return null;
+                await verifyTerminalIdentity(cancellationToken).ConfigureAwait(false);
+                using var pushScope = pushAuthorization.EnterScope();
+                pushAuthorization.AuthorizeGuardedDelete(ArtifactBranch, retained["RetainedSha"]!.GetValue<string>());
+                var deletion = await branchManager
+                    .DeleteReviewBranchAsync(
+                        repoRoot,
+                        ArtifactBranch,
+                        retained["RetainedSha"]!.GetValue<string>(),
+                        cancellationToken
+                    )
+                    .ConfigureAwait(false);
+                if (deletion is not (ReviewBranchDeletionOutcome.Deleted or ReviewBranchDeletionOutcome.AlreadyAbsent))
+                    return null;
+            }
             return await branchManager
                 .VerifyClosureAsync(
                     repoRoot,
                     ArtifactBranch,
                     defaultBranch,
-                    retained["RetainedSha"]!.GetValue<string>(),
+                    mainSha,
                     retainedPaths ?? [$"PRs/{ArtifactBranch["review/".Length..]}"],
                     cancellationToken
                 )
@@ -370,6 +467,8 @@ internal sealed class WorkflowArtifactOperations(
             gitGate.Release();
         }
     }
+
+    internal void ValidateRetainedFiles(IReadOnlyList<ReviewArtifactFile> files) => ValidateFiles(files);
 
     private static string FilesHash(IReadOnlyList<ReviewArtifactFile> files) =>
         Convert.ToHexString(
@@ -472,12 +571,15 @@ internal sealed class WorkflowArtifactOperations(
             var path = file.RelativePath;
             if (path.StartsWith("KnowledgeBase/", StringComparison.Ordinal))
             {
-                if (run.PrLifecycleState != PrLifecycleState.Merged || knowledgeEdits is null)
+                if (
+                    run.PrLifecycleState is not (PrLifecycleState.Merged or PrLifecycleState.Abandoned)
+                    || knowledgeEdits is null
+                )
                     throw new ArgumentException(
-                        "Knowledge retention requires a merged PR and a configured scoped helper.",
+                        "Knowledge retention requires a terminal PR and a configured scoped helper.",
                         nameof(files)
                     );
-                WorkflowKnowledgeEdits.ValidatePath(path, repo, allowListings: true);
+                WorkflowKnowledgeEdits.ValidatePath(path, repo, allowListings: true, developerLearningPath);
             }
             else if (!path.StartsWith(prefix, StringComparison.Ordinal))
                 throw new ArgumentException($"Artifact path must be contained in '{prefix}'.", nameof(files));

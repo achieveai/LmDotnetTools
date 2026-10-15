@@ -94,25 +94,20 @@ internal sealed class WorkflowAgentInvoker(
                     final = text;
                 }
             }
-            catch (S2SFinalTextMissingException) when (UsesMarkdown(invocation) && synthesisIntent is not null)
+            catch (S2SFinalTextMissingException) when (synthesisIntent is not null)
             {
-                var pending = await settle(invocation, agent.ThreadId, ct).ConfigureAwait(false);
-                if (pending is not null)
-                    return pending;
-                await agent.RequireIdleAsync(ct).ConfigureAwait(false);
-                if (invocation.DeadlineUtc is not { } end || end <= DateTimeOffset.UtcNow)
-                    return new(WorkflowInvocationStatus.Unknown, Error: "No synthesis budget remains.");
-                await synthesisIntent(invocation, agent.ThreadId, true, ct).ConfigureAwait(false);
-                return await SynthesizeAsync(invocation, agent, ct).ConfigureAwait(false);
+                return await FinalizeMissingResponseAsync(invocation, agent, ct).ConfigureAwait(false);
             }
+            if ((final is null || string.IsNullOrWhiteSpace(final.Text)) && synthesisIntent is not null)
+                return await FinalizeMissingResponseAsync(invocation, agent, ct).ConfigureAwait(false);
             if (final is null || final.ThreadId != agent.ThreadId || final.RunId != agent.CurrentRunId)
                 return new(
                     WorkflowInvocationStatus.Unknown,
                     Error: "No final response correlated to this accepted invocation."
                 );
 
-            // Null is an explicit confirmation from the host's mandatory settlement callback. Receipts
-            // and descendant status come from their existing owners, never from model Output fields.
+            // Null confirms the parent and recursive descendants are settled. Receipts and activity
+            // come from the mandatory host settlement callback, never from model Output fields.
             var unsettled = await settle(invocation, agent.ThreadId, ct).ConfigureAwait(false);
             var output = UsesMarkdown(invocation)
                 ? new JsonObject { ["Format"] = "markdown", ["Markdown"] = final.Text }.ToJsonString()
@@ -167,6 +162,33 @@ internal sealed class WorkflowAgentInvoker(
         + "Do not investigate further, spawn agents, use action tools, fetch PR discussion, or publish anything. "
         + "Preserve evidence and uncertainty. Return the report itself, not a completion acknowledgement.";
 
+    internal static string FinalizationPrompt(WorkflowInvocation invocation) =>
+        UsesMarkdown(invocation)
+            ? SynthesisPrompt
+            : "Return the final JSON result requested by the preceding workflow stage, using the completed work already in this conversation. "
+                + "Do not investigate further, spawn agents, use action tools or publish anything. "
+                + "For publication or replies, describe only actions with existing confirmed receipts; never repeat an action. "
+                + "Return exactly one JSON object matching this output schema, without Markdown fences or surrounding prose:\n"
+                + (
+                    invocation.Task.OutputSchema?.ToJsonString()
+                    ?? throw new InvalidOperationException("Finalization requires the stage output schema.")
+                );
+
+    private async Task<WorkflowInvocationResult> FinalizeMissingResponseAsync(
+        WorkflowInvocation invocation,
+        S2SReviewAgent agent,
+        CancellationToken ct
+    )
+    {
+        var pending = await settle(invocation, agent.ThreadId, ct).ConfigureAwait(false);
+        if (pending is not null)
+            return pending;
+        if (invocation.DeadlineUtc is not { } end || end <= DateTimeOffset.UtcNow)
+            return new(WorkflowInvocationStatus.Unknown, Error: "No synthesis budget remains.");
+        await synthesisIntent!(invocation, agent.ThreadId, true, ct).ConfigureAwait(false);
+        return await SynthesizeAsync(invocation, agent, ct).ConfigureAwait(false);
+    }
+
     private async Task<WorkflowInvocationResult> SynthesizeAsync(
         WorkflowInvocation invocation,
         S2SReviewAgent agent,
@@ -183,32 +205,48 @@ internal sealed class WorkflowAgentInvoker(
             var unsettled = await settle(invocation, agent.ThreadId, ct).ConfigureAwait(false);
             if (unsettled is not null)
                 return unsettled;
-            await agent.RequireIdleAsync(ct).ConfigureAwait(false);
         }
         await agent.EnsureActionToolSuppressionAsync(ct).ConfigureAwait(false);
         agent.ArmTurnCheckpoint(key, accepted ? inputId : null, onInputAccepted: null);
         var input = new UserInput(
-            [new TextMessage { Role = Role.User, Text = SynthesisPrompt }],
+            [new TextMessage { Role = Role.User, Text = FinalizationPrompt(invocation) }],
             SuppressSubAgentSpawning: true,
             SuppressActionTools: true
         );
         TextMessage? final = null;
-        await foreach (var message in agent.ExecuteRunAsync(input, ct).ConfigureAwait(false))
+        try
         {
-            if (message is not TextMessage { Role: Role.Assistant, IsThinking: false } text)
-                continue;
-            if (final is not null)
-                throw new InvalidOperationException("Multiple synthesis responses were received.");
-            final = text;
+            await foreach (var message in agent.ExecuteRunAsync(input, ct).ConfigureAwait(false))
+            {
+                if (message is not TextMessage { Role: Role.Assistant, IsThinking: false } text)
+                    continue;
+                if (final is not null)
+                    throw new InvalidOperationException("Multiple synthesis responses were received.");
+                final = text;
+            }
         }
+        catch (S2SFinalTextMissingException)
+        {
+            var unsettled = await settle(invocation, agent.ThreadId, ct).ConfigureAwait(false);
+            return unsettled
+                ?? new WorkflowInvocationResult(
+                    WorkflowInvocationStatus.Failed,
+                    Error: "Stage finalization returned an empty response."
+                );
+        }
+        var pending = await settle(invocation, agent.ThreadId, ct).ConfigureAwait(false);
+        if (pending is not null)
+            return pending;
         if (final is null || final.ThreadId != agent.ThreadId || final.RunId != agent.CurrentRunId)
             return new(WorkflowInvocationStatus.Unknown, Error: "No correlated synthesis report.");
-        var pending = await settle(invocation, agent.ThreadId, ct).ConfigureAwait(false);
-        return pending
-            ?? new WorkflowInvocationResult(
-                WorkflowInvocationStatus.Completed,
-                new JsonObject { ["Format"] = "markdown", ["Markdown"] = final.Text }.ToJsonString()
-            );
+        if (string.IsNullOrWhiteSpace(final.Text))
+            return new(WorkflowInvocationStatus.Failed, Error: "Stage finalization returned an empty response.");
+        return new WorkflowInvocationResult(
+            WorkflowInvocationStatus.Completed,
+            UsesMarkdown(invocation)
+                ? new JsonObject { ["Format"] = "markdown", ["Markdown"] = final.Text }.ToJsonString()
+                : final.Text
+        );
     }
 
     internal static string Diagnostic(Exception error) =>

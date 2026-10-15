@@ -98,7 +98,7 @@ public sealed class PrPollingServiceTests : LoggingTestBase
 
         await BuildPoller(store, provider).PollOnceAsync(default);
 
-        var round = store.GetLatestWorkflowRound(repoId, "118", "head-118", WorkflowRoundKind.Discussion);
+        var round = store.GetLatestWorkflowRound(run.Id, WorkflowRoundKind.Discussion);
         round.Should().NotBeNull();
         round!.Outcome.Should().Be(WorkflowRoundOutcome.Succeeded);
         var context = JsonNode.Parse(round.FrozenInputJson)!.AsObject();
@@ -111,9 +111,42 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         await BuildPoller(store, provider).PollOnceAsync(default);
 
         store
-            .GetLatestWorkflowRound(repoId, "118", "head-118", WorkflowRoundKind.Discussion)!
+            .GetLatestWorkflowRound(run.Id, WorkflowRoundKind.Discussion)!
             .Id.Should()
             .Be(round.Id, "the stable legacy window key must not create a duplicate round on restart");
+    }
+
+    [Fact]
+    public async Task An_active_PR_is_not_reviewed_again_or_acknowledged_on_poll_reentry()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+        var run = store.CreateOrGetReviewRun(SeedFor(repoId, "118"));
+        store.AddArtifact(
+            new ReviewArtifact
+            {
+                ReviewRunId = run.Id,
+                ArtifactSchemaVersion = 1,
+                ArtifactKind = "workflow-workspace-assignment",
+                Provider = "workspace",
+                Payload = JsonSerializer.Serialize(
+                    new CodeReviewDaemon.Sample.Workspace.WorkflowWorkspaceAssignment(
+                        new CodeReviewDaemon.Sample.Workspace.ReviewSlot("LmDotnetTools", 0),
+                        true,
+                        Guid.NewGuid().ToString("N"),
+                        $"review-run-{run.Id}"
+                    )
+                ),
+            }
+        );
+        var provider = new MockPrProvider(Provider, [PrDescriptor("118")], NextCursor());
+
+        await BuildPoller(store, provider).PollOnceAsync(default);
+        await BuildPoller(store, provider).PollOnceAsync(default);
+
+        store.GetReviewRun(run.Id)!.WorkflowStatus.Should().Be(WorkflowStatus.Pending);
+        store.ReadCursor(Provider, Scope, PrPollingService.CursorVersion).Cursor.Should().BeNull();
     }
 
     private static string IdOf(JsonNode? value) => value!["ProviderCommentId"]!.GetValue<string>();

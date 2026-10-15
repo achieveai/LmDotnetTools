@@ -27,6 +27,79 @@ public class MultiTurnAgentLoopTests
     private readonly Mock<ILogger<MultiTurnAgentLoop>> _loggerMock = new();
 
     [Fact]
+    public async Task Cancellation_drains_dispatched_tool_before_loop_reports_stopped()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockAgent
+            .Setup(agent =>
+                agent.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, _, token) => Task.FromResult(Stream(token))
+            );
+        var registry = new FunctionRegistry();
+        registry.AddFunction(
+            new FunctionContract
+            {
+                Name = "held",
+                Description = "fixture",
+                Parameters = [],
+            },
+            async (_, _, _) =>
+            {
+                entered.TrySetResult();
+                await release.Task;
+                completed.TrySetResult();
+                return ToolHandlerResult.FromText("released");
+            }
+        );
+        await using var loop = new MultiTurnAgentLoop(_mockAgent.Object, registry, "tool-drain");
+        using var cancellation = new CancellationTokenSource();
+        var run = loop.RunAsync(cancellation.Token);
+        await loop.SendAsync([new TextMessage { Text = "run tool", Role = Role.User }]);
+        await entered.Task;
+        try
+        {
+            await cancellation.CancelAsync();
+            var prematureCompletion = () => run.WaitAsync(TimeSpan.FromMilliseconds(100));
+            await prematureCompletion
+                .Should()
+                .ThrowAsync<TimeoutException>(
+                    "the dispatched tool is still executing and loop completion must wait for it"
+                );
+            loop.IsRunning.Should().BeTrue("the dispatched tool has not drained");
+        }
+        finally
+        {
+            release.TrySetResult();
+            await completed.Task;
+            try
+            {
+                await run;
+            }
+            catch (OperationCanceledException) { }
+        }
+
+        static async IAsyncEnumerable<IMessage> Stream([EnumeratorCancellation] CancellationToken token)
+        {
+            yield return new ToolCallMessage
+            {
+                FunctionName = "held",
+                FunctionArgs = "{}",
+                ToolCallId = "held-1",
+                Role = Role.Assistant,
+            };
+            await Task.Delay(Timeout.Infinite, token);
+        }
+    }
+
+    [Fact]
     public void Constructor_ThrowsOnNullProviderAgent()
     {
         // Arrange

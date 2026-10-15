@@ -16,7 +16,8 @@ public class TranslatedMessagesTests
     private const string DiscoveryJson = """
         {"data":[
           {"id":"claude-opus-4.8","vendor":"Anthropic","supported_endpoints":["/v1/messages","/chat/completions"]},
-          {"id":"gpt-5.3-codex","vendor":"OpenAI","supported_endpoints":["/responses"]}
+          {"id":"gpt-5.3-codex","vendor":"OpenAI","supported_endpoints":["/responses"]},
+          {"id":"gpt-6-luna","vendor":"OpenAI","supported_endpoints":["/responses"]}
         ]}
         """;
 
@@ -82,6 +83,53 @@ public class TranslatedMessagesTests
         }
 
         return frames;
+    }
+
+    [Theory]
+    [InlineData(1024, "low")]
+    [InlineData(10240, "medium")]
+    [InlineData(32768, "high")]
+    public async Task Thinking_budgets_reach_the_mock_responses_model_with_the_mapped_effort(
+        int budgetTokens,
+        string expectedEffort
+    )
+    {
+        var requests = 0;
+        await using var factory = Factory(
+            async (request, path) =>
+            {
+                path.Should().Be("/responses");
+                using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+                body.RootElement.GetProperty("model").GetString().Should().Be("gpt-6-luna");
+                var reasoning = body.RootElement.GetProperty("reasoning");
+                reasoning.GetProperty("effort").GetString().Should().Be(expectedEffort);
+                reasoning.GetProperty("summary").GetString().Should().Be("auto");
+                requests++;
+                return TestUpstream.Json(
+                    """
+                    {"id":"resp_mock","model":"gpt-6-luna",
+                     "output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
+                     "usage":{"input_tokens":4,"output_tokens":2}}
+                    """
+                );
+            }
+        );
+        using var client = factory.CreateClient();
+        using var response = await client.PostAsJsonAsync(
+            "/v1/messages",
+            new
+            {
+                model = "gpt-6-luna",
+                max_tokens = 16,
+                thinking = new { type = "enabled", budget_tokens = budgetTokens },
+                messages = new[] { new { role = "user", content = "Reply with: ok" } },
+            }
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        requests.Should().Be(1);
+        using var reply = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        reply.RootElement.GetProperty("content")[0].GetProperty("text").GetString().Should().Be("ok");
     }
 
     [Fact]

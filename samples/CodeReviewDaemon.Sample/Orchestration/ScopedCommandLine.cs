@@ -1,3 +1,6 @@
+using System.Globalization;
+using System.Text.Json.Nodes;
+
 namespace CodeReviewDaemon.Sample.Orchestration;
 
 /// <summary>Which of the four scoped, one-shot CLI surfaces (if any) <see cref="ScopedCommandLine.Parse"/>
@@ -14,17 +17,35 @@ internal enum ScopedCommandKind
     /// <summary><c>--list-candidate-prs</c>.</summary>
     ListCandidatePrs,
 
+    /// <summary>Read-only inventory of existing review-artifact branches and their source PR lifecycle.</summary>
+    ListReviewBranches,
+
     /// <summary><c>--run-pr &lt;repoKey&gt; &lt;prId&gt; &lt;approvedHead&gt; &lt;approvedBase&gt;</c>.</summary>
     RunPr,
 
     /// <summary>Bounded exact-PR requests supplied as JSON lines on stdin.</summary>
     RunPrStream,
 
+    /// <summary>One exact branch-backed merged completion, without polling.</summary>
+    CompleteMergedPr,
+
+    /// <summary>A finite explicit list of merged completions under one coordinator.</summary>
+    CompleteMergedBatch,
+
+    /// <summary>Read-only inspection of an exact branch for archive-only completion.</summary>
+    InspectMergedArchive,
+
+    /// <summary>Explicit exact-branch archive with a separate publish-and-delete confirmation.</summary>
+    ArchiveMergedPr,
+
     /// <summary>Retain missing task notes for an exact completed run without rerunning its review.</summary>
     RetainReviewNotes,
 
     /// <summary>Inspect or explicitly reset one incomplete review's occupied slot.</summary>
     ResetReviewRun,
+
+    /// <summary>Inspect one round-owned slot; confirmation refuses until a safe reset exists.</summary>
+    ResetReviewRound,
 
     /// <summary>
     /// <c>--redo-artifact-branch &lt;repoKey&gt; &lt;prId&gt;</c> (task #82, requirement 4) — the explicit,
@@ -56,12 +77,80 @@ internal static class ScopedCommandLine
     [
         "--workflow-operation",
         "--list-candidate-prs",
+        "--list-review-branches",
         "--run-pr",
         "--run-pr-stream",
+        "--complete-merged-pr",
+        "--complete-merged-batch",
+        "--inspect-merged-archive",
+        "--archive-merged-pr",
         "--retain-review-notes",
         "--reset-review-run",
+        "--reset-review-round",
         "--redo-artifact-branch",
     ];
+
+    public static bool ContainsScopedCommand(string[] args) => args.Any(arg => KnownPrefixes.Contains(arg));
+
+    public static IReadOnlyList<ScopedCommandLineResult> ReadMergedBatch(string path)
+    {
+        using var reader = File.OpenText(path);
+        var buffer = new char[65537];
+        var length = reader.ReadBlock(buffer, 0, buffer.Length);
+        if (length == buffer.Length)
+            throw new InvalidDataException("Merged batch exceeds 64 KiB of text.");
+        if (JsonNode.Parse(new string(buffer, 0, length)) is not JsonArray { Count: >= 1 and <= 18 } entries)
+            throw new InvalidDataException("Merged batch requires 1–18 explicit requests.");
+        var commands = new List<ScopedCommandLineResult>();
+        foreach (var entry in entries)
+        {
+            if (
+                entry is not JsonObject item
+                || item.Count != 7
+                || item.Any(pair =>
+                    pair.Key
+                        is not (
+                            "repository"
+                            or "prId"
+                            or "artifactTipSha"
+                            or "landedSha"
+                            or "parentSha"
+                            or "slot"
+                            or "resume"
+                        )
+                )
+                || item["slot"] is not JsonValue slotValue
+                || !slotValue.TryGetValue<int>(out var slot)
+                || slot is < 0 or > 5
+                || item["resume"] is not JsonValue resumeValue
+                || !resumeValue.TryGetValue<bool>(out var resume)
+            )
+                throw new InvalidDataException("Merged batch request has an invalid shape, slot or resume flag.");
+            string Text(string key) =>
+                item[key]?.GetValue<string>() ?? throw new InvalidDataException("Missing merged identity.");
+            var command = Parse([
+                "--complete-merged-pr",
+                Text("repository"),
+                Text("prId"),
+                Text("artifactTipSha"),
+                Text("landedSha"),
+                Text("parentSha"),
+                "--slot",
+                slot.ToString(CultureInfo.InvariantCulture),
+            ]);
+            if (
+                command.Kind != ScopedCommandKind.CompleteMergedPr
+                || string.IsNullOrWhiteSpace(command.RunPrRepoKey)
+                || command.RunPrId
+                    != int.Parse(command.RunPrId!, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture)
+            )
+                throw new InvalidDataException(
+                    "Merged batch requires canonical repository and positive PR identities."
+                );
+            commands.Add(command with { ResumeMerged = resume });
+        }
+        return commands;
+    }
 
     public static ScopedCommandLineResult Parse(string[] args)
     {
@@ -75,6 +164,9 @@ internal static class ScopedCommandLine
                 WorkflowOperation = operation,
             };
         }
+
+        if (args is ["--list-review-branches"])
+            return new ScopedCommandLineResult { Kind = ScopedCommandKind.ListReviewBranches };
 
         if (args is ["--list-candidate-prs"])
         {
@@ -98,6 +190,118 @@ internal static class ScopedCommandLine
                 ConfirmReset = confirmReset,
             };
 
+        var confirmRoundReset = args is ["--reset-review-round", _, "--receipt", _, "--confirm"];
+        var roundResetArgs = confirmRoundReset ? args[..^1] : args;
+        if (
+            (roundResetArgs is ["--reset-review-round", _] or ["--reset-review-round", _, "--receipt", _])
+            && long.TryParse(roundResetArgs[1], NumberStyles.None, CultureInfo.InvariantCulture, out var resetRoundId)
+            && resetRoundId > 0
+            && (roundResetArgs.Length != 4 || !string.IsNullOrWhiteSpace(roundResetArgs[3]))
+            && (!confirmRoundReset || roundResetArgs.Length == 4)
+        )
+            return new ScopedCommandLineResult
+            {
+                Kind = ScopedCommandKind.ResetReviewRound,
+                ResetRoundId = resetRoundId,
+                ResetReceiptPath = roundResetArgs.Length == 4 ? roundResetArgs[3] : null,
+                ConfirmReset = confirmRoundReset,
+            };
+
+        if (args is ["--complete-merged-batch", var batchPath] && !string.IsNullOrWhiteSpace(batchPath))
+            return new ScopedCommandLineResult
+            {
+                Kind = ScopedCommandKind.CompleteMergedBatch,
+                MergedBatchPath = batchPath,
+            };
+
+        if (
+            args
+                is [
+                    "--inspect-merged-archive",
+                    var archiveRepo,
+                    var archivePr,
+                    var archiveTip,
+                    var archiveLanded,
+                    var archiveParent,
+                ]
+            && int.TryParse(archivePr, NumberStyles.None, CultureInfo.InvariantCulture, out var archiveNumber)
+            && archiveNumber > 0
+            && new[] { archiveTip, archiveLanded, archiveParent }.All(value =>
+                value.Length == 40 && value.All(Uri.IsHexDigit)
+            )
+        )
+            return new ScopedCommandLineResult
+            {
+                Kind = ScopedCommandKind.InspectMergedArchive,
+                RunPrRepoKey = archiveRepo,
+                RunPrId = archivePr,
+                ArtifactTipSha = archiveTip.ToLowerInvariant(),
+                LandedSha = archiveLanded.ToLowerInvariant(),
+                ParentSha = archiveParent.ToLowerInvariant(),
+            };
+
+        if (
+            args
+            is [
+                "--archive-merged-pr",
+                var archiveRepoKey,
+                var archivePrId,
+                var archiveBranchTip,
+                var archiveMerge,
+                var archiveMergeParent,
+                "--evidence-root",
+                var evidenceRoot,
+                "--confirm-publish-and-delete",
+            ]
+        )
+        {
+            var identity = Parse([
+                "--inspect-merged-archive",
+                archiveRepoKey,
+                archivePrId,
+                archiveBranchTip,
+                archiveMerge,
+                archiveMergeParent,
+            ]);
+            if (identity.Kind == ScopedCommandKind.InspectMergedArchive && !string.IsNullOrWhiteSpace(evidenceRoot))
+                return identity with { Kind = ScopedCommandKind.ArchiveMergedPr, ArchiveEvidenceRoot = evidenceRoot };
+        }
+
+        int? mergedSlot = null;
+        var mergedInput = args;
+        if (
+            (
+                args
+                is ["--complete-merged-pr", _, _, _, _, _, "--inspect", "--slot", _]
+                    or ["--complete-merged-pr", _, _, _, _, _, "--slot", _]
+            )
+            && int.TryParse(args[^1], out var slotIndex)
+            && slotIndex is >= 0 and <= 5
+        )
+        {
+            mergedSlot = slotIndex;
+            mergedInput = args[..^2];
+        }
+        var inspectMerged = mergedInput is ["--complete-merged-pr", _, _, _, _, _, "--inspect"];
+        var mergedArgs = inspectMerged ? mergedInput[..^1] : mergedInput;
+        if (
+            mergedArgs is ["--complete-merged-pr", var mergedRepo, var mergedPr, var tip, var landed, var parent]
+            && int.TryParse(mergedPr, out var mergedNumber)
+            && mergedNumber > 0
+            && new[] { tip, landed, parent }.All(value => value.Length == 40 && value.All(Uri.IsHexDigit))
+        )
+            return new ScopedCommandLineResult
+            {
+                Kind = ScopedCommandKind.CompleteMergedPr,
+                RunPrRepoKey = mergedRepo,
+                RunPrId = mergedPr,
+                ArtifactTipSha = tip.ToLowerInvariant(),
+                LandedSha = landed.ToLowerInvariant(),
+                ParentSha = parent.ToLowerInvariant(),
+                InspectMerged = inspectMerged,
+                MergedSlot = mergedSlot,
+            };
+
         var fresh = args is ["--run-pr", _, _, _, _, "--fresh"];
         var runArgs = fresh ? args[..^1] : args;
         if (runArgs is ["--run-pr", var repoKey, var prId, var headSha, var baseSha])
@@ -116,7 +320,7 @@ internal static class ScopedCommandLine
         if (
             args is ["--run-pr-stream", var concurrencyText]
             && int.TryParse(concurrencyText, out var concurrency)
-            && concurrency is >= 1 and <= 6
+            && concurrency is >= 1 and <= 50
         )
         {
             return new ScopedCommandLineResult { Kind = ScopedCommandKind.RunPrStream, RunPrConcurrency = concurrency };
@@ -139,10 +343,13 @@ internal static class ScopedCommandLine
                 Kind = ScopedCommandKind.Malformed,
                 Error =
                     $"'{args[0]}' does not take {args.Length - 1} argument(s). Usage: "
-                    + "--workflow-operation <name> | --list-candidate-prs | "
+                    + "--workflow-operation <name> | --list-candidate-prs | --list-review-branches | "
                     + "--run-pr <repoKey> <prId> <approvedHeadSha> <approvedBaseSha> [--fresh] | "
-                    + "--run-pr-stream <concurrency:1-6> | --redo-artifact-branch <repoKey> <prId> | "
-                    + "--reset-review-run <positive-id> [--confirm]",
+                    + "--complete-merged-pr <repoKey> <prId> <artifactTipSha> <landedSha> <parentSha> [--inspect] [--slot <0-5>] | "
+                    + "--complete-merged-batch <jsonPath> | --inspect-merged-archive <repoKey> <prId> <artifactTipSha> <landedSha> <parentSha> | "
+                    + "--archive-merged-pr <repoKey> <prId> <artifactTipSha> <landedSha> <parentSha> --evidence-root <localDirectory> --confirm-publish-and-delete | "
+                    + "--run-pr-stream <concurrency:1-50> | --redo-artifact-branch <repoKey> <prId> | "
+                    + "--reset-review-run <positive-id> [--confirm] | --reset-review-round <positive-id> [--receipt <jsonPath> --confirm]",
             };
         }
 
@@ -161,9 +368,22 @@ internal sealed record ScopedCommandLineResult
 
     public bool Fresh { get; init; }
 
+    public string? ArtifactTipSha { get; init; }
+    public string? LandedSha { get; init; }
+    public string? ParentSha { get; init; }
+    public bool InspectMerged { get; init; }
+    public int? MergedSlot { get; init; }
+    public string? MergedBatchPath { get; init; }
+    public string? ArchiveEvidenceRoot { get; init; }
+    public bool ResumeMerged { get; init; }
+
     public long? NotesRunId { get; init; }
 
     public long? ResetRunId { get; init; }
+
+    public long? ResetRoundId { get; init; }
+
+    public string? ResetReceiptPath { get; init; }
 
     public bool ConfirmReset { get; init; }
 

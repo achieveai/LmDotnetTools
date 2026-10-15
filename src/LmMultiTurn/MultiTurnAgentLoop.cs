@@ -69,6 +69,158 @@ public sealed class MultiTurnAgentLoop
     private bool _actionToolsSuppressed;
     private string? _actionSuppressedRunId;
     private const string ActionSuppressedRunIdProperty = "action_suppressed_run_id";
+    private readonly object _finalReportAdmission = new();
+    private FinalReportCompletionGate? _finalReportGate;
+    private bool _finalReportInputEnqueued;
+    private string? _finalReportRunId;
+    private string? _finalReportText;
+    private readonly HashSet<OrdinaryInputAdmission> _ordinaryAdmissions = [];
+
+    /// <summary>Host opt-in after all notification producers have been connected to the completion boundary.</summary>
+    public bool FinalReportCompletionEnabled { get; set; }
+
+    /// <summary>The current operation, captured by a producer before scheduling work.</summary>
+    public FinalReportCompletionGate? FinalReportGate => Volatile.Read(ref _finalReportGate);
+
+    protected override IDisposable? ReserveInput(UserInput input, string receiptId)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        lock (_finalReportAdmission)
+        {
+            var gate = _finalReportGate;
+            if (input.FinalReportDeadlineUtc is { } deadline)
+            {
+                if (
+                    !FinalReportCompletionEnabled
+                    || Store is null
+                    || RunLedgerStore is null
+                    || input.InputId is null
+                    || input.ParentRunId is not null
+                    || _triggerRuntime is not null
+                    || !_delayed.IsEmpty
+                    || _delayed.HasPendingCauses
+                    || CurrentRunId is not null
+                    || PendingInputCount > 0
+                    || gate is not null
+                    || _ordinaryAdmissions.Count > 0
+                    || (SubAgentManager?.HasPendingFinalReportWork() ?? false)
+                )
+                {
+                    throw new InvalidOperationException("The conversation cannot admit a final-report input.");
+                }
+
+                gate = new FinalReportCompletionGate(receiptId, deadline);
+                var work = gate.ReserveWork();
+                _finalReportInputEnqueued = false;
+                Volatile.Write(ref _finalReportGate, gate);
+                if (SubAgentManager is not null)
+                {
+                    SubAgentManager.FinalReportGate = gate;
+                }
+
+                return new FinalReportAdmission(this, gate, work);
+            }
+            if (gate is null)
+            {
+                _ = base.ReserveInput(input, receiptId);
+                if (input.FinalReportOperation is { IsClosed: true })
+                {
+                    throw new InvalidOperationException("The notification belongs to a closed operation.");
+                }
+
+                var ordinary = new OrdinaryInputAdmission(this, receiptId);
+                _ = _ordinaryAdmissions.Add(ordinary);
+                return ordinary;
+            }
+            if (
+                !ReferenceEquals(input.FinalReportOperation, gate)
+                || input.ParentRunId is not null
+                || input.Messages.Count == 0
+                || input.Messages.Any(message => message is not NotifyMessage and not AgentMessage)
+            )
+            {
+                throw new InvalidOperationException("A final-report operation is already active on this conversation.");
+            }
+
+            return gate.ReserveWork();
+        }
+    }
+
+    protected override void OnInputEnqueued(UserInput input, string receiptId)
+    {
+        lock (_finalReportAdmission)
+        {
+            if (_finalReportGate?.InputId == receiptId)
+            {
+                _finalReportInputEnqueued = true;
+            }
+
+            foreach (var admission in _ordinaryAdmissions.Where(value => value.ReceiptId == receiptId))
+            {
+                admission.Enqueued = true;
+            }
+        }
+    }
+
+    private void ReleaseFinalReportAdmission(FinalReportCompletionGate gate, IDisposable work)
+    {
+        lock (_finalReportAdmission)
+        {
+            if (ReferenceEquals(_finalReportGate, gate) && !_finalReportInputEnqueued)
+            {
+                gate.Fail();
+                Volatile.Write(ref _finalReportGate, null);
+                if (SubAgentManager is not null)
+                {
+                    SubAgentManager.FinalReportGate = null;
+                }
+            }
+            work.Dispose();
+        }
+    }
+
+    private sealed class OrdinaryInputAdmission(MultiTurnAgentLoop owner, string receiptId) : IDisposable
+    {
+        public string ReceiptId { get; } = receiptId;
+        public bool Enqueued { get; set; }
+        public bool Assigned { get; set; }
+        public bool Released { get; set; }
+
+        public void Dispose()
+        {
+            lock (owner._finalReportAdmission)
+            {
+                Released = true;
+                if (!Enqueued || Assigned)
+                {
+                    _ = owner._ordinaryAdmissions.Remove(this);
+                }
+            }
+        }
+    }
+
+    private void MarkOrdinaryInputsAssigned(IEnumerable<QueuedInput> inputs)
+    {
+        lock (_finalReportAdmission)
+        {
+            var ids = inputs.Select(input => input.ReceiptId).ToHashSet(StringComparer.Ordinal);
+            foreach (var admission in _ordinaryAdmissions.Where(value => ids.Contains(value.ReceiptId)))
+            {
+                admission.Assigned = true;
+            }
+
+            _ = _ordinaryAdmissions.RemoveWhere(value => value.Assigned && value.Released);
+        }
+    }
+
+    private sealed class FinalReportAdmission(
+        MultiTurnAgentLoop owner,
+        FinalReportCompletionGate gate,
+        IDisposable work
+    ) : IDisposable
+    {
+        public void Dispose() => owner.ReleaseFinalReportAdmission(gate, work);
+    }
 
     // The bare provider this loop OWNS, when a reconfiguration said so (AgentReconfiguration.
     // OwnsProviderAgent) or the host initialized OwnsProviderAgent for the one supplied at construction;
@@ -1332,6 +1484,12 @@ public sealed class MultiTurnAgentLoop
 
                 var (batchParent, isExplicitFork) = ResolveBatchParent(realInputs);
                 var assignment = await StartRunAsync(realInputs, batchParent, ct, wasForked: isExplicitFork);
+                MarkOrdinaryInputsAssigned(realInputs);
+                if (FinalReportGate is { } reportGate && realInputs.Any(input => input.ReceiptId == reportGate.InputId))
+                {
+                    _finalReportRunId = assignment.RunId;
+                    _finalReportText = null;
+                }
                 if (AdmitRunAsync is { } admitRun)
                 {
                     await admitRun(assignment.RunId, ct);
@@ -1404,10 +1562,42 @@ public sealed class MultiTurnAgentLoop
         CancellationToken ct
     )
     {
+        var reportGate = _finalReportRunId == assignment.RunId ? FinalReportGate : null;
+        var reportCompleted = false;
+        using var deadline = reportGate is null ? null : CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (deadline is not null)
+        {
+            var remaining = reportGate!.DeadlineUtc - DateTimeOffset.UtcNow;
+            deadline.CancelAfter(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero);
+        }
         try
         {
             // Execute turns - poll for new input between turns
-            await ExecuteRunTurnsAsync(assignment.RunId, assignment.GenerationId, spawnSuppression, ct);
+            await ExecuteRunTurnsAsync(
+                assignment.RunId,
+                assignment.GenerationId,
+                spawnSuppression,
+                deadline?.Token ?? ct
+            );
+            if (reportGate is not null)
+            {
+                if (!reportGate.IsClosed || string.IsNullOrWhiteSpace(_finalReportText))
+                {
+                    throw new InvalidOperationException("The final-report operation did not close with a report.");
+                }
+
+                await FinalReportProof.SaveAsync(
+                    Store!,
+                    ThreadId,
+                    new FinalReportProof(
+                        reportGate.InputId,
+                        reportGate.DeadlineUtc,
+                        assignment.RunId,
+                        _finalReportText
+                    ),
+                    ct
+                );
+            }
 
             // Complete run - simple loop has no pending messages
             await CompleteRunAsync(
@@ -1418,6 +1608,7 @@ public sealed class MultiTurnAgentLoop
                 pendingMessageCount: PendingInputCount,
                 ct: ct
             );
+            reportCompleted = true;
         }
         catch (Exception ex) when (!IsRunCancellation(ex, ct))
         {
@@ -1488,6 +1679,31 @@ public sealed class MultiTurnAgentLoop
                 errorCode: (ex as ContextOverflowException)?.Reason,
                 ct: ct
             );
+        }
+        finally
+        {
+            if (reportGate is not null)
+            {
+                // Failed operations keep admission fenced. A successful operation can be followed by
+                // another workflow stage; old producers still carry their closed gate and are refused.
+                lock (_finalReportAdmission)
+                {
+                    if (reportCompleted)
+                    {
+                        Volatile.Write(ref _finalReportGate, null);
+                        if (SubAgentManager is not null)
+                        {
+                            SubAgentManager.FinalReportGate = null;
+                        }
+                    }
+                    else
+                    {
+                        reportGate.Fail();
+                    }
+                    _finalReportRunId = null;
+                    _finalReportText = null;
+                }
+            }
         }
     }
 
@@ -1783,6 +1999,7 @@ public sealed class MultiTurnAgentLoop
                     );
 
                     await RecordInjectedInputsAsync(runId, injectionAssignment.InputIds!, ct);
+                    MarkOrdinaryInputsAssigned(realNewInputs);
 
                     foreach (var input in realNewInputs)
                     {
@@ -1960,6 +2177,40 @@ public sealed class MultiTurnAgentLoop
 
             if (!turn.HasToolCalls)
             {
+                if (_finalReportRunId == runId && FinalReportGate is { } reportGate)
+                {
+                    var report = string.Join(
+                        "\n",
+                        turn.Attempt.CompletedMessages.OfType<TextMessage>()
+                            .Where(message =>
+                                message.Role == Role.Assistant && !string.IsNullOrWhiteSpace(message.Text)
+                            )
+                            .Select(message => message.Text)
+                    );
+                    while (true)
+                    {
+                        var decision = reportGate.Inspect(
+                            () => PendingInputCount > 0,
+                            () => SubAgentManager?.HasPendingFinalReportWork() ?? false,
+                            !string.IsNullOrWhiteSpace(report)
+                        );
+                        if (decision.Closed)
+                        {
+                            _finalReportText = report;
+                            break;
+                        }
+                        if (decision.Continue)
+                        {
+                            break;
+                        }
+
+                        await reportGate.WaitAsync(decision.Changed, ct);
+                    }
+                    if (!reportGate.IsClosed)
+                    {
+                        continue;
+                    }
+                }
                 Logger.LogDebug("No tool calls in turn {Turn}, run complete", turnCount);
                 brokeEarly = true;
                 break;
@@ -1974,6 +2225,11 @@ public sealed class MultiTurnAgentLoop
         // this — even when they happen to land exactly on the budget boundary.
         if (!brokeEarly && turnCount >= MaxTurnsPerRun)
         {
+            if (_finalReportRunId == runId)
+            {
+                throw new InvalidOperationException("The final-report operation exhausted its turn budget.");
+            }
+
             Logger.LogWarning(
                 "Max turns ({MaxTurns}) reached for run {RunId}; running a wrap-up turn to return a final status",
                 MaxTurnsPerRun,
@@ -2808,6 +3064,25 @@ public sealed class MultiTurnAgentLoop
 
             return new TurnExecutionResult(attempt, ex);
         }
+        catch
+        {
+            // Cancellation or a non-retryable stream failure must not orphan
+            // tools already dispatched by this turn or publish false inactivity.
+            try
+            {
+                await attempt.SettleToolTasksAsync();
+            }
+            catch (Exception toolFailure)
+            {
+                Logger.LogWarning(
+                    toolFailure,
+                    "Tool execution for terminating run {RunId} generation {GenerationId} failed while draining",
+                    runId,
+                    generationId
+                );
+            }
+            throw;
+        }
 
         // Wait for all tool executions to complete before next turn
         // Results are already published as each tool completes. Deferred handlers complete
@@ -3048,6 +3323,11 @@ public sealed class MultiTurnAgentLoop
 
         if (result.IsDeferred)
         {
+            if (FinalReportGate is not null || SubAgentManager?.FinalReportGate is not null)
+            {
+                (FinalReportGate ?? SubAgentManager?.FinalReportGate)?.Fail();
+                throw new InvalidOperationException("Deferred tools are not supported by final-report operations.");
+            }
             // Reserve BEFORE making the placeholder visible to history or subscribers. Any incoming
             // ResolveToolCallAsync needs to find the reservation to succeed, and reserving here —
             // on the loop's own thread, where a failure is just a failed run — is what lets a

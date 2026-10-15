@@ -71,8 +71,8 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     /// </param>
     /// <param name="sandboxOptions">
     /// Test <see cref="SandboxGatewayOptions"/> paired with <paramref name="sandboxGatewayHandler"/>
-    /// (a temp <c>WorkspaceBasePath</c>, a closed-port <c>BaseUrl</c> so the gateway MCP transport
-    /// fails fast and degrades, etc.). Required when a handler is supplied; ignored otherwise.
+    /// (a temp <c>WorkspaceBasePath</c> and an inert <c>BaseUrl</c>). Capturing handlers also replace
+    /// the MCP transport and return 503 immediately. Required when a handler is supplied; ignored otherwise.
     /// </param>
     /// <param name="copilotModels">
     /// Optional stub GitHub Copilot models. When set, the <see cref="ProviderRegistry"/> singleton is
@@ -265,6 +265,13 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
 
                 services.RemoveAll<SandboxGatewayOptions>();
                 services.AddSingleton(sandboxOptions);
+                if (_sandboxGatewayHandler is CapturingSandboxGatewayHandler)
+                {
+                    services.AddKeyedSingleton<HttpMessageHandler>(
+                        Program.SandboxMcpTransportHandlerKey,
+                        _sandboxGatewayHandler
+                    );
+                }
 
                 services.RemoveAll<IWorkspaceStore>();
                 var workspacesPath = Path.Combine(Path.GetDirectoryName(_conversationPath)!, "workspaces");

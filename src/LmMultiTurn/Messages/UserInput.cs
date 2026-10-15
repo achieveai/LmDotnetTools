@@ -26,6 +26,13 @@ public record UserInput(
     bool SuppressActionTools = false
 )
 {
+    /// <summary>Opts this input into a final-report run with one fixed deadline; unsupported loops refuse it.</summary>
+    public DateTimeOffset? FinalReportDeadlineUtc { get; init; }
+
+    /// <summary>Captured in-process origin for a notification delivered to an opted-in operation.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public FinalReportCompletionGate? FinalReportOperation { get; init; }
+
     /// <summary>Preserves the constructor used by previously compiled consumers.</summary>
     public UserInput(List<IMessage> Messages, string? InputId, string? ParentRunId, bool SuppressSubAgentSpawning)
         : this(Messages, InputId, ParentRunId, SuppressSubAgentSpawning, false) { }

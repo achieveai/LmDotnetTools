@@ -87,6 +87,51 @@ public sealed class AdoPrProviderTests : LoggingTestBase
             LoggerFactory.CreateLogger<AdoPrProvider>()
         );
 
+    [Theory]
+    [InlineData("valid")]
+    [InlineData("missing")]
+    [InlineData("malformed")]
+    [InlineData("repository")]
+    [InlineData("project")]
+    [InlineData("pr")]
+    [InlineData("conflict")]
+    public async Task Single_pr_native_identity_is_bound_to_the_requested_destination(string scenario)
+    {
+        const string nativeId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        var repository = new System.Text.Json.Nodes.JsonObject
+        {
+            ["id"] = scenario == "malformed" ? "not-a-guid" : nativeId.ToUpperInvariant(),
+            ["name"] = scenario == "repository" ? "another" : "WIDGETS",
+            ["project"] = new System.Text.Json.Nodes.JsonObject
+            {
+                ["name"] = scenario == "project" ? "another" : "PLATFORM",
+            },
+        };
+        var payload = new System.Text.Json.Nodes.JsonObject
+        {
+            ["pullRequestId"] = scenario == "pr" ? 43 : 42,
+            ["status"] = "active",
+            ["lastMergeSourceCommit"] = new System.Text.Json.Nodes.JsonObject { ["commitId"] = "head" },
+            ["lastMergeTargetCommit"] = new System.Text.Json.Nodes.JsonObject { ["commitId"] = "base" },
+        };
+        if (scenario != "missing")
+            payload["repository"] = repository;
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullrequests/42", payload.ToJsonString());
+        var provider = Provider(handler);
+        var repo = Repo with { RepoStableId = scenario == "conflict" ? "bbbbbbbb-cccc-dddd-eeee-ffffffffffff" : null };
+        if (scenario is "valid" or "missing")
+        {
+            var descriptor = await provider.GetPullRequestAsync(repo, "42", default);
+            descriptor!.RepositoryStableId.Should().Be(scenario == "missing" ? null : nativeId);
+        }
+        else
+            await provider
+                .Invoking(value => value.GetPullRequestAsync(repo, "42", default))
+                .Should()
+                .ThrowAsync<InvalidDataException>();
+        handler.Requests.Should().ContainSingle();
+    }
+
     [Fact]
     public void Provider_id_is_ado()
     {

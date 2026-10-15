@@ -30,6 +30,8 @@ internal static class SchemaMigrations
         ),
         new Migration(12, V12Sql),
         new Migration(13, V13Sql),
+        new Migration(14, V14Sql),
+        new Migration(15, V15Sql),
     ];
 
     // ── v1: initial orchestration schema ─────────────────────────────────────────────────────────
@@ -413,5 +415,49 @@ internal static class SchemaMigrations
     // erasing, resetting, or reordering the completed row itself.
     private const string V13Sql = """
         ALTER TABLE review_run ADD COLUMN generation INTEGER NOT NULL DEFAULT 0;
+        """;
+
+    // Expand first so an interrupted upgrade preserves the old identity and every legacy row.
+    private const string V14Sql = """
+        ALTER TABLE workflow_round ADD COLUMN review_run_id INTEGER NULL REFERENCES review_run (id);
+        CREATE INDEX ix_workflow_round_owner ON workflow_round (review_run_id, kind, id DESC);
+        """;
+
+    // Contract only after v14: preserve legacy rounds without guessing their owner from the PR head.
+    private const string V15Sql = """
+        CREATE TABLE workflow_round_replacement (
+            id                   INTEGER PRIMARY KEY,
+            repo_id              INTEGER NOT NULL REFERENCES repo (id),
+            pr_id                TEXT NOT NULL,
+            head_sha             TEXT NOT NULL,
+            kind                 TEXT NOT NULL,
+            event_key            TEXT NOT NULL,
+            frozen_input_json    TEXT NOT NULL,
+            workflow_instance_id TEXT NULL,
+            outcome              TEXT NOT NULL,
+            completed_at         TEXT NULL,
+            created_at           TEXT NOT NULL,
+            updated_at           TEXT NOT NULL,
+            review_run_id        INTEGER NULL REFERENCES review_run (id)
+        );
+        INSERT INTO workflow_round_replacement (
+            id, repo_id, pr_id, head_sha, kind, event_key, frozen_input_json,
+            workflow_instance_id, outcome, completed_at, created_at, updated_at, review_run_id)
+        SELECT id, repo_id, pr_id, head_sha, kind, event_key, frozen_input_json,
+               workflow_instance_id, outcome, completed_at, created_at, updated_at, review_run_id
+        FROM workflow_round;
+        DROP TABLE workflow_round;
+        ALTER TABLE workflow_round_replacement RENAME TO workflow_round;
+        CREATE UNIQUE INDEX ux_workflow_round_owner_event
+            ON workflow_round (review_run_id, kind, event_key)
+            WHERE review_run_id IS NOT NULL;
+        CREATE UNIQUE INDEX ux_workflow_round_legacy_event
+            ON workflow_round (repo_id, pr_id, head_sha, kind, event_key)
+            WHERE review_run_id IS NULL;
+        CREATE INDEX ix_workflow_round_pending
+            ON workflow_round (repo_id, id)
+            WHERE completed_at IS NULL;
+        CREATE INDEX ix_workflow_round_owner
+            ON workflow_round (review_run_id, kind, id DESC);
         """;
 }

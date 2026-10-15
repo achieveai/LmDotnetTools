@@ -21,6 +21,38 @@ internal sealed record ReviewSlot(string RepositoryName, int Index)
     }
 }
 
+internal sealed class ReviewSlotClaim : IAsyncDisposable
+{
+    private int _state;
+    private readonly ILogger _logger;
+
+    public ReviewSlotClaim(ReviewSlotPool pool, ReviewSlot slot, ILogger logger)
+    {
+        Pool = pool;
+        Slot = slot;
+        _logger = logger;
+    }
+
+    public ReviewSlot Slot { get; }
+    public ReviewSlotPool Pool { get; }
+
+    public void Transfer()
+    {
+        if (Interlocked.CompareExchange(ref _state, 1, 0) != 0)
+            throw new InvalidOperationException("Review slot claim was already transferred or returned.");
+        _logger.LogDebug("Review slot claim transferred {SlotName}", Slot.Name);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.CompareExchange(ref _state, 2, 0) == 0)
+        {
+            await Pool.ReturnAsync(Slot, CancellationToken.None).ConfigureAwait(false);
+            _logger.LogDebug("Untransferred review slot claim returned {SlotName}", Slot.Name);
+        }
+    }
+}
+
 internal interface IReviewSlotPool
 {
     IReadOnlyList<ReviewSlot> Slots { get; }
@@ -98,6 +130,29 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
 
     public IReadOnlyList<ReviewSlot> Slots { get; }
 
+    internal ReviewSlotClaim? TryClaim(string repositoryName, ReviewSlot? preferred = null)
+    {
+        var canonical = CanonicalRepository(repositoryName);
+        if (preferred is not null && (preferred.RepositoryName != canonical || !Slots.Contains(preferred)))
+            throw new SlotAddressUnusableException("Preferred review slot is not configured for this repository.");
+        lock (_gate)
+        {
+            var slot = preferred is null ? TakeAvailable(canonical) : TakePreferred(preferred);
+            if (slot is null)
+                return null;
+            _logger.LogDebug("Review slot claimed {SlotName}", slot.Name);
+            return new ReviewSlotClaim(this, slot, _logger);
+        }
+    }
+
+    private ReviewSlot? TakePreferred(ReviewSlot slot)
+    {
+        if (_active.Contains(slot) || _retired.Contains(slot))
+            return null;
+        _active.Add(slot);
+        return slot;
+    }
+
     public async Task<ReviewSlot> LeaseAsync(string repositoryName, CancellationToken cancellationToken)
     {
         var canonical = CanonicalRepository(repositoryName);
@@ -171,6 +226,7 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
                 throw new InvalidOperationException("Cannot return a slot that this pool does not hold.");
             SignalChanged();
         }
+        _logger.LogDebug("Review slot returned {SlotName}", slot.Name);
         return Task.CompletedTask;
     }
 

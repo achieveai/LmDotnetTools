@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
+using AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
 using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
@@ -69,6 +70,14 @@ internal sealed class ReviewWorkflowInvoker(
         try
         {
             var evidence = await ReadResultAsync(invocation, ct).ConfigureAwait(false);
+            var active = await SettleCompletedSessionsAsync(
+                    ct,
+                    invocation,
+                    reconcilingCurrent: reconcile && evidence?.Status != WorkflowInvocationStatus.Completed
+                )
+                .ConfigureAwait(false);
+            if (active is not null)
+                return active;
             if (evidence is { Status: WorkflowInvocationStatus.Completed or WorkflowInvocationStatus.Failed })
                 return evidence;
             if (invocation.Task.Delegate == DelegateKind.Agent && invocation.DeadlineUtc is null)
@@ -154,12 +163,16 @@ internal sealed class ReviewWorkflowInvoker(
                             || ex is Win32Exception
                         )
                     {
-                        // Process-start failures (for example, a missing configured interpreter) happen before
-                        // the script can execute or produce an external effect. Record them as a settled failure
-                        // so the runtime does not strand the occurrence InFlight and reconcile it forever.
+                        // A closure failure may follow a successful main push. Without its exact integration
+                        // proof, retain uncertainty instead of authorizing disposable reset and fresh model work.
                         result = new(
-                            HasUnresolvedReceipt("workflow-")
+                            ex is ReviewPublicationUncertainException
+                            || HasUnresolvedReceipt("workflow-")
                             || Path.GetFileNameWithoutExtension(invocation.Task.Script) == "fetch-discussion"
+                            || (
+                                Path.GetFileNameWithoutExtension(invocation.Task.Script) == "close-artifact-branch"
+                                && !HasConfirmedIntegration(invocation)
+                            )
                                 ? WorkflowInvocationStatus.Unknown
                                 : WorkflowInvocationStatus.Failed,
                             Error: WorkflowAgentInvoker.Diagnostic(ex)
@@ -170,6 +183,8 @@ internal sealed class ReviewWorkflowInvoker(
             else
                 result = new(WorkflowInvocationStatus.Failed, Error: "Unsupported workflow invocation delegate.");
 
+            if (result.Status == WorkflowInvocationStatus.Unknown && invocation.Task.Delegate == DelegateKind.Agent)
+                result = await ClassifyInactiveAttemptAsync(invocation, callerToken).ConfigureAwait(false) ?? result;
             if (result.Status == WorkflowInvocationStatus.Completed && invocation.Task.Delegate == DelegateKind.Agent)
                 result = await ValidateAgentResultAsync(invocation, result, ct).ConfigureAwait(false);
             await SaveResultAsync(invocation, result, ct).ConfigureAwait(false);
@@ -200,6 +215,15 @@ internal sealed class ReviewWorkflowInvoker(
         {
             // A missing response/evidence does not authorize replaying a script that may have committed
             // an external effect. Reconciliation must recover its receipt or keep the invocation blocked.
+            if (invocation.Task.Delegate == DelegateKind.Agent)
+            {
+                var failed = await ClassifyInactiveAttemptAsync(invocation, callerToken).ConfigureAwait(false);
+                if (failed is not null)
+                {
+                    await SaveResultAsync(invocation, failed, callerToken).ConfigureAwait(false);
+                    return failed;
+                }
+            }
             return new(WorkflowInvocationStatus.Unknown, Error: WorkflowAgentInvoker.Diagnostic(ex));
         }
     }
@@ -356,6 +380,135 @@ internal sealed class ReviewWorkflowInvoker(
         );
     }
 
+    /// <summary>Recheck completed session owners before a later phase or a validated-runtime resume.</summary>
+    internal async Task<WorkflowInvocationResult?> SettleCompletedSessionsAsync(
+        CancellationToken ct,
+        WorkflowInvocation? current = null,
+        WorkflowInstanceSnapshot? snapshot = null,
+        bool reconcilingCurrent = false,
+        bool includeFailed = false
+    )
+    {
+        try
+        {
+            if (snapshot is not null)
+                await ValidateCompletedEvidenceAsync(snapshot, ct).ConfigureAwait(false);
+            var directory = Path.Combine(Path.GetFullPath(runDirectory), "private");
+            if (!Directory.Exists(directory))
+                return null;
+            var sessions = new Dictionary<string, RawResult>(StringComparer.Ordinal);
+            foreach (var path in Directory.EnumerateFiles(directory, "invocation-*.json"))
+            {
+                ct.ThrowIfCancellationRequested();
+                if (new FileInfo(path).Length > checked(options.Limits.MaxArtifactPayloadChars * 4L))
+                    throw new InvalidOperationException("Invocation artifact exceeds the configured limit.");
+                var saved = JsonSerializer.Deserialize<RawResult>(
+                    await File.ReadAllTextAsync(path, ct).ConfigureAwait(false)
+                );
+                if (saved is null || saved.SchemaVersion != 1 || saved.Invocation.InstanceId != instanceId)
+                    throw new InvalidOperationException("Invocation artifact identity is invalid.");
+                var previous = saved.Invocation;
+                if (
+                    (
+                        saved.Result.Status != WorkflowInvocationStatus.Completed
+                        && !(includeFailed && saved.Result.Status == WorkflowInvocationStatus.Failed)
+                    )
+                    || previous.Task.Delegate != DelegateKind.Agent
+                    || previous.SessionId is not { } session
+                )
+                    continue;
+                if (
+                    !sessions.TryGetValue(session, out var latest)
+                    || previous.DeadlineUtc > latest.Invocation.DeadlineUtc
+                    || (
+                        previous.DeadlineUtc == latest.Invocation.DeadlineUtc
+                        && previous.Attempt > latest.Invocation.Attempt
+                    )
+                )
+                    sessions[session] = saved;
+            }
+            foreach (var (session, latest) in sessions)
+            {
+                // Reconciliation owns an unfinished current input. An older completed turn on that
+                // same parent must not impose its expired deadline on the still-running newer turn.
+                if (reconcilingCurrent && current?.SessionId == session)
+                    continue;
+                var previous = latest.Invocation;
+                var artifact = store.TryGetLatestArtifact(run.Id, "workflow-session:" + Hash(session));
+                var binding = artifact is null ? null : JsonSerializer.Deserialize<SessionBinding>(artifact.Payload);
+                var prepared = workspace.ReadPreparation(run).Workspace;
+                if (
+                    binding is null
+                    || binding.SessionId != session
+                    || string.IsNullOrWhiteSpace(binding.ThreadId)
+                    || binding.WorkspaceId != prepared.WorkspaceId
+                    || binding.ModeId != options.LmStreamingModeId
+                    || binding.WorkingDirectoryRelPath != prepared.WorkingDirectoryRelPath
+                    || binding.PublicationPolicyVersion != 1
+                )
+                    return new(
+                        WorkflowInvocationStatus.Unknown,
+                        Error: "Completed agent session binding is unavailable."
+                    );
+                var activityDeadline = previous.DeadlineUtc;
+                if (
+                    current?.DeadlineUtc is { } currentDeadline
+                    && (activityDeadline is null || currentDeadline < activityDeadline)
+                )
+                    activityDeadline = currentDeadline;
+                var pending = await WaitForActivityAsync(binding.ThreadId, activityDeadline, ct).ConfigureAwait(false);
+                if (pending is not null)
+                    return pending;
+            }
+            return sessions.Count > 0 && HasUnresolvedReceipt("workflow-publication")
+                ? new(WorkflowInvocationStatus.Unknown, Error: "A publication receipt is unresolved.")
+                : null;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            return new(WorkflowInvocationStatus.Unknown, Error: WorkflowAgentInvoker.Diagnostic(ex));
+        }
+    }
+
+    private async Task ValidateCompletedEvidenceAsync(WorkflowInstanceSnapshot snapshot, CancellationToken ct)
+    {
+        if (snapshot.InstanceId != instanceId || snapshot.Definition is null)
+            throw new InvalidOperationException("Workflow completion evidence belongs to another instance.");
+        foreach (var occurrence in snapshot.Tasks.Where(task => task.Status == WorkflowTaskStatus.Validated))
+        {
+            var task = snapshot
+                .Definition.Nodes.OfType<ProceduralNode>()
+                .SingleOrDefault(node => node.Id == occurrence.NodeId)
+                ?.TaskList?.SingleOrDefault(value => value.Id == occurrence.TaskId);
+            if (task?.Delegate != DelegateKind.Agent)
+                continue;
+            var id = occurrence.ToolCallId ?? $"{instanceId}/{occurrence.Name}/{occurrence.Attempts}";
+            var path = Path.Combine(runDirectory, "private", "invocation-" + Hash(id) + ".json");
+            if (!File.Exists(path) || new FileInfo(path).Length > checked(options.Limits.MaxArtifactPayloadChars * 4L))
+                throw new InvalidOperationException("Validated agent invocation evidence is unavailable.");
+            var saved = JsonSerializer.Deserialize<RawResult>(
+                await File.ReadAllTextAsync(path, ct).ConfigureAwait(false)
+            );
+            if (
+                saved is null
+                || saved.SchemaVersion != 1
+                || saved.Result.Status != WorkflowInvocationStatus.Completed
+                || saved.Invocation.InstanceId != instanceId
+                || saved.Invocation.InvocationId != id
+                || saved.Invocation.UnitName != occurrence.Name
+                || saved.Invocation.Task.Id != occurrence.TaskId
+                || saved.Invocation.Attempt != occurrence.Attempts + 1
+                || saved.Invocation.SessionId != snapshot.Sessions[task.Session ?? occurrence.NodeId]
+                || saved.Invocation.DeadlineUtc != snapshot.Deadlines[occurrence.Name]
+            )
+                throw new InvalidOperationException("Validated agent invocation evidence does not match the snapshot.");
+        }
+    }
+
     private async Task<WorkflowInvocationResult?> SettleAsync(
         WorkflowInvocation invocation,
         string threadId,
@@ -367,28 +520,143 @@ internal sealed class ReviewWorkflowInvoker(
             .ConfigureAwait(false);
         if (HasUnresolvedReceipt("workflow-publication"))
             return new(WorkflowInvocationStatus.Unknown, Error: "A publication receipt is unresolved.");
+        return await WaitForActivityAsync(threadId, invocation.DeadlineUtc, ct).ConfigureAwait(false)
+            ?? (
+                HasUnresolvedReceipt("workflow-publication")
+                    ? new(WorkflowInvocationStatus.Unknown, Error: "A publication receipt is unresolved.")
+                    : null
+            );
+    }
+
+    private async Task<WorkflowInvocationResult?> ClassifyInactiveAttemptAsync(
+        WorkflowInvocation invocation,
+        CancellationToken ct
+    )
+    {
+        if (
+            invocation.DeadlineUtc is not { } deadline
+            || deadline > DateTimeOffset.UtcNow
+            || invocation.SessionId is not { } session
+            || workspace.HasUnsettledPreparation(run.Id)
+            || store
+                .GetOutboxForRun(run.Id)
+                .Any(entry => entry.Status is not (OutboxStatus.Posted or OutboxStatus.Sent or OutboxStatus.Collected))
+            || (
+                store.TryGetLatestArtifact(run.Id, "workflow-attempt-reset-intent") is not null
+                && store.TryGetLatestArtifact(run.Id, "workflow-attempt-reset") is null
+            )
+        )
+            return null;
+        try
+        {
+            _ = await ReadResultAsync(invocation, ct).ConfigureAwait(false);
+            var artifact = store.TryGetLatestArtifact(run.Id, "workflow-session:" + Hash(session));
+            var binding = artifact is null ? null : JsonSerializer.Deserialize<SessionBinding>(artifact.Payload);
+            var prepared = workspace.ReadPreparation(run).Workspace;
+            if (
+                binding is null
+                || binding.SessionId != session
+                || string.IsNullOrWhiteSpace(binding.ThreadId)
+                || binding.WorkspaceId != prepared.WorkspaceId
+                || binding.ModeId != options.LmStreamingModeId
+                || binding.WorkingDirectoryRelPath != prepared.WorkingDirectoryRelPath
+                || binding.PublicationPolicyVersion != 1
+            )
+                return null;
+            var key = WorkflowAgentInvoker.InvocationKey(invocation);
+            var original = await client
+                .GetStatusByInputIdAsync(
+                    binding.ThreadId,
+                    AchieveAi.LmDotnetTools.LmMultiTurn.Messages.IdempotentInputId.Create(
+                        key,
+                        invocation.IsCorrection,
+                        invocation.IsCorrection
+                    ),
+                    ct
+                )
+                .ConfigureAwait(false);
+            if (original.Status is not ("Completed" or "Errored") || string.IsNullOrWhiteSpace(original.RunId))
+                return null;
+            if (await SynthesisIntentAsync(invocation, binding.ThreadId, false, ct).ConfigureAwait(false))
+            {
+                var inputId = AchieveAi.LmDotnetTools.LmMultiTurn.Messages.IdempotentInputId.Create(
+                    key + ":synthesis",
+                    true,
+                    true
+                );
+                try
+                {
+                    var finalization = await client
+                        .GetStatusByInputIdAsync(binding.ThreadId, inputId, ct)
+                        .ConfigureAwait(false);
+                    if (
+                        finalization.Status is not ("Completed" or "Errored")
+                        || string.IsNullOrWhiteSpace(finalization.RunId)
+                    )
+                        return null;
+                }
+                catch (HttpRequestException)
+                {
+                    await client.RequireUnacceptedInputAsync(binding.ThreadId, inputId, ct).ConfigureAwait(false);
+                }
+            }
+            if (await WaitForActivityAsync(binding.ThreadId, deadline, ct).ConfigureAwait(false) is not null)
+                return null;
+            if (
+                store
+                    .GetOutboxForRun(run.Id)
+                    .Any(entry =>
+                        entry.Status is not (OutboxStatus.Posted or OutboxStatus.Sent or OutboxStatus.Collected)
+                    )
+            )
+                return null;
+            return new(
+                WorkflowInvocationStatus.Failed,
+                Error: "Expired hosted attempt is inactive; disposable work will reset."
+            );
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+            when (ex
+                    is IOException
+                        or HttpRequestException
+                        or InvalidOperationException
+                        or ArgumentException
+                        or JsonException
+            )
+        {
+            return null;
+        }
+    }
+
+    private async Task<WorkflowInvocationResult?> WaitForActivityAsync(
+        string threadId,
+        DateTimeOffset? deadlineUtc,
+        CancellationToken ct
+    )
+    {
         var barrier = new ReviewSubAgentCompletionBarrier(
-            new S2SReviewSubAgentCompletionSource(client),
+            new S2SReviewSubAgentCompletionSource(client, includeParentActivity: true),
             TimeSpan.FromSeconds(options.ReviewSubAgentBarrierQuietSeconds),
             loggerFactory.CreateLogger<ReviewSubAgentCompletionBarrier>(),
             unknownQuiescence: TimeSpan.Zero
         );
         var deadline =
-            invocation.DeadlineUtc
-            ?? throw new InvalidOperationException("Agent invocation requires a persisted deadline.");
+            deadlineUtc ?? throw new InvalidOperationException("Agent invocation requires a persisted deadline.");
         if (deadline <= DateTimeOffset.UtcNow)
         {
             if (await barrier.TryConfirmSettledAsync(run, threadId, ct).ConfigureAwait(false) is null)
                 return new(
                     WorkflowInvocationStatus.Unknown,
-                    Error: "Descendant work remains unresolved after the invocation deadline."
+                    Error: "Parent or descendant work remains unresolved after the invocation deadline."
                 );
         }
         else
             await barrier.WaitAsync(run, threadId, deadline, _ => Task.CompletedTask, ct).ConfigureAwait(false);
-        return HasUnresolvedReceipt("workflow-publication")
-            ? new(WorkflowInvocationStatus.Unknown, Error: "A publication receipt is unresolved.")
-            : null;
+        return null;
     }
 
     private async Task<JsonArray> ReadAdmittedDiscussionAsync(CancellationToken ct)
@@ -471,7 +739,7 @@ internal sealed class ReviewWorkflowInvoker(
                 invocation.IsCorrection
             ),
             ["Key"] = WorkflowAgentInvoker.InvocationKey(invocation) + ":synthesis",
-            ["Prompt"] = WorkflowAgentInvoker.SynthesisPrompt,
+            ["Prompt"] = WorkflowAgentInvoker.FinalizationPrompt(invocation),
             ["DeadlineUtc"] = invocation.DeadlineUtc?.ToString("O"),
             ["SuppressSubAgentSpawning"] = true,
             ["SuppressActionTools"] = true,
@@ -495,6 +763,32 @@ internal sealed class ReviewWorkflowInvoker(
             }
         );
         return Task.FromResult(true);
+    }
+
+    private bool HasConfirmedIntegration(WorkflowInvocation invocation)
+    {
+        try
+        {
+            var artifact = store.TryGetLatestArtifact(run.Id, "workflow-content-integration");
+            var proof = artifact is null ? null : JsonNode.Parse(artifact.Payload) as JsonObject;
+            var branch = invocation.Input["ArtifactBranch"]?.GetValue<string>();
+            var retainedSha = invocation.Input["RetainedSha"]?.GetValue<string>();
+            return artifact?.ArtifactSchemaVersion == 1
+                && invocation.InstanceId == instanceId
+                && proof?["WorkflowInstanceId"]?.GetValue<string>() == invocation.InstanceId
+                && !string.IsNullOrWhiteSpace(branch)
+                && proof["ArtifactBranch"]?.GetValue<string>() == branch
+                && IsCommitSha(retainedSha)
+                && proof["RetainedSha"]?.GetValue<string>() == retainedSha
+                && IsCommitSha(proof["MainSha"]?.GetValue<string>());
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or ArgumentException)
+        {
+            return false;
+        }
+
+        static bool IsCommitSha(string? value) =>
+            value is { Length: 40 } && value.All(character => character is (>= '0' and <= '9') or (>= 'a' and <= 'f'));
     }
 
     private bool HasUnresolvedReceipt(string kindPrefix) =>

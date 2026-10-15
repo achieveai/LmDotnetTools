@@ -877,6 +877,13 @@ public class ConversationsControllerTests
 
         using var ct = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await WaitUntilChildAwaitingQuestionAsync(loop.SubAgentManager!, agentId, ct.Token);
+        await Wait.UntilAsync(
+            () => !pool.IsRunInProgress(threadId),
+            "the parent notification turn settled before testing the pending-question guard",
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(20),
+            cancellationToken: ct.Token
+        );
 
         return pool;
     }

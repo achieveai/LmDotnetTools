@@ -151,6 +151,9 @@ internal interface IReviewAgentTranscriptSource
 /// <summary>One observation of the whole descendant roster, flattened across every depth.</summary>
 internal sealed record ReviewSubAgentTreeSnapshot(IReadOnlyList<ReviewSubAgentNode> Nodes)
 {
+    /// <summary>Workflow sources also observe the root; descendant-only sources retain their existing contract.</summary>
+    public bool ParentIsIdle { get; init; } = true;
+
     /// <summary>What <see cref="ToSafeInventory"/> renders for a review that dispatched no sub-agents. A
     /// blank inventory would read as a truncated prompt; this says plainly there is nothing to fold in.</summary>
     public const string NoSubAgents = "No sub-agents were dispatched.";
@@ -281,11 +284,14 @@ internal sealed class ReviewSubAgentCompletionBarrier
     )
     {
         var first = await _source.GetSnapshotAsync(run, parentThreadId, ct).ConfigureAwait(false);
-        if (!first.Nodes.All(IsTerminal))
+        if (!first.ParentIsIdle || !first.Nodes.All(IsTerminal))
             return null;
         await Task.Delay(_quietPeriod, _timeProvider, ct).ConfigureAwait(false);
         var second = await _source.GetSnapshotAsync(run, parentThreadId, ct).ConfigureAwait(false);
-        return second.Nodes.All(IsTerminal) && SameIdentity(Canonicalize(first.Nodes), Canonicalize(second.Nodes))
+        return
+            second.ParentIsIdle
+            && second.Nodes.All(IsTerminal)
+            && SameIdentity(Canonicalize(first.Nodes), Canonicalize(second.Nodes))
             ? second
             : null;
     }
@@ -384,7 +390,7 @@ internal sealed class ReviewSubAgentCompletionBarrier
                 continue;
             }
 
-            if (AllSettled(canonical, now))
+            if (snapshot.ParentIsIdle && AllSettled(canonical, now))
             {
                 if (candidate is not null && SameIdentity(candidate, canonical))
                 {

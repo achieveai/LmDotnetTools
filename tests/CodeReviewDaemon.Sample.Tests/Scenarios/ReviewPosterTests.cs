@@ -21,6 +21,146 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// </summary>
 public sealed class ReviewPosterTests : LoggingTestBase
 {
+    [Fact]
+    public async Task Final_review_resolves_native_identity_without_changing_retention_keys_or_reposting_after_merge()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repo = Repo with { Provider = "azure-devops", Project = "Platform", RepoStableId = null };
+        var repoId = store.EnsureRepo(repo);
+        var seed = store.GetReviewRun(SeedRun(store))!;
+        var run = store.CreateOrGetReviewRun(seed with { Id = 0, RepoId = repoId });
+        const string nativeId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        var descriptor = new PullRequestDescriptor
+        {
+            PrId = run.PrId,
+            HeadSha = run.HeadSha,
+            BaseSha = run.BaseSha,
+            TriggerWatermark = run.TriggerWatermark,
+            LifecycleState = PrLifecycleState.Open,
+            RepositoryStableId = nativeId,
+        };
+        var provider = new MockPrProvider(
+            "ado",
+            [descriptor],
+            new OpaqueCursor
+            {
+                Provider = "ado",
+                Scope = "test",
+                CursorVersion = 1,
+                CursorPayload = "cursor",
+            }
+        );
+        var publisher = new FakeReviewCommentPublisher("ado");
+        var poster = Poster(publisher, store);
+        var first = await poster.PostFinalReviewAsync(run, repo, "Final report", provider, () => true, default);
+        publisher.PostedKeys.Single().Should().Contain(nativeId);
+        store.GetRepo(repoId)!.Should().Be(repo);
+        var entry = store.GetOutboxForRun(run.Id).Single();
+        provider.ReplacePullRequest(descriptor with { LifecycleState = PrLifecycleState.Merged, HeadSha = "landed" });
+        var replay = await poster.PostFinalReviewAsync(run, repo, "Final report", provider, () => true, default);
+        var proof = await poster.ReconcileFinalReviewAsync(run, repo, "Final report", default, provider);
+        JsonNode.DeepEquals(first, replay).Should().BeTrue();
+        JsonNode.DeepEquals(first, proof).Should().BeTrue();
+        store.TryTransitionOutbox(entry.Id, OutboxStatus.Posted, OutboxStatus.Sending).Should().BeTrue();
+        await poster.ReconcileFinalReviewAsync(run, repo, "Final report", default, provider);
+        store.GetOutbox(entry.Id)!.Status.Should().Be(OutboxStatus.Posted);
+        publisher.PostCount.Should().Be(1);
+        provider.ReplacePullRequest(descriptor with { RepositoryStableId = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff" });
+        await poster
+            .Invoking(value => value.PostFinalReviewAsync(run, repo, "Final report", provider, () => true, default))
+            .Should()
+            .ThrowAsync<InvalidDataException>()
+            .WithMessage("*another repository identity*");
+        publisher.PostCount.Should().Be(1);
+        store.GetOutboxForRun(run.Id).Should().ContainSingle();
+        store.GetRepo(repoId)!.Should().Be(repo);
+    }
+
+    [Fact]
+    public async Task Daemon_final_review_replays_one_receipt_and_refuses_a_changed_provider_head()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var run = store.GetReviewRun(SeedRun(store))!;
+        var descriptor = new PullRequestDescriptor
+        {
+            PrId = run.PrId,
+            HeadSha = run.HeadSha,
+            BaseSha = run.BaseSha,
+            TriggerWatermark = run.TriggerWatermark,
+            LifecycleState = PrLifecycleState.Open,
+        };
+        var provider = new MockPrProvider(
+            "github",
+            [descriptor],
+            new OpaqueCursor
+            {
+                Provider = "github",
+                Scope = "test",
+                CursorVersion = 1,
+                CursorPayload = "cursor",
+            }
+        );
+        var publisher = new FakeReviewCommentPublisher();
+        var poster = Poster(publisher, store);
+        var first = await poster.PostFinalReviewAsync(run, Repo, "Final graded review", provider, () => true, default);
+        var replay = await poster.PostFinalReviewAsync(run, Repo, "Final graded review", provider, () => true, default);
+        JsonNode.DeepEquals(first, replay).Should().BeTrue();
+        publisher.PostCount.Should().Be(1);
+        provider.ReplacePullRequest(descriptor with { HeadSha = "changed" });
+        var next = store.CreateOrGetReviewRun(run with { Id = 0, HeadSha = "new-head" });
+        await poster
+            .Invoking(value => value.PostFinalReviewAsync(next, Repo, "New report", provider, () => true, default))
+            .Should()
+            .ThrowAsync<InvalidOperationException>()
+            .WithMessage("*current open PR*");
+        publisher.PostCount.Should().Be(1);
+        provider.GetPullRequestCalls.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task Final_review_restart_reads_receipt_or_provider_proof_without_sending_again()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var run = store.GetReviewRun(SeedRun(store))!;
+        var descriptor = new PullRequestDescriptor
+        {
+            PrId = run.PrId,
+            HeadSha = run.HeadSha,
+            BaseSha = run.BaseSha,
+            TriggerWatermark = run.TriggerWatermark,
+            LifecycleState = PrLifecycleState.Open,
+        };
+        var provider = new MockPrProvider(
+            "github",
+            [descriptor],
+            new OpaqueCursor
+            {
+                Provider = "github",
+                Scope = "test",
+                CursorVersion = 1,
+                CursorPayload = "cursor",
+            }
+        );
+        var publisher = new FakeReviewCommentPublisher();
+        var poster = Poster(publisher, store);
+        await poster.PostFinalReviewAsync(run, Repo, "Final report", provider, () => true, default);
+        var entry = store.GetOutboxForRun(run.Id).Single();
+        var posted = await poster.ReconcileFinalReviewAsync(run, Repo, "Final report", default);
+        posted!["Actions"]![0]!["ReceiptId"]!.GetValue<long>().Should().Be(entry.Id);
+        store.TryTransitionOutbox(entry.Id, OutboxStatus.Posted, OutboxStatus.Sending).Should().BeTrue();
+        await poster.ReconcileFinalReviewAsync(run, Repo, "Final report", default);
+        store.GetOutbox(entry.Id)!.Status.Should().Be(OutboxStatus.Posted);
+        publisher.PostCount.Should().Be(1);
+        await poster
+            .Invoking(value => value.ReconcileFinalReviewAsync(run, Repo, "different report", default))
+            .Should()
+            .ThrowAsync<InvalidDataException>();
+        publisher.PostCount.Should().Be(1);
+    }
+
     [Theory]
     [InlineData("review_publish_summary")]
     [InlineData("review_publish_inline")]

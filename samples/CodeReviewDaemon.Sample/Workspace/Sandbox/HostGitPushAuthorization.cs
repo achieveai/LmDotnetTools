@@ -99,6 +99,11 @@ internal sealed class HostGitPushAuthorization
         ArgumentException.ThrowIfNullOrWhiteSpace(branch);
         ArgumentException.ThrowIfNullOrWhiteSpace(expectedSha);
         ArgumentException.ThrowIfNullOrWhiteSpace(remote);
+        if (_scoped.Value is { } scoped)
+        {
+            scoped.AuthorizeGuardedDelete(branch, expectedSha, remote);
+            return;
+        }
         lock (_gate)
         {
             _deleteGrant = (branch, expectedSha, remote);

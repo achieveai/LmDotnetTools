@@ -1,7 +1,12 @@
+using System.Net;
+using System.Reflection;
+using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -20,6 +25,104 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// </summary>
 public sealed class DaemonPrPollingCoverageWiringTests
 {
+    [Fact]
+    public async Task The_terminal_callback_reads_comments_through_the_registered_publishers()
+    {
+        using var factory = new DaemonWebAppFactory();
+        using var http = new CapabilitiesOnlyHandler();
+        var root = Path.Combine(Path.GetTempPath(), "terminal-reader-wiring-" + Guid.NewGuid().ToString("N"));
+        Func<IServiceProvider, object>? pollingFactory = null;
+        using var configured = factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("CodeReviewDaemon:EnablePrPolling", "true");
+            builder.UseSetting("CodeReviewDaemon:EnableAdoProvider", "true");
+            builder.UseSetting("CodeReviewDaemon:EnableCommentPosting", "false");
+            builder.UseSetting("CodeReviewDaemon:EnableGitPush", "false");
+            builder.UseSetting("CodeReviewDaemon:ReviewBotRepoUrl", "https://github.com/fixture/store.git");
+            builder.UseSetting("CodeReviewDaemon:WorkflowStateDirectory", root);
+            builder.UseSetting("CodeReviewDaemon:WorkspaceHostRoot", root);
+            builder.ConfigureServices(services =>
+            {
+                // Keep Program's actual factory, but never start its polling loop or other app services.
+                pollingFactory = services
+                    .Last(descriptor =>
+                        descriptor.ServiceType == typeof(IHostedService) && descriptor.ImplementationFactory is not null
+                    )
+                    .ImplementationFactory;
+                services.RemoveAll<IHostedService>();
+                services.RemoveAll<LmStreamingS2SClient>();
+                services.AddSingleton(
+                    new LmStreamingS2SClient(
+                        new HttpClient(http) { BaseAddress = new Uri("https://fixture.invalid/") },
+                        "fixture",
+                        "app",
+                        "key"
+                    )
+                );
+            });
+        });
+
+        var publishers = configured.Services.GetServices<IReviewCommentPublisher>().ToArray();
+        publishers.Select(publisher => publisher.Provider).Should().BeEquivalentTo("github", "ado");
+        var capturing = new CommentReaderCapture(configured.Services);
+        using var poller = (PrPollingService)pollingFactory!(capturing);
+        capturing.ResolvedReaders.Clear();
+        var terminal =
+            (Func<IReadOnlyList<ReviewBranchInventoryEntry>, CancellationToken, Task>)
+                typeof(PrPollingService)
+                    .GetField("_processTerminal", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .GetValue(poller)!;
+
+        // Empty inventory exercises the actual delegate's DI wiring without provider, Git or workflow actions.
+        await terminal([], CancellationToken.None);
+
+        capturing
+            .ResolvedReaders.Should()
+            .ContainSingle()
+            .Subject.Should()
+            .Equal(publishers, "terminal completion must receive the configured publishers as comment readers");
+        http.Requests.Should().Equal("GET /api/conversations/capabilities");
+    }
+
+    private sealed class CommentReaderCapture(IServiceProvider inner) : IServiceProvider
+    {
+        public List<IReviewCommentReader[]> ResolvedReaders { get; } = [];
+
+        public object? GetService(Type serviceType)
+        {
+            var service = inner.GetService(serviceType);
+            if (
+                (
+                    serviceType == typeof(IEnumerable<IReviewCommentReader>)
+                    || serviceType == typeof(IEnumerable<IReviewCommentPublisher>)
+                ) && service is IEnumerable<IReviewCommentReader> readers
+            )
+                ResolvedReaders.Add(readers.ToArray());
+            return service;
+        }
+    }
+
+    private sealed class CapabilitiesOnlyHandler : HttpMessageHandler
+    {
+        public List<string> Requests { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            var operation = request.Method + " " + request.RequestUri!.AbsolutePath;
+            Requests.Add(operation);
+            if (operation != "GET /api/conversations/capabilities")
+                throw new InvalidOperationException("Only the fake startup capabilities request is allowed.");
+            return Task.FromResult(
+                new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        "{\"schemaVersion\":1,\"messageIdempotency\":true,\"spawnSuppression\":true,\"rootReasoningEffort\":true,\"actionToolSuppression\":true,\"conversationWorkingDirectory\":true}"
+                    ),
+                }
+            );
+        }
+    }
+
     [Fact]
     public void The_registered_github_provider_carries_the_configured_poll_bounds()
     {

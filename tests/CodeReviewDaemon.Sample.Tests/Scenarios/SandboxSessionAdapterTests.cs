@@ -90,6 +90,24 @@ public sealed class SandboxSessionAdapterTests
     }
 
     [Fact]
+    public async Task Operator_receipt_adapter_preserves_multi_megabyte_stdout_without_changing_default_cap()
+    {
+        var receipt = "{\"schema\":1,\"inventory\":\"" + new string('x', 2_184_989) + "\"}";
+        var gateway = new ScriptedSandboxGateway { CommandStdout = receipt };
+        await using var operatorAdapter = CreateAdapter(
+            gateway,
+            new SandboxLimits { MaxOutputChars = 32 * 1024 * 1024 }
+        );
+        var result = await operatorAdapter.RunAsync(
+            new SandboxCommand(["python3", "-c", "print(receipt)"]),
+            CancellationToken.None
+        );
+        result.Stdout.Should().Be(receipt);
+        result.Stdout.Should().NotContain(SandboxLimits.TruncationMarker);
+        new SandboxLimits().CapOutput(receipt).Should().Contain(SandboxLimits.TruncationMarker);
+    }
+
+    [Fact]
     public async Task RunAsync_maps_a_gateway_execution_timeout_to_TimeoutException()
     {
         var gateway = new ScriptedSandboxGateway { SimulateExecutionTimeout = true };

@@ -14,9 +14,9 @@ namespace LmStreaming.Sample.Browser.E2E.Tests.Infrastructure;
 ///         test can assert that the per-workspace marketplace selection actually reached the wire;</item>
 ///   <item>the discovered-items GET (empty) and the cleanup DELETE (no-op).</item>
 /// </list>
-/// The gateway's MCP endpoint is deliberately NOT served here: the app dials it with its own
-/// transport and degrades gracefully when it can't reach it (see <c>ConnectHttpMcpClient</c>), which
-/// is exactly what this test wants — no sandbox tools, just the observable create call.
+/// The fixture also injects this handler into the MCP transport. MCP requests return 503 immediately,
+/// exercising graceful degradation without a real connection or initialization timeout. Session
+/// liveness reads return the valid create response, so only MCP tools are unavailable.
 ///
 /// <para>
 /// <b>Auth-enforcement mode (issue #153):</b> by default (<see cref="CapturingSandboxGatewayHandler(bool)"/>
@@ -217,6 +217,19 @@ public sealed class CapturingSandboxGatewayHandler : HttpMessageHandler
             }
 
             return Json(CreateResponse);
+        }
+
+        if (
+            request.Method == HttpMethod.Get
+            && path.EndsWith("/api/v1/sandboxes/" + CreatedSessionId, StringComparison.Ordinal)
+        )
+        {
+            return Json(CreateResponse);
+        }
+
+        if (isMcp)
+        {
+            return Json("{}", HttpStatusCode.ServiceUnavailable);
         }
 
         if (isDiscovered)

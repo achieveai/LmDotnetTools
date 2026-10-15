@@ -430,6 +430,8 @@ public class OpenClient : BaseHttpService, IOpenClient
                         continue;
                     }
 
+                    LogStreamingResponseMetadata(res, requestId);
+
                     // Add default assistant role if not present. Fill the delta in place: the final chunk
                     // can still carry tool calls or reasoning, which a replacement delta would drop.
                     if (res.Choices?.Count > 0 && res.Choices[0].FinishReason != null)
@@ -475,6 +477,46 @@ public class OpenClient : BaseHttpService, IOpenClient
             stream?.Dispose();
             response?.Dispose();
         }
+    }
+
+    private void LogStreamingResponseMetadata(ChatCompletionResponse response, string requestId)
+    {
+        var choice = response.Choices?.FirstOrDefault();
+        if (choice?.FinishReason == null && (response.Usage == null || IsNoneUsage(response.Usage)))
+        {
+            return;
+        }
+
+        // Inspect the consumed first choice before normalization/filtering. Never log payload text.
+        var delta = choice?.Delta;
+        var finishReason = choice?.FinishReason switch
+        {
+            Choice.FinishReasonEnum.Stop => "stop",
+            Choice.FinishReasonEnum.Length => "length",
+            Choice.FinishReasonEnum.ModelLength => "model_length",
+            Choice.FinishReasonEnum.Error => "error",
+            Choice.FinishReasonEnum.ToolCalls => "tool_calls",
+            Choice.FinishReasonEnum.EndOfStream => "eos",
+            Choice.FinishReasonEnum.EndTurn => "end_turn",
+            null => "none",
+            _ => "other",
+        };
+        var hasContent =
+            delta?.Content != null
+            && (!delta.Content.Is<string>() || !string.IsNullOrEmpty(delta.Content.Get<string>()));
+        Logger.LogInformation(
+            "Streaming response metadata - RequestId: {RequestId}, ChoiceCount: {ChoiceCount}, FinishReason: {FinishReason}, HasDelta: {HasDelta}, HasContent: {HasContent}, HasToolCalls: {HasToolCalls}, HasReasoning: {HasReasoning}, PromptTokens: {PromptTokens}, CompletionTokens: {CompletionTokens}, TotalTokens: {TotalTokens}",
+            requestId,
+            response.Choices?.Count ?? 0,
+            finishReason,
+            delta != null,
+            hasContent,
+            delta?.ToolCalls?.Count > 0,
+            !string.IsNullOrEmpty(delta?.Reasoning) || delta?.ReasoningDetails?.Count > 0,
+            response.Usage?.PromptTokens,
+            response.Usage?.CompletionTokens,
+            response.Usage?.TotalTokens
+        );
     }
 
     /// <summary>

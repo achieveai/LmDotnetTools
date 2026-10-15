@@ -243,6 +243,120 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task WaitAsync_ParentBusyAfterDescendantsSettle_WaitsForAnIdleQuietPair()
+    {
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
+        var settled = new[]
+        {
+            Node("child", "root", 1, ReviewSubAgentStatus.Completed),
+            Node("grandchild", "thread-child", 2, ReviewSubAgentStatus.Completed),
+        };
+        var source = new ScriptedCompletionSource(
+            new ReviewSubAgentTreeSnapshot(settled) { ParentIsIdle = false },
+            new ReviewSubAgentTreeSnapshot(settled) { ParentIsIdle = false },
+            new ReviewSubAgentTreeSnapshot(settled),
+            new ReviewSubAgentTreeSnapshot(settled)
+        );
+        var barrier = CreateBarrier(source, clock);
+        var task = barrier.WaitAsync(
+            TestRun(),
+            "root",
+            clock.GetUtcNow() + TimeSpan.FromMinutes(1),
+            NoopValidator,
+            CancellationToken.None
+        );
+
+        await PumpAndStayClosedAsync(task, clock, TimeSpan.FromSeconds(1), steps: 2);
+        var result = await PumpUntilSettledAsync(task, clock, TimeSpan.FromSeconds(2));
+
+        result.Nodes.Should().HaveCount(2);
+        source
+            .CallCount.Should()
+            .BeGreaterThanOrEqualTo(4, "parent activity must block even a settled recursive roster");
+    }
+
+    [Fact]
+    public async Task WaitAsync_ParentResumesDuringQuietConfirmation_RequiresANewIdlePair()
+    {
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
+        var settled = new ReviewSubAgentTreeSnapshot([Node("child", "root", 1, ReviewSubAgentStatus.Completed)]);
+        var source = new ScriptedCompletionSource(settled, settled with { ParentIsIdle = false }, settled, settled);
+        var barrier = CreateBarrier(source, clock);
+        var task = barrier.WaitAsync(
+            TestRun(),
+            "root",
+            clock.GetUtcNow() + TimeSpan.FromMinutes(1),
+            NoopValidator,
+            CancellationToken.None
+        );
+
+        await PumpAndStayClosedAsync(task, clock, TimeSpan.FromSeconds(2), steps: 1);
+        var result = await PumpUntilSettledAsync(task, clock, TimeSpan.FromSeconds(2));
+
+        result.Nodes.Should().ContainSingle();
+        source.CallCount.Should().BeGreaterThanOrEqualTo(4, "the resumed parent invalidates the first candidate");
+    }
+
+    [Fact]
+    public async Task TryConfirmSettledAsync_ParentBusyOnEitherObservation_DeclinesConfirmation()
+    {
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
+        var settled = new ReviewSubAgentTreeSnapshot([Node("child", "root", 1, ReviewSubAgentStatus.Completed)]);
+        var firstBusy = new ScriptedCompletionSource(settled with { ParentIsIdle = false });
+        var firstResult = await CreateBarrier(firstBusy, clock)
+            .TryConfirmSettledAsync(TestRun(), "root", CancellationToken.None);
+        firstResult.Should().BeNull();
+        firstBusy.CallCount.Should().Be(1, "a busy first observation must not start a quiet wait");
+
+        var secondBusy = new ScriptedCompletionSource(settled, settled with { ParentIsIdle = false });
+        var task = CreateBarrier(secondBusy, clock).TryConfirmSettledAsync(TestRun(), "root", CancellationToken.None);
+        var secondResult = await PumpUntilSettledAsync(task, clock, QuietPeriod);
+        secondResult.Should().BeNull();
+        secondBusy.CallCount.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task WaitAsync_BusyParentConsumesOnlyTheOriginalDeadline()
+    {
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
+        var source = new ScriptedCompletionSource(new ReviewSubAgentTreeSnapshot([]) { ParentIsIdle = false });
+        var barrier = CreateBarrier(source, clock);
+        var task = barrier.WaitAsync(
+            TestRun(),
+            "root",
+            clock.GetUtcNow() + TimeSpan.FromSeconds(5),
+            NoopValidator,
+            CancellationToken.None
+        );
+
+        var act = () => PumpUntilSettledAsync(task, clock, TimeSpan.FromSeconds(1));
+        await act.Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        source.CallCount.Should().BeGreaterThan(1, "the parent must be polled until the original deadline");
+    }
+
+    [Fact]
+    public async Task WaitAsync_BusyParentHonorsCallerCancellation()
+    {
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
+        var source = new ScriptedCompletionSource(new ReviewSubAgentTreeSnapshot([]) { ParentIsIdle = false });
+        var barrier = CreateBarrier(source, clock);
+        using var cancellation = new CancellationTokenSource();
+        var task = barrier.WaitAsync(
+            TestRun(),
+            "root",
+            clock.GetUtcNow() + TimeSpan.FromMinutes(1),
+            NoopValidator,
+            cancellation.Token
+        );
+
+        (await clock.WaitForNextWaitAsync(TimeSpan.FromSeconds(5))).Should().BeTrue();
+        cancellation.Cancel();
+
+        await FluentActions.Awaiting(() => task).Should().ThrowAsync<OperationCanceledException>();
+        source.CallCount.Should().Be(1, "cancellation must not trigger another poll or reset the budget");
+    }
+
+    [Fact]
     public async Task WaitAsync_SecondIdenticalTerminalSnapshotOpens_EmptyTreeAlsoNeedsTwoSnapshots()
     {
         // Brief bullet 3: an empty descendant tree is vacuously "all terminal" but STILL requires two

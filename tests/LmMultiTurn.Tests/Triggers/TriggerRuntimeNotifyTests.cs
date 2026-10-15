@@ -85,6 +85,137 @@ public class TriggerRuntimeNotifyTests
     }
 
     [Fact]
+    public async Task Discard_stop_removes_durable_waits_without_enqueue_and_closes_admission()
+    {
+        var (rt, src, notified, store) = BuildRuntimeWithStore();
+        await using var runtime = rt;
+        (await rt.ArmAsync("w1", "manual", "{}", "1h", null, WaitMode.Notify, null, default)).IsArmed.Should().BeTrue();
+        (await store.LoadActiveAsync("t")).Should().ContainSingle();
+        await rt.StopForDiscardAsync();
+        await rt.StopForDiscardAsync();
+        (await store.LoadActiveAsync("t")).Should().BeEmpty();
+        rt.ListWaits().Should().BeEmpty();
+        notified.Should().BeEmpty();
+        (await rt.ArmAsync("w2", "manual", "{}", "1h", null, WaitMode.Notify, null, default))
+            .IsArmed.Should()
+            .BeFalse();
+        src.Sinks.Should().BeEmpty();
+        notified.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Discard_stop_rejects_duplicate_wait_id_without_losing_source()
+    {
+        var (rt, src, _, _) = BuildRuntimeWithStore();
+        await using var runtime = rt;
+        (await rt.ArmAsync("w1", "manual", "{}", "1h", null, WaitMode.Notify, null, default)).IsArmed.Should().BeTrue();
+        (await rt.ArmAsync("w1", "manual", "{}", "1h", null, WaitMode.Notify, null, default))
+            .IsArmed.Should()
+            .BeFalse();
+        await rt.StopForDiscardAsync();
+        src.Sinks.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Discard_stop_cannot_claim_success_after_ordinary_disposal()
+    {
+        var (rt, _, _, store) = BuildRuntimeWithStore();
+        await rt.ArmAsync("w1", "manual", "{}", "1h", null, WaitMode.Notify, null, default);
+        await rt.DisposeAsync();
+        var stop = () => rt.StopForDiscardAsync();
+        await stop.Should().ThrowAsync<Exception>();
+        (await store.LoadActiveAsync("t")).Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Discard_stop_drains_inflight_notify_save_before_deleting_rows()
+    {
+        var (rt, src, _, store) = BuildRuntimeWithStore();
+        await using var runtime = rt;
+        await rt.ArmAsync("w1", "manual", "{}", "1h", null, WaitMode.Notify, null, default);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        store.BeforeSave = async () =>
+        {
+            entered.TrySetResult();
+            await release.Task;
+        };
+        var fire = src.Sinks["w1"].FireAsync(new TriggerFireEvent("fire"), default).AsTask();
+        await entered.Task;
+        var stop = rt.StopForDiscardAsync();
+        stop.IsCompleted.Should().BeFalse();
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        var cancelledWait = () => rt.StopForDiscardAsync(cancelled.Token);
+        await cancelledWait.Should().ThrowAsync<OperationCanceledException>();
+        release.TrySetResult();
+        await fire;
+        await stop;
+        (await store.LoadActiveAsync("t")).Should().BeEmpty();
+        src.Sinks.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Discard_stop_does_not_confirm_failed_durable_delete()
+    {
+        var (rt, _, _, store) = BuildRuntimeWithStore();
+        await rt.ArmAsync("w1", "manual", "{}", "1h", null, WaitMode.Notify, null, default);
+        store.FailDelete = true;
+        var stop = () => rt.StopForDiscardAsync();
+        await stop.Should().ThrowAsync<IOException>();
+        await stop.Should().ThrowAsync<IOException>();
+        (await store.LoadActiveAsync("t")).Should().ContainSingle();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Discard_stop_refuses_lost_source_cleanup_failure(bool synchronousFire)
+    {
+        var source = new FailingDisposeSource(synchronousFire);
+        var rt = new TriggerRuntime(new TriggerOptions(), (_, _, _, _) => Task.CompletedTask);
+        rt.Register(
+            new TriggerSourceRegistration
+            {
+                Kind = "failure",
+                Description = "fixture",
+                ArgsSchema = "{}",
+                Capabilities = ManualTriggerSource.Caps,
+                Source = source,
+            }
+        );
+        await rt.ArmAsync("w1", "failure", "{}", "1h", null, WaitMode.Block, null, default);
+        if (!synchronousFire)
+            await rt.CancelWaitsAsync("w1", null, null, default);
+        var stop = () => rt.StopForDiscardAsync();
+        await stop.Should().ThrowAsync<InvalidOperationException>();
+        source.Disposals.Should().BeGreaterThan(0);
+    }
+
+    private sealed class FailingDisposeSource(bool synchronousFire) : ITriggerSource, IArmedTrigger
+    {
+        public string WaitId => "w1";
+        public int Disposals { get; private set; }
+
+        public async ValueTask<IArmedTrigger> ArmAsync(
+            TriggerArmRequest request,
+            ITriggerEventSink eventSink,
+            CancellationToken ct
+        )
+        {
+            if (synchronousFire)
+                await eventSink.FireAsync(new TriggerFireEvent("synchronous"), ct);
+            return this;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Disposals++;
+            return ValueTask.FromException(new InvalidOperationException("Fixture source is still live"));
+        }
+    }
+
+    [Fact]
     public async Task NotifyWait_StaysArmed_AcrossMultipleFires()
     {
         var (rt, src, notified) = BuildRuntime();
@@ -249,14 +380,20 @@ public class TriggerRuntimeNotifyTests
     {
         private readonly ConcurrentDictionary<string, NotifyWaitRecord> _rows = new(StringComparer.Ordinal);
 
-        public Task SaveAsync(NotifyWaitRecord record, CancellationToken ct = default)
+        public Func<Task>? BeforeSave { get; set; }
+        public bool FailDelete { get; set; }
+
+        public async Task SaveAsync(NotifyWaitRecord record, CancellationToken ct = default)
         {
+            if (BeforeSave is not null)
+                await BeforeSave();
             _rows[record.WaitId] = record;
-            return Task.CompletedTask;
         }
 
         public Task DeleteAsync(string threadId, string waitId, CancellationToken ct = default)
         {
+            if (FailDelete)
+                throw new IOException("Fixture durable delete failed");
             _rows.TryRemove(waitId, out _);
             return Task.CompletedTask;
         }

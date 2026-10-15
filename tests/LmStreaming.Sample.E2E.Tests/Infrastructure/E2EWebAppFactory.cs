@@ -70,6 +70,14 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
     {
         builder.UseEnvironment("Production");
 
+        // Default stores must not reuse another test host's database or pooled WAL files.
+        var storeId = Guid.NewGuid().ToString("N");
+        builder.UseSetting("Identity:DatabasePath", Path.Combine(Path.GetTempPath(), $"identity_e2e_{storeId}.db"));
+        builder.UseSetting(
+            "LmStreaming:NotifyWaitDbPath",
+            Path.Combine(Path.GetTempPath(), $"notify_e2e_{storeId}.db")
+        );
+
         // Per-test configuration overrides (e.g. "Auth:Webhook:HoldTimeoutSeconds") without
         // touching process-global environment variables.
         if (_settings is not null)

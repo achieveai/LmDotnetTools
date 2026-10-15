@@ -401,18 +401,38 @@ internal sealed class ReviewSetupScriptRunner : IReviewSlotPreparer
     internal async Task<System.Text.Json.Nodes.JsonObject> ResetReviewSlotAsync(
         System.Text.Json.Nodes.JsonObject identity,
         bool apply,
-        CancellationToken ct
+        CancellationToken ct,
+        bool compactOutput = false
     )
     {
         var request = (System.Text.Json.Nodes.JsonObject)identity.DeepClone();
         request["apply"] = apply;
+        if (compactOutput)
+            request["compactOutput"] = true;
         var script = await File.ReadAllTextAsync(
                 Path.Combine(AppContext.BaseDirectory, ".review", "scripts", "reset-review-slot.py"),
                 ct
             )
             .ConfigureAwait(false);
         var result = await RunAsync(["python3", "-c", script, request.ToJsonString()], ct).ConfigureAwait(false);
-        RequireSuccess(result, "Scoped review-slot reset");
+        if (!result.Succeeded)
+        {
+            var reason = result
+                .Stderr.Split('\n')
+                .Select(line => line.Trim())
+                .LastOrDefault(line => line.Length > 0) switch
+            {
+                "RuntimeError: Prepared slot refused in unprepared mode" => "prepared-slot-present",
+                "RuntimeError: Prepared identity mismatch" => "prepared-identity-mismatch",
+                "RuntimeError: Prior reset outcome is uncertain; reconcile before retry" => "reset-outcome-unknown",
+                "RuntimeError: Reset would enter a repair path" => "checkout-repair-required",
+                "RuntimeError: Legacy pool-run binding refused" => "legacy-pool-binding",
+                _ => "unclassified",
+            };
+            throw new InvalidOperationException(
+                $"Scoped review-slot reset failed with exit {result.ExitCode}; reason={reason}."
+            );
+        }
         var receipt =
             System.Text.Json.Nodes.JsonNode.Parse(result.Stdout) as System.Text.Json.Nodes.JsonObject
             ?? throw new InvalidDataException("Reset receipt is missing.");
@@ -423,6 +443,23 @@ internal sealed class ReviewSetupScriptRunner : IReviewSlotPreparer
             || (apply && receipt["status"]?.GetValue<string>() != "reset")
         )
             throw new InvalidDataException("Reset did not acknowledge the exact assignment.");
+        if (
+            compactOutput
+            && (
+                receipt["compactOutput"] is not System.Text.Json.Nodes.JsonValue compact
+                || !compact.TryGetValue<bool>(out var isCompact)
+                || !isCompact
+                || receipt.ContainsKey("inventory")
+                || receipt["inventoryCount"] is not System.Text.Json.Nodes.JsonValue count
+                || !count.TryGetValue<long>(out var inventoryCount)
+                || inventoryCount < 0
+                || receipt["inventorySha256"] is not System.Text.Json.Nodes.JsonValue digest
+                || !digest.TryGetValue<string>(out var inventorySha256)
+                || inventorySha256.Length != 64
+                || inventorySha256.Any(c => c is not (>= '0' and <= '9') and not (>= 'a' and <= 'f'))
+            )
+        )
+            throw new InvalidDataException("Compact reset inventory evidence is missing or invalid.");
         return receipt;
     }
 
@@ -454,8 +491,8 @@ internal sealed class ReviewSetupScriptRunner : IReviewSlotPreparer
             throw new InvalidDataException("Strict reset did not acknowledge the exact review slot.");
     }
 
-    internal async Task VerifyPreparedAsync(ReviewSlot slot, ReviewRun run, CancellationToken ct) =>
-        _ = await ReadEvidenceAsync(slot, run, ct).ConfigureAwait(false);
+    internal async Task<string> VerifyPreparedAsync(ReviewSlot slot, ReviewRun run, CancellationToken ct) =>
+        (await ReadEvidenceAsync(slot, run, ct).ConfigureAwait(false)).CheckoutSha!;
 
     private async Task<WorktreeEvidence> ReadEvidenceAsync(ReviewSlot slot, ReviewRun? run, CancellationToken ct)
     {

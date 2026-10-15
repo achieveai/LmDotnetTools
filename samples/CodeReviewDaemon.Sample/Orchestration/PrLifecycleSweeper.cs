@@ -3,7 +3,6 @@ using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
-using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.Git;
 
 namespace CodeReviewDaemon.Sample.Orchestration;
@@ -199,23 +198,11 @@ internal sealed class PrLifecycleSweeper
                 break;
 
             case PrLifecycle.Abandoned:
-                await using (
-                    await HostRetentionWorkspace
-                        .AcquireRepositoryLockAsync(_repoRoot, cancellationToken)
+                if (
+                    await RunMergedWorkflowAsync(pr, cancellationToken, PrLifecycleState.Abandoned)
                         .ConfigureAwait(false)
                 )
-                {
-                    await _branchManager
-                        .DeleteBranchAsync(_repoRoot, pr.Branch, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                _logger.LogInformation(
-                    "PR-lifecycle sweep deleted notes branch '{Branch}' for abandoned {Provider} PR {PrId}.",
-                    pr.Branch,
-                    pr.Provider,
-                    pr.PrId
-                );
-                _terminallyResolved.Add(pr.Branch);
+                    _terminallyResolved.Add(pr.Branch);
                 break;
 
             default:
@@ -231,17 +218,23 @@ internal sealed class PrLifecycleSweeper
         return await RunMergedWorkflowAsync(pr, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<bool> RunMergedWorkflowAsync(ReviewedPr pr, CancellationToken cancellationToken)
+    private async Task<bool> RunMergedWorkflowAsync(
+        ReviewedPr pr,
+        CancellationToken cancellationToken,
+        PrLifecycleState terminalState = PrLifecycleState.Merged
+    )
     {
         var repoId = _store.EnsureRepo(pr.Repo);
         var run =
             _store.GetLatestReviewRun(repoId, pr.PrId)
             ?? await CreateMergedOrphanRunAsync(_store, repoId, pr, _getCurrentHeadShaAsync, cancellationToken)
                 .ConfigureAwait(false);
-        if (run.PrLifecycleState != PrLifecycleState.Merged)
+        if (_store.GetAmbiguousWorkflowRoundId(run) is { } legacyRoundId)
+            throw new InvalidOperationException($"Legacy workflow round {legacyRoundId} needs owner reconciliation.");
+        if (run.PrLifecycleState != terminalState)
         {
-            _store.UpdateReviewRunState(run.Id, run.Stage, run.WorkflowStatus, PrLifecycleState.Merged);
-            run = run with { PrLifecycleState = PrLifecycleState.Merged };
+            _store.UpdateReviewRunState(run.Id, run.Stage, run.WorkflowStatus, terminalState);
+            run = run with { PrLifecycleState = terminalState };
         }
         var frozen = new JsonObject
         {
@@ -259,11 +252,12 @@ internal sealed class PrLifecycleSweeper
         var round = _store.CreateOrGetWorkflowRound(
             new WorkflowRoundSeed
             {
+                ReviewRunId = run.Id,
                 RepoId = run.RepoId,
                 PrId = run.PrId,
                 HeadSha = run.HeadSha,
                 Kind = WorkflowRoundKind.Merged,
-                EventKey = run.HeadSha,
+                EventKey = terminalState.ToString().ToLowerInvariant() + ":" + run.HeadSha,
                 FrozenInputJson = frozen.ToJsonString(),
             }
         );

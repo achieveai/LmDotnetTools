@@ -66,6 +66,7 @@ internal static class ResetReviewRunCommand
             if (
                 prior["schema"]?.GetValue<int>() != 1
                 || prior["status"]?.GetValue<string>() != "reset"
+                || priorPrepared.Checkout is null
                 || priorPrepared.AssignmentId != assignment.AssignmentId
                 || priorPrepared.Slot != assignment.Slot
                 || prior["identity"]?["assignmentId"]?.GetValue<string>() != assignment.AssignmentId
@@ -103,7 +104,8 @@ internal static class ResetReviewRunCommand
             );
         var prepared = Read<WorkflowWorkspacePreparation>(WorkflowWorkspace.PreparationArtifactKind);
         if (
-            prepared.AssignmentId != assignment.AssignmentId
+            prepared.Checkout is null
+            || prepared.AssignmentId != assignment.AssignmentId
             || prepared.Slot != assignment.Slot
             || prepared.Checkout.SourceHeadSha != run.HeadSha
             || prepared.Checkout.TargetBaseSha != run.BaseSha
@@ -135,7 +137,9 @@ internal static class ResetReviewRunCommand
             throw new InvalidOperationException("Run was parked for another reason; reset refused.");
         var session = await sessions.GetOrCreateSharedAsync(ct).ConfigureAwait(false);
         var helper = new ReviewSetupScriptRunner(session.CommandRunner, session.FileSystem, false);
-        var inspection = await helper.ResetReviewSlotAsync(identity, apply: false, ct).ConfigureAwait(false);
+        var inspection = await helper
+            .ResetReviewSlotAsync(identity, apply: false, ct, compactOutput: true)
+            .ConfigureAwait(false);
         if (!confirm)
             return inspection;
         await RequireSettledAsync(snapshot, run, prepared, store, client, loggerFactory, options, databasePath, ct)
@@ -147,7 +151,9 @@ internal static class ResetReviewRunCommand
             DateTimeOffset.UtcNow,
             "Explicit operator slot reset; historical review preserved."
         );
-        var receipt = await helper.ResetReviewSlotAsync(identity, apply: true, ct).ConfigureAwait(false);
+        var receipt = await helper
+            .ResetReviewSlotAsync(identity, apply: true, ct, compactOutput: true)
+            .ConfigureAwait(false);
         Save(ReceiptKind, receipt);
         if (assignment.Active)
             workspace.InvalidateReconciledAssignment(run, assignment.AssignmentId);
@@ -292,7 +298,9 @@ internal static class ResetReviewRunCommand
         };
         var session = await sessions.GetOrCreateSharedAsync(ct).ConfigureAwait(false);
         var helper = new ReviewSetupScriptRunner(session.CommandRunner, session.FileSystem, false);
-        var inspection = await helper.ResetReviewSlotAsync(identity, apply: false, ct).ConfigureAwait(false);
+        var inspection = await helper
+            .ResetReviewSlotAsync(identity, apply: false, ct, compactOutput: true)
+            .ConfigureAwait(false);
         if (!confirm)
             return inspection;
         if (
@@ -303,7 +311,9 @@ internal static class ResetReviewRunCommand
         if (prior is not null && !JsonNode.DeepEquals(JsonNode.Parse(prior.Payload)?["identity"], identity))
             throw new InvalidOperationException("Reset receipt belongs to a different assignment.");
         Save(IntentKind, identity);
-        var receipt = await helper.ResetReviewSlotAsync(identity, apply: true, ct).ConfigureAwait(false);
+        var receipt = await helper
+            .ResetReviewSlotAsync(identity, apply: true, ct, compactOutput: true)
+            .ConfigureAwait(false);
         if (receipt["status"]?.GetValue<string>() != "reset" || !JsonNode.DeepEquals(receipt["identity"], identity))
             throw new InvalidDataException("Remote reset did not confirm the exact assignment.");
         Save(ReceiptKind, receipt);
