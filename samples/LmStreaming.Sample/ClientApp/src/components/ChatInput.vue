@@ -13,6 +13,13 @@ const emit = defineEmits<{
 
 const inputText = ref('');
 
+/** Replaces the draft, e.g. with the old text of a message opened for "Edit in fork". */
+function setText(text: string): void {
+  inputText.value = text;
+}
+
+defineExpose({ setText });
+
 function handleSubmit() {
   const text = inputText.value.trim();
   if (text && !props.disabled) {

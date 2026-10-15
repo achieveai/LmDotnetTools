@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using LmStreaming.Sample.SandboxApps;
 using LmStreaming.Sample.Services;
 
 namespace LmStreaming.Sample.Tests.Services;
@@ -33,6 +34,15 @@ public sealed class ModeSubAgentRequiredToolsTests
         var resolved = ModeSubAgentRequiredTools.Resolve(["subagents:*"]);
 
         resolved.Should().BeEquivalentTo(SubAgentToolProvider.AllToolNames);
+    }
+
+    [Fact]
+    public void MiniAppDebugWildcard_ResolvesToTheProviderToolSurface()
+    {
+        ModeSubAgentRequiredTools
+            .Resolve(["miniapp-debug:*"])
+            .Should()
+            .BeEquivalentTo(MiniAppDebugToolProvider.ToolNames);
     }
 
     [Fact]

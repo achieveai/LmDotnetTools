@@ -158,7 +158,7 @@ internal static class AuthCommands
         }
         if (
             !string.IsNullOrWhiteSpace(auth.Ado.ClientId)
-            && !File.Exists(Path.Combine(auth.TokenStoreDir!, "msal-ado.bin"))
+            && !File.Exists(Path.Combine(auth.TokenStoreDir, "msal-ado.bin"))
         )
         {
             throw new InvalidOperationException(

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
@@ -180,9 +181,34 @@ public sealed record ResponseInputItem
     ///     For <c>type = "function_call_output"</c>: the textual result of the local tool
     ///     execution that the model should consume on its next turn.
     /// </summary>
+    [JsonIgnore]
+    public string? Output { get; init; }
+
+    /// <summary>Multimodal function output. Text-only callers keep using <see cref="Output"/>.</summary>
+    [JsonIgnore]
+    public IReadOnlyList<ResponseInputContent>? OutputContent { get; init; }
+
+    /// <summary>The Responses wire union: a string or an array of input content.</summary>
     [JsonPropertyName("output")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? Output { get; init; }
+    public JsonElement? OutputValue
+    {
+        get =>
+            OutputContent is not null ? JsonSerializer.SerializeToElement(OutputContent)
+            : Output is not null ? JsonSerializer.SerializeToElement(Output)
+            : null;
+        init
+        {
+            if (value is { ValueKind: JsonValueKind.Array } content)
+            {
+                OutputContent = content.Deserialize<List<ResponseInputContent>>();
+            }
+            else if (value is { ValueKind: JsonValueKind.String } text)
+            {
+                Output = text.GetString();
+            }
+        }
+    }
 }
 
 /// <summary>
@@ -196,6 +222,10 @@ public sealed record ResponseInputContent
     [JsonPropertyName("text")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Text { get; init; }
+
+    [JsonPropertyName("image_url")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ImageUrl { get; init; }
 }
 
 /// <summary>

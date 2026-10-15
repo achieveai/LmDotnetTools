@@ -97,7 +97,7 @@ describe('useConversations — incremental paging', () => {
 
     await api.loadConversations();
 
-    expect(calls).toEqual(['/api/conversations?limit=30&offset=0&sort=lastUsed']);
+    expect(calls).toEqual(['/api/conversations?limit=30&offset=0&sort=lastUsed&includeDeleted=true']);
     expect(api.conversations.value).toHaveLength(CONVERSATIONS_PAGE_SIZE);
     expect(api.hasMoreConversations.value).toBe(true);
     scope.stop();
@@ -110,7 +110,7 @@ describe('useConversations — incremental paging', () => {
     await api.loadConversations();
     await api.loadMoreConversations();
 
-    expect(calls[1]).toBe('/api/conversations?limit=30&offset=30&sort=lastUsed');
+    expect(calls[1]).toBe('/api/conversations?limit=30&offset=30&sort=lastUsed&includeDeleted=true');
     expect(api.conversations.value).toHaveLength(35);
     // Appended, not prepended and not re-sorted.
     expect(ids(api.conversations.value).slice(0, 3)).toEqual(['c0', 'c1', 'c2']);
@@ -227,7 +227,7 @@ describe('useConversations — incremental paging', () => {
     await api.loadMoreConversations();
 
     // 30 fetched rows so far — the local-only entry must not push the offset to 31.
-    expect(calls[1]).toBe('/api/conversations?limit=30&offset=30&sort=lastUsed');
+    expect(calls[1]).toBe('/api/conversations?limit=30&offset=30&sort=lastUsed&includeDeleted=true');
     scope.stop();
   });
 });
@@ -243,7 +243,7 @@ describe('useConversations — sort modes', () => {
     queue = [[summary('created-a', 1), summary('created-b', 2)]];
     await api.setSortMode('created');
 
-    expect(calls[2]).toBe('/api/conversations?limit=30&offset=0&sort=created');
+    expect(calls[2]).toBe('/api/conversations?limit=30&offset=0&sort=created&includeDeleted=true');
     // Cleared: none of the lastUsed-ordered rows survive into the created-ordered list.
     expect(ids(api.conversations.value)).toEqual(['created-a', 'created-b']);
     expect(api.sortMode.value).toBe('created');
@@ -260,7 +260,7 @@ describe('useConversations — sort modes', () => {
     await api.setSortMode('created');
     await api.loadMoreConversations();
 
-    expect(calls[3]).toBe('/api/conversations?limit=30&offset=30&sort=created');
+    expect(calls[3]).toBe('/api/conversations?limit=30&offset=30&sort=created&includeDeleted=true');
     scope.stop();
   });
 
@@ -338,7 +338,7 @@ describe('useConversations — sort modes', () => {
     await api.setSortMode('created');
 
     expect(api.sortMode.value).toBe('created');
-    expect(calls[1]).toBe('/api/conversations?limit=30&offset=0&sort=created');
+    expect(calls[1]).toBe('/api/conversations?limit=30&offset=0&sort=created&includeDeleted=true');
     scope.stop();
   });
 
@@ -456,5 +456,41 @@ describe('useConversations provisioning (#435)', () => {
     // and cannot stream is worse than one that visibly failed to start.
     await expect(createNewConversation(provisionBinding)).rejects.toThrow(/provider_unavailable/);
     expect(currentThreadId.value).toBeNull();
+  });
+});
+
+describe('useConversations — deleting a fork family (found by hand)', () => {
+  const fork = (id: string, from: string, root: string): ConversationSummary => ({
+    ...summary(id),
+    forkedFrom: { threadId: from, messageId: 'm', seq: 2 },
+    rootThreadId: root,
+  });
+
+  it('keeps an original its forks still read, marked deleted, and drops it with its last fork', async () => {
+    queue = [[summary('orig'), fork('f1', 'orig', 'orig'), fork('f2', 'orig', 'orig')]];
+    const { api, scope } = harness();
+    await api.loadConversations();
+
+    await api.removeConversation('orig');
+    expect(api.conversations.value.find((c) => c.threadId === 'orig')?.deleted).toBe(true);
+    expect(ids(api.conversations.value)).toEqual(['orig', 'f1', 'f2']);
+
+    await api.removeConversation('f1');
+    expect(ids(api.conversations.value)).toEqual(['orig', 'f2']);
+
+    await api.removeConversation('f2');
+    expect(ids(api.conversations.value)).toEqual([]);
+    scope.stop();
+  });
+
+  it('removes an original without forks outright', async () => {
+    queue = [[summary('solo'), summary('other')]];
+    const { api, scope } = harness();
+    await api.loadConversations();
+
+    await api.removeConversation('solo');
+
+    expect(ids(api.conversations.value)).toEqual(['other']);
+    scope.stop();
   });
 });

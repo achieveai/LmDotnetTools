@@ -650,13 +650,14 @@ public sealed class MultiTurnAgentReplayTests
         // Generous count cap, tiny byte budget: prove the BYTE cap stops buffering before the count
         // cap would. EstimateMessageBytes ≈ 128 + text.Length*2 for both TextMessage and
         // TextUpdateMessage, so a 200-char canonical message ≈ 528 bytes: assignment (≈128) + two
-        // canonical messages (≈528 each = 1184) crosses the 1000-byte budget, so only the assignment +
-        // first two canonical messages are retained; the third and all later ones are dropped. Uses
-        // canonical complete-text fillers (not deltas — deltas never enter the bridge at all now).
+        // canonical messages (≈528 each = 1184) fit the 1200-byte budget, and a third (≈1712) would not,
+        // so only the assignment + first two canonical messages are retained; the third and all later
+        // ones are dropped. Uses canonical complete-text fillers (not deltas — deltas never enter the
+        // bridge at all now).
         await using var agent = new ReplayTestAgent(
             "thread-1",
             maxReplayBufferSize: 1_000_000,
-            maxReplayBufferBytes: 1_000
+            maxReplayBufferBytes: 1_200
         );
         const string runId = "run-1";
         const string genId = "gen-1";
@@ -696,6 +697,50 @@ public sealed class MultiTurnAgentReplayTests
         (await late.MoveNextAsync()).Should().BeTrue();
         late.Current.Should()
             .BeOfType<StreamRecoveryMessage>("the byte budget tripped, so the buffered prefix is incomplete")
+            .Which.Reason.Should()
+            .Be(StreamRecoveryReason.ReplayTruncated);
+    }
+
+    [Fact]
+    public async Task Screenshot_tool_results_count_their_image_bytes_against_the_replay_cap()
+    {
+        // Each result carries 1.5M base64 chars ≈ 3 MiB estimated. Under the default 8 MiB cap two fit
+        // and the third does not, so a late joiner must be told to resync. Before image bytes were
+        // counted every result cost 128 bytes and the buffer retained all three (≈9 MiB of images).
+        await using var agent = new ReplayTestAgent("thread-1");
+        const string runId = "run-1";
+        const string genId = "gen-1";
+        var data = new string('A', 1_500_000);
+        ToolCallResultMessage Screenshot(int i) =>
+            new()
+            {
+                ToolCallId = $"call-{i}",
+                Result = "screenshot",
+                RunId = runId,
+                GenerationId = genId,
+                ContentBlocks = [new ImageToolResultBlock { Data = data, MimeType = "image/png" }],
+            };
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await agent.PublishForTest(Assignment("thread-1", runId, genId));
+        await using var live = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        (await live.MoveNextAsync()).Should().BeTrue();
+        live.Current.Should().BeOfType<RunAssignmentMessage>();
+
+        for (var i = 0; i < 3; i++)
+        {
+            await agent.PublishForTest(Screenshot(i));
+            (await live.MoveNextAsync()).Should().BeTrue();
+            live.Current.Should()
+                .BeOfType<ToolCallResultMessage>()
+                .Which.ContentBlocks.Should()
+                .ContainSingle("live subscribers still receive every screenshot in full");
+        }
+
+        await using var late = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        (await late.MoveNextAsync()).Should().BeTrue();
+        late.Current.Should()
+            .BeOfType<StreamRecoveryMessage>("the third screenshot would push the buffer past 8 MiB")
             .Which.Reason.Should()
             .Be(StreamRecoveryReason.ReplayTruncated);
     }

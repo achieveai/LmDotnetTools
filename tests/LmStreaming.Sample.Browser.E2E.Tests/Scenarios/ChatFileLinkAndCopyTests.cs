@@ -235,7 +235,7 @@ public sealed class ChatFileLinkAndCopyTests
         await Assertions.Expect(table.Locator("tbody tr")).ToHaveCountAsync(2);
         await session.SaveSuccessScreenshotAsync("ChatFileLink.Csv_preview");
 
-        var fileTabs = workspace.GetByRole(AriaRole.Tablist, new() { Name = "Open files" });
+        var fileTabs = workspace.GetByRole(AriaRole.Tablist, new() { Name = "Open workspace tabs" });
         await Assertions.Expect(fileTabs.GetByRole(AriaRole.Tab)).ToHaveCountAsync(2);
         await bubble.GetByRole(AriaRole.Link, new() { Name = "report" }).ClickAsync();
         await Assertions.Expect(fileTabs.GetByRole(AriaRole.Tab)).ToHaveCountAsync(2);

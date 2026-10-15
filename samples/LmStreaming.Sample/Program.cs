@@ -45,12 +45,14 @@ using AchieveAi.LmDotnetTools.Misc.Web.Jina;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
+using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.Auth;
 using LmStreaming.Sample.Configuration;
 using LmStreaming.Sample.Controllers;
 using LmStreaming.Sample.Identity;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
+using LmStreaming.Sample.SandboxApps;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tools;
@@ -183,6 +185,34 @@ try
     // false every request resolves to the development principal, which is what keeps the existing
     // surface working unchanged.
     _ = builder.Services.AddSampleIdentity(builder.Configuration);
+
+    _ = builder.Services.AddSingleton(sp =>
+    {
+        var catalog = SandboxAppCatalog.Load(
+            sp.GetRequiredService<IConfiguration>(),
+            sp.GetRequiredService<IHostEnvironment>().IsDevelopment()
+                || sp.GetRequiredService<IHostEnvironment>().IsEnvironment("MiniAppLocalTest")
+        );
+        if (catalog.ProductionActivationBlocked)
+            sp.GetRequiredService<ILogger<SandboxAppCatalog>>()
+                .LogError("Mini Web App activation is disabled outside Development pending front-door trust review");
+        return catalog;
+    });
+    _ = builder.Services.AddSingleton<SandboxAppInstanceStore>();
+    _ = builder.Services.AddSingleton<SandboxAppAccess>();
+    _ = builder.Services.AddSingleton<SandboxAppDiscovery>();
+    _ = builder.Services.AddSingleton(sp =>
+    {
+        var configuration = sp.GetRequiredService<IConfiguration>();
+        var options = configuration.GetSection("BrowserDebug").Get<BrowserDebugOptions>() ?? new BrowserDebugOptions();
+        options.GatewayAppId =
+            configuration["BrowserDebug:GatewayAppId"] ?? configuration["SandboxGateway:AppId"] ?? "lmstreaming-sample";
+        return options;
+    });
+    _ = builder.Services.AddSingleton<BrowserDebugBindingStore>();
+    _ = builder.Services.AddSingleton<BrowserDebugAccess>();
+    _ = builder.Services.AddSingleton<SandboxAppCapability>();
+    _ = builder.Services.AddSingleton<ISandboxAppModeReadiness, SandboxAppModeReadiness>();
 
     // Bug#15: the data-protection key ring that signs and encrypts the time-limited READ grant which lets
     // header-less browser fetches (an <iframe src>, an <img src>, a relative <link> inside a rendered
@@ -625,6 +655,13 @@ try
     // Microsoft.Data.Sqlite opens but does NOT create the database file's parent directory (unlike the
     // former FileConversationStore, which created its root in its constructor). A configured path whose
     // parent does not exist (a per-test temp dir, a fresh deploy) fails to open otherwise.
+    // The former FileConversationStore lived in conversations/ beside the binaries, and an upgrade
+    // carries that directory forward. Nothing imports it, so refuse to start over it unannounced.
+    LegacyConversationStoreGuard.EnsureNoUnimportedStore(
+        Path.Combine(AppContext.BaseDirectory, "conversations"),
+        conversationDbPath,
+        builder.Configuration.GetValue<bool>(LegacyConversationStoreGuard.AcknowledgeKey)
+    );
     var conversationDbDir = Path.GetDirectoryName(Path.GetFullPath(conversationDbPath));
     if (!string.IsNullOrEmpty(conversationDbDir))
     {
@@ -935,6 +972,22 @@ try
             {
                 var threadId = context.ThreadId;
                 var mode = context.Mode;
+                if (mode.Id == SystemChatModes.MiniWebAppBuilderModeId)
+                {
+                    if (
+                        !sp.GetRequiredService<SandboxAppCatalog>().Enabled
+                        || (
+                            !sp.GetRequiredService<SandboxAppCatalog>().SameOriginDevelopment
+                            && !sp.GetRequiredService<ConversationAuthorizer>().IsEnforced
+                        )
+                    )
+                        throw new InvalidOperationException("Mini Web App Builder is unavailable on this host.");
+                    mode = mode with
+                    {
+                        SystemPrompt =
+                            mode.SystemPrompt + $" Workspace ID for Mini Web App links: {context.WorkspaceId}.",
+                    };
+                }
                 // The capacity resolver rides on the lifecycle bundle so every loop built below — and every
                 // sub-agent spawned from one — sizes its context against the model's window (#681). A bundle
                 // minted here for the purpose publishes nothing and stores nothing, so the loop's lifecycle
@@ -979,10 +1032,29 @@ try
                 // Workflow Author's Read/Grep/Skill) gets the same session and a narrower tool slice
                 // wired further below; this shared block establishes what they have in common.
                 var caps = ModeCapabilities.Resolve(mode.EnabledCapabilityTools);
+                if (caps.MiniAppDebugTools && !sp.GetRequiredService<SandboxAppCatalog>().Enabled)
+                    throw new InvalidOperationException("Mini App debugging requires SandboxApps:Enabled.");
+                if (caps.BrowserDebugTools)
+                {
+                    if (sp.GetRequiredService<BrowserDebugBindingStore>().UnavailableReason is { } browserReason)
+                        throw new InvalidOperationException(browserReason);
+                    if (callerCredential is not null)
+                        throw new InvalidOperationException(
+                            "Browser debugging currently requires an interactive conversation."
+                        );
+                    if (sandboxCredential.AppId != sp.GetRequiredService<BrowserDebugOptions>().GatewayAppId)
+                        throw new InvalidOperationException(
+                            "BrowserDebug:GatewayAppId must match this host's sandbox gateway app identity."
+                        );
+                }
                 // True when the mode takes the whole gateway surface rather than a named subset.
-                // Only a full-surface mode can be served over the Copilot CLI transport, which
-                // connects to /mcp directly and cannot apply a per-tool filter.
-                var hasFullSandboxSurface = caps.NeedsSandbox && caps.SandboxToolAllowList is null;
+                // Copilot uses its dynamic tool bridge for workspace functions. Host debug tools
+                // need the image-aware MultiTurnAgent provider arm below.
+                var hasFullSandboxSurface =
+                    caps.SandboxTools
+                    && caps.SandboxToolAllowList is null
+                    && !caps.MiniAppDebugTools
+                    && !caps.BrowserDebugTools;
                 var sandboxRegistry = sp.GetRequiredService<SandboxSessionRegistry>();
                 var sandboxLifetime = sp.GetRequiredService<SandboxGatewayLifetime>();
                 var requestedWorkingDirectory = ConversationWorkingDirectory
@@ -1006,15 +1078,9 @@ try
                     // sandbox gateway. Reject the CLI-only providers and mock variants up front instead
                     // of creating an unused sandbox session and an agent with no sandbox tools.
                     //
-                    // Copilot is a special case, and the rule is about the SHAPE of the selection, not
-                    // the mode's identity: its CLI transport connects to the raw /mcp with no per-tool
-                    // filter, so it can serve a full-surface mode but cannot honour a named subset.
-                    // Handing it the full surface for a mode that asked for Read/Grep/Skill would
-                    // defeat the narrowing, and it cannot consume the filtered FunctionRegistry path
-                    // either - so a partial-surface mode on Copilot would get NEITHER the tools it
-                    // asked for NOR the workflow-authoring tools (its provider arm returns before those
-                    // are wired). Reject it here rather than establishing a live session and appending
-                    // a system-prompt suffix promising tools it can't have.
+                    // Keep the existing CLI mode restriction: host workflow/debug functions are
+                    // registered only on the API provider arm. Plain workspace modes reach Copilot's
+                    // filtered dynamic bridge, never an unfiltered external MCP endpoint.
                     var copilotCannotNarrowSandbox = !hasFullSandboxSurface && normalizedProviderId is "copilot";
                     if (
                         normalizedProviderId is "codex" or "claude" or "codex-mock" or "claude-mock" or "copilot-mock"
@@ -1028,8 +1094,7 @@ try
                                 + "; this provider is not wired for the sandbox"
                                 + (
                                     copilotCannotNarrowSandbox
-                                        ? " when the mode selects only some workspace tools (Copilot "
-                                            + "cannot filter the gateway's tool surface)."
+                                        ? " when the mode selects host workflow/debug functions or only some workspace tools."
                                         : "."
                                 )
                         );
@@ -1134,7 +1199,10 @@ try
                     // confidently claim tools (Write/Edit/Bash/...) that do not exist for it. Derived
                     // from the mode's own allow-list rather than from its id, so a narrowed copy gets a
                     // narrowed suffix instead of Workspace Agent's promises.
-                    var wsSuffix = BuildWorkspaceSuffix(sandboxSession.HostPath, caps.SandboxToolAllowList);
+                    var wsSuffix = BuildWorkspaceSuffix(
+                        sandboxSession.HostPath,
+                        caps.SandboxTools ? caps.SandboxToolAllowList : new HashSet<string>(StringComparer.Ordinal)
+                    );
                     if (requestedWorkingDirectory is not null)
                     {
                         wsSuffix +=
@@ -1311,6 +1379,7 @@ try
 
                 if (string.Equals(normalizedProviderId, "copilot", StringComparison.Ordinal))
                 {
+                    var copilotResources = new List<IAsyncDisposable>();
                     // Keep hosted/Jina web tools conversation-local; the shared registry is a process
                     // singleton and must never retain an MCP client owned by one pooled agent.
                     var copilotRegistry = new FunctionRegistry();
@@ -1331,6 +1400,8 @@ try
                         new CopilotOptions(),
                         loggerFactory
                     );
+                    if (cliHostedSearch.Resource is not null)
+                        copilotResources.Add(cliHostedSearch.Resource);
                     try
                     {
                         _ = WebToolRegistrationPolicy.Apply(
@@ -1349,17 +1420,36 @@ try
                         // caller's /mcp tool calls carry its own identity; the interactive UI (null)
                         // falls back to the default (issue #153 M1/M2). Connect-time-frozen for the
                         // pooled agent by design — not re-evaluated per turn.
-                        // Only a full-surface mode reaches here with a sandbox: a partial allow-list
-                        // on Copilot was rejected above, because the CLI connects to /mcp directly and
-                        // cannot filter the gateway's tool surface.
-                        Dictionary<string, string>? sandboxMcpHeaders = null;
+                        IReadOnlyList<string> sandboxToolNames = [];
                         if (hasFullSandboxSurface)
                         {
-                            sandboxMcpHeaders = new Dictionary<string, string>
+                            var sandboxMcpHeaders = new Dictionary<string, string>
                             {
                                 ["X-Session-ID"] = sandboxSession!.SessionId,
                             };
                             AddSandboxAuthHeaders(sandboxMcpHeaders, callerCredential ?? sandboxCredential);
+                            var sandboxTools = new FunctionRegistry();
+                            var clients = ConnectFilteredHttpMcpClient(
+                                sandboxTools,
+                                "sandbox",
+                                $"{sandboxLifetime.GatewayBaseUrl}/mcp",
+                                sandboxMcpHeaders,
+                                loggerFactory,
+                                toolNames: null,
+                                omitServerPrefix: true,
+                                handlerDecorator: SandboxToolHealth.Wrap,
+                                transportHandler: sp.GetKeyedService<HttpMessageHandler>(SandboxMcpTransportHandlerKey)
+                            );
+                            copilotResources.AddRange(clients.Cast<IAsyncDisposable>());
+                            var (contracts, handlers) = sandboxTools.Build();
+                            if (!contracts.Any())
+                                throw new ProviderUnavailableException(
+                                    normalizedProviderId,
+                                    "Sandbox workspace tools are unavailable."
+                                );
+                            foreach (var contract in contracts)
+                                _ = copilotRegistry.AddFunction(contract, handlers[contract.Name], "sandbox");
+                            sandboxToolNames = [.. contracts.Select(contract => contract.Name)];
                         }
 
                         return new MultiTurnAgentPool.AgentCreationResult(
@@ -1370,31 +1460,23 @@ try
                                 requestResponseDumpFileName,
                                 conversationStore,
                                 loggerFactory,
-                                extraMcpServers: hasFullSandboxSurface
-                                    ? BuildHttpMcpServer(
-                                        "sandbox",
-                                        $"{sandboxLifetime.GatewayBaseUrl}/mcp",
-                                        sandboxMcpHeaders!
-                                    )
-                                    : null,
                                 workingDirectoryOverride: hasFullSandboxSurface ? sandboxSession!.HostPath : null,
-                                lifecycleServices: lifecycleServices
+                                lifecycleServices: lifecycleServices,
+                                additionalEnabledTools: sandboxToolNames,
+                                clientFactory: sp.GetKeyedService<
+                                    Func<
+                                        CopilotSdkOptions,
+                                        Microsoft.Extensions.Logging.ILogger?,
+                                        AchieveAi.LmDotnetTools.CopilotSdkProvider.Agents.ICopilotSdkClient
+                                    >
+                                >(CopilotSdkClientFactoryKey)
                             ),
-                            cliHostedSearch.Resource is null ? null : [cliHostedSearch.Resource]
+                            copilotResources.Count == 0 ? null : copilotResources
                         );
                     }
                     catch
                     {
-                        if (cliHostedSearch.Resource is not null)
-                        {
-                            try
-                            {
-                                cliHostedSearch.Resource.DisposeAsync().AsTask().GetAwaiter().GetResult();
-                            }
-                            catch
-                            { /* ignore cleanup errors so the construction failure remains primary */
-                            }
-                        }
+                        DisposeOwnedResources(copilotResources);
 
                         throw;
                     }
@@ -1606,7 +1688,53 @@ try
                     );
                 }
 
-                if (caps.NeedsSandbox)
+                if (caps.MiniAppDebugTools)
+                {
+                    var appCatalog = sp.GetRequiredService<SandboxAppCatalog>();
+                    var appDebugProvider = new MiniAppDebugToolProvider(
+                        sp.GetRequiredService<IWorkspaceFileBrowser>(),
+                        sp.GetRequiredService<SandboxAppDiscovery>(),
+                        sandboxSession!.SessionId,
+                        string.IsNullOrWhiteSpace(workspaceId)
+                            ? SandboxSessionRegistry.DefaultWorkspaceId
+                            : workspaceId,
+                        appCatalog.SameOriginDevelopment ? appCatalog.BrowserOrigin!.Host : appCatalog.AppDomain
+                    );
+                    _ = filteredRegistry.AddProvider(
+                        AllowListedFunctionProvider.Wrap(appDebugProvider, caps.MiniAppDebugToolAllowList)
+                    );
+                }
+
+                if (caps.BrowserDebugTools)
+                {
+                    var authorizer = sp.GetRequiredService<ConversationAuthorizer>();
+                    var principal = authorizer.Current;
+                    if (authorizer.IsEnforced && principal is null)
+                        throw new InvalidOperationException(
+                            "Browser debugging requires the current interactive principal."
+                        );
+                    var browserProvider = new BrowserDebugToolProvider(
+                        sp.GetRequiredService<BrowserDebugBindingStore>(),
+                        sp.GetRequiredService<BrowserDebugAccess>(),
+                        sp.GetRequiredService<IWorkspaceFileBrowser>(),
+                        sp.GetRequiredService<SandboxAppDiscovery>(),
+                        new BrowserDebugGateway(
+                            CreateBrowserGatewayClient(sandboxLifetime.GatewayBaseUrl, sandboxCredential)
+                        ),
+                        threadId,
+                        workspaceId ?? SandboxSessionRegistry.DefaultWorkspaceId,
+                        sandboxSession!.SessionId,
+                        principal,
+                        sp.GetRequiredService<SandboxAppCatalog>().Enabled,
+                        loggerFactory.CreateLogger<BrowserDebugToolProvider>()
+                    );
+                    ownedResources.Add(browserProvider);
+                    _ = filteredRegistry.AddProvider(
+                        AllowListedFunctionProvider.Wrap(browserProvider, caps.BrowserDebugToolAllowList)
+                    );
+                }
+
+                if (caps.SandboxTools)
                 {
                     // Expose the sandbox file/shell tools via the gateway's MCP endpoint, bound to this
                     // agent's sandbox session by the X-Session-ID header and the app's sandbox auth
@@ -1653,32 +1781,19 @@ try
                                 sandboxRegistry,
                                 sandboxSession.SessionId
                             );
-                    var sandboxClients = caps.SandboxToolAllowList is { } sandboxAllowList
-                        ? ConnectFilteredHttpMcpClient(
-                            filteredRegistry,
-                            "sandbox",
-                            $"{sandboxLifetime.GatewayBaseUrl}/mcp",
-                            sandboxMcpHeaders,
-                            loggerFactory,
-                            toolNames: sandboxAllowList,
-                            omitServerPrefix: true,
-                            handlerDecorator: SandboxToolHealth.Wrap,
-                            transportHandler: sandboxTransportHandler,
-                            existingClient: keptSandboxClient,
-                            namedHandlerDecorator: cwdDecorator
-                        )
-                        : ConnectHttpMcpClient(
-                            filteredRegistry,
-                            "sandbox",
-                            $"{sandboxLifetime.GatewayBaseUrl}/mcp",
-                            sandboxMcpHeaders,
-                            loggerFactory,
-                            omitServerPrefix: true,
-                            handlerDecorator: SandboxToolHealth.Wrap,
-                            transportHandler: sandboxTransportHandler,
-                            existingClient: keptSandboxClient,
-                            namedHandlerDecorator: cwdDecorator
-                        );
+                    var sandboxClients = ConnectFilteredHttpMcpClient(
+                        filteredRegistry,
+                        "sandbox",
+                        $"{sandboxLifetime.GatewayBaseUrl}/mcp",
+                        sandboxMcpHeaders,
+                        loggerFactory,
+                        toolNames: caps.SandboxToolAllowList,
+                        omitServerPrefix: true,
+                        handlerDecorator: SandboxToolHealth.Wrap,
+                        transportHandler: sandboxTransportHandler,
+                        existingClient: keptSandboxClient,
+                        namedHandlerDecorator: cwdDecorator
+                    );
 
                     if (sandboxClients.Count > 0)
                     {
@@ -2882,6 +2997,10 @@ try
         };
     });
 
+    // Dedicated app hosts must terminate here, before Vite, static files, chat APIs or SPA fallback.
+    _ = app.UseMiddleware<BrowserDebugMiddleware>();
+    _ = app.UseMiddleware<SandboxAppMiddleware>();
+
     // Enable Vite dev server in development
     if (app.Environment.IsDevelopment())
     {
@@ -2994,6 +3113,67 @@ try
                         threadId
                     );
                     workspaceId = null;
+                }
+            }
+
+            var persistedMetadata = await context
+                .RequestServices.GetRequiredService<IConversationStore>()
+                .LoadMetadataAsync(threadId, cancellationToken);
+            var agentPoolForGate = context.RequestServices.GetRequiredService<MultiTurnAgentPool>();
+            var activeModeId = agentPoolForGate.GetAgentMode(threadId)?.Id;
+            var persistedModeId =
+                persistedMetadata?.Properties?.TryGetValue(
+                    MultiTurnAgentPool.ModePropertyKey,
+                    out var persistedModeValue
+                ) == true
+                    ? persistedModeValue switch
+                    {
+                        string id => id,
+                        System.Text.Json.JsonElement { ValueKind: System.Text.Json.JsonValueKind.String } value =>
+                            value.GetString(),
+                        _ => null,
+                    }
+                    : null;
+            if (
+                modeId == SystemChatModes.MiniWebAppBuilderModeId
+                || (activeModeId ?? persistedModeId) == SystemChatModes.MiniWebAppBuilderModeId
+            )
+            {
+                var boundWorkspaceId =
+                    persistedMetadata?.Properties?.TryGetValue(
+                        MultiTurnAgentPool.WorkspacePropertyKey,
+                        out var boundValue
+                    ) == true
+                        ? boundValue switch
+                        {
+                            string id => id,
+                            System.Text.Json.JsonElement { ValueKind: System.Text.Json.JsonValueKind.String } value =>
+                                value.GetString(),
+                            _ => null,
+                        }
+                        : null;
+                var effectiveWorkspaceId =
+                    activeModeId == SystemChatModes.MiniWebAppBuilderModeId
+                        ? agentPoolForGate.GetAgentWorkspaceId(threadId)
+                    : persistedModeId == SystemChatModes.MiniWebAppBuilderModeId ? boundWorkspaceId
+                    : boundWorkspaceId ?? workspaceId ?? SandboxSessionRegistry.DefaultWorkspaceId;
+                var appCatalog = context.RequestServices.GetRequiredService<SandboxAppCatalog>();
+                var appAuthorizer = context.RequestServices.GetRequiredService<ConversationAuthorizer>();
+                if (
+                    string.IsNullOrWhiteSpace(effectiveWorkspaceId)
+                    || !appCatalog.IsAvailableFor(
+                        context.Request.Host.Host,
+                        context.Request.IsHttps,
+                        appAuthorizer.IsEnforced,
+                        context.Request.Host.Port
+                    )
+                    || !await context
+                        .RequestServices.GetRequiredService<ISandboxAppModeReadiness>()
+                        .IsReadyAsync(effectiveWorkspaceId, cancellationToken)
+                )
+                {
+                    context.Response.StatusCode = StatusCodes.Status404NotFound;
+                    return;
                 }
             }
 
@@ -4955,7 +5135,13 @@ public partial class Program
         string? mockApiKeyOverride = null,
         IReadOnlyDictionary<string, McpServerConfig>? extraMcpServers = null,
         string? workingDirectoryOverride = null,
-        MultiTurnLifecycleServices? lifecycleServices = null
+        MultiTurnLifecycleServices? lifecycleServices = null,
+        IReadOnlyList<string>? additionalEnabledTools = null,
+        Func<
+            CopilotSdkOptions,
+            Microsoft.Extensions.Logging.ILogger?,
+            AchieveAi.LmDotnetTools.CopilotSdkProvider.Agents.ICopilotSdkClient
+        >? clientFactory = null
     )
     {
         var copilotCliPath = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH") ?? "copilot";
@@ -5016,6 +5202,8 @@ public partial class Program
         // include the renamed "WebSearch"/"WebFetch" function tools, not just the literal built-in
         // name).
         var enabledTools = WebToolRegistrationPolicy.ResolveEnabledTools(mode.EnabledTools, mode.EnabledBuiltInTools);
+        if (additionalEnabledTools is { Count: > 0 } && enabledTools is not null)
+            enabledTools = [.. enabledTools, .. additionalEnabledTools];
 
         var copilotOptions = new CopilotSdkOptions
         {
@@ -5051,6 +5239,7 @@ public partial class Program
             store: conversationStore,
             logger: loggerFactory.CreateLogger<CopilotAgentLoop>(),
             loggerFactory: loggerFactory,
+            clientFactory: clientFactory,
             persistRunLedger: true,
             lifecycleServices: lifecycleServices
         );
@@ -5352,6 +5541,9 @@ public partial class Program
     /// </summary>
     internal const string SandboxMcpTransportHandlerKey = "sandbox-mcp-transport";
 
+    /// <summary>Optional test client for the Copilot factory; absent in production.</summary>
+    internal const string CopilotSdkClientFactoryKey = "copilot-sdk-client-factory";
+
     /// <summary>
     ///     Connects to an HTTP MCP server and adds its tools to the FunctionRegistry.
     ///     Used by middleware-pipeline providers (Anthropic/OpenAI) which route tool calls through
@@ -5496,7 +5688,7 @@ public partial class Program
     }
 
     /// <summary>
-    ///     Connects to an HTTP MCP server but only exposes the tools named in <paramref name="toolNames"/>
+    ///     Connects to an HTTP MCP server and exposes workspace tools selected by <paramref name="toolNames"/>,
     ///     on <paramref name="registry"/> — used by Workflow Author mode to give the model a narrow
     ///     Read/Grep/Skill slice of the sandbox instead of its full tool surface. Mirrors
     ///     <see cref="ConnectHttpMcpClient"/>'s <c>handlerDecorator is not null</c> branch (the only one
@@ -5530,7 +5722,7 @@ public partial class Program
         string endpoint,
         IReadOnlyDictionary<string, string> headers,
         ILoggerFactory loggerFactory,
-        IReadOnlySet<string> toolNames,
+        IReadOnlySet<string>? toolNames,
         bool omitServerPrefix,
         Func<ToolHandler, ToolHandler> handlerDecorator,
         HttpMessageHandler? transportHandler = null,
@@ -5555,7 +5747,11 @@ public partial class Program
             var (contracts, handlers) = scratch.Build();
             foreach (var contract in contracts)
             {
-                if (toolNames.Contains(contract.Name) && handlers.TryGetValue(contract.Name, out var handler))
+                if (
+                    contract.Name != "Browser"
+                    && (toolNames is null || toolNames.Contains(contract.Name))
+                    && handlers.TryGetValue(contract.Name, out var handler)
+                )
                 {
                     var wrapped = namedHandlerDecorator?.Invoke(contract, handler) ?? handler;
                     _ = registry.AddFunction(contract, handlerDecorator(wrapped), name);
@@ -5567,7 +5763,7 @@ public partial class Program
                 existingClient is null ? "Connected to" : "Reused the connection to",
                 name,
                 endpoint,
-                string.Join(", ", toolNames)
+                toolNames is null ? "all workspace tools except Browser" : string.Join(", ", toolNames)
             );
         }
         catch (Exception ex)
@@ -5595,6 +5791,17 @@ public partial class Program
 
         return createdClients;
     }
+
+    private static SandboxClient CreateBrowserGatewayClient(string gatewayUrl, SandboxCredential credential) =>
+        new(
+            new SandboxClientOptions(
+                new Uri(gatewayUrl),
+                credential.AppId,
+                credential.AppKey,
+                executionTimeout: TimeSpan.FromMinutes(2),
+                transportTimeout: TimeSpan.FromMinutes(2)
+            )
+        );
 
     /// <summary>
     ///     Builds query parameter string for LlmQuery MCP endpoints (used by Codex which doesn't support HTTP headers).

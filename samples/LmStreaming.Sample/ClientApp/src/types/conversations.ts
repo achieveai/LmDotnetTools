@@ -54,6 +54,30 @@ export interface ConversationSummary {
    * writes the field when it has one, so an explicit `false` is a real "no".
    */
   canShare?: boolean;
+  /**
+   * Where this conversation was forked from, or null/absent for a conversation that is not a fork.
+   * `messageId` is the persisted id of the last message the fork shares with its parent (null when the
+   * server could not name one); `seq` is that message's position in the parent's history.
+   */
+  forkedFrom?: ForkOrigin | null;
+  /**
+   * The original conversation at the top of the fork chain — the same value for a fork and a fork of
+   * that fork, which is what lets the sidebar nest every fork one level under the original. Null for a
+   * conversation that is not a fork.
+   */
+  rootThreadId?: string | null;
+  /**
+   * True for an original that was deleted but is kept because forks still read its messages. It is
+   * listed so the sidebar can group those forks under it, and it cannot be opened.
+   */
+  deleted?: boolean;
+}
+
+/** The parent conversation and message a fork starts from (`forkedFrom` on the wire). */
+export interface ForkOrigin {
+  threadId: string;
+  messageId?: string | null;
+  seq?: number | null;
 }
 
 /**

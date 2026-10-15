@@ -4,6 +4,7 @@ import type { ConversationSortMode, ConversationSummary } from '@/types/conversa
 import { CONVERSATION_SORT_MODES } from '@/types/conversations';
 import type { Workspace } from '@/types/workspace';
 import { isWorkspaceSelectable } from '@/types/workspace';
+import { forkOriginLabel, nestForks, type SidebarEntry } from '@/utils/conversationForks';
 
 const props = withDefaults(defineProps<{
   conversations: ConversationSummary[];
@@ -55,6 +56,8 @@ interface ConversationGroup {
   testId: string;
   label: string;
   conversations: ConversationSummary[];
+  /** Top-level rows with their forks nested one level under the original. */
+  entries: SidebarEntry[];
   workspace: Workspace | null;
   missingWorkspaceId: string | null;
 }
@@ -74,7 +77,7 @@ const groups = computed<ConversationGroup[]>(() => {
   }
 
   const knownIds = new Set(props.workspaces.map((workspace) => workspace.id));
-  const result: ConversationGroup[] = props.workspaces.map((workspace) => ({
+  const result: Omit<ConversationGroup, 'entries'>[] = props.workspaces.map((workspace) => ({
     key: `workspace:${workspace.id}`,
     testId: workspace.id,
     label: workspace.name,
@@ -106,7 +109,9 @@ const groups = computed<ConversationGroup[]>(() => {
     });
   }
 
-  return result;
+  // Forks copy their original's workspace, so nesting within a project finds the original. A fork
+  // whose original is elsewhere (another page) stays a top-level row with a fork badge.
+  return result.map((group) => ({ ...group, entries: nestForks(group.conversations) }));
 });
 
 /**
@@ -134,18 +139,32 @@ function revealCap(group: ConversationGroup): number {
   if (group.key === LEGACY_GROUP_ID) return Number.POSITIVE_INFINITY;
   const requested = groupRevealCaps.value.get(group.key) ?? GROUP_REVEAL_STEP;
   const activeIndex = props.currentThreadId
-    ? group.conversations.findIndex((row) => row.threadId === props.currentThreadId)
+    ? group.entries.findIndex(
+        (entry) =>
+          entry.conversation.threadId === props.currentThreadId ||
+          entry.forks.some((fork) => fork.threadId === props.currentThreadId)
+      )
     : -1;
   if (activeIndex < requested) return requested;
   return Math.ceil((activeIndex + 1) / GROUP_REVEAL_STEP) * GROUP_REVEAL_STEP;
 }
 
-function visibleConversations(group: ConversationGroup): ConversationSummary[] {
-  return group.conversations.slice(0, revealCap(group));
+/** Caps count top-level rows; an original's forks come with it. */
+function visibleEntries(group: ConversationGroup): SidebarEntry[] {
+  return group.entries.slice(0, revealCap(group));
 }
 
 function hiddenCount(group: ConversationGroup): number {
-  return Math.max(0, group.conversations.length - revealCap(group));
+  return Math.max(0, group.entries.length - revealCap(group));
+}
+
+/** A fork shown at the top level because its original is not loaded. */
+function isOrphanFork(conversation: ConversationSummary): boolean {
+  return !!conversation.rootThreadId && conversation.rootThreadId !== conversation.threadId;
+}
+
+function rowTitle(conversation: ConversationSummary): string {
+  return conversation.preview ? `${conversation.title}\n${conversation.preview}` : conversation.title;
 }
 
 /**
@@ -158,7 +177,7 @@ function hiddenCount(group: ConversationGroup): number {
 function revealMore(group: ConversationGroup): void {
   const next = revealCap(group) + GROUP_REVEAL_STEP;
   groupRevealCaps.value = new Map(groupRevealCaps.value).set(group.key, next);
-  if (next >= group.conversations.length && props.hasMore) {
+  if (next >= group.entries.length && props.hasMore) {
     emit('loadMore');
   }
 }
@@ -561,36 +580,92 @@ function handleDelete(event: Event, threadId: string): void {
             class="conversation-list project-conversations"
             :data-testid="`project-conversations-${group.testId}`"
           >
-            <li
-              v-for="conv in visibleConversations(group)"
-              :key="conv.threadId"
-              :class="['conversation-item', { active: conv.threadId === currentThreadId }]"
-              data-testid="conversation-item"
-              :data-thread-id="conv.threadId"
-            >
-              <button
-                type="button"
-                class="conversation-select-btn"
-                :title="conv.preview ? `${conv.title}\n${conv.preview}` : conv.title"
-                @click="emit('selectConversation', conv.threadId)"
+            <template v-for="entry in visibleEntries(group)" :key="entry.conversation.threadId">
+              <!-- An original that was deleted but still has forks: a greyed header, not openable. -->
+              <li
+                v-if="entry.conversation.deleted"
+                class="conversation-item deleted-original"
+                data-testid="sidebar-deleted-original"
+                :data-thread-id="entry.conversation.threadId"
               >
                 <div class="conversation-content">
                   <div class="conversation-title">
-                    {{ conv.title }}
+                    {{ entry.conversation.title }}
+                    <span class="deleted-original-note">(deleted original)</span>
                   </div>
                 </div>
-              </button>
-              <time class="conversation-date" :datetime="new Date(conv.lastUpdated).toISOString()">
-                {{ formatDate(conv.lastUpdated) }}
-              </time>
-              <button
-                class="delete-btn"
-                @click="handleDelete($event, conv.threadId)"
-                title="Delete conversation"
+              </li>
+              <li
+                v-else
+                :class="[
+                  'conversation-item',
+                  { active: entry.conversation.threadId === currentThreadId, 'fork-row': isOrphanFork(entry.conversation) },
+                ]"
+                :data-testid="isOrphanFork(entry.conversation) ? 'sidebar-fork-row' : 'conversation-item'"
+                :data-thread-id="entry.conversation.threadId"
               >
-                X
-              </button>
-            </li>
+                <button
+                  type="button"
+                  class="conversation-select-btn"
+                  :title="rowTitle(entry.conversation)"
+                  @click="emit('selectConversation', entry.conversation.threadId)"
+                >
+                  <div class="conversation-content">
+                    <div class="conversation-title">
+                      <span v-if="isOrphanFork(entry.conversation)" class="fork-badge" aria-label="Fork">⑂</span>
+                      {{ entry.conversation.title }}
+                    </div>
+                    <div v-if="isOrphanFork(entry.conversation)" class="fork-origin">
+                      {{ forkOriginLabel(entry.conversation, conversations) }}
+                    </div>
+                  </div>
+                </button>
+                <time class="conversation-date" :datetime="new Date(entry.conversation.lastUpdated).toISOString()">
+                  {{ formatDate(entry.conversation.lastUpdated) }}
+                </time>
+                <button
+                  class="delete-btn"
+                  @click="handleDelete($event, entry.conversation.threadId)"
+                  title="Delete conversation"
+                >
+                  X
+                </button>
+              </li>
+              <!-- Forks, one level under their original (a fork of a fork too). -->
+              <li
+                v-for="fork in entry.forks"
+                :key="fork.threadId"
+                :class="['conversation-item', 'fork-row', 'fork-row--nested', { active: fork.threadId === currentThreadId }]"
+                data-testid="sidebar-fork-row"
+                :data-thread-id="fork.threadId"
+                :data-root-thread-id="entry.conversation.threadId"
+              >
+                <button
+                  type="button"
+                  class="conversation-select-btn"
+                  :title="rowTitle(fork)"
+                  @click="emit('selectConversation', fork.threadId)"
+                >
+                  <div class="conversation-content">
+                    <div class="conversation-title">
+                      <span class="fork-badge" aria-label="Fork">⑂</span>
+                      {{ fork.title }}
+                    </div>
+                    <div class="fork-origin">{{ forkOriginLabel(fork, conversations) }}</div>
+                  </div>
+                </button>
+                <time class="conversation-date" :datetime="new Date(fork.lastUpdated).toISOString()">
+                  {{ formatDate(fork.lastUpdated) }}
+                </time>
+                <button
+                  class="delete-btn"
+                  @click="handleDelete($event, fork.threadId)"
+                  title="Delete conversation"
+                >
+                  X
+                </button>
+              </li>
+            </template>
 
             <li v-if="hiddenCount(group) > 0" class="group-more-row">
               <button
@@ -1228,6 +1303,40 @@ function handleDelete(event: Event, threadId: string): void {
 
 .delete-btn:hover {
   background: #c82333;
+}
+
+/* Forks: nested one level under their original, with where they came from under the title. */
+.project-conversations .fork-row--nested {
+  padding-left: 56px;
+}
+
+.fork-badge {
+  margin-right: 2px;
+  color: #6c757d;
+}
+
+.fork-origin {
+  font-size: 11px;
+  color: #8a939c;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A deleted original is a label for its forks: greyed, not clickable. */
+.conversation-item.deleted-original,
+.conversation-item.deleted-original:hover {
+  background: transparent;
+  cursor: default;
+}
+
+.deleted-original .conversation-title {
+  color: #adb5bd;
+  font-style: italic;
+}
+
+.deleted-original-note {
+  font-size: 11px;
 }
 
 /* Responsive styles */

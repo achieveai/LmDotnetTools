@@ -373,7 +373,13 @@ def publish(root, args):
     remote_pins(directory, args)
     record['state'] = 'push-started'
     journal.write_text(json.dumps(record, sort_keys=True))
-    _, pushed = git(directory, 'push', '--porcelain', '--', args['repoUrl'],
+    # Lease the push to the exact pinned source tip: remote_pins only proved sourceRef==sourceSha at
+    # pin time, and a concurrent rewind before this push could otherwise fast-forward underneath us
+    # (the merge's first parent IS sourceSha, so a rewind-then-readvance still fast-forwards). The
+    # lease makes the push publish only while the remote source is still the reviewed base.
+    _, pushed = git(directory, 'push', '--porcelain',
+                    '--force-with-lease=' + args['sourceRef'] + ':' + args['sourceSha'],
+                    '--', args['repoUrl'],
                     commit + ':' + args['sourceRef'], allow_failure=True)
     if pushed['exitCode'] != 0:
         raise Blocked('PUSH_OUTCOME_UNKNOWN', 'Push did not report success; independently inspect remote before any retry.')

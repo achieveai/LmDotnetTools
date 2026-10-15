@@ -95,6 +95,38 @@ public class SandboxModelsTests
     }
 
     [Fact]
+    public void SandboxCreateRequest_PluginMountsAreDefensivelyCopied()
+    {
+        var mounts = new List<SandboxPluginMount> { new("sandbox-apps", "sandbox-apps", "global") };
+        var request = new SandboxCreateRequest("ws", pluginMounts: mounts);
+
+        mounts.Add(new SandboxPluginMount("other", "other", "global"));
+
+        request.PluginMounts.Should().ContainSingle().Which.Path.Should().Be("sandbox-apps");
+    }
+
+    [Theory]
+    [InlineData("../outside")]
+    [InlineData("/absolute")]
+    [InlineData("C:/outside")]
+    public void SandboxPluginMount_RejectsPathsOutsideConfiguredBase(string path)
+    {
+        var act = () => new SandboxPluginMount(path);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Theory]
+    [InlineData("..")]
+    [InlineData("nested/name")]
+    public void SandboxPluginMount_RejectsInvalidContainerNames(string name)
+    {
+        var act = () => new SandboxPluginMount("sandbox-apps", name);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
     public void SandboxCreateRequest_NullWorkspace_Throws()
     {
         var act = () => new SandboxCreateRequest(null!);

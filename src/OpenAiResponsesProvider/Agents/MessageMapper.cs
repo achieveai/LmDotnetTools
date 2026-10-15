@@ -279,6 +279,7 @@ internal static class MessageMapper
                             Type = "function_call_output",
                             CallId = result.ToolCallId,
                             Output = ClampFunctionCallOutput(result.Result),
+                            OutputContent = MapToolImages(result.Result, result.ContentBlocks),
                         }
                     );
                 }
@@ -305,6 +306,7 @@ internal static class MessageMapper
                         Type = "function_call_output",
                         CallId = singleResult.ToolCallId,
                         Output = ClampFunctionCallOutput(singleResult.Result),
+                        OutputContent = MapToolImages(singleResult.Result, singleResult.ContentBlocks),
                     }
                 );
                 break;
@@ -359,6 +361,33 @@ internal static class MessageMapper
     ///     limit. A result the LmCore bound already handled is far below this and passes through
     ///     unchanged; only legacy oversized history gets cut, with the same marker text.
     /// </summary>
+    private static IReadOnlyList<ResponseInputContent>? MapToolImages(
+        string? text,
+        IList<ToolResultContentBlock>? blocks
+    )
+    {
+        if (blocks is null || !blocks.OfType<ImageToolResultBlock>().Any())
+        {
+            return null;
+        }
+
+        List<ResponseInputContent> content =
+        [
+            new() { Type = "input_text", Text = ClampFunctionCallOutput(text) ?? string.Empty },
+        ];
+        foreach (var image in blocks.OfType<ImageToolResultBlock>())
+        {
+            content.Add(
+                new ResponseInputContent
+                {
+                    Type = "input_image",
+                    ImageUrl = $"data:{image.MimeType};base64,{image.Data}",
+                }
+            );
+        }
+        return content;
+    }
+
     private static string? ClampFunctionCallOutput(string? output) =>
         output == null ? null : s_functionCallOutputLimit.BoundText(output);
 

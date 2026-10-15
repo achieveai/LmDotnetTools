@@ -96,6 +96,18 @@ public interface IConversationStore
     /// <param name="ct">Cancellation token.</param>
     Task ReplaceMessageAsync(string threadId, PersistedMessage replacement, CancellationToken ct = default);
 
+    /// <summary>
+    /// Numbers the thread's own rows that were written before <see cref="PersistedMessage.Seq"/>
+    /// existed, in the order they load - exactly as the next append would. Idempotent. For a reader
+    /// that needs positions, such as a fork anchor, on a conversation that has had no append since.
+    /// </summary>
+    /// <remarks>
+    /// The default does nothing: a store that has always assigned Seq has no such rows.
+    /// </remarks>
+    /// <param name="threadId">The thread identifier.</param>
+    /// <param name="ct">Cancellation token.</param>
+    Task NumberLegacyMessagesAsync(string threadId, CancellationToken ct = default) => Task.CompletedTask;
+
     // === Metadata (property bag for state, session mappings, etc.) ===
 
     /// <summary>

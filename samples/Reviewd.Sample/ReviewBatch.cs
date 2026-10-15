@@ -473,11 +473,13 @@ internal static class ReviewBatch
                     continue;
                 entry ??= candidates.OrderBy(value => value["order"]!.GetValue<long>()).First();
                 attempt ??= await ReadAsync(database, AttemptKey(entry));
-                // A finished, released review of an earlier head is history, not an owner: the author pushed
-                // since, so reviewing the new head is a fresh admission. Treating it as an owner held every
-                // updated PR, so one long-lived db could never re-review anything.
+                // AttemptKey is per repo/pr, not per head. A completed-verified attempt whose slot
+                // was already released belongs to an EARLIER head of this PR; once the PR advances,
+                // its new head is a fresh review, not a stuck retry. Drop the stale attempt so the
+                // lane admits the new head below instead of parking it as an unresumable outcome.
                 if (
-                    attempt?["stage"]?.GetValue<string>() == "completed-verified"
+                    attempt is not null
+                    && attempt["stage"]?.GetValue<string>() == "completed-verified"
                     && Reusable(attempt)
                     && attempt["reviewedHeadSha"]?.GetValue<string>() != entry["head"]!.GetValue<string>()
                 )

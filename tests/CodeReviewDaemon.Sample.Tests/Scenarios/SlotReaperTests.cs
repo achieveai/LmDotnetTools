@@ -61,6 +61,7 @@ public sealed class SlotReaperTests
                 key,
                 new JsonObject { ["prId"] = "17", ["sessionId"] = "session" },
                 null,
+                "reviewd/review-attempt/repo/17",
                 CancellationToken.None,
                 claimedAt
             );
@@ -121,6 +122,7 @@ public sealed class SlotReaperTests
                 ownerKey,
                 receipt,
                 null,
+                $"reviewd/review-attempt/{repo.NormalizedKey}/100",
                 CancellationToken.None,
                 DateTimeOffset.UtcNow - TimeSpan.FromHours(2)
             );
@@ -136,6 +138,7 @@ public sealed class SlotReaperTests
                     ownerKey,
                     new JsonObject { ["prId"] = "200", ["sessionId"] = "live" },
                     null,
+                    $"reviewd/review-attempt/{repo.NormalizedKey}/200",
                     CancellationToken.None
                 );
             await blocked.Should().ThrowAsync<InvalidOperationException>();
@@ -176,6 +179,7 @@ public sealed class SlotReaperTests
                 ownerKey,
                 new JsonObject { ["prId"] = "200", ["sessionId"] = "live" },
                 null,
+                $"reviewd/review-attempt/{repo.NormalizedKey}/200",
                 CancellationToken.None
             );
             next.Should().NotBeNullOrEmpty();
@@ -215,7 +219,14 @@ public sealed class SlotReaperTests
                 ["threadId"] = "thread-busy",
             };
             // Claimed by the old binary: owned, no lease stamp. Strip the lease so it is an undated owner.
-            _ = await SlotRelease.ClaimAsync(connection, ownerKey, receipt, null, CancellationToken.None);
+            _ = await SlotRelease.ClaimAsync(
+                connection,
+                ownerKey,
+                receipt,
+                null,
+                $"reviewd/review-attempt/{repo.NormalizedKey}/100",
+                CancellationToken.None
+            );
             var undated = (await store.GetAsync<JsonObject>(ownerKey))!;
             undated.Remove("leaseExpiresAt");
             await store.SetAsync(ownerKey, undated, CancellationToken.None);
@@ -278,7 +289,14 @@ public sealed class SlotReaperTests
                 ["threadId"] = "thread-live",
             };
             // Freshly claimed: the lease is well in the future.
-            _ = await SlotRelease.ClaimAsync(connection, ownerKey, receipt, null, CancellationToken.None);
+            _ = await SlotRelease.ClaimAsync(
+                connection,
+                ownerKey,
+                receipt,
+                null,
+                $"reviewd/review-attempt/{repo.NormalizedKey}/100",
+                CancellationToken.None
+            );
 
             // A host that would answer every call still must not be touched for a live-lease slot.
             var handler = new FakeHttpMessageHandler()

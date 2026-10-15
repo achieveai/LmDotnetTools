@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
@@ -68,6 +70,98 @@ public sealed class SandboxSessionAdapterTests
 
         result.Succeeded.Should().BeTrue();
         result.Stdout.Should().Be("ok");
+    }
+
+    [Fact]
+    public async Task RunAsync_forwards_the_commands_environment_to_the_gateway_as_the_env_overlay()
+    {
+        var gateway = new ScriptedSandboxGateway { CommandExitCode = 0 };
+        await using var adapter = CreateAdapter(gateway);
+
+        var result = await adapter.RunAsync(
+            new SandboxCommand(
+                ["git", "rev-parse", "--show-toplevel"],
+                "/workspace/review_repo",
+                new Dictionary<string, string> { ["GIT_CONFIG_COUNT"] = "1", ["PYTHONDONTWRITEBYTECODE"] = "1" }
+            ),
+            CancellationToken.None
+        );
+
+        result.Succeeded.Should().BeTrue();
+        using var body = JsonDocument.Parse(gateway.LastSubmitBody!);
+        var env = body.RootElement.GetProperty("env");
+        env.GetProperty("GIT_CONFIG_COUNT").GetString().Should().Be("1");
+        env.GetProperty("PYTHONDONTWRITEBYTECODE").GetString().Should().Be("1");
+        env.EnumerateObject().Should().HaveCount(2);
+        body.RootElement.GetProperty("cwd").GetProperty("path").GetString().Should().Be("review_repo");
+    }
+
+    [Fact]
+    public async Task RunAsync_without_an_environment_sends_no_env_field()
+    {
+        var gateway = new ScriptedSandboxGateway { CommandExitCode = 0 };
+        await using var adapter = CreateAdapter(gateway);
+
+        _ = await adapter.RunAsync(new SandboxCommand(["git", "status"]), CancellationToken.None);
+
+        using var body = JsonDocument.Parse(gateway.LastSubmitBody!);
+        body.RootElement.TryGetProperty("env", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task RunAsync_sends_a_per_command_timeout_as_that_operations_gateway_execution_timeout()
+    {
+        var gateway = new ScriptedSandboxGateway { CommandExitCode = 0 };
+        await using var adapter = CreateAdapter(
+            gateway,
+            new SandboxLimits { CommandTimeout = TimeSpan.FromMinutes(5) }
+        );
+
+        _ = await adapter.RunAsync(
+            new SandboxCommand(["python3", "setup.py"], Timeout: TimeSpan.FromMinutes(11)),
+            CancellationToken.None
+        );
+
+        using var body = JsonDocument.Parse(gateway.LastSubmitBody!);
+        body.RootElement.GetProperty("timeout_secs").GetInt64().Should().Be(660);
+    }
+
+    [Fact]
+    public async Task RunAsync_without_a_timeout_sends_the_configured_command_timeout()
+    {
+        var gateway = new ScriptedSandboxGateway { CommandExitCode = 0 };
+        await using var adapter = CreateAdapter(
+            gateway,
+            new SandboxLimits { CommandTimeout = TimeSpan.FromMinutes(7) }
+        );
+
+        _ = await adapter.RunAsync(new SandboxCommand(["git", "status"]), CancellationToken.None);
+
+        using var body = JsonDocument.Parse(gateway.LastSubmitBody!);
+        body.RootElement.GetProperty("timeout_secs").GetInt64().Should().Be(420);
+    }
+
+    [Fact]
+    public async Task RunAsync_cancels_client_side_at_the_per_command_timeout_not_the_configured_one()
+    {
+        // The gateway never terminalizes the operation, so only a client-side deadline ends the call. The
+        // configured limit is minutes; the command's own is 100 ms. The SDK's poll deadline (per-command
+        // value + 1 s grace) is the fallback: a call that took that long used the wrong deadline.
+        var gateway = new ScriptedSandboxGateway { HangOperations = true };
+        await using var adapter = CreateAdapter(
+            gateway,
+            new SandboxLimits { CommandTimeout = TimeSpan.FromMinutes(5) }
+        );
+        var clock = Stopwatch.StartNew();
+
+        var act = () =>
+            adapter.RunAsync(
+                new SandboxCommand(["sleep", "600"], Timeout: TimeSpan.FromMilliseconds(100)),
+                CancellationToken.None
+            );
+
+        (await act.Should().ThrowAsync<TimeoutException>()).Which.Message.Should().Contain("00:00:00.1000000");
+        clock.Elapsed.Should().BeLessThan(TimeSpan.FromMilliseconds(700));
     }
 
     [Fact]

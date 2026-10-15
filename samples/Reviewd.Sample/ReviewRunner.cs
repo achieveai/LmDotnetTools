@@ -420,7 +420,7 @@ internal static class ReviewRunner
                 else
                     await client.EnsureConversationReusableAsync(thread, workspace, provider, mode, ct);
             }
-            await WaitAsync(client, thread, null, delay, ct);
+            await WaitAsync(client, thread, null, delay, ct, terminalFailuresSettle: failedCleanup);
         }
         var ownerThreads = new HashSet<string>(StringComparer.Ordinal);
         var adoptedHistory = new List<string>();
@@ -507,28 +507,10 @@ internal static class ReviewRunner
             receipt["reasoningEffort"] = reasoningEffort;
         if (resume || cleanupOnly)
             receipt = attempt!.DeepClone().AsObject();
-        var ownerKey = SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot);
-        var claimToken = await SlotRelease.ClaimAsync(
-            connection,
-            ownerKey,
-            receipt,
-            (resume || cleanupOnly) ? receipt["claimToken"]?.GetValue<string>() : null,
-            ct
-        );
-        receipt["claimToken"] = claimToken;
-        receipt["cleanupState"] ??= "owned";
-        args["claimToken"] = claimToken;
-        // A model turn can outlast the lease window, so renew the lease on every wait poll too; otherwise
-        // the reaper mistakes a live review for a dead one between checkpoints.
-        async Task LeasedDelayAsync(CancellationToken token)
-        {
-            await delay(token);
-            _ = await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, token);
-        }
         if (cleanupOnly && attempt!["claimToken"] is null)
             receipt["legacyCleanupAdoption"] = true;
-        args["adopt"] = receipt["legacyCleanupAdoption"]?.GetValue<bool>() == true;
-        var store = new SqliteKvStore(connection);
+        // Archive the attempt the claim below overwrites before claiming, so the overwrite is never
+        // the only copy of it.
         if (resume || cleanupOnly || attempt?["stage"]?.GetValue<string>() == "failed-released")
         {
             query.Parameters["@key"].Value = attemptKey;
@@ -539,7 +521,25 @@ internal static class ReviewRunner
             archive.Parameters.AddWithValue("@value", raw);
             await archive.ExecuteNonQueryAsync(ct);
         }
-        await SaveAsync();
+        var ownerKey = SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot);
+        var claimToken = await SlotRelease.ClaimAsync(
+            connection,
+            ownerKey,
+            receipt,
+            (resume || cleanupOnly) ? receipt["claimToken"]?.GetValue<string>() : null,
+            attemptKey,
+            ct
+        );
+        args["claimToken"] = claimToken;
+        // A model turn can outlast the lease window, so renew the lease on every wait poll too; otherwise
+        // the reaper mistakes a live review for a dead one between checkpoints.
+        async Task LeasedDelayAsync(CancellationToken token)
+        {
+            await delay(token);
+            _ = await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, token);
+        }
+        args["adopt"] = receipt["legacyCleanupAdoption"]?.GetValue<bool>() == true;
+        var store = new SqliteKvStore(connection);
         try
         {
             if (cleanupResume || failedCleanup)
@@ -728,7 +728,7 @@ internal static class ReviewRunner
                 );
             // This is outgoing-owner cleanup. Review success stays committed even if drain/reset fails.
             if (thread is not null)
-                await WaitAsync(client, thread, null, delay, ct);
+                await WaitAsync(client, thread, null, delay, ct, terminalFailuresSettle: failedCleanup);
             await SlotRelease.AssertCurrentAsync(connection, ownerKey, claimToken, ct);
             receipt["cleanupState"] = "pending";
             var operation = Guid.NewGuid().ToString("N");
@@ -848,14 +848,24 @@ internal static class ReviewRunner
             && now - lastActivity >= UnknownQuiescence
         );
 
+    /// <remarks>
+    ///     <c>terminalFailuresSettle</c> is for failed-owner cleanup only: Error and Stopped descendants
+    ///     count as settled rather than as a failure, so cleanup can drain a review that already failed.
+    ///     Unknown still throws (cleanup must not reset under a descendant it cannot see) and Running still
+    ///     waits. Outside cleanup, Unknown is waited on until it quiesces.
+    /// </remarks>
     internal static async Task<S2SStatusResult?> WaitAsync(
         LmStreamingS2SClient client,
         string thread,
         string? input,
         Func<CancellationToken, Task> delay,
-        CancellationToken ct
+        CancellationToken ct,
+        bool terminalFailuresSettle = false
     )
     {
+        bool Settled(ReviewSubAgentNode node, DateTimeOffset now) =>
+            IsSettledNode(node, now)
+            || (terminalFailuresSettle && node.Status is ReviewSubAgentStatus.Error or ReviewSubAgentStatus.Stopped);
         string? candidate = null;
         var busyReads = 0;
         while (true)
@@ -882,25 +892,30 @@ internal static class ReviewRunner
                 throw new InvalidOperationException($"Review input ended with {status.Status}; not success.");
             }
             // Genuine descendant failures: a node that errored, was stopped, or carries a failure code.
-            // Unknown is deliberately NOT fatal here. Unknown means the source could not resolve the node's
+            // Outside failed-owner cleanup, Unknown is deliberately NOT fatal. Unknown means the source could not resolve the node's
             // status on this poll (a child mid-spawn/handoff), not that it failed — a node flickers Unknown
             // and then resolves. Throwing on it abandoned Nova reviews whose sub-agents (the publisher
             // included) then completed. Instead keep waiting on Unknown and only stop blocking on it once it
             // has been inactive for the quiescence window (mirrors ReviewSubAgentCompletion.IsQuiescedUnknown).
+            var now = DateTimeOffset.UtcNow;
             if (
                 tree.Nodes.Any(n =>
-                    n.Status is ReviewSubAgentStatus.Error or ReviewSubAgentStatus.Stopped || n.FailureCode is not null
+                    (terminalFailuresSettle && n.Status == ReviewSubAgentStatus.Unknown)
+                    || (
+                        n.Status is ReviewSubAgentStatus.Error or ReviewSubAgentStatus.Stopped
+                        && !terminalFailuresSettle
+                    )
+                    || (n.FailureCode is not null && !(terminalFailuresSettle && Settled(n, now)))
                 )
             )
             {
                 throw new InvalidOperationException("Review descendants failed; not success.");
             }
-            var now = DateTimeOffset.UtcNow;
             var idle =
                 !global.IsInProgress
                 && global.CurrentRunId is null
                 && (status is null || status.Status.Equals("completed", StringComparison.OrdinalIgnoreCase))
-                && tree.Nodes.All(n => IsSettledNode(n, now));
+                && tree.Nodes.All(n => Settled(n, now));
             var signature = JsonSerializer.Serialize(
                 new
                 {

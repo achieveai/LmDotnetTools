@@ -8,7 +8,7 @@ import { DEFAULT_WORKSPACE_ID, useWorkspaces } from '@/composables/useWorkspaces
 import { egressDialogRequest, closeEgressDialog } from '@/composables/useEgressAuth';
 import { conversationExists, updateConversationMetadata } from '@/api/conversationsApi';
 import { WorkspaceRevisionConflictError } from '@/api/workspacesApi';
-import { InvalidEnvError } from '@/api/chatModesApi';
+import { InvalidEnvError, activateMiniWebApps } from '@/api/chatModesApi';
 import type { ChatModeCreateUpdate } from '@/types/chatMode';
 import type { WorkspaceCreate, WorkspaceUpdate } from '@/types/workspace';
 import { isWorkspaceSelectable } from '@/types/workspace';
@@ -25,6 +25,7 @@ import ConversationInspector from './ConversationInspector.vue';
 import PanelSplitter from './PanelSplitter.vue';
 import ContextCostPanel from './ContextCostPanel.vue';
 import ArtifactPreviewModal from './ArtifactPreviewModal.vue';
+import SandboxAppPreview from './SandboxAppPreview.vue';
 import ConversationTabs from './ConversationTabs.vue';
 import SubAgentTranscript from './SubAgentTranscript.vue';
 import { useSubAgentPanel } from '@/composables/useSubAgentPanel';
@@ -43,6 +44,8 @@ import { SUBMIT_CLIENT_TOOL_RESULT } from '@/composables/useClientToolSubmit';
 import { IS_QUESTION_ANSWERED } from '@/composables/useToolResult';
 import { isQuestionAwaitingAnswer } from '@/utils/pendingQuestions';
 import { WORKSPACE_FILE_LINKS, type WorkspaceFileLinksContext } from '@/utils/workspaceLinks';
+import { MINI_WEB_APP_LINKS, type MiniWebAppLinksContext } from '@/utils/miniWebAppLinks';
+import { resolveMiniWebApp } from '@/api/sandboxAppsApi';
 import { GET_CHECKPOINT_STATE, type CheckpointStateLookup } from '@/composables/messageDisplay';
 import ModeSelector from './ModeSelector.vue';
 import ProviderSelector from './ProviderSelector.vue';
@@ -52,6 +55,9 @@ import MarketplaceModal from './MarketplaceModal.vue';
 import EgressAuthModal from './EgressAuthModal.vue';
 import ShareConversationModal from './ShareConversationModal.vue';
 import HeaderActionsMenu from './HeaderActionsMenu.vue';
+import ForkBanner from './ForkBanner.vue';
+import { useConversationFork } from '@/composables/useConversationFork';
+import { isCliBackedProvider } from '@/utils/conversationForks';
 
 const {
   conversations,
@@ -76,6 +82,7 @@ const {
   currentModeId,
   availableTools,
   isLoading: modesLoading,
+  canActivateMiniWebApps,
   loadModes,
   loadTools,
   selectMode,
@@ -85,6 +92,18 @@ const {
   deleteMode,
   copyMode,
 } = useChatModes();
+const miniWebAppActivationError = ref<string | null>(null);
+
+async function handleActivateMiniWebApps(): Promise<void> {
+  miniWebAppActivationError.value = null;
+  const workspaceId = selectedWorkspaceId.value ?? DEFAULT_WORKSPACE_ID;
+  try {
+    await activateMiniWebApps(workspaceId);
+    if (selectedWorkspaceId.value === workspaceId) await loadModes(workspaceId);
+  } catch (error) {
+    miniWebAppActivationError.value = error instanceof Error ? error.message : 'Mini Web Apps are unavailable.';
+  }
+}
 
 // Provider catalog + per-process selection for new conversations.
 const {
@@ -109,6 +128,11 @@ const {
   createWorkspace,
   updateWorkspace,
 } = useWorkspaces();
+
+watch(selectedWorkspaceId, (workspaceId) => {
+  miniWebAppActivationError.value = null;
+  void loadModes(workspaceId ?? DEFAULT_WORKSPACE_ID);
+});
 
 const workspaceSelectorRef = ref<InstanceType<typeof WorkspaceSelector> | null>(null);
 const workspaceManagementRef = ref<InstanceType<typeof WorkspaceSelector> | null>(null);
@@ -208,6 +232,35 @@ async function provisionThread(): Promise<string> {
 async function handleCancel(): Promise<void> {
   await cancelStream();
 }
+
+const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null);
+
+// Fork a conversation (⑂ Fork from here / ✎ Edit in fork) and the branch switcher's data. The fork
+// opens through handleSelectConversation, exactly like a sidebar click.
+const {
+  fork,
+  forkError,
+  branchPoints,
+  refreshBranches,
+} = useConversationFork({
+  currentThreadId,
+  conversations,
+  addOrUpdateConversation,
+  openConversation: (threadId) => handleSelectConversation(threadId),
+  setComposerText: (text) => chatInputRef.value?.setText(text),
+});
+
+/**
+ * Fork buttons show only on a STARTED conversation (it has a sidebar row, so the server has its
+ * history) whose provider reads our stored messages. CLI-backed providers keep their own session and
+ * the server refuses to fork them in v1. The provider is the row's binding, falling back to the header
+ * selection that `restoreBindingsFromConversation` keeps in step with it (legacy rows carry none).
+ */
+const forkActionsEnabled = computed(() => {
+  const conversation = currentConversation.value;
+  if (!currentThreadId.value || !conversation || conversation.deleted) return false;
+  return !isCliBackedProvider(conversation.provider ?? selectedProviderId.value);
+});
 
 // Conversation-wide cost for the usage banner (#196). Prefers a provider-reported figure over the public
 // estimate; renders null (no configured rate — e.g. flat-rate Copilot) as nothing rather than a bogus $0.
@@ -330,19 +383,41 @@ const { view: compactionControl, request: requestManualCompaction } = useManualC
 // server. This object is the whole modal state — null means closed. Keyed to the BOARD's thread
 // (subAgentParentThreadId): the conversation whose task carries the chip and whose workspace the
 // message's links point into (sub-agent transcripts share it).
-type FilePreviewRequest = { id: string; path: string; target?: undefined; label: string }
-  | { id: string; path?: undefined; target: string; label: string };
-const previewTabs = ref<FilePreviewRequest[]>([]);
+type FilePreviewRequest = { id: string; path: string; target?: undefined; label: string; kind?: 'file' }
+  | { id: string; path?: undefined; target: string; label: string; kind?: 'file' };
+type AppPreviewRequest = { id: string; label: string; appId: string; workspaceId: string; kind: 'app' };
+const previewTabs = ref<(FilePreviewRequest | AppPreviewRequest)[]>([]);
 const activePreviewId = ref<string | null>(null);
-const artifactPreview = computed(() => previewTabs.value.find((tab) => tab.id === activePreviewId.value) ?? null);
+const artifactPreview = computed(() => {
+  const tab = previewTabs.value.find((item) => item.id === activePreviewId.value);
+  return tab && tab.kind !== 'app' ? tab : null;
+});
+const appPreview = computed(() => {
+  const tab = previewTabs.value.find((item) => item.id === activePreviewId.value);
+  return tab?.kind === 'app' ? tab : null;
+});
 // F-003 (#784): a computed instead of an inline template `.map()` — ConversationInspector's own props
 // (like `previewHeight`, updated on every splitter `pointermove`) re-render this component constantly
 // while dragging, and an inline map would rebuild a brand-new tab array and tab objects on every one
 // of those renders even though the tabs themselves did not change. This only recomputes when
 // `previewTabs` itself does.
 const previewTabSummaries = computed(() =>
-  previewTabs.value.map((tab) => ({ id: tab.id, label: tab.label, path: tab.path ?? tab.target }))
+  previewTabs.value.map((tab) => ({
+    id: tab.id, label: tab.label, path: tab.kind === 'app' ? tab.label : tab.path ?? tab.target,
+  }))
 );
+
+function openSandboxApp(appId: string, name: string, workspaceId: string): void {
+  const id = `app:${workspaceId}:${appId}`;
+  if (!previewTabs.value.some((tab) => tab.id === id)) {
+    previewTabs.value.push({ id, appId, workspaceId, label: name, kind: 'app' });
+  }
+  activePreviewId.value = id;
+  if (!hasWorkspaceWidthPreference.value && previewTabs.value.length === 1) inspectorWidth.value = 640;
+  inspectorOpen.value = true;
+}
+
+const miniWebAppError = ref<string | null>(null);
 
 function previewLabel(value: string): string {
   const parts = value.replace(/\\/g, '/').split('/').filter(Boolean);
@@ -396,12 +471,29 @@ provide<WorkspaceFileLinksContext>(WORKSPACE_FILE_LINKS, {
   },
 });
 
+provide<MiniWebAppLinksContext>(MINI_WEB_APP_LINKS, {
+  threadId: subAgentParentThreadId,
+  open: (link) => {
+    if (link.threadId !== subAgentParentThreadId.value) return;
+    miniWebAppError.value = null;
+    void resolveMiniWebApp(link.threadId, link.workspaceId, link.appId)
+      .then((app) => {
+        if (link.threadId === subAgentParentThreadId.value) openSandboxApp(app.id, app.name, app.workspaceId);
+      })
+      .catch(() => {
+        if (link.threadId === subAgentParentThreadId.value)
+          miniWebAppError.value = 'This Mini Web App is unavailable in this conversation.';
+      });
+  },
+});
+
 // A conversation switch unmounts the modal rather than leaving it previewing the OLD thread's file
 // against the NEW thread's workspace. This is also the second half of the #594 D6 fix: with the
 // preview's backdrop stopping at the sidebar's edge (`.artifact-preview-beside-sidebar`,
 // ArtifactPreviewModal.vue), clicking another conversation actually reaches the sidebar, and THIS
 // watch is what closes the modal for it.
 watch(subAgentParentThreadId, () => {
+  miniWebAppError.value = null;
   previewTabs.value = [];
   activePreviewId.value = null;
   previewExpanded.value = false;
@@ -704,7 +796,7 @@ const shareModalOpen = ref(false);
 const headerActionsMenuRef = ref<InstanceType<typeof HeaderActionsMenu> | null>(null);
 const modalOpenedFromHeaderActions = ref<'marketplace' | 'egress' | 'share' | null>(null);
 const inspectorOpen = ref(false);
-const inspectorSection = ref<'work' | 'files' | 'agents'>('work');
+const inspectorSection = ref<'work' | 'files' | 'apps' | 'agents'>('work');
 const inspectorLauncherRef = ref<HTMLButtonElement | null>(null);
 const inspectorRef = ref<InstanceType<typeof ConversationInspector> | null>(null);
 let inspectorInitialized = false;
@@ -980,16 +1072,28 @@ const headerTitle = computed(() => {
   return conversation?.title?.trim() || appName;
 });
 
+/**
+ * Counts the user's choices of what the chat shows: New chat, or opening a conversation. Every
+ * switch awaits before it commits, and so does the load-time restore, so a switch compares this
+ * after its awaits and gives way when a newer choice was made meanwhile. Without it the restore,
+ * which only runs once every catalog has loaded, took over a New chat clicked in that window and
+ * the next message went into the old conversation.
+ */
+let selectionEpoch = 0;
+
 // Load conversations and modes on mount
 onMounted(async () => {
+  const epoch = selectionEpoch;
   // Load modes, tools, and providers in parallel with conversations
   await Promise.all([
     loadConversations(),
-    loadModes(),
+    loadModes(selectedWorkspaceId.value ?? DEFAULT_WORKSPACE_ID),
     loadTools(),
     loadProviders(),
     loadWorkspaces(),
   ]);
+  // The user already chose what to show while the catalogs loaded.
+  if (epoch !== selectionEpoch) return;
 
   // A ?threadId= deep link takes priority over the "select most recent" default below — it's an
   // explicit navigation to one conversation, so an unknown id should surface as not-found rather
@@ -1000,9 +1104,10 @@ onMounted(async () => {
     // not "does not exist" - and a deep link is most often to an older conversation, which is the
     // case this screen used to report as not-found. Membership stays as a fast path for a link into
     // a conversation already on screen; anything else is resolved against the server.
-    const exists =
-      conversations.value.some((c) => c.threadId === deepLinkThreadId) ||
-      (await conversationExists(deepLinkThreadId));
+    // A deleted original is still listed while forks read it, but it is gone: not-found.
+    const listed = conversations.value.find((c) => c.threadId === deepLinkThreadId);
+    const exists = listed ? !listed.deleted : await conversationExists(deepLinkThreadId);
+    if (epoch !== selectionEpoch) return;
     if (exists) {
       await handleSelectConversation(deepLinkThreadId);
     } else {
@@ -1018,10 +1123,9 @@ onMounted(async () => {
   // recently but started long ago can sit on a later page and lose to this reduce. Paging the whole
   // list on mount to make it exact would defeat the incremental loading this sits on top of; under
   // the default `lastUsed` sort the first page always holds the true maximum anyway.
-  if (conversations.value.length > 0) {
-    const mostRecent = conversations.value.reduce((best, c) =>
-      c.lastUpdated > best.lastUpdated ? c : best
-    );
+  const openable = conversations.value.filter((c) => !c.deleted);
+  if (openable.length > 0) {
+    const mostRecent = openable.reduce((best, c) => (c.lastUpdated > best.lastUpdated ? c : best));
     await handleSelectConversation(mostRecent.threadId);
   }
 });
@@ -1029,11 +1133,13 @@ onMounted(async () => {
 // Handle creating a new chat
 async function handleNewChat(): Promise<void> {
   if (questionBusy.value) return;
+  const epoch = ++selectionEpoch;
   notFoundThreadId.value = null;
 
   // Disconnect current WebSocket and clear state
   await disconnectWebSocket();
   await clearMessages();
+  if (epoch !== selectionEpoch) return;
   // A fresh chat is always idle — return the Send/Stop control to "Send" if we came from a
   // streaming conversation (clearMessages no longer lowers the flags to avoid a switch-back
   // flicker; see useChat.markStreamIdle).
@@ -1047,6 +1153,8 @@ async function handleNewChat(): Promise<void> {
   // the provisioning hook useChat calls when it needs an id (see `provisionThread`).
   currentThreadId.value = null;
   setThreadId(null);
+  forkError.value = null;
+  void refreshBranches(null);
 }
 
 /** Starts an unreserved draft bound to the workspace whose sidebar folder launched it. */
@@ -1067,16 +1175,22 @@ async function handleNewChatInWorkspace(workspaceId: string): Promise<void> {
 // Handle selecting an existing conversation
 async function handleSelectConversation(threadId: string): Promise<void> {
   if (questionBusy.value) return;
+  const epoch = ++selectionEpoch;
   notFoundThreadId.value = null;
   if (threadId === currentThreadId.value) return;
 
   // Disconnect current WebSocket and clear state
   await disconnectWebSocket();
   await clearMessages();
+  // A newer New chat or selection, made while this one awaited, wins.
+  if (epoch !== selectionEpoch) return;
 
   // Switch to selected conversation
   selectConversation(threadId);
   setThreadId(threadId);
+  forkError.value = null;
+  // Branch switcher data for the conversation being opened (also how a new fork shows "1 / 2").
+  void refreshBranches(threadId);
 
   // Restore the conversation's bound provider/mode/workspace so opening (or refreshing into) a
   // conversation shows its actual bindings instead of the process defaults. Without this, a refresh
@@ -1426,6 +1540,7 @@ onBeforeUnmount(() => {
     />
 
     <main id="chat-main" v-show="!previewExpanded" class="chat-main">
+      <p v-if="miniWebAppError" class="question-navigation-error" role="alert">{{ miniWebAppError }}</p>
       <p v-if="questionNavigationError" class="question-navigation-error" role="status">{{ questionNavigationError }}</p>
       <div v-if="notFoundThreadId" class="chat-view not-found-view" data-testid="conversation-not-found">
         <div class="not-found-content">
@@ -1501,16 +1616,31 @@ onBeforeUnmount(() => {
         <div id="conversation-main-view" v-show="activeTabId === 'main'" class="tab-view" data-testid="main-view"
           role="region" :aria-labelledby="tabs.length > 1 ? 'conversation-main-selector' : undefined"
           :aria-label="tabs.length > 1 ? undefined : 'Main conversation'">
+          <ForkBanner
+            :conversation="currentConversation"
+            :conversations="conversations"
+            @open="handleSelectConversation"
+          />
+
           <MessageList
             :display-items="displayItems"
             :is-loading="chatLoading"
             :view-preference="viewPreference"
+            :fork-actions="forkActionsEnabled"
+            :branch-points="branchPoints"
+            @fork-after-run="(runId) => fork({ afterRunId: runId })"
+            @edit-in-fork="(messageId) => fork({ beforeMessageId: messageId })"
+            @open-branch="handleSelectConversation"
           />
 
           <AuthRequiredBanner :requests="pendingAuthRequests" @dismiss="dismissAuthRequest" />
 
           <div v-if="error" class="error-banner" data-testid="error-banner">
             {{ error }}
+          </div>
+
+          <div v-if="forkError" class="error-banner" role="alert" data-testid="fork-error">
+            {{ forkError }}
           </div>
 
           <ContextCostPanel
@@ -1556,6 +1686,7 @@ onBeforeUnmount(() => {
             @busy-change="questionBusy = $event" @open-change="questionOpen = $event" @opened="questionOpened" />
 
           <ChatInput
+            ref="chatInputRef"
             :disabled="isSending && !chatLoading"
             :streaming="chatLoading"
             @send="handleSend"
@@ -1568,7 +1699,10 @@ onBeforeUnmount(() => {
                 :current-mode-id="currentModeId"
                 :tools="availableTools"
                 :is-loading="modesLoading"
+                :can-activate-mini-web-apps="canActivateMiniWebApps"
+                :mini-web-app-error="miniWebAppActivationError"
                 :disabled="modeSwitchDisabled"
+                @activate-mini-web-apps="handleActivateMiniWebApps"
                 @select-mode="handleSelectMode"
                 @create-mode="handleCreateMode"
                 @update-mode="handleUpdateMode"
@@ -1652,12 +1786,22 @@ onBeforeUnmount(() => {
       @close="closeInspector"
       @select-section="inspectorSection = $event"
       @open-artifact="openArtifactPreview"
+      @open-app="openSandboxApp"
       @select-agent="handleInspectorAgentSelect"
       @select-preview="activePreviewId = $event"
       @close-preview="closePreview"
       @update:preview-height="setPreviewHeight"
     >
       <template #preview>
+        <SandboxAppPreview
+          v-if="appPreview && subAgentParentThreadId"
+          :key="`${subAgentParentThreadId}:${appPreview.id}`"
+          :thread-id="subAgentParentThreadId"
+          :workspace-id="appPreview.workspaceId"
+          :app-id="appPreview.appId"
+          :name="appPreview.label"
+          @close="closePreview(appPreview.id)"
+        />
         <ArtifactPreviewModal
           v-if="artifactPreview && subAgentParentThreadId"
           :key="`${subAgentParentThreadId}:${artifactPreview.id}`"

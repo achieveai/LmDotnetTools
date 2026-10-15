@@ -181,6 +181,9 @@ public sealed class ConversationsControllerSubAgentsTests
             new ThreadMetadata { ThreadId = reusedThreadId, LastUpdated = 0 }
         );
 
+        // Counted from here: Delete itself lists threads (to find forks that still read the conversation),
+        // and only the listing's own scan says whether the cache was forgotten.
+        var listsBeforeRescan = countingStore.ListThreadsCallCount;
         var after = await controller.ListSubAgents(reusedThreadId);
         var summariesAfter = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(
             Assert.IsType<OkObjectResult>(after).Value
@@ -192,10 +195,10 @@ public sealed class ConversationsControllerSubAgentsTests
                 "the deleted conversation's stale recovered child must not resurrect for a thread id reused "
                     + "by a fresh conversation"
             );
-        countingStore
-            .ListThreadsCallCount.Should()
+        (countingStore.ListThreadsCallCount - listsBeforeRescan)
+            .Should()
             .Be(
-                2,
+                1,
                 "Delete must Forget() the cache entry so the reused thread id actually rescans instead of "
                     + "reusing the deleted conversation's cached rows under the same NoLiveManager owner"
             );

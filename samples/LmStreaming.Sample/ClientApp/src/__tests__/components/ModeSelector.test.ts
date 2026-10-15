@@ -26,6 +26,16 @@ const modes = [
 ];
 
 describe('ModeSelector', () => {
+  it('offers an explicit workspace check before the builder mode is available', async () => {
+    const wrapper = mount(ModeSelector, {
+      props: { modes, currentModeId: 'default', tools: [], canActivateMiniWebApps: true },
+    });
+    await wrapper.get('[data-testid="mode-selector-button"]').trigger('click');
+    expect(wrapper.find('[data-testid="mode-option-mini-web-app-builder"]').exists()).toBe(false);
+    await wrapper.get('[data-testid="activate-mini-web-apps"]').trigger('click');
+    expect(wrapper.emitted('activate-mini-web-apps')).toHaveLength(1);
+  });
+
   it('labels the compact trigger with the current mode and retains its icon', () => {
     const wrapper = mount(ModeSelector, {
       props: { modes, currentModeId: 'default', tools: [] },

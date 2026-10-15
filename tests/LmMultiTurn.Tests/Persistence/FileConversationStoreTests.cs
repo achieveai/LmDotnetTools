@@ -73,6 +73,30 @@ public class FileConversationStoreTests : IDisposable
         fallback.Single().Properties["title"].Should().Be(rows.Single().Properties["title"]);
     }
 
+    [Fact]
+    public async Task ListConversationRowsAsync_ExcludesDeletedRowsWithoutTheLineageBeingRequested()
+    {
+        var kept = new ThreadMetadata
+        {
+            ThreadId = "kept",
+            LastUpdated = 1,
+            Properties = ImmutableDictionary<string, object>.Empty.Add("title", "kept"),
+        };
+        await _store.SaveMetadataAsync("kept", kept);
+        await _store.SaveMetadataAsync(
+            "gone",
+            ConversationLineage.Write(kept with { ThreadId = "gone", LastUpdated = 2 }, new() { DeletedAt = 5 })
+        );
+        var options = new ConversationListOptions { ExcludeDeleted = true };
+        var keys = new HashSet<string>(StringComparer.Ordinal) { "title" };
+
+        var rows = await _store.ListConversationRowsAsync(keys, null, 50, 0, options);
+
+        rows.Select(row => row.ThreadId).Should().Equal("kept");
+        rows.Single().Properties.Keys.Should().Equal("title");
+        (await _store.ListThreadsAsync(50, 0, options)).Select(row => row.ThreadId).Should().Equal("kept");
+    }
+
     [Theory]
     [InlineData("{\"title\":null}")]
     [InlineData("{\"title\":7,\"ignored\":[1,{\"nested\":true}]}")]

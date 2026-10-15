@@ -89,9 +89,11 @@ internal static class WorkspaceCommands
     {
         S2SWorkspace? workspace = options.Get("workspace") is { } id ? await client.GetWorkspaceAsync(id, ct) : null;
         var marketplaces = options.Get("marketplaces") is { } csv
-            ? csv.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
-                .Distinct(StringComparer.Ordinal)
-                .ToArray()
+            ?
+            [
+                .. csv.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                    .Distinct(StringComparer.Ordinal),
+            ]
             : workspace?.Marketplaces ?? [];
         if (options.Command == "workspace plugins")
         {
@@ -120,13 +122,15 @@ internal static class WorkspaceCommands
                         "--enabled-plugins must be null or an array of marketplace/plugin pairs."
                     );
                 }
-                selection = document
-                    .RootElement.EnumerateArray()
-                    .Select(item => new SandboxPluginRef(
-                        item.GetProperty("marketplace").GetString()!,
-                        item.GetProperty("plugin").GetString()!
-                    ))
-                    .ToArray();
+                selection =
+                [
+                    .. document
+                        .RootElement.EnumerateArray()
+                        .Select(item => new SandboxPluginRef(
+                            item.GetProperty("marketplace").GetString()!,
+                            item.GetProperty("plugin").GetString()!
+                        )),
+                ];
             }
             var catalog = await client.GetMarketplaceCatalogAsync(marketplaces, ct);
             if (

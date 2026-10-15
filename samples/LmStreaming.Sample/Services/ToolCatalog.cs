@@ -3,6 +3,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmWorkflow.Tools;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 using LmStreaming.Sample.Models;
+using LmStreaming.Sample.SandboxApps;
 
 namespace LmStreaming.Sample.Services;
 
@@ -123,7 +124,29 @@ public sealed class ToolCatalog(
             )
         );
 
-        // 7. Sandbox/workspace tools, listed live from the gateway when it is reachable. The wildcard
+        // 7. App debugging calls the same owned sandbox through the host's bounded gateway API.
+        catalog.Add(Wildcard(ToolGroups.MiniAppDebug, "All Mini App debug tools", requiresSandbox: true));
+        catalog.AddRange(
+            MiniAppDebugToolProvider.ToolNames.Select(name =>
+                Qualified(ToolGroups.MiniAppDebug, name, MiniAppDebugDescription(name), requiresSandbox: true)
+            )
+        );
+
+        catalog.Add(
+            Wildcard(ToolGroups.BrowserDebug, "All browser preview and debugging tools", requiresSandbox: true)
+        );
+        catalog.AddRange(
+            BrowserDebugToolProvider.ToolNames.Select(name =>
+                Qualified(
+                    ToolGroups.BrowserDebug,
+                    name,
+                    BrowserDebugToolProvider.Description(name),
+                    requiresSandbox: true
+                )
+            )
+        );
+
+        // 8. Sandbox/workspace tools, listed live from the gateway when it is reachable. The wildcard
         //    row goes first and is the only entry that can cover marketplace-provided tools installed
         //    after this listing was taken.
         var sandbox = await sandboxProbe.GetAsync(timeProvider, ct).ConfigureAwait(false);
@@ -137,12 +160,14 @@ public sealed class ToolCatalog(
             }
         );
         catalog.AddRange(
-            sandbox.Tools.Select(t =>
-                Qualified(ToolGroups.Sandbox, t.Name, t.Description, requiresSandbox: true) with
-                {
-                    CatalogWarning = sandbox.Warning,
-                }
-            )
+            sandbox
+                .Tools.Where(t => t.Name != "Browser")
+                .Select(t =>
+                    Qualified(ToolGroups.Sandbox, t.Name, t.Description, requiresSandbox: true) with
+                    {
+                        CatalogWarning = sandbox.Warning,
+                    }
+                )
         );
 
         return catalog;
@@ -197,5 +222,15 @@ public sealed class ToolCatalog(
             SubAgentToolProvider.GetAgentsToolName =>
                 "List the agents in this collaboration. Turns on the collaboration surface.",
             _ => "Sub-agent delegation tool.",
+        };
+
+    private static string MiniAppDebugDescription(string name) =>
+        name switch
+        {
+            MiniAppDebugToolProvider.ListToolName => "List registered Mini Web Apps in this conversation's workspace.",
+            MiniAppDebugToolProvider.InspectToolName => "Inspect one Mini Web App's manifest and files.",
+            MiniAppDebugToolProvider.TestRequestToolName =>
+                "Run a bounded test request against one Mini Web App and capture stdout and stderr.",
+            _ => "Diagnose a Mini Web App.",
         };
 }

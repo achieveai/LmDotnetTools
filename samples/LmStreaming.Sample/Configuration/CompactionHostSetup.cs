@@ -1,3 +1,5 @@
+using System.Text;
+using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 
@@ -90,8 +92,40 @@ public static class CompactionHostSetup
             );
         }
 
-        var encoder = new Tiktoken.Encoder(new Tiktoken.Encodings.O200KBase());
-        return text => string.IsNullOrEmpty(text) ? 0 : encoder.CountTokens(text);
+        const int MaxPieceUtf8Bytes = 4096;
+        var encoding = new Tiktoken.Encodings.O200KBase();
+        var encoder = new Tiktoken.Encoder(encoding);
+        var pieces = new Regex(encoding.Pattern, RegexOptions.Compiled);
+        return text =>
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return 0;
+            }
+
+            // UTF-8 needs at most three bytes per UTF-16 code unit. Keep both
+            // GetByteCount and the native tokenizer's int count from overflowing.
+            if (text.Length > int.MaxValue / 3)
+            {
+                return 3L * text.Length;
+            }
+
+            foreach (var piece in pieces.EnumerateMatches(text.AsSpan()))
+            {
+                // Tiktoken 2.2 allocates two int[pieceBytes + 1] arrays on the
+                // stack. Screen that allocation; a whole-input cap would distort
+                // ordinary long code. One token per UTF-8 byte is an upper bound.
+                if (
+                    piece.Length > MaxPieceUtf8Bytes
+                    || Encoding.UTF8.GetByteCount(text.AsSpan(piece.Index, piece.Length)) > MaxPieceUtf8Bytes
+                )
+                {
+                    return Encoding.UTF8.GetByteCount(text);
+                }
+            }
+
+            return encoder.CountTokens(text);
+        };
     }
 
     /// <summary>The text after a leading <c>---</c>…<c>---</c> block, trimmed; the whole text when there is none.</summary>

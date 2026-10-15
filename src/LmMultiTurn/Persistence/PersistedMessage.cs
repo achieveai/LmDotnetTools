@@ -58,6 +58,19 @@ public sealed record PersistedMessage
     public long? Seq { get; init; }
 
     /// <summary>
+    /// The message this one follows: the previous row of the conversation, or - for the first row a
+    /// fork writes - the message it was forked from. <c>null</c> only for a conversation's first
+    /// message. Assigned by the STORE on append (a supplied value is ignored), like <see cref="Seq"/>.
+    /// </summary>
+    /// <remarks>
+    /// A conversation is the chain of parents from its newest message back to its first, so two
+    /// forks share every message up to the one they split at - same ids, stored once (see
+    /// <see cref="ConversationLineage"/>). Rows written before this column existed read with the
+    /// previous row as their parent; nothing rewrites them.
+    /// </remarks>
+    public string? ParentMessageId { get; init; }
+
+    /// <summary>
     /// The concrete message type name (e.g., "TextMessage", "ToolCallMessage").
     /// </summary>
     public required string MessageType { get; init; }

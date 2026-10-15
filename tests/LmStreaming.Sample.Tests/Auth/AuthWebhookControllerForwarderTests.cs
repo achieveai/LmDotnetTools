@@ -170,6 +170,37 @@ public sealed class AuthWebhookControllerForwarderTests
 
     private static OAuthAccessToken NewToken() => new("tok-abc", DateTimeOffset.UtcNow.AddHours(1));
 
+    [Theory]
+    [InlineData("graph.microsoft.com", true)]
+    [InlineData("mcqdbdev-my.sharepoint.com", false)]
+    [InlineData("other-tenant.sharepoint.com", false)]
+    public async Task M365_bearer_token_is_injected_only_for_graph(string host, bool allowed)
+    {
+        var token = NewToken();
+        var provider = new FakeTokenProvider("m365");
+        provider.SetToken(token);
+        var forwarder = new RecordingForwarder();
+        var controller = CreateController(provider, new StubResolutionPolicy(null), forwarder);
+        var request = NewRequest("session-1", "m365") with { DestinationHost = host, Path = "/v1.0/me" };
+
+        var result = await controller.Evaluate("m365", request, CancellationToken.None);
+
+        var response = (AuthWebhookResponse)result.Should().BeOfType<OkObjectResult>().Subject.Value!;
+        response.Decision.Should().Be(allowed ? "allow" : "deny");
+        if (allowed)
+        {
+            response.Headers.Should().ContainSingle().Which.Should().Equal("Authorization", "Bearer " + token.Value);
+            response.ExpiresAt.Should().Be(token.ExpiresAtUtc);
+        }
+        else
+        {
+            response.Headers.Should().BeNull();
+            response.Reason.Should().Contain("not allowed");
+        }
+
+        forwarder.RequiredCalls.Should().BeEmpty();
+    }
+
     [Fact]
     public async Task Immediately_signed_in_allow_never_touches_the_forwarder()
     {

@@ -16,6 +16,24 @@ namespace LmStreaming.Sample.FileBrowser;
 /// </remarks>
 public static class WorkspaceContentTypes
 {
+    /// <summary>Shared headers for opaque-origin workspace documents and their relative assets.</summary>
+    public static void ApplyHeaders(HttpResponse response, string contentType, string fileName, bool attachment = false)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+        response.Headers["X-Content-Type-Options"] = "nosniff";
+        response.Headers.CacheControl = "private, no-store";
+        response.Headers["Referrer-Policy"] = "no-referrer";
+        if (IsActiveDocument(contentType))
+        {
+            response.Headers.ContentSecurityPolicy = SandboxPolicy;
+        }
+        var disposition = new Microsoft.Net.Http.Headers.ContentDispositionHeaderValue(
+            attachment ? "attachment" : "inline"
+        );
+        disposition.SetHttpFileName(fileName);
+        response.Headers.ContentDisposition = disposition.ToString();
+    }
+
     /// <summary>What an unrecognised extension is served as. Inert under <c>nosniff</c>.</summary>
     public const string Default = "application/octet-stream";
 

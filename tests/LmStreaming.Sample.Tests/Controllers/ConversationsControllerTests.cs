@@ -88,6 +88,7 @@ public class ConversationsControllerTests
                                 MultiTurnAgentPool.ProviderPropertyKey,
                                 MultiTurnAgentPool.WorkspacePropertyKey,
                                 MultiTurnAgentPool.ModePropertyKey,
+                                ConversationLineage.PropertyKey,
                             }
                         )
                     ),
@@ -107,16 +108,18 @@ public class ConversationsControllerTests
                     {
                         ["title"] = "Projected title",
                         ["preview"] = "Projected preview",
+                        [ConversationLineage.PropertyKey] = """{"schema_version":1,"deleted_at":5}""",
                     },
                 },
             ]);
         await using var pool = CreatePool();
         var controller = CreateController(store.Object, pool, ModeStoreResolvingSystemModes());
-        var response = Assert.IsType<OkObjectResult>(await controller.List());
+        var response = Assert.IsType<OkObjectResult>(await controller.List(includeDeleted: true));
         var row = Assert.IsType<List<ConversationSummary>>(response.Value).Single();
         row.ThreadId.Should().Be("canonical");
         row.Title.Should().Be("Projected title");
         row.Preview.Should().Be("Projected preview");
+        row.Deleted.Should().BeTrue("the lineage is read off the projected listing row");
         row.CanShare.Should().BeTrue();
         listing.VerifyAll();
         store.VerifyNoOtherCalls();

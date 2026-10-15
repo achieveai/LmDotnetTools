@@ -229,9 +229,17 @@ public sealed class SubAgentFocusFlowTests
         while (!cts.IsCancellationRequested)
         {
             using var response = await http.GetAsync($"/api/conversations/{threadId}/subagents", cts.Token);
-            response.StatusCode.Should().Be(HttpStatusCode.OK);
-
             lastBody = await response.Content.ReadAsStringAsync(cts.Token);
+
+            // A restart rewrites the child's metadata; while that is in flight the hierarchy index answers
+            // the documented retryable 503 hierarchy_busy rather than a possibly stale listing.
+            if (response.StatusCode == HttpStatusCode.ServiceUnavailable && lastBody.Contains("hierarchy_busy"))
+            {
+                await Task.Yield();
+                continue;
+            }
+
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
             using var doc = JsonDocument.Parse(lastBody);
 
             foreach (var entry in doc.RootElement.EnumerateArray())
