@@ -63,10 +63,12 @@ internal sealed class ReviewdConfig(IConfiguration configuration) : IDisposable
             throw new ArgumentException("The S2S host URL must not contain credentials, a query, or a fragment.");
         }
 
+        // The conversation listing (title-prefix lookup) is paged and, with a large conversation store, a
+        // page took 17-22s under a full batch; 30s timed out and held nine PRs before they were admitted.
         _s2sTransport ??= new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
         {
             BaseAddress = address,
-            Timeout = TimeSpan.FromSeconds(30),
+            Timeout = TimeSpan.FromSeconds(120),
         };
         return new LmStreamingS2SClient(_s2sTransport, S2SSecret, AppId, AppKey);
     }

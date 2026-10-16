@@ -420,7 +420,24 @@ internal static class ReviewRunner
                 else
                     await client.EnsureConversationReusableAsync(thread, workspace, provider, mode, ct);
             }
-            await WaitAsync(client, thread, null, delay, ct, terminalFailuresSettle: failedCleanup);
+            // This wait runs before the claim is re-taken, so a retained owner must renew its own lease here.
+            // Otherwise the lease lapses while the old run finishes and the reaper reclaims a live review
+            // (it reclaimed three during one drain).
+            var retainedToken = (resume || cleanupOnly) ? attempt?["claimToken"]?.GetValue<string>() : null;
+            var retainedOwner = SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot);
+            await WaitAsync(
+                client,
+                thread,
+                null,
+                retainedToken is null
+                    ? delay
+                    : async token =>
+                    {
+                        await delay(token);
+                        _ = await SlotRelease.HeartbeatAsync(connection, retainedOwner, retainedToken, token);
+                    },
+                ct
+            );
         }
         var ownerThreads = new HashSet<string>(StringComparer.Ordinal);
         var adoptedHistory = new List<string>();
@@ -728,7 +745,7 @@ internal static class ReviewRunner
                 );
             // This is outgoing-owner cleanup. Review success stays committed even if drain/reset fails.
             if (thread is not null)
-                await WaitAsync(client, thread, null, delay, ct, terminalFailuresSettle: failedCleanup);
+                await WaitAsync(client, thread, null, LeasedDelayAsync, ct);
             await SlotRelease.AssertCurrentAsync(connection, ownerKey, claimToken, ct);
             receipt["cleanupState"] = "pending";
             var operation = Guid.NewGuid().ToString("N");
@@ -839,8 +856,20 @@ internal static class ReviewRunner
     // one. Mirrors ReviewSubAgentCompletion.IsQuiescedUnknown.
     private static readonly TimeSpan UnknownQuiescence = TimeSpan.FromSeconds(90);
 
+    // The host answers hierarchy_busy while ANY conversation's metadata publication is pending, so with a
+    // full batch of reviews it is busy for minutes at a time. Busy is not failure: at the 1s poll this
+    // tolerates about ten minutes of consecutive busy reads (each wait still renews the slot lease)
+    // before giving up. Twelve, the old bound, aborted dozens of live reviews mid-run.
+    internal const int MaxConsecutiveBusyReads = 600;
+
+    // Error and Stopped are terminal: the child is done, it just did not succeed. That is not a review
+    // failure — a grader can error while the publisher still publishes — so it settles rather than throws.
+    // Whether the review succeeded is decided by the root input's status and then by verify, never by a
+    // descendant's stamp. Running never settles, however old its LastActivityUtc: that is the metadata's
+    // LastUpdated, which per-turn writes deliberately leave alone, so a child working for hours reads as
+    // idle since it spawned (seen live: four hours "idle" while writing messages minutes earlier).
     private static bool IsSettledNode(ReviewSubAgentNode node, DateTimeOffset now) =>
-        node.Status == ReviewSubAgentStatus.Completed
+        node.Status is ReviewSubAgentStatus.Completed or ReviewSubAgentStatus.Error or ReviewSubAgentStatus.Stopped
         || (
             node.Status == ReviewSubAgentStatus.Unknown
             && UnknownQuiescence > TimeSpan.Zero
@@ -849,23 +878,17 @@ internal static class ReviewRunner
         );
 
     /// <remarks>
-    ///     <c>terminalFailuresSettle</c> is for failed-owner cleanup only: Error and Stopped descendants
-    ///     count as settled rather than as a failure, so cleanup can drain a review that already failed.
-    ///     Unknown still throws (cleanup must not reset under a descendant it cannot see) and Running still
-    ///     waits. Outside cleanup, Unknown is waited on until it quiesces.
+    ///     Waits until the root run is idle and every descendant has settled (see <see cref="IsSettledNode"/>).
+    ///     A descendant never makes the wait throw: only the root input's own status can fail it.
     /// </remarks>
     internal static async Task<S2SStatusResult?> WaitAsync(
         LmStreamingS2SClient client,
         string thread,
         string? input,
         Func<CancellationToken, Task> delay,
-        CancellationToken ct,
-        bool terminalFailuresSettle = false
+        CancellationToken ct
     )
     {
-        bool Settled(ReviewSubAgentNode node, DateTimeOffset now) =>
-            IsSettledNode(node, now)
-            || (terminalFailuresSettle && node.Status is ReviewSubAgentStatus.Error or ReviewSubAgentStatus.Stopped);
         string? candidate = null;
         var busyReads = 0;
         while (true)
@@ -877,7 +900,7 @@ internal static class ReviewRunner
             {
                 tree = await client.GetSubAgentTreeAsync(thread, ct);
             }
-            catch (LmStreamingS2SClient.HierarchyBusyException) when (++busyReads <= 12)
+            catch (LmStreamingS2SClient.HierarchyBusyException) when (++busyReads <= MaxConsecutiveBusyReads)
             {
                 candidate = null;
                 await delay(ct);
@@ -891,31 +914,12 @@ internal static class ReviewRunner
             {
                 throw new InvalidOperationException($"Review input ended with {status.Status}; not success.");
             }
-            // Genuine descendant failures: a node that errored, was stopped, or carries a failure code.
-            // Outside failed-owner cleanup, Unknown is deliberately NOT fatal. Unknown means the source could not resolve the node's
-            // status on this poll (a child mid-spawn/handoff), not that it failed — a node flickers Unknown
-            // and then resolves. Throwing on it abandoned Nova reviews whose sub-agents (the publisher
-            // included) then completed. Instead keep waiting on Unknown and only stop blocking on it once it
-            // has been inactive for the quiescence window (mirrors ReviewSubAgentCompletion.IsQuiescedUnknown).
             var now = DateTimeOffset.UtcNow;
-            if (
-                tree.Nodes.Any(n =>
-                    (terminalFailuresSettle && n.Status == ReviewSubAgentStatus.Unknown)
-                    || (
-                        n.Status is ReviewSubAgentStatus.Error or ReviewSubAgentStatus.Stopped
-                        && !terminalFailuresSettle
-                    )
-                    || (n.FailureCode is not null && !(terminalFailuresSettle && Settled(n, now)))
-                )
-            )
-            {
-                throw new InvalidOperationException("Review descendants failed; not success.");
-            }
             var idle =
                 !global.IsInProgress
                 && global.CurrentRunId is null
                 && (status is null || status.Status.Equals("completed", StringComparison.OrdinalIgnoreCase))
-                && tree.Nodes.All(n => Settled(n, now));
+                && tree.Nodes.All(n => IsSettledNode(n, now));
             var signature = JsonSerializer.Serialize(
                 new
                 {

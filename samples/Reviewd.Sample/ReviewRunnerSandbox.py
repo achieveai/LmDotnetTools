@@ -1,7 +1,9 @@
 """Executed only through Gateway; uses the installed review-setup helpers."""
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 from urllib.parse import quote
@@ -259,6 +261,32 @@ elif phase == 'verify':
 elif phase == 'commit':
     inspect_prepared()
     from review_commit import commit_review
-    print(json.dumps(commit_review(root, repo, pr, slot, source_sha=args['head'])))
+    # A reviewer that runs git inside its evidence leaves a .git there, and review_commit refuses any .git path
+    # part, so the finished review could never commit. Move the whole nested repository out, not just its .git:
+    # its working tree may be a clone of the source, and commit_review adds everything left in the folder.
+    folder = safe_path(outer, directory)
+    quarantine = Path('/tmp/review-quarantine') / f"{repo_slug(repo)}-{pr}-{args['head'][:8]}"
+    for current, dirs, files in os.walk(folder):
+        if '.git' not in dirs + files:
+            continue
+        nested = Path(current) if Path(current) != folder else Path(current) / '.git'
+        relative = nested.relative_to(folder).as_posix()
+        target = quarantine / relative.replace('/', '__')
+        suffix = 0
+        while target.exists() or target.is_symlink():
+            suffix += 1
+            target = quarantine / f"{relative.replace('/', '__')}.{suffix}"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(nested), str(target))
+        print(f'Quarantined {directory}/{relative} to {target}', file=sys.stderr)
+        dirs[:] = [] if nested == Path(current) else [d for d in dirs if d != '.git']
+    # An earlier review of this PR, in any slot, leaves review/<repo>-<pr> in the shared review repository, and a
+    # detached slot refuses to switch to or overwrite it. Retain this head's review on its own branch instead.
+    expected = None
+    branch = f'review/{repo_slug(repo)}-{pr}'
+    if (run_git_read(outer, ['symbolic-ref', '-q', 'HEAD'], check=False).returncode
+            and not run_git_read(outer, ['rev-parse', '-q', '--verify', 'refs/heads/' + branch], check=False).returncode):
+        expected = f"{branch}-{args['head'][:8]}"
+    print(json.dumps(commit_review(root, repo, pr, slot, source_sha=args['head'], expected_branch=expected)))
 else:
     raise ReviewError('Unknown review-runner sandbox phase.')

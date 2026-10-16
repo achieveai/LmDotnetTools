@@ -368,7 +368,9 @@ public sealed class ReviewdRunnerTests
 
     [Theory]
     [InlineData(503, "hierarchy_busy", 2, true)]
-    [InlineData(503, "hierarchy_busy", 20, false)]
+    // Minutes of busy under a full batch are normal and must not abort a live review.
+    [InlineData(503, "hierarchy_busy", 120, true)]
+    [InlineData(503, "hierarchy_busy", ReviewRunner.MaxConsecutiveBusyReads + 8, false)]
     [InlineData(503, "other", 1, false)]
     [InlineData(500, "hierarchy_busy", 1, false)]
     public async Task Hierarchy_busy_retries_are_bounded_and_require_two_new_idle_snapshots(
@@ -418,7 +420,7 @@ public sealed class ReviewdRunnerTests
         else
         {
             await run.Should().ThrowAsync<HttpRequestException>();
-            reads.Should().Be(error == "hierarchy_busy" && code == 503 ? 14 : 2);
+            reads.Should().Be(error == "hierarchy_busy" && code == 503 ? ReviewRunner.MaxConsecutiveBusyReads + 2 : 2);
         }
         handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get);
     }
@@ -455,6 +457,54 @@ public sealed class ReviewdRunnerTests
         await ReviewRunner.WaitAsync(client, "thread", null, _ => Task.CompletedTask, CancellationToken.None);
         reads.Should().Be(42);
         handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get);
+    }
+
+    // Seen live: a grader stamped "error" beside a completed publisher. A finished child that did not succeed
+    // is not a failed review, so the wait settles instead of throwing. A running child keeps the wait however
+    // old its activity time looks: that time is not refreshed per turn (one read four hours "idle" while it
+    // was still writing messages).
+    [Theory]
+    [InlineData("error", 0, true)]
+    [InlineData("stopped", 0, true)]
+    [InlineData("running", 240, false)]
+    [InlineData("running", 0, false)]
+    [InlineData("mystery", 2, true)]
+    [InlineData("mystery", 0, false)]
+    public async Task Terminal_descendant_stamps_settle_the_wait_but_running_ones_keep_it(
+        string state,
+        int idleMinutes,
+        bool settles
+    )
+    {
+        var activity = DateTimeOffset.UtcNow.AddMinutes(-idleMinutes).ToString("O");
+        var failure = state == "error" ? ",\"failureCode\":\"model_error\"" : "";
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/run-state", """{"threadId":"thread","isInProgress":false,"currentRunId":null}""")
+            .OnJson(
+                HttpMethod.Get,
+                "/subagents?",
+                $$"""{"schemaVersion":1,"nodes":[{"agentId":"publisher","threadId":"publisher-thread","parentThreadId":"thread","depth":1,"template":"reviewer","status":"completed"},{"agentId":"left","threadId":"left-thread","parentThreadId":"thread","depth":1,"template":"reviewer","status":"{{state}}","lastActivityUtc":"{{activity}}"{{failure}}}]}"""
+            );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var delays = 0;
+        var run = () =>
+            ReviewRunner.WaitAsync(
+                client,
+                "thread",
+                null,
+                _ => ++delays > 20 ? throw new TimeoutException("Descendant still active.") : Task.CompletedTask,
+                CancellationToken.None
+            );
+        if (settles)
+        {
+            await run();
+            delays.Should().Be(1);
+        }
+        else
+        {
+            await run.Should().ThrowAsync<TimeoutException>();
+        }
     }
 
     [Theory]
@@ -723,6 +773,41 @@ public sealed class ReviewdRunnerTests
             .Select(entry => entry["status"]!.GetValue<string>())
             .Should()
             .Equal("held", "verified", "verified");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Batch_retries_a_host_timeout_before_the_claim_instead_of_holding_the_pr(bool reviewedEarlierHead)
+    {
+        // The conversation lookup runs before the claim. A host timeout there leaves the attempt row as it was
+        // and says nothing about the PR, yet it held nine fresh PRs for good. The row may already hold an
+        // earlier head's released review, which must not turn the timeout into a hold either.
+        using var batch = new BatchFixture(0);
+        if (reviewedEarlierHead)
+            batch.PutAttempt(
+                "1",
+                new JsonObject
+                {
+                    ["slot"] = 0,
+                    ["stage"] = "completed-verified",
+                    ["cleanupState"] = "released",
+                    ["claimToken"] = "earlier-claim",
+                    ["reviewedHeadSha"] = new string('9', 40),
+                    ["mergeSha"] = new string('9', 40),
+                    ["artifactCommit"] = new JsonObject { ["status"] = "committed", ["commit"] = new string('c', 40) },
+                }
+            );
+        batch.OnRunAsync = () =>
+            batch.Runs.Count == 1
+                ? throw new TaskCanceledException(
+                    "The request was canceled due to the configured HttpClient.Timeout of 30 seconds elapsing.",
+                    new TimeoutException()
+                )
+                : Task.CompletedTask;
+        await batch.ExecuteAsync();
+        batch.Runs.Should().Equal("1:fresh", "2:fresh", "3:fresh", "1:fresh");
+        batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
     }
 
     [Fact]
@@ -1622,12 +1707,12 @@ public sealed class ReviewdRunnerTests
                     client,
                     Sandbox,
                     CancellationToken.None,
-                    // A running descendant never settles; bound the wait so the test sees it keep waiting.
-                    _ => ++waits > 20 ? throw new TimeoutException("Descendant still running.") : Task.CompletedTask
+                    // An active descendant never settles; bound the wait so the test sees it keep waiting.
+                    _ => ++waits > 20 ? throw new TimeoutException("Descendant still active.") : Task.CompletedTask
                 );
             if (succeeds)
                 await run();
-            else if (scenario == "running-descendant")
+            else if (scenario is "running-descendant" or "unknown-descendant")
                 await run.Should().ThrowAsync<TimeoutException>();
             else
                 await run.Should().ThrowAsync<InvalidOperationException>();
@@ -1658,6 +1743,13 @@ public sealed class ReviewdRunnerTests
             {
                 phases.Should().BeEmpty();
                 after.ToJsonString().Should().Be(original);
+                if (scenario is "running-descendant" or "unknown-descendant")
+                {
+                    // The wait runs before the claim is re-taken, so it renews the retained lease itself;
+                    // otherwise the reaper reclaims a review that is still finishing.
+                    owner["leaseExpiresAt"].Should().NotBeNull();
+                    owner.Remove("leaseExpiresAt");
+                }
                 owner.ToJsonString().Should().Be(claim.ToJsonString());
             }
             if (scenario != "successful-receipt")

@@ -500,6 +500,7 @@ internal static class ReviewBatch
                     continue;
                 }
                 var launched = false;
+                string? attemptBeforeLaunch = null;
                 try
                 {
                     try
@@ -604,6 +605,7 @@ internal static class ReviewBatch
                         await SaveAsync(() => entry["status"] = "queued");
                         return;
                     }
+                    attemptBeforeLaunch = (await ReadAsync(database, AttemptKey(entry)))?.ToJsonString();
                     launched = true;
                     await run(CliOptions.Parse([.. arguments]));
                     var receipt = await ReadAsync(database, ReceiptKey(entry));
@@ -624,8 +626,15 @@ internal static class ReviewBatch
                 catch (Exception ex)
                 {
                     var retained = await ReadAsync(database, AttemptKey(entry));
+                    // The claim writes the attempt row, so a host timeout or connection failure that left the row
+                    // as it was before launch failed before the claim: it left nothing behind and says nothing
+                    // about the PR. Retry it with backoff. Holding it parked nine PRs whose conversation lookup
+                    // timed out. The row may predate this launch (an earlier head's released review).
+                    var transientBeforeClaim =
+                        retained?.ToJsonString() == attemptBeforeLaunch
+                        && ex is HttpRequestException or TimeoutException or TaskCanceledException;
                     if (
-                        (launched && (retained is null || !Resumable(retained)))
+                        (launched && !transientBeforeClaim && (retained is null || !Resumable(retained)))
                         || entry["failures"]!.GetValue<int>() + 1 >= MaxLaneRetries
                     )
                     {
