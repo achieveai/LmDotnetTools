@@ -41,6 +41,8 @@ internal sealed class CliOptions
                 "repo",
                 "pr",
                 "slot",
+                "slots",
+                "stale-after-minutes",
                 "db",
                 "session",
                 "workspace",
@@ -146,13 +148,28 @@ internal sealed class CliOptions
         if (command == "review run")
         {
             _ = PrCommands.ParseRepo(result.Required("repo"));
-            foreach (var name in new[] { "pr", "slot", "db", "session", "workspace", "provider" })
+            foreach (var name in new[] { "pr", "db", "session", "workspace", "provider" })
             {
                 _ = result.Required(name);
             }
-            if (!int.TryParse(result.Required("slot"), out var slot) || slot is < 0 or > 5)
+            if (result.Has("slot"))
             {
-                throw new ArgumentException("--slot must be between 0 and 5.");
+                if (!int.TryParse(result.Required("slot"), out var slot) || slot is < 0 or > 5)
+                {
+                    throw new ArgumentException("--slot must be between 0 and 5.");
+                }
+                if (result.Has("slots") || result.Has("stale-after-minutes"))
+                {
+                    throw new ArgumentException("--slots and --stale-after-minutes apply only without --slot.");
+                }
+            }
+            _ = ReviewSlots(result);
+            if (
+                result.Get("stale-after-minutes") is { } stale
+                && (!int.TryParse(stale, out var minutes) || minutes < 0)
+            )
+            {
+                throw new ArgumentException("--stale-after-minutes must be zero or a positive number of minutes.");
             }
         }
         if (command is "pr bind-thread" or "agent start" or "review run" && result.Has("pr"))
@@ -211,6 +228,35 @@ internal sealed class CliOptions
         return result;
     }
 
+    /// <summary>The slots an automatic <c>review run</c> may try, in order: <c>--slots</c>, else 0–5.</summary>
+    internal static int[] ReviewSlots(CliOptions options)
+    {
+        if (options.Get("slots") is not { } list)
+            return [0, 1, 2, 3, 4, 5];
+        var slots = list.Split(',', StringSplitOptions.TrimEntries)
+            .Select(value => int.TryParse(value, out var slot) && slot is >= 0 and <= 5 ? slot : -1)
+            .ToArray();
+        if (slots.Length == 0 || slots.Contains(-1) || slots.Distinct().Count() != slots.Length)
+            throw new ArgumentException("--slots must be distinct comma-separated slots between 0 and 5.");
+        return slots;
+    }
+
+    /// <summary>A copy with each named option set, or removed when its value is null.</summary>
+    internal CliOptions With(params (string Name, string? Value)[] changes)
+    {
+        var copy = new CliOptions { Command = Command, Argv = Argv };
+        foreach (var (name, value) in _values)
+            copy._values[name] = value;
+        foreach (var (name, value) in changes)
+        {
+            if (value is null)
+                copy._values.Remove(name);
+            else
+                copy._values[name] = value;
+        }
+        return copy;
+    }
+
     public const string HelpText = """
         Reviewd — small ADO / Gateway / S2S command-line client
 
@@ -230,8 +276,11 @@ internal sealed class CliOptions
         agent start --workspace <id> --provider <id> --prompt <text> [--directory <relative-dir>]
                     [--mode <id>] [--wait] [--timeout <seconds>] [--repo <org/project/repo> --pr <id> [--db <path>]]
 
-        review run --repo <org/project/repo> --pr <id> --slot <0-5> --db <pending.db>
+        review run --repo <org/project/repo> --pr <id> [--slot <0-5> | --slots <csv>] --db <pending.db>
                    --session <sandbox-session-id> --workspace <host-workspace-id> --provider <id> [--mode <id>] [--reasoning-effort <low|medium|high|xhigh>] [--execute] [--resume] [--cleanup-only]
+                   [--stale-after-minutes <n, default 120>]
+        Without --slot, run takes the first free or stale slot (stale owners are reclaimed via cleanup-only);
+        a PR that already owns a slot keeps it. No usable slot exits 3 with per-slot reasons on stderr.
         review batch --selection <json> --db <pending.db> --session <id> --workspace <id> --provider <id>
                      [--mode <id>] [--reasoning-effort <low|medium|high|xhigh>] [--listen <url>] [--callback <url>] --execute
         Batch resumes its fixed selected queue; failed PRs requeue, ambiguous owners hold slots. No automatic new PR discovery.

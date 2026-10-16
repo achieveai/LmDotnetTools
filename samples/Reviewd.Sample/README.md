@@ -124,7 +124,16 @@ reviewd review run --repo O365Exchange/Weve_DA/Nova --pr <id> --slot 2 \
 # Add --execute only after authorizing this PR/slot's reset, hosted publication and local artifact commit.
 ```
 
-`ReviewRunner.RunAsync` runs the reusable **one-PR function**. Pick candidates with `pr pick`; supply an explicit available slot. It is not a scheduler or automatic batch dispatcher.
+`ReviewRunner.RunAsync` runs the reusable **one-PR function**. Pick candidates with `pr pick`. It is not a scheduler or automatic batch dispatcher.
+
+**Slot choice.** `--slot` names the slot. Without it, the runner picks one (`AutoSlot.cs`):
+
+- A PR that already owns a slot keeps it, and so does `--resume` / `--cleanup-only`. Recovery never moves a PR.
+- Otherwise it tries each slot once, in order (`--slots 2,4` limits and orders them). A slot is skipped, with nothing claimed, when a queued batch entry holds it, another local run holds its lease, or the DB records an owner.
+- A **stale** owner counts as free. Stale means it is in a state cleanup-only accepts (verified but never released, or a failed original review) and older than `--stale-after-minutes` (default 120). It is reclaimed through cleanup-only under the held slot lease, and the slot is then used. A reclaim that fails leaves the slot held, and the runner moves on.
+- If `prepare` finds the native slot busy, it exits 3 with a `slot-not-idle` status before writing anything. The runner then releases its own claim and tries the next slot. With an explicit `--slot`, the run stops, but the claim is still released.
+- If no slot is usable, the run exits **3** and writes a JSON skip reason for every slot to stderr. Nothing is claimed.
+- Preview prints the slot it would pick, or the stale owner it would reclaim.
 
 1. Validate eligibility, host capabilities and session/workspace identity. Re-review reuses the immutable bound conversation, checking its workspace/provider/mode and global idle state.
 2. Atomically claim the selected workspace/repository/slot with an immutable SQLite token. Keep PR/slot lifetime leases. Incoming setup requires an already idle native slot; it never resets a predecessor. Run installed setup through Gateway and require complete context plus an unchanged active/non-draft source/merge revision. Save `setup-context.json` inside the review directory.

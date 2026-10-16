@@ -50,8 +50,9 @@ internal static class SlotRelease
                 || existing["prId"]?.GetValue<string>() != owner["prId"]?.GetValue<string>()
                 || existing["sessionId"]?.GetValue<string>() != owner["sessionId"]?.GetValue<string>()
             )
-                throw new InvalidOperationException(
-                    "Selected slot has a durable owner; no admission or reset allowed."
+                throw new ReviewRunner.SlotUnavailableException(
+                    "Selected slot has a durable owner; no admission or reset allowed.",
+                    existing
                 );
             token = retainedToken;
         }
