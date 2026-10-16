@@ -2177,7 +2177,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// (no-credential) UI path. Validated against the app id the conversation was frozen to at
     /// creation: a mismatch throws <see cref="SandboxCredentialConflictException"/> so a foreign S2S
     /// caller cannot mutate another app's conversation mode (issue #153 M2). The frozen credential
-    /// itself is preserved across the swap — this parameter only authorizes the switch.
+    /// itself is preserved across the swap. With no pooled agent (evicted, or the host restarted) the
+    /// rebuilt agent is bound to this credential, as a fresh create would be.
     /// </param>
     /// <param name="ownerUserId">
     /// <c>Principal.EffectiveUserId</c> of the caller requesting the switch, or <c>null</c> for an
@@ -2249,7 +2250,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// (no-credential) UI path. Validated against the app id the conversation was frozen to at
     /// creation: a mismatch throws <see cref="SandboxCredentialConflictException"/> so a foreign S2S
     /// caller cannot mutate another app's conversation provider (issue #153 M2). The frozen credential
-    /// itself is preserved across the swap — this parameter only authorizes the switch.
+    /// itself is preserved across the swap. With no pooled agent (evicted, or the host restarted) the
+    /// rebuilt agent is bound to this credential, as a fresh create would be.
     /// </param>
     /// <param name="ownerUserId">
     /// <c>Principal.EffectiveUserId</c> of the caller requesting the switch, or <c>null</c> for an
@@ -2416,8 +2418,10 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             // switch is neither a create nor a cross-actor request, so it must not change (or drop)
             // the caller identity the thread is bound to. Peeked (not removed) under the same lock
             // that guards the swap below, so no concurrent GetOrCreateAgent can interleave.
+            // With no existing entry (evicted, or the host restarted) the recreate binds to the caller,
+            // exactly as a fresh create would; binding it to no app would refuse this caller's next send.
             _ = _agents.TryGetValue(threadId, out var existingEntry);
-            var frozenCredential = existingEntry?.CallerCredential;
+            var frozenCredential = existingEntry is null ? callerCredential : existingEntry.CallerCredential;
 
             // Same reason the credential is peeked rather than taken from the request: a switch is
             // neither a create nor a cross-actor request, so it must not change (or drop) the user

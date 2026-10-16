@@ -142,6 +142,45 @@ public class MultiTurnAgentPoolCallerCredentialTests
         seenCredentials[1].Should().Be(credential, "a provider switch must preserve the frozen caller credential");
     }
 
+    /// <summary>
+    /// A switch on a thread with no pooled agent (evicted, or the host restarted) binds the agent to the
+    /// caller, as a fresh create would. Bound to no app instead, the same caller's next send is refused
+    /// as a cross-app request it never made.
+    /// </summary>
+    [Fact]
+    public async Task SwitchProviderAsync_WithNoPooledAgent_BindsTheCallerCredential()
+    {
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test", "openai"]);
+        var seenCredentials = new List<SandboxCredential?>();
+
+        await using var pool = new MultiTurnAgentPool(
+            context =>
+            {
+                seenCredentials.Add(context.CallerCredential);
+                return new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId));
+            },
+            registry.ToReal(),
+            new InMemoryConversationStore(),
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var credential = new SandboxCredential("caller-after-restart", "key-after-restart");
+
+        var switched = await pool.SwitchProviderAsync("thread-prov-unpooled", "openai", mode, credential);
+        var sent = pool.GetOrCreateAgent(
+            "thread-prov-unpooled",
+            mode,
+            requestedProviderId: null,
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: null,
+            callerCredential: credential
+        );
+
+        seenCredentials.Should().ContainSingle().Which.Should().Be(credential);
+        sent.Should().BeSameAs(switched.Agent, "the caller that switched the provider owns the agent it built");
+    }
+
     [Fact]
     public async Task GetOrCreateAgent_Throws_WhenSecondCallHasDifferentAppId()
     {
