@@ -27,26 +27,6 @@
     <PackageReference Include="Xunit.SkippableFact" Version="1.4.13" />
   </ItemGroup>
   <ItemGroup>
-    <!-- RETIRED (2026-10-15): the CodeReviewDaemon host is no longer runnable (Program.cs excluded,
-         OutputType=Library). These tests boot that host via WebApplicationFactory<Program> or assert
-         daemon-service wiring, so they are excluded while the daemon is retired. The library tests
-         below (ReviewRunner/barrier/orchestration) still run — Reviewd.Sample reuses that code.
-         To re-enable: restore the daemon Exe + Program.cs and remove these excludes. -->
-    <Compile Remove="Infrastructure/DaemonWebAppFactory.cs" />
-    <Compile Remove="Eval/EvalSweepConfigurationTests.cs" />
-    <Compile Remove="Orchestration/DaemonReviewStageExecutorPooledTests.cs" />
-    <Compile Remove="Orchestration/StaleHeadGuardTests.cs" />
-    <Compile Remove="Scenarios/ContextDiscoveryRouteTests.cs" />
-    <Compile Remove="Scenarios/DaemonAuthRegistrationTests.cs" />
-    <Compile Remove="Scenarios/DaemonGatewayUrlWiringTests.cs" />
-    <Compile Remove="Scenarios/DaemonHttpPolicyWiringTests.cs" />
-    <Compile Remove="Scenarios/DaemonPrPollingCoverageWiringTests.cs" />
-    <Compile Remove="Scenarios/DaemonS2SClientTimeoutWiringTests.cs" />
-    <Compile Remove="Scenarios/LmStreamingS2SClientTests.cs" />
-    <Compile Remove="Scenarios/ReviewBranchManagerRealGitTests.cs" />
-    <Compile Remove="Scenarios/RouteExposureTests.cs" />
-  </ItemGroup>
-  <ItemGroup>
     <ProjectReference Include="..\..\samples\CodeReviewDaemon.Sample\CodeReviewDaemon.Sample.csproj" />
     <ProjectReference Include="../../samples/Reviewd.Sample/Reviewd.Sample.csproj" Aliases="Reviewd" />
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
