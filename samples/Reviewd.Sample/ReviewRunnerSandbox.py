@@ -51,6 +51,15 @@ def live():
     return payload, merge
 
 
+def summary_reply(thread, posted):
+    # A re-review of an already-summarized PR posts its summary as a reply in the earlier summary thread: a
+    # general (not inline) thread opened by the same author.
+    opener = min(thread.get('comments', []), key=lambda c: c.get('id', 0), default={})
+    author = (opener.get('author') or {}).get('id')
+    return (not thread.get('threadContext') and opener.get('id') != posted.get('id')
+            and author is not None and author == (posted.get('author') or {}).get('id'))
+
+
 def inspect_prepared():
     manifest = json.loads(state.prepared_slot_path(pool.repo_key, slot).read_text())
     _, merge = live()
@@ -237,12 +246,12 @@ elif phase == 'verify':
             or receipt.get('mergeSha') != args['merge']):
         raise ReviewError('Publication receipt does not identify the prepared PR revision.')
     comments = receipt.get('comments')
-    if not isinstance(comments, list) or not comments or not any(c.get('kind') == 'summary' for c in comments):
+    if not isinstance(comments, list) or not comments:
         raise ReviewError('Publication receipt must include a posted summary.')
     payload, _ = live()
     api = (quote(payload['repository']['project']['id'], safe='') + '/_apis/git/repositories/'
            + quote(payload['repository']['id'], safe='') + '/pullRequests/' + str(pr))
-    verified, seen = [], set()
+    verified, seen, summarized = [], set(), False
     for comment in comments:
         thread_id, comment_id = comment.get('threadId'), comment.get('commentId')
         if (type(thread_id) is not int or thread_id <= 0 or type(comment_id) is not int or comment_id <= 0
@@ -255,8 +264,12 @@ elif phase == 'verify':
                 or posted.get('isDeleted') or posted.get('content') != comment.get('content')
                 or not isinstance(comment.get('content'), str) or not comment['content'].strip()):
             raise ReviewError('Publication could not be independently verified.')
+        summarized = summarized or comment.get('kind') == 'summary' or (
+            comment.get('kind') == 'reply' and summary_reply(thread, posted))
         verified.append({'threadId': thread_id, 'commentId': comment_id, 'kind': comment.get('kind'),
                          'contentSha256': hashlib.sha256(posted['content'].encode()).hexdigest()})
+    if not summarized:
+        raise ReviewError('Publication receipt must include a posted summary.')
     print(json.dumps({'comments': verified}))
 elif phase == 'commit':
     inspect_prepared()
