@@ -763,6 +763,7 @@ internal static class ReviewBatch
                     or "review-completed"
                     or "confirmation-running"
                     or "confirmation-completed"
+                    or "verify-pending"
             && attempt["reviewInputId"]?.GetValue<string>() is { Length: > 0 }
             && (
                 attempt["confirmationIdempotencyKey"] is null

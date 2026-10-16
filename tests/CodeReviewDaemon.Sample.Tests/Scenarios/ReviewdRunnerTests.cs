@@ -989,6 +989,27 @@ public sealed class ReviewdRunnerTests
         batch.RunAges.Should().NotContain(age => age != "72");
     }
 
+    [Fact]
+    public async Task Batch_resumes_an_owner_whose_verification_did_not_finish()
+    {
+        using var batch = new BatchFixture(0);
+        batch.PutAttempt(
+            "1",
+            new JsonObject
+            {
+                ["slot"] = 0,
+                ["stage"] = "verify-pending",
+                ["reviewInputId"] = "original",
+                ["confirmationIdempotencyKey"] = "confirm",
+                ["confirmationInputId"] = "confirmation",
+                ["mergeSha"] = new string('b', 40),
+            }
+        );
+        await batch.ExecuteAsync();
+        batch.Runs.Should().Contain("1:resume");
+        batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
+    }
+
     [Theory]
     [InlineData("eligibility")]
     [InlineData("resume")]
@@ -2331,6 +2352,7 @@ public sealed class ReviewdRunnerTests
             "--execute",
         ]);
         var failPublication = false;
+        var refuseCommit = false;
         try
         {
             using var connection = PrThreadBindings.Connection(database);
@@ -2420,6 +2442,22 @@ public sealed class ReviewdRunnerTests
                 "--resume",
                 "--execute",
             ]);
+            refuseCommit = true;
+            var refusedCommit = () =>
+                ReviewRunner.RunAsync(
+                    verificationResume,
+                    config,
+                    client,
+                    SandboxAsync,
+                    CancellationToken.None,
+                    _ => Task.CompletedTask
+                );
+            await refusedCommit.Should().ThrowAsync<SandboxException>();
+            refuseCommit = false;
+            (await store.GetAsync<JsonObject>(attemptKey))!["stage"]!
+                .GetValue<string>()
+                .Should()
+                .Be("verify-pending", "a refused commit never ran, so verification resumes");
             var requestsBeforeResume = handler.Requests.Count;
             phases.Clear();
             await ReviewRunner.RunAsync(
@@ -2552,6 +2590,11 @@ public sealed class ReviewdRunnerTests
             if (phase == "commit")
             {
                 polls.Should().BeGreaterThanOrEqualTo(3, "input completion alone must not allow commits");
+                if (refuseCommit)
+                    throw new SandboxException(SandboxErrorKind.Unavailable, "refused", 503)
+                    {
+                        ErrorCode = "operation_capacity_exhausted",
+                    };
             }
             var json = phase switch
             {

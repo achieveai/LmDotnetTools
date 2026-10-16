@@ -126,8 +126,26 @@ internal static class ReviewRunner
             new SandboxCommand(["python3", "-c", script, phase, args.ToJsonString()], ".", operation),
             token
         );
-        return Settle(phase, result.ExitCode, result.StandardOutput, result.StandardError, operation);
+        var settled = Settle(phase, result.ExitCode, result.StandardOutput, result.StandardError, operation);
+        // The SDK keeps a record whose id the caller supplied, and the gateway holds at most a few hundred per
+        // session for an hour; past that, every submit is refused. A settled success is fully consumed and
+        // never replayed (each step mints a new id), so release it. Failures stay for inspection.
+        try
+        {
+            await sandbox.DeleteOperationAsync(session, operation, token);
+        }
+        catch (SandboxException) { }
+        return settled;
     }
+
+    // The gateway refused to admit the operation at its record or concurrency limit, so it never ran.
+    internal static bool RefusedAtCapacity(Exception failure) =>
+        failure
+            is SandboxException
+            {
+                StatusCode: 503,
+                ErrorCode: "operation_capacity_exhausted" or "operation_concurrency_limit",
+            };
 
     internal static JsonObject Settle(string phase, int exitCode, string output, string? error, string operation)
     {
@@ -783,8 +801,10 @@ internal static class ReviewRunner
         }
         catch (Exception failure)
         {
+            var prepareRefused =
+                RefusedAtCapacity(failure) && receipt["stage"]?.GetValue<string>() == "prepare-pending";
             if (
-                failure is SlotNotIdleException
+                (failure is SlotNotIdleException || prepareRefused)
                 && receipt["reviewInputId"] is null
                 && receipt["reviewIdempotencyKey"] is null
             )
@@ -811,6 +831,8 @@ internal static class ReviewRunner
                     Console.Error.WriteLine($"Claim release held its lane: {releaseFailure.Message}");
                     throw;
                 }
+                if (prepareRefused)
+                    throw;
                 throw new SlotUnavailableException($"Native slot is not idle: {failure.Message}");
             }
             if (
@@ -891,7 +913,18 @@ internal static class ReviewRunner
             receipt[phase + "OperationId"] = operation;
             await SaveAsync();
             Console.Error.WriteLine($"{repo.DisplayName} #{pr}: {phase}, operation {operation}");
-            var result = await sandbox(phase, args, operation, ct);
+            JsonObject result;
+            try
+            {
+                result = await sandbox(phase, args, operation, ct);
+            }
+            catch (Exception refused) when (RefusedAtCapacity(refused) && phase == "commit")
+            {
+                // Nothing ran. Verify-pending resumes by re-verifying (read-only) and then committing.
+                receipt["stage"] = "verify-pending";
+                await SaveAsync();
+                throw;
+            }
             receipt["stage"] = phase + "-completed";
             await SaveAsync();
             return result;
