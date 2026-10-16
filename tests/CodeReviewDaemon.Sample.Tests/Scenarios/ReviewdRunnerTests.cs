@@ -2038,6 +2038,14 @@ public sealed class ReviewdRunnerTests
                 $$"""[{"threadId":"prior","title":"Nova-17-{{priorHead}}","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1}]"""
             )
             .OnJson(HttpMethod.Put, "/metadata", "{}")
+            // A provider that cannot freeze (Copilot, Codex, Claude SDK loops) refuses the thaw; it was never frozen.
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/unfreeze", StringComparison.Ordinal),
+                _ => new HttpResponseMessage(HttpStatusCode.Conflict)
+                {
+                    Content = new StringContent("""{"error":"not_freezable","threadId":"prior"}"""),
+                }
+            )
             .OnJson(HttpMethod.Post, "/messages", """{"inputId":"original","idempotencyKeyHonored":true}""")
             .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
             .OnJson(
@@ -2315,6 +2323,7 @@ public sealed class ReviewdRunnerTests
                 }
             )
             .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .OnJson(HttpMethod.Post, "/unfreeze", """{"threadId":"thread","frozen":false}""")
             .OnJson(HttpMethod.Get, "/status?", """{"status":"Completed","runId":"run","response":{"text":"done"}}""")
             .On(
                 request => request.RequestUri!.AbsolutePath.EndsWith("/run-state", StringComparison.Ordinal),
@@ -2382,6 +2391,7 @@ public sealed class ReviewdRunnerTests
                 .Contain("setup-context.json")
                 .And.Contain("Do not reset or rerun setup");
             await SnapshotAsync('d');
+            var beforeReReview = handler.Requests.Count;
             first["reviewCompletedAt"] = DateTimeOffset.UtcNow.AddHours(-1);
             await store.SetAsync(key, first);
             phases.Clear();
@@ -2395,6 +2405,17 @@ public sealed class ReviewdRunnerTests
             );
             provisions.Should().Be(1);
             sends.Should().Be(4);
+            // A reclaim leaves the thread frozen; the re-review thaws it before its send, or the run parks.
+            var reReview = handler.Requests.Skip(beforeReReview).ToList();
+            var thaw = reReview.FindIndex(r =>
+                r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations/thread/unfreeze"
+            );
+            thaw.Should().BeGreaterThan(-1, "a re-review must thaw the conversation it reuses");
+            var send = reReview.FindIndex(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal));
+            reReview
+                .FindIndex(thaw, r => r.Uri.AbsolutePath.EndsWith("/run-state", StringComparison.Ordinal))
+                .Should()
+                .BeInRange(thaw + 1, send - 1, "work queued behind the freeze settles before the review is sent");
             var last = (await store.GetAsync<JsonObject>(key))!;
             last["reviewCompletedAt"] = DateTimeOffset.UtcNow.AddHours(-1);
             await store.SetAsync(key, last);

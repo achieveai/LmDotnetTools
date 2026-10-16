@@ -617,6 +617,21 @@ internal static class ReviewRunner
                     },
                 ct
             );
+            // A reclaim leaves its conversation frozen. A fresh review on that thread thaws it once it is
+            // idle; otherwise the host accepts the review message and the run parks behind the freeze for
+            // good, and the reaper never frees the slot because the run reads as in progress. Work that
+            // queued behind the freeze runs on the thaw, so it settles before the slot is taken. A provider
+            // that cannot freeze was never frozen.
+            if (!resume && !cleanupOnly)
+            {
+                if (
+                    (await client.SetFrozenAsync(thread, frozen: false, ct)).Refusal
+                    is { } refusal
+                        and not "not_freezable"
+                )
+                    throw new InvalidOperationException($"Host refused to unfreeze {thread}: {refusal}.");
+                await WaitAsync(client, thread, null, delay, ct);
+            }
         }
         foreach (var ownerThread in ownerThreads)
         {
