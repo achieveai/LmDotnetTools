@@ -2193,6 +2193,7 @@ public sealed class ReviewdRunnerTests
         var provisions = 0;
         var polls = 0;
         var phases = new List<string>();
+        var verifySummaryThreads = new List<string>();
         var handler = new FakeHttpMessageHandler()
             .OnJson(
                 HttpMethod.Get,
@@ -2302,6 +2303,8 @@ public sealed class ReviewdRunnerTests
             );
             provisions.Should().Be(1);
             sends.Should().Be(4);
+            // The re-review's verify learns the first round's summary thread, where a reply may stand as its summary.
+            verifySummaryThreads.Should().Equal("[]", "[7]");
             var last = (await store.GetAsync<JsonObject>(key))!;
             last["reviewCompletedAt"] = DateTimeOffset.UtcNow.AddHours(-1);
             await store.SetAsync(key, last);
@@ -2479,6 +2482,8 @@ public sealed class ReviewdRunnerTests
             {
                 throw new InvalidOperationException("publication unavailable");
             }
+            if (phase == "verify")
+                verifySummaryThreads.Add(args["summaryThreads"]!.ToJsonString());
             if (phase == "commit")
             {
                 polls.Should().BeGreaterThanOrEqualTo(3, "input completion alone must not allow commits");
@@ -2488,6 +2493,7 @@ public sealed class ReviewdRunnerTests
                 "prepare" =>
                     """{"mergeSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","contextPath":".worktrees/Nova-2/PRs/nova-17/setup-context.json","reviewDirectory":".worktrees/Nova-2/PRs/nova-17","baselineComments":[]}""",
                 "commit" => """{"status":"committed","commit":"cccccccccccccccccccccccccccccccccccccccc"}""",
+                "verify" => """{"comments":[{"threadId":7,"commentId":1,"kind":"summary"}]}""",
                 "cleanup" => new JsonObject
                 {
                     ["claimToken"] = args["claimToken"]!.DeepClone(),

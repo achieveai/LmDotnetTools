@@ -740,6 +740,7 @@ internal static class ReviewRunner
                     "confirmation",
                     "Can you confirm if the PR feedback and replies to any discussion where you could add value have been posted. Audit and report existing publication receipts; do not post duplicates. Report your final verdict on the PR, with a brief rationale and any unresolved blockers. If the review is incomplete or blocked, state that explicitly rather than inferring approval. You MUST return a non-empty final text response. End your response with a standalone line in exactly this format: verdict: <APPROVE | APPROVE_WITH_COMMENTS | REQUEST_CHANGES | BLOCKED | INCOMPLETE>. Choose exactly one value, do not leave the placeholder, and put nothing after this verdict line."
                 );
+            args["summaryThreads"] = await PriorSummaryThreadsAsync(connection, repo, pr, ct);
             receipt["verifiedPublication"] = await StepAsync("verify");
             await WaitAsync(client, thread!, null, LeasedDelayAsync, ct);
             receipt["artifactCommit"] = await StepAsync("commit");
@@ -933,6 +934,48 @@ internal static class ReviewRunner
         && attempt["confirmationIdempotencyKey"] is null
         && attempt["initialSend"] is null
         && attempt["confirmationSend"] is null;
+
+    /// <summary>
+    ///     Threads that an earlier verified round of this PR recorded as its summary, from the success receipt, the
+    ///     current attempt and archived attempts. Verify accepts a re-review's reply as its summary only in one of
+    ///     these. A round verified in another database is not seen, so its reply is held rather than passed.
+    /// </summary>
+    internal static async Task<JsonArray> PriorSummaryThreadsAsync(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        RepoIdentity repo,
+        string pr,
+        CancellationToken ct
+    )
+    {
+        var threads = new SortedSet<int>();
+        using var query = connection.CreateCommand();
+        query.CommandText =
+            "SELECT value FROM cache WHERE key=@run OR key=@attempt OR key LIKE 'reviewd/attempt-history/%'";
+        query.Parameters.AddWithValue("@run", $"reviewd/review-run/{repo.NormalizedKey}/{pr}");
+        query.Parameters.AddWithValue("@attempt", $"reviewd/review-attempt/{repo.NormalizedKey}/{pr}");
+        using var reader = await query.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            if (
+                JsonNode.Parse(reader.GetString(0)) is not JsonObject row
+                || row["prId"]?.GetValue<string>() != pr
+                || row["repository"]?.GetValue<string>()?.Equals(repo.DisplayName, StringComparison.OrdinalIgnoreCase)
+                    != true
+                || row["verifiedPublication"]?["comments"] is not JsonArray comments
+            )
+                continue;
+            foreach (var comment in comments)
+            {
+                if (
+                    comment?["kind"]?.GetValue<string>() == "summary"
+                    && comment["threadId"] is JsonValue id
+                    && id.TryGetValue<int>(out var threadId)
+                )
+                    threads.Add(threadId);
+            }
+        }
+        return [.. threads.Select(id => (JsonNode)id)];
+    }
 
     internal static string PrLeaseIdentity(RepoIdentity repo, string pr) => "pr/" + repo.NormalizedKey + "/" + pr;
 
