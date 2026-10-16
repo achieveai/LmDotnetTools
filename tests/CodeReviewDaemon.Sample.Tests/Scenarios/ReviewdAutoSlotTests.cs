@@ -2,6 +2,7 @@ extern alias Reviewd;
 
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.Misc.Storage;
+using AchieveAi.LmDotnetTools.Sandbox;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
@@ -29,6 +30,9 @@ public sealed class ReviewdAutoSlotTests : IDisposable
 
     /// <summary>What the host reports for every conversation's run state.</summary>
     private bool _inProgress;
+
+    /// <summary>The gateway refuses every operation submit at its record limit.</summary>
+    private bool _refuseAtCapacity;
 
     public ReviewdAutoSlotTests()
     {
@@ -133,6 +137,48 @@ public sealed class ReviewdAutoSlotTests : IDisposable
 
         await run.Should().ThrowAsync<InvalidOperationException>().WithMessage(Stop);
         _phases.Should().Equal($"prepare 17/{expected}");
+    }
+
+    [Fact]
+    public async Task A_prepare_the_gateway_refused_at_capacity_releases_only_its_own_claim()
+    {
+        _refuseAtCapacity = true;
+
+        var run = () => RunAsync("--slots", "0");
+
+        await run.Should().ThrowAsync<SandboxException>();
+        _phases.Should().Equal("prepare 17/0");
+        (await GetAsync(AttemptKey(17)))!["stage"]!.GetValue<string>().Should().Be("failed-released");
+        (await GetAsync(OwnerKey(0)))!["state"]!.GetValue<string>().Should().Be("released");
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_verified_receipt_frees_its_slot_once_the_slot_owner_moved_past_its_claim(bool released)
+    {
+        // PR 9's verified review in slot 0 is followed by a re-review in slot 1, so its latest attempt is in flight.
+        var at = DateTimeOffset.UtcNow.ToString("O");
+        var receipt = Attempt(9, 0, "completed-verified", at);
+        await PutAsync($"reviewd/review-run/{Repo.NormalizedKey}/9", receipt);
+        await HoldAsync(9, 1);
+        var slotOwner = Claim(receipt, DateTimeOffset.UtcNow.AddMinutes(30));
+        if (released)
+            slotOwner["state"] = "released";
+        await PutAsync(OwnerKey(0), slotOwner);
+
+        var run = () => RunAsync("--slots", "0");
+
+        if (released)
+        {
+            await run.Should().ThrowAsync<InvalidOperationException>().WithMessage(Stop);
+            _phases.Should().Equal("prepare 17/0");
+        }
+        else
+        {
+            (await run()).Should().Be(ReviewRunner.NoSlotExitCode);
+            _phases.Should().BeEmpty();
+        }
     }
 
     [Fact]
@@ -341,6 +387,11 @@ public sealed class ReviewdAutoSlotTests : IDisposable
             );
         if (_notIdle.Contains(slot))
             throw new ReviewRunner.SlotNotIdleException("Native slot retains an owner.");
+        if (_refuseAtCapacity)
+            throw new SandboxException(SandboxErrorKind.Unavailable, "refused", 503)
+            {
+                ErrorCode = "operation_capacity_exhausted",
+            };
         throw new InvalidOperationException(Stop);
     }
 

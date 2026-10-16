@@ -917,6 +917,8 @@ public abstract class MultiTurnAgentBase
                 }
             }
 
+            // The orders taken so far by each generation this batch starts.
+            var taken = new Dictionary<string, SortedSet<int>>(StringComparer.Ordinal);
             foreach (var message in messages)
             {
                 var normalized = message;
@@ -926,11 +928,28 @@ public abstract class MultiTurnAgentBase
                     && message.MessageOrderIdx is { } index
                 )
                 {
-                    normalized = NormalizeCanonicalOrder(
-                        message,
-                        index,
-                        lastOrders.TryGetValue(generation, out var last) ? last : null
-                    );
+                    int? last = lastOrders.TryGetValue(generation, out var stored) ? stored : null;
+                    // Rows persist fire-and-forget, so the store can commit a row after a later row of its own
+                    // generation: a tool call can land after its own result. Such a row keeps its stored order,
+                    // which is where it was appended. Renumbering it behind the result put the result first, and
+                    // the provider rejected the recovered history on every turn. A tie is still renumbered, and
+                    // so is every row of a generation that was already in history before this batch.
+                    var orders = taken.GetValueOrDefault(generation);
+                    if (orders is null || index >= orders.Max || index == last || !orders.Add(index))
+                    {
+                        normalized = NormalizeCanonicalOrder(message, index, last);
+                        if (orders is not null && !orders.Add(normalized.MessageOrderIdx!.Value))
+                        {
+                            // A kept row can leave the last order below one already taken.
+                            normalized = NormalizeCanonicalOrder(message, index, orders.Max);
+                            _ = orders.Add(normalized.MessageOrderIdx!.Value);
+                        }
+                        else if (orders is null && last is null)
+                        {
+                            taken[generation] = [normalized.MessageOrderIdx!.Value];
+                        }
+                    }
+
                     // Use the actual stored order: unrecognized canonical types are not cloned.
                     lastOrders[generation] = normalized.MessageOrderIdx!.Value;
                 }

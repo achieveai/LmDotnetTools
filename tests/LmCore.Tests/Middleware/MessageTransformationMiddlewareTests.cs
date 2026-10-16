@@ -1238,6 +1238,60 @@ public class MessageTransformationMiddlewareTests
     }
 
     [Fact]
+    public async Task Upstream_KeepsToolCallsWithTheirResults_WhenANotificationLandsMidGeneration()
+    {
+        // A NotifyClient call records its notification before its own result. Splitting the generation there
+        // dropped the notify call's tool_use, and Anthropic rejected every later turn of the conversation.
+        var middleware = new MessageTransformationMiddleware();
+        ToolCallMessage Call(string id, int order) =>
+            new()
+            {
+                FunctionName = "fn_" + id,
+                FunctionArgs = "{}",
+                ToolCallId = id,
+                GenerationId = "gen1",
+                MessageOrderIdx = order,
+            };
+        ToolCallResultMessage Result(string id, int order) =>
+            new()
+            {
+                ToolCallId = id,
+                Result = "result_" + id,
+                GenerationId = "gen1",
+                MessageOrderIdx = order,
+            };
+        var notice = new NotifyMessage
+        {
+            NotifyKind = "client-notification",
+            SourceToolCallId = "call_2",
+            GenerationId = "notify:1",
+        };
+        var inputMessages = new List<IMessage>
+        {
+            Call("call_1", 4),
+            Result("call_1", 5),
+            Call("call_2", 6),
+            notice,
+            Result("call_2", 7),
+            Call("call_3", 8),
+            Result("call_3", 9),
+        };
+        var agent = new MockAgent();
+
+        await middleware.InvokeAsync(new MiddlewareContext(Messages: inputMessages, Options: null), agent);
+
+        var receivedMessages = agent.ReceivedMessages.ToList();
+        Assert.Equal(2, receivedMessages.Count);
+        var aggregate = Assert.IsType<ToolsCallAggregateMessage>(receivedMessages[0]);
+        Assert.Equal(["call_1", "call_2", "call_3"], aggregate.ToolsCallMessage.ToolCalls.Select(c => c.ToolCallId));
+        Assert.Equal(
+            ["call_1", "call_2", "call_3"],
+            aggregate.ToolsCallResult.ToolCallResults.Select(r => r.ToolCallId)
+        );
+        Assert.Same(notice, receivedMessages[1]);
+    }
+
+    [Fact]
     public async Task Upstream_PreservesMessageOrdering_WhenAggregating()
     {
         // Arrange

@@ -3,6 +3,7 @@ extern alias Reviewd;
 using System.Net;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.Misc.Storage;
+using AchieveAi.LmDotnetTools.Sandbox;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Microsoft.Extensions.Configuration;
@@ -986,6 +987,96 @@ public sealed class ReviewdRunnerTests
         if (scenario is "fresh" or "failed-released")
             batch.Runs.Should().NotContain("1:fresh");
         batch.RunAges.Should().NotContain(age => age != "72");
+    }
+
+    [Fact]
+    public async Task Batch_resumes_an_owner_whose_verification_did_not_finish()
+    {
+        using var batch = new BatchFixture(0);
+        batch.PutAttempt(
+            "1",
+            new JsonObject
+            {
+                ["slot"] = 0,
+                ["stage"] = "verify-pending",
+                ["reviewInputId"] = "original",
+                ["confirmationIdempotencyKey"] = "confirm",
+                ["confirmationInputId"] = "confirmation",
+                ["mergeSha"] = new string('b', 40),
+            }
+        );
+        await batch.ExecuteAsync();
+        batch.Runs.Should().Contain("1:resume");
+        batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
+    }
+
+    [Theory]
+    [InlineData("eligibility")]
+    [InlineData("resume")]
+    public async Task Batch_backs_off_gateway_capacity_without_holding_the_pr(string refusedAt)
+    {
+        using var batch = new BatchFixture(0);
+        if (refusedAt == "resume")
+            batch.PutAttempt(
+                "1",
+                new JsonObject
+                {
+                    ["slot"] = 0,
+                    ["stage"] = "review-running",
+                    ["reviewInputId"] = "original",
+                    ["mergeSha"] = new string('b', 40),
+                }
+            );
+        var refusals = 0;
+        void Refuse(string pr)
+        {
+            if (pr == "1" && ++refusals <= 7)
+                throw new SandboxException(SandboxErrorKind.Unavailable, "operation_concurrency_limit", 503);
+        }
+        batch.Eligibility = pr =>
+        {
+            if (refusedAt == "eligibility")
+                Refuse(pr);
+            return BatchFixture.Live(pr);
+        };
+        if (refusedAt == "resume")
+            batch.OnRun = () => Refuse(batch.Runs[^1].Split(':')[0]);
+        await batch.ExecuteAsync();
+        refusals.Should().Be(8);
+        batch.Runs.Should().Contain(refusedAt == "resume" ? "1:resume" : "1:fresh");
+        batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
+        batch.Entries().First()["failures"]!.GetValue<int>().Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("failed-released", "1:fresh")]
+    [InlineData("review-running", null)]
+    public async Task Batch_defers_only_a_resumed_owner_whose_prepared_merge_changed(string stage, string? run)
+    {
+        using var batch = new BatchFixture(0);
+        batch.PutAttempt(
+            "1",
+            new JsonObject
+            {
+                ["slot"] = 0,
+                ["stage"] = stage,
+                ["cleanupState"] = stage == "failed-released" ? "released" : "owned",
+                ["claimToken"] = "token",
+                ["reviewInputId"] = stage == "review-running" ? "original" : null,
+                ["mergeSha"] = new string('9', 40),
+            }
+        );
+        await batch.ExecuteAsync();
+        if (run is null)
+        {
+            batch.Runs.Should().NotContain(value => value.StartsWith("1:", StringComparison.Ordinal));
+            batch.Entries().First()["reason"]!.GetValue<string>().Should().Contain("prepared merge");
+        }
+        else
+        {
+            batch.Runs.Should().Contain(run);
+            batch.Entries().First()["status"]!.GetValue<string>().Should().Be("verified");
+        }
     }
 
     [Fact]
@@ -2262,6 +2353,8 @@ public sealed class ReviewdRunnerTests
             "--execute",
         ]);
         var failPublication = false;
+        var refuseCommit = false;
+        string? retryableCommit = null;
         try
         {
             using var connection = PrThreadBindings.Connection(database);
@@ -2353,6 +2446,41 @@ public sealed class ReviewdRunnerTests
                 "--resume",
                 "--execute",
             ]);
+            refuseCommit = true;
+            var refusedCommit = () =>
+                ReviewRunner.RunAsync(
+                    verificationResume,
+                    config,
+                    client,
+                    SandboxAsync,
+                    CancellationToken.None,
+                    _ => Task.CompletedTask
+                );
+            await refusedCommit.Should().ThrowAsync<SandboxException>();
+            refuseCommit = false;
+            (await store.GetAsync<JsonObject>(attemptKey))!["stage"]!
+                .GetValue<string>()
+                .Should()
+                .Be("verify-pending", "a refused commit never ran, so verification resumes");
+            foreach (
+                var refusal in new[]
+                {
+                    "An existing Git operation or index lock must be resolved first.",
+                    "Source changed during artifact capture or commit hook; side effects preserved for inspection.",
+                }
+            )
+            {
+                retryableCommit = refusal;
+                await refusedCommit
+                    .Should()
+                    .ThrowAsync<InvalidOperationException>()
+                    .WithMessage("*" + refusal[..20] + "*");
+                retryableCommit = null;
+                (await store.GetAsync<JsonObject>(attemptKey))!["stage"]!
+                    .GetValue<string>()
+                    .Should()
+                    .Be("verify-pending", "other sandbox work stopped the commit, and a rerun is safe");
+            }
             var requestsBeforeResume = handler.Requests.Count;
             phases.Clear();
             await ReviewRunner.RunAsync(
@@ -2487,6 +2615,13 @@ public sealed class ReviewdRunnerTests
             if (phase == "commit")
             {
                 polls.Should().BeGreaterThanOrEqualTo(3, "input completion alone must not allow commits");
+                if (refuseCommit)
+                    throw new SandboxException(SandboxErrorKind.Unavailable, "refused", 503)
+                    {
+                        ErrorCode = "operation_capacity_exhausted",
+                    };
+                if (retryableCommit is not null)
+                    ReviewRunner.Settle("commit", 1, "", "review_common.ReviewError: " + retryableCommit, operation);
             }
             var json = phase switch
             {

@@ -83,6 +83,31 @@ def inspect_prepared():
     return merge
 
 
+def clear_stale_index_locks():
+    # A canceled agent command can kill Git mid-refresh (a `git status` did) and leave index.lock behind. Git then
+    # refuses every later commit or reset in this slot, so the slot never frees. Call only while this attempt owns
+    # the slot. Remove only the slot's own per-worktree locks, and only while no process works inside the slot.
+    import time
+    inside = os.path.realpath(outer) + os.sep
+    for entry in Path('/proc').iterdir():
+        try:
+            if entry.name.isdigit() and (os.readlink(entry / 'cwd') + os.sep).startswith(inside):
+                return
+        except OSError:
+            continue
+    for checkout in (outer, source):
+        if not (checkout / '.git').exists():
+            continue
+        lock = Path(run_git_read(checkout, ['rev-parse', '--path-format=absolute', '--git-path', 'index.lock']).stdout.strip())
+        try:
+            age = time.time() - lock.stat().st_mtime
+        except FileNotFoundError:
+            continue
+        if age >= 60:
+            lock.unlink()
+            print(f'Removed stale {lock} ({int(age)}s old; no process in the slot).', file=sys.stderr)
+
+
 if phase == 'eligibility':
     payload = eligibility()
     print(json.dumps({'prId': str(pr), 'status': payload.get('status'),
@@ -117,6 +142,7 @@ elif phase == 'prepare':
                                    run_git_read(root, ['rev-parse', 'HEAD']).stdout.strip(),
                                    pool._verified_baseline())
         atomic_json(marker, {'claimToken': args['claimToken'], 'pr': pr, 'state': 'owned'})
+        clear_stale_index_locks()
     # The CLI does not expose prepare's lock_timeout. Use its existing route with a bounded
     # native-lock wait so overlapping source fetches contend locally, not at a batch gate.
     driver = """import sys
@@ -204,6 +230,7 @@ elif phase == 'cleanup':
             atomic_json(marker, previous)
         if not previous or previous.get('claimToken') != args['claimToken'] or previous.get('pr') != pr or previous.get('state') != 'owned':
             raise ReviewError('Native claim changed; no cleanup allowed.')
+        clear_stale_index_locks()
         prepared_path = state.prepared_slot_path(pool.repo_key, slot)
         if prepared_path.exists() and json.loads(prepared_path.read_text()).get('pr') != pr:
             raise ReviewError('Native prepared owner changed; no reset allowed.')
@@ -284,6 +311,7 @@ elif phase == 'verify':
     print(json.dumps({'comments': verified}))
 elif phase == 'commit':
     inspect_prepared()
+    clear_stale_index_locks()
     from review_commit import commit_review
     # A reviewer that runs git inside its evidence leaves a .git there, and review_commit refuses any .git path
     # part, so the finished review could never commit. Move the whole nested repository out, not just its .git:

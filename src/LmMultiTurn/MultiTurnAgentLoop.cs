@@ -4587,10 +4587,13 @@ public sealed class MultiTurnAgentLoop
     protected override async Task OnHistoryRestoredAsync(IReadOnlyList<IMessage> messages, CancellationToken ct)
     {
         // Pair the restored rows with the store's and reconcile compaction state before anything
-        // else reads the history: the view the first turn builds depends on it.
+        // else reads the history: the view the first turn builds depends on it. Pair the history as
+        // restored, not the loaded rows: restore appends a renumbered copy of a row whose stored order
+        // went backwards within its generation (rows commit out of order), identities are tracked by
+        // reference, and an unidentified copy made every compaction of the thread answer watermark_drift.
         if (_compaction is not null)
         {
-            await _compaction.TrackRestoredAsync(messages ?? [], ct);
+            await _compaction.TrackRestoredAsync(GetHistorySnapshot(), ct);
         }
 
         // Rebuild the deferred registry from persisted history. Each ToolCallResultMessage

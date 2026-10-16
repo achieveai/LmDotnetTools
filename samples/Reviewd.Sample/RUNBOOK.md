@@ -117,9 +117,12 @@ $R pr pick --repos "$REPOS" --db $DB --max-age-hours 72 --selection-out $SEL > /
 
 ```bash
 $R review batch --selection $SEL --db $DB --session $SESSION --workspace $WS \
-  --provider gpt-6.1-sol --mode code-review-daemon --reasoning-effort xhigh --max-age-hours 72 \
+  --provider claude-haiku-5.5 --mode code-review-daemon --reasoning-effort xhigh --max-age-hours 72 \
   --listen http://127.0.0.1:5235 --config $CFG --execute 2>&1 | tee -a .logs/review-batch.log
 ```
+
+- Changing `--provider` needs a fresh selection (step 5), and only once no review is in flight. A
+  started review resumes only on the provider it began with.
 
 ## 7. Watch it
 
