@@ -2353,6 +2353,7 @@ public sealed class ReviewdRunnerTests
         ]);
         var failPublication = false;
         var refuseCommit = false;
+        string? retryableCommit = null;
         try
         {
             using var connection = PrThreadBindings.Connection(database);
@@ -2458,6 +2459,25 @@ public sealed class ReviewdRunnerTests
                 .GetValue<string>()
                 .Should()
                 .Be("verify-pending", "a refused commit never ran, so verification resumes");
+            foreach (
+                var refusal in new[]
+                {
+                    "An existing Git operation or index lock must be resolved first.",
+                    "Source changed during artifact capture or commit hook; side effects preserved for inspection.",
+                }
+            )
+            {
+                retryableCommit = refusal;
+                await refusedCommit
+                    .Should()
+                    .ThrowAsync<InvalidOperationException>()
+                    .WithMessage("*" + refusal[..20] + "*");
+                retryableCommit = null;
+                (await store.GetAsync<JsonObject>(attemptKey))!["stage"]!
+                    .GetValue<string>()
+                    .Should()
+                    .Be("verify-pending", "other sandbox work stopped the commit, and a rerun is safe");
+            }
             var requestsBeforeResume = handler.Requests.Count;
             phases.Clear();
             await ReviewRunner.RunAsync(
@@ -2595,6 +2615,8 @@ public sealed class ReviewdRunnerTests
                     {
                         ErrorCode = "operation_capacity_exhausted",
                     };
+                if (retryableCommit is not null)
+                    ReviewRunner.Settle("commit", 1, "", "review_common.ReviewError: " + retryableCommit, operation);
             }
             var json = phase switch
             {

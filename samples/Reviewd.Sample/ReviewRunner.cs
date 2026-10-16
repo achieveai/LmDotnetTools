@@ -138,6 +138,23 @@ internal static class ReviewRunner
         return settled;
     }
 
+    // Other work in the sandbox, not this review, stops these commits, so they can be retried:
+    // - an index lock: the phase clears a stale one itself, and a live Git command holds one only briefly;
+    // - a moved source fingerprint: another slot's prepare fetched into the shared source store.
+    // A rerun is safe. A commit that already landed finds nothing staged and only pushes.
+    internal static bool CommitRetryable(Exception failure) =>
+        failure is SettledSandboxException { Phase: "commit" }
+        && (
+            failure.Message.Contains(
+                "An existing Git operation or index lock must be resolved first.",
+                StringComparison.Ordinal
+            )
+            || failure.Message.Contains(
+                "Source changed during artifact capture or commit hook",
+                StringComparison.Ordinal
+            )
+        );
+
     // The gateway refused to admit the operation at its record or concurrency limit, so it never ran.
     internal static bool RefusedAtCapacity(Exception failure) =>
         failure
@@ -918,9 +935,10 @@ internal static class ReviewRunner
             {
                 result = await sandbox(phase, args, operation, ct);
             }
-            catch (Exception refused) when (RefusedAtCapacity(refused) && phase == "commit")
+            catch (Exception refused)
+                when (phase == "commit" && (RefusedAtCapacity(refused) || CommitRetryable(refused)))
             {
-                // Nothing ran. Verify-pending resumes by re-verifying (read-only) and then committing.
+                // Verify-pending resumes by re-verifying (read-only) and then committing again.
                 receipt["stage"] = "verify-pending";
                 await SaveAsync();
                 throw;
