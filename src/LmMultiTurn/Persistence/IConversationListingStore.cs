@@ -67,6 +67,6 @@ public static class ConversationListingStoreExtensions
         var rows = scope is null
             ? await store.ListThreadsAsync(limit, offset, options, ct).ConfigureAwait(false)
             : await store.ListThreadsAsync(scope, limit, offset, options, ct).ConfigureAwait(false);
-        return rows.Select(row => ConversationListingRow.FromMetadata(row, keys)).ToArray();
+        return [.. rows.Select(row => ConversationListingRow.FromMetadata(row, keys))];
     }
 }

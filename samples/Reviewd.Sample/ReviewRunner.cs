@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.Misc.Storage;
 using AchieveAi.LmDotnetTools.Sandbox;
 using CodeReviewDaemon.Sample.Agents;
+using CodeReviewDaemon.Sample.Persistence.Models;
 
 namespace Reviewd.Sample;
 
@@ -14,10 +15,29 @@ internal static class ReviewRunner
     /// </summary>
     internal sealed class ReviewNotAdmittedException(string message) : InvalidOperationException(message);
 
-    internal sealed class SettledSandboxException(string phase, string message) : InvalidOperationException(message)
+    internal class SettledSandboxException(string phase, string message) : InvalidOperationException(message)
     {
         internal string Phase { get; } = phase;
     }
+
+    /// <summary>
+    ///     Prepare refused admission before writing anything native: the slot is busy, there is nothing to clean,
+    ///     and the run's own claim can be released.
+    /// </summary>
+    internal sealed class SlotNotIdleException(string message) : SettledSandboxException("prepare", message);
+
+    /// <summary>
+    ///     The selected slot is held, so nothing was claimed or written for it. <see cref="Owner"/> is the record
+    ///     that holds it, when one is known. An automatic run tries its next slot.
+    /// </summary>
+    internal sealed class SlotUnavailableException(string message, JsonNode? owner = null)
+        : InvalidOperationException(message)
+    {
+        internal JsonNode? Owner { get; } = owner;
+    }
+
+    /// <summary>Exit code of an automatic <c>review run</c> that found no usable slot.</summary>
+    internal const int NoSlotExitCode = 3;
 
     public static async Task<int> RunAsync(CliOptions options, ReviewdConfig config, CancellationToken ct)
     {
@@ -106,11 +126,25 @@ internal static class ReviewRunner
             new SandboxCommand(["python3", "-c", script, phase, args.ToJsonString()], ".", operation),
             token
         );
-        if (result.ExitCode != 0)
+        return Settle(phase, result.ExitCode, result.StandardOutput, result.StandardError, operation);
+    }
+
+    internal static JsonObject Settle(string phase, int exitCode, string output, string? error, string operation)
+    {
+        if (
+            exitCode == 3
+            && phase == "prepare"
+            && TryParseObject(output) is { } refusal
+            && refusal["status"]?.GetValue<string>() == "slot-not-idle"
+        )
+            throw new SlotNotIdleException(
+                refusal["reason"]?.GetValue<string>() ?? "Native slot is not idle; nothing was prepared."
+            );
+        if (exitCode != 0)
         {
             // Surface the sandbox's own diagnostics (tail of stderr, falling back to stdout) so a failure
             // is actionable without a separate artifact fetch.
-            var detail = string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError;
+            var detail = string.IsNullOrWhiteSpace(error) ? output : error;
             detail = (detail ?? string.Empty).TrimEnd();
             if (detail.Length > 1200)
             {
@@ -118,19 +152,51 @@ internal static class ReviewRunner
             }
             throw new SettledSandboxException(
                 phase,
-                $"Sandbox {phase} failed (exit {result.ExitCode}, operation {operation}); inspect retained output."
+                $"Sandbox {phase} failed (exit {exitCode}, operation {operation}); inspect retained output."
                     + (detail.Length > 0 ? $"\n--- sandbox output tail ---\n{detail}" : string.Empty)
             );
         }
-        return JsonNode.Parse(result.StandardOutput)?.AsObject()
+        return JsonNode.Parse(output)?.AsObject()
             ?? throw new InvalidOperationException($"Sandbox {phase} returned no result.");
+
+        static JsonObject? TryParseObject(string text)
+        {
+            try
+            {
+                return JsonNode.Parse(text) as JsonObject;
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+        }
     }
 
-    internal static async Task<int> RunAsync(
+    internal static Task<int> RunAsync(
         CliOptions options,
         ReviewdConfig config,
         LmStreamingS2SClient client,
         Func<string, JsonObject, string, CancellationToken, Task<JsonObject>> sandbox,
+        CancellationToken ct,
+        Func<CancellationToken, Task>? delay = null,
+        Func<DateTimeOffset>? now = null
+    ) =>
+        options.Has("slot")
+            ? RunInSlotAsync(options, config, client, sandbox, null, false, null, ct, delay, now)
+            : AutoSlot.RunAsync(options, config, client, sandbox, ct, delay, now);
+
+    /// <summary>
+    ///     Runs one PR in <c>--slot</c>. An automatic run passes the slot lease (and PR lease) it already holds,
+    ///     which stay owned by the caller, and the <paramref name="selection"/> record of how the slot was chosen.
+    /// </summary>
+    internal static async Task<int> RunInSlotAsync(
+        CliOptions options,
+        ReviewdConfig config,
+        LmStreamingS2SClient client,
+        Func<string, JsonObject, string, CancellationToken, Task<JsonObject>> sandbox,
+        FileStream? heldSlotLease,
+        bool prLeaseHeld,
+        JsonObject? selection,
         CancellationToken ct,
         Func<CancellationToken, Task>? delay = null,
         Func<DateTimeOffset>? now = null
@@ -151,12 +217,12 @@ internal static class ReviewRunner
         var key = $"reviewd/review-run/{repo.NormalizedKey}/{pr}";
         var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/{pr}";
         delay ??= token => Task.Delay(TimeSpan.FromSeconds(1), token);
-        using var prLease = options.Has("execute")
-            ? AcquireLease(database, "pr/" + repo.NormalizedKey + "/" + pr)
-            : null;
-        using var slotLease = options.Has("execute")
-            ? AcquireLease(database, "slot/" + workspace + "/" + repo.NormalizedKey + "/" + slot)
-            : null;
+        using var prLease =
+            options.Has("execute") && !prLeaseHeld ? AcquireLease(database, PrLeaseIdentity(repo, pr)) : null;
+        using var slotLease =
+            options.Has("execute") && heldSlotLease is null
+                ? AcquireLease(database, SlotLeaseIdentity(workspace, repo, slot))
+                : null;
         using var connection = new Microsoft.Data.Sqlite.SqliteConnection(
             new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
             {
@@ -254,6 +320,72 @@ internal static class ReviewRunner
             throw new InvalidOperationException(
                 "An incomplete review attempt exists; inspect its operation/thread/input IDs before retrying."
             );
+        }
+        // Pure DB reads, so a held slot is refused before any remote call, in preview too.
+        var ownerThreads = new HashSet<string>(StringComparer.Ordinal);
+        var adoptedHistory = new List<string>();
+        using (var owners = connection.CreateCommand())
+        {
+            owners.CommandText =
+                "SELECT value FROM cache WHERE key LIKE 'reviewd/review-run/%' OR key LIKE 'reviewd/review-attempt/%'";
+            using var reader = await owners.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                var ownerText = reader.GetString(0);
+                var owner = JsonNode.Parse(ownerText);
+                if (
+                    owner?["workspaceId"]?.GetValue<string>() != workspace
+                    || owner["repository"]
+                        ?.GetValue<string>()
+                        ?.Equals(repo.DisplayName, StringComparison.OrdinalIgnoreCase) != true
+                    || owner["slot"]?.GetValue<int>() != slot
+                )
+                {
+                    continue;
+                }
+                if ((resume || cleanupOnly) && owner["prId"]?.GetValue<string>() == pr)
+                    continue;
+                if (
+                    owner["cleanupState"]?.GetValue<string>() == "released"
+                    && owner["claimToken"]?.GetValue<string>() is { Length: > 0 }
+                )
+                    continue;
+                // A successful receipt is review evidence, not a slot release. Its current attempt
+                // must certify owner cleanup; legacy successes require explicit cleanup-only adoption.
+                if (owner["stage"]?.GetValue<string>() == "completed-verified")
+                {
+                    var latest = await ReadAsync($"reviewd/review-attempt/{repo.NormalizedKey}/{owner["prId"]}");
+                    if (
+                        latest?["cleanupState"]?.GetValue<string>() == "released"
+                        && latest["claimToken"]?.GetValue<string>() is { Length: > 0 }
+                    )
+                        continue;
+                    var adopted = await ReadAsync("reviewd/legacy-cleaned/" + SlotRelease.Digest(ownerText));
+                    if (adopted?["cleanupState"]?.GetValue<string>() == "released")
+                        continue;
+                    if (cleanupOnly)
+                    {
+                        if (owner["threadId"]?.GetValue<string>() is { Length: > 0 } historicalThread)
+                            ownerThreads.Add(historicalThread);
+                        else
+                            throw new InvalidOperationException(
+                                "Legacy completed owner lacks an identified thread to drain."
+                            );
+                        adoptedHistory.Add(ownerText);
+                        continue;
+                    }
+                    throw new SlotUnavailableException(
+                        "Legacy completed slot requires explicit owner cleanup/adoption.",
+                        owner
+                    );
+                }
+                var release = await ReadAsync(SlotRelease.Key(ownerText));
+                if (release is null || !SlotRelease.Allows(release, ownerText, pr, options.Required("session")))
+                    throw new SlotUnavailableException(
+                        "Selected slot has an incomplete review; no reset allowed.",
+                        owner
+                    );
+            }
         }
         var thread = await PrThreadBindings.GetAsync(database, repo, pr, ct);
         // Durable, cross-run reuse: when this pending db has no local binding (a fresh/next batch),
@@ -392,6 +524,7 @@ internal static class ReviewRunner
                         workspace,
                         session = options.Required("session"),
                         threadId = thread,
+                        slotSelection = selection,
                         actions = new[]
                         {
                             "claim idle selected slot and review-setup (no incoming reset)",
@@ -439,67 +572,6 @@ internal static class ReviewRunner
                 ct
             );
         }
-        var ownerThreads = new HashSet<string>(StringComparer.Ordinal);
-        var adoptedHistory = new List<string>();
-        using (var owners = connection.CreateCommand())
-        {
-            owners.CommandText =
-                "SELECT value FROM cache WHERE key LIKE 'reviewd/review-run/%' OR key LIKE 'reviewd/review-attempt/%'";
-            using var reader = await owners.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct))
-            {
-                var ownerText = reader.GetString(0);
-                var owner = JsonNode.Parse(ownerText);
-                if (
-                    owner?["workspaceId"]?.GetValue<string>() != workspace
-                    || owner["repository"]
-                        ?.GetValue<string>()
-                        ?.Equals(repo.DisplayName, StringComparison.OrdinalIgnoreCase) != true
-                    || owner["slot"]?.GetValue<int>() != slot
-                )
-                {
-                    continue;
-                }
-                if ((resume || cleanupOnly) && owner["prId"]?.GetValue<string>() == pr)
-                    continue;
-                if (
-                    owner["cleanupState"]?.GetValue<string>() == "released"
-                    && owner["claimToken"]?.GetValue<string>() is { Length: > 0 }
-                )
-                    continue;
-                // A successful receipt is review evidence, not a slot release. Its current attempt
-                // must certify owner cleanup; legacy successes require explicit cleanup-only adoption.
-                if (owner["stage"]?.GetValue<string>() == "completed-verified")
-                {
-                    var latest = await ReadAsync($"reviewd/review-attempt/{repo.NormalizedKey}/{owner["prId"]}");
-                    if (
-                        latest?["cleanupState"]?.GetValue<string>() == "released"
-                        && latest["claimToken"]?.GetValue<string>() is { Length: > 0 }
-                    )
-                        continue;
-                    var adopted = await ReadAsync("reviewd/legacy-cleaned/" + SlotRelease.Digest(ownerText));
-                    if (adopted?["cleanupState"]?.GetValue<string>() == "released")
-                        continue;
-                    if (cleanupOnly)
-                    {
-                        if (owner["threadId"]?.GetValue<string>() is { Length: > 0 } historicalThread)
-                            ownerThreads.Add(historicalThread);
-                        else
-                            throw new InvalidOperationException(
-                                "Legacy completed owner lacks an identified thread to drain."
-                            );
-                        adoptedHistory.Add(ownerText);
-                        continue;
-                    }
-                    throw new InvalidOperationException(
-                        "Legacy completed slot requires explicit owner cleanup/adoption."
-                    );
-                }
-                var release = await ReadAsync(SlotRelease.Key(ownerText));
-                if (release is null || !SlotRelease.Allows(release, ownerText, pr, options.Required("session")))
-                    throw new InvalidOperationException("Selected slot has an incomplete review; no reset allowed.");
-            }
-        }
         foreach (var ownerThread in ownerThreads)
         {
             await WaitAsync(client, ownerThread, null, delay, ct);
@@ -522,6 +594,8 @@ internal static class ReviewRunner
         };
         if (reasoningEffort is not null)
             receipt["reasoningEffort"] = reasoningEffort;
+        if (selection is not null)
+            receipt["slotSelection"] = selection.DeepClone();
         if (resume || cleanupOnly)
             receipt = attempt!.DeepClone().AsObject();
         if (cleanupOnly && attempt!["claimToken"] is null)
@@ -699,6 +773,36 @@ internal static class ReviewRunner
         catch (Exception failure)
         {
             if (
+                failure is SlotNotIdleException
+                && receipt["reviewInputId"] is null
+                && receipt["reviewIdempotencyKey"] is null
+            )
+            {
+                // Prepare refused before touching the native slot, so release only this run's own claim.
+                var pending = receipt.DeepClone().AsObject();
+                receipt["stage"] = "failed-released";
+                receipt["admissionRefused"] = failure.Message;
+                try
+                {
+                    await SlotRelease.ReleaseAsync(
+                        connection,
+                        ownerKey,
+                        claimToken,
+                        attemptKey,
+                        receipt,
+                        CancellationToken.None
+                    );
+                }
+                catch (Exception releaseFailure)
+                {
+                    pending["cleanupError"] = releaseFailure.Message;
+                    await store.SetAsync(attemptKey, pending, CancellationToken.None);
+                    Console.Error.WriteLine($"Claim release held its lane: {releaseFailure.Message}");
+                    throw;
+                }
+                throw new SlotUnavailableException($"Native slot is not idle: {failure.Message}");
+            }
+            if (
                 failure is SettledSandboxException { Phase: "prepare" }
                 && receipt["reviewInputId"] is null
                 && receipt["reviewIdempotencyKey"] is null
@@ -829,6 +933,11 @@ internal static class ReviewRunner
         && attempt["confirmationIdempotencyKey"] is null
         && attempt["initialSend"] is null
         && attempt["confirmationSend"] is null;
+
+    internal static string PrLeaseIdentity(RepoIdentity repo, string pr) => "pr/" + repo.NormalizedKey + "/" + pr;
+
+    internal static string SlotLeaseIdentity(string workspace, RepoIdentity repo, int slot) =>
+        "slot/" + workspace + "/" + repo.NormalizedKey + "/" + slot;
 
     internal static FileStream AcquireLease(string database, string identity)
     {

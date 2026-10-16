@@ -418,12 +418,14 @@ public sealed class FileConversationStore
         readOptions.Converters.Add(new ListingPropertiesConverter(readKeys));
         var rows = await ReadAllMetadataAsync(ct, readOptions).ConfigureAwait(false);
         var listOptions = options ?? ConversationListOptions.Default;
-        return listOptions
-            .Order(rows.Where(row => (scope is null || scope.Admits(row)) && listOptions.Admits(row)))
-            .Skip(offset)
-            .Take(limit)
-            .Select(row => ConversationListingRow.FromMetadata(row, keys))
-            .ToArray();
+        return
+        [
+            .. listOptions
+                .Order(rows.Where(row => (scope is null || scope.Admits(row)) && listOptions.Admits(row)))
+                .Skip(offset)
+                .Take(limit)
+                .Select(row => ConversationListingRow.FromMetadata(row, keys)),
+        ];
     }
 
     private sealed class ListingPropertiesConverter(IReadOnlySet<string> keys)

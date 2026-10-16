@@ -60,6 +60,13 @@ def summary_reply(thread, posted):
             and author is not None and author == (posted.get('author') or {}).get('id'))
 
 
+def slot_not_idle(reason):
+    # Admission was refused before anything native was written, so the caller may release its own
+    # claim and try another slot. Exit 3 plus this status line is the contract the runner checks.
+    print(json.dumps({'status': 'slot-not-idle', 'reason': reason}))
+    sys.exit(3)
+
+
 def inspect_prepared():
     manifest = json.loads(state.prepared_slot_path(pool.repo_key, slot).read_text())
     _, merge = live()
@@ -99,9 +106,9 @@ elif phase == 'prepare':
     with lock_session(120), writable.lock(shared=True, phase='reviewd-admit'), writable.slot_lock(pool.repo_key, slot, phase='reviewd-admit'):
         previous = json.loads(marker.read_text()) if marker.exists() else None
         if previous and previous.get('state') != 'released':
-            raise ReviewError('Native slot has an unreleased reviewd owner.')
+            slot_not_idle('Native slot has an unreleased reviewd owner.')
         if state.prepared_slot_path(pool.repo_key, slot).exists() or writable.load_pool_run(pool.repo_key, slot, dry_run=True) is not None:
-            raise ReviewError('Native slot retains an owner; explicit owner cleanup is required.')
+            slot_not_idle('Native slot retains an owner; explicit owner cleanup is required.')
         if outer.exists():
             _verify_postconditions(writable, pool, outer, source,
                                    run_git_read(root, ['rev-parse', 'HEAD']).stdout.strip(),
