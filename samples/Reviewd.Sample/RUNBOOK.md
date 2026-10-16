@@ -64,6 +64,7 @@ Gateway down? `cd /home/gautamb/Gateway && docker compose up -d`, then come back
 
 ```bash
 H=$PWD/.run/reviewd-local/host
+DOTNET_hostBuilder__reloadConfigOnChange=false \
 SandboxGateway__AppKey="$DAEMON_GATEWAY_APP_KEY" dotnet $H/LmStreaming.Sample.dll \
   --urls http://0.0.0.0:5000 --contentRoot $H --webroot $H/wwwroot \
   --Identity:DatabasePath $H/identity.db --LmStreaming:NotifyWaitDbPath $H/notify-waits.db \
@@ -73,6 +74,8 @@ SandboxGateway__AppKey="$DAEMON_GATEWAY_APP_KEY" dotnet $H/LmStreaming.Sample.dl
 
 - Healthy: `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5000/` prints `200`.
 - The app ID and key must be the matching pair shown above. A wrong pair makes every review fail with 503.
+- `reloadConfigOnChange=false` stops the host from watching every folder under its working directory and content root for config edits. From the repo root that is ~55,000 folders per watcher and ~7% of the host's CPU. Edits to `$H/appsettings.json` now take effect only on the next start.
+- A staged build in `.run/reviewd-local/host.next`? With the host stopped, run `.run/reviewd-local/swap-host.sh` first. It keeps data and the deployed `appsettings*.json`.
 
 ## 3. Start the webhook (only if 5206 is down). Terminal 2, leave it open
 
