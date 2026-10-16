@@ -51,12 +51,15 @@ def live():
     return payload, merge
 
 
-def summary_reply(thread, posted):
-    # A re-review of an already-summarized PR posts its summary as a reply in the earlier summary thread: a
-    # general (not inline) thread opened by the same author.
+def summary_reply(thread, posted, summary_threads):
+    # A re-review of an already-summarized PR posts its summary as a reply in the earlier summary thread. Only
+    # a thread an earlier verified round of this PR recorded as its summary counts, so a reply in any other
+    # general thread the reviewer opened (a PR-level finding, say) is not taken for a summary. It must still be
+    # a general (not inline) thread opened by the same author.
     opener = min(thread.get('comments', []), key=lambda c: c.get('id', 0), default={})
     author = (opener.get('author') or {}).get('id')
-    return (not thread.get('threadContext') and opener.get('id') != posted.get('id')
+    return (thread.get('id') in summary_threads and not thread.get('threadContext')
+            and opener.get('id') != posted.get('id')
             and author is not None and author == (posted.get('author') or {}).get('id'))
 
 
@@ -286,6 +289,7 @@ elif phase == 'verify':
     api = (quote(payload['repository']['project']['id'], safe='') + '/_apis/git/repositories/'
            + quote(payload['repository']['id'], safe='') + '/pullRequests/' + str(pr))
     verified, seen, summarized = [], set(), False
+    summary_threads = set(args.get('summaryThreads') or [])
     for comment in comments:
         thread_id, comment_id = comment.get('threadId'), comment.get('commentId')
         if (type(thread_id) is not int or thread_id <= 0 or type(comment_id) is not int or comment_id <= 0
@@ -299,7 +303,7 @@ elif phase == 'verify':
                 or not isinstance(comment.get('content'), str) or not comment['content'].strip()):
             raise ReviewError('Publication could not be independently verified.')
         summarized = summarized or comment.get('kind') == 'summary' or (
-            comment.get('kind') == 'reply' and summary_reply(thread, posted))
+            comment.get('kind') == 'reply' and summary_reply(thread, posted, summary_threads))
         verified.append({'threadId': thread_id, 'commentId': comment_id, 'kind': comment.get('kind'),
                          'contentSha256': hashlib.sha256(posted['content'].encode()).hexdigest()})
     if not summarized:
