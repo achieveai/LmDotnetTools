@@ -61,6 +61,7 @@ Section 5) -- never `YES`.
 | Pool status, warm a slot, prime history, recover cache | `review_pool_admin.py` |
 | Archive or discard a finished slot | `review_reset.py` |
 | Merge a completed local review into local `main` | `merge_review.py` |
+| Copy outside changes and commit every review artifact locally | `review_commit.py <PR> --repo <Repo> --slot <N>` |
 
 ## Topology
 
@@ -121,7 +122,7 @@ org configured), `--transport {auto,gateway,cli}`, `--lock-timeout` (seconds,
 reach its merge ref via `ls-remote`; exits without calling the destructive
 preparation step; never used by the real fetch).
 
-Exit codes: `0` ready and verified clean; `1` failed (invalid target, lock
+Exit codes: `4` / `PR_NOT_ACTIVE` means ADO confirms the PR is completed or abandoned: skip it; no Git preparation was attempted. `0` ready and verified clean; `1` failed (invalid target, lock
 conflict, fetch failure, cleanup failure, checkout failure, or verification
 failure) -- nothing is left half-cleaned.
 
@@ -161,8 +162,11 @@ Flags: `--repo` (required), `--slot` (required, int), `--org`, `--root`,
 | `1` | Workspace failed: PR could not be resolved, or Git setup failed. Nothing usable. |
 | `2` | Workspace ready, context warning: **the prepared Git worktree stays valid and usable** -- only context collection warned or failed. |
 | `3` | PR moved during context collection (iteration/merge commit changed underneath it). The slot stays ready at the fetched merge SHA; re-resolve and re-prepare for a coherent report. |
+| `4` | `PR_NOT_ACTIVE`: ADO confirms the PR is completed or abandoned. Skip it. Rejected before Git preparation; the existing slot is unchanged. |
 
 Exit `2` is not a setup failure. Do not discard the workspace on exit `2`.
+
+Exit `4` is a terminal-PR skip, not a retryable fetch failure. Do not reset or retry the slot solely for this result. Missing merge refs on active PRs, unknown statuses, and authentication/network failures are not classified as completed; normal errors remain exit `1`. The status check is a point-in-time observation; a PR completing after resolution can still produce a normal fetch failure. Callers must explicitly handle code `4`; older daemon callers may report it as a generic failure.
 
 ## 3. `review_ado.py` -- ADO provider (resolve / context)
 
@@ -339,6 +343,42 @@ confirm:
       baseline.
 - [ ] No leftover Git operation (merge/rebase/cherry-pick/revert/bisect) and
       no live writer for that slot.
+
+## Commit all review artifacts locally
+
+After the root review conversation **and all recursive subagents are idle**, run:
+
+```bash
+python3 /workspace/.claude/skills/review-setup/scripts/review_commit.py 5720427 --repo Nova --slot 5 --dry-run
+python3 /workspace/.claude/skills/review-setup/scripts/review_commit.py 5720427 --repo Nova --slot 5
+```
+
+The script validates the prepared PR/merge, selected-slot ownership and review
+branch. It accepts `review/<repo-slug>-<PR>` or a suffixed branch for that PR;
+`--expected-branch` requires an exact branch. A detached outer slot at local
+`main` may create `review/<repo-slug>-<PR>`. Wrong branches and existing staged
+changes are refused, not silently fixed. Shared and selected-slot locks protect
+against managed setup/reset/merge writers. The caller must separately establish
+conversation/subagent idle; a Git lock does not stop an agent editing files.
+
+**Every file** under `PRs/<repo-slug>-<PR>/` is committed, including hidden and
+ignored files, raw context and receipt files. Deleted tracked artifacts are
+included. Changed files outside that directory are copied into
+`outside/outer/` or `outside/source/`, preserving their relative paths and
+leaving originals untouched. Checkout/diff and deletion evidence is retained
+in `outside/checkout-<digest>.json`; source gitlink changes are never staged.
+Copy collisions, symlinks, other PR/repository changes and sensitive/dependency
+paths are refused rather than overwritten or omitted. Inspect sensitive
+content before committing: this command is not a general secret scanner.
+
+`--dry-run` makes no copies, branch changes, staging or commits; it still uses
+managed locks/writer bookkeeping. `--lock-timeout` defaults to `0` (fail fast).
+An unchanged repeat returns `status: unchanged`, not another commit. Normal
+Git hooks/signing remain enabled. No push, PR feedback, source commit, reset,
+merge, cleanup or automatic retry occurs. If a hook/commit/verification fails,
+inspect the preserved branch/index before retrying. Successful output includes
+the branch, commit, copied paths and file count; all directory paths and file
+contents must match committed HEAD before success is reported.
 
 ## Invoke by absolute path
 

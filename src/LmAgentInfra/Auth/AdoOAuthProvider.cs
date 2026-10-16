@@ -22,6 +22,7 @@ public sealed class AdoOAuthProvider : OAuthProviderBase
     private readonly string[] _scopes;
     private readonly string _cacheFilePath;
     private readonly object _cacheLock = new();
+    private readonly AdoWebhookTokenCache _webhookTokens = new();
 
     /// <summary>Creates the Azure DevOps (Entra/MSAL) provider.</summary>
     /// <param name="options">Entra client id, tenant + scopes.</param>
@@ -90,6 +91,9 @@ public sealed class AdoOAuthProvider : OAuthProviderBase
     {
         var app = _app ?? throw new InvalidOperationException("ADO OAuth is not configured (missing ClientId).");
 
+        await CancelSignInAsync().ConfigureAwait(false);
+        var webhookSuspension = await _webhookTokens.SuspendAsync().ConfigureAwait(false);
+
         // MSAL computes the authorize URL asynchronously inside ExecuteAsync; capture it so we can
         // return it (and open the browser ourselves) the moment MSAL is ready.
         var urlReady = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -156,6 +160,10 @@ public sealed class AdoOAuthProvider : OAuthProviderBase
                     Logger.LogInformation("ADO sign-in aborted by the originating request.");
                     throw;
                 }
+                finally
+                {
+                    _webhookTokens.Resume(webhookSuspension);
+                }
             })
             .ConfigureAwait(false);
 
@@ -175,27 +183,35 @@ public sealed class AdoOAuthProvider : OAuthProviderBase
     public override async Task SignOutAsync(CancellationToken ct = default)
     {
         await CancelSignInAsync().ConfigureAwait(false);
+        var webhookSuspension = await _webhookTokens.SuspendAsync().ConfigureAwait(false);
 
-        if (_app is not null)
+        try
         {
-            foreach (var account in await _app.GetAccountsAsync().ConfigureAwait(false))
+            if (_app is not null)
             {
-                await _app.RemoveAsync(account).ConfigureAwait(false);
+                foreach (var account in await _app.GetAccountsAsync().ConfigureAwait(false))
+                {
+                    await _app.RemoveAsync(account).ConfigureAwait(false);
+                }
             }
-        }
 
-        lock (_cacheLock)
+            lock (_cacheLock)
+            {
+                if (File.Exists(_cacheFilePath))
+                {
+                    File.Delete(_cacheFilePath);
+                }
+            }
+
+            SetStatus(
+                new OAuthStatus(OAuthSignInState.NotStarted, Account: null, Scopes: [], ExpiresAtUtc: null, Error: null)
+            );
+            Logger.LogInformation("Signed out of ADO.");
+        }
+        finally
         {
-            if (File.Exists(_cacheFilePath))
-            {
-                File.Delete(_cacheFilePath);
-            }
+            _webhookTokens.Resume(webhookSuspension);
         }
-
-        SetStatus(
-            new OAuthStatus(OAuthSignInState.NotStarted, Account: null, Scopes: [], ExpiresAtUtc: null, Error: null)
-        );
-        Logger.LogInformation("Signed out of ADO.");
     }
 
     /// <inheritdoc />
@@ -219,6 +235,39 @@ public sealed class AdoOAuthProvider : OAuthProviderBase
             SetFailed("interaction_required");
             throw new InvalidOperationException("ADO sign-in expired or was revoked; sign in again.", ex);
         }
+    }
+
+    /// <summary>Acquires the ADO webhook token using the ten-minute margin and shared forced refresh.</summary>
+    internal async Task<OAuthAccessToken> GetWebhookAccessTokenAsync(CancellationToken ct = default)
+    {
+        var generation = _webhookTokens.Generation;
+        var account =
+            await GetAccountAsync().ConfigureAwait(false)
+            ?? throw new InvalidOperationException("ADO provider is not signed in.");
+        var app = _app ?? throw new InvalidOperationException("ADO provider is not signed in.");
+        return await _webhookTokens
+            .GetAsync(
+                account.HomeAccountId.Identifier,
+                generation,
+                async refreshCancellation =>
+                {
+                    try
+                    {
+                        var result = await app.AcquireTokenSilent(_scopes, account)
+                            .WithForceRefresh(true)
+                            .ExecuteAsync(refreshCancellation)
+                            .ConfigureAwait(false);
+                        return new OAuthAccessToken(result.AccessToken, result.ExpiresOn);
+                    }
+                    catch (MsalUiRequiredException ex)
+                    {
+                        SetFailed("interaction_required");
+                        throw new InvalidOperationException("ADO sign-in expired or was revoked; sign in again.", ex);
+                    }
+                },
+                ct
+            )
+            .ConfigureAwait(false);
     }
 
     /// <summary>Returns the single cached account, or null when unconfigured / none is signed in.</summary>

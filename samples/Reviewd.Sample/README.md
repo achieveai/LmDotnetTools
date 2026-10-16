@@ -2,6 +2,8 @@
 
 Small operator CLI for ADO PR observations and existing Gateway/S2S workspaces. It reuses CodeReviewDaemon's clients and OAuth providers without starting the daemon host.
 
+To run the NOVA reviews (all repos, all slots, CLI only), follow [RUNBOOK.md](RUNBOOK.md).
+
 ```bash
 dotnet run --project samples/Reviewd.Sample -- --help
 
@@ -114,6 +116,22 @@ reviewd pr pick --repo O365Exchange/Weve_DA/Nova --db .run/reviewd/pending-nondr
 - Unknown draft/head metadata, incomplete/failed/malformed receipts, or bindings without completed receipts are excluded. A missing database/snapshot fails rather than treating history as empty.
 - Use the refreshed non-draft operator database. Standard `pr check` still includes drafts and does not populate `IsDraft`; those snapshots are not eligible. Recheck live status/head before submitting. This command does not start reviews or change the immutable conversation binding.
 
+## Restrict new reviews by creation age
+
+Use `--max-age-hours 72` on `pr pick`, `review run`, and `review batch` to admit only PRs created within the rolling previous 72 hours (UTC, inclusive). This is creation age, not last update or comment age. Missing, malformed, offset-free, or future creation timestamps fail closed. Omitting the option preserves the existing behavior.
+
+`pr pick` filters saved snapshot `CreatedAt`; execution rechecks authoritative live ADO `creationDate` before claiming and immediately before the initial review prompt. A PR that ages out during setup retains its claimed owner and artifacts for inspection; no prompt, fabricated success, or automatic release follows.
+
+Age-limited batches require a new immutable selection containing integer `"maxAgeHours": 72`, paired with `--max-age-hours 72`. Missing or mismatched policy on either side is rejected; the policy also binds the persisted execution scope. Fresh expired queue entries become terminal `age-excluded`. A released failed attempt is a fresh admission and remains subject to the age limit. Identified already-admitted reviews may finish, including confirmation and outgoing cleanup; an existing thread, preparation-only attempt, or unresolved send does not authorize that exemption. Existing held, stale, closed, or uncertain owners are not freed or reinterpreted by this policy.
+
+## Operator publication and restart policy
+
+As of 2026-10-09, requested PR review runs are authorized to post appropriate inline feedback, replies and review summaries. The former NOVA collect-only restriction is superseded. This does not authorize source pushes, merges, PR completion or unrelated external actions; actual authentication and publication capability checks still apply.
+
+Restarting the review process means starting fresh: stop or verify quiescence of its writers, reset **every PR review slot** in the configured Gateway workspace/pool through supported cleanup mechanisms, retire stale attempt/ownership state, verify fresh slots, then refill. Do not retain old slot assignments or resume interrupted PR attempts across that restart. Repository roots, shared knowledge, credentials, unrelated data and already-posted comments are outside the reset scope. Historical completed-review records outside slots may remain; they do not reserve slots, and existing posted feedback must not be duplicated.
+
+This is operator policy, not a claim that `review batch` automatically resets its pool on startup. The retained-state and `--resume` contracts below describe existing implementation mechanics. Do not use them to bypass the restart policy; if the supported cleanup path cannot establish quiescence or fresh slots, report that concrete blocker rather than silently resuming retained attempts.
+
 ## Run one PR review
 
 ```bash
@@ -121,7 +139,8 @@ reviewd pr pick --repo O365Exchange/Weve_DA/Nova --db .run/reviewd/pending-nondr
 reviewd review run --repo O365Exchange/Weve_DA/Nova --pr <id> --slot 2 \
   --db .run/reviewd/pending-nondraft.db --session <gateway-session-id> \
   --workspace <host-workspace-id> --provider <provider-id>
-# Add --execute only after authorizing this PR/slot's reset, hosted publication and local artifact commit.
+# Requested PR review runs authorize comments/replies/summaries under the operator policy above.
+# Add --execute only with the intended PR/slot scope and authorization for reset and local artifact commit.
 ```
 
 `ReviewRunner.RunAsync` runs the reusable **one-PR function**. Pick candidates with `pr pick`. It is not a scheduler or automatic batch dispatcher.
@@ -130,7 +149,7 @@ reviewd review run --repo O365Exchange/Weve_DA/Nova --pr <id> --slot 2 \
 
 - A PR that already owns a slot keeps it, and so does `--resume` / `--cleanup-only`. Recovery never moves a PR.
 - Otherwise it tries each slot once, in order (`--slots 2,4` limits and orders them). A slot is skipped, with nothing claimed, when a queued batch entry holds it, another local run holds its lease, or the DB records an owner.
-- A **stale** owner counts as free. Stale means it is in a state cleanup-only accepts (verified but never released, or a failed original review) and older than `--stale-after-minutes` (default 120). It is reclaimed through cleanup-only under the held slot lease, and the slot is then used. A reclaim that fails leaves the slot held, and the runner moves on.
+- A **stale** owner counts as free. Stale means another PR's claim lease has lapsed, the same test `review reap-slots` uses. It is reclaimed with the reaper's own reclaim (freeze, confirm quiesced, discard, release) under the held slot lease, and the slot is then used. A reclaim that fails, such as a review that is still running, leaves the slot held, and the runner moves on. Owners claimed before leasing are never stale here; `reap-slots --include-undated` handles those.
 - If `prepare` finds the native slot busy, it exits 3 with a `slot-not-idle` status before writing anything. The runner then releases its own claim and tries the next slot. With an explicit `--slot`, the run stops, but the claim is still released.
 - If no slot is usable, the run exits **3** and writes a JSON skip reason for every slot to stderr. Nothing is claimed.
 - Preview prints the slot it would pick, or the stale owner it would reclaim.
@@ -174,7 +193,7 @@ reviewd review batch --selection selection.json --db pending.db \
 
 - Selection JSON contains `repositories` (repo to rows with `repository`, string `prId`, `headSha`) and `lanes` (repo to distinct slots 0–5). It does not discover replacement or arbitrary new PRs.
 - One process serves OAuth and all lanes. Different slots prepare concurrently. Short SQLite claim/release transactions choose owners; lifetime PR/slot leases and native Git locks retain their existing scope. Keep the exclusive operator/database boundary.
-- The immutable request digest records provenance, not completion. `reviewd/batch-state/<digest>` checkpoints fixed assignments and retries. Restart with the same selection and execution scope resumes the queue, skipping exact-head verified attempts/receipts. Legacy assignment conflicts park instead of guessing.
+- The immutable request digest records provenance, not completion. `reviewd/batch-state/<digest>` checkpoints fixed assignments and retries. Existing retained-state mechanics can resume the queue with the same selection and execution scope, skipping exact-head verified attempts/receipts. This is not the operator restart procedure: apply the all-slot reset policy above before starting fresh. Legacy assignment conflicts park instead of guessing.
 - Ordinary failures requeue with capped 15–300 second backoff and fresh provider lifecycle/head/merge checks. Safe sibling lanes continue. An identified admitted owner keeps its slot while retried; its queued followers cannot overtake it.
 - Completed/abandoned unadmitted PRs retire without a success receipt. Closed admitted owners hold their slot pending certified release. Drafts/missing merges defer; changed selected heads are not silently replaced. Unknown setup/send/commit outcomes hold ownership. Preparation uncertainty holds only its owning lane. A competing producer still suspends new admission globally. A known completed pre-admission setup failure may preserve evidence, reset only its own native claim, and requeue; missing quiescence or changed ownership holds the lane.
 - Batch completion/parking leaves OAuth serving. SIGTERM/Ctrl+C stops admission, waits for admitted local runners while OAuth remains available, then exits. Remote operations can outlive callers; supervisor kill deadlines must be configured separately. No unlimited-drain guarantee.
@@ -232,6 +251,10 @@ reviewd review capacity --repos organization/project/RepoA,organization/project/
 ```
 
 This local read-only preview checks all historical attempts, receipts, exact release certificates and mutable batch assignments. It never releases, reserves, resets or reshuffles a slot. Missing evidence holds the lane. Supplied evidence must identify `workspaceId`, `sessionId`, `operationId`, `sharedQuiescent`, `producerQuiescent`, and `slots` with full `repository`, integer `slot`, `nativeQuiescent`, `artifactsRetained`, and `quiescentThreads` IDs. Those facts are inputs, not independently certified by the planner. A `candidate` is not execution authorization; recheck evidence and ownership immediately before admission. Certificate-based reuse requires a different PR. Legacy no-admission releases require a different session. An `operator-retired-after-reset` certificate instead names the exact recovery session and may release an admitted or same-session failed owner. `review reconcile-slot --repo <repo> --pr <pr> --db <db> --evidence <proof.json>` validates without writing; add `--execute` only after authorized reset and independent evidence review. The proof binds the raw attempt digest, hashed archive/reset receipts, stopped producers and writers, successful reset postconditions, and timestamp ordering. This command does not perform the reset or authenticate operator attestations. It preserves the original attempt and creates no successful-review receipt. Batch retirement is honored only with its matching certificate.
+
+For an attempt that failed **before acquiring an already-idle native slot**, reconciliation also accepts `classification: preparation-settled-native-idle`. It requires `prepare-pending`, an exact claim token, and no thread, input or send identifiers. The existing `--evidence` proof must hash-bind `nativeIdleReceiptPath`. That receipt identifies the exact attempt digest, workspace/session/repository/PR/slot/claim; identifies every retained preparation/cleanup operation as terminal with an exit code; and certifies released/absent native ownership, no prepared or pool run, stopped producers, quiescent writers and a clean source HEAD matching the 40-character baseline SHA. Its `checkedAt` must be within five minutes and not in the future. `preparationSettled`, `noAdmission`, `threadQuiescent` and `nativeQuiescent` must be true in the proof.
+
+This is **operator-attested evidence, not an authenticated native receipt**. Fresh inspection through Gateway/native APIs and exclusive operator control are prerequisites; the age bound does not close the inspection-to-release race. After independent review and exact execution authorization, `--execute` atomically releases the matching SQLite owner and inserts the immutable certificate. A changed owner or certificate collision rolls back both writes. The original attempt stays byte-for-byte unchanged. Only a **different PR in the same session** may reuse this certificate; no reset, input replay or successful-review receipt is produced. Other reconciliation classifications retain their existing certificate-only behavior.
 
 ## Workspace and agent behavior
 

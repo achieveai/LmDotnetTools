@@ -1,4 +1,6 @@
 using System.Collections.Immutable;
+using System.Text;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using FluentAssertions;
@@ -25,6 +27,152 @@ public class FileConversationStoreTests : IDisposable
         GC.SuppressFinalize(this);
         // #477: detach-then-delete rather than recursive-delete in place — see DetachedStoreTeardown.
         DetachedStoreTeardown.Purge(_testDirectory);
+    }
+
+    [Fact]
+    public async Task ListConversationRowsAsync_FiltersBeforePagingAndPreservesFullMetadata()
+    {
+        var options = new ConversationListOptions { ExcludedThreadIdPrefixes = ["subagent-"] };
+        var keys = new HashSet<string>(StringComparer.Ordinal) { "title" };
+        var scope = new ConversationListScope { TenantId = "tenant", UserId = "owner" };
+        foreach (
+            var (storage, id, tenant, stamp) in new[]
+            {
+                ("alias", "canonical", "tenant", 1L),
+                ("second", "second", "tenant", 2L),
+                ("child", "subagent-child", "tenant", 3L),
+                ("foreign", "foreign", "other", 4L),
+            }
+        )
+        {
+            await _store.SaveMetadataAsync(
+                storage,
+                new ThreadMetadata
+                {
+                    ThreadId = id,
+                    LastUpdated = stamp,
+                    TenantId = tenant,
+                    OwnerUserId = "owner",
+                    Properties = ImmutableDictionary<string, object>
+                        .Empty.Add("title", id)
+                        .Add("history", new string('x', 100_000)),
+                }
+            );
+        }
+        var full = await _store.ListThreadsAsync(scope, 1, 1, options);
+        var rows = await _store.ListConversationRowsAsync(keys, scope, 1, 1, options);
+        rows.Select(row => row.ThreadId).Should().Equal(full.Select(row => row.ThreadId));
+        rows.Single().ThreadId.Should().Be("canonical");
+        rows.Single().Properties.Should().ContainSingle().Which.Key.Should().Be("title");
+        var unchanged = await _store.LoadMetadataAsync("alias");
+        ((JsonElement)unchanged!.Properties!["history"]).GetString().Should().HaveLength(100_000);
+        var memory = new InMemoryConversationStore();
+        await memory.SaveMetadataAsync("alias", unchanged);
+        var fallback = await memory.ListConversationRowsAsync(keys, scope);
+        fallback.Single().ThreadId.Should().Be("canonical");
+        fallback.Single().Properties["title"].Should().Be(rows.Single().Properties["title"]);
+    }
+
+    [Fact]
+    public async Task ListConversationRowsAsync_ExcludesDeletedRowsWithoutTheLineageBeingRequested()
+    {
+        var kept = new ThreadMetadata
+        {
+            ThreadId = "kept",
+            LastUpdated = 1,
+            Properties = ImmutableDictionary<string, object>.Empty.Add("title", "kept"),
+        };
+        await _store.SaveMetadataAsync("kept", kept);
+        await _store.SaveMetadataAsync(
+            "gone",
+            ConversationLineage.Write(kept with { ThreadId = "gone", LastUpdated = 2 }, new() { DeletedAt = 5 })
+        );
+        var options = new ConversationListOptions { ExcludeDeleted = true };
+        var keys = new HashSet<string>(StringComparer.Ordinal) { "title" };
+
+        var rows = await _store.ListConversationRowsAsync(keys, null, 50, 0, options);
+
+        rows.Select(row => row.ThreadId).Should().Equal("kept");
+        rows.Single().Properties.Keys.Should().Equal("title");
+        (await _store.ListThreadsAsync(50, 0, options)).Select(row => row.ThreadId).Should().Equal("kept");
+    }
+
+    [Theory]
+    [InlineData("{\"title\":null}")]
+    [InlineData("{\"title\":7,\"ignored\":[1,{\"nested\":true}]}")]
+    [InlineData("{\"title\":\"first\",\"title\":\"last\",\"ignored\":1,\"ignored\":null}")]
+    [InlineData("{\"title\":{\"nested\":7}}")]
+    public async Task ListConversationRowsAsync_MatchesFullPropertyText(string bag)
+    {
+        Directory.CreateDirectory(Path.Combine(_testDirectory, "alias"));
+        await File.WriteAllTextAsync(
+            Path.Combine(_testDirectory, "alias", "metadata.json"),
+            "{\"threadId\":\"canonical\",\"lastUpdated\":1,\"properties\":" + bag + "}"
+        );
+        var full = (await _store.ListThreadsAsync()).Single();
+        var projected = (await _store.ListConversationRowsAsync(new HashSet<string> { "title" })).Single();
+        projected.Properties["title"].Should().Be(full.Properties!["title"]?.ToString());
+    }
+
+    [Theory]
+    [InlineData("{\"ignored\":[1,]}")]
+    [InlineData("{\"ignored\":01}")]
+    [InlineData("{\"ignored\":\"\\q\"}")]
+    [InlineData("[]")]
+    public async Task ListConversationRowsAsync_ValidatesSkippedPropertiesInStrictMode(string bag)
+    {
+        Directory.CreateDirectory(Path.Combine(_testDirectory, "subagent-child"));
+        await File.WriteAllTextAsync(
+            Path.Combine(_testDirectory, "subagent-child", "metadata.json"),
+            "{\"threadId\":\"subagent-child\",\"lastUpdated\":1,\"properties\":" + bag + "}"
+        );
+        var store = new FileConversationStore(_testDirectory, null, true);
+        var options = new ConversationListOptions { ExcludedThreadIdPrefixes = ["subagent-"] };
+        var full = () => store.ListThreadsAsync(options: options);
+        var projected = () => store.ListConversationRowsAsync(new HashSet<string> { "title" }, options: options);
+        await full.Should().ThrowAsync<JsonException>();
+        await projected.Should().ThrowAsync<JsonException>();
+    }
+
+    [Theory]
+    [InlineData("utf8")]
+    [InlineData("utf16")]
+    [InlineData("utf32")]
+    [InlineData("invalid-utf8")]
+    public async Task ListConversationRowsAsync_PreservesDecodedTextAndCancellation(string encodingName)
+    {
+        Directory.CreateDirectory(Path.Combine(_testDirectory, "alias"));
+        var path = Path.Combine(_testDirectory, "alias", "metadata.json");
+        const string json =
+            "{\"threadId\":\"canonical\",\"lastUpdated\":1,\"properties\":{\"title\":\"héllo 世界 😀\",\"ignored\":[{\"value\":1}]}}";
+        if (encodingName == "invalid-utf8")
+        {
+            var parts = json.Split("héllo 世界 😀");
+            await File.WriteAllBytesAsync(
+                path,
+                [.. Encoding.UTF8.GetBytes(parts[0]), 0xff, .. Encoding.UTF8.GetBytes(parts[1])]
+            );
+        }
+        else
+        {
+            var encoding = encodingName switch
+            {
+                "utf16" => Encoding.Unicode,
+                "utf32" => Encoding.UTF32,
+                _ => new UTF8Encoding(true),
+            };
+            await File.WriteAllTextAsync(path, json, encoding);
+        }
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "title" };
+        var full = (await _store.ListThreadsAsync()).Single();
+        var rows = await _store.ListConversationRowsAsync(keys);
+        rows.Single().Properties["title"].Should().Be(full.Properties!["title"].ToString());
+        (await _store.ListConversationRowsAsync(new HashSet<string> { "Title" }))
+            .Single()
+            .Properties.Should()
+            .BeEmpty();
+        var canceled = () => _store.ListConversationRowsAsync(keys, ct: new CancellationToken(true));
+        await canceled.Should().ThrowAsync<OperationCanceledException>();
     }
 
     #region Constructor Tests
@@ -190,6 +338,61 @@ public class FileConversationStoreTests : IDisposable
     }
 
     #endregion
+
+    [Theory]
+    [InlineData("utf8")]
+    [InlineData("utf16")]
+    [InlineData("utf32")]
+    [InlineData("invalid-utf8")]
+    public async Task LoadMetadataAsync_PreservesDecodedPropertyValuesAfterConcurrentReads(string encodingName)
+    {
+        const string json = "{\"threadId\":\"encoded\",\"lastUpdated\":1,\"properties\":{\"value\":\"héllo 世界 😀\"}}";
+        var directory = Path.Combine(_testDirectory, "encoded");
+        Directory.CreateDirectory(directory);
+        byte[] bytes;
+        if (encodingName == "invalid-utf8")
+        {
+            var parts = json.Split("héllo 世界 😀");
+            bytes = [.. Encoding.UTF8.GetBytes(parts[0]), 0xff, .. Encoding.UTF8.GetBytes(parts[1])];
+        }
+        else
+        {
+            var encoding = encodingName switch
+            {
+                "utf16" => Encoding.Unicode,
+                "utf32" => Encoding.UTF32,
+                _ => Encoding.UTF8,
+            };
+            bytes = [.. encoding.GetPreamble(), .. encoding.GetBytes(json)];
+        }
+
+        await File.WriteAllBytesAsync(Path.Combine(directory, "metadata.json"), bytes);
+        var expected = encodingName == "invalid-utf8" ? "�" : "héllo 世界 😀";
+        var results = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => _store.LoadMetadataAsync("encoded")));
+        await _store.SaveMetadataAsync("other", CreateTestMetadata("other"));
+        await _store.LoadMetadataAsync("other");
+
+        foreach (var metadata in results)
+        {
+            metadata.Should().NotBeNull();
+            ((JsonElement)metadata!.Properties!["value"]).GetString().Should().Be(expected);
+            ((JsonElement)metadata.Properties["value"]).GetRawText().Should().Contain(expected);
+        }
+    }
+
+    [Fact]
+    public async Task LoadMessagesAsync_PreservesLargeTranscriptAcrossBufferGrowth()
+    {
+        var messages = CreateTestMessages("large", "run", 100)
+            .Select(message => message with { MessageJson = new string('x', 20_000) })
+            .ToArray();
+        await _store.AppendMessagesAsync("large", messages);
+
+        var loaded = await _store.LoadMessagesAsync("large");
+
+        loaded.Should().HaveCount(messages.Length);
+        loaded[99].MessageJson.Should().Be(messages[99].MessageJson);
+    }
 
     #region SaveMetadataAsync / LoadMetadataAsync Tests
 

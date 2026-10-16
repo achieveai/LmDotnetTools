@@ -87,6 +87,11 @@ review-host-kit/
    cp -r /path/to/review-host-kit/skills/* .claude/skills/
    ```
 
+   Re-copy after every kit change: this copy is the only one reviews run. Its
+   review-branch pushes already pass `http.postBuffer=524288000` and
+   `http.version=HTTP/1.1` per command, because egress proxies otherwise time
+   out (HTTP 408) while Git walks a large repo. No sandbox gitconfig is needed.
+
 4. **Add operating rules**: copy the example and edit it for your repos
    (see "Host-specific" below):
 

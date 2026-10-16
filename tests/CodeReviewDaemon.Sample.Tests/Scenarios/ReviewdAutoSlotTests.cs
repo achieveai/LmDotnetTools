@@ -11,14 +11,13 @@ using Reviewd::Reviewd.Sample;
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
 /// <summary>
-///     <c>review run</c> without <c>--slot</c>: the first free or stale slot is used, held slots are skipped with
+///     <c>review run</c> without <c>--slot</c>: the first free or lapsed-lease slot is used, held slots are skipped with
 ///     nothing claimed, and no usable slot exits 3. The fake sandbox stops every run right after admission.
 /// </summary>
 public sealed class ReviewdAutoSlotTests : IDisposable
 {
     private const string Stop = "stop after admission";
     private static readonly string Head = new('a', 40);
-    private static readonly string Old = "2026-01-01T00:00:00+00:00";
 
     private readonly string _database = Path.Combine(Path.GetTempPath(), $"reviewd-autoslot-{Guid.NewGuid():N}.db");
     private readonly List<string> _phases = [];
@@ -27,6 +26,9 @@ public sealed class ReviewdAutoSlotTests : IDisposable
 
     /// <summary>Runs once on the first host-contract request, after the owner check and before the claim.</summary>
     private Action? _beforeClaim;
+
+    /// <summary>What the host reports for every conversation's run state.</summary>
+    private bool _inProgress;
 
     public ReviewdAutoSlotTests()
     {
@@ -46,7 +48,22 @@ public sealed class ReviewdAutoSlotTests : IDisposable
                     };
                 }
             )
-            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .On(
+                request => request.RequestUri!.ToString().Contains("/run-state", StringComparison.Ordinal),
+                _ => new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        _inProgress
+                            ? """{"isInProgress":true,"currentRunId":"run-1"}"""
+                            : """{"isInProgress":false,"currentRunId":null}""",
+                        System.Text.Encoding.UTF8,
+                        "application/json"
+                    ),
+                }
+            )
+            .OnJson(HttpMethod.Post, "/freeze", """{"frozen":true}""")
+            .OnJson(HttpMethod.Post, "/unfreeze", """{"frozen":false}""")
+            .OnJson(HttpMethod.Get, "/api/conversations?", "[]")
             .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
         using var connection = PrThreadBindings.Connection(_database);
         new SqliteKvStore(connection)
@@ -133,32 +150,36 @@ public sealed class ReviewdAutoSlotTests : IDisposable
     }
 
     [Theory]
-    [InlineData("completed-verified", true, true)]
-    [InlineData("completed-verified", false, false)]
-    [InlineData("review-completed", true, false)]
-    public async Task A_stale_owner_in_a_cleanup_only_state_is_reclaimed_and_its_slot_used(
-        string stage,
-        bool old,
-        bool reclaimed
+    [InlineData(-1, false, "reclaimed")]
+    [InlineData(30, false, "held")]
+    [InlineData(-1, true, "in progress")]
+    [InlineData(null, false, "held")]
+    public async Task An_owner_whose_lease_lapsed_is_reclaimed_like_the_reaper_and_its_slot_used(
+        int? leaseMinutes,
+        bool inProgress,
+        string outcome
     )
     {
-        await VerifiedOwnerAsync(9, 0, stage, old ? Old : DateTimeOffset.UtcNow.ToString("O"));
+        await VerifiedOwnerAsync(9, 0, leaseMinutes is { } minutes ? DateTimeOffset.UtcNow.AddMinutes(minutes) : null);
+        _inProgress = inProgress;
 
         var run = () => RunAsync("--slots", "0");
 
-        if (reclaimed)
+        if (outcome == "reclaimed")
         {
             await run.Should().ThrowAsync<InvalidOperationException>().WithMessage(Stop);
             _phases.Should().Equal("cleanup 9/0", "prepare 17/0");
             (await GetAsync(AttemptKey(9)))!["cleanupState"]!.GetValue<string>().Should().Be("released");
             (await GetAsync(AttemptKey(17)))!["slotSelection"]!["reclaimed"]!.GetValue<string>().Should().Be("9");
+            return;
         }
-        else
-        {
-            (await run()).Should().Be(ReviewRunner.NoSlotExitCode);
-            _phases.Should().BeEmpty();
-            (await GetAsync(AttemptKey(9)))!["cleanupState"]!.GetValue<string>().Should().Be("owned");
-        }
+        (await run()).Should().Be(ReviewRunner.NoSlotExitCode);
+        _phases.Should().BeEmpty();
+        (await GetAsync(AttemptKey(9)))!["cleanupState"]!.GetValue<string>().Should().Be("owned");
+        // A fresh or undated lease is never touched on the host; a live review is never frozen.
+        _handler.CountRequests("/freeze").Should().Be(0);
+        if (outcome == "held")
+            _handler.CountRequests("/run-state").Should().Be(0);
     }
 
     [Fact]
@@ -179,7 +200,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
     [Fact]
     public async Task A_PR_that_owns_a_slot_is_never_moved()
     {
-        await VerifiedOwnerAsync(17, 4, "completed-verified", DateTimeOffset.UtcNow.ToString("O"));
+        await VerifiedOwnerAsync(17, 4, DateTimeOffset.UtcNow.AddMinutes(30));
 
         (await RunAsync("--cleanup-only")).Should().Be(0);
 
@@ -226,7 +247,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         string expected
     )
     {
-        var settle = () => ReviewRunner.Settle(phase, exit, output, "op");
+        var settle = () => ReviewRunner.Settle(phase, exit, output, null, "op");
 
         switch (expected)
         {
@@ -250,7 +271,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
     [InlineData("--slot", "1", "--slots", "2")]
     [InlineData("--slots", "1,1")]
     [InlineData("--slots", "6")]
-    [InlineData("--stale-after-minutes", "-1")]
+    [InlineData("--slots", "a")]
     [InlineData("--slot", "6")]
     public void Review_run_rejects_invalid_slot_options(params string[] extra)
     {
@@ -323,25 +344,26 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         throw new InvalidOperationException(Stop);
     }
 
-    /// <summary>A live review owns the slot: recent, in flight, never stale.</summary>
+    /// <summary>A live review owns the slot: in flight, its lease fresh.</summary>
     private async Task HoldAsync(int pr, int slot)
     {
         var attempt = Attempt(pr, slot, "review-running", DateTimeOffset.UtcNow.ToString("O"));
         attempt["reviewInputId"] = "input";
         await PutAsync(AttemptKey(pr), attempt);
-        await PutAsync(OwnerKey(slot), Claim(attempt));
+        await PutAsync(OwnerKey(slot), Claim(attempt, DateTimeOffset.UtcNow.AddMinutes(30)));
     }
 
-    /// <summary>A review that finished and was verified, but whose slot was never cleaned up.</summary>
-    private async Task VerifiedOwnerAsync(int pr, int slot, string stage, string at)
+    /// <summary>A verified review whose slot was never cleaned up, leased until <paramref name="lease"/> (null: undated).</summary>
+    private async Task VerifiedOwnerAsync(int pr, int slot, DateTimeOffset? lease)
     {
-        var attempt = Attempt(pr, slot, stage, at);
+        var at = DateTimeOffset.UtcNow.ToString("O");
+        var attempt = Attempt(pr, slot, "completed-verified", at);
         attempt["finishedAt"] = at;
         attempt["threadId"] = $"t{pr}";
         attempt["artifactCommit"] = new JsonObject { ["commit"] = new string('c', 40) };
         await PutAsync(AttemptKey(pr), attempt);
         await PutAsync($"reviewd/review-run/{Repo.NormalizedKey}/{pr}", attempt.DeepClone());
-        await PutAsync(OwnerKey(slot), Claim(attempt));
+        await PutAsync(OwnerKey(slot), Claim(attempt, lease));
         await PrThreadBindings.SetAsync(_database, Repo, pr.ToString(), $"t{pr}", CancellationToken.None);
     }
 
@@ -361,10 +383,12 @@ public sealed class ReviewdAutoSlotTests : IDisposable
             ["startedAt"] = at,
         };
 
-    private static JsonObject Claim(JsonObject attempt)
+    private static JsonObject Claim(JsonObject attempt, DateTimeOffset? lease)
     {
         var claim = attempt.DeepClone().AsObject();
         claim["state"] = "owned";
+        if (lease is { } expiry)
+            claim["leaseExpiresAt"] = expiry;
         return claim;
     }
 

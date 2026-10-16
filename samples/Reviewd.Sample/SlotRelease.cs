@@ -15,6 +15,22 @@ internal static class SlotRelease
         "reviewd/slot-owner/" + Digest(workspace + "/" + repository + "/" + slot);
 
     /// <summary>
+    /// How long a fresh slot claim is leased before the reaper may reclaim it. A running review
+    /// extends this each phase via <see cref="HeartbeatAsync"/>, so only a dead/stalled review lets
+    /// the lease lapse. Generously longer than the gap between a review's phases.
+    /// </summary>
+    // A live review heartbeats this lease on every progress checkpoint (ReviewRunner.SaveAsync), so the
+    // lease records when the review was last active. 30 min bounds how long a dead/abandoned slot can stay
+    // owned before the reaper reclaims it; a still-running review is protected regardless by the reaper's
+    // run-state pre-check, so this window can be short without risking a live review.
+    internal static readonly TimeSpan DefaultLeaseWindow = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// Key prefix of every slot-owner row, so the reaper can enumerate owners it must inspect.
+    /// </summary>
+    internal const string OwnerKeyPrefix = "reviewd/slot-owner/";
+
+    /// <summary>
     ///     Claims the slot owner row and saves <paramref name="owner"/>, stamped with the claim token and
     ///     <c>cleanupState</c>, as the attempt at <paramref name="attemptKey"/> in the same transaction. A crash
     ///     can therefore never leave a durable claim whose attempt reconcile-slot cannot find.
@@ -25,7 +41,8 @@ internal static class SlotRelease
         JsonObject owner,
         string? retainedToken,
         string attemptKey,
-        CancellationToken ct
+        CancellationToken ct,
+        DateTimeOffset? nowUtc = null
     )
     {
         using var transaction = connection.BeginTransaction();
@@ -66,6 +83,9 @@ internal static class SlotRelease
             var claim = owner.DeepClone().AsObject();
             claim["claimToken"] = token;
             claim["state"] = "owned";
+            // Lease the claim. The reaper reclaims an owned slot only once this lapses, so a dead or
+            // SIGKILL'd review never blocks the slot forever; a live review refreshes it each phase.
+            claim["leaseExpiresAt"] = (nowUtc ?? DateTimeOffset.UtcNow) + DefaultLeaseWindow;
             write.Parameters["@value"].Value = claim.ToJsonString();
             await write.ExecuteNonQueryAsync(ct);
         }
@@ -76,6 +96,56 @@ internal static class SlotRelease
         await write.ExecuteNonQueryAsync(ct);
         transaction.Commit();
         return token;
+    }
+
+    /// <summary>
+    /// True when an owner row is still held (<c>state=="owned"</c>) and its lease has lapsed at
+    /// <paramref name="now"/>. An owner with no <c>leaseExpiresAt</c> (claimed before leasing
+    /// existed) is reported expired only when <paramref name="undatedExpired"/> is set, so a reaper
+    /// can opt in to reclaiming legacy jams while a routine sweep ignores them.
+    /// </summary>
+    internal static bool IsLeaseExpired(JsonObject owner, DateTimeOffset now, bool undatedExpired = false)
+    {
+        if (owner["state"]?.GetValue<string>() != "owned")
+            return false;
+        if (owner["leaseExpiresAt"]?.GetValue<DateTimeOffset>() is { } expiry)
+            return expiry <= now;
+        return undatedExpired;
+    }
+
+    /// <summary>
+    /// Extends an owned slot's lease to <paramref name="nowUtc"/> + <see cref="DefaultLeaseWindow"/>,
+    /// but only while the row is still owned on the exact claim token (a CAS). Returns false without
+    /// throwing when the row was released or reclaimed out from under the caller, so a review's
+    /// per-phase heartbeat never turns a lost race into a failure.
+    /// </summary>
+    internal static async Task<bool> HeartbeatAsync(
+        SqliteConnection connection,
+        string key,
+        string token,
+        CancellationToken ct,
+        DateTimeOffset? nowUtc = null
+    )
+    {
+        using var transaction = connection.BeginTransaction();
+        using var read = connection.CreateCommand();
+        read.Transaction = transaction;
+        read.CommandText = "SELECT value FROM cache WHERE key=@key";
+        read.Parameters.AddWithValue("@key", key);
+        var raw = await read.ExecuteScalarAsync(ct) as string;
+        var claim = raw is null ? null : JsonNode.Parse(raw)!.AsObject();
+        if (claim?["claimToken"]?.GetValue<string>() != token || claim["state"]?.GetValue<string>() != "owned")
+            return false;
+        claim["leaseExpiresAt"] = (nowUtc ?? DateTimeOffset.UtcNow) + DefaultLeaseWindow;
+        using var write = connection.CreateCommand();
+        write.Transaction = transaction;
+        write.CommandText = "UPDATE cache SET value=@value WHERE key=@key AND value=@old";
+        write.Parameters.AddWithValue("@key", key);
+        write.Parameters.AddWithValue("@old", raw!);
+        write.Parameters.AddWithValue("@value", claim.ToJsonString());
+        var updated = await write.ExecuteNonQueryAsync(ct) == 1;
+        transaction.Commit();
+        return updated;
     }
 
     internal static async Task AssertCurrentAsync(
@@ -160,6 +230,14 @@ internal static class SlotRelease
             && (
                 IsResetRetirement(proof, attempt, newSession)
                 || (
+                    proof["classification"]?.GetValue<string>() == "preparation-settled-native-idle"
+                    && previous == newSession
+                    && IsNeverAdmitted(owner)
+                    && proof["noAdmission"]?.GetValue<bool>() == true
+                    && proof["nativeIdleReceiptPath"]?.GetValue<string>() is { Length: > 0 }
+                    && proof["claimToken"]?.GetValue<string>() == owner["claimToken"]?.GetValue<string>()
+                )
+                || (
                     previous != newSession
                     && proof["classification"]?.GetValue<string>()
                         is "failed-before-review-admission"
@@ -181,6 +259,70 @@ internal static class SlotRelease
         && proof["producersStopped"]?.GetValue<bool>() == true
         && proof["resetReceiptPath"]?.GetValue<string>() is { Length: > 0 }
         && proof["archiveManifestPath"]?.GetValue<string>() is { Length: > 0 };
+
+    private static bool IsNeverAdmitted(JsonNode attempt) =>
+        attempt["stage"]?.GetValue<string>() == "prepare-pending"
+        && attempt["claimToken"]?.GetValue<string>() is { Length: > 0 }
+        && new[]
+        {
+            "threadId",
+            "reviewInputId",
+            "confirmationInputId",
+            "reviewIdempotencyKey",
+            "confirmationIdempotencyKey",
+            "initialSend",
+            "confirmationSend",
+        }.All(field => attempt[field] is null);
+
+    private static async Task ValidateNativeIdleAsync(JsonNode proof, JsonNode owner, CancellationToken ct)
+    {
+        var path = proof["nativeIdleReceiptPath"]!.GetValue<string>();
+        var evidence = proof["evidence"]!.AsArray().SingleOrDefault(item => item?["path"]?.GetValue<string>() == path);
+        var bytes = await File.ReadAllBytesAsync(path, ct);
+        if (evidence is null || Convert.ToHexString(SHA256.HashData(bytes)) != evidence["sha256"]?.GetValue<string>())
+            throw new InvalidOperationException("Native idle receipt must be hash-bound evidence.");
+        var receipt = JsonNode.Parse(bytes)!;
+        if (
+            !IsNeverAdmitted(owner)
+            || receipt["schemaVersion"]?.GetValue<int>() != 1
+            || receipt["attemptDigest"]?.GetValue<string>() != proof["attemptDigest"]!.GetValue<string>()
+            || new[] { "workspaceId", "sessionId", "repository", "prId", "claimToken" }.Any(field =>
+                receipt[field]?.GetValue<string>() != owner[field]?.GetValue<string>()
+            )
+            || receipt["slot"]?.GetValue<int>() != owner["slot"]?.GetValue<int>()
+            || receipt["nativeOwnerState"]?.GetValue<string>() is not ("released" or "absent")
+            || receipt["preparedRunAbsent"]?.GetValue<bool>() != true
+            || receipt["poolRunAbsent"]?.GetValue<bool>() != true
+            || receipt["writersQuiescent"]?.GetValue<bool>() != true
+            || receipt["producersStopped"]?.GetValue<bool>() != true
+            || receipt["cleanBaselineVerified"]?.GetValue<bool>() != true
+            || receipt["baselineSha"]?.GetValue<string>() is not { Length: 40 } baseline
+            || !baseline.All(Uri.IsHexDigit)
+            || receipt["sourceHeadSha"]?.GetValue<string>() != baseline
+            || receipt["checkedAt"]?.GetValue<DateTimeOffset>() is not { } checkedAt
+            || checkedAt > DateTimeOffset.UtcNow
+            || DateTimeOffset.UtcNow - checkedAt > TimeSpan.FromMinutes(5)
+        )
+            throw new InvalidOperationException("Native idle evidence does not match this never-admitted attempt.");
+        foreach (var field in new[] { "prepareOperationId", "cleanupOperationId" })
+        {
+            var id = owner[field]?.GetValue<string>();
+            if (field == "prepareOperationId" && string.IsNullOrWhiteSpace(id))
+                throw new InvalidOperationException("Preparation operation is unidentified.");
+            if (id is null)
+                continue;
+            var operation = receipt["operations"]
+                ?.AsArray()
+                .SingleOrDefault(item => item?["operationId"]?.GetValue<string>() == id);
+            if (
+                operation?["status"]?.GetValue<string>() is not ("succeeded" or "failed")
+                || operation["exitCode"] is null
+            )
+                throw new InvalidOperationException(
+                    "Preparation and cleanup operations must be settled before release."
+                );
+        }
+    }
 
     private static async Task ValidateResetAsync(JsonNode proof, JsonNode owner, CancellationToken ct)
     {
@@ -254,7 +396,11 @@ internal static class SlotRelease
         var owner = JsonNode.Parse(attempt)!;
         var classification = proof["classification"]?.GetValue<string>();
         var retired = classification == "operator-retired-after-reset";
-        var recoverySession = retired ? proof["recoverySessionId"]?.GetValue<string>() ?? "" : "different-session";
+        var nativeIdle = classification == "preparation-settled-native-idle";
+        var recoverySession =
+            retired ? proof["recoverySessionId"]?.GetValue<string>() ?? ""
+            : nativeIdle ? owner["sessionId"]?.GetValue<string>() ?? ""
+            : "different-session";
         if (
             !Allows(proof, attempt, "different-pr", recoverySession)
             || proof["operatorReason"]?.GetValue<string>() is not { Length: > 0 }
@@ -308,6 +454,8 @@ internal static class SlotRelease
         }
         if (retired)
             await ValidateResetAsync(proof, owner, ct);
+        if (nativeIdle)
+            await ValidateNativeIdleAsync(proof, owner, ct);
         if (!options.Has("execute"))
         {
             Console.WriteLine(proof.ToJsonString());

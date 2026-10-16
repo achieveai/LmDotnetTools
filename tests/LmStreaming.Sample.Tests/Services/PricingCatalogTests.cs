@@ -691,13 +691,13 @@ public class PricingCatalogTests
     }
 
     [Theory]
-    [InlineData("gpt-5.3-codex")]
     [InlineData("claude-sonnet-4-6")]
     public void TheShippedAppsettings_LeavesDeliberatelyUnpricedIds_Unavailable(string modelId)
     {
         var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
 
-        // Codex and the Claude CLI bill by subscription; a guessed rate would be summed and believed (#378).
+        // The Claude CLI bills by subscription; a guessed rate would be summed and believed (#378).
+        // gpt-5.3-codex left this list on 2026-10-14: Copilot serves it and OpenAI publishes its price.
         ResolverFrom(configuration).Resolve(modelId).Should().BeNull($"'{modelId}' has no cited public price");
     }
 

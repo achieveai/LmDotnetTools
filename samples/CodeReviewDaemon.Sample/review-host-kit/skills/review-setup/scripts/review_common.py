@@ -2983,6 +2983,22 @@ def _assert_ref_writer_scope(kind: str) -> None:
         raise ReviewError("Unrecognized parent-origin writer-scope kind.")
 
 
+# Large parent repos make git enumerate objects for many seconds before the
+# chunked receive-pack POST finishes; egress proxies time that out (HTTP 408)
+# even for a tiny pack. A big post buffer sends the pack in one sized request.
+# Passed per command so new review repos never depend on sandbox gitconfig.
+_PARENT_PUSH_CONFIG = (("http.postBuffer", "524288000"), ("http.version", "HTTP/1.1"))
+
+
+def _parent_push_env() -> dict[str, str]:
+    base = int(os.environ.get("GIT_CONFIG_COUNT", "0") or "0")
+    env = {"GIT_CONFIG_COUNT": str(base + len(_PARENT_PUSH_CONFIG))}
+    for offset, (key, value) in enumerate(_PARENT_PUSH_CONFIG):
+        env[f"GIT_CONFIG_KEY_{base + offset}"] = key
+        env[f"GIT_CONFIG_VALUE_{base + offset}"] = value
+    return env
+
+
 def create_or_update_parent_remote_ref(
     root: Path,
     ref: str,
@@ -3017,7 +3033,8 @@ def create_or_update_parent_remote_ref(
     lease = f"{ref}:{expected_old or ''}"
     run_git(
         root,
-        ["push", f"--force-with-lease={lease}", "--", remote, f"{new_sha}:{ref}"],
+        ["push", "--recurse-submodules=no", f"--force-with-lease={lease}", "--", remote, f"{new_sha}:{ref}"],
+        extra_env=_parent_push_env(),
     )
     actual = read_parent_remote_ref(root, ref, remote=remote)
     if actual != new_sha:
@@ -3049,7 +3066,11 @@ def delete_parent_remote_ref(
     if current != expected_tip:
         raise ReviewError("Parent-origin ref moved; refusing to delete an unexpected tip.")
     lease = f"{ref}:{expected_tip}"
-    run_git(root, ["push", f"--force-with-lease={lease}", "--", remote, f":{ref}"])
+    run_git(
+        root,
+        ["push", f"--force-with-lease={lease}", "--", remote, f":{ref}"],
+        extra_env=_parent_push_env(),
+    )
     if read_parent_remote_ref(root, ref, remote=remote) is not None:
         raise ReviewError("Parent-origin ref deletion did not verify as absent.")
 
@@ -4457,10 +4478,12 @@ def _hash_preservation_file(path: Path, *, changed_message: str) -> dict:
 
 
 def _index_entry(repo: Path, relative: str) -> dict | None:
-    result = run_git_read(repo, ["show", f":{relative}"], check=False)
-    if result.returncode:
-        return None
     mode_result = run_git_read(repo, ["ls-files", "-s", "--", relative])
+    if not mode_result.stdout:
+        return None
+    result = run_git_read(repo, ["cat-file", "blob", f":{relative}"], check=False)
+    if result.returncode:
+        raise ReviewError("Preservation indexed blob is unreadable.")
     fields = mode_result.stdout.split(None, 3)
     if len(fields) < 4:
         raise ReviewError("Preservation index entry is unreadable.")

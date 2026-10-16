@@ -134,6 +134,8 @@ internal static class PrCommands
                 new PrObservation(pr.PrId, MapLifecycle(pr.LifecycleState), pr.HeadSha, pr.Title)
                 {
                     ObservedAt = now,
+                    IsDraft = pr.IsDraft,
+                    CreatedAt = pr.CreatedAt,
                     SourceUpdatedAt = activity?.SourceUpdatedAt ?? pr.UpdatedAt,
                     LastCommentPostedAt = activity?.LastCommentPostedAt,
                 }
@@ -229,6 +231,8 @@ internal static class PrCommands
         old.Lifecycle != current.Lifecycle
         || old.HeadSha != current.HeadSha
         || old.Title != current.Title
+        || old.IsDraft != current.IsDraft
+        || old.CreatedAt != current.CreatedAt
         || old.SourceUpdatedAt != current.SourceUpdatedAt
         || old.LastCommentPostedAt != current.LastCommentPostedAt;
 
@@ -291,6 +295,8 @@ internal static class PrCommands
         string? Title
     )
     {
+        public bool? IsDraft { get; init; }
+        public DateTimeOffset? CreatedAt { get; init; }
         public DateTimeOffset? ObservedAt { get; init; }
         public DateTimeOffset? LastChangedAt { get; init; }
         public DateTimeOffset? SourceUpdatedAt { get; init; }

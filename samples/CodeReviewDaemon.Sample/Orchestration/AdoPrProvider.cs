@@ -181,7 +181,11 @@ internal sealed class AdoPrProvider : IPrProvider
                             UniqueNameOf(pr, "createdBy"),
                             // What the PR SAYS it does — the prose half of the knowledge-retrieval key.
                             StringOf(pr, "title"),
-                            StringOf(pr, "description")
+                            StringOf(pr, "description"),
+                            pr.TryGetProperty("isDraft", out var draft)
+                            && draft.ValueKind is JsonValueKind.True or JsonValueKind.False
+                                ? draft.GetBoolean()
+                                : null
                         )
                     );
                 }
@@ -220,6 +224,7 @@ internal sealed class AdoPrProvider : IPrProvider
                             // nulled for an old PR whose last push couldn't be dated (see ResolveRecencySignalsAsync)
                             // so the filter keeps it; UpdatedAt = last push, resolved only for PRs before the window.
                             CreatedAt = recencyCreatedAt,
+                            IsDraft = raw.IsDraft,
                             UpdatedAt = updatedAt,
                             Author = raw.Author,
                             Title = raw.Title,
@@ -347,7 +352,8 @@ internal sealed class AdoPrProvider : IPrProvider
         string? Status,
         string? Author,
         string? Title,
-        string? Description
+        string? Description,
+        bool? IsDraft
     );
 
     /// <summary>

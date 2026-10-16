@@ -9,6 +9,12 @@ namespace Reviewd.Sample;
 
 internal static class ReviewRunner
 {
+    /// <summary>
+    /// A definitive refusal before any slot claim or host admission: the PR is simply skipped, and the
+    /// lane's slot was never touched, so it says nothing about the lane's health.
+    /// </summary>
+    internal sealed class ReviewNotAdmittedException(string message) : InvalidOperationException(message);
+
     internal class SettledSandboxException(string phase, string message) : InvalidOperationException(message)
     {
         internal string Phase { get; } = phase;
@@ -101,7 +107,7 @@ internal static class ReviewRunner
         );
     }
 
-    private static async Task<JsonObject> ExecuteSandboxAsync(
+    internal static async Task<JsonObject> ExecuteSandboxAsync(
         SandboxClient sandbox,
         string session,
         string phase,
@@ -120,10 +126,10 @@ internal static class ReviewRunner
             new SandboxCommand(["python3", "-c", script, phase, args.ToJsonString()], ".", operation),
             token
         );
-        return Settle(phase, result.ExitCode, result.StandardOutput, operation);
+        return Settle(phase, result.ExitCode, result.StandardOutput, result.StandardError, operation);
     }
 
-    internal static JsonObject Settle(string phase, int exitCode, string output, string operation)
+    internal static JsonObject Settle(string phase, int exitCode, string output, string? error, string operation)
     {
         if (
             exitCode == 3
@@ -136,9 +142,18 @@ internal static class ReviewRunner
             );
         if (exitCode != 0)
         {
+            // Surface the sandbox's own diagnostics (tail of stderr, falling back to stdout) so a failure
+            // is actionable without a separate artifact fetch.
+            var detail = string.IsNullOrWhiteSpace(error) ? output : error;
+            detail = (detail ?? string.Empty).TrimEnd();
+            if (detail.Length > 1200)
+            {
+                detail = "…" + detail[^1200..];
+            }
             throw new SettledSandboxException(
                 phase,
                 $"Sandbox {phase} failed (exit {exitCode}, operation {operation}); inspect retained output."
+                    + (detail.Length > 0 ? $"\n--- sandbox output tail ---\n{detail}" : string.Empty)
             );
         }
         return JsonNode.Parse(output)?.AsObject()
@@ -163,11 +178,12 @@ internal static class ReviewRunner
         LmStreamingS2SClient client,
         Func<string, JsonObject, string, CancellationToken, Task<JsonObject>> sandbox,
         CancellationToken ct,
-        Func<CancellationToken, Task>? delay = null
+        Func<CancellationToken, Task>? delay = null,
+        Func<DateTimeOffset>? now = null
     ) =>
         options.Has("slot")
-            ? RunInSlotAsync(options, config, client, sandbox, null, false, null, ct, delay)
-            : AutoSlot.RunAsync(options, config, client, sandbox, ct, delay);
+            ? RunInSlotAsync(options, config, client, sandbox, null, false, null, ct, delay, now)
+            : AutoSlot.RunAsync(options, config, client, sandbox, ct, delay, now);
 
     /// <summary>
     ///     Runs one PR in <c>--slot</c>. An automatic run passes the slot lease (and PR lease) it already holds,
@@ -182,7 +198,8 @@ internal static class ReviewRunner
         bool prLeaseHeld,
         JsonObject? selection,
         CancellationToken ct,
-        Func<CancellationToken, Task>? delay = null
+        Func<CancellationToken, Task>? delay = null,
+        Func<DateTimeOffset>? now = null
     )
     {
         var repo = PrCommands.ParseRepo(options.Required("repo"));
@@ -193,6 +210,10 @@ internal static class ReviewRunner
         var provider = options.Required("provider");
         var mode = options.Get("mode") ?? config.ModeId;
         var reasoningEffort = options.Get("reasoning-effort");
+        var maxAgeHours = options.Get("max-age-hours") is { } age
+            ? int.Parse(age, System.Globalization.CultureInfo.InvariantCulture)
+            : (int?)null;
+        now ??= () => DateTimeOffset.UtcNow;
         var key = $"reviewd/review-run/{repo.NormalizedKey}/{pr}";
         var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/{pr}";
         delay ??= token => Task.Delay(TimeSpan.FromSeconds(1), token);
@@ -300,23 +321,124 @@ internal static class ReviewRunner
                 "An incomplete review attempt exists; inspect its operation/thread/input IDs before retrying."
             );
         }
+        // Pure DB reads, so a held slot is refused before any remote call, in preview too.
+        var ownerThreads = new HashSet<string>(StringComparer.Ordinal);
+        var adoptedHistory = new List<string>();
+        using (var owners = connection.CreateCommand())
+        {
+            owners.CommandText =
+                "SELECT value FROM cache WHERE key LIKE 'reviewd/review-run/%' OR key LIKE 'reviewd/review-attempt/%'";
+            using var reader = await owners.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                var ownerText = reader.GetString(0);
+                var owner = JsonNode.Parse(ownerText);
+                if (
+                    owner?["workspaceId"]?.GetValue<string>() != workspace
+                    || owner["repository"]
+                        ?.GetValue<string>()
+                        ?.Equals(repo.DisplayName, StringComparison.OrdinalIgnoreCase) != true
+                    || owner["slot"]?.GetValue<int>() != slot
+                )
+                {
+                    continue;
+                }
+                if ((resume || cleanupOnly) && owner["prId"]?.GetValue<string>() == pr)
+                    continue;
+                if (
+                    owner["cleanupState"]?.GetValue<string>() == "released"
+                    && owner["claimToken"]?.GetValue<string>() is { Length: > 0 }
+                )
+                    continue;
+                // A successful receipt is review evidence, not a slot release. Its current attempt
+                // must certify owner cleanup; legacy successes require explicit cleanup-only adoption.
+                if (owner["stage"]?.GetValue<string>() == "completed-verified")
+                {
+                    var latest = await ReadAsync($"reviewd/review-attempt/{repo.NormalizedKey}/{owner["prId"]}");
+                    if (
+                        latest?["cleanupState"]?.GetValue<string>() == "released"
+                        && latest["claimToken"]?.GetValue<string>() is { Length: > 0 }
+                    )
+                        continue;
+                    var adopted = await ReadAsync("reviewd/legacy-cleaned/" + SlotRelease.Digest(ownerText));
+                    if (adopted?["cleanupState"]?.GetValue<string>() == "released")
+                        continue;
+                    if (cleanupOnly)
+                    {
+                        if (owner["threadId"]?.GetValue<string>() is { Length: > 0 } historicalThread)
+                            ownerThreads.Add(historicalThread);
+                        else
+                            throw new InvalidOperationException(
+                                "Legacy completed owner lacks an identified thread to drain."
+                            );
+                        adoptedHistory.Add(ownerText);
+                        continue;
+                    }
+                    throw new SlotUnavailableException(
+                        "Legacy completed slot requires explicit owner cleanup/adoption.",
+                        owner
+                    );
+                }
+                var release = await ReadAsync(SlotRelease.Key(ownerText));
+                if (release is null || !SlotRelease.Allows(release, ownerText, pr, options.Required("session")))
+                    throw new SlotUnavailableException(
+                        "Selected slot has an incomplete review; no reset allowed.",
+                        owner
+                    );
+            }
+        }
         var thread = await PrThreadBindings.GetAsync(database, repo, pr, ct);
-        if (thread is not null && reasoningEffort is not null && !cleanupOnly)
-            throw new InvalidOperationException(
-                "Existing conversation reasoning effort cannot be verified by the binding API; no prompt sent."
-            );
+        // Durable, cross-run reuse: when this pending db has no local binding (a fresh/next batch),
+        // the host itself remembers the PR's conversation via its title "{repo}-{pr}-{sha}". Reuse
+        // that conversation instead of refusing or provisioning a blank one. Provider is reconciled
+        // (switched if needed) on the reuse path below, so a different model is not a blocker.
+        if (thread is null && !resume && !cleanupOnly)
+        {
+            var match = await client.FindConversationByTitlePrefixAsync($"{repo.RepoName}-{pr}-", workspace, mode, ct);
+            if (match is not null)
+            {
+                thread = match.ThreadId;
+                // Cache the host-resolved thread in this db for the fast path on subsequent steps.
+                await PrThreadBindings.SetAsync(database, repo, pr, thread, ct);
+            }
+        }
+        // True when this review continues an existing conversation (prior revision of this PR) rather
+        // than a freshly-provisioned blank one. Drives the incremental re-review prompt below: the
+        // conversation already holds the earlier review's full message history.
+        var reusedConversation = thread is not null && !resume && !cleanupOnly;
+        // A prior conversation without a receipt in THIS db is only a risk if it is still running: its
+        // receipt may live in whichever db ran it. Ask the host, not our bookkeeping.
+        // The host is also the cross-db record of what was already admitted: a conversation titled for this
+        // exact head means this revision was reviewed from another db, and re-admitting it would post
+        // duplicate PR comments.
+        if (
+            !resume
+            && !cleanupOnly
+            && successful is null
+            && current["HeadSha"]?.GetValue<string>() is { Length: >= 8 } liveHead
+            && await client.FindConversationByTitlePrefixAsync(
+                $"{repo.RepoName}-{pr}-{liveHead[..8]}",
+                workspace,
+                mode,
+                ct
+            )
+                is not null
+        )
+            throw new ReviewNotAdmittedException("PR head was already reviewed by another run; skipped.");
+        var threadInFlight =
+            thread is not null && !resume && !cleanupOnly && (await client.GetRunStateAsync(thread, ct)).IsInProgress;
         if (
             !resume
             && !cleanupOnly
             && !PrSelection.IsEligible(
                 JsonSerializer.SerializeToElement(current),
                 successful is null ? null : JsonSerializer.SerializeToElement(successful),
-                thread is not null,
+                threadInFlight,
                 DateTimeOffset.UtcNow
             )
         )
         {
-            throw new InvalidOperationException("PR is not eligible for review.");
+            throw new ReviewNotAdmittedException("PR is not eligible for review.");
         }
         if (
             resume
@@ -390,72 +512,6 @@ internal static class ReviewRunner
             ["slot"] = slot,
             ["head"] = cleanupOnly ? attempt!["headSha"]!.GetValue<string>() : current["HeadSha"]!.GetValue<string>(),
         };
-        // Pure DB reads, so a held slot is refused before any remote call, in preview too.
-        var ownerThreads = new HashSet<string>(StringComparer.Ordinal);
-        var adoptedHistory = new List<string>();
-        using (var owners = connection.CreateCommand())
-        {
-            owners.CommandText =
-                "SELECT value FROM cache WHERE key LIKE 'reviewd/review-run/%' OR key LIKE 'reviewd/review-attempt/%'";
-            using var reader = await owners.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct))
-            {
-                var ownerText = reader.GetString(0);
-                var owner = JsonNode.Parse(ownerText);
-                if (
-                    owner?["workspaceId"]?.GetValue<string>() != workspace
-                    || owner["repository"]
-                        ?.GetValue<string>()
-                        ?.Equals(repo.DisplayName, StringComparison.OrdinalIgnoreCase) != true
-                    || owner["slot"]?.GetValue<int>() != slot
-                )
-                {
-                    continue;
-                }
-                if ((resume || cleanupOnly) && owner["prId"]?.GetValue<string>() == pr)
-                    continue;
-                if (
-                    owner["cleanupState"]?.GetValue<string>() == "released"
-                    && owner["claimToken"]?.GetValue<string>() is { Length: > 0 }
-                )
-                    continue;
-                // A successful receipt is review evidence, not a slot release. Its current attempt
-                // must certify owner cleanup; legacy successes require explicit cleanup-only adoption.
-                if (owner["stage"]?.GetValue<string>() == "completed-verified")
-                {
-                    var latest = await ReadAsync($"reviewd/review-attempt/{repo.NormalizedKey}/{owner["prId"]}");
-                    if (
-                        latest?["cleanupState"]?.GetValue<string>() == "released"
-                        && latest["claimToken"]?.GetValue<string>() is { Length: > 0 }
-                    )
-                        continue;
-                    var adopted = await ReadAsync("reviewd/legacy-cleaned/" + SlotRelease.Digest(ownerText));
-                    if (adopted?["cleanupState"]?.GetValue<string>() == "released")
-                        continue;
-                    if (cleanupOnly)
-                    {
-                        if (owner["threadId"]?.GetValue<string>() is { Length: > 0 } historicalThread)
-                            ownerThreads.Add(historicalThread);
-                        else
-                            throw new InvalidOperationException(
-                                "Legacy completed owner lacks an identified thread to drain."
-                            );
-                        adoptedHistory.Add(ownerText);
-                        continue;
-                    }
-                    throw new SlotUnavailableException(
-                        "Legacy completed slot requires explicit owner cleanup/adoption.",
-                        owner
-                    );
-                }
-                var release = await ReadAsync(SlotRelease.Key(ownerText));
-                if (release is null || !SlotRelease.Allows(release, ownerText, pr, options.Required("session")))
-                    throw new SlotUnavailableException(
-                        "Selected slot has an incomplete review; no reset allowed.",
-                        owner
-                    );
-            }
-        }
         if (!options.Has("execute"))
         {
             Console.WriteLine(
@@ -476,7 +532,7 @@ internal static class ReviewRunner
                             "review and publish through S2S",
                             "same-thread confirmation",
                             "verify publication",
-                            "review_commit (no push)",
+                            "review_commit and publish review branch (top-level review repo only; no submodule push)",
                         },
                     }
                 )
@@ -488,13 +544,41 @@ internal static class ReviewRunner
         if (thread is not null)
         {
             if (!cleanupOnly)
-                await client.EnsureConversationBindingAsync(thread, workspace, provider, mode, ct);
-            await WaitAsync(client, thread, null, delay, ct, terminalFailuresSettle: failedCleanup);
+            {
+                // Resume keeps strict identity (its provider already matches the retained attempt).
+                // A fresh re-review of an existing conversation reconciles the provider instead of
+                // refusing: if the conversation runs a different model, switch it to the current one.
+                if (resume)
+                    await client.EnsureConversationBindingAsync(thread, workspace, provider, mode, ct);
+                else
+                    await client.EnsureConversationReusableAsync(thread, workspace, provider, mode, ct);
+            }
+            // This wait runs before the claim is re-taken, so a retained owner must renew its own lease here.
+            // Otherwise the lease lapses while the old run finishes and the reaper reclaims a live review
+            // (it reclaimed three during one drain).
+            var retainedToken = (resume || cleanupOnly) ? attempt?["claimToken"]?.GetValue<string>() : null;
+            var retainedOwner = SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot);
+            await WaitAsync(
+                client,
+                thread,
+                null,
+                retainedToken is null
+                    ? delay
+                    : async token =>
+                    {
+                        await delay(token);
+                        _ = await SlotRelease.HeartbeatAsync(connection, retainedOwner, retainedToken, token);
+                    },
+                ct
+            );
         }
         foreach (var ownerThread in ownerThreads)
         {
             await WaitAsync(client, ownerThread, null, delay, ct);
         }
+        // Only validated admitted resumes and outgoing-owner cleanup bypass fresh-admission age checks.
+        if (!resume && !cleanupOnly)
+            await EnsureCreationAgeAsync();
         var receipt = new JsonObject
         {
             ["repository"] = repo.DisplayName,
@@ -538,6 +622,13 @@ internal static class ReviewRunner
             ct
         );
         args["claimToken"] = claimToken;
+        // A model turn can outlast the lease window, so renew the lease on every wait poll too; otherwise
+        // the reaper mistakes a live review for a dead one between checkpoints.
+        async Task LeasedDelayAsync(CancellationToken token)
+        {
+            await delay(token);
+            _ = await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, token);
+        }
         args["adopt"] = receipt["legacyCleanupAdoption"]?.GetValue<bool>() == true;
         var store = new SqliteKvStore(connection);
         try
@@ -592,8 +683,20 @@ internal static class ReviewRunner
                     },
                 }
             );
+            var reReviewPreamble = reusedConversation
+                ? $"""
+                    This conversation already reviewed an earlier revision of this same PR — your prior
+                    findings, replies and summary are in the message history above. The PR has since been
+                    updated to head {args["head"]}. Re-read your earlier review first, then focus on what
+                    changed since you last reviewed it: confirm whether prior findings are now addressed,
+                    withdraw any that no longer apply, and assess only the new/changed code. Still
+                    re-verify live PR state before posting, and reply to existing finding threads instead
+                    of duplicating them.
+
+                    """
+                : "";
             var prompt = $"""
-                Review {repo.DisplayName} PR #{pr} in slot {repo.RepoName}-{slot}.
+                {reReviewPreamble}Review {repo.DisplayName} PR #{pr} in slot {repo.RepoName}-{slot}.
                 Setup is already complete. Read prepared context at {contextPath} (absolute path inside the sandbox).
                 Do not reset or rerun setup. Expected source head {args["head"]}; prepared merge {args["merge"]}.
                 Use pr-context-gatherer for remaining context. Use Bluebird for source/wiki searches; grep for branch-specific changes.
@@ -615,7 +718,7 @@ internal static class ReviewRunner
                     client,
                     thread!,
                     receipt["reviewInputId"]!.GetValue<string>(),
-                    delay,
+                    LeasedDelayAsync,
                     ct
                 );
                 receipt["reviewResponse"] = existing?.ResponseText;
@@ -626,7 +729,7 @@ internal static class ReviewRunner
             await SaveAsync();
             if (resume && receipt["confirmationInputId"]?.GetValue<string>() is { Length: > 0 } confirmation)
             {
-                var existing = await WaitAsync(client, thread!, confirmation, delay, ct);
+                var existing = await WaitAsync(client, thread!, confirmation, LeasedDelayAsync, ct);
                 receipt["confirmationResponse"] = existing?.ResponseText;
                 receipt["stage"] = "confirmation-completed";
                 await SaveAsync();
@@ -637,7 +740,7 @@ internal static class ReviewRunner
                     "Can you confirm if the PR feedback and replies to any discussion where you could add value have been posted. Audit and report existing publication receipts; do not post duplicates. Report your final verdict on the PR, with a brief rationale and any unresolved blockers. If the review is incomplete or blocked, state that explicitly rather than inferring approval. You MUST return a non-empty final text response. End your response with a standalone line in exactly this format: verdict: <APPROVE | APPROVE_WITH_COMMENTS | REQUEST_CHANGES | BLOCKED | INCOMPLETE>. Choose exactly one value, do not leave the placeholder, and put nothing after this verdict line."
                 );
             receipt["verifiedPublication"] = await StepAsync("verify");
-            await WaitAsync(client, thread!, null, delay, ct);
+            await WaitAsync(client, thread!, null, LeasedDelayAsync, ct);
             receipt["artifactCommit"] = await StepAsync("commit");
             var commit = receipt["artifactCommit"]!;
             if (
@@ -678,7 +781,6 @@ internal static class ReviewRunner
                 var pending = receipt.DeepClone().AsObject();
                 receipt["stage"] = "failed-released";
                 receipt["admissionRefused"] = failure.Message;
-                receipt["updatedAt"] = DateTimeOffset.UtcNow;
                 try
                 {
                     await SlotRelease.ReleaseAsync(
@@ -716,7 +818,9 @@ internal static class ReviewRunner
                     Console.Error.WriteLine($"Owner recovery held its lane: {cleanupFailure.Message}");
                 }
             }
-            // Keep the pending phase and previous successful receipt. Unknown outcomes require inspection.
+            // Keep the pending phase and previous successful receipt so a live run can resume and finish
+            // publication without redoing the review. The slot stays leased, so if this process dies the
+            // lease reaper reclaims it within the lease window — retention never becomes a permanent block.
             await store.SetAsync(attemptKey, receipt, CancellationToken.None);
             Console.Error.WriteLine(
                 $"Review stopped at {receipt["stage"]}; retained {attemptKey}. No automatic retry or cleanup."
@@ -729,10 +833,12 @@ internal static class ReviewRunner
             query.Parameters["@key"].Value = name;
             return await query.ExecuteScalarAsync(ct) is string json ? JsonNode.Parse(json) : null;
         }
-        Task SaveAsync()
+        async Task SaveAsync()
         {
-            receipt["updatedAt"] = DateTimeOffset.UtcNow;
-            return store.SetAsync(attemptKey, receipt, ct);
+            await store.SetAsync(attemptKey, receipt, ct);
+            // Extend the slot lease on every progress checkpoint so a live review is never mistaken for
+            // a dead one by the reaper. A lost claim (already reclaimed) is a no-op, never a failure.
+            _ = await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, ct);
         }
         async Task CleanupAsync()
         {
@@ -743,7 +849,7 @@ internal static class ReviewRunner
                 );
             // This is outgoing-owner cleanup. Review success stays committed even if drain/reset fails.
             if (thread is not null)
-                await WaitAsync(client, thread, null, delay, ct, terminalFailuresSettle: failedCleanup);
+                await WaitAsync(client, thread, null, LeasedDelayAsync, ct);
             await SlotRelease.AssertCurrentAsync(connection, ownerKey, claimToken, ct);
             receipt["cleanupState"] = "pending";
             var operation = Guid.NewGuid().ToString("N");
@@ -778,9 +884,28 @@ internal static class ReviewRunner
             await SaveAsync();
             return result;
         }
+        async Task EnsureCreationAgeAsync()
+        {
+            if (maxAgeHours is not { } hours)
+                return;
+            var live = await sandbox("eligibility", args, Guid.NewGuid().ToString("N"), ct);
+            if (
+                live["prId"]?.GetValue<string>() != pr
+                || live["status"]?.GetValue<string>() != "active"
+                || live["isDraft"]?.GetValue<bool>() != false
+                || live["headSha"]?.GetValue<string>() != args["head"]!.GetValue<string>()
+                || !PrSelection.IsWithinCreationAge(live["createdAt"], hours, now())
+            )
+                throw new InvalidOperationException(
+                    "PR creation age is outside the configured limit or unavailable; no fresh admission allowed."
+                );
+        }
+
         async Task SendAndWaitAsync(string phase, string text)
         {
             await sandbox("inspect", args, Guid.NewGuid().ToString("N"), ct);
+            if (phase == "review")
+                await EnsureCreationAgeAsync();
             var idempotency = "reviewd-" + Guid.NewGuid().ToString("N");
             receipt[phase + "IdempotencyKey"] = idempotency;
             receipt["stage"] = phase + "-send-pending";
@@ -789,7 +914,7 @@ internal static class ReviewRunner
             receipt[phase + "InputId"] = input;
             receipt["stage"] = phase + "-running";
             await SaveAsync();
-            var status = await WaitAsync(client, thread!, input, delay, ct);
+            var status = await WaitAsync(client, thread!, input, LeasedDelayAsync, ct);
             receipt[phase + "Response"] = status?.ResponseText;
             receipt["stage"] = phase + "-completed";
             await SaveAsync();
@@ -834,23 +959,45 @@ internal static class ReviewRunner
             || (logical.IndexOf('/') is var separator && separator > 0 && logical[(separator + 1)..] == leaf)
         );
 
+    // An Unknown sub-agent node is treated as settled only once its activity timestamp has stood still
+    // for the whole window (and re-blocks if it moves again, because settlement is re-evaluated every poll).
+    // This prevents both a premature abort on a transient Unknown and an unbounded block on an abandoned
+    // one. Mirrors ReviewSubAgentCompletion.IsQuiescedUnknown.
+    private static readonly TimeSpan UnknownQuiescence = TimeSpan.FromSeconds(90);
+
+    // The host answers hierarchy_busy while ANY conversation's metadata publication is pending, so with a
+    // full batch of reviews it is busy for minutes at a time. Busy is not failure: at the 1s poll this
+    // tolerates about ten minutes of consecutive busy reads (each wait still renews the slot lease)
+    // before giving up. Twelve, the old bound, aborted dozens of live reviews mid-run.
+    internal const int MaxConsecutiveBusyReads = 600;
+
+    // Error and Stopped are terminal: the child is done, it just did not succeed. That is not a review
+    // failure — a grader can error while the publisher still publishes — so it settles rather than throws.
+    // Whether the review succeeded is decided by the root input's status and then by verify, never by a
+    // descendant's stamp. Running never settles, however old its LastActivityUtc: that is the metadata's
+    // LastUpdated, which per-turn writes deliberately leave alone, so a child working for hours reads as
+    // idle since it spawned (seen live: four hours "idle" while writing messages minutes earlier).
+    private static bool IsSettledNode(ReviewSubAgentNode node, DateTimeOffset now) =>
+        node.Status is ReviewSubAgentStatus.Completed or ReviewSubAgentStatus.Error or ReviewSubAgentStatus.Stopped
+        || (
+            node.Status == ReviewSubAgentStatus.Unknown
+            && UnknownQuiescence > TimeSpan.Zero
+            && node.LastActivityUtc is { } lastActivity
+            && now - lastActivity >= UnknownQuiescence
+        );
+
     /// <remarks>
-    ///     <c>terminalFailuresSettle</c> is for failed-owner cleanup only: Error and Stopped descendants
-    ///     count as settled rather than as a failure, so cleanup can drain a review that already failed.
-    ///     Unknown still throws and Running still waits.
+    ///     Waits until the root run is idle and every descendant has settled (see <see cref="IsSettledNode"/>).
+    ///     A descendant never makes the wait throw: only the root input's own status can fail it.
     /// </remarks>
     internal static async Task<S2SStatusResult?> WaitAsync(
         LmStreamingS2SClient client,
         string thread,
         string? input,
         Func<CancellationToken, Task> delay,
-        CancellationToken ct,
-        bool terminalFailuresSettle = false
+        CancellationToken ct
     )
     {
-        bool Settled(ReviewSubAgentNode node) =>
-            node.Status == ReviewSubAgentStatus.Completed
-            || (terminalFailuresSettle && node.Status is ReviewSubAgentStatus.Error or ReviewSubAgentStatus.Stopped);
         string? candidate = null;
         var busyReads = 0;
         while (true)
@@ -862,7 +1009,7 @@ internal static class ReviewRunner
             {
                 tree = await client.GetSubAgentTreeAsync(thread, ct);
             }
-            catch (LmStreamingS2SClient.HierarchyBusyException) when (++busyReads <= 12)
+            catch (LmStreamingS2SClient.HierarchyBusyException) when (++busyReads <= MaxConsecutiveBusyReads)
             {
                 candidate = null;
                 await delay(ct);
@@ -876,24 +1023,12 @@ internal static class ReviewRunner
             {
                 throw new InvalidOperationException($"Review input ended with {status.Status}; not success.");
             }
-            if (
-                tree.Nodes.Any(n =>
-                    n.Status == ReviewSubAgentStatus.Unknown
-                    || (
-                        n.Status is ReviewSubAgentStatus.Error or ReviewSubAgentStatus.Stopped
-                        && !terminalFailuresSettle
-                    )
-                    || (n.FailureCode is not null && !(terminalFailuresSettle && Settled(n)))
-                )
-            )
-            {
-                throw new InvalidOperationException("Review descendants failed or have unknown status; not success.");
-            }
+            var now = DateTimeOffset.UtcNow;
             var idle =
                 !global.IsInProgress
                 && global.CurrentRunId is null
                 && (status is null || status.Status.Equals("completed", StringComparison.OrdinalIgnoreCase))
-                && tree.Nodes.All(Settled);
+                && tree.Nodes.All(n => IsSettledNode(n, now));
             var signature = JsonSerializer.Serialize(
                 new
                 {

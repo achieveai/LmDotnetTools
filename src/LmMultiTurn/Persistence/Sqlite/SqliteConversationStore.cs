@@ -773,7 +773,7 @@ public sealed class SqliteConversationStore
     /// <remarks>
     /// A <c>CASE</c>, not <c>AND</c>, so an unreadable record or lineage is never parsed: SQLite does
     /// not promise to short-circuit <c>AND</c>, and <c>json_extract</c> on malformed JSON fails the
-    /// whole statement. Unreadable counts as not deleted, as <see cref="ConversationLineage.Read"/> does.
+    /// whole statement. Unreadable counts as not deleted, as <see cref="ConversationLineage.Read(ThreadMetadata)"/> does.
     /// </remarks>
     /// <param name="options">The resolved (never null) listing options.</param>
     /// <param name="metadataJsonColumn">How the <c>metadata_json</c> column is spelled in this statement.</param>

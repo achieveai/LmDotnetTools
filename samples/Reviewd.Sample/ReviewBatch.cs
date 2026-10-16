@@ -13,6 +13,17 @@ internal static class ReviewBatch
             async token =>
             {
                 string? previous = null;
+                // Startup sweep: reclaim any slot a prior (crashed) batch left owned — including legacy
+                // owners claimed before leasing existed — so restarting the batch always clears jams.
+                await SweepSlotsAsync(options, config, undatedExpired: true, token);
+                // Periodic sweep on its own timer: a queue can drain for hours, and a lane waiting on a
+                // lapsed owner only resumes once the reaper frees that slot. Sweeping between queues
+                // alone left such lanes waiting until they gave up.
+                var reaper = SweepPeriodicallyAsync(
+                    cancellation => SweepSlotsAsync(options, config, undatedExpired: false, cancellation),
+                    (delay, cancellation) => Task.Delay(delay, cancellation),
+                    token
+                );
                 while (!token.IsCancellationRequested)
                 {
                     var text = await File.ReadAllTextAsync(options.Required("selection"), token);
@@ -28,6 +39,7 @@ internal static class ReviewBatch
                                 options.Required("db"),
                                 "batch/" + options.Required("workspace")
                             );
+                            _ = ValidateAgePolicy(options, JsonNode.Parse(text)!.AsObject());
                             await ClaimAsync(options.Required("db"), digest, text, token);
                             _ = config.CreateS2SClient();
                             await ExecuteAsync(
@@ -60,11 +72,87 @@ internal static class ReviewBatch
                     }
                     await Task.Delay(TimeSpan.FromSeconds(5), token);
                 }
+                await reaper;
             }
         );
 
+    internal static async Task SweepPeriodicallyAsync(
+        Func<CancellationToken, Task> sweep,
+        Func<TimeSpan, CancellationToken, Task> delay,
+        CancellationToken ct
+    )
+    {
+        try
+        {
+            while (true)
+            {
+                await delay(TimeSpan.FromMinutes(5), ct);
+                await sweep(ct);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+    }
+
     private static void EnsureNoDaemon() =>
         EnsureNoDaemon(() => Directory.EnumerateDirectories("/proc"), File.ReadAllBytes);
+
+    /// <summary>
+    /// Reclaims every slot in the batch's workspace whose lease has lapsed, using the live session to run
+    /// each discard. Best-effort and self-contained: it opens its own short-lived read-write connection
+    /// (with a busy timeout so it yields to in-flight reviews) and swallows any sweep-level error so a
+    /// transient SQLite contention or host blip never stops the batch — the next sweep retries.
+    /// <paramref name="undatedExpired"/> also reclaims legacy owners with no lease; used only at startup
+    /// when no review is running yet.
+    /// </summary>
+    private static async Task SweepSlotsAsync(
+        CliOptions options,
+        ReviewdConfig config,
+        bool undatedExpired,
+        CancellationToken ct
+    )
+    {
+        try
+        {
+            await using var connection = new SqliteConnection(
+                new SqliteConnectionStringBuilder
+                {
+                    DataSource = options.Required("db"),
+                    Mode = SqliteOpenMode.ReadWrite,
+                }.ToString()
+            );
+            await connection.OpenAsync(ct);
+            using (var pragma = connection.CreateCommand())
+            {
+                pragma.CommandText = "PRAGMA busy_timeout=5000;";
+                _ = await pragma.ExecuteNonQueryAsync(ct);
+            }
+            var client = config.CreateS2SClient();
+            using var sandboxClient = config.CreateSandboxClient(TimeSpan.FromMinutes(10));
+            var session = options.Required("session");
+            SlotReaper.SandboxExecutor sandbox = (phase, args, operation, token) =>
+                ReviewRunner.ExecuteSandboxAsync(sandboxClient, session, phase, args, operation, token);
+            var results = await SlotReaper.SweepAsync(
+                connection,
+                client,
+                sandbox,
+                options.Required("workspace"),
+                DateTimeOffset.UtcNow,
+                undatedExpired,
+                execute: true,
+                ct
+            );
+            var reclaimed = results.Where(result => result.Status == "reclaimed").ToList();
+            if (reclaimed.Count > 0)
+                Console.Error.WriteLine(
+                    $"Reaper reclaimed {reclaimed.Count} lapsed-lease slot(s): "
+                        + string.Join(", ", reclaimed.Select(result => $"{result.Repo}#{result.Pr}/slot{result.Slot}"))
+                );
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            Console.Error.WriteLine($"Reaper sweep skipped: {ex.Message}.");
+        }
+    }
 
     internal static void EnsureNoDaemon(Func<IEnumerable<string>> enumerate, Func<string, byte[]> read)
     {
@@ -130,6 +218,7 @@ internal static class ReviewBatch
         var database = options.Required("db");
         var stateKey = "reviewd/batch-state/" + SlotRelease.Digest(text);
         var selection = JsonNode.Parse(text)!.AsObject();
+        var maxAgeHours = ValidateAgePolicy(options, selection);
         var scope = new JsonObject
         {
             ["workspace"] = options.Required("workspace"),
@@ -139,6 +228,8 @@ internal static class ReviewBatch
         };
         if (options.Get("reasoning-effort") is { } reasoningEffort)
             scope["reasoningEffort"] = reasoningEffort;
+        if (maxAgeHours is { } hours)
+            scope["maxAgeHours"] = hours;
         var state = await ReadAsync(database, stateKey) as JsonObject;
         if (state is null)
         {
@@ -168,11 +259,13 @@ internal static class ReviewBatch
                         || !head.All(Uri.IsHexDigit)
                     )
                         throw new InvalidOperationException("Invalid or duplicate selected PR.");
-                    var slot = slots[index++ % slots.Length];
+                    // A PR this db already ran keeps its earlier lane, so one long-lived db can feed many
+                    // selections; only an owner retained on a lane outside this selection is a conflict.
                     var attempt = await ReadAsync(database, AttemptKey(repo, pr));
-                    // A released attempt no longer owns its slot, so a round-robin assignment to a
-                    // different slot is free to run; only a still-owning attempt pins the PR.
-                    if (attempt is not null && !Reusable(attempt) && attempt["slot"]!.GetValue<int>() != slot)
+                    var next = slots[index++ % slots.Length];
+                    var slot =
+                        attempt?["slot"]?.GetValue<int>() is { } earlier && slots.Contains(earlier) ? earlier : next;
+                    if (attempt is not null && attempt["slot"]!.GetValue<int>() != slot && !Reusable(attempt))
                         throw new InvalidOperationException(
                             "Legacy batch slot assignment conflicts with retained ownership; reconcile before admission."
                         );
@@ -235,7 +328,7 @@ internal static class ReviewBatch
             else if (entry["status"]?.GetValue<string>() == "launching" && attempt is null)
             {
                 entry["status"] = "held";
-                entry["reason"] = "Interrupted launch has no definitive non-admission evidence.";
+                entry["reason"] = InterruptedLaunch;
             }
         }
         await SaveAsync(() => { });
@@ -289,10 +382,69 @@ internal static class ReviewBatch
 
         async Task LaneAsync(string repo, int slot, JsonObject[] lane)
         {
+            DateTimeOffset? heldSince = null;
+            var launchHolds = 0;
             while (!scheduling.IsCancellationRequested)
             {
+                // A held PR is skipped, never a lane stop. While its retained owner still holds the slot,
+                // wait for the reaper to reclaim it (its lease lapses once nothing runs), then move on.
+                // A slot the reaper cannot free within the wait bound stays held for an operator.
+                var slotHeld = false;
+                foreach (
+                    var held in lane.Where(value => value["status"]!.GetValue<string>() is "held" or "closed-held")
+                )
+                {
+                    if (
+                        held["reason"]?.GetValue<string>() == InterruptedLaunch
+                        || (await ReadAsync(database, AttemptKey(held)) is { } retainedHeld && !Reusable(retainedHeld))
+                    )
+                    {
+                        slotHeld = true;
+                        break;
+                    }
+                }
+                // A slot still owned by a PR outside this lane (left by an earlier batch) refuses every
+                // launch, so the lane would burn its queue in seconds. Wait for the reaper instead.
+                if (
+                    !slotHeld
+                    && await ReadAsync(
+                        database,
+                        SlotRelease.OwnerKey(
+                            options.Required("workspace"),
+                            PrCommands.ParseRepo(repo).NormalizedKey,
+                            slot
+                        )
+                    )
+                        is { } owner
+                    && owner["state"]?.GetValue<string>() != "released"
+                    && !lane.Any(value => value["pr"]!.GetValue<string>() == owner["prId"]?.GetValue<string>())
+                )
+                    slotHeld = true;
+                if (slotHeld)
+                {
+                    heldSince ??= now();
+                    if (now() - heldSince >= HeldSlotWait)
+                    {
+                        Console.Error.WriteLine(
+                            $"Lane {repo}/{slot} held: its retained owner was not reclaimed. Other safe slots continue."
+                        );
+                        return;
+                    }
+                    await delay(TimeSpan.FromMinutes(1), scheduling.Token);
+                    continue;
+                }
+                heldSince = null;
                 var candidates = lane.Where(entry =>
-                        entry["status"]!.GetValue<string>() is not ("verified" or "closed" or "stale" or "retired")
+                        entry["status"]!.GetValue<string>()
+                            is not (
+                                "verified"
+                                or "closed"
+                                or "stale"
+                                or "retired"
+                                or "age-excluded"
+                                or "held"
+                                or "closed-held"
+                            )
                     )
                     .ToArray();
                 if (candidates.Length == 0)
@@ -311,15 +463,15 @@ internal static class ReviewBatch
                                 candidate["status"] = "held";
                                 candidate["reason"] = "Multiple retained owners in one slot.";
                             });
-                            return;
+                            break;
                         }
                         entry = candidate;
                         attempt = retained;
                     }
                 }
-                entry ??=
-                    candidates.FirstOrDefault(value => value["status"]!.GetValue<string>() is "held" or "closed-held")
-                    ?? candidates.OrderBy(value => value["order"]!.GetValue<long>()).First();
+                if (candidates.Any(value => value["status"]!.GetValue<string>() == "held"))
+                    continue;
+                entry ??= candidates.OrderBy(value => value["order"]!.GetValue<long>()).First();
                 attempt ??= await ReadAsync(database, AttemptKey(entry));
                 // AttemptKey is per repo/pr, not per head. A completed-verified attempt whose slot
                 // was already released belongs to an EARLIER head of this PR; once the PR advances,
@@ -332,17 +484,14 @@ internal static class ReviewBatch
                     && attempt["reviewedHeadSha"]?.GetValue<string>() != entry["head"]!.GetValue<string>()
                 )
                     attempt = null;
-                if (
-                    entry["status"]!.GetValue<string>() is "held" or "closed-held"
-                    || (attempt is not null && !Resumable(attempt))
-                )
+                if (attempt is not null && !Resumable(attempt))
                 {
                     await SaveAsync(() =>
                     {
                         entry["status"] = "held";
                         entry["reason"] ??= "Retained outcome requires reconciliation; slot remains owned.";
                     });
-                    return;
+                    continue;
                 }
                 var retryAt = entry["retryAt"]?.GetValue<long>() ?? 0;
                 if (retryAt > now().ToUnixTimeSeconds())
@@ -351,6 +500,7 @@ internal static class ReviewBatch
                     continue;
                 }
                 var launched = false;
+                string? attemptBeforeLaunch = null;
                 try
                 {
                     try
@@ -376,15 +526,11 @@ internal static class ReviewBatch
                     if (!cleanup && live["status"]!.GetValue<string>() != "active")
                     {
                         await SaveAsync(() => entry["status"] = attempt is null ? "closed" : "closed-held");
-                        if (attempt is not null)
-                            return;
                         continue;
                     }
                     if (!cleanup && live["headSha"]!.GetValue<string>() != head)
                     {
                         await SaveAsync(() => entry["status"] = attempt is null ? "stale" : "held");
-                        if (attempt is not null)
-                            return;
                         continue;
                     }
                     if (
@@ -401,6 +547,24 @@ internal static class ReviewBatch
                         throw new InvalidOperationException(
                             "PR draft or prepared merge is unavailable/changed; retry deferred."
                         );
+                    var freshAdmission =
+                        attempt is null
+                        || (attempt["stage"]?.GetValue<string>() == "failed-released" && Reusable(attempt));
+                    if (
+                        freshAdmission
+                        && maxAgeHours is { } limit
+                        && !PrSelection.IsWithinCreationAge(live["createdAt"], limit, now())
+                    )
+                    {
+                        await SaveAsync(() =>
+                        {
+                            entry["status"] = "age-excluded";
+                            entry["reason"] =
+                                "PR creation age is outside the configured limit or unavailable; no admission performed.";
+                            entry["ageCheckedAt"] = now();
+                        });
+                        continue;
+                    }
                     var arguments = new List<string>
                     {
                         "review",
@@ -427,6 +591,11 @@ internal static class ReviewBatch
                     };
                     if (options.Get("reasoning-effort") is { } effort)
                         arguments.AddRange(["--reasoning-effort", effort]);
+                    if (maxAgeHours is { } maximumAge)
+                        arguments.AddRange([
+                            "--max-age-hours",
+                            maximumAge.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        ]);
                     if (attempt is not null && attempt["stage"]?.GetValue<string>() != "failed-released")
                         arguments.Add("--resume");
                     scheduling.Token.ThrowIfCancellationRequested();
@@ -436,6 +605,7 @@ internal static class ReviewBatch
                         await SaveAsync(() => entry["status"] = "queued");
                         return;
                     }
+                    attemptBeforeLaunch = (await ReadAsync(database, AttemptKey(entry)))?.ToJsonString();
                     launched = true;
                     await run(CliOptions.Parse([.. arguments]));
                     var receipt = await ReadAsync(database, ReceiptKey(entry));
@@ -447,6 +617,7 @@ internal static class ReviewBatch
                         entry["status"] = "verified";
                         entry.Remove("retryAt");
                     });
+                    launchHolds = 0;
                 }
                 catch (OperationCanceledException) when (scheduling.IsCancellationRequested)
                 {
@@ -455,7 +626,17 @@ internal static class ReviewBatch
                 catch (Exception ex)
                 {
                     var retained = await ReadAsync(database, AttemptKey(entry));
-                    if (launched && (retained is null || !Resumable(retained)))
+                    // The claim writes the attempt row, so a host timeout or connection failure that left the row
+                    // as it was before launch failed before the claim: it left nothing behind and says nothing
+                    // about the PR. Retry it with backoff. Holding it parked nine PRs whose conversation lookup
+                    // timed out. The row may predate this launch (an earlier head's released review).
+                    var transientBeforeClaim =
+                        retained?.ToJsonString() == attemptBeforeLaunch
+                        && ex is HttpRequestException or TimeoutException or TaskCanceledException;
+                    if (
+                        (launched && !transientBeforeClaim && (retained is null || !Resumable(retained)))
+                        || entry["failures"]!.GetValue<int>() + 1 >= MaxLaneRetries
+                    )
                     {
                         await SaveAsync(() =>
                         {
@@ -463,9 +644,22 @@ internal static class ReviewBatch
                             entry["reason"] = ex.Message;
                         });
                         Console.Error.WriteLine(
-                            $"Lane {repo}/{slot} held: {ex.Message}. No replay; other safe slots continue."
+                            $"PR {repo}/{entry["pr"]} held on lane {slot}: {ex.Message}. Skipped; the lane continues once its slot is free."
                         );
-                        return;
+                        // Several launches failing in a row points at the slot, not the PRs: stop the lane
+                        // rather than burn the rest of its queue.
+                        if (
+                            launched
+                            && ex is not ReviewRunner.ReviewNotAdmittedException
+                            && ++launchHolds >= MaxLaneRetries
+                        )
+                        {
+                            Console.Error.WriteLine(
+                                $"Lane {repo}/{slot} held: {launchHolds} launches failed in a row."
+                            );
+                            return;
+                        }
+                        continue;
                     }
                     await SaveAsync(() =>
                     {
@@ -511,6 +705,34 @@ internal static class ReviewBatch
             }
         }
     }
+
+    private static int? ValidateAgePolicy(CliOptions options, JsonObject selection)
+    {
+        var maxAgeHours = options.Get("max-age-hours") is { } age
+            ? int.Parse(age, System.Globalization.CultureInfo.InvariantCulture)
+            : (int?)null;
+        if (selection.ContainsKey("maxAgeHours") || maxAgeHours is not null)
+        {
+            if (
+                selection["maxAgeHours"] is not JsonValue ageValue
+                || !ageValue.TryGetValue<int>(out var manifestAge)
+                || manifestAge <= 0
+                || manifestAge != maxAgeHours
+            )
+                throw new InvalidOperationException(
+                    "Manifest creation-age policy must exactly match --max-age-hours; use a new immutable selection."
+                );
+        }
+        return maxAgeHours;
+    }
+
+    // A PR that keeps failing is skipped (held) instead of looping on one lane forever.
+    private const int MaxLaneRetries = 5;
+
+    private const string InterruptedLaunch = "Interrupted launch has no definitive non-admission evidence.";
+
+    // Long enough for a lapsed lease plus a few 5-minute reaper sweeps.
+    private static readonly TimeSpan HeldSlotWait = TimeSpan.FromHours(2);
 
     private static bool Reusable(JsonNode attempt) =>
         attempt["cleanupState"]?.GetValue<string>() == "released"

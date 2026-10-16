@@ -351,14 +351,53 @@ public sealed class ConversationAuthorizer
     /// or null when enforcement is off.
     /// </param>
     /// <param name="ct">Cancellation token.</param>
-    public async Task<bool> MayShareForListingAsync(
+    public Task<bool> MayShareForListingAsync(
         ThreadMetadata metadata,
         IReadOnlySet<string>? grantedThreadIds,
         CancellationToken ct = default
     )
     {
         ArgumentNullException.ThrowIfNull(metadata);
+        return MayShareForListingAsync(
+            metadata.ThreadId,
+            metadata.TenantId,
+            metadata.OwnerUserId,
+            metadata.OwnerAppId,
+            metadata.Visibility,
+            grantedThreadIds,
+            ct
+        );
+    }
 
+    /// <summary>Uses the same sharing policy for a read-only listing projection.</summary>
+    public Task<bool> MayShareForListingAsync(
+        ConversationListingRow row,
+        IReadOnlySet<string>? grantedThreadIds,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(row);
+        return MayShareForListingAsync(
+            row.ThreadId,
+            row.TenantId,
+            row.OwnerUserId,
+            row.OwnerAppId,
+            row.Visibility,
+            grantedThreadIds,
+            ct
+        );
+    }
+
+    private async Task<bool> MayShareForListingAsync(
+        string threadId,
+        string? tenantId,
+        string? ownerUserId,
+        string? ownerAppId,
+        Visibility? visibility,
+        IReadOnlySet<string>? grantedThreadIds,
+        CancellationToken ct
+    )
+    {
         // Step 0: enforcement off allows every action, so the share control stays visible through
         // the pre-enforcement window docs/deployment/AUTH_ENFORCE.md exists to make survivable. Read
         // BEFORE the principal so an unauthenticated pre-rollout request is answered the same way.
@@ -374,21 +413,21 @@ public sealed class ConversationAuthorizer
 
         // An unstamped or untenanted row belongs to no tenant, so no principal may share it - the
         // same refusal AuthorizeAsync gives it, minus the 404 mapping a listing has no use for.
-        if (metadata.TenantId is null)
+        if (tenantId is null)
         {
             return false;
         }
 
         var descriptor = new ResourceDescriptor
         {
-            Ref = ConversationRef(metadata.ThreadId),
-            TenantId = metadata.TenantId,
-            OwnerUserId = metadata.OwnerUserId,
-            OwnerAppId = metadata.OwnerAppId,
-            Visibility = metadata.Visibility ?? Visibility.Private,
+            Ref = ConversationRef(threadId),
+            TenantId = tenantId,
+            OwnerUserId = ownerUserId,
+            OwnerAppId = ownerAppId,
+            Visibility = visibility ?? Visibility.Private,
         };
 
-        var suppliedGrant = grantedThreadIds?.Contains(metadata.ThreadId) == true ? GrantRole.Viewer : (GrantRole?)null;
+        var suppliedGrant = grantedThreadIds?.Contains(threadId) == true ? GrantRole.Viewer : (GrantRole?)null;
 
         var decision = await _policy
             .EvaluateCapabilityAsync(principal, descriptor, AccessAction.Share, suppliedGrant, ct)

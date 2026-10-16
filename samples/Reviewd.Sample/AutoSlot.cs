@@ -7,9 +7,9 @@ using Microsoft.Data.Sqlite;
 namespace Reviewd.Sample;
 
 /// <summary>
-///     <c>review run</c> without <c>--slot</c>. Each allowed slot is tried once, in order: a free slot is used, a
-///     stale owner is reclaimed through the existing cleanup-only path and its slot used, and a held slot is skipped
-///     with its reason. Nothing is claimed for a skipped slot. A PR that already owns a slot keeps it.
+///     <c>review run</c> without <c>--slot</c>. Each allowed slot is tried once, in order: a free slot is used, an
+///     owner whose lease has lapsed is reclaimed by the reaper's own reclaim and its slot used, and a held slot is
+///     skipped with its reason. Nothing is claimed for a skipped slot. A PR that already owns a slot keeps it.
 /// </summary>
 internal static class AutoSlot
 {
@@ -21,7 +21,8 @@ internal static class AutoSlot
         LmStreamingS2SClient client,
         Func<string, JsonObject, string, CancellationToken, Task<JsonObject>> sandbox,
         CancellationToken ct,
-        Func<CancellationToken, Task>? delay
+        Func<CancellationToken, Task>? delay,
+        Func<DateTimeOffset>? now
     )
     {
         var repo = PrCommands.ParseRepo(options.Required("repo"));
@@ -29,9 +30,7 @@ internal static class AutoSlot
         var database = options.Required("db");
         var workspace = options.Required("workspace");
         var execute = options.Has("execute");
-        var staleAfter = TimeSpan.FromMinutes(
-            options.Get("stale-after-minutes") is { } minutes ? int.Parse(minutes, CultureInfo.InvariantCulture) : 120
-        );
+        now ??= () => DateTimeOffset.UtcNow;
         using var prLease = execute
             ? ReviewRunner.AcquireLease(database, ReviewRunner.PrLeaseIdentity(repo, pr))
             : null;
@@ -55,7 +54,8 @@ internal static class AutoSlot
                 true,
                 new JsonObject { ["mode"] = "pinned", ["slot"] = pinned },
                 ct,
-                delay
+                delay,
+                now
             );
         }
         var batchSlots = await LiveBatchSlotsAsync(database, workspace, repo, ct);
@@ -91,9 +91,7 @@ internal static class AutoSlot
                 var (exit, held) = await TryRunAsync(slotOptions, lease, selection);
                 if (exit is { } code)
                     return code;
-                if (
-                    await StaleOwnerAsync(database, repo, workspace, pr, slot, held!.Owner, staleAfter, ct) is { } stale
-                )
+                if (await LapsedOwnerAsync(database, repo, workspace, pr, slot, now(), ct) is { } stale)
                 {
                     if (!execute)
                     {
@@ -107,37 +105,17 @@ internal static class AutoSlot
                                 ["workspace"] = workspace,
                                 ["slotSelection"] = selection,
                                 ["actions"] = new JsonArray(
-                                    $"reclaim stale owner PR {stale} through cleanup-only",
+                                    $"reclaim PR {stale}'s lapsed claim as reap-slots does (freeze, confirm quiesced, discard, release)",
                                     "then run this PR in the reclaimed slot"
                                 ),
                             }.ToJsonString()
                         );
                         return 0;
                     }
-                    try
+                    // The slot lease stays held across the reclaim, so nothing local can take the slot.
+                    if (await ReclaimAsync(stale, slot) is { } refusal)
                     {
-                        // The slot lease stays held across the reclaim, so nothing local can take the slot.
-                        await ReviewRunner.RunInSlotAsync(
-                            slotOptions.With(
-                                ("pr", stale),
-                                ("cleanup-only", "true"),
-                                ("resume", null),
-                                ("head", null),
-                                ("reasoning-effort", null)
-                            ),
-                            config,
-                            client,
-                            sandbox,
-                            lease,
-                            false,
-                            null,
-                            ct,
-                            delay
-                        );
-                    }
-                    catch (Exception failure) when (failure is not OperationCanceledException)
-                    {
-                        Skip(slot, $"Stale owner PR {stale} could not be reclaimed: {failure.Message}");
+                        Skip(slot, $"Lapsed owner PR {stale} was not reclaimed: {refusal}");
                         continue;
                     }
                     selection["reclaimed"] = stale;
@@ -179,7 +157,8 @@ internal static class AutoSlot
                         true,
                         selection,
                         ct,
-                        delay
+                        delay,
+                        now
                     ),
                     null
                 );
@@ -189,52 +168,72 @@ internal static class AutoSlot
                 return (null, held);
             }
         }
+
+        // Null when the slot was reclaimed, else why not (a live review refuses to quiesce, for example).
+        async Task<string?> ReclaimAsync(string ownerPr, int slot)
+        {
+            try
+            {
+                await using var connection = new SqliteConnection(
+                    new SqliteConnectionStringBuilder
+                    {
+                        DataSource = database,
+                        Mode = SqliteOpenMode.ReadWrite,
+                    }.ToString()
+                );
+                await connection.OpenAsync(ct);
+                var (ownerAttempt, token, terminal) = await SlotReaper.PrepareAsync(
+                    connection,
+                    repo,
+                    ownerPr,
+                    slot,
+                    workspace,
+                    ct
+                );
+                if (terminal is not null)
+                    return terminal.Status;
+                var result = await SlotReaper.ReclaimOneAsync(
+                    connection,
+                    client,
+                    (phase, args, operation, cancel) => sandbox(phase, args, operation, cancel),
+                    repo,
+                    ownerPr,
+                    slot,
+                    workspace,
+                    ownerAttempt!,
+                    token!,
+                    execute: true,
+                    ct
+                );
+                return result.Status == "reclaimed" ? null : result.Detail ?? result.Status;
+            }
+            catch (Exception failure) when (failure is not OperationCanceledException)
+            {
+                return failure.Message;
+            }
+        }
     }
 
     /// <summary>
-    ///     The PR whose owner of <paramref name="slot"/> is stale and in a state cleanup-only accepts: a verified
-    ///     review never released, or a failed original review. Unknown or in-flight stages are never stale.
+    ///     The other PR whose claim on <paramref name="slot"/> has a lapsed lease, the same test the reaper uses.
+    ///     An owner claimed before leasing existed is never lapsed here; <c>review reap-slots --include-undated</c>
+    ///     reclaims those.
     /// </summary>
-    internal static async Task<string?> StaleOwnerAsync(
+    internal static async Task<string?> LapsedOwnerAsync(
         string database,
         RepoIdentity repo,
         string workspace,
         string pr,
         int slot,
-        JsonNode? owner,
-        TimeSpan staleAfter,
+        DateTimeOffset now,
         CancellationToken ct
-    )
-    {
-        if (owner?["prId"]?.GetValue<string>() is not { } ownerPr || ownerPr == pr)
-            return null;
-        var attempt = await ReadAsync(database, AttemptKey(repo, ownerPr), ct);
-        if (
-            attempt is null
-            || attempt["slot"]?.GetValue<int>() != slot
-            || attempt["workspaceId"]?.GetValue<string>() != workspace
-            || attempt["cleanupState"]?.GetValue<string>() != "owned"
-        )
-            return null;
-        var stage = attempt["stage"]?.GetValue<string>();
-        var cleanable =
-            stage == "completed-verified"
-            || (
-                stage == "review-running"
-                && attempt["reviewInputId"] is not null
-                && attempt["confirmationInputId"] is null
-                && attempt["confirmationIdempotencyKey"] is null
-            );
-        var stamps = new[] { "updatedAt", "finishedAt", "startedAt" }
-            .Select(name =>
-                attempt[name] is JsonValue value && value.TryGetValue<DateTimeOffset>(out var at)
-                    ? at
-                    : (DateTimeOffset?)null
-            )
-            .OfType<DateTimeOffset>()
-            .ToArray();
-        return cleanable && stamps.Length > 0 && DateTimeOffset.UtcNow - stamps.Max() >= staleAfter ? ownerPr : null;
-    }
+    ) =>
+        await ReadAsync(database, SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot), ct) is JsonObject owner
+        && owner["prId"]?.GetValue<string>() is { } ownerPr
+        && ownerPr != pr
+        && SlotRelease.IsLeaseExpired(owner, now)
+            ? ownerPr
+            : null;
 
     private static async Task<HashSet<int>> LiveBatchSlotsAsync(
         string database,

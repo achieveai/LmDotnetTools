@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
@@ -16,7 +17,8 @@ public sealed class FileConversationStore
         IConversationOwnershipStore,
         IRunLedgerStore,
         IRunLifecycleStore,
-        IInputAcceptanceStore
+        IInputAcceptanceStore,
+        IConversationListingStore
 {
     private const string MessagesFileName = "messages.json";
     private const string MetadataFileName = "metadata.json";
@@ -399,6 +401,82 @@ public sealed class FileConversationStore
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<ConversationListingRow>> ListConversationRowsAsync(
+        IReadOnlySet<string> propertyKeys,
+        ConversationListScope? scope = null,
+        int limit = 50,
+        int offset = 0,
+        ConversationListOptions? options = null,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(propertyKeys);
+        var keys = new HashSet<string>(propertyKeys, StringComparer.Ordinal);
+        // The lineage is always read so ExcludeDeleted can filter, but only requested keys are projected.
+        var readKeys = new HashSet<string>(keys, StringComparer.Ordinal) { ConversationLineage.PropertyKey };
+        var readOptions = new JsonSerializerOptions(JsonOptions);
+        readOptions.Converters.Add(new ListingPropertiesConverter(readKeys));
+        var rows = await ReadAllMetadataAsync(ct, readOptions).ConfigureAwait(false);
+        var listOptions = options ?? ConversationListOptions.Default;
+        return
+        [
+            .. listOptions
+                .Order(rows.Where(row => (scope is null || scope.Admits(row)) && listOptions.Admits(row)))
+                .Skip(offset)
+                .Take(limit)
+                .Select(row => ConversationListingRow.FromMetadata(row, keys)),
+        ];
+    }
+
+    private sealed class ListingPropertiesConverter(IReadOnlySet<string> keys)
+        : JsonConverter<System.Collections.Immutable.ImmutableDictionary<string, object>>
+    {
+        public override System.Collections.Immutable.ImmutableDictionary<string, object> Read(
+            ref Utf8JsonReader reader,
+            Type typeToConvert,
+            JsonSerializerOptions options
+        )
+        {
+            if (reader.TokenType != JsonTokenType.StartObject)
+            {
+                throw new JsonException("Metadata properties must be an object.");
+            }
+            var values = System.Collections.Immutable.ImmutableDictionary.CreateBuilder<string, object>();
+            while (reader.Read())
+            {
+                if (reader.TokenType == JsonTokenType.EndObject)
+                {
+                    return values.ToImmutable();
+                }
+                if (reader.TokenType != JsonTokenType.PropertyName)
+                {
+                    throw new JsonException("Expected a metadata property name.");
+                }
+                var key = reader.GetString()!;
+                if (!reader.Read())
+                {
+                    throw new JsonException("Expected a metadata property value.");
+                }
+                if (keys.Contains(key))
+                {
+                    values[key] = JsonSerializer.Deserialize<object>(ref reader, options)!;
+                }
+                else
+                {
+                    reader.Skip();
+                }
+            }
+            throw new JsonException("Incomplete metadata properties.");
+        }
+
+        public override void Write(
+            Utf8JsonWriter writer,
+            System.Collections.Immutable.ImmutableDictionary<string, object> value,
+            JsonSerializerOptions options
+        ) => throw new NotSupportedException("Listing projections are read-only.");
+    }
+
+    /// <inheritdoc />
     public async Task<int> StampUnownedThreadsAsync(string quarantineTenantId, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(quarantineTenantId);
@@ -490,7 +568,10 @@ public sealed class FileConversationStore
     /// <see cref="ListThreadsAsync(int, int, ConversationListOptions, CancellationToken)"/> uses for a directory that has
     /// messages but no metadata file.
     /// </summary>
-    private async Task<IReadOnlyList<ThreadMetadata>> ReadAllMetadataAsync(CancellationToken ct)
+    private async Task<IReadOnlyList<ThreadMetadata>> ReadAllMetadataAsync(
+        CancellationToken ct,
+        JsonSerializerOptions? readOptions = null
+    )
     {
         ct.ThrowIfCancellationRequested();
         if (!Directory.Exists(_baseDirectory))
@@ -516,7 +597,7 @@ public sealed class FileConversationStore
 
                 var threadId = Path.GetFileName(dir);
                 var metadataFile = Path.Combine(dir, MetadataFileName);
-                var metadata = await LoadMetadataFileAsync(metadataFile, ct);
+                var metadata = await LoadMetadataFileAsync(metadataFile, ct, readOptions);
 
                 if (metadata != null)
                 {
@@ -1397,8 +1478,7 @@ public sealed class FileConversationStore
 
         try
         {
-            var json = await File.ReadAllTextAsync(filePath, ct);
-            return JsonSerializer.Deserialize<List<PersistedMessage>>(json, JsonOptions) ?? [];
+            return await ReadJsonFileAsync<List<PersistedMessage>>(filePath, ct) ?? [];
         }
         catch (JsonException)
         {
@@ -1407,11 +1487,15 @@ public sealed class FileConversationStore
         }
     }
 
-    private async Task<ThreadMetadata?> LoadMetadataFileAsync(string filePath, CancellationToken ct)
+    private async Task<ThreadMetadata?> LoadMetadataFileAsync(
+        string filePath,
+        CancellationToken ct,
+        JsonSerializerOptions? readOptions = null
+    )
     {
         if (!_strictMetadataReads)
         {
-            return await LoadJsonFileAsync<ThreadMetadata>(filePath, ct);
+            return await LoadJsonFileAsync<ThreadMetadata>(filePath, ct, readOptions);
         }
 
         if (!File.Exists(filePath))
@@ -1419,12 +1503,15 @@ public sealed class FileConversationStore
             return null;
         }
 
-        var json = await File.ReadAllTextAsync(filePath, ct);
-        return JsonSerializer.Deserialize<ThreadMetadata>(json, JsonOptions)
+        return await ReadJsonFileAsync<ThreadMetadata>(filePath, ct, readOptions)
             ?? throw new JsonException("Persisted thread metadata must be an object, not null.");
     }
 
-    private static async Task<T?> LoadJsonFileAsync<T>(string filePath, CancellationToken ct)
+    private static async Task<T?> LoadJsonFileAsync<T>(
+        string filePath,
+        CancellationToken ct,
+        JsonSerializerOptions? readOptions = null
+    )
         where T : class
     {
         if (!File.Exists(filePath))
@@ -1434,12 +1521,59 @@ public sealed class FileConversationStore
 
         try
         {
-            var json = await File.ReadAllTextAsync(filePath, ct);
-            return JsonSerializer.Deserialize<T>(json, JsonOptions);
+            return await ReadJsonFileAsync<T>(filePath, ct, readOptions);
         }
         catch (JsonException)
         {
             return null;
+        }
+    }
+
+    private static async Task<T?> ReadJsonFileAsync<T>(
+        string filePath,
+        CancellationToken ct,
+        JsonSerializerOptions? readOptions = null
+    )
+    {
+        ct.ThrowIfCancellationRequested();
+        await using var stream = new FileStream(
+            filePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            4096,
+            FileOptions.Asynchronous | FileOptions.SequentialScan
+        );
+        // Keep ReadAllTextAsync's BOM detection and invalid-byte replacement without building a string.
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        var buffer = ArrayPool<char>.Shared.Rent((int)Math.Min(Math.Max(stream.Length, 1), 1_048_576));
+        try
+        {
+            var count = 0;
+            while (true)
+            {
+                if (count == buffer.Length)
+                {
+                    var larger = ArrayPool<char>.Shared.Rent(checked(buffer.Length * 2));
+                    buffer.AsSpan(0, count).CopyTo(larger);
+                    ArrayPool<char>.Shared.Return(buffer, clearArray: true);
+                    buffer = larger;
+                }
+
+                var read = await reader.ReadAsync(buffer.AsMemory(count), ct);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                count += read;
+            }
+
+            return JsonSerializer.Deserialize<T>(buffer.AsSpan(0, count), readOptions ?? JsonOptions);
+        }
+        finally
+        {
+            ArrayPool<char>.Shared.Return(buffer, clearArray: true);
         }
     }
 
