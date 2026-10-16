@@ -1751,6 +1751,45 @@ public class CompactionLoopTests
         (await h.StateAsync())!.ActiveCheckpointId.Should().NotBeNull();
     }
 
+    [Fact]
+    public async Task CompactMode_ARecoveredThreadWhoseToolCallCommittedAfterItsResult_StillCompacts()
+    {
+        // Rows persist fire-and-forget, so a tool call can commit after its own result. Restore appends that call
+        // as a renumbered copy; compaction tracked the loaded original instead, so the copy had no identity and
+        // every compaction of the recovered thread answered watermark_drift until the run overflowed.
+        IReadOnlyList<PersistedMessage> rows;
+        ThreadMetadata? metadata;
+        await using (var first = new Harness(EchoThenDone(3), Options(CompactionMode.Compact), _ => 1_000_000))
+        {
+            (await first.RunAsync("start")).IsError.Should().BeFalse();
+            rows = await first.Store.LoadMessagesAsync(Thread);
+            metadata = await first.Store.LoadMetadataAsync(Thread);
+        }
+        var call = rows.First(r =>
+            r.MessageType == nameof(ToolCallMessage) && r.GenerationId is not null && r.MessageOrderIdx is not null
+        );
+        var result = rows.First(r =>
+            r.MessageType == nameof(ToolCallResultMessage)
+            && r.GenerationId == call.GenerationId
+            && r.MessageOrderIdx > call.MessageOrderIdx
+        );
+        var reordered = rows.Where(r => r != call).ToList();
+        reordered.Insert(reordered.IndexOf(result) + 1, call);
+        var store = new InMemoryConversationStore();
+        // One append per row, as each fire-and-forget write commits on its own: Seq follows commit order.
+        foreach (var row in reordered)
+        {
+            await store.AppendMessagesAsync(Thread, [row with { Seq = null }]);
+        }
+        await store.SaveMetadataAsync(Thread, metadata!);
+
+        await using var h = new Harness(EchoThenDone(4), Options(CompactionMode.Compact), _ => Window, store: store);
+        (await h.RunAsync("continue")).IsError.Should().BeFalse();
+
+        h.Decisions.Should().NotContain(d => d.Reason == CompactionReasons.WatermarkDrift);
+        (await h.StateAsync())!.ActiveCheckpointId.Should().NotBeNull();
+    }
+
     /// <summary>
     ///     Appends a row from another writer on the <paramref name="onWatermarkRead"/>th watermark read. The loop
     ///     reads it once to seed activity, then the pipeline reads it right before it prepares: read 2 lands
