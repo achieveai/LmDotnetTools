@@ -1752,10 +1752,11 @@ public class CompactionLoopTests
     }
 
     [Fact]
-    public async Task CompactMode_ARecoveredThreadWhoseToolCallCommittedAfterItsResult_StillCompacts()
+    public async Task CompactMode_ARecoveredThreadWithARenumberedRow_StillCompacts()
     {
-        // Rows persist fire-and-forget, so a tool call can commit after its own result. Restore appends that call
-        // as a renumbered copy; compaction tracked the loaded original instead, so the copy had no identity and
+        // A row can be stored with an order another row of its generation already holds: a deferred result is
+        // persisted with its raw order before history renumbers it. Restore meets the later row as a tie and appends
+        // it as a renumbered copy. Compaction tracked the loaded original instead, so the copy had no identity and
         // every compaction of the recovered thread answered watermark_drift until the run overflowed.
         IReadOnlyList<PersistedMessage> rows;
         ThreadMetadata? metadata;
@@ -1773,10 +1774,22 @@ public class CompactionLoopTests
             && r.GenerationId == call.GenerationId
             && r.MessageOrderIdx > call.MessageOrderIdx
         );
-        var reordered = rows.Where(r => r != call).ToList();
-        reordered.Insert(reordered.IndexOf(result) + 1, call);
+        var tied = MessagePersistenceConverter.FromPersistedMessage(result) switch
+        {
+            ToolCallResultMessage m => MessagePersistenceConverter.ToPersistedMessage(
+                m with
+                {
+                    MessageOrderIdx = call.MessageOrderIdx,
+                },
+                Thread,
+                result.RunId
+            ),
+            var other => throw new InvalidOperationException($"Unexpected {other.GetType().Name}"),
+        };
         var store = new InMemoryConversationStore();
-        // One append per row, as each fire-and-forget write commits on its own: Seq follows commit order.
+        var reordered = rows.Where(r => r != call).Select(r => r == result ? tied : r).ToList();
+        reordered.Insert(reordered.IndexOf(tied) + 1, call);
+        // One append per row keeps the stored order: the in-memory store sorts a batch by timestamp.
         foreach (var row in reordered)
         {
             await store.AppendMessagesAsync(Thread, [row with { Seq = null }]);
