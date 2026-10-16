@@ -28,13 +28,7 @@ internal static class PrSelection
             {
                 var pr = entry.Value;
                 var attempt = await ReadAsync($"reviewd/review-attempt/{prefix}/{entry.Name}");
-                if (
-                    attempt is not null
-                    && (
-                        !attempt.Value.TryGetProperty("stage", out var attemptStage)
-                        || attemptStage.GetString() != "completed-verified"
-                    )
-                )
+                if (attempt is not null && !IsSettled(attempt.Value))
                 {
                     continue;
                 }
@@ -159,6 +153,22 @@ internal static class PrSelection
         );
         File.Move(temporary, path, overwrite: true);
     }
+
+    // An attempt still in flight or retained keeps its PR out of a new selection. A verified review is settled,
+    // and so is a failed-released attempt whose slot was released on its claim: the batch admits that one fresh,
+    // so pick must offer it again or the PR is never reviewed.
+    internal static bool IsSettled(JsonElement attempt) =>
+        attempt.TryGetProperty("stage", out var stage)
+        && (
+            stage.GetString() == "completed-verified"
+            || (
+                stage.GetString() == "failed-released"
+                && attempt.TryGetProperty("cleanupState", out var cleanup)
+                && cleanup.GetString() == "released"
+                && attempt.TryGetProperty("claimToken", out var claim)
+                && !string.IsNullOrEmpty(claim.GetString())
+            )
+        );
 
     internal static bool IsEligible(JsonElement pr, JsonElement? review, bool hasThread, DateTimeOffset now)
     {

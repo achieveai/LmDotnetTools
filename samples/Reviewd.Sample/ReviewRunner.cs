@@ -360,6 +360,17 @@ internal static class ReviewRunner
                         && latest["claimToken"]?.GetValue<string>() is { Length: > 0 }
                     )
                         continue;
+                    // The PR's latest attempt may be a later review in another slot. This receipt still holds its
+                    // own slot only while that slot's owner row carries the receipt's claim.
+                    if (
+                        owner["claimToken"]?.GetValue<string>() is { Length: > 0 } receiptClaim
+                        && await ReadAsync(SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot)) is { } slotOwner
+                        && (
+                            slotOwner["state"]?.GetValue<string>() == "released"
+                            || slotOwner["claimToken"]?.GetValue<string>() != receiptClaim
+                        )
+                    )
+                        continue;
                     var adopted = await ReadAsync("reviewd/legacy-cleaned/" + SlotRelease.Digest(ownerText));
                     if (adopted?["cleanupState"]?.GetValue<string>() == "released")
                         continue;

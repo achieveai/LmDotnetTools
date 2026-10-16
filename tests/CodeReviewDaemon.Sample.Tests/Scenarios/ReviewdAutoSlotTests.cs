@@ -135,6 +135,35 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         _phases.Should().Equal($"prepare 17/{expected}");
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_verified_receipt_frees_its_slot_once_the_slot_owner_moved_past_its_claim(bool released)
+    {
+        // PR 9's verified review in slot 0 is followed by a re-review in slot 1, so its latest attempt is in flight.
+        var at = DateTimeOffset.UtcNow.ToString("O");
+        var receipt = Attempt(9, 0, "completed-verified", at);
+        await PutAsync($"reviewd/review-run/{Repo.NormalizedKey}/9", receipt);
+        await HoldAsync(9, 1);
+        var slotOwner = Claim(receipt, DateTimeOffset.UtcNow.AddMinutes(30));
+        if (released)
+            slotOwner["state"] = "released";
+        await PutAsync(OwnerKey(0), slotOwner);
+
+        var run = () => RunAsync("--slots", "0");
+
+        if (released)
+        {
+            await run.Should().ThrowAsync<InvalidOperationException>().WithMessage(Stop);
+            _phases.Should().Equal("prepare 17/0");
+        }
+        else
+        {
+            (await run()).Should().Be(ReviewRunner.NoSlotExitCode);
+            _phases.Should().BeEmpty();
+        }
+    }
+
     [Fact]
     public async Task No_usable_slot_exits_3_without_claims_writes_or_remote_calls()
     {

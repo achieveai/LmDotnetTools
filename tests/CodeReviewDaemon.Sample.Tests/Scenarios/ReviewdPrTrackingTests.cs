@@ -293,6 +293,28 @@ public sealed class ReviewdPrTrackingTests
     }
 
     [Fact]
+    public void Picking_offers_again_a_failed_attempt_whose_slot_was_released_on_its_claim()
+    {
+        static System.Text.Json.JsonElement Attempt(string stage, string cleanupState, string claimToken = "claim") =>
+            System.Text.Json.JsonSerializer.SerializeToElement(
+                new
+                {
+                    stage,
+                    cleanupState,
+                    claimToken,
+                }
+            );
+
+        PrSelection.IsSettled(Attempt("completed-verified", "released")).Should().BeTrue();
+        PrSelection.IsSettled(Attempt("failed-released", "released")).Should().BeTrue();
+        // Still owned, released without its claim, or an interrupted review that may have posted: not offered.
+        PrSelection.IsSettled(Attempt("failed-released", "owned")).Should().BeFalse();
+        PrSelection.IsSettled(Attempt("failed-released", "released", "")).Should().BeFalse();
+        PrSelection.IsSettled(Attempt("review-running", "released")).Should().BeFalse();
+        PrSelection.IsSettled(System.Text.Json.JsonSerializer.SerializeToElement(new { })).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Activity_uses_publication_not_edit_or_system_and_deleted_comment_times()
     {
         var handler = new FakeHttpMessageHandler()

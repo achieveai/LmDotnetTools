@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.Sandbox;
 using Microsoft.Data.Sqlite;
 
 namespace Reviewd.Sample;
@@ -533,13 +534,20 @@ internal static class ReviewBatch
                         await SaveAsync(() => entry["status"] = attempt is null ? "stale" : "held");
                         continue;
                     }
+                    var freshAdmission =
+                        attempt is null
+                        || (attempt["stage"]?.GetValue<string>() == "failed-released" && Reusable(attempt));
+                    // Only a resumed owner must keep its prepared merge. A fresh admission prepares a new one, so
+                    // a released failure's old merge must not defer it: the target branch moves on, and the PR was
+                    // retried until held.
                     if (
                         !cleanup
                         && (
                             live["isDraft"]!.GetValue<bool>()
                             || live["mergeSha"]?.GetValue<string>() is not { Length: 40 }
                             || (
-                                attempt?["mergeSha"]?.GetValue<string>() is { } merge
+                                !freshAdmission
+                                && attempt?["mergeSha"]?.GetValue<string>() is { } merge
                                 && merge != live["mergeSha"]!.GetValue<string>()
                             )
                         )
@@ -547,9 +555,6 @@ internal static class ReviewBatch
                         throw new InvalidOperationException(
                             "PR draft or prepared merge is unavailable/changed; retry deferred."
                         );
-                    var freshAdmission =
-                        attempt is null
-                        || (attempt["stage"]?.GetValue<string>() == "failed-released" && Reusable(attempt));
                     if (
                         freshAdmission
                         && maxAgeHours is { } limit
@@ -633,9 +638,13 @@ internal static class ReviewBatch
                     var transientBeforeClaim =
                         retained?.ToJsonString() == attemptBeforeLaunch
                         && ex is HttpRequestException or TimeoutException or TaskCanceledException;
+                    // A gateway at its operation limit says nothing about the PR: a restart resumes every owner at
+                    // once and briefly exceeds it. Back off without spending the PR's retries, or admitted reviews
+                    // are held and their slots wait for the reaper.
+                    var capacity = ex is SandboxException { Kind: SandboxErrorKind.Unavailable, StatusCode: 503 };
                     if (
                         (launched && !transientBeforeClaim && (retained is null || !Resumable(retained)))
-                        || entry["failures"]!.GetValue<int>() + 1 >= MaxLaneRetries
+                        || (!capacity && entry["failures"]!.GetValue<int>() + 1 >= MaxLaneRetries)
                     )
                     {
                         await SaveAsync(() =>
@@ -663,12 +672,15 @@ internal static class ReviewBatch
                     }
                     await SaveAsync(() =>
                     {
-                        var failures = entry["failures"]!.GetValue<int>() + 1;
+                        var failures = entry["failures"]!.GetValue<int>() + (capacity ? 0 : 1);
+                        var backoff = capacity ? (entry["capacityRetries"]?.GetValue<int>() ?? 0) + 1 : failures;
                         entry["failures"] = failures;
+                        if (capacity)
+                            entry["capacityRetries"] = backoff;
                         entry["status"] = "retry";
                         entry["reason"] = ex.Message;
                         entry["retryAt"] = now()
-                            .AddSeconds(Math.Min(300, 15 * Math.Pow(2, Math.Min(failures - 1, 5))))
+                            .AddSeconds(Math.Min(300, 15 * Math.Pow(2, Math.Min(backoff - 1, 5))))
                             .ToUnixTimeSeconds();
                         entry["order"] = entriesToRun.Max(value => value["order"]!.GetValue<long>()) + 1;
                     });
