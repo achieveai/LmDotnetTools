@@ -315,6 +315,104 @@ public sealed class ReviewdPrTrackingTests
     }
 
     [Fact]
+    public void Picking_treats_a_released_attempt_for_an_earlier_head_as_over()
+    {
+        static System.Text.Json.JsonElement Attempt(string cleanupState, string claimToken, string? headSha) =>
+            System.Text.Json.JsonSerializer.SerializeToElement(
+                new
+                {
+                    stage = "review-completed",
+                    cleanupState,
+                    claimToken,
+                    headSha,
+                }
+            );
+        var earlier = new string('d', 40);
+        var live = new string('a', 40);
+
+        PrSelection.IsReleasedForEarlierHead(Attempt("released", "claim", earlier), live).Should().BeTrue();
+        // The same head may already have posted. Still owned, released without its claim, or an unknown head: not over.
+        PrSelection.IsReleasedForEarlierHead(Attempt("released", "claim", live), live).Should().BeFalse();
+        PrSelection
+            .IsReleasedForEarlierHead(Attempt("released", "claim", live.ToUpperInvariant()), live)
+            .Should()
+            .BeFalse();
+        PrSelection.IsReleasedForEarlierHead(Attempt("owned", "claim", earlier), live).Should().BeFalse();
+        PrSelection.IsReleasedForEarlierHead(Attempt("released", "", earlier), live).Should().BeFalse();
+        PrSelection.IsReleasedForEarlierHead(Attempt("released", "claim", null), live).Should().BeFalse();
+        PrSelection.IsReleasedForEarlierHead(Attempt("released", "claim", earlier), null).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData('d', true)]
+    [InlineData('a', false)]
+    public async Task Picking_offers_a_new_head_after_its_slot_was_released_mid_review(char attemptHead, bool picked)
+    {
+        // The reaper released this review's slot at review-completed; the stage and thread binding stayed.
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-pick-{Guid.NewGuid():N}.db");
+        var selection = database + ".selection.json";
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var now = DateTimeOffset.Parse("2026-10-17T12:00:00Z");
+        try
+        {
+            using (var connection = PrThreadBindings.Connection(database))
+            {
+                var store = new SqliteKvStore(connection);
+                await store.SetAsync(
+                    $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                    new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["17"] = new System.Text.Json.Nodes.JsonObject
+                        {
+                            ["PrId"] = 17,
+                            ["Lifecycle"] = "Open",
+                            ["IsDraft"] = false,
+                            ["HeadSha"] = new string('a', 40),
+                            ["CreatedAt"] = now.AddHours(-1).ToString("O"),
+                        },
+                    }
+                );
+                await store.SetAsync(
+                    $"reviewd/review-attempt/{repo.NormalizedKey}/17",
+                    new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["stage"] = "review-completed",
+                        ["cleanupState"] = "released",
+                        ["claimToken"] = "claim",
+                        ["headSha"] = new string(attemptHead, 40),
+                    }
+                );
+            }
+            await PrThreadBindings.SetAsync(database, repo, "17", "thread", CancellationToken.None);
+            var options = CliOptions.Parse([
+                "pr",
+                "pick",
+                "--repo",
+                repo.DisplayName,
+                "--db",
+                database,
+                "--max-age-hours",
+                "72",
+                "--selection-out",
+                selection,
+            ]);
+
+            await PrSelection.RunAsync(options, CancellationToken.None, now);
+
+            var queued = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(selection))![
+                "repositories"
+            ]!.AsObject();
+            queued.Count.Should().Be(picked ? 1 : 0);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+            File.Delete(selection);
+        }
+    }
+
+    [Fact]
     public async Task Activity_uses_publication_not_edit_or_system_and_deleted_comment_times()
     {
         var handler = new FakeHttpMessageHandler()

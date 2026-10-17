@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.Sandbox;
 using Microsoft.Data.Sqlite;
@@ -483,6 +484,16 @@ internal static class ReviewBatch
                     && attempt["stage"]?.GetValue<string>() == "completed-verified"
                     && Reusable(attempt)
                     && attempt["reviewedHeadSha"]?.GetValue<string>() != entry["head"]!.GetValue<string>()
+                )
+                    attempt = null;
+                // Likewise an attempt whose slot was released mid-review (reaper or reclaim-slot): its stage
+                // stays, but once the PR advances it can never publish, so the new head is admitted fresh.
+                if (
+                    attempt is not null
+                    && PrSelection.IsReleasedForEarlierHead(
+                        JsonSerializer.SerializeToElement(attempt),
+                        entry["head"]!.GetValue<string>()
+                    )
                 )
                     attempt = null;
                 if (attempt is not null && !Resumable(attempt))

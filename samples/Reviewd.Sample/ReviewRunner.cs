@@ -343,12 +343,21 @@ internal static class ReviewRunner
             )
         )
             throw new InvalidOperationException("Only identified admitted review or confirmation stages can resume.");
+        var earlierHead =
+            attempt is not null
+            && !resume
+            && !cleanupOnly
+            && PrSelection.IsReleasedForEarlierHead(
+                JsonSerializer.SerializeToElement(attempt),
+                current["HeadSha"]?.GetValue<string>()
+            );
         if (
             !resume
             && !cleanupOnly
             && attempt is not null
             && attempt["stage"]?.GetValue<string>() != "completed-verified"
             && attempt["stage"]?.GetValue<string>() != "failed-released"
+            && !earlierHead
             && !CanRetryPreparation(attempt, options.Required("session"))
         )
         {
@@ -663,7 +672,7 @@ internal static class ReviewRunner
             receipt["legacyCleanupAdoption"] = true;
         // Archive the attempt the claim below overwrites before claiming, so the overwrite is never
         // the only copy of it.
-        if (resume || cleanupOnly || attempt?["stage"]?.GetValue<string>() == "failed-released")
+        if (resume || cleanupOnly || attempt?["stage"]?.GetValue<string>() == "failed-released" || earlierHead)
         {
             query.Parameters["@key"].Value = attemptKey;
             var raw = (string)(await query.ExecuteScalarAsync(ct))!;
