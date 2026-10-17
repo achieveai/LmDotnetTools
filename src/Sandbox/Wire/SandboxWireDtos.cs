@@ -126,7 +126,8 @@ internal sealed record WorkspaceVolumeDto(
     // The persisted session_mounts.id (issue #119) — the integer every direct file/command API is
     // keyed by. Always present on a #119 create/get response (MountSummary.id is non-optional there);
     // nullable here because the list response carries no volumes and a pre-#119 gateway omits it.
-    [property: JsonPropertyName("id")] long? Id
+    [property: JsonPropertyName("id")] long? Id,
+    [property: JsonPropertyName("relative_path")] string? RelativePath = null
 );
 
 /// <summary>

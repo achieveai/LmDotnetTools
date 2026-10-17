@@ -48,7 +48,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
               "session_id": "sess-http",
               "app_id": "lmstreaming",
               "discoveries": [
-                { "kind": "context_file", "path": "CLAUDE.md", "content": "# Project rules\nBe terse.", "truncated": false }
+                { "kind": "context_file", "path": "CLAUDE.md", "content": "# Project rules\nBe terse.", "truncated": false, "agent_id": "thread-http" }
               ]
             }
             """;
@@ -62,7 +62,8 @@ public sealed class ContextDiscoveryWebhookHttpTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        var message = app.Agent.SentMessages.Should().ContainSingle().Which.Should().BeOfType<NotifyMessage>().Subject;
+        app.Agent.SentMessages.Should().BeEmpty();
+        var message = app.Agent.RecordedContext.Should().ContainSingle().Which;
         message.Role.Should().Be(Role.User);
         message.NotifyKind.Should().Be(NotifyKinds.ContextDiscovery);
         message.Label.Should().Be("CLAUDE.md");
@@ -148,6 +149,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
         // The sub-agent's provider BLOCKS on its first turn, so the spawned "ctx-probe" sub-agent stays
         // deterministically Running (no timer) for the whole routed delivery.
         var subAgentBlock = new TaskCompletionSource<bool>();
+        var subAgentEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var subAgentProvider = new Mock<IStreamingAgent>();
         subAgentProvider
             .Setup(a =>
@@ -160,6 +162,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
             .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
                 async (_, _, ct) =>
                 {
+                    subAgentEntered.TrySetResult();
                     await subAgentBlock.Task.WaitAsync(ct);
                     return EmptyMessageStream();
                 }
@@ -214,6 +217,8 @@ public sealed class ContextDiscoveryWebhookHttpTests
             runInBackground: true
         );
 
+        await subAgentEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var ownerThreadId = primaryLoop.SubAgentManager.ListAgents().Single().ThreadId;
         var diagnostics = new ContextDiscoveryDiagnostics();
 
         using var host = await new HostBuilder()
@@ -251,7 +256,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
               "event": "context_discovery",
               "session_id": "{{SessionId}}",
               "discoveries": [
-                { "kind": "context_file", "path": "sub/CLAUDE.md", "content": "# Sub rules", "agent_id": "{{ProbeAgentId}}" }
+                { "kind": "context_file", "path": "sub/CLAUDE.md", "content": "# Sub rules", "agent_id": "{{ownerThreadId}}" }
               ]
             }
             """;
@@ -337,6 +342,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
             _ = pool.GetOrCreateAgent(ThreadId, mode);
             registry.RegisterThread(SessionId, ThreadId);
             var agent = created ?? throw new InvalidOperationException("recording agent was not created");
+            agent.CurrentRunId = "active-run";
 
             var host = await new HostBuilder()
                 .ConfigureWebHost(webBuilder =>
@@ -350,7 +356,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
                         services.AddSingleton(pool);
                         services.AddSingleton(sessionSecretStore);
                         services.AddSingleton<ContextDiscoveryFormatter>();
-                        services.AddSingleton(new ContextDiscoveryOptions());
+                        services.AddSingleton(new ContextDiscoveryOptions { RouteToOpeningSubAgent = true });
                         services.AddSingleton<ContextDiscoveryInjector>();
                         services.AddSingleton(new AgentOutputTokenPolicy(new AgentOutputTokenOptions()));
                         services.AddSingleton<ContextDiscoveryDiagnostics>();

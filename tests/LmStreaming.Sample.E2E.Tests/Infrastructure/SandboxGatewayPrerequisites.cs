@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Configuration;
+
 namespace LmStreaming.Sample.E2E.Tests.Infrastructure;
 
 /// <summary>
@@ -14,7 +16,8 @@ namespace LmStreaming.Sample.E2E.Tests.Infrastructure;
 /// beside it, or at <c>SANDBOX_AGENT_CLI</c>) — the host spawns the gateway (adopt-or-spawn).
 /// </description></item>
 /// <item><description>
-/// A gateway already responds <c>200</c> at <c>{SANDBOX_GATEWAY_URL ?? http://localhost:3000}/health</c>
+/// A gateway already responds successfully at <c>{SANDBOX_GATEWAY_URL ?? http://localhost:3000}/health</c>
+/// and does not reject keyless catalog access when the test host has no configured app key
 /// — the host adopts it.
 /// </description></item>
 /// </list>
@@ -99,8 +102,9 @@ public sealed class SandboxGatewayPrerequisites
             );
         }
 
-        // No exe configured — adopt a gateway only if one is already healthy.
-        if (IsHealthy(baseUrl))
+        // A public health response alone does not prove the unauthenticated test host can
+        // use the gateway. An auth-enforced marketplace catalog fails before model setup.
+        if (IsHealthy(baseUrl) && CanReadMarketplaceCatalog(baseUrl))
         {
             return new SandboxGatewayPrerequisites(
                 available: true,
@@ -113,7 +117,8 @@ public sealed class SandboxGatewayPrerequisites
         }
 
         return Unavailable(
-            "No sandbox gateway is configured. Set SANDBOX_GATEWAY_EXE to mcp-gateway.exe "
+            "No accessible sandbox gateway is configured (health failed or catalog access requires an unconfigured app key). "
+                + "Set SANDBOX_GATEWAY_EXE to mcp-gateway.exe "
                 + "(with agent-cli.exe beside it) or run a gateway reachable at "
                 + $"{baseUrl}/health to enable this test."
         );
@@ -154,6 +159,34 @@ public sealed class SandboxGatewayPrerequisites
         new(false, reason, false, null, null, DefaultBaseUrl);
 
     private static string? NonEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
+
+    private static bool CanReadMarketplaceCatalog(string baseUrl)
+    {
+        var configuration = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .SetBasePath(AppContext.BaseDirectory)
+            .AddJsonFile("appsettings.json", optional: true)
+            .AddEnvironmentVariables()
+            .Build();
+        if (!string.IsNullOrWhiteSpace(configuration["SandboxGateway:AppKey"]))
+        {
+            // The host uses its configured credentials; do not judge it by a keyless probe.
+            return true;
+        }
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            using var response = http.GetAsync($"{baseUrl.TrimEnd('/')}/api/v1/marketplaces/preview")
+                .GetAwaiter()
+                .GetResult();
+            return response.StatusCode
+                is not (System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden);
+        }
+        catch
+        {
+            // Other gateway failures must remain visible to the scenario, not turn into skips.
+            return true;
+        }
+    }
 
     private static bool IsHealthy(string baseUrl)
     {

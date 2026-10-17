@@ -402,7 +402,7 @@ if ($IncludeDeclarations) {
                             Where-Object {
                                 $attributeText = $_.ToString()
                                 $attributeName = ($_.Name.ToString().Replace("global::", "") -split '\.')[-1] -replace 'Attribute$', ''
-                                if ($attributeName -match '^(LinuxOnlyFact|WindowsOnlyFact|RequiresFileSymlinkFact|RequiresUnreadableEntryFact)$') {
+                                if ($attributeName -match '^(SkippableFact|SkippableTheory|LinuxOnlyFact|WindowsOnlyFact|RequiresFileSymlinkFact|RequiresUnreadableEntryFact)$') {
                                     return $true
                                 }
                                 return @(

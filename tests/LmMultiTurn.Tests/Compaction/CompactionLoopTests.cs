@@ -1751,6 +1751,58 @@ public class CompactionLoopTests
         (await h.StateAsync())!.ActiveCheckpointId.Should().NotBeNull();
     }
 
+    [Fact]
+    public async Task CompactMode_ARecoveredThreadWithARenumberedRow_StillCompacts()
+    {
+        // A row can be stored with an order another row of its generation already holds: a deferred result is
+        // persisted with its raw order before history renumbers it. Restore meets the later row as a tie and appends
+        // it as a renumbered copy. Compaction tracked the loaded original instead, so the copy had no identity and
+        // every compaction of the recovered thread answered watermark_drift until the run overflowed.
+        IReadOnlyList<PersistedMessage> rows;
+        ThreadMetadata? metadata;
+        await using (var first = new Harness(EchoThenDone(3), Options(CompactionMode.Compact), _ => 1_000_000))
+        {
+            (await first.RunAsync("start")).IsError.Should().BeFalse();
+            rows = await first.Store.LoadMessagesAsync(Thread);
+            metadata = await first.Store.LoadMetadataAsync(Thread);
+        }
+        var call = rows.First(r =>
+            r.MessageType == nameof(ToolCallMessage) && r.GenerationId is not null && r.MessageOrderIdx is not null
+        );
+        var result = rows.First(r =>
+            r.MessageType == nameof(ToolCallResultMessage)
+            && r.GenerationId == call.GenerationId
+            && r.MessageOrderIdx > call.MessageOrderIdx
+        );
+        var tied = MessagePersistenceConverter.FromPersistedMessage(result) switch
+        {
+            ToolCallResultMessage m => MessagePersistenceConverter.ToPersistedMessage(
+                m with
+                {
+                    MessageOrderIdx = call.MessageOrderIdx,
+                },
+                Thread,
+                result.RunId
+            ),
+            var other => throw new InvalidOperationException($"Unexpected {other.GetType().Name}"),
+        };
+        var store = new InMemoryConversationStore();
+        var reordered = rows.Where(r => r != call).Select(r => r == result ? tied : r).ToList();
+        reordered.Insert(reordered.IndexOf(tied) + 1, call);
+        // One append per row keeps the stored order: the in-memory store sorts a batch by timestamp.
+        foreach (var row in reordered)
+        {
+            await store.AppendMessagesAsync(Thread, [row with { Seq = null }]);
+        }
+        await store.SaveMetadataAsync(Thread, metadata!);
+
+        await using var h = new Harness(EchoThenDone(4), Options(CompactionMode.Compact), _ => Window, store: store);
+        (await h.RunAsync("continue")).IsError.Should().BeFalse();
+
+        h.Decisions.Should().NotContain(d => d.Reason == CompactionReasons.WatermarkDrift);
+        (await h.StateAsync())!.ActiveCheckpointId.Should().NotBeNull();
+    }
+
     /// <summary>
     ///     Appends a row from another writer on the <paramref name="onWatermarkRead"/>th watermark read. The loop
     ///     reads it once to seed activity, then the pipeline reads it right before it prepares: read 2 lands

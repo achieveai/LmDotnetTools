@@ -62,7 +62,8 @@ internal sealed class LmStreamingS2SClient
             // Backward compatibility with hosts predating the gateway-catalog envelope.
             JsonValueKind.Array => Deserialize<List<S2SWorkspace>>(body),
             JsonValueKind.Object when document.RootElement.TryGetProperty("workspaces", out var workspaces) =>
-                workspaces.Deserialize<List<S2SWorkspace>>(JsonOptions) ?? [],
+                workspaces.Deserialize<List<S2SWorkspace>>(JsonOptions)
+                    ?? throw new JsonException("The workspace catalog contained a null workspaces list."),
             _ => throw new JsonException("The workspace response was neither an array nor a catalog envelope."),
         };
     }
@@ -77,7 +78,8 @@ internal sealed class LmStreamingS2SClient
         string name,
         string directoryRelPath,
         IReadOnlyList<string> marketplaces,
-        CancellationToken ct
+        CancellationToken ct,
+        IReadOnlyList<AchieveAi.LmDotnetTools.Sandbox.SandboxPluginRef>? pluginSelection = null
     )
     {
         var body = await SendReadAsync(
@@ -88,10 +90,49 @@ internal sealed class LmStreamingS2SClient
                 Name = name,
                 DirectoryRelPath = directoryRelPath,
                 Marketplaces = marketplaces,
+                PluginSelection = pluginSelection,
             },
             ct
         );
         return Deserialize<S2SWorkspace>(body);
+    }
+
+    public async Task<S2SWorkspace> GetWorkspaceAsync(string id, CancellationToken ct) =>
+        Deserialize<S2SWorkspace>(
+            await SendReadAsync(HttpMethod.Get, $"api/workspaces/{Uri.EscapeDataString(id)}", null, ct)
+        );
+
+    public async Task<S2SWorkspace> UpdateWorkspaceAsync(
+        S2SWorkspace workspace,
+        IReadOnlyList<string> marketplaces,
+        bool replaceSelection,
+        IReadOnlyList<AchieveAi.LmDotnetTools.Sandbox.SandboxPluginRef>? pluginSelection,
+        CancellationToken ct
+    )
+    {
+        var payload = new Dictionary<string, object?> { ["marketplaces"] = marketplaces };
+        if (replaceSelection)
+        {
+            payload["pluginSelection"] = pluginSelection;
+            payload["pluginsRevision"] =
+                workspace.PluginsRevision
+                ?? throw new ReviewHostContractException(
+                    "The host did not provide a plugin revision; no edit was sent."
+                );
+        }
+        return Deserialize<S2SWorkspace>(
+            await SendReadAsync(HttpMethod.Put, $"api/workspaces/{Uri.EscapeDataString(workspace.Id)}", payload, ct)
+        );
+    }
+
+    public async Task<JsonElement> GetMarketplaceCatalogAsync(IReadOnlyList<string>? marketplaces, CancellationToken ct)
+    {
+        var query = marketplaces is { Count: > 0 }
+            ? "?marketplaces=" + Uri.EscapeDataString(string.Join(',', marketplaces))
+            : "";
+        var body = await SendReadAsync(HttpMethod.Get, "api/marketplaces" + query, null, ct);
+        using var document = JsonDocument.Parse(body);
+        return document.RootElement.Clone();
     }
 
     /// <summary>
@@ -125,7 +166,7 @@ internal sealed class LmStreamingS2SClient
     /// that stored <c>""</c> would hand each spawn a blank model id instead of leaving it to inherit.
     /// </para>
     /// </summary>
-    public async Task<string> ProvisionAsync(
+    public Task<string> ProvisionAsync(
         string workspaceId,
         string providerId,
         string modeId,
@@ -133,8 +174,36 @@ internal sealed class LmStreamingS2SClient
         string? subAgentModelId,
         string? reasoningEffort,
         CancellationToken ct
+    ) =>
+        ProvisionAsync(
+            workspaceId,
+            providerId,
+            modeId,
+            systemPromptAppendix,
+            subAgentModelId,
+            reasoningEffort,
+            workingDirectory: null,
+            ct
+        );
+
+    /// <summary>Explicit cwd uses the host's capability-gated WorkingDirectoryRelPath contract.</summary>
+    public async Task<string> ProvisionAsync(
+        string workspaceId,
+        string providerId,
+        string modeId,
+        string? systemPromptAppendix,
+        string? subAgentModelId,
+        string? reasoningEffort,
+        string? workingDirectory,
+        CancellationToken ct
     )
     {
+        if (workingDirectory is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(workingDirectory);
+            _ = new AchieveAi.LmDotnetTools.Sandbox.SandboxCommand(["pwd"], workingDirectory);
+            await EnsureWorkingDirectoryContractAsync(ct);
+        }
         using var response = await ExecuteAsync(
             HttpMethod.Post,
             "api/conversations",
@@ -148,6 +217,7 @@ internal sealed class LmStreamingS2SClient
                 // Do not normalize empty to null: empty explicitly asks the host to omit effort, while null
                 // leaves the provider's default intact.
                 ReasoningEffort = reasoningEffort,
+                WorkingDirectoryRelPath = workingDirectory,
             },
             ct
         );
@@ -316,6 +386,25 @@ internal sealed class LmStreamingS2SClient
         }
     }
 
+    public async Task EnsureWorkingDirectoryContractAsync(CancellationToken ct)
+    {
+        using var response = await ExecuteAsync(HttpMethod.Get, "api/conversations/capabilities", body: null, ct);
+        if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
+        {
+            throw new ReviewHostContractException(
+                "The review host predates explicit conversation cwd. Upgrade it before provisioning; no prompt was sent."
+            );
+        }
+        _ = response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (!ReadBoolProperty(body, "conversationWorkingDirectory"))
+        {
+            throw new ReviewHostContractException(
+                "The review host does not advertise explicit conversation cwd. No conversation or prompt was created."
+            );
+        }
+    }
+
     /// <summary>
     /// Whether the host takes manual compaction requests (<c>manualCompaction</c> on
     /// <c>GET api/conversations/capabilities</c>). A host without the capability endpoint, or one that omits the
@@ -357,6 +446,51 @@ internal sealed class LmStreamingS2SClient
         _ = response.EnsureSuccessStatusCode();
         var body = await response.Content.ReadAsStringAsync(ct);
         return new S2SCompactionResult(ReadStringProperty(body, "requestId"), ReadStringProperty(body, "status"), null);
+    }
+
+    /// <summary>
+    /// Freezes (<paramref name="frozen"/> true) or unfreezes a conversation we own via
+    /// <c>POST api/conversations/{threadId}/freeze|unfreeze</c>. A frozen conversation finishes its in-flight
+    /// turn (capturing tool results) then stops advancing, so a held review slot can be reclaimed safely.
+    /// <para>
+    /// A host that does not know the thread (404) answers <see cref="S2SFreezeResult.Present"/> false — the
+    /// conversation is not running there, which for a reclaim is the same end state as frozen. An agent the
+    /// host refuses to freeze (409, e.g. a provider-owned session) is reported through
+    /// <see cref="S2SFreezeResult.Refusal"/> rather than thrown, so the caller decides.
+    /// </para>
+    /// </summary>
+    public async Task<S2SFreezeResult> SetFrozenAsync(string threadId, bool frozen, CancellationToken ct)
+    {
+        using var response = await ExecuteAsync(
+            HttpMethod.Post,
+            $"api/conversations/{Uri.EscapeDataString(threadId)}/{(frozen ? "freeze" : "unfreeze")}",
+            body: null,
+            ct
+        );
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return new S2SFreezeResult(Present: false, Frozen: false, Refusal: null);
+        }
+
+        if (response.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.Forbidden)
+        {
+            var refusal = await response.Content.ReadAsStringAsync(ct);
+            return new S2SFreezeResult(
+                Present: true,
+                Frozen: false,
+                // A refusal must be reported, never thrown: the body may not be the expected { error } shape
+                // (e.g. a plain text 403 page), so parse defensively and fall back to a generic reason.
+                Refusal: TryReadStringProperty(refusal, "error") ?? "refused"
+            );
+        }
+
+        _ = response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadAsStringAsync(ct);
+        using var document = JsonDocument.Parse(body);
+        var isFrozen =
+            document.RootElement.TryGetProperty("frozen", out var value) && value.ValueKind is JsonValueKind.True;
+        return new S2SFreezeResult(Present: true, Frozen: isFrozen, Refusal: null);
     }
 
     /// <summary>
@@ -439,6 +573,227 @@ internal sealed class LmStreamingS2SClient
         return ParseStatus(body);
     }
 
+    public async Task EnsureConversationBindingAsync(
+        string threadId,
+        string workspaceId,
+        string providerId,
+        string modeId,
+        CancellationToken ct
+    )
+    {
+        for (var offset = 0; offset < 10000; offset += 100)
+        {
+            var body = await SendReadAsync(
+                HttpMethod.Get,
+                $"api/conversations?limit=100&offset={offset}&sort=created",
+                body: null,
+                ct
+            );
+            using var document = JsonDocument.Parse(body);
+            var rows = document.RootElement;
+            if (rows.ValueKind != JsonValueKind.Array)
+            {
+                throw new ReviewHostContractException("Conversation metadata listing is invalid.");
+            }
+            foreach (var row in rows.EnumerateArray())
+            {
+                if (row.GetProperty("threadId").GetString() != threadId)
+                {
+                    continue;
+                }
+                if (
+                    row.GetProperty("workspace").GetString() != workspaceId
+                    || row.GetProperty("provider").GetString() != providerId
+                    || row.GetProperty("mode").GetString() != modeId
+                )
+                {
+                    throw new ReviewHostContractException(
+                        "Bound conversation workspace/provider/mode differs; no prompt sent."
+                    );
+                }
+                return;
+            }
+            if (rows.GetArrayLength() < 100)
+            {
+                break;
+            }
+        }
+        throw new ReviewHostContractException("Bound conversation metadata was not found; no prompt sent.");
+    }
+
+    /// <summary>
+    /// Finds the most recently-updated hosted conversation whose title starts with
+    /// <paramref name="titlePrefix"/> and whose workspace/mode match, or null if none exists. The
+    /// review client stamps each PR's conversation title as <c>{repo}-{pr}-{sha}</c>
+    /// (<see cref="UpdateMetadataAsync"/>), so the host's own conversation list is the durable,
+    /// cross-run PR→conversation mapping — no separate binding store is required. Provider is NOT
+    /// matched here: a re-review may run a different model, and the caller reconciles it via
+    /// <see cref="EnsureConversationReusableAsync"/>.
+    /// </summary>
+    public async Task<S2SConversationMatch?> FindConversationByTitlePrefixAsync(
+        string titlePrefix,
+        string workspaceId,
+        string modeId,
+        CancellationToken ct
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(titlePrefix);
+        S2SConversationMatch? best = null;
+        var bestUpdated = long.MinValue;
+        for (var offset = 0; offset < 10000; offset += 100)
+        {
+            var body = await SendReadAsync(
+                HttpMethod.Get,
+                $"api/conversations?limit=100&offset={offset}&sort=created",
+                body: null,
+                ct
+            );
+            using var document = JsonDocument.Parse(body);
+            var rows = document.RootElement;
+            if (rows.ValueKind != JsonValueKind.Array)
+            {
+                throw new ReviewHostContractException("Conversation metadata listing is invalid.");
+            }
+            foreach (var row in rows.EnumerateArray())
+            {
+                var title = row.TryGetProperty("title", out var t) ? t.GetString() : null;
+                if (title is null || !title.StartsWith(titlePrefix, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                if (
+                    (row.TryGetProperty("workspace", out var ws) ? ws.GetString() : null) != workspaceId
+                    || (row.TryGetProperty("mode", out var md) ? md.GetString() : null) != modeId
+                )
+                {
+                    continue;
+                }
+                var updated =
+                    row.TryGetProperty("lastUpdated", out var lu) && lu.ValueKind == JsonValueKind.Number
+                        ? lu.GetInt64()
+                        : 0;
+                if (best is null || updated >= bestUpdated)
+                {
+                    var threadId = row.GetProperty("threadId").GetString();
+                    if (threadId is not null)
+                    {
+                        best = new S2SConversationMatch(
+                            threadId,
+                            row.TryGetProperty("provider", out var pv) ? pv.GetString() : null
+                        );
+                        bestUpdated = updated;
+                    }
+                }
+            }
+            if (rows.GetArrayLength() < 100)
+            {
+                break;
+            }
+        }
+        return best;
+    }
+
+    /// <summary>
+    /// Switches an idle conversation's provider (model) to <paramref name="providerId"/> via
+    /// <c>POST api/conversations/{threadId}/provider</c>. The host allows this only while no run is
+    /// streaming (our re-review case — the conversation is idle between reviews) and preserves the
+    /// thread's workspace and mode.
+    /// </summary>
+    public async Task SwitchProviderAsync(string threadId, string providerId, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerId);
+        await SendAsync(
+            HttpMethod.Post,
+            $"api/conversations/{Uri.EscapeDataString(threadId)}/provider",
+            new { ProviderId = providerId },
+            ct
+        );
+    }
+
+    /// <summary>
+    /// Reuse-path counterpart to <see cref="EnsureConversationBindingAsync"/>: validates that the
+    /// conversation's bound-for-life workspace and mode match, and if its provider differs from
+    /// <paramref name="providerId"/>, switches it to the current model instead of refusing. Reasoning
+    /// effort is a provision-time property with no switch endpoint, so a reused conversation simply
+    /// continues in its original effort. Never throws on a provider difference.
+    /// </summary>
+    public async Task EnsureConversationReusableAsync(
+        string threadId,
+        string workspaceId,
+        string providerId,
+        string modeId,
+        CancellationToken ct
+    )
+    {
+        for (var offset = 0; offset < 10000; offset += 100)
+        {
+            var body = await SendReadAsync(
+                HttpMethod.Get,
+                $"api/conversations?limit=100&offset={offset}&sort=created",
+                body: null,
+                ct
+            );
+            using var document = JsonDocument.Parse(body);
+            var rows = document.RootElement;
+            if (rows.ValueKind != JsonValueKind.Array)
+            {
+                throw new ReviewHostContractException("Conversation metadata listing is invalid.");
+            }
+            foreach (var row in rows.EnumerateArray())
+            {
+                if (row.GetProperty("threadId").GetString() != threadId)
+                {
+                    continue;
+                }
+                if (
+                    row.GetProperty("workspace").GetString() != workspaceId
+                    || row.GetProperty("mode").GetString() != modeId
+                )
+                {
+                    throw new ReviewHostContractException(
+                        "Reused conversation workspace/mode differs; no prompt sent."
+                    );
+                }
+                var currentProvider = row.TryGetProperty("provider", out var pv) ? pv.GetString() : null;
+                if (!string.Equals(currentProvider, providerId, StringComparison.Ordinal))
+                {
+                    await SwitchProviderAsync(threadId, providerId, ct);
+                }
+                return;
+            }
+            if (rows.GetArrayLength() < 100)
+            {
+                break;
+            }
+        }
+        throw new ReviewHostContractException("Reused conversation metadata was not found; no prompt sent.");
+    }
+
+    public async Task<S2SRunState> GetRunStateAsync(string threadId, CancellationToken ct)
+    {
+        var body = await SendReadAsync(
+            HttpMethod.Get,
+            $"api/conversations/{Uri.EscapeDataString(threadId)}/run-state",
+            body: null,
+            ct
+        );
+        using var document = JsonDocument.Parse(body);
+        var root = document.RootElement;
+        if (
+            !root.TryGetProperty("isInProgress", out var active)
+            || active.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+        )
+        {
+            throw new ReviewHostContractException("The host omitted the global conversation run state.");
+        }
+        var run =
+            root.TryGetProperty("currentRunId", out var value) && value.ValueKind != JsonValueKind.Null
+                ? value.GetString()
+                : null;
+        return new S2SRunState(active.GetBoolean(), run);
+    }
+
     /// <summary>
     /// Reads the versioned recursive descendant graph (schema v1) for <paramref name="rootThreadId"/> via
     /// <c>GET api/conversations/{rootThreadId}/subagents?recursive=true</c>, for the S2S review-completion
@@ -459,12 +814,32 @@ internal sealed class LmStreamingS2SClient
     /// </summary>
     public async Task<ReviewSubAgentTreeSnapshot> GetSubAgentTreeAsync(string rootThreadId, CancellationToken ct)
     {
-        var body = await SendReadAsync(
+        using var response = await ExecuteAsync(
             HttpMethod.Get,
             $"api/conversations/{Uri.EscapeDataString(rootThreadId)}/subagents?recursive=true",
             body: null,
             ct
         );
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (response.StatusCode == HttpStatusCode.ServiceUnavailable)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(body);
+                if (
+                    document.RootElement.ValueKind == JsonValueKind.Object
+                    && document.RootElement.TryGetProperty("code", out var code)
+                    && code.ValueKind == JsonValueKind.String
+                    && code.GetString() == "hierarchy_busy"
+                )
+                    throw new HierarchyBusyException();
+            }
+            catch (JsonException)
+            {
+                // An unrecognized error remains an HTTP failure, never a retryable empty tree.
+            }
+        }
+        _ = response.EnsureSuccessStatusCode();
         return ParseSubAgentTree(body);
     }
 
@@ -531,6 +906,9 @@ internal sealed class LmStreamingS2SClient
         );
         return ParseAgentTranscript(body);
     }
+
+    public sealed class HierarchyBusyException()
+        : HttpRequestException("Hierarchy discovery is temporarily busy.", null, HttpStatusCode.ServiceUnavailable);
 
     // ── HTTP plumbing ────────────────────────────────────────────────────────────────────────────
 
@@ -644,6 +1022,32 @@ internal sealed class LmStreamingS2SClient
         }
 
         throw new InvalidOperationException($"Server response did not contain a '{propertyName}' string. Body: {body}");
+    }
+
+    /// <summary>
+    /// Like <see cref="ReadStringProperty"/> but returns null instead of throwing when the body is not JSON or
+    /// the property is missing. Used for refusal bodies, which must be surfaced, not thrown.
+    /// </summary>
+    private static string? TryReadStringProperty(string body, string propertyName)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String)
+            {
+                var text = value.GetString();
+                if (!string.IsNullOrEmpty(text))
+                {
+                    return text;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // Non-JSON refusal body (e.g. a plain 403/409 page); caller falls back to a generic reason.
+        }
+
+        return null;
     }
 
     private static bool ReadBoolProperty(string body, string propertyName)
@@ -897,12 +1301,12 @@ internal sealed class LmStreamingS2SClient
 }
 
 /// <summary>A workspace as returned by the review host's <c>api/workspaces</c> list/create endpoints.</summary>
-internal sealed record S2SWorkspace(
-    string Id,
-    string Name,
-    string DirectoryRelPath,
-    IReadOnlyList<string> Marketplaces
-);
+internal sealed record S2SWorkspace(string Id, string Name, string DirectoryRelPath, IReadOnlyList<string> Marketplaces)
+{
+    public bool IsSystemDefined { get; init; }
+    public IReadOnlyList<AchieveAi.LmDotnetTools.Sandbox.SandboxPluginRef>? PluginSelection { get; init; }
+    public int? PluginsRevision { get; init; }
+}
 
 /// <summary>
 /// A polled run status: the top-level <c>Status</c> string (one of <c>NotStarted</c>/<c>InProgress</c>/
@@ -910,6 +1314,16 @@ internal sealed record S2SWorkspace(
 /// run is terminal (null while still running).
 /// </summary>
 internal sealed record S2SStatusResult(string Status, string? RunId, string? ResponseText);
+
+internal sealed record S2SRunState(bool IsInProgress, string? CurrentRunId);
+
+/// <summary>A hosted conversation located by title prefix: its thread id and currently-bound provider.</summary>
+internal sealed record S2SConversationMatch(string ThreadId, string? Provider);
+
+/// <summary>Outcome of a freeze/unfreeze call. <see cref="Present"/> is false when the host does not know the
+/// thread (not running there); <see cref="Refusal"/> is set when the host refused (e.g. a provider-owned
+/// session) instead of applying it.</summary>
+internal sealed record S2SFreezeResult(bool Present, bool Frozen, string? Refusal);
 
 /// <summary>
 /// The host's answer to a manual compaction request: an accepted request's id and status (<c>queued</c> or

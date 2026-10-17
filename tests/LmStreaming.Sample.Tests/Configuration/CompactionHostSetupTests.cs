@@ -145,6 +145,19 @@ public class CompactionHostSetupTests
     }
 
     [Fact]
+    public void O200kTextTokenizer_IsSharedByEveryLoopsSetup()
+    {
+        var settings = new Dictionary<string, string?>
+        {
+            ["Compaction:Mode"] = "Compact",
+            ["Compaction:TextTokenizer"] = "o200k",
+        };
+
+        // Create runs once per root loop; a counter per call kept a ~45 MB encoder alive per loop.
+        Create(settings)!.TextTokens.Should().BeSameAs(Create(settings)!.TextTokens);
+    }
+
+    [Fact]
     public void UnknownTextTokenizer_IsRefusedAtStartup()
     {
         var act = () =>

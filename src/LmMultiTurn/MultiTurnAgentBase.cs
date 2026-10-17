@@ -24,7 +24,11 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 /// Abstract base class for multi-turn agents providing common infrastructure for
 /// channel management, subscription handling, and lifecycle management.
 /// </summary>
-public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReportingAgent, IStartupReadinessAgent
+public abstract class MultiTurnAgentBase
+    : IMultiTurnAgent,
+        IAcceptanceReportingAgent,
+        IContextNotificationSink,
+        IStartupReadinessAgent
 {
     #region Fields
 
@@ -499,6 +503,32 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
     #region Conversation History Thread-Safe Access
 
+    /// <inheritdoc />
+    public async ValueTask<bool> TryAppendContextAsync(NotifyMessage message, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        ct.ThrowIfCancellationRequested();
+        if (message.NotifyKind != NotifyKinds.ContextDiscovery)
+        {
+            return false;
+        }
+        string runId;
+        lock (_stateLock)
+        {
+            if (_currentRunId is null)
+            {
+                return false;
+            }
+            runId = _currentRunId;
+        }
+        // An explicit run id keeps a concurrent completion from attributing this to another run.
+        // This never touches the input channel, even if the run finishes during publication.
+        AddToHistory(message, runId);
+        await PublishToAllAsync(message, ct);
+        Logger.LogDebug("Context appended without input: thread {ThreadId}, run {RunId}", ThreadId, runId);
+        return true;
+    }
+
     /// <summary>
     /// Adds a message to the conversation history in a thread-safe manner.
     /// If a persistence store is configured, the message is also persisted (fire-and-forget).
@@ -887,6 +917,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                 }
             }
 
+            // The orders taken so far by each generation this batch starts.
+            var taken = new Dictionary<string, SortedSet<int>>(StringComparer.Ordinal);
             foreach (var message in messages)
             {
                 var normalized = message;
@@ -896,11 +928,28 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                     && message.MessageOrderIdx is { } index
                 )
                 {
-                    normalized = NormalizeCanonicalOrder(
-                        message,
-                        index,
-                        lastOrders.TryGetValue(generation, out var last) ? last : null
-                    );
+                    int? last = lastOrders.TryGetValue(generation, out var stored) ? stored : null;
+                    // Rows persist fire-and-forget, so the store can commit a row after a later row of its own
+                    // generation: a tool call can land after its own result. Such a row keeps its stored order,
+                    // which is where it was appended. Renumbering it behind the result put the result first, and
+                    // the provider rejected the recovered history on every turn. A tie is still renumbered, and
+                    // so is every row of a generation that was already in history before this batch.
+                    var orders = taken.GetValueOrDefault(generation);
+                    if (orders is null || index >= orders.Max || index == last || !orders.Add(index))
+                    {
+                        normalized = NormalizeCanonicalOrder(message, index, last);
+                        if (orders is not null && !orders.Add(normalized.MessageOrderIdx!.Value))
+                        {
+                            // A kept row can leave the last order below one already taken.
+                            normalized = NormalizeCanonicalOrder(message, index, orders.Max);
+                            _ = orders.Add(normalized.MessageOrderIdx!.Value);
+                        }
+                        else if (orders is null && last is null)
+                        {
+                            taken[generation] = [normalized.MessageOrderIdx!.Value];
+                        }
+                    }
+
                     // Use the actual stored order: unrecognized canonical types are not cloned.
                     lastOrders[generation] = normalized.MessageOrderIdx!.Value;
                 }

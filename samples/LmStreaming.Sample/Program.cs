@@ -119,12 +119,18 @@ try
                 .Enrich.WithThreadId()
                 .Enrich.WithExceptionDetails()
                 .Enrich.WithProperty("Application", "LmStreaming.Sample")
-                // Add caller info: file path, line number, method name, namespace
-                .Enrich.WithCallerInfo(
-                    includeFileInfo: true,
-                    assemblyPrefix: "AchieveAi.", // Match our assemblies
-                    filePathDepth: 3
-                ) // Include last 3 path segments
+                // Add caller info (file path, line number, method name, namespace) to Warning and above
+                // only. The enricher captures and demystifies a full stack trace per event; on the
+                // per-chunk Debug/Information stream that was ~69% of the host's busy thread time.
+                .Enrich.AtLevel(
+                    LogEventLevel.Warning,
+                    enrich =>
+                        enrich.WithCallerInfo(
+                            includeFileInfo: true,
+                            assemblyPrefix: "AchieveAi.", // Match our assemblies
+                            filePathDepth: 3
+                        ) // Include last 3 path segments
+                )
                 // File sink with structured JSON (includes all enriched properties)
                 .WriteTo.File(
                     new CompactJsonFormatter(),
@@ -640,10 +646,41 @@ try
     });
     _ = builder.Services.AddSingleton<CodexMcpServerLifetime>();
 
-    // Register the FileConversationStore for conversation persistence (it also implements the
-    // IRunLedgerStore run-status ledger, so register the same instance under both interfaces).
-    var conversationsPath = Path.Combine(AppContext.BaseDirectory, "conversations");
-    var conversationStore = new FileConversationStore(conversationsPath);
+    // Register the conversation store: SqliteConversationStore (fast appends, queryable by thread id)
+    // wrapped in IndexedConversationStore (the parent-child hierarchy index). The same instance also
+    // implements the IRunLedgerStore run-status ledger, so register it under both interfaces.
+    // Why SQLite instead of the former FileConversationStore: the file store rewrote a thread's whole
+    // messages.json on every append, so opening a long conversation got progressively slower; SQLite
+    // inserts one row and indexes by thread_id. Streaming incrementals stay in memory (merged by the
+    // pipeline); only finished messages are persisted.
+    var conversationDbPath = builder.Configuration["LmStreaming:ConversationDbPath"];
+    if (string.IsNullOrWhiteSpace(conversationDbPath))
+    {
+        conversationDbPath = Path.Combine(AppContext.BaseDirectory, "conversations.db");
+    }
+    // Microsoft.Data.Sqlite opens but does NOT create the database file's parent directory (unlike the
+    // former FileConversationStore, which created its root in its constructor). A configured path whose
+    // parent does not exist (a per-test temp dir, a fresh deploy) fails to open otherwise.
+    // The former FileConversationStore lived in conversations/ beside the binaries, and an upgrade
+    // carries that directory forward. Nothing imports it, so refuse to start over it unannounced.
+    LegacyConversationStoreGuard.EnsureNoUnimportedStore(
+        Path.Combine(AppContext.BaseDirectory, "conversations"),
+        conversationDbPath,
+        builder.Configuration.GetValue<bool>(LegacyConversationStoreGuard.AcknowledgeKey)
+    );
+    var conversationDbDir = Path.GetDirectoryName(Path.GetFullPath(conversationDbPath));
+    if (!string.IsNullOrEmpty(conversationDbDir))
+    {
+        _ = Directory.CreateDirectory(conversationDbDir);
+    }
+    // IndexedConversationStore keeps its OWN parent-child hierarchy index in a JSON file; SQLite does
+    // not replace it. Home it beside the database now that there is no conversations/ directory.
+    var conversationIndexPath = Path.Combine(
+        conversationDbDir ?? AppContext.BaseDirectory,
+        "conversations.parent-child-index.json"
+    );
+    var innerConversationStore = new SqliteConversationStore(conversationDbPath);
+    var conversationStore = new IndexedConversationStore(innerConversationStore, conversationIndexPath);
     _ = builder.Services.AddSingleton<IConversationStore>(conversationStore);
     _ = builder.Services.AddSingleton<IRunLedgerStore>(conversationStore);
 
@@ -1026,6 +1063,15 @@ try
                     && !caps.BrowserDebugTools;
                 var sandboxRegistry = sp.GetRequiredService<SandboxSessionRegistry>();
                 var sandboxLifetime = sp.GetRequiredService<SandboxGatewayLifetime>();
+                var requestedWorkingDirectory = ConversationWorkingDirectory
+                    .ReadAsync(sp.GetRequiredService<IConversationStore>(), threadId)
+                    .GetAwaiter()
+                    .GetResult();
+                ConversationWorkingDirectory? conversationWorkingDirectory = null;
+                if (requestedWorkingDirectory is not null)
+                {
+                    ConversationWorkingDirectory.EnsureSupported(providerId, caps.NeedsSandbox);
+                }
                 SandboxSession? sandboxSession = null;
                 // Staged for the pool to publish as part of a successful agent-entry commit (WI #195): the
                 // ONLY authoritative "this conversation has a sandbox workspace" signal for the file browser.
@@ -1148,6 +1194,13 @@ try
                         )
                         .GetAwaiter()
                         .GetResult();
+                    if (requestedWorkingDirectory is not null)
+                    {
+                        conversationWorkingDirectory = ConversationWorkingDirectory
+                            .ResolveAsync(sandboxRegistry, sandboxSession, requestedWorkingDirectory)
+                            .GetAwaiter()
+                            .GetResult();
+                    }
                     // The suffix must name the tools this agent ACTUALLY has, or the model will
                     // confidently claim tools (Write/Edit/Bash/...) that do not exist for it. Derived
                     // from the mode's own allow-list rather than from its id, so a narrowed copy gets a
@@ -1156,6 +1209,11 @@ try
                         sandboxSession.HostPath,
                         caps.SandboxTools ? caps.SandboxToolAllowList : new HashSet<string>(StringComparer.Ordinal)
                     );
+                    if (requestedWorkingDirectory is not null)
+                    {
+                        wsSuffix +=
+                            $"\nConversation shell/file default working directory: {requestedWorkingDirectory} (relative to workspace root). This is not a filesystem jail. Background Bash and unsupported sandbox tools are refused.";
+                    }
 
                     // Seed any context files (CLAUDE.md / AGENTS.md) the gateway has already
                     // discovered into the system prompt. Mid-session deliveries land via the
@@ -1719,6 +1777,16 @@ try
                         (callerCredential ?? sandboxCredential).AppId
                     );
                     var keptSandboxClient = ReusedResource<McpClient>(context.Existing, sandboxClientKey);
+                    Func<FunctionContract, ToolHandler, ToolHandler>? cwdDecorator = conversationWorkingDirectory
+                        is null
+                        ? null
+                        : (contract, handler) =>
+                            conversationWorkingDirectory.Wrap(
+                                contract,
+                                handler,
+                                sandboxRegistry,
+                                sandboxSession.SessionId
+                            );
                     var sandboxClients = ConnectFilteredHttpMcpClient(
                         filteredRegistry,
                         "sandbox",
@@ -1729,7 +1797,8 @@ try
                         omitServerPrefix: true,
                         handlerDecorator: SandboxToolHealth.Wrap,
                         transportHandler: sandboxTransportHandler,
-                        existingClient: keptSandboxClient
+                        existingClient: keptSandboxClient,
+                        namedHandlerDecorator: cwdDecorator
                     );
 
                     if (sandboxClients.Count > 0)
@@ -2889,6 +2958,23 @@ try
     _ = builder.Services.AddSingleton<PendingQuestionHub>();
 
     var app = builder.Build();
+
+    // Rebuild from authoritative metadata before this host serves indexed hierarchy reads. A test
+    // host may replace the store, so initialize the registered instance, not the captured default.
+    if (app.Services.GetRequiredService<IConversationStore>() is IndexedConversationStore indexedStore)
+    {
+        await indexedStore.InitializeAsync();
+    }
+
+    // IndexedConversationStore does not own/dispose its inner store, and SqliteConversationStore is
+    // IAsyncDisposable-only, so a container-tracked singleton would make the synchronous
+    // ServiceProvider.Dispose() (used by BrowserWebAppFactory's IHost.Dispose()) throw. Dispose the
+    // inner SQLite store asynchronously on shutdown instead. Deliberately NOT calling the process-wide
+    // SqliteConnection.ClearAllPools() here: it would evict the pooled connections of parallel E2E
+    // hosts in the same process. The WAL is durable; the pool drains on process exit.
+    app.Lifetime.ApplicationStopped.Register(() =>
+        innerConversationStore.DisposeAsync().AsTask().GetAwaiter().GetResult()
+    );
 
     // Log startup information
     var logger = app.Services.GetRequiredService<ILogger<Program>>();
@@ -5488,6 +5574,7 @@ public partial class Program
     ///     see <see cref="ReusedResource{T}"/>). Registered from as is — no second connection — so the
     ///     handlers a child captured earlier and the ones registered here share one session.
     /// </param>
+    /// <param name="namedHandlerDecorator">Optional conversation-specific wrapper using the discovered tool contract.</param>
     private static List<McpClient> ConnectHttpMcpClient(
         FunctionRegistry registry,
         string name,
@@ -5497,7 +5584,8 @@ public partial class Program
         bool omitServerPrefix = false,
         Func<ToolHandler, ToolHandler>? handlerDecorator = null,
         HttpMessageHandler? transportHandler = null,
-        McpClient? existingClient = null
+        McpClient? existingClient = null,
+        Func<FunctionContract, ToolHandler, ToolHandler>? namedHandlerDecorator = null
     )
     {
         var createdClients = new List<McpClient>();
@@ -5510,7 +5598,7 @@ public partial class Program
             createdClients.Add(client);
 
             var mcpClients = new Dictionary<string, McpClient> { [name] = client };
-            if (handlerDecorator is null)
+            if (handlerDecorator is null && namedHandlerDecorator is null)
             {
                 _ = registry
                     .AddMcpClientsAsync(mcpClients, name, omitServerPrefix: omitServerPrefix)
@@ -5535,7 +5623,8 @@ public partial class Program
                 {
                     if (handlers.TryGetValue(contract.Name, out var handler))
                     {
-                        _ = registry.AddFunction(contract, handlerDecorator(handler), name);
+                        var wrapped = namedHandlerDecorator?.Invoke(contract, handler) ?? handler;
+                        _ = registry.AddFunction(contract, handlerDecorator?.Invoke(wrapped) ?? wrapped, name);
                     }
                 }
             }
@@ -5549,6 +5638,19 @@ public partial class Program
         }
         catch (Exception ex)
         {
+            if (namedHandlerDecorator is not null)
+            {
+                // Explicit cwd is a contract, not an optional tool connection. Never build a model
+                // agent with missing/partially decorated sandbox tools after a registration failure.
+                if (existingClient is null)
+                {
+                    foreach (var client in createdClients)
+                    {
+                        client.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    }
+                }
+                throw;
+            }
             logger.LogWarning(
                 ex,
                 "Failed to connect to MCP server '{Name}' at {Endpoint} — continuing without its tools",
@@ -5619,6 +5721,7 @@ public partial class Program
     ///     see <see cref="ReusedResource{T}"/>). Registered from as is — no second connection — so the
     ///     handlers a child captured earlier and the ones registered here share one session.
     /// </param>
+    /// <param name="namedHandlerDecorator">Optional conversation-specific wrapper using the discovered tool contract.</param>
     private static List<McpClient> ConnectFilteredHttpMcpClient(
         FunctionRegistry registry,
         string name,
@@ -5629,7 +5732,8 @@ public partial class Program
         bool omitServerPrefix,
         Func<ToolHandler, ToolHandler> handlerDecorator,
         HttpMessageHandler? transportHandler = null,
-        McpClient? existingClient = null
+        McpClient? existingClient = null,
+        Func<FunctionContract, ToolHandler, ToolHandler>? namedHandlerDecorator = null
     )
     {
         var createdClients = new List<McpClient>();
@@ -5655,7 +5759,8 @@ public partial class Program
                     && handlers.TryGetValue(contract.Name, out var handler)
                 )
                 {
-                    _ = registry.AddFunction(contract, handlerDecorator(handler), name);
+                    var wrapped = namedHandlerDecorator?.Invoke(contract, handler) ?? handler;
+                    _ = registry.AddFunction(contract, handlerDecorator(wrapped), name);
                 }
             }
 
@@ -5669,6 +5774,19 @@ public partial class Program
         }
         catch (Exception ex)
         {
+            if (namedHandlerDecorator is not null)
+            {
+                // Explicit cwd is a contract, not an optional tool connection. Never build a model
+                // agent with missing/partially decorated sandbox tools after a registration failure.
+                if (existingClient is null)
+                {
+                    foreach (var client in createdClients)
+                    {
+                        client.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    }
+                }
+                throw;
+            }
             logger.LogWarning(
                 ex,
                 "Failed to connect to MCP server '{Name}' at {Endpoint} — continuing without its tools",
