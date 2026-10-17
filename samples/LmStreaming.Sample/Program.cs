@@ -357,9 +357,10 @@ try
     // as a hosted service but is non-fatal: when the gateway is not configured/available the app
     // still starts for all other modes; the hard failure surfaces only when Workspace Agent mode
     // actually tries to create a sandbox session.
-    var sandboxOptions =
+    var sandboxOptions = DefaultWorkspaceLeafWhenUnset(
         builder.Configuration.GetSection(SandboxGatewayOptions.SectionName).Get<SandboxGatewayOptions>()
-        ?? new SandboxGatewayOptions();
+            ?? new SandboxGatewayOptions()
+    );
 
     // An unattended host (the compaction eval runner) turns the browser-hosted question tool off so a
     // run can never park on a question nobody will answer. Default true keeps the interactive UI as is.
@@ -5872,6 +5873,27 @@ public partial class Program
         }
 
         return null;
+    }
+
+    /// <summary>
+    ///     Gives the built-in default workspace a real directory leaf when the config names none.
+    ///     <para>
+    ///     The gateway rejects an empty <c>workspace</c> path with a 400 (per-app workspace roots).
+    ///     Without <c>SandboxGateway:Workspace</c> or <c>WorkspacePath</c>, the default workspace
+    ///     resolved to an empty leaf, so every create for it failed: chats in that workspace and the
+    ///     tool-catalog probe, which asks for a bare <see cref="SandboxSessionRegistry.DefaultWorkspaceId"/>
+    ///     ref and so never reads the workspace store. Setting the leaf on the options fixes both,
+    ///     because every path resolves its leaf from them. A configured leaf is left alone.
+    ///     </para>
+    /// </summary>
+    internal static SandboxGatewayOptions DefaultWorkspaceLeafWhenUnset(SandboxGatewayOptions options)
+    {
+        if (string.IsNullOrWhiteSpace(options.ResolveWorkspace().Leaf))
+        {
+            options.Workspace = SandboxSessionRegistry.DefaultWorkspaceId;
+        }
+
+        return options;
     }
 
     /// <summary>
