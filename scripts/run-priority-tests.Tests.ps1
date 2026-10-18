@@ -269,7 +269,7 @@ try {
     # nothing in this tooling may downgrade a measured row to an unmeasured one.
     Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "measured" }).Count 9595 "Measured coverage classifications"
     Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "no-coverage-capture" }).Count 229 "Rows in approved projects without coverage capture"
-    Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "not-in-capture" }).Count 1328 "Rows absent from the frozen capture"
+    Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "not-in-capture" }).Count 1329 "Rows absent from the frozen capture"
     Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.path -like "samples/LmStreaming.Sample/ClientApp/*" }).Count -eq 0) "Client tests remain whole-suite and must not acquire declaration rows in this phase."
     foreach ($changed in @("samples/LmStreaming.Sample/Program.cs", "src/LmStreaming.AspNetCore/SelectionProbe.cs")) {
         $scopedPlan = & $runner -RepositoryRoot (Join-Path $PSScriptRoot "..") -Fast -ChangedPath $changed | ConvertFrom-Json
