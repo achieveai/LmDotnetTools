@@ -133,8 +133,37 @@ public sealed class SandboxWorkspaceBackup : IDisposable
         }
     }
 
-    public Task<SandboxBackupCosts> GetCostsAsync(CancellationToken ct) =>
-        _client.GetBackupCostsAsync(since: null, SandboxBackupCostGrouping.Workspace, ct);
+    /// <summary>
+    /// The backup costs of ONE workspace. The gateway reports every workspace under the app, grouped by workspace
+    /// key (<c>&lt;app-dir&gt;/&lt;workspace&gt;</c>), so this keeps only <paramref name="gatewayWorkspace"/>'s group
+    /// and recomputes the totals from it: a caller authorized for one conversation never reads another
+    /// workspace's usage. App-level runs (init, prune) belong to no workspace and are left out. A workspace with no
+    /// backup runs yet gets empty groups and zero totals.
+    /// </summary>
+    public async Task<SandboxBackupCosts> GetCostsAsync(string gatewayWorkspace, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(gatewayWorkspace);
+        var costs = await _client
+            .GetBackupCostsAsync(since: null, SandboxBackupCostGrouping.Workspace, ct)
+            .ConfigureAwait(false);
+        var groups = costs.Groups.Where(group => IsWorkspaceGroup(group.Group, gatewayWorkspace)).ToList();
+        return costs with
+        {
+            TotalEstimatedCostUsd = groups.Sum(group => group.EstimatedCostUsd),
+            TotalStorageUsdPerMonthAdded = groups.Sum(group => group.StorageUsdPerMonth),
+            Groups = groups,
+        };
+    }
+
+    /// <summary>
+    /// Whether a workspace-grouped cost key names <paramref name="gatewayWorkspace"/>: everything after the app
+    /// directory (the first segment) must equal it exactly, so <c>app/prefix-ws</c> never matches <c>ws</c>.
+    /// </summary>
+    private static bool IsWorkspaceGroup(string? group, string gatewayWorkspace)
+    {
+        var slash = group?.IndexOf('/', StringComparison.Ordinal) ?? -1;
+        return slash > 0 && string.Equals(group![(slash + 1)..], gatewayWorkspace, StringComparison.Ordinal);
+    }
 
     public void Dispose() => _client.Dispose();
 }

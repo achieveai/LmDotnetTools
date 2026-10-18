@@ -379,61 +379,60 @@ public sealed class OperationExecuteTests
         exception.Which.ToString().Should().NotContain(sentinel);
     }
 
-    [Fact]
-    public async Task ExecuteAsync_TerminalFailedWithoutExitCode_ThrowsOperationFailedWithGatewayReason()
+    [Theory]
+    // The gateway reports `failed` with NO exit_code for a command rejected before it spawned (PATH miss,
+    // policy refusal), killed by a signal (gateway-types operation.rs OperationOutcome::Failed), or one the OS
+    // refused to run (#198, error_code executable_not_runnable). Each is a coherent answer, so the SDK must not
+    // fabricate an exit code or call it Protocol: it classifies by the closed-vocabulary error_code. The
+    // free-text `error` is gateway-controlled, so a secret-like marker planted there must never reach Message or
+    // ToString (ADR 0001). Verbatim status shape (api/operations.rs status_response), on the submit response and
+    // on a later poll.
+    [InlineData(null, SandboxErrorKind.OperationFailed, false)]
+    [InlineData(null, SandboxErrorKind.OperationFailed, true)]
+    [InlineData("executable_not_runnable", SandboxErrorKind.ExecutableNotRunnable, false)]
+    [InlineData("executable_not_runnable", SandboxErrorKind.ExecutableNotRunnable, true)]
+    public async Task ExecuteAsync_FailedWithoutExitCode_ClassifiesByCode_ButNeverCopiesTheGatewayError(
+        string? errorCode,
+        SandboxErrorKind kind,
+        bool viaPoll
+    )
     {
+        const string Sentinel = "sk-live-SENTINEL-0123456789";
         const string sessionId = "sess-noexit";
         const string operationId = "op-noexit";
         var (client, handler) = TestSupport.CreateBorrowedClient();
         RegisterWorkspaceMount(handler, sessionId, mountId: 1);
-        // The gateway reports `failed` with NO exit_code for a command rejected before it spawned (PATH miss,
-        // policy refusal) or killed by a signal (gateway-types operation.rs OperationOutcome::Failed). That is a
-        // coherent answer, not a protocol anomaly: the SDK must not fabricate an exit code, and must not call
-        // it Protocol either — it is OperationFailed, carrying the gateway's sanitized reason.
-        RegisterSubmit(
-            handler,
+        var failed =
             "{\"operation_id\":\""
-                + operationId
-                + "\",\"status\":\"failed\",\"created_at\":\"2026-10-09T00:00:00Z\",\"stdout_bytes\":0,\"stderr_bytes\":0,"
-                + "\"error\":\"child was terminated by signal 9\",\"artifacts\":{\"mount_id\":1,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
-            HttpStatusCode.OK
-        );
-
-        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["false"], operationId: operationId));
-
-        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
-        thrown.Kind.Should().Be(SandboxErrorKind.OperationFailed);
-        thrown.Message.Should().Contain("child was terminated by signal 9");
-        thrown.OperationId.Should().Be(operationId);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_ExecutableNotRunnable_ThrowsItsOwnKindWithGatewayMessage()
-    {
-        const string sessionId = "sess-noexec";
-        const string operationId = "op-noexec";
-        var (client, handler) = TestSupport.CreateBorrowedClient();
-        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
-        // Issue #198: an executable that exists but lacks the execute bit. Verbatim gateway status shape
-        // (api/operations.rs status_response): failed, no exit_code, allow-listed error + error_code.
-        RegisterSubmit(
-            handler,
-            "{\"operation_id\":\""
-                + operationId
-                + "\",\"status\":\"failed\",\"created_at\":\"2026-10-09T00:00:00Z\",\"stdout_bytes\":0,\"stderr_bytes\":0,"
-                + "\"error\":\"executable is not runnable (permission denied; is it marked executable?)\","
-                + "\"error_code\":\"executable_not_runnable\","
-                + "\"artifacts\":{\"mount_id\":1,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
-            HttpStatusCode.OK
-        );
+            + operationId
+            + "\",\"status\":\"failed\",\"created_at\":\"2026-10-09T00:00:00Z\",\"stdout_bytes\":0,\"stderr_bytes\":0,"
+            + "\"error\":\"child was terminated; token="
+            + Sentinel
+            + "\""
+            + (errorCode is null ? string.Empty : ",\"error_code\":\"" + errorCode + "\"")
+            + ",\"artifacts\":{\"mount_id\":1,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}";
+        if (viaPoll)
+        {
+            RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
+            RegisterPoll(handler, operationId, failed);
+        }
+        else
+        {
+            RegisterSubmit(handler, failed, HttpStatusCode.OK);
+        }
 
         var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["./tool.sh"], operationId: operationId));
 
         var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
-        thrown.Kind.Should().Be(SandboxErrorKind.ExecutableNotRunnable);
-        thrown.ErrorCode.Should().Be("executable_not_runnable");
-        thrown.Message.Should().Contain("is it marked executable?");
+        thrown.Kind.Should().Be(kind);
+        thrown.ErrorCode.Should().Be(errorCode);
         thrown.OperationId.Should().Be(operationId);
+        thrown.Message.Should().NotContain(Sentinel);
+        thrown.ToString().Should().NotContain(Sentinel);
+        if (errorCode is not null)
+        {
+            thrown.Message.Should().Contain(errorCode);
+        }
     }
 
     [Fact]

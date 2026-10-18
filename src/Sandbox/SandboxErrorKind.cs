@@ -111,7 +111,8 @@ public enum SandboxErrorKind
     /// status <c>failed</c> with NO exit code and no more specific <c>error_code</c> — the command was
     /// rejected before it spawned (e.g. not found on <c>PATH</c>, or refused by policy) or was killed by a
     /// signal; or the gateway reported <c>cancelled</c> or <c>internal_failure</c>. The
-    /// message carries the gateway's sanitized <c>error</c> text.</item>
+    /// message is fixed local text plus any <c>error_code</c>; the gateway's free-text <c>error</c> is never
+    /// copied (ADR 0001).</item>
     /// </list>
     /// Distinct from <see cref="Protocol"/> (reserved for a malformed/unrecognized gateway response): here the
     /// gateway answered coherently and the operation simply did not succeed. A user command that RAN and
@@ -151,8 +152,9 @@ public enum SandboxErrorKind
     /// <summary>
     /// The command's executable exists and passed policy checks, but the operating system refused to run
     /// it (operation status <c>failed</c> with <c>error_code executable_not_runnable</c>, issue #198) —
-    /// typically a missing execute bit or a <c>noexec</c> mount. The message carries the gateway's
-    /// sanitized explanation; <see cref="SandboxException.ErrorCode"/> is <c>executable_not_runnable</c>.
+    /// typically a missing execute bit or a <c>noexec</c> mount. The message is fixed local text (the
+    /// gateway's free-text explanation is never copied, ADR 0001); <see cref="SandboxException.ErrorCode"/> is
+    /// <c>executable_not_runnable</c>.
     /// </summary>
     ExecutableNotRunnable,
 

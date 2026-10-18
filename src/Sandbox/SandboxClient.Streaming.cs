@@ -313,10 +313,7 @@ public sealed partial class SandboxClient
         {
             throw StreamProtocolError("reported inconsistent output totals or protocol version");
         }
-        if (
-            result.Outcome == "failed"
-            && TerminalFailure(result.ErrorCode, result.Error, operationId: null) is { } failure
-        )
+        if (result.Outcome == "failed" && TerminalFailure(result.ErrorCode, operationId: null) is { } failure)
         {
             throw failure;
         }
@@ -328,7 +325,7 @@ public sealed partial class SandboxClient
                 stdoutBytes,
                 stderrBytes
             ),
-            "failed" => throw FailedWithoutExitCode(result.Error, operationId: null),
+            "failed" => throw FailedWithoutExitCode(result.ErrorCode, operationId: null),
             "timed_out" => throw new SandboxException(
                 SandboxErrorKind.ExecutionTimeout,
                 "The sandbox gateway's execution timeout elapsed before the streaming command completed."
@@ -345,20 +342,19 @@ public sealed partial class SandboxClient
         };
     }
 
-    /// <summary>Longest gateway operation <c>error</c> text copied into a <see cref="SandboxException"/>.</summary>
-    internal const int MaxOperationErrorChars = 256;
-
     /// <summary>
     /// The failure a <c>failed</c> operation's allow-listed <c>error_code</c> names (issue #198), or
     /// <c>null</c> when it names none the SDK classifies — the caller then falls back to the exit code.
-    /// Shared by the streaming and poll paths so both raise the same kind for the same code.
+    /// Shared by the streaming and poll paths so both raise the same kind for the same code. The message is
+    /// fixed local text: the gateway's free-text <c>error</c> is never copied into it (ADR 0001).
     /// </summary>
-    private static SandboxException? TerminalFailure(string? errorCode, string? error, string? operationId) =>
+    private static SandboxException? TerminalFailure(string? errorCode, string? operationId) =>
         errorCode switch
         {
             "executable_not_runnable" => new SandboxException(
                 SandboxErrorKind.ExecutableNotRunnable,
-                $"The sandbox could not run the command's executable: {BoundOperationError(error, "permission denied")}.",
+                "The sandbox could not run the command's executable; check that it is marked executable "
+                    + "(error_code executable_not_runnable).",
                 operationId: operationId
             )
             {
@@ -370,20 +366,20 @@ public sealed partial class SandboxClient
     /// <summary>
     /// A <c>failed</c> operation with no exit code: it was rejected before it spawned (not found on
     /// <c>PATH</c>, refused by policy) or killed by a signal. The gateway answered coherently, so this is
-    /// <see cref="SandboxErrorKind.OperationFailed"/>, not <see cref="SandboxErrorKind.Protocol"/>; the
-    /// gateway's sanitized <c>error</c> is the only explanation, so it is carried in the message.
+    /// <see cref="SandboxErrorKind.OperationFailed"/>, not <see cref="SandboxErrorKind.Protocol"/>. The message
+    /// is fixed local text plus the closed-vocabulary <c>error_code</c>, when sent; the gateway's free-text
+    /// <c>error</c> is gateway-controlled and is never copied into the exception (ADR 0001).
     /// </summary>
-    private static SandboxException FailedWithoutExitCode(string? error, string? operationId) =>
+    private static SandboxException FailedWithoutExitCode(string? errorCode, string? operationId) =>
         new(
             SandboxErrorKind.OperationFailed,
-            $"The sandbox command failed without an exit code: {BoundOperationError(error, "no reason given")}.",
+            "The sandbox command failed without an exit code: it was rejected before it started or was "
+                + $"killed by a signal{(string.IsNullOrEmpty(errorCode) ? string.Empty : $" (error_code {errorCode})")}.",
             operationId: operationId
-        );
-
-    private static string BoundOperationError(string? error, string fallback) =>
-        string.IsNullOrWhiteSpace(error) ? fallback
-        : error.Length > MaxOperationErrorChars ? error[..MaxOperationErrorChars] + "…"
-        : error;
+        )
+        {
+            ErrorCode = errorCode,
+        };
 
     private static SandboxException StreamProtocolError(string detail) =>
         new(SandboxErrorKind.Protocol, $"Sandbox gateway streaming response {detail}.");

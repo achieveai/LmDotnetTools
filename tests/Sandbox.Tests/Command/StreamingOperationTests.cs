@@ -240,26 +240,27 @@ public sealed class StreamingOperationTests
     }
 
     [Theory]
-    // Verbatim gateway terminal frames (api/operations.rs stream_result_frame over a sanitized OperationResult).
-    [InlineData(
-        """{"protocol_version":4,"outcome":"failed","stdout_bytes":0,"stderr_bytes":0,"error":"executable is not runnable (permission denied; is it marked executable?)","error_code":"executable_not_runnable"}""",
-        SandboxErrorKind.ExecutableNotRunnable,
-        "is it marked executable?"
-    )]
-    [InlineData(
-        """{"protocol_version":4,"outcome":"failed","stdout_bytes":0,"stderr_bytes":0,"error":"operation request was rejected"}""",
-        SandboxErrorKind.OperationFailed,
-        "operation request was rejected"
-    )]
-    public async Task ExecuteStreamingAsync_FailedWithoutExitCode_MapsToGatewayReason(
-        string result,
-        SandboxErrorKind kind,
-        string gatewayMessage
+    // Verbatim gateway terminal frame shape (api/operations.rs stream_result_frame) with a secret-like marker
+    // planted in the free-text `error`: #198's executable_not_runnable gets its own kind, a codeless no-exit-code
+    // failure is OperationFailed, and neither copies the gateway-controlled text into Message or ToString
+    // (ADR 0001).
+    [InlineData("executable_not_runnable", SandboxErrorKind.ExecutableNotRunnable)]
+    [InlineData(null, SandboxErrorKind.OperationFailed)]
+    public async Task ExecuteStreamingAsync_FailedWithoutExitCode_ClassifiesByCode_ButNeverCopiesTheGatewayError(
+        string? errorCode,
+        SandboxErrorKind kind
     )
     {
+        const string Sentinel = "sk-live-SENTINEL-0123456789";
         var (client, gateway) = TestSupport.CreateBorrowedClient();
         RegisterWorkspaceMount(gateway);
-        var frame = "{\"type\":\"result\",\"result\":" + result + "}\n";
+        var frame =
+            "{\"type\":\"result\",\"result\":{\"protocol_version\":4,\"outcome\":\"failed\",\"stdout_bytes\":0,\"stderr_bytes\":0,"
+            + "\"error\":\"operation request was rejected; token="
+            + Sentinel
+            + "\""
+            + (errorCode is null ? string.Empty : ",\"error_code\":\"" + errorCode + "\"")
+            + "}}\n";
         RegisterStream(gateway, new MemoryStream(Encoding.UTF8.GetBytes(frame)));
 
         var act = () =>
@@ -267,7 +268,13 @@ public sealed class StreamingOperationTests
 
         var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
         thrown.Kind.Should().Be(kind);
-        thrown.Message.Should().Contain(gatewayMessage);
+        thrown.ErrorCode.Should().Be(errorCode);
+        thrown.Message.Should().NotContain(Sentinel);
+        thrown.ToString().Should().NotContain(Sentinel);
+        if (errorCode is not null)
+        {
+            thrown.Message.Should().Contain(errorCode);
+        }
     }
 
     [Fact]

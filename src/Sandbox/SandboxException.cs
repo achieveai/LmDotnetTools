@@ -13,10 +13,9 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 /// <c>401</c>/<c>403</c> body at all (an auth rejection is the upstream output most likely to include
 /// credential material), and never includes any <see cref="SandboxClientOptions.ClientSecret"/>-derived
 /// value. A JSON-RPC error's <c>message</c> is never included either (<see cref="SandboxErrorKind.McpCallFailed"/>
-/// carries only <see cref="JsonRpcCode"/>). One gateway-authored text IS included, length-bounded, because it
-/// is the only explanation the caller gets: an operation's sanitized <c>error</c> on a failed command
-/// (<see cref="SandboxErrorKind.OperationFailed"/> / <see cref="SandboxErrorKind.ExecutableNotRunnable"/>; the
-/// gateway passes only an allow-listed, path-free message).
+/// carries only <see cref="JsonRpcCode"/>), and neither is a failed operation's free-text <c>error</c>
+/// (<see cref="SandboxErrorKind.OperationFailed"/> / <see cref="SandboxErrorKind.ExecutableNotRunnable"/> carry
+/// a fixed message plus the closed-vocabulary <see cref="ErrorCode"/>).
 /// </remarks>
 public sealed class SandboxException : Exception
 {
@@ -52,7 +51,7 @@ public sealed class SandboxException : Exception
     /// <summary>
     /// The gateway's stable, machine-readable <c>error_code</c> from a non-2xx error body (e.g.
     /// <c>path_not_found</c>, <c>session_not_found</c>, <c>image_not_found</c>, <c>workspace_purged</c>) or
-    /// from a failed operation's status (<c>executable_not_runnable</c>), when the gateway sent one.
+    /// from a failed operation's status (e.g. <c>executable_not_runnable</c>), when the gateway sent one.
     /// <c>null</c> for auth rejections (whose body is deliberately never read) and any response with no
     /// machine-readable body.
     /// It is a closed, gateway-defined vocabulary — safe to surface and branch on, like a JSON-RPC error

@@ -77,7 +77,7 @@ public sealed partial class SandboxClient
     /// <see cref="SandboxErrorKind.OutputLimitExceeded"/>; an executable the OS refused to run surfaces as
     /// <see cref="SandboxErrorKind.ExecutableNotRunnable"/>; a <c>failed</c> status with no exit code
     /// (rejected before spawn, or killed by a signal) or a <c>cancelled</c> status surfaces as
-    /// <see cref="SandboxErrorKind.OperationFailed"/> carrying the gateway's sanitized reason; a
+    /// <see cref="SandboxErrorKind.OperationFailed"/> (the gateway's free-text reason is never copied); a
     /// non-UTF-8 artifact surfaces as <see cref="SandboxErrorKind.Integrity"/>; a malformed or
     /// unrecognized gateway response surfaces as <see cref="SandboxErrorKind.Protocol"/>. A caller
     /// cancellation surfaces as a plain <see cref="OperationCanceledException"/>.
@@ -521,7 +521,7 @@ public sealed partial class SandboxClient
         CancellationToken ct
     )
     {
-        if (status.Status == "failed" && TerminalFailure(status.ErrorCode, status.Error, operationId) is { } failure)
+        if (status.Status == "failed" && TerminalFailure(status.ErrorCode, operationId) is { } failure)
         {
             throw failure;
         }
@@ -534,7 +534,7 @@ public sealed partial class SandboxClient
                     $"Sandbox gateway reported a succeeded operation '{operationId}' with no exit code.",
                     operationId: operationId
                 ),
-            "failed" => status.ExitCode ?? throw FailedWithoutExitCode(status.Error, operationId),
+            "failed" => status.ExitCode ?? throw FailedWithoutExitCode(status.ErrorCode, operationId),
             "cancelled" => throw new SandboxException(
                 SandboxErrorKind.OperationFailed,
                 $"The sandbox gateway cancelled operation '{operationId}' before it completed.",

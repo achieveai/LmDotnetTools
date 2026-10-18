@@ -65,8 +65,8 @@ state and leased browsers need it. Per-app git marketplaces (below) are built ag
   `error` envelope, carrying `JsonRpcCode`).
 - `409` → `Conflict` (incl. `workspace_in_use`, `only_partial_snapshots`); `503`, `workspace_restore_failed`,
   `image_pull_failed` (`502`) and `image_pull_timeout` (`504`) → `Unavailable`.
-- Operations: a `failed` status with no exit code → `OperationFailed` with the gateway's reason (poll and
-  stream); status `cancelled` or `internal_failure` → `OperationFailed` (poll and stream); the streaming `timeout_secs` follows
+- Operations: a `failed` status with no exit code → `OperationFailed` carrying its `ErrorCode`, never the
+  gateway's free-text reason (poll and stream); status `cancelled` or `internal_failure` → `OperationFailed` (poll and stream); the streaming `timeout_secs` follows
   `SandboxCommand.ExecutionTimeout` (1–120 s, default 30); the reserved operation ids `stream` and
   `capabilities` are refused client-side.
 
@@ -255,7 +255,8 @@ UTF-8.
 - **Client-side transport timeout / lost response** → `SandboxErrorKind.TransportTimeout`, carrying the
   recoverable `SandboxException.OperationId`.
 - **Executable could not run** (gateway `error_code` `executable_not_runnable`) →
-  `SandboxErrorKind.ExecutableNotRunnable`, quoting the gateway's bounded reason.
+  `SandboxErrorKind.ExecutableNotRunnable` with a fixed message; the gateway's free-text `error` is never
+  copied into an exception (ADR 0001).
 - **Failed with no exit code** (a pre-spawn rejection or a signal kill), or **cancelled by the gateway**
   → `SandboxErrorKind.OperationFailed`.
 - **Caller cancellation** → a plain `OperationCanceledException`.

@@ -99,9 +99,18 @@ public sealed class SandboxController(
             ct
         );
 
+    /// <summary>
+    /// The backup costs of THIS conversation's workspace only. The gateway's report covers every workspace under
+    /// the app, and conversation access says nothing about the others, so the groups and totals are scoped to it.
+    /// </summary>
     [HttpGet("backup/costs")]
     public Task<IActionResult> Costs(string threadId, CancellationToken ct) =>
-        RunAsync(threadId, "costs", async (_, token) => Ok(await backup.GetCostsAsync(token)), ct);
+        RunAsync(
+            threadId,
+            "costs",
+            async (target, token) => Ok(await backup.GetCostsAsync(target.GatewayWorkspace, token)),
+            ct
+        );
 
     /// <summary>
     /// PERMANENTLY purges the workspace: its sandboxes, snapshots and files. Requires the caller to echo the gateway
