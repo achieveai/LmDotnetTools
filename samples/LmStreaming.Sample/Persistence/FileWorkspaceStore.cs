@@ -118,6 +118,9 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
                 Env = dto.Env is null
                     ? new Dictionary<string, string>(StringComparer.Ordinal)
                     : new Dictionary<string, string>(dto.Env, StringComparer.Ordinal),
+                // Passed through as typed; the gateway validates both and rejects a bad value on create.
+                Image = string.IsNullOrWhiteSpace(dto.Image) ? null : dto.Image.Trim(),
+                Home = string.IsNullOrWhiteSpace(dto.Home) ? null : dto.Home.Trim(),
                 IsSystemDefined = false,
                 CreatedAt = now,
                 UpdatedAt = now,

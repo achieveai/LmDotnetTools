@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.Sandbox;
+
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 
 /// <summary>
@@ -21,6 +23,12 @@ public static class GatewayAuthHeaders
 
     /// <summary>The session-binding header the gateway already required before app auth existed.</summary>
     public const string SessionHeader = "X-Session-ID";
+
+    /// <summary>
+    /// The calling agent's id inside a shared sandbox (gateway ADR 0040). Sent only for a named agent
+    /// (a sub-agent); the primary agent omits it — an empty value is a gateway error, not the default.
+    /// </summary>
+    public const string AgentIdHeader = SandboxAgentId.HeaderName;
 
     /// <summary>
     /// True when both an app id and a non-blank app key are present — the only case in which the bearer
@@ -47,15 +55,44 @@ public static class GatewayAuthHeaders
     }
 
     /// <summary>
-    /// Builds the header dictionary an MCP <c>HttpClientTransport</c> should carry: the session header
-    /// always, plus the two app-bearer headers when configured. Replaces the inline
-    /// <c>new Dictionary { ["X-Session-ID"] = sessionId }</c> at every sandbox MCP transport site.
+    /// Sets <see cref="AgentIdHeader"/> to <paramref name="agentId"/> on <paramref name="headers"/>, or
+    /// REMOVES it when <paramref name="agentId"/> is null or empty (the primary agent). A non-empty value
+    /// must be a valid <see cref="SandboxAgentId"/>; an invalid one throws rather than reaching the gateway.
     /// </summary>
-    public static Dictionary<string, string> ForMcp(string sessionId, string? appId, string? appKey)
+    /// <exception cref="ArgumentException"><paramref name="agentId"/> is non-empty but invalid.</exception>
+    public static void ApplyAgentId(IDictionary<string, string> headers, string? agentId)
+    {
+        ArgumentNullException.ThrowIfNull(headers);
+        if (string.IsNullOrEmpty(agentId))
+        {
+            _ = headers.Remove(AgentIdHeader);
+            return;
+        }
+
+        SandboxAgentId.ThrowIfInvalid(agentId, nameof(agentId));
+        headers[AgentIdHeader] = agentId;
+    }
+
+    /// <summary>
+    /// Builds the header dictionary an MCP <c>HttpClientTransport</c> should carry: the session header
+    /// always, plus the two app-bearer headers when configured, plus <see cref="AgentIdHeader"/> when
+    /// <paramref name="agentId"/> is non-empty (see <see cref="ApplyAgentId"/>). Replaces the inline
+    /// <c>new Dictionary { ["X-Session-ID"] = sessionId }</c> at every sandbox MCP transport site.
+    /// <paramref name="agentId"/> pins EVERY call on the transport to that one agent's state: use it only for a
+    /// client that serves a single agent. A client shared by the primary agent and its sub-agents stamps the id
+    /// per request with <see cref="SandboxAgentIdHandler"/> instead.
+    /// </summary>
+    public static Dictionary<string, string> ForMcp(
+        string sessionId,
+        string? appId,
+        string? appKey,
+        string? agentId = null
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         var headers = new Dictionary<string, string> { [SessionHeader] = sessionId };
         Apply(headers, appId, appKey);
+        ApplyAgentId(headers, agentId);
         return headers;
     }
 }

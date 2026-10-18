@@ -1,7 +1,7 @@
-using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
+using AchieveAi.LmDotnetTools.Sandbox;
 
 namespace LmStreaming.Sample.SandboxApps;
 
@@ -156,11 +156,11 @@ public sealed class BrowserDebugBindingStore(BrowserDebugOptions options, TimePr
         targetPath = null;
         if (
             UnavailableReason is not null
-            || !Header(request, "X-Sbx-Original-Url", out var original)
-            || !Header(request, "X-Sbx-App-Id", out var app)
-            || !Header(request, "X-Sbx-Browser-Id", out var browser)
-            || !Header(request, "X-Sbx-Browser-Instance", out var instance)
-            || !Header(request, "X-Sbx-Browser-Signature", out var signature)
+            || !Header(request, BrowserRequestSignature.OriginalUrlHeader, out var original)
+            || !Header(request, BrowserRequestSignature.AppIdHeader, out var app)
+            || !Header(request, BrowserRequestSignature.BrowserIdHeader, out var browser)
+            || !Header(request, BrowserRequestSignature.BrowserInstanceHeader, out var instance)
+            || !Header(request, BrowserRequestSignature.SignatureHeader, out var signature)
             || app != options.GatewayAppId
             || original.Length > 8192
             || !VerifySignature(signature, request.Method, original, app, browser, instance)
@@ -262,39 +262,17 @@ public sealed class BrowserDebugBindingStore(BrowserDebugOptions options, TimePr
         string app,
         string browser,
         string instance
-    )
-    {
-        var parts = signature.Split(',');
-        if (
-            parts.Length != 2
-            || !parts[0].StartsWith("t=", StringComparison.Ordinal)
-            || !parts[1].StartsWith("v1=", StringComparison.Ordinal)
-            || parts[1].Length != 67
-            || !long.TryParse(parts[0].AsSpan(2), NumberStyles.None, CultureInfo.InvariantCulture, out var timestamp)
-        )
-        {
-            return false;
-        }
-        var now = clock.GetUtcNow().ToUnixTimeSeconds();
-        if (timestamp < now - 300 || timestamp > now + 300)
-        {
-            return false;
-        }
-        try
-        {
-            var message =
-                $"v1\n{timestamp.ToString(CultureInfo.InvariantCulture)}\n{method}\n{original}\n{app}\n{browser}\n{instance}";
-            var expected = HMACSHA256.HashData(
-                Encoding.UTF8.GetBytes(options.SigningSecret),
-                Encoding.UTF8.GetBytes(message)
-            );
-            return CryptographicOperations.FixedTimeEquals(expected, Convert.FromHexString(parts[1][3..]));
-        }
-        catch (FormatException)
-        {
-            return false;
-        }
-    }
+    ) =>
+        BrowserRequestSignature.Verify(
+            options.SigningSecret,
+            signature,
+            method,
+            original,
+            app,
+            browser,
+            instance,
+            clock.GetUtcNow()
+        ) == BrowserSignatureVerdict.Valid;
 
     private static bool Header(HttpRequest request, string name, out string value)
     {

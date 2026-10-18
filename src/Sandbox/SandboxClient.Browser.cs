@@ -1,4 +1,3 @@
-using System.Net;
 using System.Text.Json;
 
 namespace AchieveAi.LmDotnetTools.Sandbox;
@@ -15,7 +14,7 @@ public sealed partial class SandboxClient
         using var response = await SendRestAsync(HttpMethod.Get, "mcp/tools", null, null, ct).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw MapErrorResponse(response, "browser capability discovery");
+            throw await MapErrorResponseAsync(response, "browser capability discovery", ct).ConfigureAwait(false);
         }
         var listing = await ReadBrowserJsonAsync(response, ct).ConfigureAwait(false);
         if (!listing.TryGetProperty("tools", out var tools) || tools.ValueKind != JsonValueKind.Array)
@@ -67,38 +66,72 @@ public sealed partial class SandboxClient
         using var response = await SendRestAsync(HttpMethod.Post, "mcp", payload, null, ct).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw MapErrorResponse(response, "browser tool call");
+            throw await MapErrorResponseAsync(response, "browser tool call", ct).ConfigureAwait(false);
         }
         var envelope = await ReadBrowserJsonAsync(response, ct).ConfigureAwait(false);
+        return UnwrapJsonRpcResult(envelope, "browser tool call");
+    }
+
+    /// <summary>
+    /// Returns a JSON-RPC response's <c>result</c> object, or throws for every other shape. The one place
+    /// an MCP call in this SDK interprets an envelope, so every call speaks the same error contract:
+    /// <list type="bullet">
+    /// <item>An <c>error</c> object → <see cref="SandboxErrorKind.McpCallFailed"/> carrying its integer
+    /// <c>code</c> on <see cref="SandboxException.JsonRpcCode"/>. Its <c>message</c> is never copied into the
+    /// exception: it is gateway-controlled text that can echo tool output or credentials (ADR 0001).</item>
+    /// <item>Neither an <c>error</c> nor an object <c>result</c> → <see cref="SandboxErrorKind.Protocol"/>.</item>
+    /// </list>
+    /// </summary>
+    private static JsonElement UnwrapJsonRpcResult(JsonElement envelope, string operation)
+    {
+        if (envelope.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object)
+        {
+            int? code =
+                error.TryGetProperty("code", out var codeElement)
+                && codeElement.ValueKind == JsonValueKind.Number
+                && codeElement.TryGetInt32(out var parsedCode)
+                    ? parsedCode
+                    : null;
+            var codeText = code is { } value ? $" {value}" : string.Empty;
+            throw new SandboxException(
+                SandboxErrorKind.McpCallFailed,
+                $"Sandbox gateway {operation} returned JSON-RPC error{codeText}."
+            )
+            {
+                JsonRpcCode = code,
+            };
+        }
+
         if (!envelope.TryGetProperty("result", out var result) || result.ValueKind != JsonValueKind.Object)
         {
-            throw new SandboxException(SandboxErrorKind.Protocol, "Gateway browser call returned no MCP result.");
+            throw new SandboxException(SandboxErrorKind.Protocol, $"Gateway {operation} returned no MCP result.");
         }
+
         return result.Clone();
     }
 
-    /// <summary>Closes only the browser lease under this client's credential; false means already absent.</summary>
-    public async Task<bool> CloseBrowserAsync(string browserId, CancellationToken ct = default)
+    /// <summary>
+    /// Destroys the browser bound to <paramref name="browserId"/> under this client's app, now. Idempotent:
+    /// the gateway answers <c>204</c> whether or not a browser was bound, so closing twice succeeds twice.
+    /// The next request for the same id binds a fresh browser.
+    /// </summary>
+    /// <exception cref="SandboxException">
+    /// <see cref="SandboxErrorKind.BrowserUnsupported"/> when the gateway does not enable browsers (its only
+    /// <c>404</c> on this route), or the usual transport/authorization kinds.
+    /// </exception>
+    public async Task CloseBrowserAsync(string browserId, CancellationToken ct = default)
     {
         ValidateBrowserId(browserId);
-        using var response = await SendRestAsync(
-                HttpMethod.Delete,
-                $"api/v1/browsers/{Uri.EscapeDataString(browserId)}",
-                null,
-                null,
-                ct
-            )
+        using var response = await SendRestAsync(HttpMethod.Delete, BrowserPath(browserId), null, null, ct)
             .ConfigureAwait(false);
-        if (response.StatusCode == HttpStatusCode.NotFound)
-        {
-            return false;
-        }
         if (!response.IsSuccessStatusCode)
         {
-            throw MapErrorResponse(response, "browser close");
+            throw await MapErrorResponseAsync(response, "browser close", ct).ConfigureAwait(false);
         }
-        return true;
     }
+
+    private static string BrowserPath(string browserId, string suffix = "") =>
+        $"api/v1/browsers/{Uri.EscapeDataString(browserId)}{suffix}";
 
     private static void ValidateBrowserId(string browserId)
     {

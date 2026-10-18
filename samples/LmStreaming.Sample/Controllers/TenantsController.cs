@@ -10,7 +10,9 @@ using Microsoft.Extensions.Options;
 namespace LmStreaming.Sample.Controllers;
 
 /// <summary>
-/// Guards the tenant admin surface with the operator shared secret.
+/// Guards the operator-only routes with the operator shared secret: the tenant admin surface, and the
+/// sandbox routes that change state for every user of the app (git marketplace registrations, workspace
+/// restore and purge).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -36,7 +38,7 @@ namespace LmStreaming.Sample.Controllers;
 /// schema, and reach the JSON deserializer, by sending nonsense with no header at all.
 /// </para>
 /// </remarks>
-[AttributeUsage(AttributeTargets.Class)]
+[AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
 public sealed class OperatorSecretAuthAttribute : Attribute, IAsyncActionFilter, IOrderedFilter
 {
     /// <summary>Configuration key the operator secret is read from.</summary>
@@ -55,6 +57,13 @@ public sealed class OperatorSecretAuthAttribute : Attribute, IAsyncActionFilter,
     /// </summary>
     public int Order => -2100;
 
+    /// <summary>
+    /// Refuse a missing or wrong secret with <c>403</c> instead of <c>401</c>. Set it on a route the SPA calls:
+    /// the client reads a <c>401</c> on <c>/api</c> as its own sign-in expiring, so a mistyped operator secret
+    /// would renew the user's token and then sign them out.
+    /// </summary>
+    public bool RefuseWithForbidden { get; set; }
+
     /// <inheritdoc />
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
@@ -69,7 +78,7 @@ public sealed class OperatorSecretAuthAttribute : Attribute, IAsyncActionFilter,
             httpContext
                 .RequestServices.GetService<ILogger<OperatorSecretAuthAttribute>>()
                 ?.LogError(
-                    "{ConfigKey} is not configured; the tenant admin surface is unavailable. "
+                    "{ConfigKey} is not configured; the operator-only routes are unavailable. "
                         + "Set {EnvVar} to enable it.",
                     SecretConfigKey,
                     SecretEnvironmentVariable
@@ -84,9 +93,12 @@ public sealed class OperatorSecretAuthAttribute : Attribute, IAsyncActionFilter,
 
         if (!InboundS2SAuthAttribute.ConstantTimeEquals(secret, httpContext.Request.Headers[HeaderName].ToString()))
         {
-            context.Result = new UnauthorizedObjectResult(
-                new { error = "unauthorized", code = "operator_auth_failed" }
-            );
+            context.Result = RefuseWithForbidden
+                ? new ObjectResult(new { error = "forbidden", code = "operator_auth_failed" })
+                {
+                    StatusCode = StatusCodes.Status403Forbidden,
+                }
+                : new UnauthorizedObjectResult(new { error = "unauthorized", code = "operator_auth_failed" });
             return;
         }
 

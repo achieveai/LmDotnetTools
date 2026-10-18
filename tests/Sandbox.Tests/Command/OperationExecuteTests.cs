@@ -379,20 +379,113 @@ public sealed class OperationExecuteTests
         exception.Which.ToString().Should().NotContain(sentinel);
     }
 
-    [Fact]
-    public async Task ExecuteAsync_TerminalFailedWithoutExitCode_ThrowsProtocol()
+    [Theory]
+    // The gateway reports `failed` with NO exit_code for a command rejected before it spawned (PATH miss,
+    // policy refusal), killed by a signal (gateway-types operation.rs OperationOutcome::Failed), or one the OS
+    // refused to run (#198, error_code executable_not_runnable). Each is a coherent answer, so the SDK must not
+    // fabricate an exit code or call it Protocol: it classifies by the closed-vocabulary error_code. The
+    // free-text `error` is gateway-controlled, so a secret-like marker planted there must never reach Message or
+    // ToString (ADR 0001). Verbatim status shape (api/operations.rs status_response), on the submit response and
+    // on a later poll.
+    [InlineData(null, SandboxErrorKind.OperationFailed, false)]
+    [InlineData(null, SandboxErrorKind.OperationFailed, true)]
+    [InlineData("executable_not_runnable", SandboxErrorKind.ExecutableNotRunnable, false)]
+    [InlineData("executable_not_runnable", SandboxErrorKind.ExecutableNotRunnable, true)]
+    public async Task ExecuteAsync_FailedWithoutExitCode_ClassifiesByCode_ButNeverCopiesTheGatewayError(
+        string? errorCode,
+        SandboxErrorKind kind,
+        bool viaPoll
+    )
     {
+        const string Sentinel = "sk-live-SENTINEL-0123456789";
         const string sessionId = "sess-noexit";
         const string operationId = "op-noexit";
         var (client, handler) = TestSupport.CreateBorrowedClient();
         RegisterWorkspaceMount(handler, sessionId, mountId: 1);
-        // A `failed` status with no exit_code is a protocol anomaly (a real failure always carries the
-        // child's code) — the SDK refuses to fabricate one.
-        RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"failed\"}", HttpStatusCode.OK);
+        var failed =
+            "{\"operation_id\":\""
+            + operationId
+            + "\",\"status\":\"failed\",\"created_at\":\"2026-10-09T00:00:00Z\",\"stdout_bytes\":0,\"stderr_bytes\":0,"
+            + "\"error\":\"child was terminated; token="
+            + Sentinel
+            + "\""
+            + (errorCode is null ? string.Empty : ",\"error_code\":\"" + errorCode + "\"")
+            + ",\"artifacts\":{\"mount_id\":1,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}";
+        if (viaPoll)
+        {
+            RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
+            RegisterPoll(handler, operationId, failed);
+        }
+        else
+        {
+            RegisterSubmit(handler, failed, HttpStatusCode.OK);
+        }
 
-        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["false"], operationId: operationId));
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["./tool.sh"], operationId: operationId));
 
-        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown.Kind.Should().Be(kind);
+        thrown.ErrorCode.Should().Be(errorCode);
+        thrown.OperationId.Should().Be(operationId);
+        thrown.Message.Should().NotContain(Sentinel);
+        thrown.ToString().Should().NotContain(Sentinel);
+        if (errorCode is not null)
+        {
+            thrown.Message.Should().Contain(errorCode);
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PollReportsCancelled_ThrowsOperationFailed()
+    {
+        const string sessionId = "sess-cancelled";
+        const string operationId = "op-cancelled";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
+        RegisterPoll(
+            handler,
+            operationId,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"cancelled\",\"stdout_bytes\":0,\"stderr_bytes\":0,\"error\":\"operation was cancelled\"}"
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["sleep", "5"], operationId: operationId));
+
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown
+            .Kind.Should()
+            .Be(SandboxErrorKind.OperationFailed, "cancelled is a gateway outcome, not an unknown status");
+        thrown.OperationId.Should().Be(operationId);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PollReportsInternalFailure_ThrowsOperationFailedLikeTheStreamPath()
+    {
+        const string sessionId = "sess-internal";
+        const string operationId = "op-internal";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
+        RegisterPoll(
+            handler,
+            operationId,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"internal_failure\",\"stdout_bytes\":0,\"stderr_bytes\":0}"
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["true"], operationId: operationId));
+
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown
+            .Kind.Should()
+            .Be(
+                SandboxErrorKind.OperationFailed,
+                "internal_failure is a coherent gateway outcome (the stream path already maps it so), not a malformed response"
+            );
+        thrown.OperationId.Should().Be(operationId);
     }
 
     [Fact]
