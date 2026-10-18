@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Sandbox SDK synced to gateway v0.1.16 (+ per-app marketplaces at gateway `bac5a32`)** — public changes a consumer must know about:
+  - `SandboxClient.CloseBrowserAsync` returns `Task`, not `Task<bool>` (source and binary break). The gateway answers `204` even for an unknown id, so the old `false` never meant "not found"; a `404` now throws `BrowserUnsupported`.
+  - Error kinds reclassified. Control-plane `409` is `Conflict` (was `Protocol`), `503` is `Unavailable`, `410`/`workspace_purged` is `WorkspacePurged`, image refusals are `ImageRejected`. An operation that ends `failed` without an exit code, `internal_failure` or `cancelled` is `OperationFailed` (was `Protocol`); `executable_not_runnable` is `ExecutableNotRunnable`.
+  - `ExecuteStreamingAsync` sends the command's `ExecutionTimeout` as the gateway's `timeout_secs` instead of a fixed 30 s, and throws `ArgumentOutOfRangeException` outside 1–120 s.
+  - `SandboxInfo` and `SandboxCreateRequest` constructors and LmAgentInfra `GatewayAuthHeaders.ForMcp` gain optional parameters (binary-signature change; source-compatible).
+  - LmAgentInfra `SandboxSessionRegistry.DestroyWorkspaceSessionAsync` now awaits a create still in flight and destroys it, instead of skipping it.
+
 - **LmAgentInfra 1.0.x compatibility for the in-place switch**: the richer switch result moved to new entry points, `MultiTurnAgentPool.SwitchModeAsync` and `SwitchProviderAsync` (`Task<AgentSwitchResult>`, which also reports whether the switch was served in place or by a recreate). `RecreateAgentWithModeAsync` and `RecreateAgentWithProviderAsync` keep their published `Task<IMultiTurnAgent>` signatures as thin delegates, and `AgentCreationContext` keeps its published positional constructor and `Deconstruct` — `Existing` is an init-only property rather than a positional parameter. Both binary and source consumers of 1.0.33 bind unchanged.
 
 - **LmMultiTurn provider ownership on reconfigure**: `AgentReconfiguration.OwnsProviderAgent` (default false) lets a host hand the loop the lifetime of the bare provider it supplies. An owned provider is disposed exactly once — when a later successful reconfiguration supersedes it, or at loop teardown — preferring `IAsyncDisposable`; a refused or failed reconfiguration disposes nothing. A provider supplied at construction stays un-owned, as before.

@@ -10,7 +10,12 @@ public sealed partial class SandboxClient
     private const int MaxStreamStdinBytes = 1024 * 1024;
     private const int MaxStreamFrameBytes = 128 * 1024;
     private const long MaxStreamOutputBytes = 256L * 1024 * 1024;
-    private const int StreamExecutionTimeoutSeconds = 30;
+
+    /// <summary>The gateway's streaming execution timeout when the command names none (its own default).</summary>
+    internal const int DefaultStreamTimeoutSeconds = 30;
+
+    /// <summary>The gateway's upper bound on a streaming command's <c>timeout_secs</c> (it accepts 1–120).</summary>
+    internal const int MaxStreamTimeoutSeconds = 120;
 
     /// <summary>Probes the owned session's streaming protocol without running workspace code.</summary>
     public async Task<bool> SupportsStreamingAsync(string sessionId, CancellationToken ct = default)
@@ -52,6 +57,26 @@ public sealed partial class SandboxClient
     /// as it arrives. The callback supplies backpressure; no complete output is buffered in this SDK.
     /// Cancelling the token closes the HTTP response, which asks the gateway to terminate the process.
     /// </summary>
+    /// <remarks>
+    /// The gateway execution timeout is <see cref="SandboxCommand.ExecutionTimeout"/> rounded up to whole
+    /// seconds, sent as <c>timeout_secs</c>; it must be at most <see cref="MaxStreamTimeoutSeconds"/> (120)
+    /// seconds, the gateway's streaming limit. Without one the gateway default of
+    /// <see cref="DefaultStreamTimeoutSeconds"/> (30) seconds applies —
+    /// <see cref="SandboxClientOptions.ExecutionTimeout"/> is deliberately NOT used here, since it governs
+    /// the general operations API and may exceed the streaming limit. The SDK's own deadline for the whole
+    /// call is that timeout plus <see cref="SandboxClientOptions.TransportTimeout"/>.
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <see cref="SandboxCommand.ExecutionTimeout"/> exceeds <see cref="MaxStreamTimeoutSeconds"/> seconds.
+    /// </exception>
+    /// <exception cref="SandboxException">
+    /// The command could not be run (<see cref="SandboxErrorKind.ExecutableNotRunnable"/>), ended without an
+    /// exit code (<see cref="SandboxErrorKind.OperationFailed"/>), hit its gateway timeout
+    /// (<see cref="SandboxErrorKind.ExecutionTimeout"/>) or output cap
+    /// (<see cref="SandboxErrorKind.OutputLimitExceeded"/>), the call's own deadline elapsed
+    /// (<see cref="SandboxErrorKind.TransportTimeout"/>), or the stream was malformed
+    /// (<see cref="SandboxErrorKind.Protocol"/>). A command that ran and exited non-zero is returned, not thrown.
+    /// </exception>
     public async Task<SandboxStreamResult> ExecuteStreamingAsync(
         string sessionId,
         SandboxCommand command,
@@ -81,6 +106,17 @@ public sealed partial class SandboxClient
                 "Streaming command output cap must be between 1 byte and 256 MiB."
             );
         }
+        var timeoutSeconds = command.ExecutionTimeout is { } requested
+            ? Math.Ceiling(requested.TotalSeconds)
+            : DefaultStreamTimeoutSeconds;
+        if (timeoutSeconds > MaxStreamTimeoutSeconds)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(command),
+                command.ExecutionTimeout,
+                $"A streaming command's execution timeout must be at most {MaxStreamTimeoutSeconds} seconds."
+            );
+        }
 
         var mountId = await ResolveWorkspaceMountIdAsync(sessionId, ct).ConfigureAwait(false);
         var relativeUri = $"api/v1/sandboxes/{Uri.EscapeDataString(sessionId)}/operations/stream";
@@ -90,7 +126,7 @@ public sealed partial class SandboxClient
             args = command.Arguments.Skip(1).ToArray(),
             env = environment is null ? null : new Dictionary<string, string>(environment),
             cwd = new OperationCwdDto(mountId, command.NormalizedWorkingDirectory),
-            timeout_secs = StreamExecutionTimeoutSeconds,
+            timeout_secs = (int)timeoutSeconds,
             max_output_bytes = maxOutputBytes,
             stdin_base64 = Convert.ToBase64String(stdin.Span),
         };
@@ -105,7 +141,7 @@ public sealed partial class SandboxClient
 
         // Allow the gateway's full execution deadline plus transport grace. A normal per-request
         // transport timeout could cut off an otherwise valid long-running, quiet process.
-        var executionLimit = TimeSpan.FromSeconds(StreamExecutionTimeoutSeconds);
+        var executionLimit = TimeSpan.FromSeconds(timeoutSeconds);
         var streamDeadline =
             executionLimit <= TimeSpan.MaxValue - _options.TransportTimeout
                 ? executionLimit + _options.TransportTimeout
@@ -277,6 +313,11 @@ public sealed partial class SandboxClient
         {
             throw StreamProtocolError("reported inconsistent output totals or protocol version");
         }
+        if (result.Outcome == "failed" && TerminalFailure(result.ErrorCode, operationId: null) is { } failure)
+        {
+            throw failure;
+        }
+
         return result.Outcome switch
         {
             "succeeded" or "failed" when result.ExitCode is { } exitCode => new SandboxStreamResult(
@@ -284,6 +325,7 @@ public sealed partial class SandboxClient
                 stdoutBytes,
                 stderrBytes
             ),
+            "failed" => throw FailedWithoutExitCode(result.ErrorCode, operationId: null),
             "timed_out" => throw new SandboxException(
                 SandboxErrorKind.ExecutionTimeout,
                 "The sandbox gateway's execution timeout elapsed before the streaming command completed."
@@ -300,6 +342,45 @@ public sealed partial class SandboxClient
         };
     }
 
+    /// <summary>
+    /// The failure a <c>failed</c> operation's allow-listed <c>error_code</c> names (issue #198), or
+    /// <c>null</c> when it names none the SDK classifies — the caller then falls back to the exit code.
+    /// Shared by the streaming and poll paths so both raise the same kind for the same code. The message is
+    /// fixed local text: the gateway's free-text <c>error</c> is never copied into it (ADR 0001).
+    /// </summary>
+    private static SandboxException? TerminalFailure(string? errorCode, string? operationId) =>
+        errorCode switch
+        {
+            "executable_not_runnable" => new SandboxException(
+                SandboxErrorKind.ExecutableNotRunnable,
+                "The sandbox could not run the command's executable; check that it is marked executable "
+                    + "(error_code executable_not_runnable).",
+                operationId: operationId
+            )
+            {
+                ErrorCode = errorCode,
+            },
+            _ => null,
+        };
+
+    /// <summary>
+    /// A <c>failed</c> operation with no exit code: it was rejected before it spawned (not found on
+    /// <c>PATH</c>, refused by policy) or killed by a signal. The gateway answered coherently, so this is
+    /// <see cref="SandboxErrorKind.OperationFailed"/>, not <see cref="SandboxErrorKind.Protocol"/>. The message
+    /// is fixed local text plus the closed-vocabulary <c>error_code</c>, when sent; the gateway's free-text
+    /// <c>error</c> is gateway-controlled and is never copied into the exception (ADR 0001).
+    /// </summary>
+    private static SandboxException FailedWithoutExitCode(string? errorCode, string? operationId) =>
+        new(
+            SandboxErrorKind.OperationFailed,
+            "The sandbox command failed without an exit code: it was rejected before it started or was "
+                + $"killed by a signal{(string.IsNullOrEmpty(errorCode) ? string.Empty : $" (error_code {errorCode})")}.",
+            operationId: operationId
+        )
+        {
+            ErrorCode = errorCode,
+        };
+
     private static SandboxException StreamProtocolError(string detail) =>
         new(SandboxErrorKind.Protocol, $"Sandbox gateway streaming response {detail}.");
 
@@ -310,6 +391,8 @@ public sealed partial class SandboxClient
         string? Outcome,
         int? ExitCode,
         long? StdoutBytes,
-        long? StderrBytes
+        long? StderrBytes,
+        string? Error,
+        string? ErrorCode
     );
 }

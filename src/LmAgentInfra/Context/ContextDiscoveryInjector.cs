@@ -108,7 +108,14 @@ public sealed class ContextDiscoveryInjector
                 }
                 else if (agent is ISubAgentContextSink sink)
                 {
-                    result = await sink.TryDeliverContextAsync(owner, [message], ct).ConfigureAwait(false);
+                    // The gateway reports the id the sub-agent presented on X-Sbx-Agent-ID, which the host
+                    // derived from (root thread, sub-agent id) — see SandboxSubAgentIdentity. Map it back to
+                    // that sub-agent's scoped thread under this root; any other id is passed through and the
+                    // sink answers NotOwned.
+                    var sinkThreadId = SandboxSubAgentIdentity.TryGetSubAgentId(owner, threadId, out var subAgentId)
+                        ? SubAgentThreadIds.For(threadId, subAgentId)
+                        : owner;
+                    result = await sink.TryDeliverContextAsync(sinkThreadId, [message], ct).ConfigureAwait(false);
                 }
                 else
                 {

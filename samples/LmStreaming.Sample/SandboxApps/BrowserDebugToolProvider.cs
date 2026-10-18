@@ -422,14 +422,14 @@ public sealed class BrowserDebugToolProvider : IFunctionProvider, IAsyncDisposab
         // Preview routing is revoked at once, but the lease stays owned until the gateway confirms the
         // close: a failed close can then be retried with the same handle or released by DisposeAsync.
         _bindings.Revoke(binding);
-        var closed = await _gateway.CloseAsync(binding.BrowserId, ct);
+        await _gateway.CloseAsync(binding.BrowserId, ct);
         _owned.Remove(handle);
         return ToolHandlerResult.FromText(
             JsonSerializer.Serialize(
                 new
                 {
                     browserHandle = handle,
-                    closed,
+                    closed = true,
                     handleInvalidated = true,
                 }
             )
@@ -596,7 +596,14 @@ public sealed class BrowserDebugToolProvider : IFunctionProvider, IAsyncDisposab
                 await CleanupAsync(binding);
             }
             _owned.Clear();
-            (_gateway as IDisposable)?.Dispose();
+            if (_gateway is IAsyncDisposable asyncGateway)
+            {
+                await asyncGateway.DisposeAsync();
+            }
+            else
+            {
+                (_gateway as IDisposable)?.Dispose();
+            }
         }
         finally
         {

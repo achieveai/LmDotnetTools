@@ -12,7 +12,7 @@ public sealed partial class SandboxClient
     /// </summary>
     /// <param name="marketplaces">
     /// Optional subset of marketplace aliases to preview. When omitted, the gateway applies its own
-    /// default set.
+    /// default set plus every git marketplace this app registered (<see cref="RegisterAppMarketplaceAsync"/>).
     /// </param>
     /// <param name="ct">Cancellation token observed by the HTTP call.</param>
     public async Task<SandboxMarketplaceCatalog> PreviewMarketplacesAsync(
@@ -20,17 +20,19 @@ public sealed partial class SandboxClient
         CancellationToken ct = default
     )
     {
-        var relativeUri = "api/v1/marketplaces/preview";
+        // app_id makes the preview include this app's registered git marketplaces when the gateway runs with
+        // AUTH_ENFORCE off; with it on, the authenticated app wins and the parameter is ignored.
+        var relativeUri = $"api/v1/marketplaces/preview?{AppIdQuery()}";
         if (marketplaces is { Count: > 0 })
         {
-            relativeUri += $"?marketplaces={Uri.EscapeDataString(string.Join(',', marketplaces))}";
+            relativeUri += $"&marketplaces={Uri.EscapeDataString(string.Join(',', marketplaces))}";
         }
 
         using var response = await SendRestAsync(HttpMethod.Get, relativeUri, body: null, sessionId: null, ct)
             .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw MapErrorResponse(response, "marketplace preview");
+            throw await MapErrorResponseAsync(response, "marketplace preview", ct).ConfigureAwait(false);
         }
 
         MarketplaceCatalogDto? payload;
@@ -96,16 +98,37 @@ public sealed partial class SandboxClient
     /// workspace, over the existing session-discovery REST endpoint. V1: this is a narrow read of
     /// already-discovered items — it does not add proactive discovery or crawling.
     /// </summary>
+    public Task<IReadOnlyList<SandboxDiscoveredItem>> ListDiscoveredAsync(
+        string sessionId,
+        CancellationToken ct = default
+    ) => ListDiscoveredAsync(sessionId, agentId: null, ct);
+
+    /// <summary>
+    /// Lists discovered items for <paramref name="sessionId"/>, narrowed to the rows one agent has been
+    /// notified of (gateway ADR 0040, <c>?agent_id=</c>).
+    /// </summary>
+    /// <param name="sessionId">The sandbox session.</param>
+    /// <param name="agentId">
+    /// <c>null</c> lists every row (no filter); <c>""</c> lists the rows the default (primary) agent was
+    /// notified of; any other value must be a valid <see cref="SandboxAgentId"/> and lists that agent's.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
     public async Task<IReadOnlyList<SandboxDiscoveredItem>> ListDiscoveredAsync(
         string sessionId,
+        string? agentId,
         CancellationToken ct = default
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        if (agentId is { Length: > 0 })
+        {
+            SandboxAgentId.ThrowIfInvalid(agentId, nameof(agentId));
+        }
 
+        var query = agentId is null ? string.Empty : $"?agent_id={Uri.EscapeDataString(agentId)}";
         using var response = await SendRestAsync(
                 HttpMethod.Get,
-                $"api/v1/sandboxes/{Uri.EscapeDataString(sessionId)}/discovered",
+                $"api/v1/sandboxes/{Uri.EscapeDataString(sessionId)}/discovered{query}",
                 body: null,
                 sessionId: null,
                 ct
@@ -113,7 +136,8 @@ public sealed partial class SandboxClient
             .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw MapErrorResponse(response, $"listing discovered items for session '{sessionId}'");
+            throw await MapErrorResponseAsync(response, $"listing discovered items for session '{sessionId}'", ct)
+                .ConfigureAwait(false);
         }
 
         DiscoveredItemsResponseDto? payload;
@@ -158,7 +182,13 @@ public sealed partial class SandboxClient
                     item.Path,
                     item.Content,
                     item.QualifiedName
-                ),
+                )
+                {
+                    Frontmatter = item.Frontmatter?.Clone(),
+                    Plugin = item.Plugin,
+                    DiscoveredAt = item.DiscoveredAt,
+                    Notified = item.Notified,
+                },
                 operation,
                 statusCode
             );

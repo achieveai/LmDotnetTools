@@ -403,7 +403,7 @@ public sealed class BrowserDebugToolProviderTests
             return Task.FromResult(JsonSerializer.SerializeToElement(response));
         }
 
-        public Task<bool> CloseAsync(string browserId, CancellationToken ct)
+        public Task CloseAsync(string browserId, CancellationToken ct)
         {
             CloseAttempts.Add(browserId);
             if (FailCloses > 0)
@@ -412,7 +412,7 @@ public sealed class BrowserDebugToolProviderTests
                 throw new SandboxException(SandboxErrorKind.TransportTimeout, "close timed out");
             }
             Closed.Add(browserId);
-            return Task.FromResult(true);
+            return Task.CompletedTask;
         }
     }
 }

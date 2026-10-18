@@ -1720,6 +1720,7 @@ public class WorkspacePluginSelectionServiceTests
         private TaskCompletionSource? _deleteGate;
         private TaskCompletionSource? _createGate;
         private int _creates;
+        private int _failDeletes;
 
         /// <summary>
         /// When set, a create THROWS this instead of answering. Distinct from
@@ -1784,6 +1785,18 @@ public class WorkspacePluginSelectionServiceTests
             );
 
         public void ReleaseDeletes() => Volatile.Read(ref _deleteGate)?.TrySetResult();
+
+        /// <summary>
+        /// How many of the next DELETEs answer 503 instead of deleting. A refused delete is not recorded in
+        /// <see cref="DeletedSessionIds"/>: the sandbox is still running.
+        /// </summary>
+        public void FailNextDeletes(int count)
+        {
+            lock (_gate)
+            {
+                _failDeletes = count;
+            }
+        }
 
         /// <summary>
         /// Parks every subsequent CREATE the same way, so "a session creation is still in flight" becomes
@@ -1901,6 +1914,12 @@ public class WorkspacePluginSelectionServiceTests
                 var deleted = path[(path.LastIndexOf('/') + 1)..];
                 lock (_gate)
                 {
+                    if (_failDeletes > 0)
+                    {
+                        _failDeletes--;
+                        return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+                    }
+
                     _deletedSessionIds.Add(deleted);
                     _calls.Add(new GatewayCall(GatewayCallKind.Delete, deleted, Body: string.Empty));
                 }

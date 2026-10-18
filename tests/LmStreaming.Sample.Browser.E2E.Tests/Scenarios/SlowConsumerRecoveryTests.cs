@@ -55,17 +55,30 @@ namespace LmStreaming.Sample.Browser.E2E.Tests.Scenarios;
 public sealed class SlowConsumerRecoveryTests
 {
     /// <summary>
-    /// Per-subscriber output-channel capacity for this host. Small enough that a modest scripted turn
-    /// is guaranteed to overflow it while the pump is parked, large enough to still exercise the
-    /// "some buffered frames are delivered, then recovery" ordering rather than an empty-channel edge.
+    /// Per-subscriber output-channel capacity for this host. The counting argument has TWO sides, and
+    /// the replacement subscriber gets the same capacity as the one that is dropped:
+    /// <list type="bullet">
+    /// <item><description>
+    /// Above everything the replacement stream receives in total (about 10 frames on the Anthropic path,
+    /// whose final turn alone publishes text, usage, conversation_usage, context_pressure and
+    /// run_completed back to back). So even a replacement pump that drains nothing cannot be evicted.
+    /// At 4 it could: a slow runner dropped the replacement too, and the focus view, whose one auto-resume
+    /// was already spent, never saw <c>done</c>.
+    /// </description></item>
+    /// <item><description>
+    /// Far below the burst published while the first pump is parked (see <see cref="FirstTurnWordCount"/>),
+    /// so that drop still happens by arithmetic rather than by timing.
+    /// </description></item>
+    /// </list>
     /// </summary>
-    private const int OutputChannelCapacity = 4;
+    private const int OutputChannelCapacity = 16;
 
     /// <summary>
-    /// Words in turn 1. Any value above <see cref="OutputChannelCapacity"/> proves the point; this is an
-    /// order of magnitude above it so the overflow cannot be an accident of message batching.
+    /// Words in the burst turn: 40 text chunks at the scripted responder's 10 words per chunk, before the
+    /// turn's tool call. More than <see cref="OutputChannelCapacity"/> proves the point; this is well
+    /// above it so the overflow cannot be an accident of message batching.
     /// </summary>
-    private const int FirstTurnWordCount = 40;
+    private const int FirstTurnWordCount = 400;
 
     /// <summary>The final full message. Distinctive so "exactly once" is countable in the DOM.</summary>
     private const string FinalAnswer = "Recovered final answer: the run survived the dropped stream.";
@@ -139,7 +152,7 @@ public sealed class SlowConsumerRecoveryTests
         await pump.Parked.WaitForAsync("the outbound pump to park with a registered, non-draining subscriber");
 
         // 2) The provider asking for turn 2 proves turn 1 finished streaming, so all of its messages
-        //    have been published against a 4-slot channel that nothing is draining: the subscriber has
+        //    have been published against a channel that nothing is draining: the subscriber has
         //    necessarily been evicted by now. No sleep, no polling — a counting argument.
         await heldFinalTurn.Arrived.WaitForAsync("the provider's final turn to be requested");
         var restCallsBeforeDrop = restCatchUp.Count;

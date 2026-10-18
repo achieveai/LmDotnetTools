@@ -31,34 +31,9 @@ public sealed class SandboxAppAccess(
         CancellationToken ct
     )
     {
-        if (
-            (principal is null && authorizer.IsEnforced)
-            || (
-                principal is not null
-                && (principal.Source != PrincipalSource.Interactive || principal.Actor.Kind != PrincipalKind.EndUser)
-            )
-        )
-            return new(401, null, null);
-
-        var metadata = await conversations.LoadMetadataAsync(threadId, ct);
-        var decision = await authorizer.AuthorizeAsync(principal, threadId, metadata, AccessAction.Write, ct);
-        if (!decision.Allowed)
-            return new(decision.HidesExistence ? 404 : 403, null, null);
-        if (metadata is null)
-            return new(404, null, null);
-        if (
-            metadata.Properties is null
-            || !metadata.Properties.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var value)
-        )
-            return new(409, null, null);
-        var workspace = value switch
-        {
-            string s => s,
-            JsonElement { ValueKind: JsonValueKind.String } element => element.GetString(),
-            _ => null,
-        };
-        if (string.IsNullOrWhiteSpace(workspace))
-            return new(409, null, null);
+        var (status, workspace) = await ResolveWorkspaceAsync(threadId, principal, ct);
+        if (status != 200 || workspace is null)
+            return new(status, null, null);
         SandboxSessionResolution session;
         try
         {
@@ -83,5 +58,44 @@ public sealed class SandboxAppAccess(
             SandboxSessionResolutionOutcome.CredentialConflict => new(403, null, null),
             _ => new(409, null, null),
         };
+    }
+
+    /// <summary>
+    /// Authorizes an interactive end user to write to <paramref name="threadId"/> and returns the conversation's
+    /// workspace id, without touching any sandbox session.
+    /// </summary>
+    public async Task<(int Status, string? WorkspaceId)> ResolveWorkspaceAsync(
+        string threadId,
+        Principal? principal,
+        CancellationToken ct
+    )
+    {
+        if (
+            (principal is null && authorizer.IsEnforced)
+            || (
+                principal is not null
+                && (principal.Source != PrincipalSource.Interactive || principal.Actor.Kind != PrincipalKind.EndUser)
+            )
+        )
+            return (401, null);
+
+        var metadata = await conversations.LoadMetadataAsync(threadId, ct);
+        var decision = await authorizer.AuthorizeAsync(principal, threadId, metadata, AccessAction.Write, ct);
+        if (!decision.Allowed)
+            return (decision.HidesExistence ? 404 : 403, null);
+        if (metadata is null)
+            return (404, null);
+        if (
+            metadata.Properties is null
+            || !metadata.Properties.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var value)
+        )
+            return (409, null);
+        var workspace = value switch
+        {
+            string s => s,
+            JsonElement { ValueKind: JsonValueKind.String } element => element.GetString(),
+            _ => null,
+        };
+        return string.IsNullOrWhiteSpace(workspace) ? (409, null) : (200, workspace);
     }
 }
