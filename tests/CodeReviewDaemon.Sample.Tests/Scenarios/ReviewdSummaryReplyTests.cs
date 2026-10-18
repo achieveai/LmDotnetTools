@@ -76,7 +76,40 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
             Case(Thread(7, null, "bot"), 1)
         );
 
-        var results = await RunRuleAsync(python!, cases.ToJsonString());
+        var results = await RunRuleAsync(
+            python!,
+            "summary_reply",
+            "c['thread'], c['posted'], set(c['summaryThreads'])",
+            cases.ToJsonString()
+        );
+
+        results.Should().Equal(true, false, false, false, false);
+    }
+
+    [SkippableFact]
+    public async Task Github_verify_skips_only_the_empty_review_that_wraps_a_reply()
+    {
+        // LmDotnetTools #803: each thread reply also made an empty COMMENTED review, the publisher listed it,
+        // and verify refused the whole receipt as invalid.
+        var python = await FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox's wrapper rule cannot be run");
+        static JsonObject Entry(string type, string kind, string content) =>
+            new()
+            {
+                ["commentType"] = type,
+                ["commentId"] = 5,
+                ["kind"] = kind,
+                ["content"] = content,
+            };
+        var cases = new JsonArray(
+            Entry("review", "reply", ""),
+            Entry("review", "reply", "text"),
+            Entry("review", "inline", ""),
+            Entry("review_comment", "reply", ""),
+            Entry("issue_comment", "summary", "")
+        );
+
+        var results = await RunRuleAsync(python!, "github_reply_wrapper", "c", cases.ToJsonString());
 
         results.Should().Equal(true, false, false, false, false);
     }
@@ -115,8 +148,8 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
         await new SqliteKvStore(connection).SetAsync(key, value);
     }
 
-    /// <summary>Runs the sandbox script's own <c>summary_reply</c>, lifted out of the embedded script.</summary>
-    private static async Task<bool[]> RunRuleAsync(string python, string cases)
+    /// <summary>Runs one of the sandbox script's own rules, lifted out of the embedded script.</summary>
+    private static async Task<bool[]> RunRuleAsync(string python, string rule, string arguments, string cases)
     {
         var script = Path.Combine(Path.GetTempPath(), $"reviewd-sandbox-{Guid.NewGuid():N}.py");
         using (
@@ -131,11 +164,13 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
             const string harness = """
                 import ast, json, sys
                 tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
-                rule = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'summary_reply')
+                name, arguments = sys.argv[2], sys.argv[3]
+                rule = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
                 scope = {}
-                exec(compile(ast.Module([rule], []), 'summary_reply', 'exec'), scope)
+                exec(compile(ast.Module([rule], []), name, 'exec'), scope)
+                call = eval('lambda c: rule(' + arguments + ')', {'rule': scope[name]})
                 cases = json.loads(sys.stdin.read())
-                print(json.dumps([scope['summary_reply'](c['thread'], c['posted'], set(c['summaryThreads'])) for c in cases]))
+                print(json.dumps([call(c) for c in cases]))
                 """;
             var start = new ProcessStartInfo(python)
             {
@@ -146,6 +181,8 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
             start.ArgumentList.Add("-c");
             start.ArgumentList.Add(harness);
             start.ArgumentList.Add(script);
+            start.ArgumentList.Add(rule);
+            start.ArgumentList.Add(arguments);
             using var process = Process.Start(start)!;
             await process.StandardInput.WriteAsync(cases);
             process.StandardInput.Close();

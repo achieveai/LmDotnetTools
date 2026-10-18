@@ -84,6 +84,12 @@ def github_belongs(kind, item):
     return str(item.get('pull_request_url', '')).endswith(f'/pulls/{pr}')
 
 
+def github_reply_wrapper(comment):
+    # GitHub files each reply to a review thread under its own empty COMMENTED review. A publisher may list
+    # that wrapper too, but it carries no text: the reply itself is verified as its review_comment entry.
+    return comment.get('commentType') == 'review' and comment.get('kind') == 'reply' and comment.get('content') == ''
+
+
 def same_text(posted, recorded):
     return isinstance(posted, str) and posted.replace('\r\n', '\n') == recorded.replace('\r\n', '\n')
 
@@ -333,6 +339,8 @@ elif phase == 'verify':
         # A GitHub summary is a top-level PR comment or a review body. Each round posts its own, so there is
         # no reply-in-thread summary to recognise.
         for comment in comments:
+            if github_reply_wrapper(comment):
+                continue
             kind, comment_id, content = comment.get('commentType'), comment.get('commentId'), comment.get('content')
             if (kind not in GITHUB_COMMENTS or type(comment_id) is not int or comment_id <= 0
                     or (kind, comment_id) in seen or [kind, comment_id] in args['baselineComments']
