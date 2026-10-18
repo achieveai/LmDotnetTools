@@ -35,6 +35,28 @@ public sealed class ReviewdPrTrackingTests
     }
 
     [Fact]
+    public void Two_segment_repo_is_github_and_its_display_name_parses_back_to_the_same_key()
+    {
+        var repo = PrCommands.ParseRepo("achieveai/LmDotnetTools");
+
+        (repo.Provider, repo.OrgOrOwner, repo.Project, repo.RepoName)
+            .Should()
+            .Be(("github", "achieveai", null, "LmDotnetTools"));
+        PrCommands.ParseRepo(repo.DisplayName).NormalizedKey.Should().Be(repo.NormalizedKey);
+        PrCommands.ParseRepo("org/project/repo").Provider.Should().Be("azure-devops");
+    }
+
+    [Theory]
+    [InlineData("repo")]
+    [InlineData("a/b/c/d")]
+    [InlineData("owner/")]
+    [InlineData("owner/re?po")]
+    public void Malformed_repo_names_are_refused(string value)
+    {
+        FluentActions.Invoking(() => PrCommands.ParseRepo(value)).Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
     public async Task Ado_poll_snapshot_preserves_draft_and_creation_metadata_for_rolling_selection()
     {
         var now = DateTimeOffset.Parse("2026-10-13T06:00:00Z");

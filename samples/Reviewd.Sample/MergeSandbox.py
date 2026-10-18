@@ -358,8 +358,7 @@ def publish(root, args):
               'state': 'commit-started', 'commitSha': None}
     with journal.open('x') as stream:
         json.dump(record, stream, sort_keys=True)
-    git(directory, 'commit', '-m', 'Merge ' + args['targetRef'] + ' into ' + args['sourceRef'] +
-        '\n\nCo-Authored-By: Claude Code <noreply@anthropic.com>')
+    git(directory, 'commit', '-m', 'Merge ' + args['targetRef'] + ' into ' + args['sourceRef'])
     commit, _ = git(directory, 'rev-parse', 'HEAD')
     actual_tree, _ = git(directory, 'rev-parse', 'HEAD^{tree}')
     parents, _ = git(directory, 'rev-list', '--parents', '-n', '1', 'HEAD')

@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "review-setup" / "s
 from review_common import (
     CleanupNotProvenError, ReviewError, ReviewState, SourcePool, assert_no_git_operation,
     check_acquisition_ready, check_outer_merge_ready, current_ref, discover_root,
-    fetch_session, git_ignored_paths, git_status, lock_session, parse_ado_url, read_submodules,
+    fetch_session, git_ignored_paths, git_status, lock_session, parse_source_url, read_submodules,
     run_git, run_git_read, safe_path, validate_sha, worktree_rows,
     ensure_relative_worktrees, validate_relative_worktree,
 )
@@ -87,7 +87,7 @@ def inspect_checkout(root, pool, *, require_relative=True):
     if store.exists():
         require(git(store, "rev-parse", "--is-bare-repository") == "true", "Source store is not bare.")
         require(git(store, "rev-parse", "--is-shallow-repository") == "false", "Source store is shallow; prime separately.")
-        require(parse_ado_url(git(store, "config", "--get", "remote.origin.url")) == parse_ado_url(pool.module["url"]),
+        require(parse_source_url(git(store, "config", "--get", "remote.origin.url")) == parse_source_url(pool.module["url"]),
                 "Source store origin differs from .gitmodules.")
         check_acquisition_ready(store)
         assert_no_git_operation(store, read_only=True)

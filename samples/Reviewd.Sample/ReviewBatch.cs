@@ -94,8 +94,41 @@ internal static class ReviewBatch
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
     }
 
-    private static void EnsureNoDaemon() =>
-        EnsureNoDaemon(() => Directory.EnumerateDirectories("/proc"), File.ReadAllBytes);
+    private static void EnsureNoDaemon()
+    {
+        if (OperatingSystem.IsWindows())
+            EnsureNoWindowsDaemon(ProcessNames);
+        else
+            EnsureNoDaemon(() => Directory.EnumerateDirectories("/proc"), File.ReadAllBytes);
+    }
+
+    private static string[] ProcessNames()
+    {
+        var processes = System.Diagnostics.Process.GetProcesses();
+        try
+        {
+            return [.. processes.Select(process => process.ProcessName)];
+        }
+        finally
+        {
+            foreach (var process in processes)
+                process.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Windows offers no other process's command line without WMI, so this matches the daemon's apphost
+    /// (CodeReviewDaemon.Sample.exe) by process name. A daemon hosted as <c>dotnet CodeReviewDaemon.Sample.dll</c>
+    /// is not seen.
+    /// </summary>
+    internal static void EnsureNoWindowsDaemon(Func<IEnumerable<string>> processNames)
+    {
+        if (
+            processNames()
+                .Any(name => string.Equals(name, "CodeReviewDaemon.Sample", StringComparison.OrdinalIgnoreCase))
+        )
+            throw new InvalidOperationException("Competing daemon producer detected.");
+    }
 
     /// <summary>
     /// Reclaims every slot in the batch's workspace whose lease has lapsed, using the live session to run

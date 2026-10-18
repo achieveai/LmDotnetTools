@@ -104,12 +104,11 @@ def _main(argv=None) -> int:
         # Lazy, function-body-only provider import (mirrors
         # review_git_prepare.py's own ruling-R5 pattern): only this CLI
         # entrypoint ever binds to a concrete provider. `route()` above, and
-        # this module's own top-level imports, never import review_ado.
-        import review_ado
+        # this module's own top-level imports, never import a provider.
+        from review_github import select_provider
 
-        org_url = review_ado._resolve_org_url(args.org)
         transport = None if args.transport == "auto" else args.transport
-        provider = review_ado.AdoProvider(org_url, transport=transport)
+        provider = select_provider(root, args.repo, org=args.org, transport=transport)
         return route(provider=provider, pr=args.pr_number, repo=args.repo, slot=args.slot, root=root)
     except ReviewError as exc:
         print(f"Review setup stopped: {exc}", file=sys.stderr)

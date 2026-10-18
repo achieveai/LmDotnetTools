@@ -12,7 +12,16 @@ internal static class SandboxCommands
 {
     public static async Task<int> RunAsync(CliOptions options, ReviewdConfig config, CancellationToken ct)
     {
-        using var sandbox = config.CreateSandboxClient();
+        // For exec, --timeout is also the gateway's execution deadline, so a long command is not cut at 2 minutes.
+        var timeout =
+            options.Command == "sandbox exec"
+                ? int.Parse(options.Get("timeout") ?? "120", System.Globalization.CultureInfo.InvariantCulture)
+                : 120;
+        if (timeout is < 1 or > 86400)
+        {
+            throw new ArgumentException("--timeout must be between 1 and 86400 seconds.");
+        }
+        using var sandbox = config.CreateSandboxClient(TimeSpan.FromSeconds(timeout));
         if (options.Command == "sandbox create")
         {
             var auth = AuthCommands.LoadOptions(config, options.Required("callback"));
@@ -66,11 +75,6 @@ internal static class SandboxCommands
         if (options.Command != "sandbox exec")
         {
             throw new ArgumentException("Unsupported sandbox command.");
-        }
-        var timeout = int.Parse(options.Get("timeout") ?? "120", System.Globalization.CultureInfo.InvariantCulture);
-        if (timeout is < 1 or > 86400)
-        {
-            throw new ArgumentException("--timeout must be between 1 and 86400 seconds.");
         }
         var operation = Guid.NewGuid().ToString("N");
         var command = new SandboxCommand(options.Argv, options.Get("directory") ?? ".", operationId: operation);

@@ -894,7 +894,7 @@ def _resolve_org_url(explicit_org: str | None) -> str:
         return explicit_org
     root = discover_root(None)
     modules = read_submodules(root, read_only=True)
-    organizations = sorted({module["org_url"] for module in modules})
+    organizations = sorted({module["org_url"] for module in modules if module["provider"] == "ado"})
     if len(organizations) != 1:
         raise ReviewError(
             "Could not determine a single Azure DevOps organization from .gitmodules; pass --org explicitly."

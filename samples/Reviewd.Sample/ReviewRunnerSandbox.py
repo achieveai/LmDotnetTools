@@ -13,7 +13,6 @@ args = json.loads(encoded)
 root = Path.cwd()
 scripts = root / '.claude/skills/review-setup/scripts'
 sys.path.insert(0, str(scripts))
-import review_ado
 from review_common import ReviewError, ReviewState, SourcePool, repo_slug, safe_path, run_git_read
 from review_pool_admin import select_module_by_name
 
@@ -25,30 +24,68 @@ pool = SourcePool(state, module)
 outer = safe_path(root, pool.slot_relative_path(slot))
 source = safe_path(outer, module['path'])
 directory = f'PRs/{repo_slug(repo)}-{pr}'
-transport = review_ado.select_transport('https://dev.azure.com/' + args['org'], transport='gateway')
+github = module['provider'] == 'github'
+if github:
+    import review_github
+    client = review_github.GitHubClient(module['owner'], module['repository'])
+else:
+    import review_ado
+    transport = review_ado.select_transport('https://dev.azure.com/' + args['org'], transport='gateway')
 
 
 def eligibility():
+    # Provider-neutral live state; 'payload' keeps the raw provider response for the phases that need it.
+    if github:
+        payload = review_github.fetch_pr(client, pr)
+        base = (payload.get('base') or {}).get('repo') or {}
+        if (base.get('name', '').casefold() != repo.casefold()
+                or (base.get('owner') or {}).get('login', '').casefold() != args['org'].casefold()):
+            raise ReviewError('PR identity does not match the requested repository.')
+        return {**review_github.live_state(payload), 'payload': payload}
     number, payload = review_ado.fetch_pr(transport, pr)
     repository = payload.get('repository') or {}
     project = repository.get('project') or {}
     if (number != pr or repository.get('name', '').casefold() != repo.casefold()
             or project.get('name', '').casefold() != args['project'].casefold()):
         raise ReviewError('PR identity does not match the requested repository.')
-    return payload
+    return {'prId': str(pr), 'status': payload.get('status'), 'isDraft': payload.get('isDraft'),
+            'createdAt': payload.get('creationDate'),
+            'headSha': (payload.get('lastMergeSourceCommit') or {}).get('commitId'),
+            'mergeSha': (payload.get('lastMergeCommit') or {}).get('commitId'), 'payload': payload}
 
 
 def live():
-    payload = eligibility()
-    if payload.get('status') != 'active' or payload.get('isDraft') is not False:
+    current = eligibility()
+    if current['status'] != 'active' or current['isDraft'] is not False:
         raise ReviewError('PR is not active/non-draft in the requested repository.')
-    head = (payload.get('lastMergeSourceCommit') or {}).get('commitId')
-    merge = (payload.get('lastMergeCommit') or {}).get('commitId')
-    if head != args['head'] or not isinstance(merge, str) or len(merge) != 40:
+    merge = current['mergeSha']
+    if current['headSha'] != args['head'] or not isinstance(merge, str) or len(merge) != 40:
         raise ReviewError('PR source changed or merge is unavailable; no submission allowed.')
     if args.get('merge') and merge != args['merge']:
         raise ReviewError('Prepared PR merge changed; inspect before continuing.')
-    return payload, merge
+    return current['payload'], merge
+
+
+def ado_pr_api(payload):
+    return (quote(payload['repository']['project']['id'], safe='') + '/_apis/git/repositories/'
+            + quote(payload['repository']['id'], safe='') + '/pullRequests/' + str(pr))
+
+
+# GitHub comment types a reviewer may post: the PR-scoped list holding them and the per-item read-back.
+GITHUB_COMMENTS = {'issue_comment': (f'issues/{pr}/comments', 'issues/comments/{}'),
+                   'review': (f'pulls/{pr}/reviews', f'pulls/{pr}/reviews/{{}}'),
+                   'review_comment': (f'pulls/{pr}/comments', 'pulls/comments/{}')}
+
+
+def github_belongs(kind, item):
+    # Comment read-backs are repository-scoped, so tie each one back to this PR.
+    if kind == 'issue_comment':
+        return str(item.get('issue_url', '')).endswith(f'/issues/{pr}')
+    return str(item.get('pull_request_url', '')).endswith(f'/pulls/{pr}')
+
+
+def same_text(posted, recorded):
+    return isinstance(posted, str) and posted.replace('\r\n', '\n') == recorded.replace('\r\n', '\n')
 
 
 def summary_reply(thread, posted, summary_threads):
@@ -109,12 +146,8 @@ def clear_stale_index_locks():
 
 
 if phase == 'eligibility':
-    payload = eligibility()
-    print(json.dumps({'prId': str(pr), 'status': payload.get('status'),
-                      'isDraft': payload.get('isDraft'),
-                      'createdAt': payload.get('creationDate'),
-                      'headSha': (payload.get('lastMergeSourceCommit') or {}).get('commitId'),
-                      'mergeSha': (payload.get('lastMergeCommit') or {}).get('commitId')}))
+    current = eligibility()
+    print(json.dumps({key: current[key] for key in ('prId', 'status', 'isDraft', 'createdAt', 'headSha', 'mergeSha')}))
 elif phase == 'inspect':
     _, merge = live()
     print(json.dumps({'headSha': args['head'], 'mergeSha': merge}))
@@ -148,17 +181,24 @@ elif phase == 'prepare':
     driver = """import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-import review_setup, review_ado
+import review_setup
 from review_git_prepare import prepare
+from review_github import select_provider
 review_setup.prepare = lambda **kwargs: prepare(**kwargs, lock_timeout=120)
-provider = review_ado.AdoProvider(sys.argv[2], transport='gateway')
+provider = select_provider(Path.cwd(), sys.argv[4], org=sys.argv[2] or None, transport='gateway')
 raise SystemExit(review_setup.route(provider=provider, pr=int(sys.argv[3]), repo=sys.argv[4], slot=int(sys.argv[5]), root=Path.cwd()))
 """
     setup = subprocess.run([sys.executable, '-c', driver, str(scripts),
-                            'https://dev.azure.com/' + args['org'], str(pr), repo, str(slot)],
+                            '' if github else 'https://dev.azure.com/' + args['org'], str(pr), repo, str(slot)],
                            capture_output=True, text=True)
     if setup.returncode != 0:
-        raise ReviewError(f'Setup stopped with exit {setup.returncode}; preserve the slot and inspect it.')
+        # Setup's stderr names the failed step and its report names any context warnings; keep both.
+        try:
+            warnings = json.loads(setup.stdout).get('warnings') or []
+        except (ValueError, AttributeError):
+            warnings = []
+        raise ReviewError(f'Setup stopped with exit {setup.returncode}; preserve the slot and inspect it.\n'
+                          + setup.stderr[-4000:] + ''.join(f'\nWarning: {w}' for w in warnings[:20]))
     report = json.loads(setup.stdout)
     snapshot = report.get('snapshot') or {}
     if report.get('complete') is not True or snapshot.get('head_sha') != args['head']:
@@ -170,13 +210,15 @@ raise SystemExit(review_setup.route(provider=provider, pr=int(sys.argv[3]), repo
     with context.open('x') as stream:
         stream.write(setup.stdout)
     payload, _ = live()
-    repo_api = (quote(payload['repository']['project']['id'], safe='') + '/_apis/git/repositories/'
-                + quote(payload['repository']['id'], safe='') + '/pullRequests/' + str(pr))
-    threads = transport.request('GET', repo_api + '/threads?api-version=7.1')
-    values = threads.get('value') if isinstance(threads, dict) else None
-    if not isinstance(values, list) or threads.get('count') != len(values):
-        raise ReviewError('Incomplete baseline discussions.')
-    baseline = [[thread['id'], comment['id']] for thread in values for comment in thread.get('comments', [])]
+    if github:
+        baseline = [[kind, item['id']] for kind, (listing, _) in GITHUB_COMMENTS.items()
+                    for item in client.get_pages(listing)]
+    else:
+        threads = transport.request('GET', ado_pr_api(payload) + '/threads?api-version=7.1')
+        values = threads.get('value') if isinstance(threads, dict) else None
+        if not isinstance(values, list) or threads.get('count') != len(values):
+            raise ReviewError('Incomplete baseline discussions.')
+        baseline = [[thread['id'], comment['id']] for thread in values for comment in thread.get('comments', [])]
     print(json.dumps({'mergeSha': merge, 'contextPath': str(context.relative_to(root)),
                       'reviewDirectory': str(folder.relative_to(root)), 'baselineComments': baseline}))
 elif phase == 'cleanup':
@@ -286,9 +328,29 @@ elif phase == 'verify':
     if not isinstance(comments, list) or not comments:
         raise ReviewError('Publication receipt must include a posted summary.')
     payload, _ = live()
-    api = (quote(payload['repository']['project']['id'], safe='') + '/_apis/git/repositories/'
-           + quote(payload['repository']['id'], safe='') + '/pullRequests/' + str(pr))
     verified, seen, summarized = [], set(), False
+    if github:
+        # A GitHub summary is a top-level PR comment or a review body. Each round posts its own, so there is
+        # no reply-in-thread summary to recognise.
+        for comment in comments:
+            kind, comment_id, content = comment.get('commentType'), comment.get('commentId'), comment.get('content')
+            if (kind not in GITHUB_COMMENTS or type(comment_id) is not int or comment_id <= 0
+                    or (kind, comment_id) in seen or [kind, comment_id] in args['baselineComments']
+                    or not isinstance(content, str) or not content.strip()):
+                raise ReviewError('Publication IDs invalid, duplicated, or already present before this review.')
+            seen.add((kind, comment_id))
+            posted = client.request(GITHUB_COMMENTS[kind][1].format(comment_id))
+            if (not isinstance(posted, dict) or posted.get('id') != comment_id or not github_belongs(kind, posted)
+                    or not same_text(posted.get('body'), content)):
+                raise ReviewError('Publication could not be independently verified.')
+            summarized = summarized or (comment.get('kind') == 'summary' and kind in ('issue_comment', 'review'))
+            verified.append({'commentType': kind, 'commentId': comment_id, 'kind': comment.get('kind'),
+                             'contentSha256': hashlib.sha256(content.encode()).hexdigest()})
+        if not summarized:
+            raise ReviewError('Publication receipt must include a posted summary.')
+        print(json.dumps({'comments': verified}))
+        sys.exit(0)
+    api = ado_pr_api(payload)
     summary_threads = set(args.get('summaryThreads') or [])
     for comment in comments:
         thread_id, comment_id = comment.get('threadId'), comment.get('commentId')

@@ -490,14 +490,15 @@ public sealed class ConversationPagingAndSortTests
     /// Needed because two of the claims here are about a page that must NOT be requested — no third
     /// page once the list is exhausted, and no page appended across a sort switch. Those are invisible
     /// in the DOM: a pager that correctly declined to fetch and a pager that never ran look identical.
-    /// The global pending-question inbox also reads this endpoint, so identical URLs may occur more
-    /// than once without representing an extra sidebar page. Distinct URLs preserve the page-boundary
-    /// assertion while excluding those legitimate duplicate reads.
+    /// The global pending-question inbox also reads this endpoint, at its own 1000-row page size, so
+    /// only requests at the sidebar's page size count. Repeated identical URLs are not an extra
+    /// sidebar page, so distinct URLs preserve the page-boundary assertion.
     /// The per-conversation routes (<c>/api/conversations/{id}/...</c>) carry a path segment where
     /// this one carries a query string, so matching on <c>"/api/conversations?"</c> tells them apart.
     /// </remarks>
     private sealed class ConversationListRequestLog
     {
+        private const string SidebarPagePrefix = "/api/conversations?limit=30&";
         private readonly List<string> _urls = [];
 
         public ConversationListRequestLog(IPage page)
@@ -517,7 +518,7 @@ public sealed class ConversationPagingAndSortTests
 
         private void OnRequest(object? sender, IRequest request)
         {
-            if (!request.Url.Contains("/api/conversations?", StringComparison.Ordinal))
+            if (!request.Url.Contains(SidebarPagePrefix, StringComparison.Ordinal))
             {
                 return;
             }

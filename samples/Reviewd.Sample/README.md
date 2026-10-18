@@ -51,7 +51,7 @@ reviewd sandbox exec --session <returned-session-id> --timeout 120 --config /pat
 - Keep `auth serve` running while authenticated commands execute. It exposes only the existing `POST /api/auth/webhook/{provider}` route, uses per-session secret validation and destination allowlists, and fails fast when sign-in is required. No login route is added.
 - Reuse an explicit existing absolute `Auth:TokenStoreDir`. Tokens are not copied into the sandbox; refresh may update the shared cache. Avoid concurrent token-refresh writers.
 - `sandbox create` attaches the existing shared auth/network policy and saves a fresh webhook secret for the returned session. It supports managed ADO/GitHub, not configured keys or M365. Existing session callbacks are not changed. The logical workspace is reused; the session is new and not deleted on exit.
-- `sandbox exec` accepts an existing session ID and prints an operation ID before execution. `--timeout` bounds local waiting; the SDK remote command deadline remains two minutes. A timed-out operation must be inspected, not blindly resubmitted.
+- `sandbox exec` accepts an existing session ID and prints an operation ID before execution. `--timeout` (default 120 s) bounds both local waiting and the gateway's execution deadline. A timed-out operation must be inspected, not blindly resubmitted.
 - Existing `workspace exec` remains the host-catalog-based path and does not automatically attach this webhook. Use the direct `sandbox` commands for daemon-owned workspaces.
 
 ## Create and configure workspaces

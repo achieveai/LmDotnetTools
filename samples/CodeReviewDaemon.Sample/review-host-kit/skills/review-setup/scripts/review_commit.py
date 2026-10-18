@@ -244,7 +244,7 @@ def commit_review(root: Path, repo: str, pr: int, slot: int, *,
                     raise ReviewError("Staged paths escaped the review directory; no commit made.")
                 commit_start = observe(outer, "rev-parse", "HEAD").strip()
                 if staged:
-                    message = f"Retain {pool.repo_name} PR {pr} review artifacts\n\nCo-Authored-By: Claude Code <noreply@anthropic.com>"
+                    message = f"Retain {pool.repo_name} PR {pr} review artifacts"
                     try:
                         run_git(outer, ["commit", "-m", message])
                     finally:

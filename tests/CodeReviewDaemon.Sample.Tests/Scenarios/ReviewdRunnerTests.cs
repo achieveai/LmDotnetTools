@@ -538,6 +538,20 @@ public sealed class ReviewdRunnerTests
     }
 
     [Theory]
+    [InlineData("Reviewd.Sample", false)]
+    [InlineData("CodeReviewDaemon.Sample", true)]
+    [InlineData("codereviewdaemon.sample", true)]
+    [InlineData("CodeReviewDaemon.Sample.Tests", false)]
+    public void Windows_producer_scan_detects_the_daemon_apphost_by_process_name(string name, bool competing)
+    {
+        var scan = () => ReviewBatch.EnsureNoWindowsDaemon(() => ["svchost", name]);
+        if (competing)
+            scan.Should().Throw<InvalidOperationException>().WithMessage("Competing daemon producer detected.");
+        else
+            scan.Should().NotThrow();
+    }
+
+    [Theory]
     [InlineData("file")]
     [InlineData("directory")]
     [InlineData("io")]
@@ -1849,6 +1863,115 @@ public sealed class ReviewdRunnerTests
         }
         finally
         {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    [Fact]
+    public async Task Runner_renews_the_slot_lease_while_a_long_sandbox_step_runs()
+    {
+        // A large PR's prepare outlasts the 30-minute lease. Without renewal the reaper reclaims the slot
+        // under the live command.
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-lease-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var ownerKey = SlotRelease.OwnerKey("workspace", repo.NormalizedKey, 2);
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .On(
+                request =>
+                    request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
+                _ => Json("""{"threadId":"thread"}""")
+            )
+            .OnJson(HttpMethod.Get, "/api/conversations?", "[]")
+            .OnJson(HttpMethod.Put, "/metadata", "{}");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        var previousInterval = ReviewRunner.LeaseRenewInterval;
+        ReviewRunner.LeaseRenewInterval = TimeSpan.FromMilliseconds(20);
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            var store = new SqliteKvStore(connection);
+            async Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token)
+            {
+                if (phase == "eligibility")
+                    return new JsonObject
+                    {
+                        ["prId"] = "17",
+                        ["status"] = "active",
+                        ["isDraft"] = false,
+                        ["headSha"] = new string('a', 40),
+                        ["createdAt"] = DateTimeOffset.UtcNow.ToString("O"),
+                    };
+                phase.Should().Be("prepare");
+                var started = (await store.GetAsync<JsonObject>(ownerKey))![
+                    "leaseExpiresAt"
+                ]!.GetValue<DateTimeOffset>();
+                var deadline = DateTime.UtcNow.AddSeconds(10);
+                while (DateTime.UtcNow < deadline)
+                {
+                    await Task.Delay(20, token);
+                    var lease = (await store.GetAsync<JsonObject>(ownerKey))![
+                        "leaseExpiresAt"
+                    ]!.GetValue<DateTimeOffset>();
+                    if (lease > started)
+                        throw new InvalidOperationException("lease renewed during prepare");
+                }
+                throw new InvalidOperationException("lease never renewed during prepare");
+            }
+            await store.SetAsync(
+                $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                new JsonObject
+                {
+                    ["17"] = new JsonObject
+                    {
+                        ["Lifecycle"] = "Open",
+                        ["IsDraft"] = false,
+                        ["HeadSha"] = new string('a', 40),
+                    },
+                }
+            );
+            var options = CliOptions.Parse([
+                "review",
+                "run",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "test",
+                "--execute",
+            ]);
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    options,
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ => Task.CompletedTask
+                );
+            (await run.Should().ThrowAsync<InvalidOperationException>())
+                .Which.Message.Should()
+                .Be("lease renewed during prepare");
+        }
+        finally
+        {
+            ReviewRunner.LeaseRenewInterval = previousInterval;
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             File.Delete(database);
         }

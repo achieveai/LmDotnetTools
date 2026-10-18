@@ -88,6 +88,24 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
         first.LifecycleState.Should().Be(PrLifecycleState.Open);
     }
 
+    /// <summary>Reviewd selects only PRs that say they are not drafts, so an absent flag must stay unknown.</summary>
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("false", false)]
+    [InlineData("null", null)]
+    public async Task ListOpenPullRequests_carries_the_draft_flag(string draft, bool? expected)
+    {
+        var json = $$"""
+            [ { "number": 7, "state": "open", "merged_at": null, "draft": {{draft}},
+                "updated_at": "2026-06-01T10:00:00Z", "head": { "sha": "h" }, "base": { "sha": "b" } } ]
+            """;
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/repos/acme/widgets/pulls", json);
+
+        var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        page.PullRequests[0].IsDraft.Should().Be(expected);
+    }
+
     /// <summary>
     /// The prose half of the knowledge-retrieval key. Sibling PRs applying one architectural pattern often
     /// touch entirely different files, so ranked purely on changed paths the relevant lesson scores zero on
@@ -450,6 +468,7 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
             .Should()
             .Contain(["11", "12", "13", "14"], "these PRs exist only on pages past the old hardcoded ceiling of 10");
         page.PullRequests.Should().HaveCount(14);
+        page.IsComplete.Should().BeTrue("the last page offered no rel=next");
     }
 
     /// <summary>
@@ -468,6 +487,7 @@ public sealed class GitHubPrProviderTests : LoggingTestBase
 
         handler.CountRequests("/pulls").Should().Be(maxPages);
         page.PullRequests.Should().HaveCount(maxPages);
+        page.IsComplete.Should().BeFalse("stopping with rel=next still on offer leaves PRs unseen");
     }
 
     /// <summary>A page bound that cannot be a page count is treated as unset, never as zero pages (which

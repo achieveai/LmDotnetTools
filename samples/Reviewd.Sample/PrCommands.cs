@@ -42,49 +42,80 @@ internal static class PrCommands
         }
         var auth =
             config.Configuration.GetSection(AuthOptions.SectionName).Get<AuthOptions>()
-            ?? throw new InvalidOperationException("Configure Auth:Ado and the existing Auth:TokenStoreDir.");
+            ?? throw new InvalidOperationException("Configure Auth and the existing Auth:TokenStoreDir.");
         if (string.IsNullOrWhiteSpace(auth.TokenStoreDir) || !Path.IsPathFullyQualified(auth.TokenStoreDir))
         {
             throw new InvalidOperationException(
                 "Auth:TokenStoreDir must explicitly name the absolute shared OAuth cache directory."
             );
         }
-        if (string.IsNullOrWhiteSpace(auth.Ado.ClientId) || auth.Ado.Scopes.Length == 0)
-        {
-            throw new InvalidOperationException(
-                "Configure Auth:Ado:ClientId and Auth:Ado:Scopes to match the signed-in host."
-            );
-        }
-        var tokenCache = Path.Combine(auth.TokenStoreDir, "msal-ado.bin");
-        if (!File.Exists(tokenCache))
-        {
-            throw new InvalidOperationException(
-                "The shared ADO OAuth cache is missing. Sign in through the existing host first."
-            );
-        }
-        var tokens = new AdoOAuthProvider(auth.Ado, tokenCache, NullLogger<AdoOAuthProvider>.Instance);
-        using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
-        var provider = new AdoPrProvider(
-            http,
-            tokens,
-            NullLogger<AdoPrProvider>.Instance,
-            config.Configuration.GetValue(
-                "CodeReviewDaemon:MaxPagesPerPoll",
-                CodeReviewDaemonOptions.DefaultMaxPagesPerPoll
-            ),
-            config.Configuration.GetValue(
-                "CodeReviewDaemon:MaxPrsPerPage",
-                CodeReviewDaemonOptions.DefaultMaxPrsPerPage
-            )
+        var repos = ParseRepos(options);
+        var maxPages = config.Configuration.GetValue(
+            "CodeReviewDaemon:MaxPagesPerPoll",
+            CodeReviewDaemonOptions.DefaultMaxPagesPerPoll
         );
-        return await RunAsync(options, provider, ct, new AdoPrActivityReader(http, tokens).ReadAsync);
+        var maxPrs = config.Configuration.GetValue(
+            "CodeReviewDaemon:MaxPrsPerPage",
+            CodeReviewDaemonOptions.DefaultMaxPrsPerPage
+        );
+        using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
+        IPrProvider? ado = null;
+        IPrProvider? github = null;
+        AdoPrActivityReader? adoActivity = null;
+        if (repos.Any(repo => repo.Provider == "azure-devops"))
+        {
+            if (string.IsNullOrWhiteSpace(auth.Ado.ClientId) || auth.Ado.Scopes.Length == 0)
+            {
+                throw new InvalidOperationException(
+                    "Configure Auth:Ado:ClientId and Auth:Ado:Scopes to match the signed-in host."
+                );
+            }
+            var tokenCache = Path.Combine(auth.TokenStoreDir, "msal-ado.bin");
+            if (!File.Exists(tokenCache))
+            {
+                throw new InvalidOperationException(
+                    "The shared ADO OAuth cache is missing. Sign in through the existing host first."
+                );
+            }
+            var tokens = new AdoOAuthProvider(auth.Ado, tokenCache, NullLogger<AdoOAuthProvider>.Instance);
+            ado = new AdoPrProvider(http, tokens, NullLogger<AdoPrProvider>.Instance, maxPages, maxPrs);
+            adoActivity = new AdoPrActivityReader(http, tokens);
+        }
+        if (repos.Any(repo => repo.Provider == "github"))
+        {
+            // Listing reads the signed-in token from the shared store; it never runs the OAuth sign-in flow.
+            var tokens = new GitHubOAuthProvider(
+                auth.Github,
+                new FileOAuthTokenStore(auth.TokenStoreDir, NullLogger<FileOAuthTokenStore>.Instance),
+                http,
+                NullLogger<GitHubOAuthProvider>.Instance
+            );
+            github = new GitHubPrProvider(http, tokens, NullLogger<GitHubPrProvider>.Instance, maxPages, maxPrs);
+        }
+        return await RunAsync(
+            options,
+            repo => repo.Provider == "github" ? github! : ado!,
+            ct,
+            // GitHub's updated_at already covers pushes and comments, so only ADO needs the activity read.
+            (repo, pr, token) =>
+                repo.Provider == "azure-devops"
+                    ? adoActivity!.ReadAsync(repo, pr, token)
+                    : Task.FromResult(new AdoPrActivityReader.Activity(null, null))
+        );
     }
 
-    internal static async Task<int> RunAsync(
+    internal static Task<int> RunAsync(
         CliOptions options,
         IPrProvider provider,
         CancellationToken ct,
         Func<RepoIdentity, string, CancellationToken, Task<AdoPrActivityReader.Activity>>? readActivity = null
+    ) => RunAsync(options, _ => provider, ct, readActivity);
+
+    private static async Task<int> RunAsync(
+        CliOptions options,
+        Func<RepoIdentity, IPrProvider> providerFor,
+        CancellationToken ct,
+        Func<RepoIdentity, string, CancellationToken, Task<AdoPrActivityReader.Activity>>? readActivity
     )
     {
         var repos = ParseRepos(options);
@@ -93,7 +124,7 @@ internal static class PrCommands
         {
             try
             {
-                await CheckRepoAsync(options, provider, repo, readActivity, ct);
+                await CheckRepoAsync(options, providerFor(repo), repo, readActivity, ct);
             }
             catch (Exception ex) when (repos.Count > 1 && !ct.IsCancellationRequested)
             {
@@ -121,7 +152,7 @@ internal static class PrCommands
         if (!page.IsComplete)
         {
             throw new InvalidOperationException(
-                "ADO listing is incomplete. Increase CodeReviewDaemon:MaxPagesPerPoll or MaxPrsPerPage; no snapshot was saved."
+                "PR listing is incomplete. Increase CodeReviewDaemon:MaxPagesPerPoll or MaxPrsPerPage; no snapshot was saved."
             );
         }
         var now = DateTimeOffset.UtcNow;
@@ -250,11 +281,12 @@ internal static class PrCommands
         ];
     }
 
+    /// <summary><c>org/project/repo</c> names an Azure DevOps repository; <c>owner/repo</c> a GitHub one.</summary>
     internal static RepoIdentity ParseRepo(string value)
     {
         var segments = value.Split('/', StringSplitOptions.TrimEntries);
         if (
-            segments.Length != 3
+            segments.Length is not (2 or 3)
             || segments.Any(segment =>
                 string.IsNullOrWhiteSpace(segment)
                 || segment.IndexOfAny(['?', '#', '%', '\\']) >= 0
@@ -263,15 +295,24 @@ internal static class PrCommands
             )
         )
         {
-            throw new ArgumentException("--repo must be org/project/repo, without URL delimiters or empty segments.");
+            throw new ArgumentException(
+                "--repo must be org/project/repo (Azure DevOps) or owner/repo (GitHub), without URL delimiters or empty segments."
+            );
         }
-        return new RepoIdentity
-        {
-            Provider = "azure-devops",
-            OrgOrOwner = segments[0],
-            Project = segments[1],
-            RepoName = segments[2],
-        };
+        return segments.Length == 2
+            ? new RepoIdentity
+            {
+                Provider = "github",
+                OrgOrOwner = segments[0],
+                RepoName = segments[1],
+            }
+            : new RepoIdentity
+            {
+                Provider = "azure-devops",
+                OrgOrOwner = segments[0],
+                Project = segments[1],
+                RepoName = segments[2],
+            };
     }
 
     private static PrLifecycle MapLifecycle(PrLifecycleState state) =>
@@ -281,7 +322,7 @@ internal static class PrCommands
             PrLifecycleState.Merged => PrLifecycle.Merged,
             PrLifecycleState.Abandoned => PrLifecycle.Abandoned,
             _ => throw new InvalidOperationException(
-                "ADO returned an unrecognized PR lifecycle; no snapshot was saved."
+                "The provider returned an unrecognized PR lifecycle; no snapshot was saved."
             ),
         };
 

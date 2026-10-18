@@ -1084,8 +1084,8 @@ def _slot_recovery_binding(state, pool, slot: int, operation: dict) -> dict:
             manifest.get("repo_name") != pool.repo_name
             or manifest.get("slot_id") != pool.slot_name(slot)
             or manifest.get("slot_path") != pool.slot_relative_path(slot)
-            or parse_ado_url(manifest.get("submodule", {}).get("url", ""))
-            != parse_ado_url(pool.module["url"])
+            or parse_source_url(manifest.get("submodule", {}).get("url", ""))
+            != parse_source_url(pool.module["url"])
             or manifest.get("submodule", {}).get("path") != pool.module["path"]
             or not isinstance(manifest.get("run_id"), str)
             or not manifest["run_id"]
@@ -1238,7 +1238,7 @@ def _slot_recovery_binding(state, pool, slot: int, operation: dict) -> dict:
                 origin = run_git_read(
                     pool.store, ["config", "--get", "remote.origin.url"]
                 ).stdout.strip()
-                if parse_ado_url(origin) != parse_ado_url(pool.module["url"]):
+                if parse_source_url(origin) != parse_source_url(pool.module["url"]):
                     raise ReviewError("Selected slot source-store origin changed.")
                 for name in (
                     "MERGE_HEAD",
@@ -2897,9 +2897,9 @@ def run_git_read(repo: Path, args: list[str], check: bool = True, *,
 #
 # These narrowly-scoped helpers read, create/update, and delete refs on the
 # parent repository's own `origin` remote only. They are never valid for the
-# nested per-slot Azure DevOps source pool, which remains a detached,
-# read-only checkout forever: `validate_parent_origin_remote` refuses a
-# remote that itself parses as a recognized ADO URL. No live push or ref
+# nested per-slot source pool (GitHub or Azure DevOps), which remains a detached,
+# read-only checkout forever: `validate_parent_origin_remote` refuses an ADO
+# remote and any remote naming a configured source repository. No live push or ref
 # deletion is exercised by this change; `--publish`/`--complete`/`--abandon`
 # are implemented separately and are the only callers that will actually
 # invoke `create_or_update_parent_remote_ref`/`delete_parent_remote_ref`.
@@ -2926,6 +2926,18 @@ def validate_parent_origin_remote(root: Path, *, remote: str = "origin") -> str:
         pass
     else:
         raise ReviewError("Parent-origin remote must not be a nested Azure DevOps remote.")
+    # A GitHub-hosted store can review GitHub sources, so host alone cannot tell them apart: refuse
+    # the parent origin only when it names one of this store's own source repositories.
+    try:
+        parent = parse_github_url(url)
+    except ReviewError:
+        return url
+    if (root / ".gitmodules").is_file():
+        for module in read_submodules(root, read_only=True):
+            if (module.get("provider") == "github"
+                    and module["owner"].casefold() == parent["owner"].casefold()
+                    and module["repository"].casefold() == parent["repository"].casefold()):
+                raise ReviewError("Parent-origin remote must not be a nested source repository.")
     return url
 
 
@@ -3905,6 +3917,39 @@ def parse_ado_url(url: str) -> dict:
     return {"org_url": f"https://dev.azure.com/{org.lower()}", "project": project, "repository": repository}
 
 
+def parse_github_url(url: str) -> dict:
+    """Strict ``https://github.com/<owner>/<repo>[.git]`` parse; same URL hygiene as ADO."""
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except (TypeError, ValueError):
+        raise ReviewError("Invalid GitHub repository URL.") from None
+    if parsed.scheme != "https" or parsed.username or parsed.password or parsed.query or parsed.fragment or port not in (None, 443):
+        raise ReviewError("GitHub repository URL must be HTTPS without credentials, query, or custom port.")
+    if (parsed.hostname or "").lower() != "github.com":
+        raise ReviewError("Repository is not a recognized GitHub HTTPS URL.")
+    parts = parsed.path.strip("/").split("/")
+    if len(parts) != 2:
+        raise ReviewError("GitHub repository URL must be https://github.com/<owner>/<repo>.")
+    owner, repository = parts[0], parts[1].removesuffix(".git")
+    for part in (owner, repository):
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", part) or part in (".", ".."):
+            raise ReviewError("Unsafe GitHub owner or repository name.")
+    return {"provider": "github", "org_url": f"https://github.com/{owner.lower()}", "owner": owner,
+            "project": None, "repository": repository}
+
+
+def parse_source_url(url: str) -> dict:
+    """Provider-neutral source-remote coordinates: GitHub or Azure DevOps, nothing else."""
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except (TypeError, ValueError):
+        raise ReviewError("Invalid source repository URL.") from None
+    if host == "github.com":
+        return parse_github_url(url)
+    return {"provider": "ado", **parse_ado_url(url)}
+
+
 def canonical_ado_metadata_url(url: str, org_url: str) -> str:
     """Remove ADO's organization-name decoration from provider metadata only.
 
@@ -4107,10 +4152,10 @@ def read_submodules(root: Path, *, read_only: bool = False) -> list[dict]:
         if not relative.startswith("repos/") or len(PurePosixPath(relative).parts) != 2:
             raise ReviewError("Source submodules must be direct children of repos/.")
         url = runner(root, ["config", "--file", str(config), "--get", key[:-4] + "url"]).stdout.strip()
-        coordinates = parse_ado_url(url)
+        coordinates = parse_source_url(url)
         modules.append({"name": key[len("submodule."):-len(".path")], "path": relative, "url": url, **coordinates})
     if not modules:
-        raise ReviewError("No configured Azure DevOps source submodules found.")
+        raise ReviewError("No configured GitHub or Azure DevOps source submodules found.")
     return modules
 
 
@@ -5988,7 +6033,7 @@ class SourcePool:
         if origin.returncode:
             run_git(self.store, ["remote", "add", "origin", self.module["url"]])
             origin = run_git(self.store, ["config", "--get", "remote.origin.url"], check=False)
-        if origin.returncode or parse_ado_url(origin.stdout.strip()) != parse_ado_url(self.module["url"]):
+        if origin.returncode or parse_source_url(origin.stdout.strip()) != parse_source_url(self.module["url"]):
             raise ReviewError("Source-store origin does not match the configured repository.")
 
     def _ensure_store(self) -> None:
@@ -6622,6 +6667,18 @@ class SourcePool:
                 raise ReviewError(
                     "Pool slot outer worktree is on a branch; refusing to adopt foreign state."
                 )
+            if run_git(outer, ["rev-parse", "HEAD"]).stdout.strip() != root_head:
+                # A commit on the store's main (a kit fix, a new source) leaves idle slots on the old
+                # store commit, and a slot not at the current HEAD is refused at admission. An idle
+                # slot with only its gitlink delta holds nothing to lose, so move it forward; prepare
+                # does the same with reset --hard.
+                if git_ignored_paths(outer, protected=self.module["path"]) or any(
+                    path != self.module["path"] or code[0] != " " for code, path in git_status(outer)
+                ):
+                    raise ReviewError(
+                        "Pool outer worktree is behind the store HEAD and has changes; refusing to move it."
+                    )
+                run_git(outer, ["checkout", "--detach", "-q", root_head])
             return
         if outer.parent.is_symlink():
             raise ReviewError("Refusing symlink pool worktree parent directory.")

@@ -33,7 +33,7 @@ from review_common import (
     outer_merge_owner,
     outer_recovery_binding,
     outer_writer_scope,
-    parse_ado_url,
+    parse_source_url,
     preflight,
     read_parent_remote_ref,
     read_submodules,
@@ -695,7 +695,7 @@ def _validate_canonical_submodule(
         return
     ensure_repository(path, read_only=True)
     origin = run_git_read(path, ["config", "--get", "remote.origin.url"], check=False)
-    if origin.returncode or parse_ado_url(origin.stdout.strip()) != parse_ado_url(
+    if origin.returncode or parse_source_url(origin.stdout.strip()) != parse_source_url(
         manifest["submodule"]["url"]
     ):
         raise ReviewError("Initialized canonical submodule has a mismatched origin.")

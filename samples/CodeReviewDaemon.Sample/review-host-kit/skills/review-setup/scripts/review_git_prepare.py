@@ -536,13 +536,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _run(args: argparse.Namespace) -> int:
     # Lazy, function-body-only provider import (ruling R5): importing this
-    # module, or calling `prepare()` directly, never imports `review_ado`.
-    import review_ado
+    # module, or calling `prepare()` directly, never imports a provider.
+    from review_github import select_provider
 
     root = discover_root(args.root)
-    org_url = review_ado._resolve_org_url(args.org)
     transport = None if args.transport == "auto" else args.transport
-    provider = review_ado.AdoProvider(org_url, transport=transport)
+    provider = select_provider(root, args.repo, org=args.org, transport=transport)
     print(f"Resolving PR {args.pr}...", file=sys.stderr)
     resolved = provider.resolve(args.pr, repo_hint=args.repo)
     if args.probe_git_exe:
