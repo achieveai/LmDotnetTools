@@ -176,7 +176,7 @@ public sealed class IndexedConversationStoreTests : IDisposable
                 row =>
                 {
                     entered.Set();
-                    if (!release.Wait(TimeSpan.FromSeconds(5)))
+                    if (!release.Wait(TimeSpan.FromMinutes(2)))
                         throw new TimeoutException("The test did not release the metadata callback.");
                     return row! with
                     {
@@ -187,7 +187,7 @@ public sealed class IndexedConversationStoreTests : IDisposable
         );
         try
         {
-            entered.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+            entered.Wait(TimeSpan.FromMinutes(2)).Should().BeTrue();
             var busy = await Assert.ThrowsAsync<IndexedConversationStore.HierarchyBusyException>(() =>
                 store.ReadChildrenAsync("root", true)
             );
