@@ -70,6 +70,16 @@ def slot_not_idle(reason):
     sys.exit(3)
 
 
+def admit_baseline(verify):
+    # An idle slot off the idle baseline (a commit to the store's main strands every idle slot behind it) is not
+    # usable as is, and admission never repairs it. It is refused like a held slot, so an automatic run releases
+    # its claim and tries the next slot instead of failing with the claim held until its lease lapses.
+    try:
+        verify()
+    except ReviewError as failure:
+        slot_not_idle(f'Native slot is not at the idle baseline: {failure}')
+
+
 def inspect_prepared():
     manifest = json.loads(state.prepared_slot_path(pool.repo_key, slot).read_text())
     _, merge = live()
@@ -138,9 +148,9 @@ elif phase == 'prepare':
         if state.prepared_slot_path(pool.repo_key, slot).exists() or writable.load_pool_run(pool.repo_key, slot, dry_run=True) is not None:
             slot_not_idle('Native slot retains an owner; explicit owner cleanup is required.')
         if outer.exists():
-            _verify_postconditions(writable, pool, outer, source,
-                                   run_git_read(root, ['rev-parse', 'HEAD']).stdout.strip(),
-                                   pool._verified_baseline())
+            admit_baseline(lambda: _verify_postconditions(writable, pool, outer, source,
+                                                          run_git_read(root, ['rev-parse', 'HEAD']).stdout.strip(),
+                                                          pool._verified_baseline()))
         atomic_json(marker, {'claimToken': args['claimToken'], 'pr': pr, 'state': 'owned'})
         clear_stale_index_locks()
     # The CLI does not expose prepare's lock_timeout. Use its existing route with a bounded

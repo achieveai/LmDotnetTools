@@ -34,6 +34,9 @@ public sealed class ReviewdAutoSlotTests : IDisposable
     /// <summary>The gateway refuses every operation submit at its record limit.</summary>
     private bool _refuseAtCapacity;
 
+    /// <summary>The configured <c>Reviewd:LanesPerRepo</c>, when set.</summary>
+    private int? _lanes;
+
     public ReviewdAutoSlotTests()
     {
         _handler = new FakeHttpMessageHandler()
@@ -333,6 +336,134 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         CliOptions.ReviewSlots(CliOptions.Parse([.. Arguments(), "--slots", "4, 2"])).Should().Equal(4, 2);
     }
 
+    [Fact]
+    public async Task Without_slots_only_the_configured_lanes_are_tried()
+    {
+        for (var slot = 0; slot < 3; slot++)
+            await HoldAsync(100 + slot, slot);
+        _lanes = 3;
+
+        (await RunAsync()).Should().Be(ReviewRunner.NoSlotExitCode);
+
+        // Slot 3 is not one of the runner's lanes, so it is never prepared.
+        _phases.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("7")]
+    [InlineData("three")]
+    public void An_out_of_range_lane_count_is_refused(string lanes)
+    {
+        using var config = Config(lanes);
+
+        var read = () => config.LanesPerRepo;
+
+        read.Should().Throw<ArgumentException>().WithMessage("*LanesPerRepo*");
+    }
+
+    [Fact]
+    public async Task Review_slots_reports_each_slot_from_the_database_without_writing()
+    {
+        var now = DateTimeOffset.UtcNow;
+        await HoldAsync(9, 0);
+        await VerifiedOwnerAsync(10, 1, now.AddMinutes(-1));
+        await PutAsync(
+            "reviewd/batch-state/X",
+            JsonNode.Parse(
+                """{"schemaVersion":1,"scope":{"workspace":"workspace"},"entries":[{"repo":"org/project/Nova","pr":"40","slot":2,"status":"queued"}]}"""
+            )!
+        );
+        var released = Claim(Attempt(11, 3, "completed-verified", now.ToString("O")), now.AddMinutes(-1));
+        released["state"] = "released";
+        await PutAsync(OwnerKey(3), released);
+        await PutAsync(OwnerKey(4), Claim(Attempt(12, 4, "review-running", now.ToString("O")), null));
+        var before = await ReadAllAsync();
+
+        var rows = await SlotStatus.ReadAsync(_database, "workspace", [Repo], [0, 1, 2, 3, 4, 5], now, default);
+
+        rows.Select(row => $"{row["slot"]}:{row["state"]}:{row["prId"]}")
+            .Should()
+            .Equal("0:owned:9", "1:expired:10", "2:queued:", "3:free:", "4:owned:12", "5:free:");
+        (await ReadAllAsync()).Should().Equal(before);
+    }
+
+    [Theory]
+    [InlineData("--repo", "org/project/Nova", "--db", "x.db")]
+    [InlineData("--repo", "org/project/Nova", "--repos", "org/project/Nova", "--db", "x.db", "--workspace", "w")]
+    [InlineData("--repo", "org/project/Nova", "--db", "x.db", "--workspace", "w", "--slots", "6")]
+    public void Review_slots_rejects_incomplete_options(params string[] extra)
+    {
+        var parse = () => CliOptions.Parse(["review", "slots", .. extra]);
+
+        parse.Should().Throw<ArgumentException>();
+    }
+
+    [SkippableTheory]
+    [InlineData(
+        "stale",
+        3,
+        """{"status": "slot-not-idle", "reason": "Native slot is not at the idle baseline: off baseline"}"""
+    )]
+    [InlineData("idle", 0, "admitted")]
+    [InlineData("broken", 1, "")]
+    public async Task Prepare_refuses_a_slot_off_the_idle_baseline_as_not_idle(string verify, int exit, string output)
+    {
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox's admission rule cannot be run");
+        var script = Path.Combine(Path.GetTempPath(), $"reviewd-sandbox-{Guid.NewGuid():N}.py");
+        using (
+            var resource = typeof(ReviewRunner).Assembly.GetManifestResourceStream(
+                "Reviewd.Sample.ReviewRunnerSandbox.py"
+            )!
+        )
+        using (var file = File.Create(script))
+            await resource.CopyToAsync(file);
+        try
+        {
+            // Only a ReviewError from the baseline check is a busy slot; any other failure still surfaces.
+            const string harness = """
+                import ast, json, sys
+                tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
+                rules = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('slot_not_idle', 'admit_baseline')]
+                class ReviewError(Exception): pass
+                scope = {'json': json, 'sys': sys, 'ReviewError': ReviewError}
+                exec(compile(ast.Module(rules, []), 'admission', 'exec'), scope)
+                def stale(): raise ReviewError('off baseline')
+                def broken(): raise RuntimeError('git is missing')
+                scope['admit_baseline']({'stale': stale, 'idle': lambda: None, 'broken': broken}[sys.argv[2]])
+                print('admitted')
+                """;
+            var start = new System.Diagnostics.ProcessStartInfo(python!)
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            foreach (var argument in new[] { "-c", harness, script, verify })
+                start.ArgumentList.Add(argument);
+            using var process = System.Diagnostics.Process.Start(start)!;
+            var stdout = await process.StandardOutput.ReadToEndAsync();
+            var stderr = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            process.ExitCode.Should().Be(exit, stderr);
+            stdout.Trim().Should().Be(output);
+        }
+        finally
+        {
+            File.Delete(script);
+        }
+    }
+
+    private static ReviewdConfig Config(string? lanes) =>
+        new(
+            new ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    lanes is null ? [] : new Dictionary<string, string?> { ["Reviewd:LanesPerRepo"] = lanes }
+                )
+                .Build()
+        );
+
     public void Dispose()
     {
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
@@ -361,7 +492,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
     private async Task<int> RunAsync(params string[] extra)
     {
         using var http = new HttpClient(_handler) { BaseAddress = new Uri("http://localhost/") };
-        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        using var config = Config(_lanes?.ToString());
         return await ReviewRunner.RunAsync(
             CliOptions.Parse([.. Arguments(), "--execute", .. extra]),
             config,
