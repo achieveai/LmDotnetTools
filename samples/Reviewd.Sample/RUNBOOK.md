@@ -80,6 +80,39 @@ $REVIEWD_HOME/bin/start-auth.sh
   prints `405`.
 - If this is down, the sandbox cannot reach Azure DevOps (`502 policy_evaluation_failed`).
 
+## 4. First time only: move over from the old worktree
+
+The state used to live in the old worktree at `$REVIEWD_LEGACY_RUN_DIR` (default
+`~/repos/LmDotnetTools/.claude/worktrees/reviewd-sample/.run/reviewd-local`). While that folder
+still has `reviews.db` and `data/reviews.db` is empty, `start-batch.sh` and `start-host.sh` refuse
+to start. Starting on the empty database would hide every slot the old reviews hold.
+
+1. Stop the batch, `auth serve` and the host. Step 1 must show none of them.
+2. Copy the databases. SQLite's backup also takes in what their `-wal` files still hold, so never
+   copy a `.db` file without its sidecars:
+
+   ```bash
+   OLD=$REVIEWD_LEGACY_RUN_DIR
+   backup() { python3 -c 'import sqlite3,sys; sqlite3.connect(sys.argv[1]).backup(sqlite3.connect(sys.argv[2]))' "$1" "$2"; }
+   mkdir -p $REVIEWD_HOME/data/host
+   backup $OLD/reviews.db $DB
+   for db in conversations identity notify-waits; do
+       [ -e $OLD/host/$db.db ] && backup $OLD/host/$db.db $REVIEWD_HOME/data/host/$db.db
+   done
+   cp $OLD/selection.json $SEL
+   for item in logs workflow-index chat-modes workspaces appsettings.json; do
+       [ -e $OLD/host/$item ] && cp -a $OLD/host/$item $REVIEWD_HOME/data/host/
+   done
+   cp -a /home/gautamb/repos/LmDotnetTools/.run/nova/oauth-tokens/. $REVIEWD_HOME/oauth-tokens/
+   ```
+
+3. Move the old folder aside (`mv $OLD $OLD.moved`), then start with step 2.
+
+- A host older than the SQLite store kept its history in a `conversations/` folder. That folder is
+  not imported.
+- To start fresh on purpose instead, set `REVIEWD_LEGACY_STATE=abandoned` in `env/batch.env`. The new
+  database then knows nothing of the slots the old reviews hold.
+
 ## 5. Find PRs and write the selection (about 8 minutes)
 
 ```bash
@@ -128,6 +161,9 @@ finishes its current list. You do not restart it.
   Use `kill -KILL` to stop at once.
 - **Restart the batch safely** (for example to deploy a CLI): `$REVIEWD_HOME/bin/safe-restart-batch.sh`.
   It waits until every owned review can resume, then restarts. It gives up after 15 minutes.
+  It only touches the batch whose `--db` is `$DB`. It pauses that batch for each check, so no review
+  can move on between the check and the kill. It stops without touching anything when two batches
+  use `$DB`. Its test: `ops/test/ops-scripts.test.sh` (Linux or WSL).
 - **After a reboot:** steps 0, 1, 2, 3, 5, 6.
 - **A slot stays stuck for hours:** check it first with a dry run, then add `--execute`:
 

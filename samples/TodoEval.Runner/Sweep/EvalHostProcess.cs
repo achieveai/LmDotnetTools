@@ -372,6 +372,8 @@ internal sealed class EvalHostProcess : IAsyncDisposable
     private static readonly string[] StateEntries =
     [
         "conversations",
+        "conversations-export",
+        "conversations.db",
         "chat-modes",
         "workspaces",
         "workflow-index",
@@ -381,7 +383,7 @@ internal sealed class EvalHostProcess : IAsyncDisposable
         "notify-waits.db",
     ];
 
-    private static void CopyDirectory(string sourceDir, string destinationDir)
+    internal static void CopyDirectory(string sourceDir, string destinationDir)
     {
         if (!Directory.Exists(sourceDir))
         {
@@ -391,10 +393,13 @@ internal sealed class EvalHostProcess : IAsyncDisposable
         static bool IsState(string relativePath)
         {
             var firstSegment = relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)[0];
-            // Exact match for the state directories; prefix for the SQLite db so -wal/-shm/-journal
+            // Exact match for the state directories; prefix for each SQLite db so its -wal/-shm/-journal
             // sidecars are excluded with it.
-            return StateEntries.Any(entry => string.Equals(firstSegment, entry, StringComparison.OrdinalIgnoreCase))
-                || firstSegment.StartsWith("notify-waits.db", StringComparison.OrdinalIgnoreCase);
+            return StateEntries.Any(entry =>
+                entry.EndsWith(".db", StringComparison.Ordinal)
+                    ? firstSegment.StartsWith(entry, StringComparison.OrdinalIgnoreCase)
+                    : string.Equals(firstSegment, entry, StringComparison.OrdinalIgnoreCase)
+            );
         }
 
         foreach (var directory in Directory.EnumerateDirectories(sourceDir, "*", SearchOption.AllDirectories))

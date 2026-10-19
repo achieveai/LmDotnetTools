@@ -184,7 +184,9 @@ internal static class SlotRelease
         if (claim?["claimToken"]?.GetValue<string>() != token || claim["state"]?.GetValue<string>() != "owned")
             throw new InvalidOperationException("Slot claim changed; exact-token release refused.");
         claim["state"] = "released";
-        attempt["cleanupState"] = "released";
+        // Stage the released receipt; the caller's object changes only after the commit below.
+        var released = attempt.DeepClone().AsObject();
+        released["cleanupState"] = "released";
         using var write = connection.CreateCommand();
         write.Transaction = transaction;
         write.CommandText = "UPDATE cache SET value=@value WHERE key=@key AND value=@old";
@@ -198,7 +200,7 @@ internal static class SlotRelease
         save.CommandText =
             "INSERT INTO cache(key,value) VALUES(@key,@value) ON CONFLICT(key) DO UPDATE SET value=excluded.value";
         save.Parameters.AddWithValue("@key", attemptKey);
-        save.Parameters.AddWithValue("@value", attempt.ToJsonString());
+        save.Parameters.AddWithValue("@value", released.ToJsonString());
         await save.ExecuteNonQueryAsync(ct);
         foreach (var historical in adoptedHistory ?? [])
         {
@@ -207,12 +209,15 @@ internal static class SlotRelease
             {
                 ["cleanupState"] = "released",
                 ["claimToken"] = token,
-                ["ownerPrId"] = attempt["prId"]?.DeepClone(),
+                ["ownerPrId"] = released["prId"]?.DeepClone(),
                 ["attemptDigest"] = Digest(historical),
             }.ToJsonString();
             await save.ExecuteNonQueryAsync(ct);
         }
         transaction.Commit();
+        // Only a committed release may make the caller's attempt read as released. The runner's failure
+        // path persists this object, and after a rollback the owner row is still held by this token.
+        attempt["cleanupState"] = "released";
     }
 
     internal static bool Allows(JsonNode proof, string attempt, string newPr, string newSession)

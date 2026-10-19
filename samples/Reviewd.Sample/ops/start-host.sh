@@ -8,6 +8,7 @@ if pgrep -f '^dotnet .*LmStreaming.Sample.dll --urls http://0.0.0.0:5000' >/dev/
     echo "a host is already running"
     exit 1
 fi
+refuse_unmigrated_state || exit 1
 H=$(readlink -f "$REVIEWD_HOME/host")
 D=$REVIEWD_HOME/data/host
 export DOTNET_hostBuilder__reloadConfigOnChange=false

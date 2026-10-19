@@ -29,6 +29,12 @@ siblings, so the destination is never partially written. Deploying over a **runn
 refused (three checkpoints; an elevated instance is detected too) — stop it first. See the
 `.PARAMETER DestinationDirectory` help for the full contract.
 
+`conversations/` is carried forward but **not imported**: the host reads only `conversations.db`.
+While that folder holds any thread, the host refuses to start. Move it aside (for example to
+`conversations.legacy`) to start without the old history, or set
+`LmStreaming__LegacyFileStoreAcknowledged=true` to start with the folder left in place. Either way
+the old conversations are not shown.
+
 Provider is chosen in the UI (header dropdown, `GET /api/providers`). GitHub Copilot models are
 **discovered dynamically** at startup from the Copilot `/models` API and listed by their raw model
 id (e.g. `claude-opus-4.8`, `gpt-5.5`), partitioned into "Copilot · Anthropic" / "Copilot · OpenAI"
