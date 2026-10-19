@@ -55,6 +55,7 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 /// </remarks>
 public sealed class MultiTurnAgentLoop
     : MultiTurnAgentBase,
+        IContextNotificationSink,
         ISubAgentContextSink,
         ISpawnSuppressingAgent,
         IManualCompactionAgent,
@@ -178,6 +179,11 @@ public sealed class MultiTurnAgentLoop
     /// persisted observation reports this one as <i>fresh</i> when the loop is alive to vouch for it.
     /// </summary>
     public ContextObservation? LatestContextObservation => Volatile.Read(ref _latestContextObservation);
+
+    /// <inheritdoc />
+    /// <remarks>Each provider call rebuilds its request from this history, so the next turn sees the context.</remarks>
+    public ValueTask<bool> TryAppendContextAsync(NotifyMessage message, CancellationToken ct = default) =>
+        AppendContextToActiveRunAsync(message, ct);
 
     /// <inheritdoc />
     /// <remarks>

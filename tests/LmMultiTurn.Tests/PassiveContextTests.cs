@@ -100,6 +100,17 @@ public class PassiveContextTests
         }
     }
 
+    [Fact]
+    public void OnlyTheLoopWhoseProviderReadsHostHistory_AcceptsPassiveContext()
+    {
+        // A CLI loop keeps its own session history, so an append would be reported delivered while the
+        // model never saw it. Callers test for the sink and treat its absence as not deliverable.
+        typeof(MultiTurnAgentLoop).Should().Implement<IContextNotificationSink>();
+        typeof(MultiTurnAgentBase).Should().NotImplement<IContextNotificationSink>();
+        foreach (var cliLoop in new[] { typeof(ClaudeAgentLoop), typeof(CodexAgentLoop), typeof(CopilotAgentLoop) })
+            cliLoop.Should().NotImplement<IContextNotificationSink>();
+    }
+
     private static async IAsyncEnumerable<IMessage> Reply([EnumeratorCancellation] CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();

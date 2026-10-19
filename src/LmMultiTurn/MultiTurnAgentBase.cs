@@ -24,11 +24,7 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 /// Abstract base class for multi-turn agents providing common infrastructure for
 /// channel management, subscription handling, and lifecycle management.
 /// </summary>
-public abstract class MultiTurnAgentBase
-    : IMultiTurnAgent,
-        IAcceptanceReportingAgent,
-        IContextNotificationSink,
-        IStartupReadinessAgent
+public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReportingAgent, IStartupReadinessAgent
 {
     #region Fields
 
@@ -503,8 +499,12 @@ public abstract class MultiTurnAgentBase
 
     #region Conversation History Thread-Safe Access
 
-    /// <inheritdoc />
-    public async ValueTask<bool> TryAppendContextAsync(NotifyMessage message, CancellationToken ct = default)
+    /// <summary>
+    /// Appends discovered context to the active run's history without queueing input. Only a loop whose
+    /// provider reads this history on its next call may expose it as <see cref="IContextNotificationSink"/>;
+    /// a CLI-backed loop keeps its own session history, so the model would never see the append.
+    /// </summary>
+    protected async ValueTask<bool> AppendContextToActiveRunAsync(NotifyMessage message, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(message);
         ct.ThrowIfCancellationRequested();
