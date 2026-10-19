@@ -60,7 +60,7 @@ internal static class AutoSlot
         }
         var batchSlots = await LiveBatchSlotsAsync(database, workspace, repo, ct);
         var skipped = new JsonArray();
-        foreach (var slot in CliOptions.ReviewSlots(options))
+        foreach (var slot in CliOptions.ReviewSlots(options, config.LanesPerRepo))
         {
             if (batchSlots.Contains(slot))
             {
@@ -235,7 +235,7 @@ internal static class AutoSlot
             ? ownerPr
             : null;
 
-    private static async Task<HashSet<int>> LiveBatchSlotsAsync(
+    internal static async Task<HashSet<int>> LiveBatchSlotsAsync(
         string database,
         string workspace,
         RepoIdentity repo,
@@ -270,7 +270,7 @@ internal static class AutoSlot
     private static string AttemptKey(RepoIdentity repo, string pr) =>
         $"reviewd/review-attempt/{repo.NormalizedKey}/{pr}";
 
-    private static async Task<JsonNode?> ReadAsync(string database, string key, CancellationToken ct)
+    internal static async Task<JsonNode?> ReadAsync(string database, string key, CancellationToken ct)
     {
         using var connection = Open(database);
         await connection.OpenAsync(ct);

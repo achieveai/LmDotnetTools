@@ -1,6 +1,10 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount } from 'vue';
+import { onMounted, onBeforeUnmount, ref } from 'vue';
+import AppMarketplacePanel from './AppMarketplacePanel.vue';
 import MarketplaceBrowser from './MarketplaceBrowser.vue';
+
+// Bumped when a git marketplace is registered or removed, remounting the catalog so it reloads.
+const catalogKey = ref(0);
 
 const emit = defineEmits<{ close: [] }>();
 
@@ -39,7 +43,8 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown));
         </button>
       </div>
       <div class="modal-content">
-        <MarketplaceBrowser />
+        <AppMarketplacePanel @changed="catalogKey++" />
+        <MarketplaceBrowser :key="catalogKey" />
       </div>
     </div>
   </div>

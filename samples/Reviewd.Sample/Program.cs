@@ -63,6 +63,10 @@ try
         Console.WriteLine(report.ToJsonString());
         return 0;
     }
+    if (options.Command == "review slots")
+    {
+        return await SlotStatus.RunAsync(options, config, DateTimeOffset.UtcNow, cancellation.Token);
+    }
     if (options.Command == "review reconcile-slot")
     {
         return await SlotRelease.RunAsync(options, cancellation.Token);

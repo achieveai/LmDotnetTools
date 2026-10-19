@@ -1,4 +1,3 @@
-using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.Sandbox.Wire;
@@ -13,8 +12,16 @@ public sealed partial class SandboxClient
     /// path; the gateway (which may be remote) owns workspace directory creation.
     /// </summary>
     /// <exception cref="SandboxException">
-    /// The gateway rejected the credential (<see cref="SandboxErrorKind.Authorization"/>) or returned
-    /// an unexpected response (<see cref="SandboxErrorKind.Protocol"/>).
+    /// The gateway rejected the credential (<see cref="SandboxErrorKind.Authorization"/>), the environment
+    /// map (<see cref="SandboxErrorKind.InvalidEnv"/>), or the image
+    /// (<see cref="SandboxErrorKind.ImageRejected"/>); the workspace is busy or has only partial backups
+    /// (<see cref="SandboxErrorKind.Conflict"/>) or was purged (<see cref="SandboxErrorKind.WorkspacePurged"/>);
+    /// an image pull or workspace restore failed (<see cref="SandboxErrorKind.Unavailable"/>); or the gateway
+    /// returned an unexpected response (<see cref="SandboxErrorKind.Protocol"/>), including a create that
+    /// did not acknowledge the requested <see cref="SandboxCreateRequest.Home"/> exactly (that sandbox is
+    /// deleted before the exception is thrown).
+    /// <see cref="SandboxException.ErrorCode"/> names the exact reason; a <c>422 image_unsupported</c>
+    /// also carries <see cref="SandboxException.ImageReport"/>.
     /// </exception>
     public async Task<SandboxInfo> CreateAsync(SandboxCreateRequest request, CancellationToken ct = default)
     {
@@ -25,16 +32,20 @@ public sealed partial class SandboxClient
             .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            // A 400 is the only sandbox-create failure whose body is safe to read (never the
-            // credential-rejection response) and worth reading (it is the sole source of
-            // invalid_env's offending keys) — see MapRestBadRequestAsync.
-            throw response.StatusCode == HttpStatusCode.BadRequest
-                ? await MapRestBadRequestAsync(response, "sandbox creation", ct).ConfigureAwait(false)
-                : MapErrorResponse(response, "sandbox creation");
+            // The create-time codes (invalid_env with its keys, the image-policy and workspace-backup
+            // rejections) all come from the error body, which MapErrorResponseAsync reads for every status
+            // except the credential rejections.
+            throw await MapErrorResponseAsync(response, "sandbox creation", ct).ConfigureAwait(false);
         }
 
         var payload = await ReadSandboxResponseOrThrowAsync(response, "sandbox creation", ct).ConfigureAwait(false);
         var info = ToSandboxInfo(payload, "sandbox creation", (int)response.StatusCode);
+        if (request.Home is { } home)
+        {
+            // Before seeding the mount cache: a sandbox whose home was not honored is deleted, not used.
+            await RequireAcknowledgedHomeAsync(info, home, (int)response.StatusCode, ct).ConfigureAwait(false);
+        }
+
         SeedWorkspaceMountId(info);
         return info;
     }
@@ -58,7 +69,7 @@ public sealed partial class SandboxClient
             .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw MapErrorResponse(response, $"sandbox '{sessionId}'");
+            throw await MapErrorResponseAsync(response, $"sandbox '{sessionId}'", ct).ConfigureAwait(false);
         }
 
         var payload = await ReadSandboxResponseOrThrowAsync(response, $"sandbox '{sessionId}'", ct)
@@ -85,7 +96,7 @@ public sealed partial class SandboxClient
             .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw MapErrorResponse(response, "sandbox list");
+            throw await MapErrorResponseAsync(response, "sandbox list", ct).ConfigureAwait(false);
         }
 
         ListSandboxesResponseDto? payload;
@@ -142,7 +153,7 @@ public sealed partial class SandboxClient
             .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw MapErrorResponse(response, $"deleting sandbox '{sessionId}'");
+            throw await MapErrorResponseAsync(response, $"deleting sandbox '{sessionId}'", ct).ConfigureAwait(false);
         }
 
         // The sandbox (and its workspace mount) no longer exist — drop any cached sessionId→mountId entry
@@ -174,7 +185,9 @@ public sealed partial class SandboxClient
             Env: request.Env.Count > 0 ? request.Env : null,
             Plugins: request.PluginMounts.Count > 0
                 ? [.. request.PluginMounts.Select(mount => new PluginMountDto(mount.Path, mount.Name, mount.Origin))]
-                : null
+                : null,
+            Image: request.Image,
+            Home: request.Home
         );
 
     private static PluginRefDto ToPluginRefDto(SandboxPluginRef pluginRef) =>
@@ -212,7 +225,11 @@ public sealed partial class SandboxClient
             dto.Status,
             ToInventory(dto.Inventory, operation, statusCode),
             ToPluginResolution(dto.PluginResolution, operation, statusCode),
-            dto.Volumes?.Workspace?.RelativePath
+            dto.Volumes?.Workspace?.RelativePath,
+            dto.Image,
+            dto.ImageDigest,
+            dto.ImageReport is null ? null : ToImageReportOrThrow(dto.ImageReport, operation, statusCode),
+            dto.Volumes?.Workspace?.Home
         );
 
     /// <summary>

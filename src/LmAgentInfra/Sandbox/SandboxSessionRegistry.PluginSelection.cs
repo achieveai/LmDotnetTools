@@ -398,6 +398,9 @@ public sealed partial class SandboxSessionRegistry
                 () => Task.FromResult(replacement),
                 LazyThreadSafetyMode.ExecutionAndPublication
             );
+            // Evaluate it now: the replacement already exists on the gateway, and teardown skips a slot whose
+            // value was never created (for a fresh slot, that means no sandbox yet).
+            _ = republished.Value;
 
             // Reference comparison against the snapshotted Lazy: succeeds only if nothing replaced the
             // slot since the snapshot.

@@ -92,7 +92,7 @@ public sealed partial class SandboxClient
             .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw MapErrorResponse(response, operation);
+            throw await MapErrorResponseAsync(response, operation, ct).ConfigureAwait(false);
         }
 
         var payload = await ReadSandboxResponseOrThrowAsync(response, operation, ct).ConfigureAwait(false);

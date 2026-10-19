@@ -198,7 +198,7 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
         }
     }
 
-    private static async Task<string?> FindPythonAsync()
+    internal static async Task<string?> FindPythonAsync()
     {
         foreach (var candidate in new[] { "python3", "python" })
         {

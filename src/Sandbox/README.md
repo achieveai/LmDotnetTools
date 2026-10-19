@@ -51,6 +51,25 @@ this SDK still speaks unchanged. It is *not* a runnable floor: the direct API di
 commit, so a gateway pinned there cannot serve this SDK's command or file operations. The image tag in
 the workflow is the operative pin.
 
+**Gateway compatibility:** error and operation semantics are synced to `SandboxedOstoolsMcpServer`
+`origin/master` `7f19413` (v0.1.16), and CI pins image tag `0.1.16`: images, homes, backups, per-agent
+state and leased browsers need it. Per-app git marketplaces (below) are built against the gateway commit
+`bac5a32`, which is NOT in v0.1.16 — on v0.1.16 their routes do not exist. That sync covers:
+
+- REST error bodies (`{ error, code, error_code, retryable }`) read under a 64 KiB bound on every
+  non-2xx except `401`/`403`, surfacing `ErrorCode`, `Retryable`, `Retry-After` (`RetryAfter`), and a
+  backup refusal's `snapshots` (`SnapshotIds`).
+- New kinds: `WorkspacePurged` (`410` / `workspace_purged`), `ImageRejected` (`image_not_allowed`,
+  `image_unsupported_backend`, `image_not_found`, `image_unsupported` — `image_not_found` is not
+  `NotFound`), `ExecutableNotRunnable` (operation `error_code`, #198), and `McpCallFailed` (a JSON-RPC
+  `error` envelope, carrying `JsonRpcCode`).
+- `409` → `Conflict` (incl. `workspace_in_use`, `only_partial_snapshots`); `503`, `workspace_restore_failed`,
+  `image_pull_failed` (`502`) and `image_pull_timeout` (`504`) → `Unavailable`.
+- Operations: a `failed` status with no exit code → `OperationFailed` carrying its `ErrorCode`, never the
+  gateway's free-text reason (poll and stream); status `cancelled` or `internal_failure` → `OperationFailed` (poll and stream); the streaming `timeout_secs` follows
+  `SandboxCommand.ExecutionTimeout` (1–120 s, default 30); the reserved operation ids `stream` and
+  `capabilities` are refused client-side.
+
 ## What this release covers
 
 - **Lifecycle:** `CreateAsync`, `GetAsync`, `ListAsync`, `DeleteAsync` — explicit sandbox
@@ -62,7 +81,8 @@ the workflow is the operative pin.
 - **Marketplace preview:** `PreviewMarketplacesAsync` — a read-only browse of plugins, skills, and
   agents that requires no sandbox session.
 - **Session discovery:** `ListDiscoveredAsync(sessionId)` — a narrow read over the existing
-  session-discovery REST endpoint.
+  session-discovery REST endpoint; `ListDiscoveredAsync(sessionId, agentId)` narrows it to one agent.
+- **Per-agent state:** `ListAgentsAsync`, `DeleteAgentAsync`. See [Per-agent state](#per-agent-state).
 - **Command execution:** `ExecuteAsync(sessionId, command)` — run a non-interactive native command
   (an executable plus argv, no shell) in the sandbox via the gateway's direct operations API and get
   its exact captured output back. See [Command execution](#command-execution) below.
@@ -74,6 +94,29 @@ the workflow is the operative pin.
 - **Exact file transfer:** `ReadTextFileAsync`, `WriteTextFileAsync`, `ListDirectoryAsync` — exact,
   integrity-verified UTF-8 file round-trips and directory listing over a workspace-relative POSIX
   path. See [File transfer](#file-transfer) below.
+
+## Images, home and workspace backup (gateway v0.1.16)
+
+- **Image** (ADR 0039): `new SandboxCreateRequest(ws, image: "debian:bookworm-slim")` (or `repo@sha256:…`).
+  The gateway's allow-list decides; a refusal is `ImageRejected` with `ErrorCode` `image_not_allowed`,
+  `image_not_found`, `image_unsupported` (with `SandboxException.ImageReport`) or
+  `image_unsupported_backend`. The create result carries `Image`, `ImageDigest` and `ImageReport`
+  (conformance + `Warnings`, e.g. "image has no pwsh"). `GetAsync` reports `Image`/`ImageDigest` when the
+  gateway's GET carries them (a session recorded without an image reports the server default); older GETs
+  and every `ListAsync` result leave them `null`, and `ImageReport` is create-only.
+- **Home** (issue #142): `new SandboxCreateRequest(ws, home: "worktrees/issue-142")`, sent as top-level
+  `home` beside top-level `workspace`. `CreateAsync` requires `SandboxInfo.WorkspaceHome` to equal the
+  normalized request (`./a//b/` → `a/b`); on a missing or different acknowledgement it deletes the sandbox
+  and throws `Protocol`. On Docker the home must already exist and be owned by the sandbox user: v0.1.16
+  creates a missing home root-owned and refuses it with a code-less `400`.
+- **Backup** (issue #191): `ListBackupSnapshotsAsync(workspace)`, `RestoreBackupSnapshotAsync(workspace,
+  snapshotId)`, `PurgeBackupWorkspaceAsync(workspace)` and `GetBackupCostsAsync(since, groupBy)`. Every call
+  sends `app_id` = `AppId`, which the gateway needs with `AUTH_ENFORCE` off and ignores with it on. A
+  restore is refused (`Conflict`, `workspace_attached`, retryable) while a sandbox still mounts the
+  workspace: delete it first. **Purge is destructive**: it deletes this gateway's sandboxes on the workspace,
+  then its snapshots and directory. `backup_disabled` is `Unavailable` (not `NotFound`),
+  `snapshot_not_found` is `NotFound`, `backup_unavailable` is `Unavailable`, and the `400 invalid_*` /
+  `app_id_required` refusals are `Protocol` with `ErrorCode` set.
 
 ## File transfer
 
@@ -211,6 +254,11 @@ UTF-8.
   returned, since the result would be incomplete).
 - **Client-side transport timeout / lost response** → `SandboxErrorKind.TransportTimeout`, carrying the
   recoverable `SandboxException.OperationId`.
+- **Executable could not run** (gateway `error_code` `executable_not_runnable`) →
+  `SandboxErrorKind.ExecutableNotRunnable` with a fixed message; the gateway's free-text `error` is never
+  copied into an exception (ADR 0001).
+- **Failed with no exit code** (a pre-spawn rejection or a signal kill), or **cancelled by the gateway**
+  → `SandboxErrorKind.OperationFailed`.
 - **Caller cancellation** → a plain `OperationCanceledException`.
 
 Neither timeout claims the remote process tree was terminated — the gateway may still be running the
@@ -370,6 +418,87 @@ Two further consequences worth stating plainly:
   writable. Pick any other path for your own files.
 
 
+## Leased browsers (CDP and MCP relay)
+
+The gateway leases a Chrome per `(app, browser id)`; the first request with a new id binds one. Ids are
+`[A-Za-z0-9._:-]{1,128}`. Every relay call goes through the client's auth stamping, so the
+`X-Sbx-App-*` headers (and any future per-request header) are added in one place.
+
+- `GetBrowserCdpUri` / `GetBrowserCdpWebSocketUri` — the relay's HTTP and `ws`/`wss` URLs.
+- `GetBrowserVersionAsync` — `/json/version`, with `BrowserInstance` and the debugger target reduced
+  to a path on this gateway.
+- `ConnectBrowserCdpAsync` — an authenticated CDP WebSocket. Targets must stay under the browser's own
+  `/cdp/` endpoint. A gateway close `1011 browser_restarted` surfaces from `ReceiveTextAsync` as
+  `SandboxErrorKind.BrowserRestarted` (retryable): reconnect to get a fresh browser.
+- `ConnectBrowserMcpAsync(id, BrowserMcpServer.Playwright | DevTools)` — a `BrowserMcpSession` whose
+  `Client` is a streamable-HTTP `McpClient` (ModelContextProtocol.Core). Its `IsBrowserReplaced` turns
+  true when a later response names a different `X-Sbx-Browser-Instance`.
+- `CloseBrowserAsync` — idempotent (`204` even for an unknown id). A `404` means the gateway has
+  browsers disabled and throws `BrowserUnsupported`.
+- `BrowserRequestSignature` — verifies the `X-Sbx-Browser-Signature` the gateway adds to pinned
+  browser egress (HMAC-SHA256, ±300 s skew, constant-time compare).
+
+Relay error codes: `browser_capacity` / `browser_launch_failed` / `browser_unreachable` →
+`Unavailable` (capacity carries `RetryAfter`); `invalid_browser_id` / `invalid_cdp_path` /
+`unknown_browser_mcp` / `body_too_large` → `Protocol`; `cdp_upgrade_rejected` → `NotFound`.
+
+## Per-app git marketplaces (gateway ADR 0041)
+
+An app can register public git repositories as its own plugin marketplaces. The gateway clones each one
+and mounts it at `/marketplaces/<alias>/` next to the operator's marketplaces. Requires a gateway build
+containing commit `bac5a32` (not yet released; absent from v0.1.16, and numbered ADR 0040 on that
+commit's own branch) with `MARKETPLACE_STORE_PATH` set.
+
+- `RegisterAppMarketplaceAsync(alias, url, gitRef?)` — register, or re-point an existing alias (a different
+  URL or ref replaces it). `gitRef` null means `latest` (follow the default branch); a tag, branch or commit
+  pins it. The gateway clones before answering, so a bad URL or ref fails here, not at sandbox create.
+- `ListAppMarketplacesAsync()` — the app's registrations as `SandboxAppMarketplace` (`ResolvedSha`,
+  `LastError` of the last failed background sync, timestamps as text).
+- `SyncAppMarketplaceAsync(alias)` — fetch `latest` now; a pin is returned unchanged.
+- `RemoveAppMarketplaceAsync(alias)` — `false` when the alias was not registered. Sandboxes already
+  using it keep their commit.
+
+**Behaviour change:** creating a sandbox without `Marketplaces` now mounts the operator default set
+**plus all of the app's registrations**. Name aliases to mount fewer. `PreviewMarketplacesAsync` lists
+the registrations' plugins too. Every marketplace call (and the preview) sends `app_id`, which a gateway
+with `AUTH_ENFORCE` off requires and an enforcing gateway ignores.
+
+Error codes: `marketplaces_disabled` (404), `git_failed` (502), `store_failed` / `registry_failed`
+(500) → `Unavailable`; `alias_taken` (409, the alias is an operator marketplace's) → `Conflict`;
+`marketplace_not_registered` → `NotFound`; `invalid_alias` / `invalid_url` / `host_not_allowed` /
+`invalid_ref` / `ref_not_found` / `app_id_required` (400) → `Protocol`. `ErrorCode` names the reason.
+
+Not supported upstream: a "cloud" marketplace whose catalog only points at plugins in other git repos
+(`github` / `url` / `git-subdir` plugin sources are skipped). Tracked as gateway issue #202.
+
+## Per-agent state
+
+Several agents can share one sandbox session (gateway ADR 0040). Each MCP call names its agent in
+the `X-Sbx-Agent-ID` header. The gateway then keeps that agent's read-before-write marks, loaded
+skills, tasks and PowerShell contexts apart from every other agent's. A call with no header belongs
+to the default agent, whose id is `""`.
+
+- **Agent ids:** 1–64 characters of `A-Z a-z 0-9 . _ -`. Use `SandboxAgentId.IsValid` to check one.
+  Send no header for the default agent. An empty header is a JSON-RPC `-32602` error.
+- **Freshness is per agent:** an agent's `Edit` fails with "File has been modified since you read
+  it" when anyone else changed the file after this agent last read it. That agent must read the
+  file again.
+- **`ListAgentsAsync(sessionId)`:** every agent the session has seen, as `SandboxAgentInfo`.
+  `IsDefault` is true for the default agent.
+- **`DeleteAgentAsync(sessionId, agentId)`:** forgets one named agent's state. An unknown agent is
+  `NotFound` (404). The default agent cannot be deleted: that is `Conflict` (409). A busy sandbox is
+  `Unavailable` (503). The SDK refuses an invalid id before sending.
+- **`ListDiscoveredAsync(sessionId, agentId)`:**
+  - `null` lists every row.
+  - `""` lists the rows the default agent was notified of.
+  - A named id lists that agent's notified rows.
+  - Each item carries `DiscoveredAt`, `Notified`, `Plugin` and a sub-agent's `Frontmatter`.
+    Treat `Frontmatter` as untrusted.
+
+Only the gateway's `/mcp` endpoint reads the agent header. No REST call takes it, so the SDK has
+none to send.
+
+
 ## Errors
 
 Every gateway/transport failure other than caller cancellation raises `SandboxException`, which
@@ -389,10 +518,11 @@ covers every malformed-response case, and the SDK never lets one surface as a ra
   optional per the gateway's contract, e.g. a `"context_file"` item never has one) or a `null`
   collection element in any lifecycle/catalog/discovery list; a malformed operation-status or
   directory-listing body; or a write whose reported `bytes_written` does not match what was sent.
-- A non-success direct-API response carries the gateway's stable `{ error, code, error_code,
+- A non-success REST or direct-API response carries the gateway's stable `{ error, code, error_code,
   retryable }` body; only the closed-vocabulary `error_code` is mapped to a `SandboxErrorKind` and
-  surfaced on `SandboxException.ErrorCode` — the gateway-controlled free-text `error` message is never
-  copied into the exception (see Security below).
+  surfaced on `SandboxException.ErrorCode` (with `Retryable`, `RetryAfter`, `SnapshotIds` beside it) —
+  the gateway-controlled free-text `error` message is never copied into the exception (see Security
+  below). A body that is missing, malformed, or over 64 KiB falls back to classification by status.
 - An observed `3xx` redirect (which the SDK refuses rather than follows).
 
 ## Security
@@ -408,4 +538,7 @@ covers every malformed-response case, and the SDK never lets one surface as a ra
   echo credential material), and a direct-API error's gateway-controlled free-text `error` message is
   never copied into a `SandboxException`: both are untrusted, potentially secret-bearing content (e.g.
   echoed credential material or captured tool output). Only a `SandboxException.StatusCode` and the
-  closed-vocabulary `error_code` are ever surfaced.
+  closed-vocabulary `error_code` (plus `retryable`, `Retry-After`, and snapshot ids) are surfaced from a
+  REST error. A JSON-RPC `error.message` is never copied either: `McpCallFailed` carries only
+  `JsonRpcCode`. One gateway text *is* quoted, length-bounded: an operation's `error` reason (the
+  gateway allow-lists and sanitizes it before sending).

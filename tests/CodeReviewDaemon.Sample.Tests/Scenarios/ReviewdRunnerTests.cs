@@ -1093,6 +1093,43 @@ public sealed class ReviewdRunnerTests
         }
     }
 
+    [Theory]
+    [InlineData('d', "1:fresh")]
+    [InlineData('a', null)]
+    public async Task Batch_admits_a_new_head_fresh_after_its_slot_was_released_mid_review(
+        char attemptHead,
+        string? run
+    )
+    {
+        using var batch = new BatchFixture(0);
+        // The reaper released the slot at review-completed and left the stage; its prepared merge is now stale.
+        batch.PutAttempt(
+            "1",
+            new JsonObject
+            {
+                ["slot"] = 0,
+                ["stage"] = "review-completed",
+                ["cleanupState"] = "released",
+                ["claimToken"] = "token",
+                ["reviewInputId"] = "original",
+                ["headSha"] = new string(attemptHead, 40),
+                ["mergeSha"] = new string('9', 40),
+            }
+        );
+        await batch.ExecuteAsync();
+        if (run is null)
+        {
+            // The same head may already have posted, so it only resumes, and its changed merge defers it.
+            batch.Runs.Should().NotContain(value => value.StartsWith("1:", StringComparison.Ordinal));
+            batch.Entries().First()["reason"]!.GetValue<string>().Should().Contain("prepared merge");
+        }
+        else
+        {
+            batch.Runs.Should().Contain(run);
+            batch.Entries().First()["status"]!.GetValue<string>().Should().Be("verified");
+        }
+    }
+
     [Fact]
     public async Task Batch_creation_age_is_rolling_forwarded_and_bound_to_immutable_scope()
     {
@@ -2265,6 +2302,157 @@ public sealed class ReviewdRunnerTests
                 .Requests.Count(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
                 .Should()
                 .Be(running || sameHead ? 0 : 1);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    [Theory]
+    [InlineData('d')]
+    [InlineData('a')]
+    public async Task Runner_replaces_a_released_attempt_only_when_the_head_moved_on(char attemptHead)
+    {
+        // The reaper released slot 2 at review-completed; the stage stayed and the conversation is idle.
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-released-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/17";
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/api/conversations?",
+                """[{"threadId":"prior","title":"Nova-17-dddddddd","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1}]"""
+            )
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/unfreeze", StringComparison.Ordinal),
+                _ => new HttpResponseMessage(HttpStatusCode.Conflict)
+                {
+                    Content = new StringContent("""{"error":"not_freezable","threadId":"prior"}"""),
+                }
+            )
+            .OnJson(HttpMethod.Post, "/messages", """{"inputId":"original","idempotencyKeyHonored":true}""")
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        static Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token) =>
+            Task.FromResult(
+                phase switch
+                {
+                    "eligibility" => new JsonObject
+                    {
+                        ["prId"] = "17",
+                        ["status"] = "active",
+                        ["isDraft"] = false,
+                        ["headSha"] = new string('a', 40),
+                    },
+                    "prepare" => new JsonObject
+                    {
+                        ["mergeSha"] = new string('b', 40),
+                        ["contextPath"] = "context",
+                        ["reviewDirectory"] = "reviews",
+                        ["baselineComments"] = new JsonArray(),
+                    },
+                    _ => [],
+                }
+            );
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            var store = new SqliteKvStore(connection);
+            await store.SetAsync(
+                $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                new JsonObject
+                {
+                    ["17"] = new JsonObject
+                    {
+                        ["Lifecycle"] = "Open",
+                        ["IsDraft"] = false,
+                        ["HeadSha"] = new string('a', 40),
+                    },
+                }
+            );
+            await store.SetAsync(
+                attemptKey,
+                new JsonObject
+                {
+                    ["repository"] = repo.DisplayName,
+                    ["prId"] = "17",
+                    ["slot"] = 2,
+                    ["workspaceId"] = "workspace",
+                    ["stage"] = "review-completed",
+                    ["cleanupState"] = "released",
+                    ["claimToken"] = "earlier-claim",
+                    ["reviewInputId"] = "earlier-input",
+                    ["threadId"] = "prior",
+                    ["headSha"] = new string(attemptHead, 40),
+                }
+            );
+            var options = CliOptions.Parse([
+                "review",
+                "run",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "test",
+                "--execute",
+            ]);
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    options,
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ => Task.CompletedTask,
+                    () => DateTimeOffset.UtcNow
+                );
+            var earlierHead = attemptHead == 'd';
+            var failure = (await run.Should().ThrowAsync<InvalidOperationException>()).Which.Message;
+            var messages = handler.Requests.Count(r =>
+                r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal)
+            );
+            using var history = connection.CreateCommand();
+            history.CommandText = "SELECT value FROM cache WHERE key LIKE 'reviewd/attempt-history/%'";
+            var archived = await history.ExecuteScalarAsync() as string;
+            if (earlierHead)
+            {
+                // The new head is reviewed fresh, and the attempt it overwrites is kept in history.
+                failure.Should().NotStartWith("An incomplete review attempt exists");
+                messages.Should().Be(1);
+                archived.Should().Contain("earlier-claim");
+            }
+            else
+            {
+                // The same head may already have posted, so it is never re-sent.
+                failure.Should().StartWith("An incomplete review attempt exists");
+                messages.Should().Be(0);
+                archived.Should().BeNull();
+                (await store.GetAsync<JsonObject>(attemptKey))!["claimToken"]!
+                    .GetValue<string>()
+                    .Should()
+                    .Be("earlier-claim");
+            }
         }
         finally
         {

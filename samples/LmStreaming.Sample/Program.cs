@@ -357,9 +357,10 @@ try
     // as a hosted service but is non-fatal: when the gateway is not configured/available the app
     // still starts for all other modes; the hard failure surfaces only when Workspace Agent mode
     // actually tries to create a sandbox session.
-    var sandboxOptions =
+    var sandboxOptions = DefaultWorkspaceLeafWhenUnset(
         builder.Configuration.GetSection(SandboxGatewayOptions.SectionName).Get<SandboxGatewayOptions>()
-        ?? new SandboxGatewayOptions();
+            ?? new SandboxGatewayOptions()
+    );
 
     // An unattended host (the compaction eval runner) turns the browser-hosted question tool off so a
     // run can never park on a question nobody will answer. Default true keeps the interactive UI as is.
@@ -473,6 +474,18 @@ try
         sp.GetRequiredService<ILogger<MarketplaceCatalogClient>>()
     ));
     _ = builder.Services.AddSingleton<WorkspaceCatalogCompatibilityService>();
+    // This app's git marketplaces (api/marketplaces/app). Registering clones before answering, so the
+    // timeout is longer than the catalog's.
+    _ = builder.Services.AddSingleton<IAppMarketplaceClient>(_ => new AppMarketplaceClient(
+        sandboxOptions,
+        GatewayHttpClient(TimeSpan.FromSeconds(120))
+    ));
+    // Workspace backups for the conversation inspector (gateway v0.1.16 /api/v1/backup/*).
+    _ = builder.Services.AddSingleton(sp => new SandboxWorkspaceBackup(
+        sandboxOptions,
+        sp.GetRequiredService<IWorkspaceStore>(),
+        GatewayHttpClient()
+    ));
 
     // OAuth auth-provider services (GitHub + Azure DevOps token injection for sandbox egress).
     var authOptions = builder.Configuration.GetSection(AuthOptions.SectionName).Get<AuthOptions>() ?? new AuthOptions();
@@ -1444,7 +1457,8 @@ try
                                 toolNames: null,
                                 omitServerPrefix: true,
                                 handlerDecorator: SandboxToolHealth.Wrap,
-                                transportHandler: sp.GetKeyedService<HttpMessageHandler>(SandboxMcpTransportHandlerKey)
+                                transportHandler: sp.GetKeyedService<HttpMessageHandler>(SandboxMcpTransportHandlerKey),
+                                agentIdResolver: () => SandboxSubAgentIdentity.ForCurrentFlow(threadId)
                             );
                             copilotResources.AddRange(clients.Cast<IAsyncDisposable>());
                             var (contracts, handlers) = sandboxTools.Build();
@@ -1798,7 +1812,12 @@ try
                         handlerDecorator: SandboxToolHealth.Wrap,
                         transportHandler: sandboxTransportHandler,
                         existingClient: keptSandboxClient,
-                        namedHandlerDecorator: cwdDecorator
+                        namedHandlerDecorator: cwdDecorator,
+                        // Per-agent gateway state (ADR 0040): a sub-agent calling these inherited tools sends
+                        // its stable X-Sbx-Agent-ID (SandboxSubAgentIdentity); the primary sends none. No
+                        // cleanup when a sub-agent stops (product decision) — a future "retire sub-agent"
+                        // action is where SandboxClient.DeleteAgentAsync will be called.
+                        agentIdResolver: () => SandboxSubAgentIdentity.ForCurrentFlow(threadId)
                     );
 
                     if (sandboxClients.Count > 0)
@@ -5667,7 +5686,8 @@ public partial class Program
         string name,
         string endpoint,
         IReadOnlyDictionary<string, string> headers,
-        HttpMessageHandler? transportHandler
+        HttpMessageHandler? transportHandler,
+        Func<string?>? agentIdResolver = null
     )
     {
         var transportOptions = new HttpClientTransportOptions
@@ -5679,12 +5699,27 @@ public partial class Program
         };
 
         // transportHandler is null in every production path (see SandboxMcpTransportHandlerKey) —
-        // the SDK opens its own real HttpClient exactly as before this seam existed.
-        var transport = transportHandler is null
+        // the SDK opens its own real HttpClient exactly as before this seam existed. A sandbox client
+        // also gets the per-request X-Sbx-Agent-ID stamp (SandboxAgentIdHandler) in front of whichever
+        // handler sends; the borrowed test handler is never disposed with the client.
+        HttpMessageHandler? sendHandler = transportHandler;
+        var disposeHandler = false;
+        if (agentIdResolver is not null)
+        {
+            disposeHandler = transportHandler is null;
+            sendHandler = new SandboxAgentIdHandler(agentIdResolver)
+            {
+                // No auto-redirect: the app key rides in AdditionalHeaders, which a redirect would replay to
+                // another origin (same rule as GatewayHttpClient).
+                InnerHandler = transportHandler ?? new SocketsHttpHandler { AllowAutoRedirect = false },
+            };
+        }
+
+        var transport = sendHandler is null
             ? new HttpClientTransport(transportOptions)
             : new HttpClientTransport(
                 transportOptions,
-                new HttpClient(transportHandler, disposeHandler: false),
+                new HttpClient(sendHandler, disposeHandler),
                 loggerFactory: null,
                 ownsHttpClient: true
             );
@@ -5722,6 +5757,10 @@ public partial class Program
     ///     handlers a child captured earlier and the ones registered here share one session.
     /// </param>
     /// <param name="namedHandlerDecorator">Optional conversation-specific wrapper using the discovered tool contract.</param>
+    /// <param name="agentIdResolver">
+    ///     Sandbox clients only: evaluated per request to stamp <c>X-Sbx-Agent-ID</c> (see
+    ///     <see cref="SandboxAgentIdHandler"/>); null omits the handler entirely.
+    /// </param>
     private static List<McpClient> ConnectFilteredHttpMcpClient(
         FunctionRegistry registry,
         string name,
@@ -5733,7 +5772,8 @@ public partial class Program
         Func<ToolHandler, ToolHandler> handlerDecorator,
         HttpMessageHandler? transportHandler = null,
         McpClient? existingClient = null,
-        Func<FunctionContract, ToolHandler, ToolHandler>? namedHandlerDecorator = null
+        Func<FunctionContract, ToolHandler, ToolHandler>? namedHandlerDecorator = null,
+        Func<string?>? agentIdResolver = null
     )
     {
         var createdClients = new List<McpClient>();
@@ -5741,7 +5781,8 @@ public partial class Program
         try
         {
             // See ConnectHttpMcpClient: an existing client is registered from, not reconnected.
-            var client = existingClient ?? OpenHttpMcpClient(name, endpoint, headers, transportHandler);
+            var client =
+                existingClient ?? OpenHttpMcpClient(name, endpoint, headers, transportHandler, agentIdResolver);
             createdClients.Add(client);
 
             var mcpClients = new Dictionary<string, McpClient> { [name] = client };
@@ -5875,6 +5916,27 @@ public partial class Program
     }
 
     /// <summary>
+    ///     Gives the built-in default workspace a real directory leaf when the config names none.
+    ///     <para>
+    ///     The gateway rejects an empty <c>workspace</c> path with a 400 (per-app workspace roots).
+    ///     Without <c>SandboxGateway:Workspace</c> or <c>WorkspacePath</c>, the default workspace
+    ///     resolved to an empty leaf, so every create for it failed: chats in that workspace and the
+    ///     tool-catalog probe, which asks for a bare <see cref="SandboxSessionRegistry.DefaultWorkspaceId"/>
+    ///     ref and so never reads the workspace store. Setting the leaf on the options fixes both,
+    ///     because every path resolves its leaf from them. A configured leaf is left alone.
+    ///     </para>
+    /// </summary>
+    internal static SandboxGatewayOptions DefaultWorkspaceLeafWhenUnset(SandboxGatewayOptions options)
+    {
+        if (string.IsNullOrWhiteSpace(options.ResolveWorkspace().Leaf))
+        {
+            options.Workspace = SandboxSessionRegistry.DefaultWorkspaceId;
+        }
+
+        return options;
+    }
+
+    /// <summary>
     ///     Builds the sandbox <see cref="WorkspaceRef"/> for a workspace, mapping every persisted
     ///     field the gateway needs at create time — directory, marketplaces and plugin selection.
     ///     <para>
@@ -5911,7 +5973,9 @@ public partial class Program
             workspace?.DirectoryRelPath,
             workspace?.Marketplaces,
             ToSandboxPluginRefs(workspace?.PluginSelection),
-            workspace?.Env
+            workspace?.Env,
+            workspace?.Image,
+            workspace?.Home
         );
 
     /// <summary>

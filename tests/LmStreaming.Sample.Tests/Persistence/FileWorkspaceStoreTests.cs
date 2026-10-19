@@ -23,6 +23,34 @@ public class FileWorkspaceStoreTests
     }
 
     [Fact]
+    public async Task CreateAsync_ImageAndHome_PersistAndReachTheSandboxWorkspaceRef()
+    {
+        var dir = NewTempDir();
+        var created = await new FileWorkspaceStore(dir).CreateAsync(
+            new WorkspaceCreate
+            {
+                Name = "Imaged",
+                Image = " debian:bookworm-slim ",
+                Home = "  ",
+            }
+        );
+
+        // Re-read from disk, as the session-recreate path does, then build the create-time ref from it.
+        var reloaded = await new FileWorkspaceStore(dir).GetAsync(created.Id);
+        var reference = global::Program.BuildWorkspaceRef(created.Id, reloaded);
+
+        reloaded!.Image.Should().Be("debian:bookworm-slim");
+        reloaded.Home.Should().BeNull("a blank home means the workspace root");
+        reference.Image.Should().Be("debian:bookworm-slim");
+        reference.Home.Should().BeNull();
+
+        var homed = await new FileWorkspaceStore(dir).CreateAsync(
+            new WorkspaceCreate { Name = "Homed", Home = "wt/issue-1" }
+        );
+        global::Program.BuildWorkspaceRef(homed.Id, homed).Home.Should().Be("wt/issue-1");
+    }
+
+    [Fact]
     public async Task CreateAsync_UsesProvidedDirectory_WhenSupplied()
     {
         var store = new FileWorkspaceStore(NewTempDir());

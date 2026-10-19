@@ -27,6 +27,15 @@ internal sealed class ReviewdConfig(IConfiguration configuration) : IDisposable
     public string? S2SSecret => Configuration["CodeReviewDaemon:LmStreamingS2SSecret"];
     public string ModeId => Configuration["CodeReviewDaemon:LmStreamingModeId"] ?? "workspace-agent";
 
+    /// <summary>
+    ///     How many slots each repository has (<c>Reviewd:LanesPerRepo</c>, 1–6, default 6). An automatic run tries
+    ///     only these, so it never builds an extra slot the runner does not keep warm.
+    /// </summary>
+    public int LanesPerRepo =>
+        Configuration["Reviewd:LanesPerRepo"] is not { } value ? 6
+        : int.TryParse(value, out var lanes) && lanes is >= 1 and <= 6 ? lanes
+        : throw new ArgumentException("Reviewd:LanesPerRepo must be between 1 and 6.");
+
     public static ReviewdConfig Load(string? path)
     {
         var builder = new ConfigurationBuilder();

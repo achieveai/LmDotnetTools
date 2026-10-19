@@ -114,7 +114,7 @@ reviewd pr pick --repo O365Exchange/Weve_DA/Nova --db .run/reviewd/pending-nondr
 - Eligible: **active, explicitly non-draft**, with a known source head, and either unreviewed or a different source head **at least 30 minutes after the last verified successful review**. Exactly 30 minutes qualifies. Comment/title changes do not qualify.
 - Successful receipts require `stage: completed-verified`, `reviewedHeadSha`, and `reviewCompletedAt` (Unix seconds or ISO timestamp). The cooldown uses review completion, not polling or comment-publication time.
 - Unknown draft/head metadata, incomplete/failed/malformed receipts, or bindings without completed receipts are excluded. A missing database/snapshot fails rather than treating history as empty.
-- Use the refreshed non-draft operator database. Standard `pr check` still includes drafts and does not populate `IsDraft`; those snapshots are not eligible. Recheck live status/head before submitting. This command does not start reviews or change the immutable conversation binding.
+- `pr check` saves each PR's `IsDraft` from the ADO listing, so a fresh snapshot is enough; drafts are listed but never picked. Snapshots saved before 2026-10-15 lack `IsDraft` and are not eligible until refreshed. Recheck live status/head before submitting. This command does not start reviews or change the immutable conversation binding.
 
 ## Restrict new reviews by creation age
 
@@ -135,7 +135,7 @@ This is operator policy, not a claim that `review batch` automatically resets it
 ## Run one PR review
 
 ```bash
-# Preview only. No remote calls, submissions, resets, comments, commits or DB writes.
+# Preview only. No submissions, resets, comments or commits. It does read the host (see Preview below).
 reviewd review run --repo O365Exchange/Weve_DA/Nova --pr <id> --slot 2 \
   --db .run/reviewd/pending-nondraft.db --session <gateway-session-id> \
   --workspace <host-workspace-id> --provider <provider-id>
@@ -148,11 +148,18 @@ reviewd review run --repo O365Exchange/Weve_DA/Nova --pr <id> --slot 2 \
 **Slot choice.** `--slot` names the slot. Without it, the runner picks one (`AutoSlot.cs`):
 
 - A PR that already owns a slot keeps it, and so does `--resume` / `--cleanup-only`. Recovery never moves a PR.
-- Otherwise it tries each slot once, in order (`--slots 2,4` limits and orders them). A slot is skipped, with nothing claimed, when a queued batch entry holds it, another local run holds its lease, or the DB records an owner.
+- Otherwise it tries each slot once, in order (`--slots 2,4` limits and orders them). Without `--slots` it tries the first `Reviewd:LanesPerRepo` slots (configuration, 1–6, default 6), so set it to the runner's lane count. A slot is skipped, with nothing claimed, when a queued batch entry holds it, another local run holds its lease, or the DB records an owner.
 - A **stale** owner counts as free. Stale means another PR's claim lease has lapsed, the same test `review reap-slots` uses. It is reclaimed with the reaper's own reclaim (freeze, confirm quiesced, discard, release) under the held slot lease, and the slot is then used. A reclaim that fails, such as a review that is still running, leaves the slot held, and the runner moves on. Owners claimed before leasing are never stale here; `reap-slots --include-undated` handles those.
-- If `prepare` finds the native slot busy, it exits 3 with a `slot-not-idle` status before writing anything. The runner then releases its own claim and tries the next slot. With an explicit `--slot`, the run stops, but the claim is still released.
+- If `prepare` finds the native slot busy, it exits 3 with a `slot-not-idle` status before writing anything. The runner then releases its own claim and tries the next slot. With an explicit `--slot`, the run stops, but the claim is still released. A slot off the idle baseline counts as busy, such as one left behind after a commit to the store's main. Admission never repairs it; warming the slot does.
 - If no slot is usable, the run exits **3** and writes a JSON skip reason for every slot to stderr. Nothing is claimed.
 - Preview prints the slot it would pick, or the stale owner it would reclaim.
+- `review slots --repos <csv> --db <db> --workspace <id>` lists each slot from the database alone: `free`, `queued` (a live batch entry), `owned` (with the owner PR and lease) or `expired` (an automatic run reclaims it). It writes nothing and does not check local leases or the native slot.
+
+**Preview.** Without `--execute` the run claims nothing and sends nothing, but it is not offline:
+
+- It needs the S2S host (`LmStreamingBaseUrl` plus its S2S secret) and a real `--workspace`. It asks the host for an existing conversation titled `{repo}-{pr}-`, whether one is titled for the current head (then it stops: "already reviewed by another run"), and whether a bound conversation is still running.
+- When the host has a conversation for the PR and the database has no binding, preview saves that binding. It is a cache of what the host already holds, not a claim.
+- `--session` is only echoed; preview never contacts the gateway.
 
 1. Validate eligibility, host capabilities and session/workspace identity. Re-review reuses the immutable bound conversation, checking its workspace/provider/mode and global idle state.
 2. Atomically claim the selected workspace/repository/slot with an immutable SQLite token. Keep PR/slot lifetime leases. Incoming setup requires an already idle native slot; it never resets a predecessor. Run installed setup through Gateway and require complete context plus an unchanged active/non-draft source/merge revision. Save `setup-context.json` inside the review directory.

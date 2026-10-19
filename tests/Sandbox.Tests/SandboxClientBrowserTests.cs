@@ -61,12 +61,67 @@ public sealed class SandboxClientBrowserTests
         (await act.Should().ThrowAsync<SandboxException>()).Which.IsDirectReadCapExceeded.Should().BeTrue();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BrowserCall_JsonRpcErrorEnvelope_SurfacesTheCode_ButNeverTheGatewayMessage(bool longMessage)
+    {
+        const string Sentinel = "sk-live-SENTINEL-0123456789";
+        var message = longMessage ? $"tool output: {Sentinel} {new string('x', 2000)}" : $"Invalid key {Sentinel}";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        // Shape of the gateway's McpResponse::error (server.rs): a JSON-RPC error with no result. The message is
+        // gateway-controlled and can echo tool output or credentials (ADR 0001).
+        handler.OnJson(
+            HttpMethod.Post,
+            "/mcp",
+            JsonSerializer.Serialize(
+                new
+                {
+                    jsonrpc = "2.0",
+                    id = 1,
+                    error = new { code = -32602, message },
+                }
+            )
+        );
+
+        var act = () => client.CallBrowserAsync("owned-browser", "playwright", "browser_snapshot");
+
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown.Kind.Should().Be(SandboxErrorKind.McpCallFailed);
+        thrown.JsonRpcCode.Should().Be(-32602);
+        thrown.Message.Should().Contain("-32602").And.NotContain(Sentinel);
+        thrown.ToString().Should().NotContain(Sentinel);
+    }
+
     [Fact]
-    public async Task CloseBrowser_AddressesOnlyTheNamedLease_AndMissingLeaseIsAlreadyClosed()
+    public async Task CloseBrowser_IdempotentNoContent_AddressesOnlyTheNamedBrowser()
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
-        handler.OnStatus(HttpMethod.Delete, "/api/v1/browsers/owned-browser", HttpStatusCode.NotFound);
-        (await client.CloseBrowserAsync("owned-browser")).Should().BeFalse();
-        handler.Requests.Should().ContainSingle().Which.Uri.AbsolutePath.Should().Be("/api/v1/browsers/owned-browser");
+        handler.OnStatus(HttpMethod.Delete, "/api/v1/browsers/owned-browser", HttpStatusCode.NoContent);
+
+        await client.CloseBrowserAsync("owned-browser");
+        await client.CloseBrowserAsync("owned-browser");
+
+        handler.Requests.Should().HaveCount(2);
+        handler.Requests.Should().AllSatisfy(r => r.Uri.AbsolutePath.Should().Be("/api/v1/browsers/owned-browser"));
+    }
+
+    [Fact]
+    public async Task CloseBrowser_NotFoundMeansBrowsersUnsupported_AndThrows()
+    {
+        // relay.rs scope(): DELETE answers 404 only when the gateway has no browser manager.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Delete,
+            "/api/v1/browsers/owned-browser",
+            """{"error":"x","code":404,"error_code":"browser_unsupported","retryable":false}""",
+            HttpStatusCode.NotFound
+        );
+
+        var act = () => client.CloseBrowserAsync("owned-browser");
+
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown.Kind.Should().Be(SandboxErrorKind.BrowserUnsupported);
+        thrown.ErrorCode.Should().Be("browser_unsupported");
     }
 }

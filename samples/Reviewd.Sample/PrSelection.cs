@@ -28,14 +28,22 @@ internal static class PrSelection
             {
                 var pr = entry.Value;
                 var attempt = await ReadAsync($"reviewd/review-attempt/{prefix}/{entry.Name}");
-                if (attempt is not null && !IsSettled(attempt.Value))
+                var earlierHead =
+                    attempt is not null
+                    && IsReleasedForEarlierHead(
+                        attempt.Value,
+                        pr.TryGetProperty("HeadSha", out var currentHead) ? currentHead.GetString() : null
+                    );
+                if (attempt is not null && !IsSettled(attempt.Value) && !earlierHead)
                 {
                     continue;
                 }
                 var review = await ReadAsync($"reviewd/review-run/{prefix}/{entry.Name}");
                 var thread = await ReadAsync($"reviewd/pr-thread/{prefix}/{entry.Name}");
                 if (
-                    IsEligible(pr, review, thread is not null, observedAt)
+                    // That earlier attempt's binding is not an in-flight submission for this head. The runner
+                    // still asks the host whether the conversation is running before it sends anything.
+                    IsEligible(pr, review, thread is not null && !earlierHead, observedAt)
                     && (
                         options.Get("max-age-hours") is not { } age
                         || IsWithinCreationAge(
@@ -169,6 +177,20 @@ internal static class PrSelection
                 && !string.IsNullOrEmpty(claim.GetString())
             )
         );
+
+    // The reaper and reclaim-slot release a slot mid-review and leave the attempt's stage as it was. Once the PR
+    // has a new head that attempt reviewed older code: inspect refuses to publish it, so it can never finish, and
+    // the new head is a fresh review. The same head stays out: its review may already have posted.
+    internal static bool IsReleasedForEarlierHead(JsonElement attempt, string? currentHead) =>
+        attempt.TryGetProperty("cleanupState", out var cleanup)
+        && cleanup.GetString() == "released"
+        && attempt.TryGetProperty("claimToken", out var claim)
+        && !string.IsNullOrEmpty(claim.GetString())
+        && attempt.TryGetProperty("headSha", out var head)
+        && head.ValueKind == JsonValueKind.String
+        && !string.IsNullOrWhiteSpace(head.GetString())
+        && !string.IsNullOrWhiteSpace(currentHead)
+        && !string.Equals(head.GetString(), currentHead, StringComparison.OrdinalIgnoreCase);
 
     internal static bool IsEligible(JsonElement pr, JsonElement? review, bool hasThread, DateTimeOffset now)
     {

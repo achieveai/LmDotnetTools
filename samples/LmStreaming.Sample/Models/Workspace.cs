@@ -65,6 +65,19 @@ public record Workspace
     /// </summary>
     public IReadOnlyDictionary<string, string> Env { get; init; } =
         new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Client image ref every sandbox of this workspace is created from, or <see langword="null"/> for the
+    /// gateway default. The gateway's image allow-list decides whether it is accepted. Set on create only:
+    /// a live session cannot change its image.
+    /// </summary>
+    public string? Image { get; init; }
+
+    /// <summary>
+    /// Workspace-relative working directory (home) for every sandbox of this workspace, or
+    /// <see langword="null"/> for the workspace root. Set on create only.
+    /// </summary>
+    public string? Home { get; init; }
 }
 
 /// <summary>
@@ -99,6 +112,12 @@ public record WorkspaceCreate
     /// as an empty map. See <see cref="Workspace.Env"/>.
     /// </summary>
     public IReadOnlyDictionary<string, string>? Env { get; init; }
+
+    /// <summary>Optional client image ref. Blank is treated as none. See <see cref="Workspace.Image"/>.</summary>
+    public string? Image { get; init; }
+
+    /// <summary>Optional workspace-relative home. Blank is treated as none. See <see cref="Workspace.Home"/>.</summary>
+    public string? Home { get; init; }
 }
 
 /// <summary>
@@ -160,7 +179,9 @@ public sealed record WorkspaceView(
     IReadOnlyList<string> UnsupportedMarketplaces,
     IReadOnlyList<PluginRef>? PluginSelection,
     int PluginsRevision,
-    IReadOnlyDictionary<string, string> Env
+    IReadOnlyDictionary<string, string> Env,
+    string? Image,
+    string? Home
 );
 
 public sealed record WorkspaceGatewayView(string CanonicalBaseUrl, string AppId, bool Available, string? Error);
@@ -185,7 +206,9 @@ public static class WorkspaceViewMapping
             compatibility.UnsupportedMarketplaces,
             workspace.PluginSelection,
             workspace.PluginsRevision,
-            workspace.Env
+            workspace.Env,
+            workspace.Image,
+            workspace.Home
         );
     }
 }

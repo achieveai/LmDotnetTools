@@ -72,6 +72,7 @@ internal sealed class CliOptions
             "review reclaim-slot" => ["repo", "pr", "slot", "db", "workspace", "session", "execute"],
             "review reap-slots" => ["db", "workspace", "session", "include-undated", "execute"],
             "review capacity" => ["repos", "db", "workspace", "session", "evidence"],
+            "review slots" => ["repo", "repos", "db", "workspace", "slots"],
             "merge resolve" => ["request", "db", "session", "workspace", "provider", "execute"],
             "merge push" => ["request", "db", "session", "workspace", "provider", "result", "execute"],
             "pr bind-thread" => ["repo", "pr", "thread", "db"],
@@ -183,6 +184,13 @@ internal sealed class CliOptions
             }
             _ = ReviewSlots(result);
         }
+        if (command == "review slots")
+        {
+            _ = PrCommands.ParseRepos(result);
+            _ = result.Required("db");
+            _ = result.Required("workspace");
+            _ = ReviewSlots(result);
+        }
         if (command is "pr bind-thread" or "agent start" or "review run" && result.Has("pr"))
         {
             if (!int.TryParse(result.Required("pr"), out var prId) || prId <= 0)
@@ -239,11 +247,14 @@ internal sealed class CliOptions
         return result;
     }
 
-    /// <summary>The slots an automatic <c>review run</c> may try, in order: <c>--slots</c>, else 0–5.</summary>
-    internal static int[] ReviewSlots(CliOptions options)
+    /// <summary>
+    ///     The slots an automatic <c>review run</c> may try, in order: <c>--slots</c>, else the first
+    ///     <paramref name="lanes"/> slots (<see cref="ReviewdConfig.LanesPerRepo"/>).
+    /// </summary>
+    internal static int[] ReviewSlots(CliOptions options, int lanes = 6)
     {
         if (options.Get("slots") is not { } list)
-            return [0, 1, 2, 3, 4, 5];
+            return [.. Enumerable.Range(0, lanes)];
         var slots = list.Split(',', StringSplitOptions.TrimEntries)
             .Select(value => int.TryParse(value, out var slot) && slot is >= 0 and <= 5 ? slot : -1)
             .ToArray();
@@ -292,6 +303,9 @@ internal sealed class CliOptions
                    --session <sandbox-session-id> --workspace <host-workspace-id> --provider <id> [--mode <id>] [--reasoning-effort <low|medium|high|xhigh>] [--max-age-hours <positive-integer>] [--execute] [--resume] [--cleanup-only]
         Without --slot, run takes the first free slot, or one whose lease has lapsed (reclaimed like reap-slots);
         a PR that already owns a slot keeps it. No usable slot exits 3 with per-slot reasons on stderr.
+        It tries --slots in order, else the first Reviewd:LanesPerRepo slots (configuration, 1-6, default 6).
+        review slots (--repo <org/project/repo> | --repos <csv>) --db <path> --workspace <id> [--slots <csv>]
+        Read-only: one JSON line per slot, state free | queued | owned | expired, with the owner PR and lease.
         review batch --selection <json> --db <pending.db> --session <id> --workspace <id> --provider <id>
                      [--mode <id>] [--reasoning-effort <low|medium|high|xhigh>] [--max-age-hours <positive-integer>] [--listen <url>] [--callback <url>] --execute
         Batch resumes its fixed selected queue; failed PRs requeue, ambiguous owners hold slots. No automatic new PR discovery.

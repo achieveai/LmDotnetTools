@@ -2327,23 +2327,38 @@ public class CompactionLoopTests
         }
     }
 
-    /// <summary>Collects every live message until cancelled; <c>RunCompletedMessage</c> proves the reader is registered.</summary>
+    /// <summary>Collects every live message until cancelled. The reader is registered before this returns.</summary>
+    /// <remarks>
+    /// SubscribeAsync registers its subscriber synchronously on the first MoveNextAsync, so that call runs
+    /// here. Started inside Task.Run instead, a loaded machine let the caller's first run finish before the
+    /// subscriber existed, and the run's messages were never seen.
+    /// </remarks>
     private static Task CollectLive(
         Harness h,
         System.Collections.Concurrent.ConcurrentQueue<IMessage> into,
         CancellationToken ct
-    ) =>
-        Task.Run(async () =>
+    )
+    {
+        var messages = h.Loop.SubscribeAsync(ct).GetAsyncEnumerator(ct);
+        var next = messages.MoveNextAsync();
+        return ReadAsync();
+
+        async Task ReadAsync()
         {
             try
             {
-                await foreach (var message in h.Loop.SubscribeAsync(ct))
+                await using (messages)
                 {
-                    into.Enqueue(message);
+                    while (await next)
+                    {
+                        into.Enqueue(messages.Current);
+                        next = messages.MoveNextAsync();
+                    }
                 }
             }
             catch (OperationCanceledException) { }
-        });
+        }
+    }
 
     /// <summary>Polls until <paramref name="done"/> holds; throws, never returns quietly, when it does not.</summary>
     private static async Task WaitUntilAsync(Func<Task<bool>> done, string what)

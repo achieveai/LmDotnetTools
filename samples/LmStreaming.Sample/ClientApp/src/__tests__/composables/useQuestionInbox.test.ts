@@ -102,8 +102,8 @@ describe('useQuestionInbox', () => {
     const { wrapper, inbox } = render(dependencies);
     await vi.waitFor(() => expect(inbox.isRefreshing.value).toBe(false));
     expect(dependencies.listConversations).toHaveBeenCalledTimes(3);
-    expect(dependencies.listConversations).toHaveBeenNthCalledWith(1, 1000, 0);
-    expect(dependencies.listConversations).toHaveBeenNthCalledWith(3, 1000, 2000);
+    expect(dependencies.listConversations).toHaveBeenNthCalledWith(1, 1000, 0, 'lastUsed', true);
+    expect(dependencies.listConversations).toHaveBeenNthCalledWith(3, 1000, 2000, 'lastUsed', true);
     expect(dependencies.loadConversationMessages).toHaveBeenCalledTimes(2001);
     expect(inbox.entries.value.map((entry) => entry.rootThreadId)).toEqual(['root-2000']);
     wrapper.unmount();
