@@ -356,21 +356,21 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// SQLite REFUSES a creation-ordered listing rather than approximating it; the two in-memory
-    /// stores answer it.
+    /// Every store answers a creation-ordered listing identically, ordering by the creation time
+    /// derived from the thread id rather than by <c>last_updated</c>.
     /// </summary>
     /// <remarks>
-    /// <c>thread_metadata</c> has no <c>created_at</c> column, and re-deriving one in SQL would be a
-    /// second copy of <see cref="ConversationListOptions.CreationTimestampOf"/> free to diverge from
-    /// the first without anyone noticing. Following the precedent the scoped overload's throwing
-    /// default set, the store says so where it is called instead of answering something plausible.
-    /// The message is asserted to name the missing column, because a bare
-    /// <see cref="NotSupportedException"/> leaves the reader no idea what to do about it.
+    /// The host exposes a <c>created</c> sort, so the store it runs on must answer it. SQLite has no
+    /// <c>created_at</c> column, so it re-derives the ordering in memory through
+    /// <see cref="ConversationListOptions.Order"/> - the same helper the two in-memory stores use -
+    /// after reading the scoped rows. Running across every <paramref name="kind"/> pins that all
+    /// three agree: the two rows are seeded so creation order (ascending id) is the exact reverse of
+    /// last-used order, so a store that silently fell back to <c>last_updated</c> would fail here.
     /// </remarks>
     /// <param name="kind">Store flavour under test.</param>
     [Theory]
     [MemberData(nameof(StoreKinds))]
-    public async Task CreationOrderedListing_IsRefusedBySqlite_AndAnsweredByTheOthers(string kind)
+    public async Task CreationOrderedListing_IsAnsweredIdenticallyByEveryStore(string kind)
     {
         var store = CreateStore(kind);
 
@@ -378,17 +378,6 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         await WriteAsync(store, "thread-2000-bbb", TenantA, UserA, lastUpdated: 8_000);
 
         var options = new ConversationListOptions { SortOrder = ConversationSortOrder.Created };
-
-        if (kind == "sqlite")
-        {
-            var refusal = await Assert.ThrowsAsync<NotSupportedException>(() =>
-                store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, options, ct: CancellationToken.None)
-            );
-
-            _ = refusal.Message.Should().Contain("created_at");
-            _ = refusal.Message.Should().Contain(nameof(ConversationListOptions.CreationTimestampOf));
-            return;
-        }
 
         var listed = await store.ListThreadsAsync(Scope(TenantA, UserA), 50, 0, options, ct: CancellationToken.None);
 

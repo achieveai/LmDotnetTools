@@ -369,6 +369,99 @@ public class SqliteConversationStoreTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task DeleteThreadAsync_RemovesEveryThreadScopedTable_AndKeepsOtherThreads()
+    {
+        // Arrange: ensure the schema exists, then seed every thread-scoped table for two threads.
+        // Before the cascade fix, DeleteThreadAsync cleared only messages + thread_metadata, so a
+        // recreated thread id replaying an idempotency key saw a stale accepted_inputs row and was
+        // refused (queued:false). This proves the deleted thread leaves no orphaned run/admission rows.
+        await _store.AppendMessagesAsync("thread-1", CreateTestMessages("thread-1", "run-1", 1));
+        await _store.SaveMetadataAsync("thread-1", CreateTestMetadata("thread-1"));
+        await _store.AppendMessagesAsync("thread-keep", CreateTestMessages("thread-keep", "run-2", 1));
+        await _store.SaveMetadataAsync("thread-keep", CreateTestMetadata("thread-keep"));
+
+        string[] threadScopedTables =
+        [
+            "messages",
+            "thread_metadata",
+            "run_ledger",
+            "run_lifecycle",
+            "run_deferred_calls",
+            "accepted_inputs",
+            "input_acceptances",
+            "notify_waits",
+        ];
+
+        await using (var seed = new SqliteConnection($"Data Source={_databasePath}"))
+        {
+            await seed.OpenAsync();
+            foreach (var threadId in new[] { "thread-1", "thread-keep" })
+            {
+                await ExecAsync(
+                    seed,
+                    "INSERT INTO run_ledger (run_id, thread_id, status, input_ids, created_at, updated_at) "
+                        + $"VALUES ('run-{threadId}', '{threadId}', 'completed', '[]', 0, 0);"
+                );
+                await ExecAsync(
+                    seed,
+                    "INSERT INTO run_lifecycle (run_id, thread_id, generation_id, cause_kind, phase, turn_count, started_at, updated_at) "
+                        + $"VALUES ('run-{threadId}', '{threadId}', 'gen', 'user', 'completed', 0, 0, 0);"
+                );
+                await ExecAsync(
+                    seed,
+                    "INSERT INTO run_deferred_calls (thread_id, tool_call_id, run_id, tool_name, ordinal, deferred_at) "
+                        + $"VALUES ('{threadId}', 'tc-{threadId}', 'run-{threadId}', 'Bash', 0, 0);"
+                );
+                await ExecAsync(
+                    seed,
+                    $"INSERT INTO accepted_inputs (thread_id, input_id, accepted_at) VALUES ('{threadId}', 'in-1', 0);"
+                );
+                await ExecAsync(
+                    seed,
+                    "INSERT INTO input_acceptances (thread_id, input_id, accepted_at, state, spawning_suppressed, idempotency_honored, reservation_id) "
+                        + $"VALUES ('{threadId}', 'in-1', 0, 'accepted', 0, 0, 'res-{threadId}');"
+                );
+                await ExecAsync(
+                    seed,
+                    "INSERT INTO notify_waits (wait_id, thread_id, kind, args, fires_so_far, timeout_at, armed_at, status) "
+                        + $"VALUES ('w-{threadId}', '{threadId}', 'notify', '{{}}', 0, 0, 0, 'armed');"
+                );
+            }
+        }
+
+        // Act
+        await _store.DeleteThreadAsync("thread-1");
+
+        // Assert: every thread-scoped table is empty for thread-1, and thread-keep is untouched.
+        await using var verify = new SqliteConnection($"Data Source={_databasePath}");
+        await verify.OpenAsync();
+        foreach (var table in threadScopedTables)
+        {
+            (await CountAsync(verify, table, "thread-1"))
+                .Should()
+                .Be(0, $"{table} rows for the deleted thread must be gone");
+            (await CountAsync(verify, table, "thread-keep"))
+                .Should()
+                .Be(1, $"{table} rows for other threads must survive");
+        }
+    }
+
+    private static async Task ExecAsync(SqliteConnection connection, string sql)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task<long> CountAsync(SqliteConnection connection, string table, string threadId)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT COUNT(*) FROM {table} WHERE thread_id = $thread_id;";
+        command.Parameters.AddWithValue("$thread_id", threadId);
+        return (long)(await command.ExecuteScalarAsync())!;
+    }
+
+    [Fact]
     public async Task DeleteThreadAsync_DoesNotThrowForNonexistentThread()
     {
         // Act
@@ -453,6 +546,138 @@ public class SqliteConversationStoreTests : IAsyncLifetime
             var loaded = await _store.LoadMessagesAsync($"thread-{i}");
             loaded.Should().HaveCount(5);
         }
+    }
+
+    #endregion
+
+    #region ListThreadsAsync Sort-Order Parity Tests
+
+    /// <summary>
+    ///     <see cref="ConversationSortOrder.Created"/> orders by the creation time derived from the
+    ///     thread id, NOT by <c>LastUpdated</c>. Mirrors the file-store parity test so the SQLite store
+    ///     keeps the same <c>created</c> ordering the host already relies on.
+    /// </summary>
+    /// <remarks>
+    ///     The two orderings are seeded to DISAGREE completely - the earliest-created thread carries the
+    ///     newest <c>LastUpdated</c>, so the expected sequences are exact reverses of one another. A seed
+    ///     in which they agreed could not distinguish the two implementations and would pass against a
+    ///     store that quietly ignored <c>Created</c> (the exact regression this test guards).
+    /// </remarks>
+    [Fact]
+    public async Task ListThreadsAsync_OrdersByDerivedCreationTime_WhenSortOrderIsCreated()
+    {
+        // Arrange
+        await _store.SaveMetadataAsync(
+            "thread-1000-aaa",
+            new ThreadMetadata { ThreadId = "thread-1000-aaa", LastUpdated = 9_000 }
+        );
+        await _store.SaveMetadataAsync(
+            "thread-2000-bbb",
+            new ThreadMetadata { ThreadId = "thread-2000-bbb", LastUpdated = 8_000 }
+        );
+        await _store.SaveMetadataAsync(
+            "thread-3000-ccc",
+            new ThreadMetadata { ThreadId = "thread-3000-ccc", LastUpdated = 7_000 }
+        );
+
+        // Act
+        var byLastUsed = await _store.ListThreadsAsync(
+            limit: 10,
+            options: new ConversationListOptions { SortOrder = ConversationSortOrder.LastUsed }
+        );
+        var byCreated = await _store.ListThreadsAsync(
+            limit: 10,
+            options: new ConversationListOptions { SortOrder = ConversationSortOrder.Created }
+        );
+
+        // Assert
+        byLastUsed.Select(m => m.ThreadId).Should().Equal("thread-1000-aaa", "thread-2000-bbb", "thread-3000-ccc");
+        byCreated.Select(m => m.ThreadId).Should().Equal("thread-3000-ccc", "thread-2000-bbb", "thread-1000-aaa");
+    }
+
+    /// <summary>
+    ///     A thread id that carries no parseable timestamp segment sorts by <c>LastUpdated</c> under
+    ///     <see cref="ConversationSortOrder.Created"/> - it is neither dropped nor sorted to position
+    ///     zero. Mirrors the file-store fallback parity test.
+    /// </summary>
+    /// <remarks>
+    ///     Both ways an id can lack a timestamp are seeded: a <c>thread-{guid:N}</c> id with no
+    ///     delimiter after the prefix, and a <c>thread-notatimestamp-zzz</c> id whose segment does not
+    ///     parse. Both fallback rows are placed ABOVE the parseable rows, so an implementation that
+    ///     treated an unparseable id as zero would order them last and fail here.
+    /// </remarks>
+    [Fact]
+    public async Task ListThreadsAsync_FallsBackToLastUpdated_WhenTheThreadIdCarriesNoTimestamp()
+    {
+        // Arrange
+        var provisioned = $"thread-{Guid.NewGuid():N}";
+        const string NonNumeric = "thread-notatimestamp-zzz";
+        await _store.SaveMetadataAsync(
+            "thread-5000-aaa",
+            new ThreadMetadata { ThreadId = "thread-5000-aaa", LastUpdated = 1_000 }
+        );
+        await _store.SaveMetadataAsync(provisioned, new ThreadMetadata { ThreadId = provisioned, LastUpdated = 7_000 });
+        await _store.SaveMetadataAsync(NonNumeric, new ThreadMetadata { ThreadId = NonNumeric, LastUpdated = 6_500 });
+        await _store.SaveMetadataAsync(
+            "thread-6000-bbb",
+            new ThreadMetadata { ThreadId = "thread-6000-bbb", LastUpdated = 2_000 }
+        );
+
+        // Act
+        var byCreated = await _store.ListThreadsAsync(
+            limit: 10,
+            options: new ConversationListOptions { SortOrder = ConversationSortOrder.Created }
+        );
+
+        // Assert - both fallbacks (7,000 and 6,500) rank above the parsed 6,000 and 5,000.
+        byCreated
+            .Select(m => m.ThreadId)
+            .Should()
+            .Equal(provisioned, NonNumeric, "thread-6000-bbb", "thread-5000-aaa");
+    }
+
+    /// <summary>
+    ///     A Created page is chosen from the id and last_updated alone, then only its rows are loaded.
+    ///     Each paged row must still come back whole, in page order, from both listing overloads.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ListThreadsAsync_CreatedPage_ReturnsWholeRowsInPageOrder(bool scoped)
+    {
+        foreach (var (id, lastUpdated) in new[] { ("thread-1000-a", 9L), ("thread-2000-b", 8L), ("thread-3000-c", 7L) })
+        {
+            await _store.SaveMetadataAsync(
+                id,
+                new ThreadMetadata
+                {
+                    ThreadId = id,
+                    LastUpdated = lastUpdated,
+                    LatestRunId = $"run-{id}",
+                    TenantId = "tenant-a",
+                    Properties = ImmutableDictionary<string, object>.Empty.Add("title", id),
+                }
+            );
+        }
+
+        var options = new ConversationListOptions { SortOrder = ConversationSortOrder.Created };
+        var page = scoped
+            ? await _store.ListThreadsAsync(
+                ConversationListScope.ForTenant("tenant-a"),
+                limit: 2,
+                offset: 1,
+                options: options
+            )
+            : await _store.ListThreadsAsync(limit: 2, offset: 1, options: options);
+
+        page.Select(m => m.ThreadId).Should().Equal("thread-2000-b", "thread-1000-a");
+        page.Should()
+            .AllSatisfy(m =>
+            {
+                m.LatestRunId.Should().Be($"run-{m.ThreadId}");
+                m.TenantId.Should().Be("tenant-a");
+                m.Properties!["title"].ToString().Should().Be(m.ThreadId);
+            });
     }
 
     #endregion

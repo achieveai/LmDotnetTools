@@ -121,6 +121,11 @@ internal sealed class GitHubPrProvider : IPrProvider
                             // last activity) with created_at as the fallback.
                             CreatedAt = ParseTimestamp(pr, "created_at"),
                             UpdatedAt = ParseTimestamp(pr, "updated_at"),
+                            IsDraft =
+                                pr.TryGetProperty("draft", out var draft)
+                                && draft.ValueKind is JsonValueKind.True or JsonValueKind.False
+                                    ? draft.GetBoolean()
+                                    : null,
                             // Who OPENED the PR — addresses the per-developer feedback record. Left null when
                             // the payload omits it (deleted account, or a shape we didn't expect) so the daemon
                             // skips the record rather than addressing it to a placeholder.
@@ -172,6 +177,7 @@ internal sealed class GitHubPrProvider : IPrProvider
         return new PullRequestPage
         {
             PullRequests = pullRequests,
+            IsComplete = url is null,
             NextCursor = new OpaqueCursor
             {
                 Provider = Provider,

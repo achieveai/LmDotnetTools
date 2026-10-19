@@ -48,7 +48,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
               "session_id": "sess-http",
               "app_id": "lmstreaming",
               "discoveries": [
-                { "kind": "context_file", "path": "CLAUDE.md", "content": "# Project rules\nBe terse.", "truncated": false }
+                { "kind": "context_file", "path": "CLAUDE.md", "content": "# Project rules\nBe terse.", "truncated": false, "agent_id": "thread-http" }
               ]
             }
             """;
@@ -62,7 +62,8 @@ public sealed class ContextDiscoveryWebhookHttpTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        var message = app.Agent.SentMessages.Should().ContainSingle().Which.Should().BeOfType<NotifyMessage>().Subject;
+        app.Agent.SentMessages.Should().BeEmpty();
+        var message = app.Agent.RecordedContext.Should().ContainSingle().Which;
         message.Role.Should().Be(Role.User);
         message.NotifyKind.Should().Be(NotifyKinds.ContextDiscovery);
         message.Label.Should().Be("CLAUDE.md");
@@ -84,10 +85,10 @@ public sealed class ContextDiscoveryWebhookHttpTests
     }
 
     [Fact]
-    public async Task PostBatchedContextFileWebhook_DefaultAgentEnvelope_EmptyAgentId_ReachesThePrimaryWithRoutingOn()
+    public async Task PostBatchedContextFileWebhook_DefaultAgentEnvelope_EmptyAgentId_IsDroppedWithRoutingOn()
     {
-        // Gateway v0.1.16 stamps every default-agent batch with envelope agent_id "". With routing on, that must
-        // still mean "the primary agent", not an unknown sub-agent.
+        // Gateway v0.1.16 stamps every default-agent batch with envelope agent_id "". That names no owner, so it is
+        // dropped: never broadcast to the session's roots and never queued as model input.
         await using var app = await TestApp.BuildAsync(routeToOpeningSubAgent: true);
 
         const string json = """
@@ -110,7 +111,8 @@ public sealed class ContextDiscoveryWebhookHttpTests
         var response = await app.Client.SendAsync(request);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
-        app.Agent.SentMessages.Should().ContainSingle().Which.Should().BeOfType<NotifyMessage>();
+        app.Agent.SentMessages.Should().BeEmpty();
+        app.Agent.RecordedContext.Should().BeEmpty();
     }
 
     [Fact]
@@ -150,8 +152,8 @@ public sealed class ContextDiscoveryWebhookHttpTests
     // documented in samples/LmStreaming.Sample/PromptExamples.md → "Backgrounded sub-agent parked on a long
     // wait (webhook-routing fixture)".
     //
-    // Two wire shapes reach the same sub-agent. "item": the per-item agent_id this test was written
-    // against, naming the sub-agent directly. "envelope": what gateway v0.1.16 actually sends (ADR 0040)
+    // Two wire shapes reach the same sub-agent. "item": a per-item agent_id carrying the sub-agent's
+    // exact scoped thread id. "envelope": what gateway v0.1.16 actually sends (ADR 0040)
     // — agent_id on the batch envelope, carrying the sub-agent's gateway id
     // (SandboxSubAgentIdentity.ForSubAgent(root thread, sub-agent id)), which the injector maps back.
     // A duplicate delivery of the same batch must not inject twice.
@@ -186,6 +188,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
         // The sub-agent's provider BLOCKS on its first turn, so the spawned "ctx-probe" sub-agent stays
         // deterministically Running (no timer) for the whole routed delivery.
         var subAgentBlock = new TaskCompletionSource<bool>();
+        var subAgentEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var subAgentProvider = new Mock<IStreamingAgent>();
         subAgentProvider
             .Setup(a =>
@@ -198,6 +201,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
             .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
                 async (_, _, ct) =>
                 {
+                    subAgentEntered.TrySetResult();
                     await subAgentBlock.Task.WaitAsync(ct);
                     return EmptyMessageStream();
                 }
@@ -252,6 +256,8 @@ public sealed class ContextDiscoveryWebhookHttpTests
             runInBackground: true
         );
 
+        await subAgentEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var ownerThreadId = primaryLoop.SubAgentManager.ListAgents().Single().ThreadId;
         var diagnostics = new ContextDiscoveryDiagnostics();
 
         using var host = await new HostBuilder()
@@ -292,7 +298,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
                       "event": "context_discovery",
                       "session_id": "{{SessionId}}",
                       "discoveries": [
-                        { "kind": "context_file", "path": "sub/CLAUDE.md", "content": "# Sub rules", "agent_id": "{{ProbeAgentId}}" }
+                        { "kind": "context_file", "path": "sub/CLAUDE.md", "content": "# Sub rules", "agent_id": "{{ownerThreadId}}" }
                       ]
                     }
                     """
@@ -374,7 +380,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
         public HttpClient Client { get; }
         public RecordingMultiTurnAgent Agent { get; }
 
-        public static async Task<TestApp> BuildAsync(bool routeToOpeningSubAgent = false)
+        public static async Task<TestApp> BuildAsync(bool routeToOpeningSubAgent = true)
         {
             var sessionSecretStore = new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
@@ -400,6 +406,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
             _ = pool.GetOrCreateAgent(ThreadId, mode);
             registry.RegisterThread(SessionId, ThreadId);
             var agent = created ?? throw new InvalidOperationException("recording agent was not created");
+            agent.CurrentRunId = "active-run";
 
             var host = await new HostBuilder()
                 .ConfigureWebHost(webBuilder =>

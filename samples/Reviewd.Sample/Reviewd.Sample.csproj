@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="ReviewRunnerSandbox.py" />
+    <EmbeddedResource Include="MergeSandbox.py" />
+    <InternalsVisibleTo Include="CodeReviewDaemon.Sample.Tests" />
+    <ProjectReference Include="../CodeReviewDaemon.Sample/CodeReviewDaemon.Sample.csproj" />
+    <ProjectReference Include="../../src/Misc/AchieveAi.LmDotnetTools.Misc.csproj" />
+    <ProjectReference Include="../../src/Sandbox/AchieveAi.LmDotnetTools.Sandbox.csproj" />
+  </ItemGroup>
+</Project>

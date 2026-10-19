@@ -225,6 +225,7 @@ public sealed partial class SandboxClient
             dto.Status,
             ToInventory(dto.Inventory, operation, statusCode),
             ToPluginResolution(dto.PluginResolution, operation, statusCode),
+            dto.Volumes?.Workspace?.RelativePath,
             dto.Image,
             dto.ImageDigest,
             dto.ImageReport is null ? null : ToImageReportOrThrow(dto.ImageReport, operation, statusCode),

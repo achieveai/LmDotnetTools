@@ -73,6 +73,11 @@ public static class CompactionHostSetup
         };
     }
 
+    // Create runs once per root loop, and the o200k rank tables are ~45 MB. Building them per call kept one
+    // copy alive per live loop (19 copies, ~850 MB, in a profiled review host), so one counter is shared per
+    // process. Tiktoken's per-piece count cache is a ConcurrentDictionary, so the encoder is safe to share.
+    private static readonly Lazy<Func<string?, long>> O200kTextTokens = new(CreateO200kTextTokens);
+
     /// <summary>
     ///     The tokenizer <see cref="CompactionOptions.TextTokenizer"/> names, or null for the library's length / 4
     ///     heuristic. <c>o200k</c> is the encoding of the GPT-4o and GPT-5 families, which the eval's routes use; the
@@ -92,6 +97,11 @@ public static class CompactionHostSetup
             );
         }
 
+        return O200kTextTokens.Value;
+    }
+
+    private static Func<string?, long> CreateO200kTextTokens()
+    {
         const int MaxPieceUtf8Bytes = 4096;
         var encoding = new Tiktoken.Encodings.O200KBase();
         var encoder = new Tiktoken.Encoder(encoding);

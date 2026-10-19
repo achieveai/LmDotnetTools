@@ -302,6 +302,31 @@ public class SandboxSessionRegistryMarketplacesTests
         doc.RootElement.GetProperty("env").GetProperty("FOO").GetString().Should().Be("1");
     }
 
+    /// <summary>
+    /// The gateway 400s an empty <c>workspace</c> path. A host with no configured leaf used to send
+    /// <c>""</c> for the built-in default workspace, so the tool-catalog probe (a bare default ref,
+    /// the exact call below) failed on every create. The host now falls back to a leaf named after
+    /// the default workspace, and leaves a configured leaf alone.
+    /// </summary>
+    [Theory]
+    [InlineData(null, "default")]
+    [InlineData("demo", "demo")]
+    public async Task DefaultWorkspaceProbe_SendsConfiguredLeafOrDefaultLeaf_NeverEmpty(
+        string? configuredWorkspace,
+        string expectedWorkspace
+    )
+    {
+        var options = global::Program.DefaultWorkspaceLeafWhenUnset(
+            new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl, Workspace = configuredWorkspace }
+        );
+        var (registry, capture) = CreateRegistry(options);
+
+        _ = await registry.GetOrCreateLiveSessionAsync(SandboxSessionRegistry.DefaultWorkspaceId);
+
+        using var doc = JsonDocument.Parse(capture.Body!);
+        doc.RootElement.GetProperty("workspace").GetString().Should().Be(expectedWorkspace);
+    }
+
     private static IReadOnlyList<string> ReadMarketplaces(string? body)
     {
         using var doc = JsonDocument.Parse(body!);

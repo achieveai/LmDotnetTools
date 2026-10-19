@@ -280,11 +280,9 @@ public class ContextDiscoveryControllerTests
     }
 
     [Fact]
-    public async Task NotifyAsync_CorrectSecret_ContextFile_DispatchesToInjector()
+    public async Task NotifyAsync_CorrectSecret_UnownedContext_DoesNotMarkSessionDelivery()
     {
-        // Verifies the controller actually invokes the injector for context_file deliveries by
-        // observing the registry's dedup side effect: after the first successful dispatch,
-        // TryMarkDiscoverySeen for the same (sessionId, kind, path) must return false.
+        // Unowned context is accepted at the HTTP boundary but never broadcast.
         var registry = CreateEmptyRegistry();
         var controller = CreateController(authorizationHeader: Secret, registry: registry);
 
@@ -309,7 +307,7 @@ public class ContextDiscoveryControllerTests
                 "CLAUDE.md"
             )
             .Should()
-            .BeFalse("the injector should have already marked this entry as seen during dispatch");
+            .BeTrue("no session-wide delivery occurred");
     }
 
     [Fact]

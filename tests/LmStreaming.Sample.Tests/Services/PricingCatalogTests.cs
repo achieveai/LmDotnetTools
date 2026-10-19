@@ -681,18 +681,23 @@ public class PricingCatalogTests
     {
         var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
 
-        ResolverFrom(configuration).Resolve(modelId).Should().NotBeNull($"'{modelId}' is billed by the sample today");
+        var pricing = ResolverFrom(configuration).Resolve(modelId);
+        pricing.Should().NotBeNull($"'{modelId}' is billed by the sample today");
+        // gpt-6.1-sol has its own entry; an alias of it on another entry would make the name
+        // ambiguous, and the resolver drops ambiguous names (Resolve returns null).
+        if (modelId == "gpt-6.1-sol")
+            pricing!.CacheReadPerMillion.Should().Be(0.1m, "gpt-6.1-sol caches at 5% of input, not gpt-6-sol's 10%");
         CapacityFrom(configuration).Resolve(modelId)!.WindowTokens.Should().BeLessThanOrEqualTo(196_000);
     }
 
     [Theory]
-    [InlineData("gpt-5.3-codex")]
     [InlineData("claude-sonnet-4-6")]
     public void TheShippedAppsettings_LeavesDeliberatelyUnpricedIds_Unavailable(string modelId)
     {
         var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
 
-        // Codex and the Claude CLI bill by subscription; a guessed rate would be summed and believed (#378).
+        // The Claude CLI bills by subscription; a guessed rate would be summed and believed (#378).
+        // gpt-5.3-codex left this list on 2026-10-14: Copilot serves it and OpenAI publishes its price.
         ResolverFrom(configuration).Resolve(modelId).Should().BeNull($"'{modelId}' has no cited public price");
     }
 

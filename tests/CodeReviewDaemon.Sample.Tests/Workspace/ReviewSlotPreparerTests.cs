@@ -444,9 +444,9 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         // entry the daemon is not PERMITTED to remove is not a transient failure the way a busy file is: it fails
         // identically on every lease, forever, which is the exact loop the retire path exists to break.
         //
-        // Retire-vs-return is already pinned both ways at DaemonReviewStageExecutorPooledTests, so what is left
-        // untested is the TRANSLATION — that a refused unlink reaches that router as a refusal at all. That is a
-        // missing catch, one call below the one ChildrenOf already has above.
+        // Retire-vs-return belongs to the pooled caller, whose tests retired with the daemon host. What this pins is
+        // the TRANSLATION — that a refused unlink reaches that router as a refusal at all. That is a missing catch,
+        // one call below the one ChildrenOf already has above.
         var slot = CreateSlot();
         var outside = Path.Combine(_hostRoot, "outside");
         _ = Directory.CreateDirectory(outside);

@@ -137,8 +137,15 @@ internal static class EvalProgram
             // variant's data (the host was fresh), and the archived copy is what makes a committed
             // baseline re-extractable offline. Every variant's threads merge into ONE conversations/
             // directory: thread ids are host-minted and the manifest's threadId is the only join key,
-            // so the extractor, --extract-only and the comparison all keep working unchanged.
-            var liveConversations = Path.Combine(instanceDir, "conversations");
+            // so the extractor, --extract-only and the comparison all keep working unchanged. The host
+            // keeps them in conversations.db; the export writes them in that folder layout first.
+            var liveConversations = Path.Combine(instanceDir, "conversations-export");
+            var exported = await ConversationDbExport.ExportAsync(
+                Path.Combine(instanceDir, "conversations.db"),
+                liveConversations,
+                ct
+            );
+            log.WriteLine($"[sweep] harvested {exported} thread(s) from {instanceDir}");
             if (config.ArchiveRaw)
             {
                 log.WriteLine("[warn] --archive-raw: the archived transcripts carry model prose. Keep them off-repo.");

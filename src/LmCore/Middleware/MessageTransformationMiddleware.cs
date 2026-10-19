@@ -564,43 +564,69 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     /// <summary>
     ///     Groups consecutive messages by GenerationId, keeping messages without GenerationId separate
     /// </summary>
+    /// <remarks>
+    ///     An out-of-band notice (a <see cref="NotifyMessage" /> such as a NotifyClient notification, or an
+    ///     <see cref="AgentMessage" />) can be recorded while a generation is still running, between a tool
+    ///     call and its result. Splitting the generation there separates the call from its result, which
+    ///     providers reject on every later turn. Such a notice is held back and follows the generation it
+    ///     interrupted.
+    /// </remarks>
     private static List<List<IMessage>> GroupByGeneration(List<IMessage> messages)
     {
         var groups = new List<List<IMessage>>();
         var currentGroup = new List<IMessage>();
+        var heldBack = new List<IMessage>();
         string? currentGenerationId = null;
 
         foreach (var message in messages)
         {
             var messageGenerationId = message.GenerationId;
 
-            // Start a new group if GenerationId changes or message has no GenerationId
-            if (messageGenerationId == null || messageGenerationId != currentGenerationId)
+            if (messageGenerationId != null && messageGenerationId == currentGenerationId)
             {
-                // Save current group if it has messages
-                if (currentGroup.Count > 0)
-                {
-                    groups.Add(currentGroup);
-                }
-
-                // Start new group
-                currentGroup = [message];
-                currentGenerationId = messageGenerationId;
-            }
-            else
-            {
-                // Add to current group
                 currentGroup.Add(message);
+                continue;
             }
+
+            if (currentGenerationId != null && message is NotifyMessage or AgentMessage)
+            {
+                heldBack.Add(message);
+                continue;
+            }
+
+            CloseGroup();
+            currentGroup = [message];
+            currentGenerationId = messageGenerationId;
         }
 
-        // Add the last group
-        if (currentGroup.Count > 0)
-        {
-            groups.Add(currentGroup);
-        }
-
+        CloseGroup();
         return groups;
+
+        void CloseGroup()
+        {
+            if (currentGroup.Count > 0)
+            {
+                groups.Add(currentGroup);
+            }
+
+            // Held-back notices keep their own order and their own grouping.
+            List<IMessage>? notices = null;
+            foreach (var notice in heldBack)
+            {
+                if (notices is null || notice.GenerationId == null || notice.GenerationId != notices[0].GenerationId)
+                {
+                    notices = [notice];
+                    groups.Add(notices);
+                }
+                else
+                {
+                    notices.Add(notice);
+                }
+            }
+
+            currentGroup = [];
+            heldBack.Clear();
+        }
     }
 
     /// <summary>

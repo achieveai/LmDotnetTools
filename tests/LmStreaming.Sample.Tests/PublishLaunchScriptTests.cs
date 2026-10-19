@@ -773,6 +773,7 @@ public class PublishLaunchScriptTests
             .Contain(
                 "$script:DestinationPreserveList = @(\n"
                     + "    'conversations',\n"
+                    + "    'conversations.db',\n"
                     + "    'notify-waits.db',\n"
                     + "    'oauth-tokens',\n"
                     + "    'workspaces',\n"

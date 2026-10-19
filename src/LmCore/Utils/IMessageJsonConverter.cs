@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -36,7 +37,32 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         }
     }
 
+    // The caller's options without this converter, built once per caller options instance. Copying them
+    // per Read/Write sent System.Text.Json back to its metadata cache lookup for every message (~5% of a
+    // profiled host's CPU). Options are immutable once used, so the copy stays valid for their lifetime.
+    private static readonly ConditionalWeakTable<JsonSerializerOptions, JsonSerializerOptions> InnerOptions = [];
+
     public static bool CanHaveMetadata => true;
+
+    private static JsonSerializerOptions GetInnerOptions(JsonSerializerOptions options)
+    {
+        return InnerOptions.GetValue(
+            options,
+            static outer =>
+            {
+                // Create new options without this converter to avoid infinite recursion
+                var inner = new JsonSerializerOptions(outer);
+                var convertersToKeep = inner.Converters.Where(c => c is not IMessageJsonConverter).ToList();
+                inner.Converters.Clear();
+                foreach (var conv in convertersToKeep)
+                {
+                    inner.Converters.Add(conv);
+                }
+
+                return inner;
+            }
+        );
+    }
 
     private static string GetDiscriminator(JsonDerivedTypeAttribute attr)
     {
@@ -103,17 +129,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         // Get the json string of the object
         var json = rootElement.GetRawText();
 
-        // Create new options without this converter to avoid infinite recursion
-        var innerOptions = new JsonSerializerOptions(options);
-
-        // Remove this converter to avoid infinite recursion
-        var convertersToKeep = innerOptions.Converters.Where(c => c is not IMessageJsonConverter).ToList();
-
-        innerOptions.Converters.Clear();
-        foreach (var conv in convertersToKeep)
-        {
-            innerOptions.Converters.Add(conv);
-        }
+        var innerOptions = GetInnerOptions(options);
 
         // Use a type-specific converter if available, otherwise use default deserialization
         try
@@ -139,17 +155,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
 
         var valueType = value.GetType();
 
-        // Create new options without this converter to avoid infinite recursion
-        var innerOptions = new JsonSerializerOptions(options);
-
-        // Remove this converter to avoid infinite recursion
-        var convertersToKeep = innerOptions.Converters.Where(c => c is not IMessageJsonConverter).ToList();
-
-        innerOptions.Converters.Clear();
-        foreach (var conv in convertersToKeep)
-        {
-            innerOptions.Converters.Add(conv);
-        }
+        var innerOptions = GetInnerOptions(options);
 
         // Serialize with innerOptions
         var json = JsonSerializer.Serialize(value, valueType, innerOptions);

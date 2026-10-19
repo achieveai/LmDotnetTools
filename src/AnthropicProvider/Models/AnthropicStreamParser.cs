@@ -19,7 +19,12 @@ public class AnthropicStreamParser
     private const string SyntheticServerToolIdPrefix = "srvtoolu_synth_";
 
     private readonly Dictionary<int, StreamingContentBlock> _contentBlocks = [];
-    private readonly JsonSerializerOptions _jsonOptions;
+
+    // Shared by every parser: the agent builds one per streamed request, and options built per parser made
+    // System.Text.Json rebuild the Anthropic type metadata (emitting new accessor methods) each time.
+    private static readonly JsonSerializerOptions s_jsonOptions =
+        AnthropicJsonSerializerOptionsFactory.CreateUniversal();
+
     private readonly ILogger _logger;
     private readonly List<IMessage> _messages = [];
     private string _messageId = string.Empty;
@@ -36,7 +41,6 @@ public class AnthropicStreamParser
     /// </summary>
     public AnthropicStreamParser(ILogger? logger = null)
     {
-        _jsonOptions = AnthropicJsonSerializerOptionsFactory.CreateUniversal();
         _logger = logger ?? NullLogger.Instance;
     }
 
@@ -137,7 +141,7 @@ public class AnthropicStreamParser
         // Get usage if available (message_start contains cache metrics)
         if (message["usage"] != null)
         {
-            _usage = JsonSerializer.Deserialize<AnthropicUsage>(message["usage"]!.ToJsonString(), _jsonOptions);
+            _usage = JsonSerializer.Deserialize<AnthropicUsage>(message["usage"]!.ToJsonString(), s_jsonOptions);
             CaptureInitialCacheMetrics();
         }
 
@@ -175,7 +179,7 @@ public class AnthropicStreamParser
                 _logger.LogDebug("Parsing citations from content_block_start: {CitationsJson}", citationsJson);
                 _contentBlocks[index].Citations = JsonSerializer.Deserialize<List<Citation>>(
                     citationsJson,
-                    _jsonOptions
+                    s_jsonOptions
                 );
                 _logger.LogDebug(
                     "Parsed {CitationCount} citations for block {Index}",
@@ -395,7 +399,7 @@ public class AnthropicStreamParser
                 {
                     try
                     {
-                        var citation = JsonSerializer.Deserialize<Citation>(citationNode.ToJsonString(), _jsonOptions);
+                        var citation = JsonSerializer.Deserialize<Citation>(citationNode.ToJsonString(), s_jsonOptions);
                         if (citation != null)
                         {
                             block.Citations ??= [];
@@ -533,7 +537,7 @@ public class AnthropicStreamParser
 
         if (usage != null)
         {
-            _usage = JsonSerializer.Deserialize<AnthropicUsage>(usage.ToJsonString(), _jsonOptions);
+            _usage = JsonSerializer.Deserialize<AnthropicUsage>(usage.ToJsonString(), s_jsonOptions);
 
             // Don't proceed if deserialization failed
             if (_usage == null)

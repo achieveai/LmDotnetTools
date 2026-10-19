@@ -136,6 +136,7 @@ internal sealed record WorkspaceVolumeDto(
     // keyed by. Always present on a #119 create/get response (MountSummary.id is non-optional there);
     // nullable here because the list response carries no volumes and a pre-#119 gateway omits it.
     [property: JsonPropertyName("id")] long? Id,
+    [property: JsonPropertyName("relative_path")] string? RelativePath = null,
     // The normalized, persisted home (issue #142); absent when the home is the workspace root.
     [property: JsonPropertyName("home")] string? Home = null
 );

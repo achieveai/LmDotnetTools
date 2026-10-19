@@ -89,9 +89,15 @@ public sealed record ConversationLineage
     public static bool IsDeleted(ThreadMetadata? metadata) => Read(metadata)?.DeletedAt is not null;
 
     /// <summary>The lineage stored on <paramref name="metadata"/>, or <c>null</c> when none (or unreadable).</summary>
-    public static ConversationLineage? Read(ThreadMetadata? metadata)
+    public static ConversationLineage? Read(ThreadMetadata? metadata) =>
+        Parse(ThreadMetadataProjection.RawJson(metadata, PropertyKey));
+
+    /// <summary>The lineage on a listing row read with <see cref="PropertyKey"/>, or <c>null</c> when none.</summary>
+    public static ConversationLineage? Read(ConversationListingRow? row) =>
+        Parse(row?.Properties.GetValueOrDefault(PropertyKey));
+
+    private static ConversationLineage? Parse(string? json)
     {
-        var json = ThreadMetadataProjection.RawJson(metadata, PropertyKey);
         if (json is null)
         {
             return null;

@@ -387,15 +387,8 @@ server tools are dropped without needing to be enumerated.
 
 ## Live smoke tests
 
-`tests/CopilotLive.Tests/` is outside `LmDotnetTools.sln`, so CI never runs it. Those tests hit the
-real Copilot backend and are run by hand; they cover the things a fixture cannot prove — the live
-spelling of every Responses SSE event the stream translator switches on, the shape of
-`incomplete_details` on a truncated reply, whether every served model accepts the reasoning field and
-every mapped `effort`, whether enabling extended thinking rescues the models that default to
-`effort: "none"`, and whether a cached prefix is counted inside the reported `input_tokens`.
-
-```bash
-dotnet test tests/CopilotLive.Tests/CopilotLive.Tests.csproj
-```
-
-They skip cleanly with an explanatory message when no Copilot credential is present.
+The manual live suite (`tests/CopilotLive.Tests`) was retired on 2026-10-16. Nothing in the repo now
+checks the proxy against the real Copilot backend: the live Responses SSE event spellings, the
+`incomplete_details` shape, per-model reasoning and `effort` acceptance, extended-thinking rescue,
+and cached-prefix accounting in `input_tokens` are proved only by fixtures. Git history keeps the
+suite for a revival.
