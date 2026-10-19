@@ -4,10 +4,11 @@
 #   nohup setsid <ops dir>/start-batch.sh >/dev/null 2>&1 < /dev/null &
 set -uo pipefail
 source "$(dirname "$(readlink -f "$0")")/env.sh"
-if pgrep -f '^dotnet .*Reviewd.Sample.dll review batch' >/dev/null; then
-    echo "a batch is already running"
+if [ -n "$(install_batch_pids)" ]; then
+    echo "a batch is already running on $DB"
     exit 1
 fi
+refuse_unmigrated_state || exit 1
 cd "$REVIEWD_HOME"
 echo "[$(date -Is)] batch start" >> "$LOGS/review-batch.log"
 exec $R review batch --selection "$SEL" --db "$DB" --session "$SESSION" --workspace "$WS" \

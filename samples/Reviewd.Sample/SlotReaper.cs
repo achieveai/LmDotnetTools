@@ -95,12 +95,12 @@ internal static class SlotReaper
             attempt["headSha"]?.GetValue<string>()
             ?? throw new InvalidOperationException("Attempt has no head sha; refusing to reclaim.");
 
-        // 0) Read-only liveness pre-check. Freezing is the disturbance; a passive run-state GET is not.
-        //    If the host still reports the conversation in-progress it is a live review (for example a
-        //    legacy undated owner swept under --include-undated, or the active session). Leave it wholly
-        //    untouched — never freeze it — so an in-flight review is not interrupted. A later sweep
-        //    retries once the lease truly lapses and the conversation goes idle.
-        if (threadId is { Length: > 0 } && (await client.GetRunStateAsync(threadId, ct)).IsInProgress)
+        // 0) Read-only liveness pre-check. Freezing is the disturbance; passive GETs are not. If the root
+        //    still has a run, or any descendant has not settled, it is a live review (for example a legacy
+        //    undated owner swept under --include-undated, the active session, or a background child still
+        //    writing after its root went idle). Leave it wholly untouched — never freeze it — so in-flight
+        //    work is not interrupted. A later sweep retries once the whole tree goes quiet.
+        if (threadId is { Length: > 0 } && await FindActivityAsync(client, threadId, ct) is { } liveActivity)
             return new ReclaimResult(
                 repo.DisplayName,
                 pr,
@@ -108,7 +108,7 @@ internal static class SlotReaper
                 threadId,
                 "not-frozen",
                 "skipped",
-                Detail: "Conversation is in progress; left untouched (not frozen)."
+                Detail: $"{liveActivity}; left untouched (not frozen)."
             );
 
         // 1) Freeze the conversation we own. Present == false means the host does not know it — not
@@ -148,21 +148,20 @@ internal static class SlotReaper
 
         try
         {
-            // 2) Confirm the frozen conversation is not actively running. If it will not quiesce within the
-            //    deadline it was live, not dead — abort (the catch unfreezes it so it continues).
+            // 2) Confirm the frozen conversation and every descendant are quiet. Freezing stops only the
+            //    root, so a running child keeps the tree busy until it finishes. If it will not quiesce
+            //    within the deadline it was live, not dead — abort (the catch unfreezes it so it continues).
             if (frozenActive)
             {
-                var deadline = DateTimeOffset.UtcNow.AddSeconds(20);
-                while (true)
+                var deadline = DateTimeOffset.UtcNow + QuiescenceDeadline;
+                while (await FindActivityAsync(client, threadId!, ct) is { } activity)
                 {
-                    var runState = await client.GetRunStateAsync(threadId!, ct);
-                    if (!runState.IsInProgress)
-                        break;
                     if (DateTimeOffset.UtcNow >= deadline)
                         throw new InvalidOperationException(
-                            $"Conversation {threadId} did not quiesce within 20s of freezing; slot not reclaimed."
+                            $"Conversation {threadId} did not quiesce within {QuiescenceDeadline.TotalSeconds:0}s of "
+                                + $"freezing ({activity}); slot not reclaimed."
                         );
-                    await Task.Delay(1000, ct);
+                    await Task.Delay(QuiescencePoll, ct);
                 }
             }
 
@@ -208,6 +207,46 @@ internal static class SlotReaper
             await RestoreIfFrozenAsync();
             throw;
         }
+    }
+
+    // How long a frozen conversation's tree gets to settle before the reclaim gives up on it as live.
+    private static readonly TimeSpan QuiescenceDeadline = TimeSpan.FromSeconds(20);
+
+    private static readonly TimeSpan QuiescencePoll = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// Describes why <paramref name="threadId"/>'s tree is not quiet, or returns null when it is: the root
+    /// has no run in progress or pending, and every descendant has settled by the same rule the review
+    /// wait uses (<see cref="ReviewRunner.IsSettledNode"/>). A busy hierarchy means the descendants are
+    /// unknown, which is never quiet. A thread the host does not know at all has nothing running.
+    /// </summary>
+    private static async Task<string?> FindActivityAsync(
+        LmStreamingS2SClient client,
+        string threadId,
+        CancellationToken ct
+    )
+    {
+        var root = await client.GetRunStateAsync(threadId, ct);
+        if (root.IsInProgress || root.CurrentRunId is not null)
+            return "Conversation is in progress";
+        ReviewSubAgentTreeSnapshot tree;
+        try
+        {
+            tree = await client.GetSubAgentTreeAsync(threadId, ct);
+        }
+        catch (LmStreamingS2SClient.HierarchyBusyException)
+        {
+            return "Host hierarchy is busy, so descendants are unknown";
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        var now = DateTimeOffset.UtcNow;
+        var active = tree.Nodes.Where(n => !ReviewRunner.IsSettledNode(n, now)).ToList();
+        return active.Count == 0
+            ? null
+            : $"{active.Count} descendant(s) still active ({string.Join(", ", active.Select(n => $"{n.AgentId}={n.Status}"))})";
     }
 
     /// <summary>

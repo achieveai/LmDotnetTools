@@ -78,6 +78,14 @@ internal sealed class ConversationWorkingDirectory(string relativeDirectory, str
         return new ConversationWorkingDirectory(directory, absolute);
     }
 
+    /// <summary>
+    /// The sandbox command for one Bash call. The timeout travels with the command: the gateway stops
+    /// the process when it elapses, and the SDK waits for that same deadline rather than its 5-minute
+    /// default, so a longer request is honoured and a shorter one does not leave the process running.
+    /// </summary>
+    internal static SandboxCommand BashCommand(string command, string cwd, int timeoutSeconds) =>
+        new(["bash", "-c", command], cwd) { ExecutionTimeout = TimeSpan.FromSeconds(timeoutSeconds) };
+
     public ToolHandler Wrap(
         FunctionContract contract,
         ToolHandler handler,
@@ -126,12 +134,10 @@ internal sealed class ConversationWorkingDirectory(string relativeDirectory, str
                 {
                     return ToolHandlerResult.FromError("Bash timeout must be between 1 and 3600 seconds.");
                 }
-                using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                budget.CancelAfter(TimeSpan.FromSeconds(timeout));
                 var result = await registry.ExecuteWorkspaceCommandAsync(
                     sessionId,
-                    new SandboxCommand(["bash", "-c", command], cwd),
-                    budget.Token
+                    BashCommand(command, cwd, timeout),
+                    ct
                 );
                 return new ToolHandlerResult.Resolved(
                     new ToolHandlerResultPayload(

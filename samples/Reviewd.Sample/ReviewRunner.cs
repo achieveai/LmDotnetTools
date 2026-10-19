@@ -1156,7 +1156,7 @@ internal static class ReviewRunner
     // descendant's stamp. Running never settles, however old its LastActivityUtc: that is the metadata's
     // LastUpdated, which per-turn writes deliberately leave alone, so a child working for hours reads as
     // idle since it spawned (seen live: four hours "idle" while writing messages minutes earlier).
-    private static bool IsSettledNode(ReviewSubAgentNode node, DateTimeOffset now) =>
+    internal static bool IsSettledNode(ReviewSubAgentNode node, DateTimeOffset now) =>
         node.Status is ReviewSubAgentStatus.Completed or ReviewSubAgentStatus.Error or ReviewSubAgentStatus.Stopped
         || (
             node.Status == ReviewSubAgentStatus.Unknown

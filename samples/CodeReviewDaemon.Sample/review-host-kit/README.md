@@ -103,7 +103,7 @@ review-host-kit/
    existing `.gitmodules`, does not add modules):
 
    ```bash
-   python3 .claude/skills/repo-setup/scripts/repo_setup.py --apply
+   python3 .claude/skills/repo-setup/scripts/repo_setup.py apply
    ```
 
 6. **Prepare a review slot**, then reset it when done. **`review-setup` is

@@ -22,12 +22,16 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
 {
     private readonly SemaphoreSlim _initialize = new(1, 1);
     private readonly SemaphoreSlim _publish = new(1, 1);
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _mutationGates = new(
-        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal
-    );
+    private static readonly StringComparer StorageComparer = OperatingSystem.IsWindows()
+        ? StringComparer.OrdinalIgnoreCase
+        : StringComparer.Ordinal;
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _mutationGates = new(StorageComparer);
     private readonly object _gate = new();
     private Dictionary<string, string> _parents = new(StringComparer.Ordinal);
     private Dictionary<string, HashSet<string>> _children = new(StringComparer.Ordinal);
+
+    // How many ids in _parents share each storage key, so a write that changes nothing skips the scan.
+    private Dictionary<string, int> _aliasCounts = new(StorageComparer);
     private bool _ready;
     private long _epoch;
     private int _pending;
@@ -67,7 +71,7 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
             lock (_gate)
             {
                 _parents = parents;
-                RebuildChildren();
+                RebuildDerived();
                 _ready = true;
                 _epoch++;
             }
@@ -81,14 +85,17 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
     private Task PersistAsync(Dictionary<string, string> parents, CancellationToken ct) =>
         AtomicFile.WriteJsonAsync(indexPath, new { schemaVersion = 1, parents }, new JsonSerializerOptions(), ct);
 
-    private void RebuildChildren()
+    private void RebuildDerived()
     {
         _children = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        _aliasCounts = new Dictionary<string, int>(StorageComparer);
         foreach (var (child, parent) in _parents)
         {
             if (!_children.TryGetValue(parent, out var children))
                 _children[parent] = children = new HashSet<string>(StringComparer.Ordinal);
             children.Add(child);
+            var key = StorageKey(child);
+            _aliasCounts[key] = _aliasCounts.GetValueOrDefault(key) + 1;
         }
     }
 
@@ -149,20 +156,39 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
             var metadata = await inner.LoadMetadataAsync(threadId, CancellationToken.None);
             var parent = metadata is null ? null : SubAgentProvenance.TryProject(metadata)?.ParentThreadId;
             var childId = metadata?.ThreadId ?? threadId;
+            var key = StorageKey(threadId);
             Dictionary<string, string> updated;
             bool changed;
             lock (_gate)
             {
-                updated = new Dictionary<string, string>(_parents, StringComparer.Ordinal);
-                var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
-                var aliases = updated.Keys.Where(id => comparer.Equals(StorageKey(id), StorageKey(threadId))).ToArray();
-                foreach (var alias in aliases)
-                    updated.Remove(alias);
-                if (parent is not null)
-                    updated[childId] = parent;
-                changed =
-                    updated.Count != _parents.Count
-                    || updated.Any(pair => !_parents.TryGetValue(pair.Key, out var previous) || previous != pair.Value);
+                // Most writes leave the relation as it is: no entry for a root, or exactly this child
+                // under the same parent. Only a write that may change it pays for the copy and scan.
+                var aliasCount = _aliasCounts.GetValueOrDefault(key);
+                var unchanged = parent is null
+                    ? aliasCount == 0
+                    : aliasCount == 1
+                        && _parents.TryGetValue(childId, out var current)
+                        && current == parent
+                        && StorageComparer.Equals(StorageKey(childId), key);
+                if (unchanged)
+                {
+                    updated = _parents;
+                    changed = false;
+                }
+                else
+                {
+                    updated = new Dictionary<string, string>(_parents, StringComparer.Ordinal);
+                    var aliases = updated.Keys.Where(id => StorageComparer.Equals(StorageKey(id), key)).ToArray();
+                    foreach (var alias in aliases)
+                        updated.Remove(alias);
+                    if (parent is not null)
+                        updated[childId] = parent;
+                    changed =
+                        updated.Count != _parents.Count
+                        || updated.Any(pair =>
+                            !_parents.TryGetValue(pair.Key, out var previous) || previous != pair.Value
+                        );
+                }
             }
             if (changed)
                 await PersistAsync(updated, CancellationToken.None);
@@ -171,7 +197,7 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
                 if (changed)
                 {
                     _parents = updated;
-                    RebuildChildren();
+                    RebuildDerived();
                 }
                 _epoch++;
             }

@@ -140,6 +140,40 @@ public sealed class IndexedConversationStoreTests : IDisposable
         (await store.ReadChildrenAsync("other-root", true)).Should().BeEmpty();
     }
 
+    // Reads re-check every child against its metadata, so a stale relation only shows in the published index.
+    private Dictionary<string, string> PublishedParents() =>
+        JsonDocument
+            .Parse(File.ReadAllText(Path.Combine(_directory, ".index.json")))
+            .RootElement.GetProperty("parents")
+            .EnumerateObject()
+            .ToDictionary(p => p.Name, p => p.Value.GetString()!);
+
+    [Fact]
+    public async Task ChildThatLosesItsParent_IsDroppedFromThePublishedIndex()
+    {
+        var store = Create(new InMemoryConversationStore());
+        await store.SaveMetadataAsync("subagent-a", Child("subagent-a", "root"));
+        PublishedParents().Should().ContainKey("subagent-a");
+
+        await store.SaveMetadataAsync("subagent-a", new ThreadMetadata { ThreadId = "subagent-a", LastUpdated = 1 });
+
+        PublishedParents().Should().BeEmpty();
+        (await store.ReadChildrenAsync("root", true)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RecordNamingAnotherThread_DropsTheRelationStoredUnderItsSlot()
+    {
+        var store = Create(new InMemoryConversationStore());
+        await store.SaveMetadataAsync("subagent-x", Child("subagent-x", "root-x"));
+        await store.SaveMetadataAsync("subagent-y", Child("subagent-y", "root-y"));
+
+        // The record stored under x now names y, under y's own parent: x's old relation must go.
+        await store.SaveMetadataAsync("subagent-x", Child("subagent-y", "root-y"));
+
+        PublishedParents().Should().Equal(new Dictionary<string, string> { ["subagent-y"] = "root-y" });
+    }
+
     [Fact]
     [Trait("Category", "Integration")] // Real atomic rename retries intentionally exceed the unit-test budget.
     public async Task FailedPublication_BlocksReadsAndRestartRepairsFromMetadata()

@@ -99,7 +99,8 @@
       * Missing / Empty -> fresh install. Nothing is preserved because there is nothing to preserve;
         the script WARNS that the deployed instance will have no `.env`.
       * Recognized (contains all of LmStreaming.Sample.exe, appsettings.json and
-        wwwroot/dist/index.html) -> upgrade in place, preserving your data (see below).
+        wwwroot/dist/index.html) -> upgrade in place, preserving your data (see below). History in
+        the old `conversations/` folder is preserved but not imported.
       * Unrecognized (non-empty but missing one of those markers) -> REFUSED, nothing is built and
         nothing on disk is touched. This is the guard against pointing the script at, say, your
         Documents folder.
@@ -108,6 +109,13 @@
     the build output: `.env`, `oauth-tokens/`, `conversations/`, `recordings/`, `workspaces/`,
     `logs/`, `notify-waits.db` and `conversations.db` (each with its -wal/-shm/-journal sidecars),
     `.run-state.json`.
+
+    Upgrading from a build that kept conversations in `conversations/` (the file store): this build
+    reads only `conversations.db` and never imports that folder. While the folder holds any thread,
+    the deployed instance REFUSES TO START, so old history cannot vanish unnoticed. Then either move
+    the folder aside (for example to `conversations.legacy`) to start without that history, or set
+    `LmStreaming__LegacyFileStoreAcknowledged=true` in the environment to start with the folder left
+    in place. Either way the old conversations are not shown.
 
     The swap itself is two renames on the same volume (existing -> `<dir>.backup-<utc>-<pid>`, then
     `<dir>.candidate-<utc>-<pid>` -> destination), so the destination is never partially written. If

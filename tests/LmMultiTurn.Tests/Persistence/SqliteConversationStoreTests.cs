@@ -636,6 +636,50 @@ public class SqliteConversationStoreTests : IAsyncLifetime
             .Equal(provisioned, NonNumeric, "thread-6000-bbb", "thread-5000-aaa");
     }
 
+    /// <summary>
+    ///     A Created page is chosen from the id and last_updated alone, then only its rows are loaded.
+    ///     Each paged row must still come back whole, in page order, from both listing overloads.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ListThreadsAsync_CreatedPage_ReturnsWholeRowsInPageOrder(bool scoped)
+    {
+        foreach (var (id, lastUpdated) in new[] { ("thread-1000-a", 9L), ("thread-2000-b", 8L), ("thread-3000-c", 7L) })
+        {
+            await _store.SaveMetadataAsync(
+                id,
+                new ThreadMetadata
+                {
+                    ThreadId = id,
+                    LastUpdated = lastUpdated,
+                    LatestRunId = $"run-{id}",
+                    TenantId = "tenant-a",
+                    Properties = ImmutableDictionary<string, object>.Empty.Add("title", id),
+                }
+            );
+        }
+
+        var options = new ConversationListOptions { SortOrder = ConversationSortOrder.Created };
+        var page = scoped
+            ? await _store.ListThreadsAsync(
+                ConversationListScope.ForTenant("tenant-a"),
+                limit: 2,
+                offset: 1,
+                options: options
+            )
+            : await _store.ListThreadsAsync(limit: 2, offset: 1, options: options);
+
+        page.Select(m => m.ThreadId).Should().Equal("thread-2000-b", "thread-1000-a");
+        page.Should()
+            .AllSatisfy(m =>
+            {
+                m.LatestRunId.Should().Be($"run-{m.ThreadId}");
+                m.TenantId.Should().Be("tenant-a");
+                m.Properties!["title"].ToString().Should().Be(m.ThreadId);
+            });
+    }
+
     #endregion
 
     #region Schema Initialization Tests
