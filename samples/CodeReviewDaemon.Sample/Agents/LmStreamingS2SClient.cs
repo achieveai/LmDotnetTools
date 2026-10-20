@@ -573,6 +573,47 @@ internal sealed class LmStreamingS2SClient
         return ParseStatus(body);
     }
 
+    /// <summary>
+    /// Whether the host accepted the send made by <see cref="SendMessageAsync"/> with
+    /// <paramref name="idempotencyKey"/>, for a caller whose send failed before it learned the input id. The host
+    /// records such a send under an id derived from the key (<c>idem:{1|0}:{key}</c>, the flag being the spawn
+    /// suppression), and its status route answers 404 <c>unknown_inputId</c> only for an id it never accepted.
+    /// Every other answer, an unknown thread included, throws: it is not proof that nothing was accepted.
+    /// </summary>
+    public async Task<bool> WasIdempotentSendAcceptedAsync(
+        string threadId,
+        string idempotencyKey,
+        bool suppressSubAgentSpawning,
+        CancellationToken ct
+    )
+    {
+        var inputId = $"idem:{(suppressSubAgentSpawning ? '1' : '0')}:{idempotencyKey}";
+        using var response = await ExecuteAsync(
+            HttpMethod.Get,
+            $"api/conversations/{Uri.EscapeDataString(threadId)}/status?inputId={Uri.EscapeDataString(inputId)}",
+            body: null,
+            ct
+        );
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
+            try
+            {
+                using var document = JsonDocument.Parse(body);
+                if (
+                    document.RootElement.ValueKind == JsonValueKind.Object
+                    && document.RootElement.TryGetProperty("code", out var code)
+                    && code.ValueKind == JsonValueKind.String
+                    && code.GetString() == "unknown_inputId"
+                )
+                    return false;
+            }
+            catch (JsonException) { }
+        }
+        _ = response.EnsureSuccessStatusCode();
+        return true;
+    }
+
     public async Task EnsureConversationBindingAsync(
         string threadId,
         string workspaceId,

@@ -1130,6 +1130,41 @@ public sealed class ReviewdRunnerTests
         }
     }
 
+    [Theory]
+    // Seen live on 2026-10-20: the review send got a 503 and the reaper later released the slot, leaving the
+    // stage. No input was accepted, so the PR is admitted fresh (the runner confirms that with the host).
+    [InlineData(null, "1:fresh")]
+    // An accepted input may have posted: the PR stays held for reconciliation.
+    [InlineData("original", null)]
+    public async Task Batch_admits_fresh_a_released_send_that_left_no_accepted_input(string? reviewInputId, string? run)
+    {
+        using var batch = new BatchFixture(0);
+        batch.PutAttempt(
+            "1",
+            new JsonObject
+            {
+                ["slot"] = 0,
+                ["stage"] = "review-send-pending",
+                ["cleanupState"] = "released",
+                ["claimToken"] = "token",
+                ["reviewIdempotencyKey"] = "reviewd-key",
+                ["reviewInputId"] = reviewInputId,
+                ["mergeSha"] = new string('9', 40),
+            }
+        );
+        await batch.ExecuteAsync();
+        if (run is null)
+        {
+            batch.Runs.Should().NotContain(value => value.StartsWith("1:", StringComparison.Ordinal));
+            batch.Entries().First()["status"]!.GetValue<string>().Should().Be("held");
+        }
+        else
+        {
+            batch.Runs.Should().Contain(run);
+            batch.Entries().First()["status"]!.GetValue<string>().Should().Be("verified");
+        }
+    }
+
     [Fact]
     public async Task Batch_creation_age_is_rolling_forwarded_and_bound_to_immutable_scope()
     {
@@ -2464,6 +2499,188 @@ public sealed class ReviewdRunnerTests
 
     private static string ReviewPrompt(char head) =>
         $"Review org/project/Nova PR #17 in slot Nova-2.\nExpected source head {new string(head, 40)}; prepared merge {new string('b', 40)}.";
+
+    [Theory]
+    // Seen live on 2026-10-20: the review send got a 503 from a cold gateway. The conversation the attempt titled
+    // for this head is empty, and the host never accepted the send. Released by an operator or by the reaper.
+    [InlineData("failed-released", false, false)]
+    [InlineData("review-send-pending", false, false)]
+    // The host did accept that send, or another db's conversation already ran this head's review: it may have posted.
+    [InlineData("review-send-pending", true, false)]
+    [InlineData("failed-released", false, true)]
+    public async Task Runner_readmits_a_head_whose_released_attempt_left_no_accepted_input(
+        string stage,
+        bool accepted,
+        bool reviewedElsewhere
+    )
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-unsent-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/17";
+        var conversations =
+            """{"threadId":"shell","title":"Nova-17-aaaaaaaa","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1}"""
+            + (
+                reviewedElsewhere
+                    ? ""","""
+                        + """{"threadId":"other-db","title":"Nova-17-aaaaaaaa","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":2}"""
+                    : ""
+            );
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .OnJson(HttpMethod.Get, "/api/conversations?", $"[{conversations}]")
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/unfreeze", StringComparison.Ordinal),
+                _ => new HttpResponseMessage(HttpStatusCode.Conflict)
+                {
+                    Content = new StringContent("""{"error":"not_freezable","threadId":"shell"}"""),
+                }
+            )
+            // The failed send left the bound conversation empty. Another db's conversation for this head (newer)
+            // ran its review.
+            .OnJson(HttpMethod.Get, "/shell/messages", Transcript())
+            .OnJson(
+                HttpMethod.Get,
+                "/other-db/messages",
+                Transcript(("User", ReviewPrompt('a')), ("Assistant", "Done."))
+            )
+            .OnJson(HttpMethod.Post, "/messages", """{"inputId":"original","idempotencyKeyHonored":true}""")
+            // The host files an idempotent send under idem:0:<key> and answers unknown_inputId for one it never took.
+            .OnJson(
+                HttpMethod.Get,
+                "inputId=idem",
+                accepted
+                    ? """{"status":"Completed","runId":"run","response":null}"""
+                    : """{"error":"Unknown inputId","code":"unknown_inputId"}""",
+                accepted ? HttpStatusCode.OK : HttpStatusCode.NotFound
+            )
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        static Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token) =>
+            Task.FromResult(
+                phase == "prepare"
+                    ? new JsonObject
+                    {
+                        ["mergeSha"] = new string('b', 40),
+                        ["contextPath"] = "context",
+                        ["reviewDirectory"] = "reviews",
+                        ["baselineComments"] = new JsonArray(),
+                    }
+                    : []
+            );
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            var store = new SqliteKvStore(connection);
+            await store.SetAsync(
+                $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                new JsonObject
+                {
+                    ["17"] = new JsonObject
+                    {
+                        ["Lifecycle"] = "Open",
+                        ["IsDraft"] = false,
+                        ["HeadSha"] = new string('a', 40),
+                    },
+                }
+            );
+            await store.SetAsync(
+                attemptKey,
+                new JsonObject
+                {
+                    ["repository"] = repo.DisplayName,
+                    ["prId"] = "17",
+                    ["slot"] = 2,
+                    ["workspaceId"] = "workspace",
+                    ["sessionId"] = "session",
+                    ["stage"] = stage,
+                    ["cleanupState"] = "released",
+                    ["claimToken"] = "failed-claim",
+                    ["threadId"] = "shell",
+                    ["reviewIdempotencyKey"] = "reviewd-key",
+                    ["headSha"] = new string('a', 40),
+                }
+            );
+            await PrThreadBindings.SetAsync(database, repo, "17", "shell", CancellationToken.None);
+            var options = CliOptions.Parse([
+                "review",
+                "run",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "test",
+                "--execute",
+            ]);
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    options,
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ => Task.CompletedTask,
+                    () => DateTimeOffset.UtcNow
+                );
+
+            var failure = (await run.Should().ThrowAsync<InvalidOperationException>()).Which;
+            var sends = handler
+                .Requests.Where(r =>
+                    r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal)
+                )
+                .ToList();
+            if (accepted || reviewedElsewhere)
+            {
+                // Refused before any claim: the attempt is untouched and nothing is sent.
+                failure.Should().BeOfType<ReviewRunner.ReviewNotAdmittedException>();
+                failure
+                    .Message.Should()
+                    .Be(
+                        accepted
+                            ? "The released attempt's review input was accepted by the host; the head is not sent again."
+                            : "PR head was already reviewed by another run; skipped."
+                    );
+                sends.Should().BeEmpty();
+                (await store.GetAsync<JsonObject>(attemptKey))!["claimToken"]!
+                    .GetValue<string>()
+                    .Should()
+                    .Be("failed-claim");
+            }
+            else
+            {
+                // Sent once on the bound empty conversation (the host's Errored status then ends this run). The
+                // conversation holds no earlier review, so the prompt does not claim one.
+                failure.Message.Should().Be("Review input ended with Errored; not success.");
+                sends.Should().ContainSingle().Which.Uri.AbsolutePath.Should().Contain("/shell/");
+                sends[0].Body.Should().NotContain("already reviewed an earlier revision");
+                handler
+                    .Requests.Should()
+                    .NotContain(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations");
+            }
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
 
     [Theory]
     [InlineData('d')]

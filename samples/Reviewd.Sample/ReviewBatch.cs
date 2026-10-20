@@ -578,9 +578,7 @@ internal static class ReviewBatch
                         await SaveAsync(() => entry["status"] = attempt is null ? "stale" : "held");
                         continue;
                     }
-                    var freshAdmission =
-                        attempt is null
-                        || (attempt["stage"]?.GetValue<string>() == "failed-released" && Reusable(attempt));
+                    var freshAdmission = attempt is null || FreshAdmission(attempt);
                     // Only a resumed owner must keep its prepared merge. A fresh admission prepares a new one, so
                     // a released failure's old merge must not defer it: the target branch moves on, and the PR was
                     // retried until held.
@@ -645,7 +643,7 @@ internal static class ReviewBatch
                             "--max-age-hours",
                             maximumAge.ToString(System.Globalization.CultureInfo.InvariantCulture),
                         ]);
-                    if (attempt is not null && attempt["stage"]?.GetValue<string>() != "failed-released")
+                    if (!freshAdmission)
                         arguments.Add("--resume");
                     scheduling.Token.ThrowIfCancellationRequested();
                     await SaveAsync(() => entry["status"] = "launching");
@@ -794,8 +792,14 @@ internal static class ReviewBatch
         attempt["cleanupState"]?.GetValue<string>() == "released"
         && attempt["claimToken"]?.GetValue<string>() is { Length: > 0 };
 
-    private static bool Resumable(JsonNode attempt) =>
+    // A released failure, or a released attempt whose review input was never accepted (the runner confirms that
+    // with the host), is admitted fresh rather than resumed.
+    private static bool FreshAdmission(JsonNode attempt) =>
         (attempt["stage"]?.GetValue<string>() == "failed-released" && Reusable(attempt))
+        || PrSelection.HoldsNoAcceptedInput(JsonSerializer.SerializeToElement(attempt));
+
+    private static bool Resumable(JsonNode attempt) =>
+        FreshAdmission(attempt)
         || (
             attempt["stage"]?.GetValue<string>() == "completed-verified"
             && attempt["claimToken"]?.GetValue<string>() is { Length: > 0 }

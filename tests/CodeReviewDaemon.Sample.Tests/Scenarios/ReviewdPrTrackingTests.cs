@@ -434,6 +434,88 @@ public sealed class ReviewdPrTrackingTests
         }
     }
 
+    [Theory]
+    // Seen live on 2026-10-20: the review send got a 503 from a cold gateway, so no input was accepted. Released
+    // by an operator, or left at review-send-pending and released by the reaper: picked again either way.
+    [InlineData("failed-released", null, "thread", true)]
+    [InlineData("review-send-pending", null, "thread", true)]
+    // An accepted input may have posted, and a binding to another conversation may be a live submission.
+    [InlineData("failed-released", "input", "thread", false)]
+    [InlineData("review-running", "input", "thread", false)]
+    [InlineData("failed-released", null, "other", false)]
+    public async Task Picking_offers_again_a_released_attempt_that_left_no_accepted_input(
+        string stage,
+        string? reviewInputId,
+        string boundThread,
+        bool picked
+    )
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-pick-{Guid.NewGuid():N}.db");
+        var selection = database + ".selection.json";
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var now = DateTimeOffset.Parse("2026-10-20T12:00:00Z");
+        try
+        {
+            using (var connection = PrThreadBindings.Connection(database))
+            {
+                var store = new SqliteKvStore(connection);
+                await store.SetAsync(
+                    $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                    new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["17"] = new System.Text.Json.Nodes.JsonObject
+                        {
+                            ["PrId"] = 17,
+                            ["Lifecycle"] = "Open",
+                            ["IsDraft"] = false,
+                            ["HeadSha"] = new string('a', 40),
+                            ["CreatedAt"] = now.AddHours(-1).ToString("O"),
+                        },
+                    }
+                );
+                await store.SetAsync(
+                    $"reviewd/review-attempt/{repo.NormalizedKey}/17",
+                    new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["stage"] = stage,
+                        ["cleanupState"] = "released",
+                        ["claimToken"] = "claim",
+                        ["headSha"] = new string('a', 40),
+                        ["threadId"] = "thread",
+                        ["reviewIdempotencyKey"] = "reviewd-key",
+                        ["reviewInputId"] = reviewInputId,
+                    }
+                );
+            }
+            await PrThreadBindings.SetAsync(database, repo, "17", boundThread, CancellationToken.None);
+            var options = CliOptions.Parse([
+                "pr",
+                "pick",
+                "--repo",
+                repo.DisplayName,
+                "--db",
+                database,
+                "--max-age-hours",
+                "72",
+                "--selection-out",
+                selection,
+            ]);
+
+            await PrSelection.RunAsync(options, CancellationToken.None, now);
+
+            var queued = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(selection))![
+                "repositories"
+            ]!.AsObject();
+            queued.Count.Should().Be(picked ? 1 : 0);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+            File.Delete(selection);
+        }
+    }
+
     [Fact]
     public async Task Activity_uses_publication_not_edit_or_system_and_deleted_comment_times()
     {

@@ -152,8 +152,19 @@ nohup setsid $REVIEWD_HOME/bin/start-batch.sh >/dev/null 2>&1 < /dev/null &
 
 ## 8. Add new PRs (every few hours)
 
-Run step 5 again in any terminal. The running batch picks up the new `selection.json` once it
-finishes its current list. You do not restart it.
+Run step 5 again in any terminal. You do not restart the batch.
+
+- The batch checks `selection.json` every 5 seconds, but starts a new list only after its current
+  list is done. When the list is done it logs `Batch scheduling finished. OAuth callback remains
+  running.` and waits for the next new `selection.json`. That line means "waiting", not "stuck".
+- A list is not done while a lane waits on a held slot, for up to 2 hours (the reaper frees it
+  sooner). New PRs wait until then. `safe-restart-batch.sh` (step 9) cuts the wait short.
+- A file with the same content as the last one is not run again. `pick` writes a new `requestId`
+  each time, so a fresh pick always counts as new.
+- A PR whose review send failed before the host accepted it (for example a 503 from a cold gateway)
+  needs no manual steps. Once its slot is released, the next pick offers it again and the batch
+  reviews it on its existing, empty conversation. A PR whose review input the host did accept is
+  never sent again, so its comments are not posted twice.
 
 ## 9. Stop, reboot, stuck slot
 
@@ -189,7 +200,8 @@ $REVIEWD_HOME/bin/deploy.sh host <publish dir> <commit>    # then step 2
 - Nothing restarts by itself after a crash or reboot. Running host and batch as systemd user
   services is planned.
 
-- New PRs wait until the batch finishes its current list.
+- New PRs wait until the batch finishes its current list (up to 2 hours when a lane waits on a held
+  slot; see step 8).
 - If an author pushes while their PR is being reviewed, that PR is skipped until the next selection.
 - PRs with merge conflicts are skipped after 5 tries.
 - Some reviews post their comments but fail to save their record to NOVA_reviews ("Changes belong to

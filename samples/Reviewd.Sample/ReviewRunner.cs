@@ -362,6 +362,13 @@ internal static class ReviewRunner
                 JsonSerializer.SerializeToElement(attempt),
                 current["HeadSha"]?.GetValue<string>()
             );
+        // Released with no accepted input (a send refused by a cold gateway, then reaped): admitted fresh once the
+        // host confirms below that it never accepted that send.
+        var releasedUnaccepted =
+            attempt is not null
+            && !resume
+            && !cleanupOnly
+            && PrSelection.HoldsNoAcceptedInput(JsonSerializer.SerializeToElement(attempt));
         if (
             !resume
             && !cleanupOnly
@@ -369,6 +376,7 @@ internal static class ReviewRunner
             && attempt["stage"]?.GetValue<string>() != "completed-verified"
             && attempt["stage"]?.GetValue<string>() != "failed-released"
             && !earlierHead
+            && !releasedUnaccepted
             && !CanRetryPreparation(attempt, options.Required("session"))
         )
         {
@@ -453,6 +461,18 @@ internal static class ReviewRunner
                     );
             }
         }
+        // The send that failed may still have reached the host. If the host accepted that review input, this head
+        // may already be posted, so it is not sent again.
+        if (
+            releasedUnaccepted
+            && attempt!["headSha"]?.GetValue<string>() == current["HeadSha"]?.GetValue<string>()
+            && attempt["threadId"]?.GetValue<string>() is { Length: > 0 } attemptThread
+            && attempt["reviewIdempotencyKey"]?.GetValue<string>() is { Length: > 0 } sent
+            && await client.WasIdempotentSendAcceptedAsync(attemptThread, sent, false, ct)
+        )
+            throw new ReviewNotAdmittedException(
+                "The released attempt's review input was accepted by the host; the head is not sent again."
+            );
         var thread = await PrThreadBindings.GetAsync(database, repo, pr, ct);
         // Durable, cross-run reuse: when this pending db has no local binding (a fresh/next batch),
         // the host itself remembers the PR's conversation via its title "{repo}-{pr}-{sha}". Reuse
@@ -695,7 +715,13 @@ internal static class ReviewRunner
             receipt["legacyCleanupAdoption"] = true;
         // Archive the attempt the claim below overwrites before claiming, so the overwrite is never
         // the only copy of it.
-        if (resume || cleanupOnly || attempt?["stage"]?.GetValue<string>() == "failed-released" || earlierHead)
+        if (
+            resume
+            || cleanupOnly
+            || attempt?["stage"]?.GetValue<string>() == "failed-released"
+            || earlierHead
+            || releasedUnaccepted
+        )
         {
             query.Parameters["@key"].Value = attemptKey;
             var raw = (string)(await query.ExecuteScalarAsync(ct))!;

@@ -34,16 +34,25 @@ internal static class PrSelection
                         attempt.Value,
                         pr.TryGetProperty("HeadSha", out var currentHead) ? currentHead.GetString() : null
                     );
-                if (attempt is not null && !IsSettled(attempt.Value) && !earlierHead)
+                var unaccepted = attempt is not null && HoldsNoAcceptedInput(attempt.Value);
+                if (attempt is not null && !IsSettled(attempt.Value) && !earlierHead && !unaccepted)
                 {
                     continue;
                 }
                 var review = await ReadAsync($"reviewd/review-run/{prefix}/{entry.Name}");
                 var thread = await ReadAsync($"reviewd/pr-thread/{prefix}/{entry.Name}");
+                // The binding an attempt with no accepted input left names its own unsent conversation.
+                var ownUnsentThread =
+                    unaccepted
+                    && thread?.GetString() is { Length: > 0 } bound
+                    && attempt!.Value.TryGetProperty("threadId", out var attemptThread)
+                    && attemptThread.ValueKind == JsonValueKind.String
+                    && attemptThread.GetString() == bound;
                 if (
-                    // That earlier attempt's binding is not an in-flight submission for this head. The runner
-                    // still asks the host whether the conversation is running before it sends anything.
-                    IsEligible(pr, review, thread is not null && !earlierHead, observedAt)
+                    // Neither that binding nor an earlier attempt's is an in-flight submission for this head. The
+                    // runner still asks the host whether the input was accepted and whether the conversation is
+                    // running before it sends anything.
+                    IsEligible(pr, review, thread is not null && !earlierHead && !ownUnsentThread, observedAt)
                     && (
                         options.Get("max-age-hours") is not { } age
                         || IsWithinCreationAge(
@@ -191,6 +200,25 @@ internal static class PrSelection
         && !string.IsNullOrWhiteSpace(head.GetString())
         && !string.IsNullOrWhiteSpace(currentHead)
         && !string.Equals(head.GetString(), currentHead, StringComparison.OrdinalIgnoreCase);
+
+    // A send that failed (a cold gateway answered 503) leaves its attempt at review-send-pending until the reaper
+    // releases the slot, with no accepted input recorded. Nothing of it can have reached the PR unless the host
+    // accepted the send after all; reviewIdempotencyKey names that send, and the runner asks the host about it
+    // before admitting the PR again. An attempt with a recorded input stays out: its review may have posted.
+    internal static bool HoldsNoAcceptedInput(JsonElement attempt)
+    {
+        return attempt.TryGetProperty("cleanupState", out var cleanup)
+            && cleanup.GetString() == "released"
+            && attempt.TryGetProperty("claimToken", out var claim)
+            && !string.IsNullOrEmpty(claim.GetString())
+            && !(attempt.TryGetProperty("stage", out var stage) && stage.GetString() == "completed-verified")
+            && Absent("reviewInputId")
+            && Absent("confirmationInputId")
+            && Absent("confirmationIdempotencyKey");
+
+        bool Absent(string name) =>
+            !attempt.TryGetProperty(name, out var value) || value.ValueKind == JsonValueKind.Null;
+    }
 
     internal static bool IsEligible(JsonElement pr, JsonElement? review, bool hasThread, DateTimeOffset now)
     {
