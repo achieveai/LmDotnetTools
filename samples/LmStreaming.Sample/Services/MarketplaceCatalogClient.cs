@@ -20,16 +20,29 @@ public sealed class MarketplaceCatalogClient : IMarketplaceCatalogClient
     private readonly SandboxGatewayOptions _options;
     private readonly SandboxClient _sandboxClient;
     private readonly ILogger<MarketplaceCatalogClient> _logger;
+    private readonly TimeSpan _browseTimeout;
 
+    /// <summary>How long a browse waits before reporting the catalog unavailable.</summary>
+    internal static readonly TimeSpan DefaultBrowseTimeout = TimeSpan.FromSeconds(10);
+
+    /// <param name="options">Gateway address and app identity.</param>
+    /// <param name="httpClient">
+    /// Transport. Its timeout bounds <see cref="FetchCatalogToCompletionAsync"/>, so give it room for a
+    /// cold catalog build.
+    /// </param>
+    /// <param name="logger">Logger.</param>
+    /// <param name="browseTimeout">Bound on <see cref="GetCatalogAsync"/>; defaults to 10 s.</param>
     public MarketplaceCatalogClient(
         SandboxGatewayOptions options,
         HttpClient httpClient,
-        ILogger<MarketplaceCatalogClient> logger
+        ILogger<MarketplaceCatalogClient> logger,
+        TimeSpan? browseTimeout = null
     )
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         ArgumentNullException.ThrowIfNull(httpClient);
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _browseTimeout = browseTimeout ?? DefaultBrowseTimeout;
 
         // Keyless SDK over the borrowed client — the GatewayAuthHandler in the pipeline stamps the
         // X-Sbx-App-Key, so passing a (possibly short dev) app key into the SDK's validating options
@@ -50,7 +63,31 @@ public sealed class MarketplaceCatalogClient : IMarketplaceCatalogClient
         _sandboxClient = new SandboxClient(sandboxOptions, httpClient);
     }
 
+    /// <summary>
+    /// Browse read: the UI and agent creation want a fast "offline" rather than a long wait, so this
+    /// gives up after the browse timeout.
+    /// </summary>
     public async Task<MarketplaceCatalog> GetCatalogAsync(
+        IReadOnlyList<string>? marketplaces = null,
+        CancellationToken ct = default
+    )
+    {
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        bounded.CancelAfter(_browseTimeout);
+        try
+        {
+            return await FetchCatalogToCompletionAsync(marketplaces, bounded.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new MarketplaceCatalogUnavailableException(
+                $"Sandbox gateway at {_options.BaseUrl.TrimEnd('/')} did not return the marketplace catalog "
+                    + $"within {_browseTimeout.TotalSeconds:0}s."
+            );
+        }
+    }
+
+    public async Task<MarketplaceCatalog> FetchCatalogToCompletionAsync(
         IReadOnlyList<string>? marketplaces = null,
         CancellationToken ct = default
     )

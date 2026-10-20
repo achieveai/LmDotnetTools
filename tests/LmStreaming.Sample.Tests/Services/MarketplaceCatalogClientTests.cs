@@ -146,6 +146,30 @@ public class MarketplaceCatalogClientTests
         await act.Should().NotThrowAsync<MarketplaceCatalogUnavailableException>();
     }
 
+    /// <summary>
+    /// A cold gateway answers slowly. A browse gives up at its bound and reports "unavailable"; the full
+    /// fetch keeps waiting, because hanging up cancels the gateway's build and keeps it cold.
+    /// </summary>
+    [Fact]
+    public async Task SlowGateway_BoundsTheBrowse_ButNotTheFullFetch()
+    {
+        var answer = TimeSpan.FromMilliseconds(300);
+        var client = new MarketplaceCatalogClient(
+            new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl },
+            new HttpClient(new SlowHandler(answer, () => Ok(CatalogJson))),
+            NullLogger<MarketplaceCatalogClient>.Instance,
+            browseTimeout: TimeSpan.FromMilliseconds(50)
+        );
+
+        var browse = async () => await client.GetCatalogAsync();
+        (await browse.Should().ThrowAsync<MarketplaceCatalogUnavailableException>())
+            .Which.Message.Should()
+            .Contain("did not return the marketplace catalog");
+
+        var full = await client.FetchCatalogToCompletionAsync();
+        full.Marketplaces.Should().NotBeEmpty();
+    }
+
     [Fact]
     public async Task GetCatalogAsync_NullBody_NormalizesToEmptyCatalog()
     {
@@ -205,6 +229,18 @@ public class MarketplaceCatalogClientTests
             NullLogger<MarketplaceCatalogClient>.Instance
         );
         return (client, handler);
+    }
+
+    private sealed class SlowHandler(TimeSpan delay, Func<HttpResponseMessage> respond) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
+        {
+            await Task.Delay(delay, cancellationToken);
+            return respond();
+        }
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
