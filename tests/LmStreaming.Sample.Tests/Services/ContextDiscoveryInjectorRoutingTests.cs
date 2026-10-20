@@ -29,58 +29,52 @@ public sealed class ContextDiscoveryInjectorRoutingTests
     private const string Content = "Sub-directory rules.";
     private const string AgentId = "ctx-probe";
 
-    // --- Flag / normalization (AC1, blank-id bug guard) ---
+    // --- Disabled or missing ownership never broadcasts ---
 
     [Fact]
-    public async Task FlagOff_AgentIdPresent_FansOutToPrimary_NotRouted()
+    public async Task FlagOff_AgentIdPresent_DropsWithoutBroadcast()
     {
-        // AC1 revert path: with the flag OFF a discovery behaves byte-identically to today —
-        // fan-out via SendAsync regardless of a present agent_id; the sink is never consulted.
+        // Disabled routing must not re-enable the unsafe session-wide broadcast.
         using var harness = new Harness(routeToSubAgent: false);
         var sink = harness.RegisterSinkThread(SessionId, "thread-1", SubAgentContextDeliveryResult.Delivered);
 
         var sent = await harness.Injector.InjectAsync(Payload(agentId: AgentId), CancellationToken.None);
 
-        sent.Should().Be(1);
-        sink.SentMessages.Should().ContainSingle();
+        sent.Should().Be(0);
+        sink.SentMessages.Should().BeEmpty();
         sink.DeliverCallCount.Should().Be(0);
-        harness.Diagnostics.RoutingSnapshot().Fallback.Should().Be(1);
+        harness.Diagnostics.RoutingSnapshot().Fallback.Should().Be(0);
         harness.Diagnostics.RoutingSnapshot().Routed.Should().Be(0);
     }
 
     [Fact]
-    public async Task FlagOn_AgentIdNull_FansOutToPrimary()
+    public async Task FlagOn_AgentIdNull_DropsWithoutBroadcast()
     {
         using var harness = new Harness(routeToSubAgent: true);
         var sink = harness.RegisterSinkThread(SessionId, "thread-1", SubAgentContextDeliveryResult.Delivered);
 
         var sent = await harness.Injector.InjectAsync(Payload(agentId: null), CancellationToken.None);
 
-        sent.Should().Be(1);
-        sink.SentMessages.Should().ContainSingle();
+        sent.Should().Be(0);
+        sink.SentMessages.Should().BeEmpty();
         sink.DeliverCallCount.Should().Be(0);
-        harness.Diagnostics.RoutingSnapshot().Fallback.Should().Be(1);
+        harness.Diagnostics.RoutingSnapshot().Fallback.Should().Be(0);
     }
 
     [Fact]
-    public async Task FlagOn_BlankAgentId_TreatedAsSession_FansOutAndDedups()
+    public async Task FlagOn_BlankAgentId_DropsWithoutBroadcast()
     {
-        // Guards a real double-inject bug: the route predicate MUST use IsNullOrWhiteSpace, so a
-        // blank agent_id folds into the __session__ dedup target instead of a rogue "" bucket.
+        // Blank ownership cannot identify a recipient.
         using var harness = new Harness(routeToSubAgent: true);
         var sink = harness.RegisterSinkThread(SessionId, "thread-1", SubAgentContextDeliveryResult.Delivered);
 
         var first = await harness.Injector.InjectAsync(Payload(agentId: "   "), CancellationToken.None);
         var second = await harness.Injector.InjectAsync(Payload(agentId: "   "), CancellationToken.None);
 
-        first.Should().Be(1);
-        sink.SentMessages.Should().ContainSingle();
-        sink.DeliverCallCount.Should().Be(0, "a blank agent_id must fall back, not create a routing bucket");
-        second.Should().Be(0, "the blank id dedups under __session__, not a rogue \"\" target");
-        harness
-            .Registry.TryMarkDiscoverySeen(SessionId, SandboxSessionRegistry.SessionDiscoveryTarget, Kind, Path)
-            .Should()
-            .BeFalse();
+        first.Should().Be(0);
+        sink.SentMessages.Should().BeEmpty();
+        sink.DeliverCallCount.Should().Be(0, "blank ownership never broadcasts");
+        second.Should().Be(0);
     }
 
     // --- Routed aggregation (AC2 / AC4 / AC5) ---
@@ -198,20 +192,26 @@ public sealed class ContextDiscoveryInjectorRoutingTests
     }
 
     [Fact]
-    public async Task Aggregation_DeliveredWins_OverNotDeliverable_RegardlessOfOrder()
+    public async Task TerminalOwnerResult_StopsFurtherSinkConsultation()
     {
         using var harness = new Harness(routeToSubAgent: true);
-        _ = harness.RegisterSinkThread(SessionId, "thread-a", SubAgentContextDeliveryResult.TargetNotDeliverable);
-        var delivered = harness.RegisterSinkThread(SessionId, "thread-b", SubAgentContextDeliveryResult.Delivered);
+        var first = harness.RegisterSinkThread(
+            SessionId,
+            "thread-a",
+            SubAgentContextDeliveryResult.TargetNotDeliverable
+        );
+        var second = harness.RegisterSinkThread(
+            SessionId,
+            "thread-b",
+            SubAgentContextDeliveryResult.TargetNotDeliverable
+        );
 
         var sent = await harness.Injector.InjectAsync(Payload(agentId: AgentId), CancellationToken.None);
 
-        sent.Should().Be(1);
-        delivered
-            .DeliveredMessages.Should()
-            .ContainSingle("a Delivered result wins the aggregation regardless of thread order");
-        harness.Diagnostics.RoutingSnapshot().Routed.Should().Be(1);
-        harness.Diagnostics.RoutingSnapshot().Dropped.Should().Be(0);
+        sent.Should().Be(0);
+        (first.DeliverCallCount + second.DeliverCallCount).Should().Be(1);
+        harness.Diagnostics.RoutingSnapshot().Routed.Should().Be(0);
+        harness.Diagnostics.RoutingSnapshot().Dropped.Should().Be(1);
     }
 
     [Fact]
@@ -373,11 +373,9 @@ public sealed class ContextDiscoveryInjectorRoutingTests
     // --- Back-compat constructor ---
 
     [Fact]
-    public async Task CompatCtor_RoutingDefaultsOff_PresentAgentId_FansOutToPrimary()
+    public async Task CompatCtor_RoutingDefaultsOff_DropsWithoutBroadcast()
     {
-        // The restored 4-arg (registry, pool, formatter, logger) constructor defaults routing OFF, so a
-        // discovery carrying a present agent_id must fan out to the primary via SendAsync — the sink's
-        // routed TryDeliverContextAsync path is never consulted.
+        // The compatibility constructor also fails closed when routing is disabled.
         using var harness = new Harness(routeToSubAgent: true);
         var sink = harness.RegisterSinkThread(SessionId, "thread-1", SubAgentContextDeliveryResult.Delivered);
 
@@ -390,9 +388,8 @@ public sealed class ContextDiscoveryInjectorRoutingTests
 
         var sent = await compatInjector.InjectAsync(Payload(agentId: AgentId), CancellationToken.None);
 
-        sent.Should().Be(1);
-        sink.SentMessages.Should()
-            .ContainSingle("the compat ctor defaults routing OFF, so a present agent_id fans out to the primary");
+        sent.Should().Be(0);
+        sink.SentMessages.Should().BeEmpty("disabled routing never broadcasts");
         sink.DeliverCallCount.Should().Be(0, "routing is off, so the sink's routed delivery path is never consulted");
     }
 
@@ -441,7 +438,7 @@ public sealed class ContextDiscoveryInjectorRoutingTests
     }
 
     [Fact]
-    public async Task MixedBatch_PerItemProjection_ARoutes_BFallsBack()
+    public async Task MixedBatch_PerItemProjection_ARoutes_UnownedBDrops()
     {
         // The controller projects agent_id PER ITEM. Item A carries agent_id (routes via the sink);
         // item B carries none (falls back via SendAsync into the same thread). If projection copied
@@ -482,14 +479,9 @@ public sealed class ContextDiscoveryInjectorRoutingTests
             .BeOfType<NotifyMessage>()
             .Which.Text.Should()
             .Contain("SUB_MARKER");
-        sink.SentMessages.Should()
-            .ContainSingle()
-            .Which.Should()
-            .BeOfType<NotifyMessage>()
-            .Which.Text.Should()
-            .Contain("ROOT_MARKER");
+        sink.SentMessages.Should().BeEmpty();
         harness.Diagnostics.RoutingSnapshot().Routed.Should().Be(1);
-        harness.Diagnostics.RoutingSnapshot().Fallback.Should().Be(1);
+        harness.Diagnostics.RoutingSnapshot().Fallback.Should().Be(0);
     }
 
     // --- Post-merge (skipped): the injector's is-cast against the REAL MultiTurnAgentLoop ---

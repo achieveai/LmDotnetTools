@@ -14,4 +14,9 @@
          the eval measures the HOST, not a client abstraction. -->
     <InternalsVisibleTo Include="TodoEval.Runner.Tests" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Offline only: reads the stopped host's conversations.db at harvest. The S2S client above stays
+         reference-free. -->
+    <ProjectReference Include="..\..\src\LmMultiTurn\AchieveAi.LmDotnetTools.LmMultiTurn.csproj" />
+  </ItemGroup>
 </Project>

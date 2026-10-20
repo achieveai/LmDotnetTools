@@ -472,13 +472,6 @@ public sealed class AgentHierarchyService(
         };
 
     /// <summary>
-    ///     Total cap for the persisted sub-agent scan. <see cref="IConversationStore"/> has
-    ///     no property index, so rebuilding a persisted child roster means scanning thread metadata; the
-    ///     cap bounds the work on a long-lived store rather than scanning it unboundedly per request.
-    /// </summary>
-    private const int SubAgentScanMaxThreads = 2000;
-
-    /// <summary>
     ///     Returns the persisted Agent-tool child roster for <paramref name="threadId"/>, scanning the
     ///     store at most once per (thread, <paramref name="owner"/>) pair for this process's lifetime
     ///     (see <see cref="SubAgentScanCoverageCache"/>). A cache hit — including a cached EMPTY roster
@@ -494,6 +487,11 @@ public sealed class AgentHierarchyService(
         CancellationToken ct
     )
     {
+        if (store is IndexedConversationStore indexed)
+        {
+            return await indexed.ReadChildrenAsync(threadId, recursive: false, ct);
+        }
+
         if (scanCoverageCache.TryGetRecovered(threadId, owner, out var cached))
         {
             return cached;
@@ -505,7 +503,7 @@ public sealed class AgentHierarchyService(
     }
 
     /// <summary>
-    ///     Bounded, parent-filtered reconstruction of ordinary Agent-tool children from persisted
+    ///     Complete, parent-filtered reconstruction of ordinary Agent-tool children from persisted
     ///     <see cref="SubAgentProvenance"/> metadata — the pre-#244 flat-listing contract this restores
     ///     (see the call site in <see cref="BuildAsync"/>). Scoped to direct children of
     ///     <paramref name="threadId"/> only: unlike the recursive descendant reader
@@ -520,8 +518,7 @@ public sealed class AgentHierarchyService(
     ///     unread neighbour back across the offset boundary, where the next page skips it. The roster that
     ///     loses is then recorded in <see cref="SubAgentScanCoverageCache"/>, which holds its entries for
     ///     the process lifetime — so the skip outlives the scan that caused it. A single call has no
-    ///     boundary to shift across; one more than the cap is requested so a full result stays
-    ///     distinguishable from a truncated one. Kept identical to
+    ///     boundary to shift across and requests every eligible row. Kept identical to
     ///     <c>ConversationDescendantScanner.ScanAllPersistedSubAgentNodesAsync</c> on purpose: same store,
     ///     same hazard, and fixing one of the pair alone is how the other one gets forgotten.
     /// </remarks>
@@ -534,33 +531,23 @@ public sealed class AgentHierarchyService(
         // tenant - see SubAgentScanScope for why a principal is not available here and would be the
         // wrong thing to use if it were. A root with no tenant falls back to the unscoped overload
         // rather than guessing at a sentinel one.
+        logger.LogDebug("Reading complete persisted child roster for {ThreadId}", threadId);
         var scope = await SubAgentScanScope.ForRootAsync(store, threadId, ct);
         var threads =
             (
                 scope is null
-                    ? await store.ListThreadsAsync(SubAgentScanMaxThreads + 1, 0, ct: ct)
-                    : await store.ListThreadsAsync(scope, SubAgentScanMaxThreads + 1, 0, ct: ct)
+                    ? await store.ListThreadsAsync(int.MaxValue, 0, ct: ct)
+                    : await store.ListThreadsAsync(scope, int.MaxValue, 0, ct: ct)
             ) ?? [];
 
-        var scanned = Math.Min(threads.Count, SubAgentScanMaxThreads);
         var found = new List<SubAgentSummary>();
-        for (var i = 0; i < scanned; i++)
+        foreach (var metadata in threads)
         {
-            var node = SubAgentProvenance.TryProject(threads[i], threadId);
+            var node = SubAgentProvenance.TryProject(metadata, threadId);
             if (node is not null)
             {
                 found.Add(node);
             }
-        }
-
-        if (threads.Count > SubAgentScanMaxThreads)
-        {
-            logger.LogWarning(
-                "Sub-agent scan for {ThreadId} stopped at the {MaxThreads}-thread cap; "
-                    + "children persisted beyond that point are not listed.",
-                threadId,
-                SubAgentScanMaxThreads
-            );
         }
 
         return found;

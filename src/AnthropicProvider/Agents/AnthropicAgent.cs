@@ -237,7 +237,8 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
             {
                 chunkCount++;
 
-                _logger.LogDebug(
+                // Trace, not Debug: per-chunk lines were two thirds of a review host's log lines.
+                _logger.LogTrace(
                     LogEventIds.StreamingEventProcessed,
                     "Streaming event processed: Agent={AgentName}, ChunkNumber={ChunkNumber}, EventType={EventType}",
                     Name,
@@ -263,7 +264,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
 
             foreach (var message in messages)
             {
-                _logger.LogDebug(
+                _logger.LogTrace(
                     LogEventIds.MessageTransformation,
                     "Message transformed: Agent={AgentName}, MessageType={MessageType}",
                     Name,

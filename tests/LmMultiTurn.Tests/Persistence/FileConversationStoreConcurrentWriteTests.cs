@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+using System.Reflection;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using FluentAssertions;
@@ -7,9 +9,9 @@ namespace LmMultiTurn.Tests.Persistence;
 
 /// <summary>
 /// Covers the durability of <c>FileConversationStore</c>'s write-temp-then-rename path against the two
-/// hazards its <c>_lock</c> cannot cover.
+/// hazards its directory gates cannot cover.
 /// <para>
-/// The lock is a per-INSTANCE <see cref="SemaphoreSlim"/>. It serializes writers inside one store object
+/// Each gate is a per-INSTANCE <see cref="SemaphoreSlim"/>. It serializes one directory inside one store object
 /// and nothing else, so two stores over the same base directory — the shape
 /// <c>ConversationContextReportTests(kind:"file")</c> and <c>InputAcceptanceStoreTests</c> construct — run
 /// the write path concurrently, as does any second process. That leaves two failures the lock is
@@ -164,6 +166,225 @@ public sealed class FileConversationStoreConcurrentWriteTests : IDisposable
         var reloaded = await stores[0].LoadMetadataAsync(threadId);
         reloaded.Should().NotBeNull();
         reloaded!.ThreadId.Should().Be(threadId);
+    }
+
+    [Fact]
+    public async Task BusyThreadAndListing_DoNotBlockAnotherThreadsRead()
+    {
+        var store = new FileConversationStore(_root);
+        await store.SaveMetadataAsync("a", NewMetadata("a", 1));
+        await store.SaveMetadataAsync("b", NewMetadata("b", 1));
+        var gate = DirectoryGate(store, "a");
+        await gate.WaitAsync();
+        using var cancellation = new CancellationTokenSource();
+        var sameThread = store.LoadMetadataAsync("a", cancellation.Token);
+        var runMutation = store.TryMarkRunTerminalAsync(
+            "missing",
+            "completed",
+            1,
+            DateTimeOffset.UnixEpoch,
+            cancellation.Token
+        );
+        var listing = store.ListThreadsAsync(ct: cancellation.Token);
+        try
+        {
+            sameThread.IsCompleted.Should().BeFalse();
+            runMutation.IsCompleted.Should().BeFalse();
+            listing.IsCompleted.Should().BeFalse();
+            var unrelated = await store.LoadMetadataAsync("b").WaitAsync(TimeSpan.FromSeconds(1));
+            unrelated!.ThreadId.Should().Be("b");
+            sameThread.IsCompleted.Should().BeFalse();
+            runMutation.IsCompleted.Should().BeFalse();
+            listing.IsCompleted.Should().BeFalse();
+        }
+        finally
+        {
+            cancellation.Cancel();
+            gate.Release();
+            await IgnoreCancellationAsync(sameThread);
+            await IgnoreCancellationAsync(runMutation);
+            await IgnoreCancellationAsync(listing);
+        }
+    }
+
+    [Fact]
+    public async Task DirectoryAliasesAndCancelledWaiters_KeepOneGateAcrossDeletion()
+    {
+        var store = new FileConversationStore(_root);
+        var invalid = Path.GetInvalidFileNameChars()[0];
+        var alias = $"a{invalid}b";
+        const string threadId = "a_b";
+        await store.SaveMetadataAsync(threadId, NewMetadata(threadId, 1));
+        var gate = DirectoryGate(store, threadId);
+        DirectoryGate(store, alias).Should().BeSameAs(gate);
+        await gate.WaitAsync();
+        using var cancellation = new CancellationTokenSource();
+        var read = store.LoadMetadataAsync(alias, cancellation.Token);
+        try
+        {
+            read.IsCompleted.Should().BeFalse();
+            cancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read);
+            gate.CurrentCount.Should().Be(0, "a canceled waiter must not release the holder's gate");
+        }
+        finally
+        {
+            gate.Release();
+        }
+
+        await store.DeleteThreadAsync(threadId);
+        DirectoryGate(store, threadId).Should().BeSameAs(gate);
+        await store.SaveMetadataAsync(alias, NewMetadata(alias, 2));
+        (await store.LoadMetadataAsync(threadId))!.LastUpdated.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Listing_SkipsADirectoryDeletedWhileWaitingOnAnotherThread()
+    {
+        var store = new FileConversationStore(_root);
+        await store.SaveMetadataAsync("a", NewMetadata("a", 1));
+        await store.SaveMetadataAsync("b", NewMetadata("b", 1));
+        var directories = Directory.GetDirectories(_root);
+        var first = Path.GetFileName(directories[0]);
+        var deleted = Path.GetFileName(directories[1]);
+        var gate = DirectoryGate(store, first);
+        await gate.WaitAsync();
+        using var cancellation = new CancellationTokenSource();
+        var listing = store.ListThreadsAsync(ct: cancellation.Token);
+        var held = true;
+        try
+        {
+            listing.IsCompleted.Should().BeFalse();
+            await store.DeleteThreadAsync(deleted).WaitAsync(TimeSpan.FromSeconds(1));
+            gate.Release();
+            held = false;
+            var result = await listing.WaitAsync(TimeSpan.FromSeconds(1));
+            result.Select(m => m.ThreadId).Should().Equal(first);
+        }
+        finally
+        {
+            cancellation.Cancel();
+            if (held)
+            {
+                gate.Release();
+            }
+            await IgnoreCancellationAsync(listing);
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentMetadataUpdates_PreserveBothFieldsAndReleaseAfterFailure()
+    {
+        var store = new FileConversationStore(_root);
+        await store.SaveMetadataAsync("a", NewMetadata("a", 1));
+        await Task.WhenAll(
+            Enumerable
+                .Range(0, 8)
+                .Select(i =>
+                    store.UpdateMetadataAsync(
+                        "a",
+                        metadata =>
+                            metadata! with
+                            {
+                                Properties = (metadata.Properties ?? ImmutableDictionary<string, object>.Empty).Add(
+                                    $"field-{i}",
+                                    i
+                                ),
+                            }
+                    )
+                )
+        );
+        (await store.LoadMetadataAsync("a"))!.Properties.Should().HaveCount(8);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            store.UpdateMetadataAsync("a", _ => throw new InvalidOperationException("callback failure"))
+        );
+        (await store.LoadMetadataAsync("a"))!.Properties.Should().HaveCount(8);
+    }
+
+    [Fact]
+    public async Task ConcurrentAppendsAndRunMutations_PreserveEveryCommittedEntry()
+    {
+        var store = new FileConversationStore(_root);
+        await Task.WhenAll(
+            Enumerable
+                .Range(0, 8)
+                .Select(i =>
+                    store.AppendMessagesAsync(
+                        "a",
+                        [
+                            new PersistedMessage
+                            {
+                                Id = $"message-{i}",
+                                ThreadId = "a",
+                                RunId = "run-a",
+                                Timestamp = i,
+                                MessageType = "TextMessage",
+                                Role = "user",
+                                MessageJson = "{}",
+                            },
+                        ]
+                    )
+                )
+        );
+        var messages = await store.LoadMessagesAsync("a");
+        messages.Should().HaveCount(8);
+        messages.Select(m => m.Seq).Should().Equal(Enumerable.Range(1, 8).Select(i => (long?)i));
+        await store.RecordRunStartedAsync(new RunLifecycleState { ThreadId = "a", RunId = "run-a" });
+        await Task.WhenAll(
+            Enumerable
+                .Range(0, 8)
+                .Select(i =>
+                    store.RecordDeferredToolCallAsync(
+                        "run-a",
+                        new DeferredToolCallRecord
+                        {
+                            ToolCallId = $"call-{i}",
+                            ToolName = "test",
+                            DeferredAt = DateTimeOffset.UnixEpoch,
+                        }
+                    )
+                )
+        );
+        var results = await Task.WhenAll(
+            Enumerable
+                .Range(0, 8)
+                .Select(_ => store.TryMarkRunTerminalAsync("run-a", "completed", 1, DateTimeOffset.UnixEpoch))
+        );
+        results.Count(won => won).Should().Be(1);
+        var lifecycle = await store.LoadRunLifecycleAsync("run-a");
+        lifecycle!.DeferredToolCalls.Should().HaveCount(8);
+        lifecycle.DeferredToolCalls.Select(d => d.Ordinal).Should().Equal(Enumerable.Range(1, 8));
+    }
+
+    private static SemaphoreSlim DirectoryGate(FileConversationStore store, string threadId)
+    {
+        var directory = (string)
+            typeof(FileConversationStore)
+                .GetMethod("GetThreadDirectory", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(store, [threadId])!;
+        // Holding the real gate makes the ordering deterministic without a production test hook.
+        // The fallback lets the same isolation regression exercise the pre-fix implementation.
+        if (
+            typeof(FileConversationStore).GetField("_lock", BindingFlags.Instance | BindingFlags.NonPublic) is
+            { } globalGate
+        )
+        {
+            return (SemaphoreSlim)globalGate.GetValue(store)!;
+        }
+
+        return (SemaphoreSlim)
+            typeof(FileConversationStore)
+                .GetMethod("GetDirectoryGate", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(store, [directory])!;
+    }
+
+    private static async Task IgnoreCancellationAsync(Task task)
+    {
+        try
+        {
+            await task;
+        }
+        catch (OperationCanceledException) { }
     }
 
     private static ThreadMetadata NewMetadata(string threadId, long lastUpdated) =>

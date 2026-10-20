@@ -1,0 +1,4 @@
+# Compiled Python — never commit from this kit
+__pycache__/
+*.py[cod]
+*.egg-info/

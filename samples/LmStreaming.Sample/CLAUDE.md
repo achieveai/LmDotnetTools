@@ -21,12 +21,19 @@ For a one-command **standalone Production** build+launch (no Vite dev server: `n
 `-DestinationDirectory <path>` switches it to **deploy mode**: same build and publish, but the
 artifact is swapped into `<path>` and **nothing is launched**. The destination is classified before
 any build work runs — an existing deployment is upgraded in place with `.env`, `oauth-tokens/`,
-`conversations/`, `recordings/`, `workspaces/`, `logs/` and `notify-waits.db` carried forward
+`conversations/`, `recordings/`, `workspaces/`, `logs/`, `notify-waits.db` and `conversations.db`
+(the SQLite conversation store, with its `-wal`/`-shm`/`-journal` sidecars) carried forward
 byte-for-byte; a non-empty directory that is *not* a previous deployment is refused outright, and
 nothing is built. The swap is two same-volume renames via `<path>.candidate-*` / `<path>.backup-*`
 siblings, so the destination is never partially written. Deploying over a **running** instance is
 refused (three checkpoints; an elevated instance is detected too) — stop it first. See the
 `.PARAMETER DestinationDirectory` help for the full contract.
+
+`conversations/` is carried forward but **not imported**: the host reads only `conversations.db`.
+While that folder holds any thread, the host refuses to start. Move it aside (for example to
+`conversations.legacy`) to start without the old history, or set
+`LmStreaming__LegacyFileStoreAcknowledged=true` to start with the folder left in place. Either way
+the old conversations are not shown.
 
 Provider is chosen in the UI (header dropdown, `GET /api/providers`). GitHub Copilot models are
 **discovered dynamically** at startup from the Copilot `/models` API and listed by their raw model

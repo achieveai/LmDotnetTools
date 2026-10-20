@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -15,7 +17,8 @@ public sealed class FileConversationStore
         IConversationOwnershipStore,
         IRunLedgerStore,
         IRunLifecycleStore,
-        IInputAcceptanceStore
+        IInputAcceptanceStore,
+        IConversationListingStore
 {
     private const string MessagesFileName = "messages.json";
     private const string MetadataFileName = "metadata.json";
@@ -28,8 +31,8 @@ public sealed class FileConversationStore
     /// How long a caller waits for an admission record that exists but is not yet readable before calling it
     /// a fault. The threshold separates "a live writer has not finished" from "a dead host left a half-written
     /// record", and any fixed threshold there is a starvation-class discriminator: the waiter is starved by the
-    /// very load it is waiting on. The two defenses are keeping await points out of the guarded window — see
-    /// <see cref="TryReserveAcceptanceAsync"/> — and leaving the margin far wider than any plausible stall.
+    /// very load it is waiting on. New reservations publish a complete staged record atomically; the
+    /// budget still protects readers of older or externally damaged records.
     /// </summary>
     private static readonly TimeSpan AcceptanceSettleTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan AcceptanceSettlePoll = TimeSpan.FromMilliseconds(5);
@@ -40,7 +43,14 @@ public sealed class FileConversationStore
 
     private readonly string _baseDirectory;
     private readonly TimeProvider _time;
-    private readonly SemaphoreSlim _lock = new(1, 1);
+    private readonly bool _strictMetadataReads;
+
+    // Retain gates for the store lifetime, including after deletion: removing one while callers
+    // still hold or await it would let a replacement gate protect the same directory concurrently.
+    // This costs one entry per directory encountered, including reads of missing threads.
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _directoryGates = new(
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal
+    );
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -64,9 +74,14 @@ public sealed class FileConversationStore
     /// when the budget is genuinely spent without spending it in real time; production leaves it null.
     /// </param>
     public FileConversationStore(string baseDirectory, TimeProvider? timeProvider = null)
+        : this(baseDirectory, timeProvider, strictMetadataReads: false) { }
+
+    /// <summary>Creates a store that can fail closed on corrupt metadata instead of treating it as absent.</summary>
+    public FileConversationStore(string baseDirectory, TimeProvider? timeProvider, bool strictMetadataReads)
     {
         _baseDirectory = baseDirectory ?? throw new ArgumentNullException(nameof(baseDirectory));
         _time = timeProvider ?? TimeProvider.System;
+        _strictMetadataReads = strictMetadataReads;
         _ = Directory.CreateDirectory(_baseDirectory);
     }
 
@@ -85,10 +100,11 @@ public sealed class FileConversationStore
             return;
         }
 
-        // Read before taking the lock: it takes the lock itself.
+        // Read before taking the lock: ForkHistory takes the per-thread gate itself.
         var forkPoint = await ForkHistory.ForkPointAsync(this, threadId, ct);
 
-        await _lock.WaitAsync(ct);
+        var gate = GetDirectoryGate(GetThreadDirectory(threadId));
+        await gate.WaitAsync(ct);
         try
         {
             var threadDir = GetThreadDirectory(threadId);
@@ -105,7 +121,7 @@ public sealed class FileConversationStore
         }
         finally
         {
-            _ = _lock.Release();
+            _ = gate.Release();
         }
     }
 
@@ -115,7 +131,8 @@ public sealed class FileConversationStore
         ArgumentNullException.ThrowIfNull(threadId);
 
         long own;
-        await _lock.WaitAsync(ct);
+        var gate = GetDirectoryGate(GetThreadDirectory(threadId));
+        await gate.WaitAsync(ct);
         try
         {
             var messagesFile = Path.Combine(GetThreadDirectory(threadId), MessagesFileName);
@@ -124,7 +141,7 @@ public sealed class FileConversationStore
         }
         finally
         {
-            _ = _lock.Release();
+            _ = gate.Release();
         }
 
         return await ForkHistory.WatermarkAsync(this, threadId, own, ct);
@@ -149,7 +166,8 @@ public sealed class FileConversationStore
             limit,
             async (from, to, max) =>
             {
-                await _lock.WaitAsync(ct);
+                var gate = GetDirectoryGate(GetThreadDirectory(threadId));
+                await gate.WaitAsync(ct);
                 try
                 {
                     var messagesFile = Path.Combine(GetThreadDirectory(threadId), MessagesFileName);
@@ -158,7 +176,7 @@ public sealed class FileConversationStore
                 }
                 finally
                 {
-                    _ = _lock.Release();
+                    _ = gate.Release();
                 }
             },
             ct
@@ -170,7 +188,8 @@ public sealed class FileConversationStore
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
-        await _lock.WaitAsync(ct);
+        var gate = GetDirectoryGate(GetThreadDirectory(threadId));
+        await gate.WaitAsync(ct);
         try
         {
             var messagesFile = Path.Combine(GetThreadDirectory(threadId), MessagesFileName);
@@ -184,7 +203,7 @@ public sealed class FileConversationStore
         }
         finally
         {
-            _ = _lock.Release();
+            _ = gate.Release();
         }
     }
 
@@ -194,7 +213,8 @@ public sealed class FileConversationStore
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(replacement);
 
-        await _lock.WaitAsync(ct);
+        var gate = GetDirectoryGate(GetThreadDirectory(threadId));
+        await gate.WaitAsync(ct);
         try
         {
             var messagesFile = Path.Combine(GetThreadDirectory(threadId), MessagesFileName);
@@ -218,7 +238,7 @@ public sealed class FileConversationStore
         }
         finally
         {
-            _ = _lock.Release();
+            _ = gate.Release();
         }
     }
 
@@ -231,7 +251,8 @@ public sealed class FileConversationStore
         ArgumentNullException.ThrowIfNull(threadId);
 
         List<PersistedMessage> own;
-        await _lock.WaitAsync(ct);
+        var gate = GetDirectoryGate(GetThreadDirectory(threadId));
+        await gate.WaitAsync(ct);
         try
         {
             var messagesFile = Path.Combine(GetThreadDirectory(threadId), MessagesFileName);
@@ -239,7 +260,7 @@ public sealed class FileConversationStore
         }
         finally
         {
-            _ = _lock.Release();
+            _ = gate.Release();
         }
 
         return await ForkHistory.LoadAsync(this, threadId, own, ct);
@@ -250,7 +271,8 @@ public sealed class FileConversationStore
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
-        await _lock.WaitAsync(ct);
+        var gate = GetDirectoryGate(GetThreadDirectory(threadId));
+        await gate.WaitAsync(ct);
         try
         {
             var threadDir = GetThreadDirectory(threadId);
@@ -261,7 +283,7 @@ public sealed class FileConversationStore
         }
         finally
         {
-            _ = _lock.Release();
+            _ = gate.Release();
         }
     }
 
@@ -270,15 +292,16 @@ public sealed class FileConversationStore
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
-        await _lock.WaitAsync(ct);
+        var gate = GetDirectoryGate(GetThreadDirectory(threadId));
+        await gate.WaitAsync(ct);
         try
         {
             var metadataFile = Path.Combine(GetThreadDirectory(threadId), MetadataFileName);
-            return await LoadJsonFileAsync<ThreadMetadata>(metadataFile, ct);
+            return await LoadMetadataFileAsync(metadataFile, ct);
         }
         finally
         {
-            _ = _lock.Release();
+            _ = gate.Release();
         }
     }
 
@@ -295,20 +318,21 @@ public sealed class FileConversationStore
         // Hold the lock across the read AND the write so a concurrent read-modify-write for the same
         // thread cannot interleave and clobber the other's properties (the provider-vs-workspace and
         // bindings-vs-title/preview lost-update race that dropped the persisted provider).
-        await _lock.WaitAsync(ct);
+        var gate = GetDirectoryGate(GetThreadDirectory(threadId));
+        await gate.WaitAsync(ct);
         try
         {
             var threadDir = GetThreadDirectory(threadId);
             _ = Directory.CreateDirectory(threadDir);
 
             var metadataFile = Path.Combine(threadDir, MetadataFileName);
-            var existing = await LoadJsonFileAsync<ThreadMetadata>(metadataFile, ct);
+            var existing = await LoadMetadataFileAsync(metadataFile, ct);
             var updated = update(existing);
             await WriteJsonFileAsync(metadataFile, updated, ct);
         }
         finally
         {
-            _ = _lock.Release();
+            _ = gate.Release();
         }
     }
 
@@ -317,7 +341,8 @@ public sealed class FileConversationStore
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
-        await _lock.WaitAsync(ct);
+        var gate = GetDirectoryGate(GetThreadDirectory(threadId));
+        await gate.WaitAsync(ct);
         try
         {
             var threadDir = GetThreadDirectory(threadId);
@@ -328,7 +353,7 @@ public sealed class FileConversationStore
         }
         finally
         {
-            _ = _lock.Release();
+            _ = gate.Release();
         }
     }
 
@@ -340,54 +365,14 @@ public sealed class FileConversationStore
         CancellationToken ct = default
     )
     {
-        await _lock.WaitAsync(ct);
-        try
-        {
-            if (!Directory.Exists(_baseDirectory))
-            {
-                return [];
-            }
+        var metadataList = await ReadAllMetadataAsync(ct).ConfigureAwait(false);
 
-            var directories = Directory.GetDirectories(_baseDirectory);
-            var metadataList = new List<ThreadMetadata>();
+        // Exclusion and ordering both run BEFORE Skip/Take. Applying either afterwards would
+        // return a page short by however many rows it removed - the exact defect that hid real
+        // conversations behind a wall of agent-owned threads. See ConversationListOptions.
+        var listOptions = options ?? ConversationListOptions.Default;
 
-            foreach (var dir in directories)
-            {
-                ct.ThrowIfCancellationRequested();
-
-                var threadId = Path.GetFileName(dir);
-                var metadataFile = Path.Combine(dir, MetadataFileName);
-                var metadata = await LoadJsonFileAsync<ThreadMetadata>(metadataFile, ct);
-
-                if (metadata != null)
-                {
-                    metadataList.Add(metadata);
-                }
-                else
-                {
-                    // Thread exists but has no metadata - create minimal entry
-                    var messagesFile = Path.Combine(dir, MessagesFileName);
-                    var messages = await LoadMessagesFromFileAsync(messagesFile, ct);
-                    var lastUpdated =
-                        messages.Count > 0
-                            ? messages.Max(m => m.Timestamp)
-                            : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-
-                    metadataList.Add(new ThreadMetadata { ThreadId = threadId, LastUpdated = lastUpdated });
-                }
-            }
-
-            // Exclusion and ordering both run BEFORE Skip/Take. Applying either afterwards would
-            // return a page short by however many rows it removed - the exact defect that hid real
-            // conversations behind a wall of agent-owned threads. See ConversationListOptions.
-            var listOptions = options ?? ConversationListOptions.Default;
-
-            return [.. listOptions.Order(metadataList.Where(listOptions.Admits)).Skip(offset).Take(limit)];
-        }
-        finally
-        {
-            _ = _lock.Release();
-        }
+        return [.. listOptions.Order(metadataList.Where(listOptions.Admits)).Skip(offset).Take(limit)];
     }
 
     /// <inheritdoc />
@@ -413,6 +398,82 @@ public sealed class FileConversationStore
         [
             .. listOptions.Order(all.Where(m => scope.Admits(m) && listOptions.Admits(m))).Skip(offset).Take(limit),
         ];
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<ConversationListingRow>> ListConversationRowsAsync(
+        IReadOnlySet<string> propertyKeys,
+        ConversationListScope? scope = null,
+        int limit = 50,
+        int offset = 0,
+        ConversationListOptions? options = null,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(propertyKeys);
+        var keys = new HashSet<string>(propertyKeys, StringComparer.Ordinal);
+        // The lineage is always read so ExcludeDeleted can filter, but only requested keys are projected.
+        var readKeys = new HashSet<string>(keys, StringComparer.Ordinal) { ConversationLineage.PropertyKey };
+        var readOptions = new JsonSerializerOptions(JsonOptions);
+        readOptions.Converters.Add(new ListingPropertiesConverter(readKeys));
+        var rows = await ReadAllMetadataAsync(ct, readOptions).ConfigureAwait(false);
+        var listOptions = options ?? ConversationListOptions.Default;
+        return
+        [
+            .. listOptions
+                .Order(rows.Where(row => (scope is null || scope.Admits(row)) && listOptions.Admits(row)))
+                .Skip(offset)
+                .Take(limit)
+                .Select(row => ConversationListingRow.FromMetadata(row, keys)),
+        ];
+    }
+
+    private sealed class ListingPropertiesConverter(IReadOnlySet<string> keys)
+        : JsonConverter<System.Collections.Immutable.ImmutableDictionary<string, object>>
+    {
+        public override System.Collections.Immutable.ImmutableDictionary<string, object> Read(
+            ref Utf8JsonReader reader,
+            Type typeToConvert,
+            JsonSerializerOptions options
+        )
+        {
+            if (reader.TokenType != JsonTokenType.StartObject)
+            {
+                throw new JsonException("Metadata properties must be an object.");
+            }
+            var values = System.Collections.Immutable.ImmutableDictionary.CreateBuilder<string, object>();
+            while (reader.Read())
+            {
+                if (reader.TokenType == JsonTokenType.EndObject)
+                {
+                    return values.ToImmutable();
+                }
+                if (reader.TokenType != JsonTokenType.PropertyName)
+                {
+                    throw new JsonException("Expected a metadata property name.");
+                }
+                var key = reader.GetString()!;
+                if (!reader.Read())
+                {
+                    throw new JsonException("Expected a metadata property value.");
+                }
+                if (keys.Contains(key))
+                {
+                    values[key] = JsonSerializer.Deserialize<object>(ref reader, options)!;
+                }
+                else
+                {
+                    reader.Skip();
+                }
+            }
+            throw new JsonException("Incomplete metadata properties.");
+        }
+
+        public override void Write(
+            Utf8JsonWriter writer,
+            System.Collections.Immutable.ImmutableDictionary<string, object> value,
+            JsonSerializerOptions options
+        ) => throw new NotSupportedException("Listing projections are read-only.");
     }
 
     /// <inheritdoc />
@@ -507,25 +568,36 @@ public sealed class FileConversationStore
     /// <see cref="ListThreadsAsync(int, int, ConversationListOptions, CancellationToken)"/> uses for a directory that has
     /// messages but no metadata file.
     /// </summary>
-    private async Task<IReadOnlyList<ThreadMetadata>> ReadAllMetadataAsync(CancellationToken ct)
+    private async Task<IReadOnlyList<ThreadMetadata>> ReadAllMetadataAsync(
+        CancellationToken ct,
+        JsonSerializerOptions? readOptions = null
+    )
     {
-        await _lock.WaitAsync(ct);
-        try
+        ct.ThrowIfCancellationRequested();
+        if (!Directory.Exists(_baseDirectory))
         {
-            if (!Directory.Exists(_baseDirectory))
-            {
-                return [];
-            }
+            return [];
+        }
 
-            var metadataList = new List<ThreadMetadata>();
+        var metadataList = new List<ThreadMetadata>();
 
-            foreach (var dir in Directory.GetDirectories(_baseDirectory))
+        // Each directory is a consistent read, not a snapshot of the entire corpus. Never retain
+        // its gate while visiting another thread: historical scans must not stop unrelated writes.
+        foreach (var dir in Directory.GetDirectories(_baseDirectory))
+        {
+            ct.ThrowIfCancellationRequested();
+            var gate = GetDirectoryGate(dir);
+            await gate.WaitAsync(ct);
+            try
             {
-                ct.ThrowIfCancellationRequested();
+                if (!Directory.Exists(dir))
+                {
+                    continue;
+                }
 
                 var threadId = Path.GetFileName(dir);
                 var metadataFile = Path.Combine(dir, MetadataFileName);
-                var metadata = await LoadJsonFileAsync<ThreadMetadata>(metadataFile, ct);
+                var metadata = await LoadMetadataFileAsync(metadataFile, ct, readOptions);
 
                 if (metadata != null)
                 {
@@ -546,13 +618,13 @@ public sealed class FileConversationStore
                     }
                 );
             }
+            finally
+            {
+                _ = gate.Release();
+            }
+        }
 
-            return metadataList;
-        }
-        finally
-        {
-            _ = _lock.Release();
-        }
+        return metadataList;
     }
 
     /// <inheritdoc />
@@ -560,7 +632,8 @@ public sealed class FileConversationStore
     {
         ArgumentNullException.ThrowIfNull(entry);
 
-        await _lock.WaitAsync(ct);
+        var gate = GetDirectoryGate(GetThreadDirectory(entry.ThreadId));
+        await gate.WaitAsync(ct);
         try
         {
             var threadDir = GetThreadDirectory(entry.ThreadId);
@@ -583,7 +656,7 @@ public sealed class FileConversationStore
         }
         finally
         {
-            _ = _lock.Release();
+            _ = gate.Release();
         }
     }
 
@@ -592,19 +665,20 @@ public sealed class FileConversationStore
     {
         ArgumentNullException.ThrowIfNull(runId);
 
-        await _lock.WaitAsync(ct);
-        try
+        ct.ThrowIfCancellationRequested();
+        if (!Directory.Exists(_baseDirectory))
         {
-            if (!Directory.Exists(_baseDirectory))
-            {
-                return null;
-            }
+            return null;
+        }
 
-            // No threadId-from-runId index exists on disk, so scan each thread's runs.json.
-            foreach (var dir in Directory.GetDirectories(_baseDirectory))
+        // No threadId-from-runId index exists on disk, so scan each thread's runs.json.
+        foreach (var dir in Directory.GetDirectories(_baseDirectory))
+        {
+            ct.ThrowIfCancellationRequested();
+            var gate = GetDirectoryGate(dir);
+            await gate.WaitAsync(ct);
+            try
             {
-                ct.ThrowIfCancellationRequested();
-
                 var runsFile = Path.Combine(dir, RunsFileName);
                 var runs = await LoadJsonFileAsync<List<RunLedgerEntry>>(runsFile, ct);
                 var match = runs?.FirstOrDefault(r => r.RunId == runId);
@@ -613,13 +687,13 @@ public sealed class FileConversationStore
                     return match;
                 }
             }
+            finally
+            {
+                _ = gate.Release();
+            }
+        }
 
-            return null;
-        }
-        finally
-        {
-            _ = _lock.Release();
-        }
+        return null;
     }
 
     /// <inheritdoc />
@@ -627,7 +701,8 @@ public sealed class FileConversationStore
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
-        await _lock.WaitAsync(ct);
+        var gate = GetDirectoryGate(GetThreadDirectory(threadId));
+        await gate.WaitAsync(ct);
         try
         {
             var runsFile = Path.Combine(GetThreadDirectory(threadId), RunsFileName);
@@ -637,7 +712,7 @@ public sealed class FileConversationStore
         }
         finally
         {
-            _ = _lock.Release();
+            _ = gate.Release();
         }
     }
 
@@ -651,7 +726,7 @@ public sealed class FileConversationStore
 
     /// <inheritdoc />
     /// <remarks>
-    /// The store-wide lock makes this atomic against other callers in THIS process. It is not a
+    /// The directory gate makes this atomic against other callers on THIS store instance. It is not a
     /// cross-process reservation: two processes pointed at the same directory can both observe an absent
     /// entry and both write. That is the same last-writer-wins exposure the rest of this store already has
     /// (see the atomic JSON writer below), and single-writer is this store's documented deployment
@@ -687,7 +762,8 @@ public sealed class FileConversationStore
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(inputId);
 
-        await _lock.WaitAsync(ct);
+        var gate = GetDirectoryGate(GetThreadDirectory(threadId));
+        await gate.WaitAsync(ct);
         try
         {
             var threadDir = GetThreadDirectory(threadId);
@@ -717,7 +793,7 @@ public sealed class FileConversationStore
         }
         finally
         {
-            _ = _lock.Release();
+            _ = gate.Release();
         }
     }
 
@@ -727,7 +803,8 @@ public sealed class FileConversationStore
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(inputId);
 
-        await _lock.WaitAsync(ct);
+        var gate = GetDirectoryGate(GetThreadDirectory(threadId));
+        await gate.WaitAsync(ct);
         try
         {
             var acceptedFile = Path.Combine(GetThreadDirectory(threadId), AcceptedInputsFileName);
@@ -744,7 +821,7 @@ public sealed class FileConversationStore
         }
         finally
         {
-            _ = _lock.Release();
+            _ = gate.Release();
         }
     }
 
@@ -753,7 +830,8 @@ public sealed class FileConversationStore
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
-        await _lock.WaitAsync(ct);
+        var gate = GetDirectoryGate(GetThreadDirectory(threadId));
+        await gate.WaitAsync(ct);
         try
         {
             var acceptedFile = Path.Combine(GetThreadDirectory(threadId), AcceptedInputsFileName);
@@ -763,7 +841,7 @@ public sealed class FileConversationStore
         }
         finally
         {
-            _ = _lock.Release();
+            _ = gate.Release();
         }
     }
 
@@ -773,7 +851,8 @@ public sealed class FileConversationStore
         ArgumentNullException.ThrowIfNull(state);
         RunLifecycleGuards.ValidateStart(state);
 
-        await _lock.WaitAsync(ct);
+        var gate = GetDirectoryGate(GetThreadDirectory(state.ThreadId));
+        await gate.WaitAsync(ct);
         try
         {
             var threadDir = GetThreadDirectory(state.ThreadId);
@@ -811,7 +890,7 @@ public sealed class FileConversationStore
         }
         finally
         {
-            _ = _lock.Release();
+            _ = gate.Release();
         }
     }
 
@@ -820,34 +899,12 @@ public sealed class FileConversationStore
     {
         ArgumentNullException.ThrowIfNull(runId);
 
-        await _lock.WaitAsync(ct);
-        try
-        {
-            if (!Directory.Exists(_baseDirectory))
-            {
-                return null;
-            }
-
-            // Same absence of a runId→threadId index as the run ledger: scan each thread's file.
-            foreach (var dir in Directory.GetDirectories(_baseDirectory))
-            {
-                ct.ThrowIfCancellationRequested();
-
-                var file = Path.Combine(dir, RunLifecycleFileName);
-                var runs = await LoadJsonFileAsync<List<RunLifecycleState>>(file, ct);
-                var match = runs?.FirstOrDefault(r => r.RunId == runId);
-                if (match != null)
-                {
-                    return match;
-                }
-            }
-
-            return null;
-        }
-        finally
-        {
-            _ = _lock.Release();
-        }
+        var (found, result) = await WithRunAsync<RunLifecycleState>(
+            runId,
+            (_, runs, index) => Task.FromResult(runs[index]),
+            ct
+        );
+        return found ? result : null;
     }
 
     /// <inheritdoc />
@@ -858,7 +915,8 @@ public sealed class FileConversationStore
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
-        await _lock.WaitAsync(ct);
+        var gate = GetDirectoryGate(GetThreadDirectory(threadId));
+        await gate.WaitAsync(ct);
         try
         {
             var runs = await LoadThreadLifecycleAsync(threadId, ct);
@@ -866,7 +924,7 @@ public sealed class FileConversationStore
         }
         finally
         {
-            _ = _lock.Release();
+            _ = gate.Release();
         }
     }
 
@@ -878,7 +936,8 @@ public sealed class FileConversationStore
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
-        await _lock.WaitAsync(ct);
+        var gate = GetDirectoryGate(GetThreadDirectory(threadId));
+        await gate.WaitAsync(ct);
         try
         {
             var runs = await LoadThreadLifecycleAsync(threadId, ct);
@@ -891,7 +950,7 @@ public sealed class FileConversationStore
         }
         finally
         {
-            _ = _lock.Release();
+            _ = gate.Release();
         }
     }
 
@@ -907,37 +966,30 @@ public sealed class FileConversationStore
         ArgumentNullException.ThrowIfNull(runId);
         ArgumentException.ThrowIfNullOrEmpty(outcome);
 
-        await _lock.WaitAsync(ct);
-        try
-        {
-            var located = await LocateRunAsync(runId, ct);
-            if (located == null)
+        var (found, result) = await WithRunAsync(
+            runId,
+            async (file, runs, idx) =>
             {
-                return false;
-            }
+                if (runs[idx].Phase == RunLifecyclePhase.Terminal)
+                {
+                    return false;
+                }
 
-            var (file, runs, idx) = located.Value;
-            if (runs[idx].Phase == RunLifecyclePhase.Terminal)
-            {
-                return false;
-            }
+                runs[idx] = runs[idx] with
+                {
+                    Phase = RunLifecyclePhase.Terminal,
+                    Outcome = outcome,
+                    TurnCount = turnCount,
+                    TerminalAt = terminalAt,
+                    UpdatedAt = terminalAt,
+                };
 
-            runs[idx] = runs[idx] with
-            {
-                Phase = RunLifecyclePhase.Terminal,
-                Outcome = outcome,
-                TurnCount = turnCount,
-                TerminalAt = terminalAt,
-                UpdatedAt = terminalAt,
-            };
-
-            await WriteJsonFileAsync(file, runs, ct);
-            return true;
-        }
-        finally
-        {
-            _ = _lock.Release();
-        }
+                await WriteJsonFileAsync(file, runs, ct);
+                return true;
+            },
+            ct
+        );
+        return found && result;
     }
 
     /// <inheritdoc />
@@ -950,38 +1002,34 @@ public sealed class FileConversationStore
         ArgumentNullException.ThrowIfNull(runId);
         ArgumentNullException.ThrowIfNull(record);
 
-        await _lock.WaitAsync(ct);
-        try
-        {
-            var located =
-                await LocateRunAsync(runId, ct)
-                ?? throw new InvalidOperationException(
-                    $"Run '{runId}' was never recorded as started; cannot record deferral " + $"'{record.ToolCallId}'."
-                );
-
-            var (file, runs, idx) = located;
-            var state = runs[idx];
-
-            var already = state.DeferredToolCalls.FirstOrDefault(d => d.ToolCallId == record.ToolCallId);
-            if (already != null)
+        var (found, result) = await WithRunAsync(
+            runId,
+            async (file, runs, idx) =>
             {
-                return already;
-            }
+                var state = runs[idx];
+                var already = state.DeferredToolCalls.FirstOrDefault(d => d.ToolCallId == record.ToolCallId);
+                if (already != null)
+                {
+                    return already;
+                }
 
-            var committed = record with { Ordinal = state.DeferredToolCalls.Count + 1 };
-            runs[idx] = state with
-            {
-                DeferredToolCalls = [.. state.DeferredToolCalls, committed],
-                UpdatedAt = record.DeferredAt,
-            };
+                var committed = record with { Ordinal = state.DeferredToolCalls.Count + 1 };
+                runs[idx] = state with
+                {
+                    DeferredToolCalls = [.. state.DeferredToolCalls, committed],
+                    UpdatedAt = record.DeferredAt,
+                };
 
-            await WriteJsonFileAsync(file, runs, ct);
-            return committed;
-        }
-        finally
-        {
-            _ = _lock.Release();
-        }
+                await WriteJsonFileAsync(file, runs, ct);
+                return committed;
+            },
+            ct
+        );
+        return found
+            ? result
+            : throw new InvalidOperationException(
+                $"Run '{runId}' was never recorded as started; cannot record deferral " + $"'{record.ToolCallId}'."
+            );
     }
 
     /// <inheritdoc />
@@ -998,7 +1046,8 @@ public sealed class FileConversationStore
         ArgumentNullException.ThrowIfNull(toolCallId);
         ArgumentException.ThrowIfNullOrEmpty(resolutionFingerprint);
 
-        await _lock.WaitAsync(ct);
+        var gate = GetDirectoryGate(GetThreadDirectory(threadId));
+        await gate.WaitAsync(ct);
         try
         {
             var file = Path.Combine(GetThreadDirectory(threadId), RunLifecycleFileName);
@@ -1042,7 +1091,7 @@ public sealed class FileConversationStore
         }
         finally
         {
-            _ = _lock.Release();
+            _ = gate.Release();
         }
     }
 
@@ -1059,7 +1108,8 @@ public sealed class FileConversationStore
         ArgumentNullException.ThrowIfNull(toolCallId);
         ArgumentException.ThrowIfNullOrEmpty(childRunId);
 
-        await _lock.WaitAsync(ct);
+        var gate = GetDirectoryGate(GetThreadDirectory(threadId));
+        await gate.WaitAsync(ct);
         try
         {
             var file = Path.Combine(GetThreadDirectory(threadId), RunLifecycleFileName);
@@ -1093,7 +1143,7 @@ public sealed class FileConversationStore
         }
         finally
         {
-            _ = _lock.Release();
+            _ = gate.Release();
         }
     }
 
@@ -1104,33 +1154,43 @@ public sealed class FileConversationStore
     }
 
     /// <summary>
-    /// Finds the thread file holding a run, its deserialized contents, and the run's index in it.
-    /// Callers already hold <c>_lock</c>.
+    /// Finds a run and completes the operation while its directory gate is still held. Returning
+    /// the deserialized list after releasing that gate would allow a stale read-modify-write.
     /// </summary>
-    private async Task<(string File, List<RunLifecycleState> Runs, int Index)?> LocateRunAsync(
+    private async Task<(bool Found, T Result)> WithRunAsync<T>(
         string runId,
+        Func<string, List<RunLifecycleState>, int, Task<T>> action,
         CancellationToken ct
     )
     {
+        ct.ThrowIfCancellationRequested();
         if (!Directory.Exists(_baseDirectory))
         {
-            return null;
+            return (false, default!);
         }
 
         foreach (var dir in Directory.GetDirectories(_baseDirectory))
         {
             ct.ThrowIfCancellationRequested();
-
-            var file = Path.Combine(dir, RunLifecycleFileName);
-            var runs = await LoadJsonFileAsync<List<RunLifecycleState>>(file, ct);
-            var idx = runs?.FindIndex(r => r.RunId == runId) ?? -1;
-            if (idx >= 0)
+            var gate = GetDirectoryGate(dir);
+            await gate.WaitAsync(ct);
+            try
             {
-                return (file, runs!, idx);
+                var file = Path.Combine(dir, RunLifecycleFileName);
+                var runs = await LoadJsonFileAsync<List<RunLifecycleState>>(file, ct);
+                var idx = runs?.FindIndex(r => r.RunId == runId) ?? -1;
+                if (idx >= 0)
+                {
+                    return (true, await action(file, runs!, idx));
+                }
+            }
+            finally
+            {
+                _ = gate.Release();
             }
         }
 
-        return null;
+        return (false, default!);
     }
 
     /// <inheritdoc />
@@ -1142,9 +1202,7 @@ public sealed class FileConversationStore
         ArgumentNullException.ThrowIfNull(acceptance);
         var acceptanceFile = GetAcceptanceFile(acceptance.ThreadId, acceptance.InputId, createDirectory: true);
 
-        // Serialized BEFORE the create, deliberately: everything between winning the arbitration and the
-        // record's content being durable happens inside the window a losing contender has to wait out, and
-        // this is the only part of it that does not have to be there.
+        // Serialize before acquiring the gate; publication must expose only a complete record.
         var payload = JsonSerializer.SerializeToUtf8Bytes(acceptance, AcceptanceJsonOptions);
 
         // Bounded by the same settle budget the reader uses rather than by a count of tries: what has to be
@@ -1156,22 +1214,46 @@ public sealed class FileConversationStore
         var started = _time.GetTimestamp();
         while (true)
         {
-            FileStream claim;
+            ct.ThrowIfCancellationRequested();
             try
             {
-                // FileShare.None, and not FileShare.Read: the exclusive create is the arbitration, so the
-                // record's NAME necessarily exists before its content does, and a reader let in during that
-                // gap sees a zero-length record it can only report as unsettled. Denying the open instead
-                // makes "the record exists" imply "the record is readable" — the gap is still there, but
-                // nothing can observe the record in it.
-                claim = new FileStream(
-                    acceptanceFile,
-                    FileMode.CreateNew,
-                    FileAccess.Write,
-                    FileShare.None,
-                    bufferSize: 0,
-                    FileOptions.None
-                );
+                var gate =
+                    await OpenMutationGateAsync(acceptanceFile + MutationGateSuffix, ct)
+                    ?? throw new IOException("The admission publication gate did not settle.");
+                await using (gate)
+                {
+                    // One attempt only: waiting out an unreadable name here would hold the gate, and with it
+                    // the thread directory, open for the whole settle budget. The arm below waits gate-free.
+                    if (await ReadAcceptanceFileAsync(acceptanceFile, ct, waitToSettle: false) is { } existing)
+                    {
+                        return existing;
+                    }
+
+                    // Unix FileShare locks are acquired after open creates the name. Staging and
+                    // renaming under the same gate as outcome/release avoids publishing empty JSON
+                    // and serializes independent store instances and processes. Every writer sharing
+                    // this storage must use the gate: quiesce pre-gate writers before upgrading.
+                    var tempFile = acceptanceFile + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                    try
+                    {
+                        // Do not recreate a thread directory deleted while this reservation waits.
+                        await File.WriteAllBytesAsync(tempFile, payload, ct);
+                        ct.ThrowIfCancellationRequested();
+                        File.Move(tempFile, acceptanceFile, overwrite: false);
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            File.Delete(tempFile);
+                        }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                        {
+                            // A leftover staging file is not an admission; preserve the original failure.
+                        }
+                    }
+                    return null;
+                }
             }
             catch (IOException)
             {
@@ -1202,40 +1284,6 @@ public sealed class FileConversationStore
                 await Task.Delay(AcceptanceSettlePoll, _time, ct);
                 continue;
             }
-
-            try
-            {
-                // Straight-line synchronous, with no await between the create and the close. An async
-                // FileStream buffers a record this small entirely in memory and flushes it from a
-                // continuation, so the record sat visibly EMPTY across a thread-pool scheduling point — and
-                // on a loaded runner that point is exactly where the wait becomes unbounded, which is how a
-                // contender came to spend its whole settle budget on a writer that was merely descheduled.
-                // Unbuffered plus synchronous makes the window a handful of syscalls that nothing can
-                // deschedule.
-                using (claim)
-                {
-                    claim.Write(payload);
-                }
-            }
-            catch
-            {
-                TryDeleteRecordFile(acceptanceFile);
-                throw;
-            }
-
-            return null;
-        }
-    }
-
-    private static void TryDeleteRecordFile(string path)
-    {
-        try
-        {
-            File.Delete(path);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            // The original write failure remains authoritative; a leftover claim stays fail closed.
         }
     }
 
@@ -1307,13 +1355,10 @@ public sealed class FileConversationStore
     /// Takes the exclusive gate that serializes mutations of one admission record, waiting out a holder
     /// that is merely mid-mutation rather than reporting the record as not this caller's.
     /// <para>
-    /// A retraction deletes the record and only THEN drops its handle, so between those two moments the
-    /// id is free: the next caller can be granted it by the exclusive create — which takes no gate,
-    /// because the create is itself the arbitration — and arrive here holding a record that is
-    /// demonstrably its own while the previous owner's handle is still open. Answering that caller
-    /// <c>false</c> tells it there was nothing of its own to retract, and it then leaves an admission
-    /// standing for work that never ran. A gate still held once the settle budget is spent is a mutation
-    /// genuinely in flight, and standing down is the right answer to that.
+    /// Reservations, outcomes and retractions share this gate. A retraction deletes the record before
+    /// its handle closes, so callers must wait for that handle rather than treating a transient lock as
+    /// a permanent refusal. A gate still held once the settle budget is spent is a mutation genuinely
+    /// in flight, and standing down is the right answer to that.
     /// </para>
     /// </summary>
     private async Task<FileStream?> OpenMutationGateAsync(string gateFile, CancellationToken ct)
@@ -1345,7 +1390,11 @@ public sealed class FileConversationStore
         }
     }
 
-    private async Task<InputAcceptance?> ReadAcceptanceFileAsync(string acceptanceFile, CancellationToken ct)
+    private async Task<InputAcceptance?> ReadAcceptanceFileAsync(
+        string acceptanceFile,
+        CancellationToken ct,
+        bool waitToSettle = true
+    )
     {
         var started = _time.GetTimestamp();
         while (true)
@@ -1386,7 +1435,7 @@ public sealed class FileConversationStore
                 // A Windows delete-pending name is transient; a real permission failure outlives the budget.
             }
 
-            if (_time.GetElapsedTime(started) >= AcceptanceSettleTimeout)
+            if (!waitToSettle || _time.GetElapsedTime(started) >= AcceptanceSettleTimeout)
             {
                 throw new IOException($"The admission record '{acceptanceFile}' exists but never became readable.");
             }
@@ -1407,6 +1456,12 @@ public sealed class FileConversationStore
         return Path.Combine(acceptancesDir, $"{digest}.json");
     }
 
+    private SemaphoreSlim GetDirectoryGate(string directory) =>
+        _directoryGates.GetOrAdd(
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory)),
+            static _ => new SemaphoreSlim(1, 1)
+        );
+
     private string GetThreadDirectory(string threadId)
     {
         // Sanitize thread ID for filesystem safety
@@ -1423,8 +1478,7 @@ public sealed class FileConversationStore
 
         try
         {
-            var json = await File.ReadAllTextAsync(filePath, ct);
-            return JsonSerializer.Deserialize<List<PersistedMessage>>(json, JsonOptions) ?? [];
+            return await ReadJsonFileAsync<List<PersistedMessage>>(filePath, ct) ?? [];
         }
         catch (JsonException)
         {
@@ -1433,7 +1487,31 @@ public sealed class FileConversationStore
         }
     }
 
-    private static async Task<T?> LoadJsonFileAsync<T>(string filePath, CancellationToken ct)
+    private async Task<ThreadMetadata?> LoadMetadataFileAsync(
+        string filePath,
+        CancellationToken ct,
+        JsonSerializerOptions? readOptions = null
+    )
+    {
+        if (!_strictMetadataReads)
+        {
+            return await LoadJsonFileAsync<ThreadMetadata>(filePath, ct, readOptions);
+        }
+
+        if (!File.Exists(filePath))
+        {
+            return null;
+        }
+
+        return await ReadJsonFileAsync<ThreadMetadata>(filePath, ct, readOptions)
+            ?? throw new JsonException("Persisted thread metadata must be an object, not null.");
+    }
+
+    private static async Task<T?> LoadJsonFileAsync<T>(
+        string filePath,
+        CancellationToken ct,
+        JsonSerializerOptions? readOptions = null
+    )
         where T : class
     {
         if (!File.Exists(filePath))
@@ -1443,12 +1521,59 @@ public sealed class FileConversationStore
 
         try
         {
-            var json = await File.ReadAllTextAsync(filePath, ct);
-            return JsonSerializer.Deserialize<T>(json, JsonOptions);
+            return await ReadJsonFileAsync<T>(filePath, ct, readOptions);
         }
         catch (JsonException)
         {
             return null;
+        }
+    }
+
+    private static async Task<T?> ReadJsonFileAsync<T>(
+        string filePath,
+        CancellationToken ct,
+        JsonSerializerOptions? readOptions = null
+    )
+    {
+        ct.ThrowIfCancellationRequested();
+        await using var stream = new FileStream(
+            filePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            4096,
+            FileOptions.Asynchronous | FileOptions.SequentialScan
+        );
+        // Keep ReadAllTextAsync's BOM detection and invalid-byte replacement without building a string.
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        var buffer = ArrayPool<char>.Shared.Rent((int)Math.Min(Math.Max(stream.Length, 1), 1_048_576));
+        try
+        {
+            var count = 0;
+            while (true)
+            {
+                if (count == buffer.Length)
+                {
+                    var larger = ArrayPool<char>.Shared.Rent(checked(buffer.Length * 2));
+                    buffer.AsSpan(0, count).CopyTo(larger);
+                    ArrayPool<char>.Shared.Return(buffer, clearArray: true);
+                    buffer = larger;
+                }
+
+                var read = await reader.ReadAsync(buffer.AsMemory(count), ct);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                count += read;
+            }
+
+            return JsonSerializer.Deserialize<T>(buffer.AsSpan(0, count), readOptions ?? JsonOptions);
+        }
+        finally
+        {
+            ArrayPool<char>.Shared.Return(buffer, clearArray: true);
         }
     }
 
@@ -1459,7 +1584,7 @@ public sealed class FileConversationStore
     /// Atomic write through the shared <see cref="AtomicFile"/> helper: a unique staging file, then a
     /// rename over the target with a bounded retry, and cleanup of the staging file on any failure.
     /// <para>
-    /// <see cref="_lock"/> covers none of that. It is a per-INSTANCE semaphore, so it serializes nothing
+    /// The directory gates cover none of that. They are per-INSTANCE, so they serialize nothing
     /// between two stores over one base directory — the shape
     /// <c>ConversationContextReportTests(kind:"file")</c> and <c>InputAcceptanceStoreTests</c> construct —
     /// and nothing at all across processes.

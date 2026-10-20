@@ -38,6 +38,7 @@ public sealed class ContextDiscoveryEndToEndTests
                 new ContextDiscoveryItem
                 {
                     Kind = "context_file",
+                    AgentId = ThreadId,
                     Path = "CLAUDE.md",
                     Content = "# Project rules\nAlways be concise.",
                 },
@@ -47,7 +48,8 @@ public sealed class ContextDiscoveryEndToEndTests
         var result = await controller.NotifyAsync(payload, CancellationToken.None);
 
         result.Should().BeOfType<OkResult>();
-        var message = agent.SentMessages.Should().ContainSingle().Which.Should().BeOfType<NotifyMessage>().Subject;
+        agent.SentMessages.Should().BeEmpty();
+        var message = agent.RecordedContext.Should().ContainSingle().Which;
         message.Role.Should().Be(Role.User);
         message.NotifyKind.Should().Be(NotifyKinds.ContextDiscovery);
         message.Label.Should().Be("CLAUDE.md");
@@ -73,12 +75,14 @@ public sealed class ContextDiscoveryEndToEndTests
                 new ContextDiscoveryItem
                 {
                     Kind = "context_file",
+                    AgentId = ThreadId,
                     Path = "AGENTS.md",
                     Content = "ROOT_MARKER",
                 },
                 new ContextDiscoveryItem
                 {
                     Kind = "context_file",
+                    AgentId = ThreadId,
                     Path = "sub/CLAUDE.md",
                     Content = "NESTED_MARKER",
                 },
@@ -89,7 +93,7 @@ public sealed class ContextDiscoveryEndToEndTests
 
         result.Should().BeOfType<OkResult>();
         agent
-            .SentMessages.Should()
+            .RecordedContext.Should()
             .SatisfyRespectively(
                 first => first.Should().BeOfType<NotifyMessage>().Which.Text.Should().Contain("ROOT_MARKER"),
                 second => second.Should().BeOfType<NotifyMessage>().Which.Text.Should().Contain("NESTED_MARKER")
@@ -120,12 +124,14 @@ public sealed class ContextDiscoveryEndToEndTests
                 new ContextDiscoveryItem
                 {
                     Kind = "context_file",
+                    AgentId = ThreadId,
                     Path = "AGENTS.md",
                     Content = "ROOT_MARKER",
                 },
                 new ContextDiscoveryItem
                 {
                     Kind = "context_file",
+                    AgentId = ThreadId,
                     Path = "sub/CLAUDE.md",
                     Content = "NESTED_MARKER",
                 },
@@ -136,7 +142,7 @@ public sealed class ContextDiscoveryEndToEndTests
 
         result.Should().BeOfType<OkResult>();
         agent
-            .SentMessages.Should()
+            .RecordedContext.Should()
             .SatisfyRespectively(
                 first => first.Should().BeOfType<NotifyMessage>().Which.Text.Should().Contain("ROOT_MARKER"),
                 second => second.Should().BeOfType<NotifyMessage>().Which.Text.Should().Contain("NESTED_MARKER")
@@ -178,6 +184,7 @@ public sealed class ContextDiscoveryEndToEndTests
                     new ContextDiscoveryItem
                     {
                         Kind = "context_file",
+                        AgentId = ThreadId,
                         Path = "CLAUDE.md",
                         Content = "secret-gated",
                     },
@@ -248,7 +255,7 @@ public sealed class ContextDiscoveryEndToEndTests
                 Registry,
                 Pool,
                 new ContextDiscoveryFormatter(),
-                new ContextDiscoveryOptions(),
+                new ContextDiscoveryOptions { RouteToOpeningSubAgent = true },
                 new ContextDiscoveryDiagnostics(),
                 NullLogger<ContextDiscoveryInjector>.Instance
             );
@@ -277,6 +284,7 @@ public sealed class ContextDiscoveryEndToEndTests
             var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
             _ = Pool.GetOrCreateAgent(threadId, mode);
             Registry.RegisterThread(sessionId, threadId);
+            _agents[threadId].CurrentRunId = "active-run";
             return _agents[threadId];
         }
 

@@ -228,4 +228,35 @@ public class PromptCachingStreamParserTests
 
         return Assert.Single(results.OfType<UsageMessage>()).Usage;
     }
+
+    private const string MessageStartWithCacheUsage = """
+        {
+            "type": "message_start",
+            "message": {
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-sonnet-4-20250514",
+                "content": [],
+                "usage": {"input_tokens": 200, "output_tokens": 0, "cache_read_input_tokens": 3000}
+            }
+        }
+        """;
+
+    [Fact]
+    public void NewParserPerStream_ReusesTheSerializerMetadata()
+    {
+        // The agent builds a parser per streamed request. Options built per parser made System.Text.Json
+        // rebuild the Anthropic type metadata (and emit new accessor methods) on every request.
+        _ = new AnthropicStreamParser().ProcessEvent("message_start", MessageStartWithCacheUsage);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 20; i++)
+        {
+            _ = new AnthropicStreamParser().ProcessEvent("message_start", MessageStartWithCacheUsage);
+        }
+
+        var perParser = (GC.GetAllocatedBytesForCurrentThread() - before) / 20;
+        Assert.True(perParser < 32 * 1024, $"a new parser allocated {perParser} bytes for one event");
+    }
 }

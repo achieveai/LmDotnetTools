@@ -3,12 +3,23 @@
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <!-- Console-launchable daemon: drives reviews over the S2S REST API against a running LmStreaming.Sample
-         review host; ASP.NET Core hosts ONLY the sandbox auth webhook (one route). -->
-    <OutputType>Exe</OutputType>
+    <!-- RETIRED (2026-10-15): the CodeReviewDaemon host is disabled until Reviewd.Sample is
+         self-sufficient. It is NOT runnable as a daemon — Program.cs (the entry point) is excluded
+         from compilation below and the output is a plain library. Reviewd.Sample still consumes its
+         Agents/Auth/Configuration/Orchestration/Persistence/Workspace/Diagnostics/Eval types as a
+         library dependency, so this project still builds; it just cannot be launched.
+         To re-enable the daemon: restore <OutputType>Exe</OutputType>, remove the Program.cs
+         <Compile Remove> below, and re-add tests/CodeReviewDaemon.Sample.Tests to the solution. -->
+    <OutputType>Library</OutputType>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- RETIRED: the daemon entry point is excluded so this project cannot be launched. Program.cs
+         holds the top-level statements + `public partial class Program`; without it the output is a
+         non-runnable library. Restore this (and <OutputType>Exe</OutputType>) to re-enable the daemon. -->
+    <Compile Remove="Program.cs" />
+  </ItemGroup>
   <ItemGroup>
     <!-- SQLite is the daemon's orchestration source of truth (review_run / poll_cursor /
          review_outbox / review_artifact). Pinned to the version already used across
@@ -43,6 +54,7 @@
          inspects internal wiring, so the generated top-level Program and any internal types must be
          visible to the test assembly. -->
     <InternalsVisibleTo Include="CodeReviewDaemon.Sample.Tests" />
+    <InternalsVisibleTo Include="Reviewd.Sample" />
   </ItemGroup>
   <ItemGroup>
     <!-- The Web SDK does not auto-glob EmbeddedResource items, so the daemon's YAML/Scriban prompt

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using LmStreaming.Sample.Configuration;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Discovery;
@@ -106,9 +107,34 @@ public sealed class SandboxWebhookHttpTests
     }
 
     [Fact]
-    public async Task ContextDiscovery_DiscoveriesInData_ReachTheAgent()
+    public async Task ContextDiscovery_ItemOwnedByTheConversation_IsRecordedAsContextNotSent()
     {
-        await using var app = await TestApp.BuildAsync();
+        await using var app = await TestApp.BuildAsync(routeToOpeningSubAgent: true);
+        app.Primary.CurrentRunId = "active-run";
+
+        var response = await app.PostAsync(
+            Envelope(
+                "context_discovery",
+                "gw-1-2",
+                taskId: null,
+                agentId: "",
+                data: $$"""{"discoveries":[{"kind":"context_file","path":"CLAUDE.md","content":"Be terse.","truncated":false,"agent_id":"{{ThreadId}}"}]}"""
+            )
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        app.Primary.SentMessages.Should().BeEmpty("context is recorded on the active run, never queued as input");
+        var message = app.Primary.RecordedContext.Should().ContainSingle().Subject;
+        message.NotifyKind.Should().Be(NotifyKinds.ContextDiscovery);
+        message.Text.Should().Contain("Be terse.");
+    }
+
+    [Fact]
+    public async Task ContextDiscovery_DefaultAgentEnvelope_EmptyAgentId_IsDropped()
+    {
+        // The envelope's "" names no owner: dropped, never broadcast to the session's conversations.
+        await using var app = await TestApp.BuildAsync(routeToOpeningSubAgent: true);
+        app.Primary.CurrentRunId = "active-run";
 
         var response = await app.PostAsync(
             Envelope(
@@ -121,14 +147,8 @@ public sealed class SandboxWebhookHttpTests
         );
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
-        var message = app
-            .Primary.SentMessages.Should()
-            .ContainSingle()
-            .Which.Should()
-            .BeOfType<NotifyMessage>()
-            .Subject;
-        message.NotifyKind.Should().Be(NotifyKinds.ContextDiscovery);
-        message.Text.Should().Contain("Be terse.");
+        app.Primary.SentMessages.Should().BeEmpty();
+        app.Primary.RecordedContext.Should().BeEmpty();
     }
 
     [Fact]
@@ -153,7 +173,8 @@ public sealed class SandboxWebhookHttpTests
         );
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
-        sink.LastDeliveredAgentId.Should().Be("worker");
+        sink.LastDeliveredAgentId.Should()
+            .Be(SubAgentThreadIds.For("thread-sub", "worker"), "the gateway id maps back to the scoped thread");
         sink.DeliveredMessages.Should()
             .ContainSingle()
             .Which.Should()

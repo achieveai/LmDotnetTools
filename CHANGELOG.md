@@ -15,9 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **CopilotAnthropicProxy.Sample: no longer serves `mai-code-*` routers under any vendor.** Copilot now lists
   `mai-code-2-flash` under vendor `Experimental`, which the `Google`/`Microsoft` vendor veto missed; every request to it
-  answered an upstream 500. The live tests follow the catalog too: the reasoning test pins `gpt-6.1-sol` (gpt-5.5 left
-  the catalog), the dual-endpoint GPT probe is gone (no GPT model advertises `/chat/completions` any more), and the
-  thinking-rescue probe tries each model up to five times on a harder prompt.
+  answered an upstream 500.
 
 - **Sandbox SDK synced to gateway `origin/master` `8547483f` (after v0.1.16)**:
   - Breaking rename: `SandboxCreateRequest.Home` → `WorkingDir` (`home:` → `workingDir:`), `SandboxInfo.WorkspaceHome` → `WorkspaceWorkingDir`, and in LmAgentInfra `WorkspaceRef.Home` → `WorkingDir`, `SandboxSession.WorkspaceHome` → `WorkspaceWorkingDir`. The wire field is now `working_dir`, and it makes the rest of the workspace read-only for agents (gateway ADR 0044). A gateway that acknowledges only the legacy `home` (v0.1.16) fails the create.

@@ -21,8 +21,12 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
 {
     private const string DefaultBaseUrl = "https://api.anthropic.com/v1";
     private const string ProviderName = "Anthropic";
+
+    // Shared by every client so System.Text.Json builds the Anthropic type metadata once per process.
+    private static readonly JsonSerializerOptions s_jsonOptions =
+        AnthropicJsonSerializerOptionsFactory.CreateForProduction();
+
     private readonly string _baseUrl;
-    private readonly JsonSerializerOptions _jsonOptions;
     private readonly IPerformanceTracker _performanceTracker;
     private readonly RetryOptions _retryOptions;
 
@@ -49,7 +53,6 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
 
         _baseUrl = ResolveBaseUrl(baseUrl);
         _performanceTracker = performanceTracker ?? new PerformanceTracker();
-        _jsonOptions = AnthropicJsonSerializerOptionsFactory.CreateForProduction();
         _retryOptions = retryOptions ?? RetryOptions.Default;
 
         Logger.LogTrace(
@@ -79,7 +82,6 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
     {
         _baseUrl = ResolveBaseUrl(baseUrl);
         _performanceTracker = performanceTracker ?? new PerformanceTracker();
-        _jsonOptions = AnthropicJsonSerializerOptionsFactory.CreateForProduction();
         _retryOptions = retryOptions ?? RetryOptions.Default;
 
         Logger.LogTrace(
@@ -105,7 +107,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
             var response = await ExecuteHttpWithRetryAsync(
                 async () =>
                 {
-                    var requestJson = JsonSerializer.Serialize(request, _jsonOptions);
+                    var requestJson = JsonSerializer.Serialize(request, s_jsonOptions);
                     var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
 
                     var requestUrl = $"{_baseUrl}/messages";
@@ -124,7 +126,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                     _ = httpResponse.EnsureSuccessStatusCode();
                     var responseContent = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
                     var anthropicResponse =
-                        JsonSerializer.Deserialize<AnthropicResponse>(responseContent, _jsonOptions)
+                        JsonSerializer.Deserialize<AnthropicResponse>(responseContent, s_jsonOptions)
                         ?? throw new InvalidOperationException("Failed to deserialize Anthropic API response");
 
                     Logger.LogDebug(
@@ -189,7 +191,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
             var streamResponse = await ExecuteHttpWithRetryAsync(
                 async () =>
                 {
-                    var requestJson = JsonSerializer.Serialize(request, _jsonOptions);
+                    var requestJson = JsonSerializer.Serialize(request, s_jsonOptions);
                     Logger.LogTrace("Anthropic streaming request body: {RequestBody}", requestJson);
                     var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
 
@@ -329,7 +331,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
             try
             {
                 // First try to deserialize as the base AnthropicStreamEvent to get the type
-                var baseEvent = JsonSerializer.Deserialize<AnthropicStreamEvent>(sseItem.Data, _jsonOptions);
+                var baseEvent = JsonSerializer.Deserialize<AnthropicStreamEvent>(sseItem.Data, s_jsonOptions);
 
                 if (baseEvent == null)
                 {
@@ -341,27 +343,30 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                 {
                     "message_start" => JsonSerializer.Deserialize<AnthropicMessageStartEvent>(
                         sseItem.Data,
-                        _jsonOptions
+                        s_jsonOptions
                     ),
                     "content_block_start" => JsonSerializer.Deserialize<AnthropicContentBlockStartEvent>(
                         sseItem.Data,
-                        _jsonOptions
+                        s_jsonOptions
                     ),
                     "content_block_delta" => JsonSerializer.Deserialize<AnthropicContentBlockDeltaEvent>(
                         sseItem.Data,
-                        _jsonOptions
+                        s_jsonOptions
                     ),
                     "content_block_stop" => JsonSerializer.Deserialize<AnthropicContentBlockStopEvent>(
                         sseItem.Data,
-                        _jsonOptions
+                        s_jsonOptions
                     ),
                     "message_delta" => JsonSerializer.Deserialize<AnthropicMessageDeltaEvent>(
                         sseItem.Data,
-                        _jsonOptions
+                        s_jsonOptions
                     ),
-                    "message_stop" => JsonSerializer.Deserialize<AnthropicMessageStopEvent>(sseItem.Data, _jsonOptions),
-                    "ping" => JsonSerializer.Deserialize<AnthropicPingEvent>(sseItem.Data, _jsonOptions),
-                    "error" => JsonSerializer.Deserialize<AnthropicErrorEvent>(sseItem.Data, _jsonOptions),
+                    "message_stop" => JsonSerializer.Deserialize<AnthropicMessageStopEvent>(
+                        sseItem.Data,
+                        s_jsonOptions
+                    ),
+                    "ping" => JsonSerializer.Deserialize<AnthropicPingEvent>(sseItem.Data, s_jsonOptions),
+                    "error" => JsonSerializer.Deserialize<AnthropicErrorEvent>(sseItem.Data, s_jsonOptions),
                     _ => baseEvent, // Use the base event if type is unknown
                 };
             }

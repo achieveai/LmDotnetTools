@@ -46,12 +46,10 @@ public sealed record ContextDiscoveryPayload
     public bool? Truncated { get; init; }
 
     /// <summary>
-    /// Optional id (or caller-supplied name) of the sub-agent that triggered this discovery by
-    /// opening a file in the directory it carries. Stamped per-item by the gateway (cf. #187). When
-    /// present and routing is enabled, the injector delivers the context to that sub-agent instead of
-    /// the primary conversation; when null/blank it falls back to today's session fan-out. Optional +
-    /// no <c>[JsonRequired]</c> (mirrors <see cref="Truncated"/>) so older gateway builds that never
-    /// stamp it still bind.
+    /// Exact root or scoped sub-agent transcript thread id that opened the context file, or the
+    /// sub-agent's gateway id (<c>SandboxSubAgentIdentity</c>), which maps back to its scoped thread.
+    /// Ordinal ids and names are not unique across conversations sharing a sandbox session.
+    /// Missing ownership binds successfully but is dropped, never broadcast.
     /// </summary>
     [JsonPropertyName("agent_id")]
     public string? AgentId { get; init; }

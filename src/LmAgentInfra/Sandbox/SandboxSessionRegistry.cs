@@ -2859,13 +2859,37 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     private (
         IReadOnlyList<SandboxAuthProvider>? Providers,
         IReadOnlyList<SandboxNetworkRule>? Network
-    ) BuildAuthProviders(string sessionSecret)
+    ) BuildAuthProviders(string sessionSecret) =>
+        BuildAuthPolicy(_authOptions, _options, sessionSecret, _predefinedKeys);
+
+    /// <summary>
+    /// Builds the optional auth-provider and network blocks from managed OAuth providers,
+    /// runtime predefined keys, and the configured egress policy. Empty blocks are independently omitted.
+    /// </summary>
+    /// <param name="authOptions">The managed OAuth provider and webhook configuration.</param>
+    /// <param name="options">The sandbox gateway configuration, including the egress policy.</param>
+    /// <param name="sessionSecret">The shared secret authenticating gateway webhook requests.</param>
+    /// <param name="predefinedKeys">Optional runtime predefined egress keys.</param>
+    /// <returns>The auth providers and network rules, with null for each empty block.</returns>
+    public static (
+        IReadOnlyList<SandboxAuthProvider>? Providers,
+        IReadOnlyList<SandboxNetworkRule>? Network
+    ) BuildAuthPolicy(
+        AuthOptions authOptions,
+        SandboxGatewayOptions options,
+        string sessionSecret,
+        PredefinedKeyRegistry? predefinedKeys = null
+    )
     {
+        ArgumentNullException.ThrowIfNull(authOptions);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentException.ThrowIfNullOrEmpty(sessionSecret);
+
         var providers = new List<SandboxAuthProvider>();
         var rules = new List<SandboxNetworkRule>();
-        var baseUrl = _authOptions.Webhook.CallbackBaseUrl;
+        var baseUrl = authOptions.Webhook.CallbackBaseUrl;
 
-        if (!string.IsNullOrWhiteSpace(_authOptions.Github.ClientId))
+        if (!string.IsNullOrWhiteSpace(authOptions.Github.ClientId))
         {
             providers.Add(
                 new SandboxAuthProvider(
@@ -2911,7 +2935,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             );
         }
 
-        if (!string.IsNullOrWhiteSpace(_authOptions.Ado.ClientId))
+        if (!string.IsNullOrWhiteSpace(authOptions.Ado.ClientId))
         {
             providers.Add(
                 new SandboxAuthProvider(
@@ -2942,8 +2966,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         // disabled when the secret is missing, so emitting the gateway rule + webhook entry in that
         // case would point to a webhook that always denies — confusing rather than helpful.
         if (
-            !string.IsNullOrWhiteSpace(_authOptions.M365.ClientId)
-            && !string.IsNullOrWhiteSpace(_authOptions.M365.ClientSecret)
+            !string.IsNullOrWhiteSpace(authOptions.M365.ClientId)
+            && !string.IsNullOrWhiteSpace(authOptions.M365.ClientSecret)
         )
         {
             providers.Add(
@@ -2975,9 +2999,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         // configured entry. Custom-header entries carry no token expiry, so the gateway falls back to
         // the provider cache TTL — keep it short so an edited/rotated key takes effect promptly; the
         // token-minting kinds carry the minted token's real expiry regardless.
-        if (_predefinedKeys is not null)
+        if (predefinedKeys is not null)
         {
-            foreach (var entry in _predefinedKeys.Entries)
+            foreach (var entry in predefinedKeys.Entries)
             {
                 var id = $"{PredefinedKeyRegistry.ProviderIdPrefix}{entry.Id}";
                 var cacheTtlSeconds = entry.Kind == PredefinedKeyKind.CustomHeaders ? 30 : 300;
@@ -3010,7 +3034,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         // Configured egress policy (appsettings). Validated here as well as at host startup: a
         // programmatic consumer that builds SandboxGatewayOptions in code never runs the startup check,
         // and a bad policy must fail closed rather than reach the gateway.
-        if (SandboxEgressPolicyCompiler.Validate(_options) is { Count: > 0 } errors)
+        if (SandboxEgressPolicyCompiler.Validate(options) is { Count: > 0 } errors)
         {
             throw new ArgumentException(
                 "Invalid sandbox egress policy: " + string.Join(" | ", errors),
@@ -3021,14 +3045,14 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         // A configured rule id that names a managed rule REPLACES it (and a disabled entry REMOVES it),
         // so an operator can retarget or switch off a built-in rule without a code change. Removal is
         // driven by the configured KEYS — enabled or not — while only enabled rules are re-added.
-        if (_options.Network?.Rules is { Count: > 0 } configuredRules)
+        if (options.Network?.Rules is { Count: > 0 } configuredRules)
         {
             var configuredIds = new HashSet<string>(configuredRules.Keys, StringComparer.OrdinalIgnoreCase);
             _ = rules.RemoveAll(r => configuredIds.Contains(r.Id));
-            rules.AddRange(SandboxEgressPolicyCompiler.CompileRules(_options));
+            rules.AddRange(SandboxEgressPolicyCompiler.CompileRules(options));
         }
 
-        providers.AddRange(SandboxEgressPolicyCompiler.CompileProviders(_options, baseUrl, sessionSecret));
+        providers.AddRange(SandboxEgressPolicyCompiler.CompileProviders(options, baseUrl, sessionSecret));
 
         // Precedence over the EFFECTIVE (merged) rule set. The config-only check above cannot see the
         // managed OAuth gates or the runtime predefined-key gates, and a config rule that REPLACES a

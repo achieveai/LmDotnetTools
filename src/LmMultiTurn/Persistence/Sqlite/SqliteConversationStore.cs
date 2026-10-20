@@ -509,17 +509,31 @@ public sealed class SqliteConversationStore
 
         try
         {
-            using var deleteMessagesCmd = connection.CreateCommand();
-            deleteMessagesCmd.Transaction = transaction;
-            deleteMessagesCmd.CommandText = "DELETE FROM messages WHERE thread_id = $thread_id;";
-            _ = deleteMessagesCmd.Parameters.AddWithValue("$thread_id", threadId);
-            _ = await deleteMessagesCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            // Every thread-scoped table carries a thread_id column; clear the thread's rows from
+            // each in the same transaction. Deleting only messages + thread_metadata left run,
+            // admission, and ledger rows orphaned, so recreating the same thread id and replaying
+            // an idempotency key saw a stale acceptance and returned queued:false. The names are
+            // fixed literals (not caller input), so interpolating them into the DELETE is safe.
+            string[] threadScopedTables =
+            [
+                "messages",
+                "thread_metadata",
+                "run_ledger",
+                "run_lifecycle",
+                "run_deferred_calls",
+                "accepted_inputs",
+                "input_acceptances",
+                "notify_waits",
+            ];
 
-            using var deleteMetadataCmd = connection.CreateCommand();
-            deleteMetadataCmd.Transaction = transaction;
-            deleteMetadataCmd.CommandText = "DELETE FROM thread_metadata WHERE thread_id = $thread_id;";
-            _ = deleteMetadataCmd.Parameters.AddWithValue("$thread_id", threadId);
-            _ = await deleteMetadataCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            foreach (var table in threadScopedTables)
+            {
+                using var deleteCmd = connection.CreateCommand();
+                deleteCmd.Transaction = transaction;
+                deleteCmd.CommandText = $"DELETE FROM {table} WHERE thread_id = $thread_id;";
+                _ = deleteCmd.Parameters.AddWithValue("$thread_id", threadId);
+                _ = await deleteCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
 
             transaction.Commit();
         }
@@ -539,13 +553,19 @@ public sealed class SqliteConversationStore
     )
     {
         var listOptions = options ?? ConversationListOptions.Default;
-        RefuseUnsupportedSortOrder(listOptions);
+
+        // LastUsed pages in SQL (thread_metadata.last_updated exists). Created has no created_at
+        // column, so it is ordered and paged in memory through ConversationListOptions.Order - the
+        // same helper the in-memory stores use - rather than refused. See ReadCreatedPageAsync.
+        var pageInSql = listOptions.SortOrder == ConversationSortOrder.LastUsed;
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
         await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
+        using var snapshot = pageInSql ? null : connection.BeginTransaction(deferred: true);
+        command.Transaction = snapshot;
 
         // The exclusion is a WHERE clause, not a post-pass over the returned rows: LIMIT/OFFSET is
         // applied by this one statement to the fully filtered set, which is the whole point. See
@@ -555,8 +575,7 @@ public sealed class SqliteConversationStore
 
         command.CommandText = FormattableString.Invariant(
             $"""
-            SELECT thread_id, current_run_id, last_updated, metadata_json,
-                   tenant_id, owner_user_id, owner_app_id, visibility
+            SELECT {(pageInSql ? MetadataColumns : CreatedKeyColumns)}
             FROM thread_metadata
             WHERE {exclusionClause}
               AND {deletedClause}
@@ -564,12 +583,21 @@ public sealed class SqliteConversationStore
             -- sharing a last_updated are ordered by whatever SQLite returns, which may differ
             -- between the page-1 and page-2 statements: one row comes back twice and another
             -- never comes back at all. Must match ConversationListOptions.Order.
-            ORDER BY last_updated DESC, thread_id DESC
-            LIMIT $limit OFFSET $offset;
+            {(pageInSql
+                ? "ORDER BY last_updated DESC, thread_id DESC\n            LIMIT $limit OFFSET $offset"
+                : "")};
             """
         );
-        _ = command.Parameters.AddWithValue("$limit", limit);
-        _ = command.Parameters.AddWithValue("$offset", offset);
+        if (pageInSql)
+        {
+            _ = command.Parameters.AddWithValue("$limit", limit);
+            _ = command.Parameters.AddWithValue("$offset", offset);
+        }
+
+        if (!pageInSql)
+        {
+            return await ReadCreatedPageAsync(command, listOptions, limit, offset, ct).ConfigureAwait(false);
+        }
 
         var metadataList = new List<ThreadMetadata>();
 
@@ -594,7 +622,10 @@ public sealed class SqliteConversationStore
         ArgumentNullException.ThrowIfNull(scope);
 
         var listOptions = options ?? ConversationListOptions.Default;
-        RefuseUnsupportedSortOrder(listOptions);
+
+        // See the unscoped overload: LastUsed pages in SQL; Created is ordered and paged in memory
+        // via ConversationListOptions.Order so the scoped and unscoped listings agree.
+        var pageInSql = listOptions.SortOrder == ConversationSortOrder.LastUsed;
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
@@ -615,6 +646,8 @@ public sealed class SqliteConversationStore
         const string grantClause = "($userId IS NOT NULL AND t.thread_id IN (SELECT value FROM json_each($grants)))";
 
         using var command = connection.CreateCommand();
+        using var snapshot = pageInSql ? null : connection.BeginTransaction(deferred: true);
+        command.Transaction = snapshot;
 
         // The presentation exclusion is ANDed over the whole authorization disjunction, not folded
         // into one of its branches - it narrows what this surface displays regardless of WHICH
@@ -629,8 +662,7 @@ public sealed class SqliteConversationStore
         // evaluates to NULL and never satisfies the WHERE.
         command.CommandText = FormattableString.Invariant(
             $"""
-            SELECT thread_id, current_run_id, last_updated, metadata_json,
-                   tenant_id, owner_user_id, owner_app_id, visibility
+            SELECT {(pageInSql ? MetadataColumns : CreatedKeyColumns)}
             FROM thread_metadata t
             WHERE ( ( t.tenant_id = $tenantId
                       AND ( $isTenantAdmin = 1
@@ -643,8 +675,9 @@ public sealed class SqliteConversationStore
               AND {deletedClause}
             -- Same total order as the unscoped overload above, and as
             -- ConversationListOptions.Order: a scoped listing must not page differently.
-            ORDER BY t.last_updated DESC, t.thread_id DESC
-            LIMIT $limit OFFSET $offset;
+            {(pageInSql
+                ? "ORDER BY t.last_updated DESC, t.thread_id DESC\n            LIMIT $limit OFFSET $offset"
+                : "")};
             """
         );
 
@@ -654,8 +687,11 @@ public sealed class SqliteConversationStore
         _ = command.Parameters.AddWithValue("$appId", (object?)scope.AppId ?? DBNull.Value);
         _ = command.Parameters.AddWithValue("$isTenantAdmin", scope.IsTenantAdmin ? 1 : 0);
         _ = command.Parameters.AddWithValue("$tenantPublished", Visibility.TenantPublished.ToString());
-        _ = command.Parameters.AddWithValue("$limit", limit);
-        _ = command.Parameters.AddWithValue("$offset", offset);
+        if (pageInSql)
+        {
+            _ = command.Parameters.AddWithValue("$limit", limit);
+            _ = command.Parameters.AddWithValue("$offset", offset);
+        }
 
         // An app-only principal never consults grants (7.4 step 3), so it binds the empty array
         // rather than its own set - json_each over "[]" yields no rows, which is the same answer
@@ -668,6 +704,11 @@ public sealed class SqliteConversationStore
             )
         );
 
+        if (!pageInSql)
+        {
+            return await ReadCreatedPageAsync(command, listOptions, limit, offset, ct).ConfigureAwait(false);
+        }
+
         var metadataList = new List<ThreadMetadata>();
 
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
@@ -679,49 +720,61 @@ public sealed class SqliteConversationStore
         return metadataList;
     }
 
+    private const string MetadataColumns =
+        "thread_id, current_run_id, last_updated, metadata_json, tenant_id, owner_user_id, owner_app_id, visibility";
+
+    // Everything ConversationListOptions.CreationTimestampOf and Order read: the id and last_updated.
+    private const string CreatedKeyColumns = "thread_id, last_updated";
+
     /// <summary>
-    /// Refuses a sort order this store cannot answer, loudly, at the call site.
+    /// Pages a Created listing. <paramref name="keyQuery"/> selects <see cref="CreatedKeyColumns"/> for
+    /// every admitted row; the page is chosen from those keys with the shared
+    /// <see cref="ConversationListOptions.Order"/>, and only the page's metadata is then read and
+    /// deserialized. Both reads run in the query's transaction, so they see one snapshot.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// <c>thread_metadata</c> has no <c>created_at</c> column - the record itself has no creation
-    /// field either, which is why <see cref="ConversationListOptions.CreationTimestampOf"/> derives
-    /// one from the thread id. That derivation is not reproducible in SQL without a fragile
-    /// <c>substr</c>/<c>CAST</c> expression that would have to re-implement, in a second language,
-    /// the "prefix, then a delimiter, then digits, else fall back to last_updated" rule - and would
-    /// then be free to diverge from it silently, on exactly the deployments large enough that nobody
-    /// checks the order by hand.
-    /// </para>
-    /// <para>
-    /// So this throws instead of approximating, following the precedent the scoped listing overload
-    /// already set with its throwing default implementation: a store that cannot answer a listing
-    /// must say so where it is called, rather than answer something plausible. Adding a real
-    /// <c>created_at</c> column, backfilled from the id, is the fix that makes this path work; until
-    /// then the exception names both the missing column and the helper any implementation must agree
-    /// with. This is not reachable from the conversation sidebar today - the sample registers
-    /// <see cref="FileConversationStore"/> - but it is documented rather than hidden, because a
-    /// deployment that swaps in SQLite would otherwise discover it as a silently different ordering.
-    /// </para>
-    /// </remarks>
-    /// <param name="options">The resolved (never null) listing options.</param>
-    /// <exception cref="NotSupportedException">
-    /// The requested sort order has no faithful SQL expression here.
-    /// </exception>
-    private static void RefuseUnsupportedSortOrder(ConversationListOptions options)
+    private static async Task<IReadOnlyList<ThreadMetadata>> ReadCreatedPageAsync(
+        SqliteCommand keyQuery,
+        ConversationListOptions listOptions,
+        int limit,
+        int offset,
+        CancellationToken ct
+    )
     {
-        if (options.SortOrder == ConversationSortOrder.LastUsed)
+        var keys = new List<ThreadMetadata>();
+        await using (var reader = await keyQuery.ExecuteReaderAsync(ct).ConfigureAwait(false))
         {
-            return;
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                keys.Add(new ThreadMetadata { ThreadId = reader.GetString(0), LastUpdated = reader.GetInt64(1) });
+            }
         }
 
-        throw new NotSupportedException(
-            $"{nameof(SqliteConversationStore)} cannot order a listing by "
-                + $"{nameof(ConversationSortOrder)}.{options.SortOrder}: the thread_metadata table "
-                + "has no created_at column, and deriving one in SQL would be a second, silently "
-                + "divergent copy of "
-                + $"{nameof(ConversationListOptions)}.{nameof(ConversationListOptions.CreationTimestampOf)}. "
-                + "Add a backfilled created_at column before enabling this ordering on SQLite."
-        );
+        var page = listOptions.Order(keys).Skip(offset).Take(limit).Select(key => key.ThreadId).ToList();
+        if (page.Count == 0)
+        {
+            return [];
+        }
+
+        using var load = keyQuery.Connection!.CreateCommand();
+        load.Transaction = keyQuery.Transaction;
+        load.CommandText = $"""
+            SELECT {MetadataColumns}
+            FROM thread_metadata
+            WHERE thread_id IN (SELECT value FROM json_each($ids));
+            """;
+        _ = load.Parameters.AddWithValue("$ids", JsonSerializer.Serialize(page, JsonOptions));
+
+        var byId = new Dictionary<string, ThreadMetadata>(StringComparer.Ordinal);
+        await using (var reader = await load.ExecuteReaderAsync(ct).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                var metadata = ReadMetadata(reader);
+                byId[metadata.ThreadId] = metadata;
+            }
+        }
+
+        return [.. page.Select(id => byId[id])];
     }
 
     /// <summary>
@@ -787,7 +840,7 @@ public sealed class SqliteConversationStore
     /// <remarks>
     /// A <c>CASE</c>, not <c>AND</c>, so an unreadable record or lineage is never parsed: SQLite does
     /// not promise to short-circuit <c>AND</c>, and <c>json_extract</c> on malformed JSON fails the
-    /// whole statement. Unreadable counts as not deleted, as <see cref="ConversationLineage.Read"/> does.
+    /// whole statement. Unreadable counts as not deleted, as <see cref="ConversationLineage.Read(ThreadMetadata)"/> does.
     /// </remarks>
     /// <param name="options">The resolved (never null) listing options.</param>
     /// <param name="metadataJsonColumn">How the <c>metadata_json</c> column is spelled in this statement.</param>

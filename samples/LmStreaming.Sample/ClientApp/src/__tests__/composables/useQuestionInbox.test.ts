@@ -92,6 +92,23 @@ function pushed(overrides: Partial<PendingQuestionEvent> = {}): PendingQuestionE
 afterEach(() => vi.restoreAllMocks());
 
 describe('useQuestionInbox', () => {
+  it('uses the maximum supported page size without omitting older conversations', async () => {
+    const conversations = Array.from({ length: 2001 }, (_, index) => conversation(`root-${index}`));
+    const dependencies: QuestionInboxDependencies = {
+      listConversations: vi.fn(async (limit, offset) => conversations.slice(offset, offset + limit)),
+      loadConversationMessages: vi.fn(async (threadId) => threadId === 'root-2000' ? history('old-question') : []),
+      listSubAgents: vi.fn(async () => []),
+    };
+    const { wrapper, inbox } = render(dependencies);
+    await vi.waitFor(() => expect(inbox.isRefreshing.value).toBe(false));
+    expect(dependencies.listConversations).toHaveBeenCalledTimes(3);
+    expect(dependencies.listConversations).toHaveBeenNthCalledWith(1, 1000, 0, 'lastUsed', true);
+    expect(dependencies.listConversations).toHaveBeenNthCalledWith(3, 1000, 2000, 'lastUsed', true);
+    expect(dependencies.loadConversationMessages).toHaveBeenCalledTimes(2001);
+    expect(inbox.entries.value.map((entry) => entry.rootThreadId)).toEqual(['root-2000']);
+    wrapper.unmount();
+  });
+
   it('pages every conversation, scans the active root first, and keeps root/child identity distinct', async () => {
     const pages = [[conversation('old'), conversation('active')], [conversation('last')], []];
     const order: string[] = [];

@@ -691,6 +691,96 @@ public class JoinedSubscriptionTests
             .Equal(4, 0, 5, 6, null, 7, 2, int.MaxValue, 0, 1);
     }
 
+    [Fact]
+    public async Task Restore_history_keeps_the_order_of_a_tool_call_the_store_committed_after_its_result()
+    {
+        // Rows persist fire-and-forget, so a call can commit after its own result. Renumbering the call behind its
+        // result sent the result first, and the provider rejected the recovered history on every turn.
+        await using var agent = new HistoryAgent();
+        agent.Restore([
+            new ReasoningMessage
+            {
+                Reasoning = "plan",
+                GenerationId = "g",
+                MessageOrderIdx = 0,
+            },
+            new ToolCallResultMessage
+            {
+                ToolCallId = "call",
+                Result = "done",
+                GenerationId = "g",
+                MessageOrderIdx = 3,
+            },
+            new ReasoningMessage
+            {
+                Reasoning = "late",
+                GenerationId = "g",
+                MessageOrderIdx = 1,
+            },
+            new ToolCallMessage
+            {
+                ToolCallId = "call",
+                FunctionName = "lookup",
+                FunctionArgs = "{}",
+                GenerationId = "g",
+                MessageOrderIdx = 2,
+            },
+            new TextMessage
+            {
+                Text = "after",
+                GenerationId = "g",
+                MessageOrderIdx = 4,
+            },
+        ]);
+
+        agent.GetHistorySnapshot().Select(m => m.MessageOrderIdx).Should().Equal(0, 3, 1, 2, 4);
+        var sent = new List<IMessage>();
+        var provider = new Mock<IAgent>();
+        provider
+            .Setup(a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Callback<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>((m, _, _) => sent.AddRange(m))
+            .ReturnsAsync([]);
+        await new MessageTransformationMiddleware().InvokeAsync(
+            new MiddlewareContext(agent.GetHistorySnapshot(), null),
+            provider.Object
+        );
+        sent.Should()
+            .ContainSingle()
+            .Which.Should()
+            .BeOfType<CompositeMessage>()
+            .Which.Messages.Select(m => m.GetType().Name)
+            .Should()
+            .Equal(
+                nameof(ReasoningMessage),
+                nameof(ReasoningMessage),
+                nameof(ToolsCallAggregateMessage),
+                nameof(TextMessage)
+            );
+    }
+
+    [Fact]
+    public async Task Restore_history_renumbers_a_duplicate_order_that_follows_a_row_the_store_committed_late()
+    {
+        // The late row leaves the generation's last order at 1, below the 5 already taken.
+        await using var agent = new HistoryAgent();
+        agent.Restore([
+            .. new[] { 0, 5, 1, 5 }.Select(order => new TextMessage
+            {
+                Text = $"order {order}",
+                GenerationId = "g",
+                MessageOrderIdx = order,
+            }),
+        ]);
+
+        agent.GetHistorySnapshot().Select(m => m.MessageOrderIdx).Should().Equal(0, 5, 1, 6);
+    }
+
     private sealed record PausingToolResult(Action BeforeDelivery) : ToolCallResultMessage, IMessage
     {
         Role IMessage.Role

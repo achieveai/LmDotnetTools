@@ -85,6 +85,9 @@ internal sealed record PullRequestPage
     public required IReadOnlyList<PullRequestDescriptor> PullRequests { get; init; }
 
     public required OpaqueCursor NextCursor { get; init; }
+
+    /// <summary>False when the provider stopped while additional results may remain.</summary>
+    public bool IsComplete { get; init; } = true;
 }
 
 /// <summary>
@@ -110,6 +113,9 @@ internal sealed record PullRequestDescriptor
     /// falls back to this when <see cref="UpdatedAt"/> is null. Null when the provider gives no date.
     /// </summary>
     public DateTimeOffset? CreatedAt { get; init; }
+
+    /// <summary>Whether the provider explicitly identifies this PR as a draft. Null when unknown.</summary>
+    public bool? IsDraft { get; init; }
 
     /// <summary>
     /// The PR's last-activity time, if the provider exposes it (GitHub <c>updated_at</c>). ADO's PR list

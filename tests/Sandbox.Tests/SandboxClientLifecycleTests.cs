@@ -26,6 +26,19 @@ public class SandboxClientLifecycleTests
     }
 
     [Fact]
+    public async Task GetAsync_PreservesGatewayReportedLogicalWorkspaceIdentity()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/sandboxes/sess-1",
+            """{"session_id":"sess-1","container_id":"container-1","volumes":{"workspace":{"container_path":"/workspace","read_only":false,"relative_path":"app-namespace/nova-reviews"}}}"""
+        );
+        var info = await client.GetAsync("sess-1");
+        info.WorkspaceRelativePath.Should().Be("app-namespace/nova-reviews");
+    }
+
+    [Fact]
     public async Task CreateAsync_PluginMountsUsePluginsWireField_SeparateFromPluginSelection()
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();

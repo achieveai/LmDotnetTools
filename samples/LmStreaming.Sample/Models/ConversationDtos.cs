@@ -198,6 +198,9 @@ public record ProvisionConversationRequest
     public required string ProviderId { get; init; }
     public required string ModeId { get; init; }
 
+    /// <summary>Optional workspace-relative POSIX cwd for this conversation's shell/file tools. Not a filesystem jail.</summary>
+    public string? WorkingDirectoryRelPath { get; init; }
+
     /// <summary>
     /// Optional webhook URL the sample forwards auth-required/completed/denied notifications to
     /// for this thread's provider sign-ins. Persisted alongside the registration time so the
@@ -319,6 +322,9 @@ public record ConversationCapabilitiesResponse
     /// Compact mode and the kill switch is off. Each request can still be refused for its own conversation.
     /// </summary>
     public bool ManualCompaction { get; init; }
+
+    /// <summary>Recognizes explicit conversation cwd; unsupported providers/tools fail closed.</summary>
+    public bool ConversationWorkingDirectory { get; init; }
 }
 
 /// <summary>Body of <c>POST api/conversations/{threadId}/compaction</c>.</summary>

@@ -149,7 +149,7 @@ export function useQuestionInbox(
   options: QuestionInboxOptions = {}
 ) {
   const deps = options.dependencies ?? { listConversations, loadConversationMessages, listSubAgents };
-  const pageSize = options.pageSize ?? 30;
+  const pageSize = options.pageSize ?? 1000;
   const pollIntervalMs = options.pollIntervalMs ?? 30_000;
   const fullSweepIntervalMs = options.fullSweepIntervalMs ?? 5 * 60_000;
   const entryMap = ref(new Map<string, QuestionInboxEntry>());

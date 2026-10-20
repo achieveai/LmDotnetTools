@@ -14,9 +14,12 @@ public sealed class SandboxPluginMount
     public SandboxPluginMount(string path, string? name = null, string origin = "global")
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        // The gateway may resolve the path on Windows, so a drive-qualified path ("C:/x") is rooted
+        // whatever OS this runs on; IsPathRooted only says so on Windows.
         if (
             System.IO.Path.IsPathRooted(path)
             || path.StartsWith('/')
+            || (path.Length >= 2 && path[1] == ':' && char.IsAsciiLetter(path[0]))
             || path.Contains('\\')
             || path.Contains('\0')
             || path.Split('/').Contains("..", StringComparer.Ordinal)

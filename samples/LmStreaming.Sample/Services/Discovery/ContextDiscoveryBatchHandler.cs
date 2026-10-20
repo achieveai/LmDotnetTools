@@ -46,8 +46,8 @@ public sealed class ContextDiscoveryBatchHandler(
                 Content = item.Content,
                 Truncated = item.Truncated,
                 // The gateway (v0.1.16, ADR 0040) notifies per agent: each batch belongs to ONE agent and
-                // carries its id on the ENVELOPE ("" for the default agent). A per-item id, should a
-                // gateway ever send one, wins over the batch-wide value.
+                // carries its id on the ENVELOPE ("" for the default agent, which the injector drops as
+                // ownerless). A per-item id, should a gateway ever send one, wins over the batch-wide value.
                 AgentId = string.IsNullOrWhiteSpace(item.AgentId) ? body.AgentId : item.AgentId,
             };
 
