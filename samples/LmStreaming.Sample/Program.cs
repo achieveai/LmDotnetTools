@@ -623,6 +623,10 @@ try
     _ = builder.Services.AddSingleton(contextDiscoveryOptions);
     _ = builder.Services.AddSingleton<ContextDiscoveryFormatter>();
     _ = builder.Services.AddSingleton<ContextDiscoveryInjector>();
+    // One discovery-batch applier for both receivers: the legacy discovery webhook and the unified
+    // sandbox webhook (Auth:Webhook:UseSandboxWebhook), which also delivers task_completed.
+    _ = builder.Services.AddSingleton<ContextDiscoveryBatchHandler>();
+    _ = builder.Services.AddSingleton<SandboxTaskCompletionNotifier>();
     // Tracks received discovery webhooks per session for GET /api/diagnostics/context-discovery,
     // so an operator can confirm discoveries are actually arriving (vs. silently lost to an
     // unreachable callback host).
@@ -1397,7 +1401,15 @@ try
                                 loggerFactory,
                                 toolNames: null,
                                 omitServerPrefix: true,
-                                handlerDecorator: SandboxToolHealth.Wrap,
+                                handlerDecorator: handler =>
+                                    SandboxToolHealth.Wrap(
+                                        SandboxBackgroundTaskTracker.Wrap(
+                                            handler,
+                                            sandboxRegistry,
+                                            sandboxSession!.SessionId,
+                                            threadId
+                                        )
+                                    ),
                                 transportHandler: sp.GetKeyedService<HttpMessageHandler>(SandboxMcpTransportHandlerKey),
                                 agentIdResolver: () => SandboxSubAgentIdentity.ForCurrentFlow(threadId)
                             );
@@ -1740,7 +1752,17 @@ try
                         loggerFactory,
                         toolNames: caps.SandboxToolAllowList,
                         omitServerPrefix: true,
-                        handlerDecorator: SandboxToolHealth.Wrap,
+                        // The tracker records which conversation started each background task, so its
+                        // task_completed (which names no agent for a primary) reaches this conversation.
+                        handlerDecorator: handler =>
+                            SandboxToolHealth.Wrap(
+                                SandboxBackgroundTaskTracker.Wrap(
+                                    handler,
+                                    sandboxRegistry,
+                                    sandboxSession!.SessionId,
+                                    threadId
+                                )
+                            ),
                         transportHandler: sandboxTransportHandler,
                         existingClient: keptSandboxClient,
                         // Per-agent gateway state (ADR 0040): a sub-agent calling these inherited tools sends
@@ -5835,7 +5857,7 @@ public partial class Program
             ToSandboxPluginRefs(workspace?.PluginSelection),
             workspace?.Env,
             workspace?.Image,
-            workspace?.Home
+            workspace?.WorkingDir
         );
 
     /// <summary>

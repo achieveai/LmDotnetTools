@@ -1,9 +1,9 @@
 namespace AchieveAi.LmDotnetTools.Sandbox;
 
-/// <summary>One backup snapshot of a workspace, as <see cref="SandboxClient.ListBackupSnapshotsAsync"/> reports it.</summary>
+/// <summary>One backup snapshot of a workspace, as <see cref="SandboxClient.ListBackupSnapshotsAsync(string, CancellationToken)"/> reports it.</summary>
 public sealed record SandboxBackupSnapshot
 {
-    /// <summary>The snapshot id; pass it to <see cref="SandboxClient.RestoreBackupSnapshotAsync"/>.</summary>
+    /// <summary>The snapshot id; pass it to <see cref="SandboxClient.RestoreBackupSnapshotAsync(string, string, CancellationToken)"/>.</summary>
     public required string Id { get; init; }
 
     /// <summary>
@@ -32,7 +32,7 @@ public sealed record SandboxBackupSnapshot
     public long? Bytes { get; init; }
 }
 
-/// <summary>Outcome of <see cref="SandboxClient.RestoreBackupSnapshotAsync"/>.</summary>
+/// <summary>Outcome of <see cref="SandboxClient.RestoreBackupSnapshotAsync(string, string, CancellationToken)"/>.</summary>
 public sealed record SandboxBackupRestoreResult
 {
     /// <summary>The workspace the restore ran on.</summary>
@@ -51,7 +51,7 @@ public sealed record SandboxBackupRestoreResult
     public string? OrphanSnapshotId { get; init; }
 }
 
-/// <summary>Outcome of <see cref="SandboxClient.PurgeBackupWorkspaceAsync"/>.</summary>
+/// <summary>Outcome of <see cref="SandboxClient.PurgeBackupWorkspaceAsync(string, CancellationToken)"/>.</summary>
 public sealed record SandboxBackupPurgeResult
 {
     /// <summary>The purged workspace.</summary>

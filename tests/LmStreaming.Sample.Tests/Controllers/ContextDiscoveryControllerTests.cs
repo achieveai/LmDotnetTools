@@ -55,11 +55,14 @@ public class ContextDiscoveryControllerTests
 
         var controller = new ContextDiscoveryController(
             sessionSecretStore,
-            registry,
-            loader,
-            injector,
-            diagnostics,
-            new AgentOutputTokenPolicy(new AgentOutputTokenOptions()),
+            new ContextDiscoveryBatchHandler(
+                registry,
+                loader,
+                injector,
+                diagnostics,
+                new AgentOutputTokenPolicy(new AgentOutputTokenOptions()),
+                NullLogger<ContextDiscoveryBatchHandler>.Instance
+            ),
             NullLogger<ContextDiscoveryController>.Instance
         );
 

@@ -38,6 +38,7 @@ public class SandboxEnvRulesTests
     [Theory]
     [InlineData("http_proxy")]
     [InlineData("Sandbox_Home")]
+    [InlineData("sandbox_workdir")] // gateway ADR 0044 exports the working directory under this name
     [InlineData("HTTP_PROXY")]
     [InlineData("sandbox_allowed_paths")]
     public void FindInvalidKeys_RejectsProtectedNames_CaseInsensitively(string key)

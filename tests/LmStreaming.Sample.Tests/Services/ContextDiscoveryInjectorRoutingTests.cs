@@ -619,11 +619,14 @@ public sealed class ContextDiscoveryInjectorRoutingTests
             var loader = new WorkspaceSubAgentLoader(Registry, NullLogger<WorkspaceSubAgentLoader>.Instance);
             var controller = new ContextDiscoveryController(
                 SessionSecretStore,
-                Registry,
-                loader,
-                Injector,
-                Diagnostics,
-                new AgentOutputTokenPolicy(new AgentOutputTokenOptions()),
+                new ContextDiscoveryBatchHandler(
+                    Registry,
+                    loader,
+                    Injector,
+                    Diagnostics,
+                    new AgentOutputTokenPolicy(new AgentOutputTokenOptions()),
+                    NullLogger<ContextDiscoveryBatchHandler>.Instance
+                ),
                 NullLogger<ContextDiscoveryController>.Instance
             );
 

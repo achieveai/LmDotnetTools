@@ -18,6 +18,13 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 /// exactly as the create request always sends <c>app.id</c>.
 /// </para>
 /// <para>
+/// A partitioned app (gateway ADR 0042) names a workspace by <c>workspace</c> AND its partition values, because each
+/// tenant/user copy of one workspace name is a separate backup: pass them as <c>partitionProperties</c>. Missing or
+/// invalid values are the same <c>400</c>s as at create (<c>missing_partition_property</c>,
+/// <c>invalid_partition_property</c>). The gateway uses the app's CURRENT partition list, not the one a workspace
+/// was created under. Unpartitioned apps omit them.
+/// </para>
+/// <para>
 /// Failures: <c>404 backup_disabled</c> (the gateway runs without backups) is
 /// <see cref="SandboxErrorKind.Unavailable"/> with <see cref="SandboxException.Retryable"/> <c>false</c>;
 /// <c>503 backup_unavailable</c> (the store could not be reached) is <see cref="SandboxErrorKind.Unavailable"/>
@@ -30,8 +37,18 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 public sealed partial class SandboxClient
 {
     /// <summary>Lists the backup snapshots of <paramref name="workspace"/>, as the gateway orders them.</summary>
+    public Task<IReadOnlyList<SandboxBackupSnapshot>> ListBackupSnapshotsAsync(
+        string workspace,
+        CancellationToken ct = default
+    ) => ListBackupSnapshotsAsync(workspace, partitionProperties: null, ct);
+
+    /// <summary>
+    /// Lists the backup snapshots of a partitioned app's <paramref name="workspace"/> under
+    /// <paramref name="partitionProperties"/> (ADR 0042), as the gateway orders them.
+    /// </summary>
     public async Task<IReadOnlyList<SandboxBackupSnapshot>> ListBackupSnapshotsAsync(
         string workspace,
+        IReadOnlyDictionary<string, string>? partitionProperties,
         CancellationToken ct = default
     )
     {
@@ -40,7 +57,7 @@ public sealed partial class SandboxClient
         var operation = $"listing backup snapshots of workspace '{workspace}'";
         var (listed, statusCode) = await SendBackupAsync<SnapshotListResponseDto>(
                 HttpMethod.Get,
-                $"api/v1/backup/snapshots?workspace={Uri.EscapeDataString(workspace)}&{AppIdQuery()}",
+                $"api/v1/backup/snapshots?workspace={Uri.EscapeDataString(workspace)}&{AppIdQuery()}{PropertiesQuery(partitionProperties)}",
                 body: null,
                 operation,
                 ct
@@ -60,9 +77,20 @@ public sealed partial class SandboxClient
     /// until they go dormant. A diverged local copy is saved aside first, reported as
     /// <see cref="SandboxBackupRestoreResult.OrphanSnapshotId"/>.
     /// </summary>
+    public Task<SandboxBackupRestoreResult> RestoreBackupSnapshotAsync(
+        string workspace,
+        string snapshotId,
+        CancellationToken ct = default
+    ) => RestoreBackupSnapshotAsync(workspace, snapshotId, partitionProperties: null, ct);
+
+    /// <summary>
+    /// Restores <paramref name="snapshotId"/> into a partitioned app's <paramref name="workspace"/> under
+    /// <paramref name="partitionProperties"/> (ADR 0042). Otherwise as the overload without them.
+    /// </summary>
     public async Task<SandboxBackupRestoreResult> RestoreBackupSnapshotAsync(
         string workspace,
         string snapshotId,
+        IReadOnlyDictionary<string, string>? partitionProperties,
         CancellationToken ct = default
     )
     {
@@ -73,7 +101,12 @@ public sealed partial class SandboxClient
         var (restored, _) = await SendBackupAsync<RestoreResponseDto>(
                 HttpMethod.Post,
                 "api/v1/backup/restore",
-                new RestoreRequestDto(workspace, snapshotId, _options.AppId),
+                new RestoreRequestDto(
+                    workspace,
+                    snapshotId,
+                    _options.AppId,
+                    partitionProperties is { Count: > 0 } ? partitionProperties : null
+                ),
                 operation,
                 ct
             )
@@ -94,8 +127,16 @@ public sealed partial class SandboxClient
     /// backup (that revive fails with <see cref="SandboxErrorKind.WorkspacePurged"/>). None of this can be undone.
     /// A new create on the same workspace name on this gateway starts from an empty workspace (observed on v0.1.16). <see cref="SandboxBackupPurgeResult.SandboxesDeleted"/> names the sandboxes it deleted.
     /// </summary>
+    public Task<SandboxBackupPurgeResult> PurgeBackupWorkspaceAsync(string workspace, CancellationToken ct = default) =>
+        PurgeBackupWorkspaceAsync(workspace, partitionProperties: null, ct);
+
+    /// <summary>
+    /// PERMANENTLY purges a partitioned app's <paramref name="workspace"/> under <paramref name="partitionProperties"/>
+    /// (ADR 0042). Otherwise as the overload without them, including that none of it can be undone.
+    /// </summary>
     public async Task<SandboxBackupPurgeResult> PurgeBackupWorkspaceAsync(
         string workspace,
+        IReadOnlyDictionary<string, string>? partitionProperties,
         CancellationToken ct = default
     )
     {
@@ -104,7 +145,7 @@ public sealed partial class SandboxClient
         var operation = $"purging workspace '{workspace}'";
         var (purged, statusCode) = await SendBackupAsync<PurgeResponseDto>(
                 HttpMethod.Delete,
-                $"api/v1/backup/workspace?workspace={Uri.EscapeDataString(workspace)}&{AppIdQuery()}",
+                $"api/v1/backup/workspace?workspace={Uri.EscapeDataString(workspace)}&{AppIdQuery()}{PropertiesQuery(partitionProperties)}",
                 body: null,
                 operation,
                 ct
@@ -199,6 +240,19 @@ public sealed partial class SandboxClient
     }
 
     private string AppIdQuery() => "app_id=" + Uri.EscapeDataString(_options.AppId);
+
+    /// <summary>
+    /// The <c>&amp;properties.&lt;key&gt;=&lt;value&gt;</c> query suffix a partitioned workspace is addressed by, in
+    /// ordinal key order so a request is deterministic. Empty for <c>null</c> or no properties.
+    /// </summary>
+    private static string PropertiesQuery(IReadOnlyDictionary<string, string>? properties) =>
+        properties is null
+            ? string.Empty
+            : string.Concat(
+                properties
+                    .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                    .Select(pair => $"&properties.{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}")
+            );
 
     /// <summary>
     /// Sends one backup REST call and reads its JSON body, classifying a non-2xx through the shared gateway error

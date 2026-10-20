@@ -53,7 +53,7 @@ public sealed class SandboxController(
                         imageDigest = session.ImageDigest,
                         imageWarnings = session.ImageReport?.Warnings ?? [],
                         imageReport = session.ImageReport,
-                        home = session.WorkspaceHome,
+                        workingDir = session.WorkspaceWorkingDir,
                     },
             }
         );

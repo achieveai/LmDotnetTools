@@ -271,6 +271,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
                     services.AddSingleton<ContextDiscoveryInjector>();
                     services.AddSingleton(new AgentOutputTokenPolicy(new AgentOutputTokenOptions()));
                     services.AddSingleton<WorkspaceSubAgentLoader>();
+                    services.AddSingleton<ContextDiscoveryBatchHandler>();
                 });
                 webBuilder.Configure(appBuilder =>
                 {
@@ -420,6 +421,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
                         services.AddSingleton(new AgentOutputTokenPolicy(new AgentOutputTokenOptions()));
                         services.AddSingleton<ContextDiscoveryDiagnostics>();
                         services.AddSingleton<WorkspaceSubAgentLoader>();
+                        services.AddSingleton<ContextDiscoveryBatchHandler>();
                     });
                     webBuilder.Configure(appBuilder =>
                     {

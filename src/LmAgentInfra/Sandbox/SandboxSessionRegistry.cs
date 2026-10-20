@@ -52,8 +52,8 @@ public sealed record SubAgentSessionBinding(MutableSubAgentTemplateSource Source
 /// named none); <see langword="null"/> from a gateway that predates client images.</param>
 /// <param name="ImageDigest">The resolved image digest, when the gateway could resolve one.</param>
 /// <param name="ImageReport">The gateway's conformance report for the image, including its warnings.</param>
-/// <param name="WorkspaceHome">The workspace-relative home the gateway acknowledged, or
-/// <see langword="null"/> for the workspace root.</param>
+/// <param name="WorkspaceWorkingDir">The workspace-relative working directory the gateway acknowledged (the
+/// only place agents can write; ADR 0044), or <see langword="null"/> when none is set.</param>
 public sealed record SandboxSession(
     string WorkspaceId,
     string SessionId,
@@ -64,7 +64,7 @@ public sealed record SandboxSession(
     string? Image = null,
     string? ImageDigest = null,
     SandboxImageReport? ImageReport = null,
-    string? WorkspaceHome = null
+    string? WorkspaceWorkingDir = null
 );
 
 /// <summary>
@@ -95,8 +95,8 @@ public sealed record SandboxSession(
 /// </param>
 /// <param name="Image">Client image ref for the sandbox (gateway allow-list applies), or <see langword="null"/>
 /// for the gateway default. See <see cref="SandboxCreateRequest.Image"/>.</param>
-/// <param name="Home">Workspace-relative working directory for the sandbox, or <see langword="null"/> for
-/// the workspace root. See <see cref="SandboxCreateRequest.Home"/>.</param>
+/// <param name="WorkingDir">Workspace-relative working directory for the sandbox, or <see langword="null"/> for
+/// none. When set, the rest of the workspace is read-only for agents. See <see cref="SandboxCreateRequest.WorkingDir"/>.</param>
 public sealed record WorkspaceRef(
     string Id,
     string? DirectoryRelPath = null,
@@ -104,7 +104,7 @@ public sealed record WorkspaceRef(
     IReadOnlyList<SandboxPluginRef>? PluginSelection = null,
     IReadOnlyDictionary<string, string>? Env = null,
     string? Image = null,
-    string? Home = null
+    string? WorkingDir = null
 );
 
 /// <summary>
@@ -328,6 +328,24 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// on <see cref="DisposeAsync"/>.
     /// </summary>
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _discoverySeen = new(
+        StringComparer.Ordinal
+    );
+
+    /// <summary>
+    /// Per-session ledger of unified-webhook <c>event_id</c>s already accepted (gateway ADR 0043): the
+    /// gateway delivers at least once and retries a notification once, with the same
+    /// <c>Idempotency-Key</c> (<c>session_id/event_id</c>). Same lifetime as <see cref="_discoverySeen"/>.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _webhookEventsSeen = new(
+        StringComparer.Ordinal
+    );
+
+    /// <summary>
+    /// Per-session map of a primary agent's background task id to the conversation that started it. The
+    /// primary sends no agent id, so the gateway's <c>task_completed</c> for it carries <c>""</c> and only this
+    /// map says which conversation to tell. Same lifetime as <see cref="_webhookEventsSeen"/>.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, string>> _backgroundTaskOwners = new(
         StringComparer.Ordinal
     );
 
@@ -1351,6 +1369,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         _ = _subAgentBindings.TryRemove(session.SessionId, out _);
         _ = _sessionThreads.TryRemove(session.SessionId, out _);
         _ = _discoverySeen.TryRemove(session.SessionId, out _);
+        _ = _webhookEventsSeen.TryRemove(session.SessionId, out _);
+        _ = _backgroundTaskOwners.TryRemove(session.SessionId, out _);
         // Unreachable rather than wrong once the session is gone - ids are gateway-allocated and never
         // reissued, so nothing can consult this entry again. It is removed because the funnel contract
         // above requires it: a per-session-id map left growing across a long-lived process is a leak.
@@ -1429,7 +1449,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         // known) and so two sessions' secrets can never be cross-validated against each other.
         var sessionSecret = RandomNumberGenerator.GetHexString(64);
         var (authProviders, network) = BuildAuthProviders(sessionSecret);
-        var discovery = BuildDiscovery(sessionSecret);
+        var (discovery, webhook) = BuildEventDelivery(sessionSecret);
         // Per-workspace marketplace selection wins; fall back to the global config default when the
         // workspace enables none. Either way `null` means "omit the field, gateway picks its default".
         // Shared with the workspace plugin-selection validator so a selection can never be rejected
@@ -1459,7 +1479,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 .. _options.PluginMounts.Select(mount => new SandboxPluginMount(mount.Path, mount.Name, mount.Origin)),
             ],
             image: workspaceRef.Image,
-            home: workspaceRef.Home
+            workingDir: workspaceRef.WorkingDir,
+            webhook: webhook
         );
 
         if (createRequest.Env.Count > 0)
@@ -1604,7 +1625,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 info.Image,
                 info.ImageDigest,
                 info.ImageReport,
-                info.WorkspaceHome
+                info.WorkspaceWorkingDir
             );
 
             // The gateway session now exists remotely. Publish its maps and persist its secret as one
@@ -1681,6 +1702,11 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                     Status = info.Status,
                     Inventory = ToInventorySummary(info.Inventory),
                 };
+            }
+
+            if (webhook is not null && info.Webhook is null)
+            {
+                await WarnIfWebhookNotRegisteredAsync(client, session.SessionId, workspaceId, ct).ConfigureAwait(false);
             }
 
             _logger.LogInformation(
@@ -1931,6 +1957,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             _sessionVerifiedAtUtcTicks.Clear();
             _sessionThreads.Clear();
             _discoverySeen.Clear();
+            _webhookEventsSeen.Clear();
+            _backgroundTaskOwners.Clear();
             _sessionCredentials.Clear();
             _sessionEnv.Clear();
             _unreportedCreations.Clear();
@@ -2637,12 +2665,105 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     private static string DiscoverySeenKey(string target, string kind, string path) => $"{target}\0{kind}\0{path}";
 
     /// <summary>
+    /// Atomically marks unified-webhook event <paramref name="eventId"/> as accepted for
+    /// <paramref name="sessionId"/>. True on the first call; false for a redelivery of the same event,
+    /// which the caller acknowledges without processing again.
+    /// </summary>
+    public bool TryMarkWebhookEventSeen(string sessionId, string eventId)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(eventId))
+        {
+            return false;
+        }
+
+        var set = _webhookEventsSeen.GetOrAdd(
+            sessionId,
+            _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal)
+        );
+        return set.TryAdd(eventId, 0);
+    }
+
+    /// <summary>
+    /// Undoes one <see cref="TryMarkWebhookEventSeen"/> mark, so the gateway's retry of an event whose
+    /// processing failed is handled instead of being dropped as a duplicate. No-op when unknown.
+    /// </summary>
+    public void UnmarkWebhookEventSeen(string sessionId, string eventId)
+    {
+        if (!_disposed && _webhookEventsSeen.TryGetValue(sessionId, out var set))
+        {
+            _ = set.TryRemove(eventId, out _);
+        }
+    }
+
+    /// <summary>
+    /// Records that conversation <paramref name="threadId"/>'s primary agent started background task
+    /// <paramref name="taskId"/> on <paramref name="sessionId"/> (task ids are unique within a sandbox session).
+    /// </summary>
+    public void RecordBackgroundTaskOwner(string sessionId, string taskId, string threadId)
+    {
+        // Called from a tool result; a registry torn down mid-call has nothing left to notify, and without the
+        // sandbox webhook no task_completed arrives to read the record.
+        if (_disposed || !_authOptions.Webhook.UseSandboxWebhook)
+        {
+            return;
+        }
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
+
+        _backgroundTaskOwners.GetOrAdd(
+            sessionId,
+            _ => new ConcurrentDictionary<string, string>(StringComparer.Ordinal)
+        )[taskId] = threadId;
+    }
+
+    /// <summary>
+    /// Removes and returns the conversation recorded by <see cref="RecordBackgroundTaskOwner"/> for a task
+    /// that has ended. False when none was recorded (started before a restart, or by a sub-agent).
+    /// </summary>
+    public bool TryTakeBackgroundTaskOwner(string sessionId, string taskId, out string threadId)
+    {
+        threadId = string.Empty;
+        if (_disposed || !_backgroundTaskOwners.TryGetValue(sessionId, out var owners))
+        {
+            return false;
+        }
+
+        if (!owners.TryRemove(taskId, out var owner))
+        {
+            return false;
+        }
+
+        threadId = owner;
+        return true;
+    }
+
+    /// <summary>
     /// The exact URL the gateway is told to deliver context-discovery webhooks to (the auth-callback
     /// base plus the discovery route). Surfaced by the diagnostics endpoint so an operator can spot
     /// an unreachable/loopback callback host — the silent-failure mode where discoveries are fired
     /// by the gateway but never arrive at the app.
     /// </summary>
-    public string DiscoveryWebhookUrl => $"{_authOptions.Webhook.CallbackBaseUrl}/api/discovery/context_discovery";
+    public string DiscoveryWebhookUrl =>
+        _authOptions.Webhook.UseSandboxWebhook
+            ? SandboxWebhookUrl
+            : $"{_authOptions.Webhook.CallbackBaseUrl}/api/discovery/context_discovery";
+
+    /// <summary>
+    /// The unified sandbox webhook URL (gateway ADR 0043) registered when
+    /// <see cref="WebhookOptions.UseSandboxWebhook"/> is on: every subscribed event for the session is
+    /// POSTed here.
+    /// </summary>
+    public string SandboxWebhookUrl => $"{_authOptions.Webhook.CallbackBaseUrl}/api/sandbox/webhook";
+
+    /// <summary>The events the unified sandbox webhook subscribes to.</summary>
+    internal static readonly IReadOnlyList<string> SandboxWebhookSubscriptions =
+    [
+        SandboxWebhookEvents.ContextDiscovery,
+        SandboxWebhookEvents.TaskCompleted,
+    ];
 
     /// <summary>
     /// True when a callback base URL is configured. The default (a loopback host) is non-empty, so
@@ -2926,24 +3047,75 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     }
 
     /// <summary>
-    /// Builds the outbound <c>discovery</c> block telling the gateway where to deliver
-    /// context-discovery events. The URL is the public webhook base (the same one the gateway
-    /// already uses for auth callbacks) plus the discovery route; the auth value is the
-    /// gateway↔webhook shared secret. SECRET — never logged.
+    /// Builds where the gateway delivers this session's events: the unified <c>webhook</c> block when
+    /// <see cref="WebhookOptions.UseSandboxWebhook"/> is on, else the legacy <c>discovery</c> block. Never
+    /// both, because the gateway would then send every discovery twice, once per URL. The URL is the public
+    /// webhook base (the same one the gateway already uses for auth callbacks) plus the route; the auth
+    /// value is the gateway↔webhook shared secret, sent verbatim as the <c>Authorization</c> header.
+    /// SECRET — never logged.
     /// </summary>
-    private SandboxDiscoverySettings BuildDiscovery(string sessionSecret)
+    private (SandboxDiscoverySettings? Discovery, SandboxWebhookSettings? Webhook) BuildEventDelivery(
+        string sessionSecret
+    )
     {
         var url = DiscoveryWebhookUrl;
         // Registration breadcrumb: logs WHERE the gateway will deliver discoveries so an operator
         // can correlate it against the diagnostics endpoint's received counts. NEVER logs the auth
         // value (the gateway↔webhook shared secret) — only the URL and the enabled flag.
         _logger.LogInformation(
-            "ContextDiscovery: gateway will deliver discoveries to {WebhookUrl} (enabled={Enabled}).",
+            "ContextDiscovery: gateway will deliver discoveries to {WebhookUrl} (enabled={Enabled}, sandboxWebhook={SandboxWebhook}).",
             url,
-            DiscoveryEnabled
+            DiscoveryEnabled,
+            _authOptions.Webhook.UseSandboxWebhook
         );
-        return new SandboxDiscoverySettings(url, sessionSecret);
+        return _authOptions.Webhook.UseSandboxWebhook
+            ? (null, new SandboxWebhookSettings(url, sessionSecret, SandboxWebhookSubscriptions))
+            : (new SandboxDiscoverySettings(url, sessionSecret), null);
     }
+
+    /// <summary>
+    /// A gateway that predates the unified webhook (v0.1.16 and older) ignores the <c>webhook</c> block, so the
+    /// create succeeds and no event ever arrives. Only GET echoes the registration, so read it back once and
+    /// warn when it is missing. Best effort: a failed read is logged at debug and never fails the create.
+    /// </summary>
+    private async Task WarnIfWebhookNotRegisteredAsync(
+        SandboxClient client,
+        string sessionId,
+        string workspaceId,
+        CancellationToken ct
+    )
+    {
+        SandboxInfo info;
+        try
+        {
+            using var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            readCts.CancelAfter(WebhookCheckTimeout);
+            info = await client.GetAsync(sessionId, readCts.Token).ConfigureAwait(false);
+        }
+        // Cancellation is swallowed too: the session is already committed, so the create must still return it.
+        catch (Exception ex) when (ex is SandboxException or OperationCanceledException)
+        {
+            _logger.LogDebug(
+                ex,
+                "Could not read back the sandbox webhook registration of session {SessionId}.",
+                sessionId
+            );
+            return;
+        }
+
+        if (info.Webhook is null)
+        {
+            _logger.LogWarning(
+                "Sandbox session {SessionId} for workspace {WorkspaceId}: the gateway did not register the sandbox "
+                    + "webhook, so no context discovery or background-task event will arrive. The gateway is "
+                    + "probably v0.1.16 or older; set Auth:Webhook:UseSandboxWebhook=false for it.",
+                sessionId,
+                workspaceId
+            );
+        }
+    }
+
+    private static readonly TimeSpan WebhookCheckTimeout = TimeSpan.FromSeconds(5);
 
     /// <summary>One item the gateway has discovered for the workspace (a sub-agent file,
     /// a skill descriptor, …). <see cref="Kind"/> is the discriminator the caller filters by;

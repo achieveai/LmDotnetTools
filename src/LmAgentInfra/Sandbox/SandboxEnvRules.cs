@@ -39,6 +39,7 @@ public static partial class SandboxEnvRules
         "SANDBOX_ALLOWED_PATHS",
         "SANDBOX_WORKSPACE",
         "SANDBOX_HOME",
+        "SANDBOX_WORKDIR",
         "PWSH_STATE_DIR",
         "HTTP_PROXY",
         "HTTPS_PROXY",

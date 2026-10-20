@@ -7,7 +7,8 @@ export interface SandboxSessionInfo {
   image: string | null;
   imageDigest: string | null;
   imageWarnings: string[];
-  home: string | null;
+  /** The working directory the gateway acknowledged; agents can write only there. `null` = none set. */
+  workingDir: string | null;
 }
 
 export interface SandboxPanelInfo {

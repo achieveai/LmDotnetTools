@@ -59,13 +59,29 @@ public sealed class SandboxCreateRequest
     public string? Image { get; }
 
     /// <summary>
-    /// The sandbox home (gateway issue #142): a subdirectory of the workspace, relative and
-    /// <c>/</c>-separated, that becomes the default directory for relative paths, shells and operations.
-    /// Created on demand and immutable for the session. <c>null</c> keeps the home at the workspace root.
-    /// <see cref="SandboxClient.CreateAsync"/> requires the gateway to acknowledge exactly this home (in its
-    /// normalized form) and fails otherwise; see <see cref="SandboxInfo.WorkspaceHome"/>.
+    /// The sandbox working directory (gateway ADR 0044, formerly "home"): a subdirectory of the workspace,
+    /// relative and <c>/</c>-separated, that becomes the default directory for relative paths and shells.
+    /// It is <b>the only place agents can write</b>: the rest of the workspace becomes read-only for the MCP
+    /// tools and shells, while the harness surfaces (direct file API, operations) still write everywhere.
+    /// Operations started without a working directory run at the workspace root, not here. Created on
+    /// demand and immutable for the session. <c>null</c> sets none, leaving the whole workspace writable.
+    /// <see cref="SandboxClient.CreateAsync"/> requires the gateway to acknowledge exactly this directory (in
+    /// its normalized form) and fails otherwise; see <see cref="SandboxInfo.WorkspaceWorkingDir"/>.
     /// </summary>
-    public string? Home { get; }
+    public string? WorkingDir { get; }
+
+    /// <summary>
+    /// The sandbox's property bag (gateway ADR 0042), defensively copied; empty omits the field. Keys in the
+    /// app's registry <c>partition</c> list are REQUIRED (<c>400 missing_partition_property</c>), become workspace
+    /// directory levels, and are immutable; the rest change later with <see cref="SandboxClient.UpdatePropertiesAsync"/>.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Properties { get; }
+
+    /// <summary>The unified sandbox webhook (gateway PR #205), or <c>null</c> to omit the field.</summary>
+    public SandboxWebhookSettings? Webhook { get; }
+
+    /// <summary>Skill tiers for every agent of the sandbox (gateway ADR 0041), or <c>null</c> to omit the field.</summary>
+    public SandboxSkillsPolicy? Skills { get; }
 
     public SandboxCreateRequest(
         string workspace,
@@ -77,7 +93,10 @@ public sealed class SandboxCreateRequest
         IReadOnlyDictionary<string, string>? env = null,
         IReadOnlyList<SandboxPluginMount>? pluginMounts = null,
         string? image = null,
-        string? home = null
+        string? workingDir = null,
+        IReadOnlyDictionary<string, string>? properties = null,
+        SandboxWebhookSettings? webhook = null,
+        SandboxSkillsPolicy? skills = null
     )
     {
         // Null is rejected but an EMPTY string is a valid workspace leaf (the gateway's root) — this
@@ -94,19 +113,24 @@ public sealed class SandboxCreateRequest
         PluginSelection = pluginSelection is null ? null : [.. pluginSelection];
         PluginMounts = pluginMounts is null ? [] : [.. pluginMounts];
         // Null means "not requested"; a present value must say something, because the gateway would
-        // otherwise reject an empty home (it can never name the root) or resolve an empty image oddly.
+        // otherwise reject an empty working directory (it can never name the root) or resolve an empty image oddly.
         if (image is not null)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(image);
         }
 
-        if (home is not null)
+        if (workingDir is not null)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(home);
+            ArgumentException.ThrowIfNullOrWhiteSpace(workingDir);
         }
 
         Image = image;
-        Home = home;
+        WorkingDir = workingDir;
+        Properties = properties is null
+            ? new Dictionary<string, string>(StringComparer.Ordinal)
+            : new Dictionary<string, string>(properties, StringComparer.Ordinal);
+        Webhook = webhook;
+        Skills = skills;
         Env = env is null
             ? new Dictionary<string, string>(StringComparer.Ordinal)
             : new Dictionary<string, string>(env, StringComparer.Ordinal);

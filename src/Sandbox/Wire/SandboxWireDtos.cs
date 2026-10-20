@@ -22,10 +22,43 @@ internal sealed record CreateSandboxRequestDto(
     // caller's request has none, matching this SDK's nulls-omitted REST convention.
     [property: JsonPropertyName("env")] IReadOnlyDictionary<string, string>? Env = null,
     [property: JsonPropertyName("plugins")] IReadOnlyList<PluginMountDto>? Plugins = null,
-    // Client image (ADR 0039) and workspace home (issue #142). Top-level `home` mirrors the top-level
-    // `workspace` this DTO already sends (the gateway accepts both it and `mounts.home`). Omitted when unset.
+    // Client image (ADR 0039) and working directory (ADR 0044). Top-level `working_dir` mirrors the
+    // top-level `workspace` this DTO already sends (the gateway accepts both it and `mounts.working_dir`).
+    // The deprecated `home` alias is never sent. Omitted when unset.
     [property: JsonPropertyName("image")] string? Image = null,
-    [property: JsonPropertyName("home")] string? Home = null
+    [property: JsonPropertyName("working_dir")] string? WorkingDir = null,
+    // Property bag (ADR 0042), the unified sandbox webhook (gateway PR #205) and skill tiers (ADR 0041).
+    // Each is omitted when the caller set none, so the gateway applies its own defaults.
+    [property: JsonPropertyName("properties")] IReadOnlyDictionary<string, string>? Properties = null,
+    [property: JsonPropertyName("webhook")] SandboxWebhookDto? Webhook = null,
+    [property: JsonPropertyName("skills")] SkillsPolicyDto? Skills = null
+);
+
+/// <summary>
+/// The create request's <c>webhook</c> block (gateway <c>webhook/config.rs</c> <c>SandboxWebhook</c>, which
+/// denies unknown fields). <c>events</c> absent means every event, including ones added later.
+/// </summary>
+internal sealed record SandboxWebhookDto(
+    [property: JsonPropertyName("url")] string Url,
+    [property: JsonPropertyName("auth_header")] string? AuthHeader,
+    [property: JsonPropertyName("events")] IReadOnlyList<string>? Events
+);
+
+/// <summary><c>webhook</c> on <c>GET /api/v1/sandboxes/{id}</c>: never the auth header value, only whether one is set.</summary>
+internal sealed record WebhookSummaryDto(
+    [property: JsonPropertyName("url")] string? Url,
+    [property: JsonPropertyName("events")] IReadOnlyList<string?>? Events,
+    [property: JsonPropertyName("auth_header_set")] bool? AuthHeaderSet
+);
+
+/// <summary>
+/// The create request's <c>skills</c> block and the resolved policy echoed on the create response (gateway
+/// <c>skills/tiers.rs</c>). On the response <c>included</c> holds skill keys, not the refs the caller sent.
+/// </summary>
+internal sealed record SkillsPolicyDto(
+    [property: JsonPropertyName("default_tier")] string? DefaultTier,
+    [property: JsonPropertyName("included")] IReadOnlyList<string?>? Included,
+    [property: JsonPropertyName("unlisted_hint")] string? UnlistedHint
 );
 
 internal sealed record PluginMountDto(
@@ -90,7 +123,13 @@ internal sealed record CreateSandboxResponseDto(
     // that report them (never `image_report`).
     [property: JsonPropertyName("image")] string? Image = null,
     [property: JsonPropertyName("image_digest")] string? ImageDigest = null,
-    [property: JsonPropertyName("image_report")] ImageReportDto? ImageReport = null
+    [property: JsonPropertyName("image_report")] ImageReportDto? ImageReport = null,
+    // ADR 0042: `properties` is always present on a current gateway (`{}` when none); `partition` only for a
+    // partitioned app. `webhook` is GET-only; `skills` is create-only (ADR 0041).
+    [property: JsonPropertyName("properties")] Dictionary<string, string>? Properties = null,
+    [property: JsonPropertyName("partition")] IReadOnlyList<string?>? Partition = null,
+    [property: JsonPropertyName("webhook")] WebhookSummaryDto? Webhook = null,
+    [property: JsonPropertyName("skills")] SkillsPolicyDto? Skills = null
 );
 
 /// <summary>
@@ -136,8 +175,9 @@ internal sealed record WorkspaceVolumeDto(
     // keyed by. Always present on a #119 create/get response (MountSummary.id is non-optional there);
     // nullable here because the list response carries no volumes and a pre-#119 gateway omits it.
     [property: JsonPropertyName("id")] long? Id,
-    // The normalized, persisted home (issue #142); absent when the home is the workspace root.
-    [property: JsonPropertyName("home")] string? Home = null
+    // The normalized, persisted working directory (ADR 0044); absent when none is set. The legacy `home`
+    // echo is not modeled: a gateway that sends only `home` predates the read-only workspace.
+    [property: JsonPropertyName("working_dir")] string? WorkingDir = null
 );
 
 /// <summary>
@@ -323,3 +363,11 @@ internal sealed record GatewayErrorDto(
 
 /// <c>GET/PATCH .../env</c> response — the resulting environment map after the request is applied.
 internal sealed record SandboxEnvResponseDto([property: JsonPropertyName("env")] Dictionary<string, string>? Env);
+
+// --- Sandbox properties REST contract (ADR 0042, crates/mcp-gateway/src/api/properties.rs) ---
+
+/// <c>GET/PATCH .../properties</c> response — the resulting bag and the partition keys it was created under.
+internal sealed record SandboxPropertiesResponseDto(
+    [property: JsonPropertyName("properties")] Dictionary<string, string>? Properties,
+    [property: JsonPropertyName("partition")] IReadOnlyList<string?>? Partition
+);
