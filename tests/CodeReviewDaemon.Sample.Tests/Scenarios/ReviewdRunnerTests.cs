@@ -3316,6 +3316,148 @@ public sealed class ReviewdRunnerTests
         }
     }
 
+    // A passed-over legacy thread is never waited on, so a sub-agent still running there could publish for the PR
+    // beside a fresh review. Its whole tree keeps the PR ineligible (and the batch requeues it) until it settles.
+    [Fact]
+    public async Task Runner_admits_no_fresh_review_while_a_passed_over_thread_still_has_a_live_child()
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-legacy-child-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var child = "running";
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .On(
+                request =>
+                    request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
+                _ => Json("""{"threadId":"fresh"}""")
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/api/conversations?",
+                """[{"threadId":"prior","title":"Nova-17-99999999","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1}]"""
+            )
+            .On(
+                request => request.RequestUri!.AbsolutePath == "/api/conversations/prior/subagents",
+                _ =>
+                    child == "busy"
+                        ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                        {
+                            Content = new StringContent("""{"code":"hierarchy_busy"}"""),
+                        }
+                        : Json(
+                            $$"""{"schemaVersion":1,"nodes":[{"agentId":"child","threadId":"child-thread","parentThreadId":"prior","depth":1,"template":"publisher","status":"{{child}}"}]}"""
+                        )
+            )
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .OnJson(HttpMethod.Post, "/messages", """{"inputId":"original","idempotencyKeyHonored":true}""")
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        static Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token) =>
+            Task.FromResult(
+                phase switch
+                {
+                    "eligibility" => new JsonObject
+                    {
+                        ["prId"] = "17",
+                        ["status"] = "active",
+                        ["isDraft"] = false,
+                        ["headSha"] = new string('a', 40),
+                    },
+                    "prepare" => new JsonObject
+                    {
+                        ["mergeSha"] = new string('b', 40),
+                        ["contextPath"] = "context",
+                        ["reviewDirectory"] = "reviews",
+                        ["baselineComments"] = new JsonArray(),
+                    },
+                    _ => [],
+                }
+            );
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await new SqliteKvStore(connection).SetAsync(
+                $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                new JsonObject
+                {
+                    ["17"] = new JsonObject
+                    {
+                        ["Lifecycle"] = "Open",
+                        ["IsDraft"] = false,
+                        ["HeadSha"] = new string('a', 40),
+                    },
+                }
+            );
+            var options = CliOptions.Parse([
+                "review",
+                "run",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "test",
+                "--execute",
+            ]);
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    options,
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ => Task.CompletedTask,
+                    () => DateTimeOffset.UtcNow
+                );
+            foreach (var live in new[] { "running", "busy" })
+            {
+                child = live;
+                await run.Should()
+                    .ThrowAsync<ReviewRunner.ReviewNotAdmittedException>()
+                    .WithMessage("PR is not eligible for review.", $"a {live} child tree has not settled");
+                handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "nothing is claimed or sent");
+            }
+
+            child = "completed";
+            (await run.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("Errored");
+            JsonNode.Parse(
+                handler
+                    .Requests.Should()
+                    .ContainSingle(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations")
+                    .Subject.Body!
+            )!["disableClientTools"]!
+                .GetValue<bool>()
+                .Should()
+                .BeTrue();
+            handler
+                .Requests.Where(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                .Select(r => r.Uri.AbsolutePath)
+                .Should()
+                .Equal("/api/conversations/fresh/messages");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
     [Fact]
     public async Task Find_conversation_by_title_prefix_prefers_a_headless_match_over_a_newer_one()
     {

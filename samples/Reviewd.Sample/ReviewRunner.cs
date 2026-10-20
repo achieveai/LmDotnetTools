@@ -515,7 +515,7 @@ internal static class ReviewRunner
             && !cleanupOnly
             && (
                 (thread is not null && (await client.GetRunStateAsync(thread, ct)).IsInProgress)
-                || (questionThread is not null && (await client.GetRunStateAsync(questionThread, ct)).IsInProgress)
+                || (questionThread is not null && await TreeInFlightAsync(client, questionThread, now(), ct))
             );
         if (
             !resume
@@ -1213,6 +1213,28 @@ internal static class ReviewRunner
             && node.LastActivityUtc is { } lastActivity
             && now - lastActivity >= UnknownQuiescence
         );
+
+    // A passed-over thread is never waited on, so its whole tree decides admission: a sub-agent still running
+    // there can publish for the PR after a fresh review starts. A busy hierarchy read is not proof of
+    // settlement either. Either way the PR stays ineligible and the batch requeues it.
+    private static async Task<bool> TreeInFlightAsync(
+        LmStreamingS2SClient client,
+        string thread,
+        DateTimeOffset now,
+        CancellationToken ct
+    )
+    {
+        if ((await client.GetRunStateAsync(thread, ct)).IsInProgress)
+            return true;
+        try
+        {
+            return !(await client.GetSubAgentTreeAsync(thread, ct)).Nodes.All(n => IsSettledNode(n, now));
+        }
+        catch (LmStreamingS2SClient.HierarchyBusyException)
+        {
+            return true;
+        }
+    }
 
     /// <remarks>
     ///     Waits until the root run is idle and every descendant has settled (see <see cref="IsSettledNode"/>).
