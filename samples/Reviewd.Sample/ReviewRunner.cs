@@ -499,9 +499,10 @@ internal static class ReviewRunner
         var reusedConversation = thread is not null && !resume && !cleanupOnly;
         // A prior conversation without a receipt in THIS db is only a risk if it is still running: its
         // receipt may live in whichever db ran it. Ask the host, not our bookkeeping.
-        // The host is also the cross-db record of what was already admitted: a conversation titled for this
-        // exact head means this revision was reviewed from another db, and re-admitting it would post
-        // duplicate PR comments.
+        // The host is also the cross-db record of what was already admitted: a conversation holding this exact
+        // head's review means this revision was reviewed from another db, and re-admitting it would post
+        // duplicate PR comments. The title alone is not that record. It is stamped before the review is sent,
+        // so an attempt that failed at the send leaves a conversation titled for this head that reviewed nothing.
         if (
             !resume
             && !cleanupOnly
@@ -513,9 +514,20 @@ internal static class ReviewRunner
                 mode,
                 ct
             )
-                is not null
+                is { } headMatch
         )
-            throw new ReviewNotAdmittedException("PR head was already reviewed by another run; skipped.");
+        {
+            var transcript = await client.GetConversationTranscriptAsync(headMatch.ThreadId, ct);
+            if (ReviewedHead(transcript, liveHead))
+                throw new ReviewNotAdmittedException("PR head was already reviewed by another run; skipped.");
+            // A conversation with no output (never sent, or sent and never answered) holds no earlier review, so the
+            // prompt must not claim one.
+            if (
+                headMatch.ThreadId == thread
+                && transcript.All(entry => entry.Role.Equals("User", StringComparison.OrdinalIgnoreCase))
+            )
+                reusedConversation = false;
+        }
         var threadInFlight =
             !resume
             && !cleanupOnly
@@ -1124,6 +1136,23 @@ internal static class ReviewRunner
             receipt["stage"] = phase + "-completed";
             await SaveAsync();
         }
+    }
+
+    /// <summary>
+    ///     True when the conversation shows a review of <paramref name="head"/> ran: a user prompt naming the full
+    ///     head SHA (every review prompt does), followed by output from that run.
+    /// </summary>
+    internal static bool ReviewedHead(IReadOnlyList<ReviewAgentTranscriptEntry> transcript, string head)
+    {
+        var prompted = false;
+        foreach (var entry in transcript)
+        {
+            var user = entry.Role.Equals("User", StringComparison.OrdinalIgnoreCase);
+            if (prompted && !user)
+                return true;
+            prompted |= user && entry.Body.Contains(head, StringComparison.Ordinal);
+        }
+        return false;
     }
 
     internal static bool CanRetryPreparation(JsonNode attempt, string session) =>
