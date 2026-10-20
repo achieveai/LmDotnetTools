@@ -2174,6 +2174,135 @@ public sealed class ReviewdRunnerTests
         }
     }
 
+    // 2026-10-20: a cold gateway catalog made the host answer the review send with 503, and the PR was held
+    // for hours. The send must be retried with the same idempotency key instead.
+    [Fact]
+    public async Task Runner_retries_a_503_review_send_with_the_same_idempotency_key()
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-send503-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var now = DateTimeOffset.Parse("2026-10-07T22:00:00Z");
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .On(
+                request =>
+                    request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
+                _ => Json("""{"threadId":"thread"}""")
+            )
+            .OnJson(HttpMethod.Get, "/api/conversations?", "[]")
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .OnSequence(
+                HttpMethod.Post,
+                "/messages",
+                (HttpStatusCode.ServiceUnavailable, "{}"),
+                (HttpStatusCode.ServiceUnavailable, "{}"),
+                (HttpStatusCode.OK, """{"inputId":"original","idempotencyKeyHonored":true}""")
+            )
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token) =>
+            Task.FromResult(
+                phase switch
+                {
+                    "eligibility" => new JsonObject
+                    {
+                        ["prId"] = "17",
+                        ["status"] = "active",
+                        ["isDraft"] = false,
+                        ["headSha"] = new string('a', 40),
+                        ["createdAt"] = now.AddHours(-1).ToString("O"),
+                    },
+                    "prepare" => new JsonObject
+                    {
+                        ["mergeSha"] = new string('b', 40),
+                        ["contextPath"] = "context",
+                        ["reviewDirectory"] = "reviews",
+                        ["baselineComments"] = new JsonArray(),
+                    },
+                    _ => [],
+                }
+            );
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            var store = new SqliteKvStore(connection);
+            await store.SetAsync(
+                $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                new JsonObject
+                {
+                    ["17"] = new JsonObject
+                    {
+                        ["Lifecycle"] = "Open",
+                        ["IsDraft"] = false,
+                        ["HeadSha"] = new string('a', 40),
+                    },
+                }
+            );
+            var options = CliOptions.Parse([
+                "review",
+                "run",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "test",
+                "--max-age-hours",
+                "72",
+                "--execute",
+            ]);
+            var delays = 0;
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    options,
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ =>
+                    {
+                        delays++;
+                        return Task.CompletedTask;
+                    },
+                    () => now
+                );
+
+            // The scripted run then errors; this test only cares how the send got there.
+            await run.Should().ThrowAsync<InvalidOperationException>();
+
+            var sends = handler
+                .Requests.Where(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                .Select(r => r.Body)
+                .ToList();
+            sends.Should().HaveCount(3);
+            sends.Distinct().Should().ContainSingle("every resend carries the same idempotency key");
+            delays.Should().BeGreaterThanOrEqualTo(2 * ReviewRunner.SendRetryPolls);
+            var attempt = await store.GetAsync<JsonObject>($"reviewd/review-attempt/{repo.NormalizedKey}/17");
+            attempt!["reviewInputId"]!.GetValue<string>().Should().Be("original");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
     [Theory]
     [InlineData(false, "99999999")]
     [InlineData(true, "99999999")]

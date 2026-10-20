@@ -56,6 +56,13 @@ public sealed record WorkspaceCompatibilityResult(
 public sealed class WorkspaceCatalogCompatibilityService
 {
     private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(30);
+
+    // How long a caller waits for the shared catalog fetch. The fetch itself is never cut short, so a
+    // caller that gives up leaves it running and the next caller finds the catalog warm. A browse (the
+    // picker) waits as long as it always did. A check that guards a session or a mutation waits for a
+    // cold gateway build, but stays under Reviewd's 120 s host client timeout.
+    internal static readonly TimeSpan BrowseWait = TimeSpan.FromSeconds(10);
+    internal static readonly TimeSpan CheckWait = TimeSpan.FromSeconds(90);
     private readonly IMarketplaceCatalogClient _client;
     private readonly SandboxGatewayOptions _gatewayOptions;
     private readonly TimeProvider _timeProvider;
@@ -82,10 +89,17 @@ public sealed class WorkspaceCatalogCompatibilityService
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
-    public async Task<WorkspaceCompatibilityResult> EvaluateAsync(Workspace workspace, CancellationToken ct = default)
+    public Task<WorkspaceCompatibilityResult> EvaluateAsync(Workspace workspace, CancellationToken ct = default) =>
+        EvaluateAsync(workspace, BrowseWait, ct);
+
+    private async Task<WorkspaceCompatibilityResult> EvaluateAsync(
+        Workspace workspace,
+        TimeSpan wait,
+        CancellationToken ct
+    )
     {
         ArgumentNullException.ThrowIfNull(workspace);
-        var catalog = await GetCatalogAsync(ct);
+        var catalog = await GetCatalogAsync(wait, ct);
         if (!catalog.Available)
         {
             // Unavailable, never Incompatible: no marketplace was compared against anything, so the
@@ -121,11 +135,11 @@ public sealed class WorkspaceCatalogCompatibilityService
             DirectoryRelPath = "validation",
             Marketplaces = marketplaces,
         };
-        await ValidateResultAsync(await EvaluateAsync(probe, ct));
+        await ValidateResultAsync(await EvaluateAsync(probe, CheckWait, ct));
     }
 
     public async Task ValidateForSessionAsync(Workspace workspace, CancellationToken ct = default) =>
-        await ValidateResultAsync(await EvaluateAsync(workspace, ct));
+        await ValidateResultAsync(await EvaluateAsync(workspace, CheckWait, ct));
 
     /// <summary>
     /// Validates an explicit, non-null plugin selection against the current catalog. A <c>null</c>
@@ -192,7 +206,7 @@ public sealed class WorkspaceCatalogCompatibilityService
             throw new MalformedWorkspacePluginSelectionException(malformed);
         }
 
-        var snapshot = await GetCatalogAsync(ct).ConfigureAwait(false);
+        var snapshot = await GetCatalogAsync(CheckWait, ct).ConfigureAwait(false);
 
         if (snapshot.PluginFilteringSupported != true)
         {
@@ -258,7 +272,7 @@ public sealed class WorkspaceCatalogCompatibilityService
         };
     }
 
-    private async Task<CatalogSnapshot> GetCatalogAsync(CancellationToken ct)
+    private async Task<CatalogSnapshot> GetCatalogAsync(TimeSpan wait, CancellationToken ct)
     {
         Task<CatalogSnapshot> refresh;
         lock (_sync)
@@ -276,7 +290,20 @@ public sealed class WorkspaceCatalogCompatibilityService
         CatalogSnapshot value;
         try
         {
-            value = await refresh.WaitAsync(ct);
+            value = await refresh.WaitAsync(wait, _timeProvider, ct);
+        }
+        catch (TimeoutException)
+        {
+            // The fetch keeps running and stays shared (the finally below keeps an unfinished one), so
+            // the next caller joins it. Not cached: "still loading" is not an answer about the catalog.
+            return new CatalogSnapshot(
+                false,
+                [],
+                $"Sandbox gateway marketplace catalog is still loading after {wait.TotalSeconds:0}s; retry shortly.",
+                _timeProvider.GetUtcNow(),
+                [],
+                null
+            );
         }
         finally
         {
@@ -300,7 +327,7 @@ public sealed class WorkspaceCatalogCompatibilityService
     {
         try
         {
-            var catalog = await _client.GetCatalogAsync(null, CancellationToken.None);
+            var catalog = await _client.FetchCatalogToCompletionAsync(null, CancellationToken.None);
             var aliases = catalog.Marketplaces.Select(x => x.Alias).Distinct(StringComparer.Ordinal).ToArray();
             var availablePlugins = catalog
                 .Marketplaces.SelectMany(m => m.Plugins.Select(p => new PluginRef(m.Alias, p.Name)))

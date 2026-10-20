@@ -1,4 +1,5 @@
 using LmStreaming.Sample.Services;
+using Microsoft.Extensions.Time.Testing;
 
 namespace LmStreaming.Sample.Tests.Services;
 
@@ -87,6 +88,41 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
         _ = await service.EvaluateAsync(Workspace([]));
 
         client.CallCount.Should().Be(1);
+    }
+
+    /// <summary>
+    /// A cold gateway takes minutes to build its catalog (47-152 s seen), and a caller that hangs up
+    /// cancels the build. So a caller may give up, but the fetch must keep running to completion and
+    /// warm the catalog for the next caller. The picker gives up first; a session check waits longer.
+    /// </summary>
+    [Fact]
+    public async Task SlowCatalogFetch_OutlivesEveryCallerWait_AndTheNextCallerFindsItWarm()
+    {
+        var time = new FakeTimeProvider();
+        var client = new GatedCatalogClient(Catalog("one"));
+        var service = new WorkspaceCatalogCompatibilityService(client, Options(), time);
+        var bound = TimeSpan.FromSeconds(5);
+
+        var picker = service.EvaluateAsync(Workspace(["one"]));
+        var session = service.ValidateForSessionAsync(Workspace(["one"]));
+        time.Advance(WorkspaceCatalogCompatibilityService.BrowseWait);
+
+        var browse = await picker.WaitAsync(bound);
+        browse.Compatibility.Should().Be(WorkspaceCompatibility.Unavailable);
+        browse.Error.Should().Contain("still loading");
+        session.IsCompleted.Should().BeFalse("a session check waits longer than the picker");
+
+        time.Advance(WorkspaceCatalogCompatibilityService.CheckWait - WorkspaceCatalogCompatibilityService.BrowseWait);
+        await FluentActions
+            .Awaiting(() => session.WaitAsync(bound))
+            .Should()
+            .ThrowAsync<WorkspaceGatewayCatalogUnavailableException>()
+            .WithMessage("*still loading*");
+
+        client.Finish();
+        await service.ValidateForSessionAsync(Workspace(["one"])).WaitAsync(bound);
+
+        client.CallCount.Should().Be(1, "the timed-out callers left the one fetch running");
     }
 
     [Fact]
@@ -421,6 +457,36 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
         {
             _ = Interlocked.Increment(ref _calls);
             return _error is not null ? Task.FromException<MarketplaceCatalog>(_error) : Task.FromResult(_catalog!);
+        }
+    }
+
+    /// <summary>
+    /// A gateway whose full fetch answers only when the test says so. Its browse read fails, as the real
+    /// client's does when the gateway is slow, so a service that used it could never warm the catalog.
+    /// </summary>
+    private sealed class GatedCatalogClient(MarketplaceCatalog catalog) : IMarketplaceCatalogClient
+    {
+        private readonly TaskCompletionSource<MarketplaceCatalog> _gate = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        private int _calls;
+
+        public int CallCount => _calls;
+
+        public void Finish() => _gate.SetResult(catalog);
+
+        public Task<MarketplaceCatalog> GetCatalogAsync(
+            IReadOnlyList<string>? marketplaces = null,
+            CancellationToken ct = default
+        ) => Task.FromException<MarketplaceCatalog>(new MarketplaceCatalogUnavailableException("browse timed out"));
+
+        public Task<MarketplaceCatalog> FetchCatalogToCompletionAsync(
+            IReadOnlyList<string>? marketplaces = null,
+            CancellationToken ct = default
+        )
+        {
+            _ = Interlocked.Increment(ref _calls);
+            return _gate.Task;
         }
     }
 }
