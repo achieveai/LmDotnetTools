@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Time.Testing;
 
 namespace LmStreaming.Sample.Tests.Controllers;
 
@@ -21,12 +22,13 @@ public class WorkspacesControllerTests
         string? defaultLeaf = null,
         IWorkspacePluginSelectionService? pluginSelection = null,
         IMarketplaceCatalogClient? catalog = null,
-        SandboxEnvApplier? envApplier = null
+        SandboxEnvApplier? envApplier = null,
+        WorkspaceCatalogCompatibilityService? compatibility = null
     )
     {
         var dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
         var store = new FileWorkspaceStore(dir, defaultLeaf);
-        var compatibility = new WorkspaceCatalogCompatibilityService(
+        compatibility ??= new WorkspaceCatalogCompatibilityService(
             catalog ?? new SupportedCatalogClient(),
             new SandboxGatewayOptions()
         );
@@ -118,6 +120,59 @@ public class WorkspacesControllerTests
         // Unavailable. Reaching this branch with an incompatible probe is not constructible here at
         // all: the seeded default cannot be given marketplaces to fail on.
         response.Gateway.Available.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The picker's cost bug: the old <c>List</c> awaited <c>EvaluateAsync</c> once PER ROW, and each
+    /// call waits up to <c>BrowseWait</c> on the SAME shared, single-flight catalog fetch. With a cold
+    /// catalog, row 0 registers its wait, blocks the loop, and only once it times out does row 1 even
+    /// start — so its own wait is registered a full <c>BrowseWait</c> LATER than row 0's. Six rows
+    /// sequentially would need roughly 6 x <c>BrowseWait</c> of virtual time before the loop ever
+    /// returns.
+    /// <para>
+    /// Evaluated concurrently (the fix), every row's wait is registered up front, so advancing the
+    /// clock by roughly one <c>BrowseWait</c> unblocks all of them together. The clock is advanced in
+    /// small ticks with a yield between each — rather than one big jump right after calling
+    /// <c>List()</c> — because <c>FileWorkspaceStore.GetAllAsync</c> does genuine async file I/O, so
+    /// the row evaluations are not guaranteed to have registered their waits synchronously before the
+    /// first tick; small ticks give that real asynchronous hop room to land. The 15s tick budget
+    /// comfortably covers one <c>BrowseWait</c> (10s) plus that scheduling slack while staying far
+    /// short of what six SEQUENTIAL waits would need (~60s), so it still cleanly distinguishes the fix
+    /// from the bug it replaces.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task List_ManyWorkspacesAgainstAColdCatalog_CostsOneBrowseWaitNotNTimesBrowseWait()
+    {
+        var time = new FakeTimeProvider();
+        var client = new GatedCatalogClient();
+        var compatibility = new WorkspaceCatalogCompatibilityService(client, new SandboxGatewayOptions(), time);
+        var (controller, store) = Build(compatibility: compatibility);
+        for (var i = 0; i < 5; i++)
+        {
+            _ = await store.CreateAsync(new WorkspaceCreate { Name = $"Row{i}", Marketplaces = ["one"] });
+        }
+
+        var listTask = controller.List();
+
+        for (var tick = 0; tick < 15 && !listTask.IsCompleted; tick++)
+        {
+            time.Advance(TimeSpan.FromSeconds(1));
+            await Task.Delay(5);
+        }
+
+        var result = await listTask.WaitAsync(TimeSpan.FromSeconds(2));
+        var ok = result.Should().BeOfType<OkObjectResult>().Subject;
+        var response = ok.Value.Should().BeOfType<WorkspaceListResponse>().Subject;
+
+        // The catalog never answered (the gate was never released), so every row reports unavailable —
+        // what matters here is that `List` returned at all after exactly one BrowseWait, not what it
+        // reported.
+        response.Workspaces.Should().HaveCount(6, "5 created rows plus the seeded default");
+        response.Workspaces.Select(w => w.Compatibility).Should().AllBe("unavailable");
+
+        // Single-flight: however many rows asked for the catalog, only one real fetch was made.
+        client.CallCount.Should().Be(1);
     }
 
     [Fact]
@@ -822,6 +877,35 @@ public class WorkspacesControllerTests
             IReadOnlyList<string>? marketplaces = null,
             CancellationToken ct = default
         ) => Task.FromException<MarketplaceCatalog>(new MarketplaceCatalogUnavailableException("gateway offline"));
+    }
+
+    /// <summary>
+    /// A cold gateway whose full fetch never answers (the gate is never released), so every caller's
+    /// <c>BrowseWait</c> runs out before the catalog does. Its browse read fails too, as the real
+    /// client's does when the gateway is slow, so nothing but the single shared fetch can ever warm it.
+    /// </summary>
+    private sealed class GatedCatalogClient : IMarketplaceCatalogClient
+    {
+        private readonly TaskCompletionSource<MarketplaceCatalog> _gate = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        private int _calls;
+
+        public int CallCount => _calls;
+
+        public Task<MarketplaceCatalog> GetCatalogAsync(
+            IReadOnlyList<string>? marketplaces = null,
+            CancellationToken ct = default
+        ) => Task.FromException<MarketplaceCatalog>(new MarketplaceCatalogUnavailableException("browse timed out"));
+
+        public Task<MarketplaceCatalog> FetchCatalogToCompletionAsync(
+            IReadOnlyList<string>? marketplaces = null,
+            CancellationToken ct = default
+        )
+        {
+            _ = Interlocked.Increment(ref _calls);
+            return _gate.Task;
+        }
     }
 
     private sealed class SupportedCatalogClient(bool? pluginFiltering = null, params string[] pluginsUnderX)

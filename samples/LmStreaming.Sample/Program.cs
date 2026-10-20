@@ -468,9 +468,10 @@ try
     // tests/E2E swap in a fake.
     _ = builder.Services.AddSingleton<IMarketplaceCatalogClient>(sp => new MarketplaceCatalogClient(
         sandboxOptions,
-        // The gateway is frequently offline; a short timeout fails fast instead of holding the
-        // request for the default 100s while the catalog is a best-effort, read-only browse.
-        GatewayHttpClient(TimeSpan.FromSeconds(10)),
+        // Browses still give up after 10 s (the client's browse timeout). The transport allows 5 min
+        // so the compatibility check can let a cold gateway finish its catalog build: 47-152 s was
+        // observed, and a 10 s transport cancelled every build, so the catalog never warmed.
+        GatewayHttpClient(TimeSpan.FromMinutes(5)),
         sp.GetRequiredService<ILogger<MarketplaceCatalogClient>>()
     ));
     _ = builder.Services.AddSingleton<WorkspaceCatalogCompatibilityService>();

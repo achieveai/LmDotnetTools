@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.Misc.Storage;
@@ -114,6 +115,11 @@ internal static class ReviewRunner
 
     // Well inside SlotRelease.DefaultLeaseWindow, so a long step never lets its lease lapse.
     internal static TimeSpan LeaseRenewInterval { get; set; } = TimeSpan.FromMinutes(5);
+
+    // A send the host refuses with 503 is retried every SendRetryPolls delay polls (30 s at the default
+    // 1 s poll) up to SendAttempts sends: about 5 minutes, longer than the slowest cold catalog build seen.
+    internal const int SendAttempts = 11;
+    internal const int SendRetryPolls = 30;
 
     internal static async Task<JsonObject> ExecuteSandboxAsync(
         SandboxClient sandbox,
@@ -1090,7 +1096,26 @@ internal static class ReviewRunner
             receipt[phase + "IdempotencyKey"] = idempotency;
             receipt["stage"] = phase + "-send-pending";
             await SaveAsync();
-            var input = await client.SendMessageAsync(thread!, text, false, idempotency, ct);
+            string input;
+            for (var sendAttempt = 1; ; sendAttempt++)
+            {
+                try
+                {
+                    input = await client.SendMessageAsync(thread!, text, false, idempotency, ct);
+                    break;
+                }
+                // A 503 means the host refused the turn: a cold gateway catalog takes minutes to build. The
+                // same idempotency key makes a resend safe even if a 503 ever followed an accepted turn.
+                catch (HttpRequestException failure)
+                    when (failure.StatusCode == HttpStatusCode.ServiceUnavailable && sendAttempt < SendAttempts)
+                {
+                    Console.Error.WriteLine(
+                        $"{phase} send got 503 (attempt {sendAttempt}/{SendAttempts}); retrying with the same key."
+                    );
+                    for (var poll = 0; poll < SendRetryPolls; poll++)
+                        await LeasedDelayAsync(ct);
+                }
+            }
             receipt[phase + "InputId"] = input;
             receipt["stage"] = phase + "-running";
             await SaveAsync();
