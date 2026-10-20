@@ -111,7 +111,8 @@ read-only). That sync covers:
 - **Working directory** (ADR 0044, formerly "home", issue #142): `new SandboxCreateRequest(ws,
   workingDir: "agents/a1")`, sent as top-level `working_dir` beside top-level `workspace` (the deprecated
   `home` alias is never sent). **It is the only place agents can write**: the MCP tools and shells see the
-  rest of the workspace read-only (OS-enforced on Docker, Linux and Windows AppContainer), while the direct
+  rest of the workspace read-only (OS-enforced on Docker and Linux; on Windows AppContainer an ACL split that
+  stops a cooperative agent but is not a security boundary while an operation runs, ADR 0044), while the direct
   file API and operations still write everywhere. Operations without a `WorkingDirectory` run at the
   workspace ROOT, not in it, and `HOME` moves to `/home/sbx` on Docker. A git worktree cannot be the working
   directory (its commits land in the read-only parent `.git`). `CreateAsync` requires

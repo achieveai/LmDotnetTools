@@ -1,7 +1,7 @@
 import { apiFetch } from '@/api/http';
 import { operatorRefusalMessage, withOperatorSecret } from '@/api/operatorSecret';
 
-/** One git marketplace this app registered with the sandbox gateway (gateway ADR 0041). */
+/** One git marketplace this app registered with the sandbox gateway (gateway ADR 0045). */
 export interface AppMarketplace {
   appId: string;
   alias: string;
@@ -63,10 +63,29 @@ export async function removeAppMarketplace(alias: string): Promise<void> {
   await throwIfFailed(response, `remove '${alias}'`);
 }
 
-/** Throws with the gateway's error code (e.g. `ref_not_found`) so the UI can say why. */
+/**
+ * What each gateway refusal means. The SDK never relays the gateway's free-text message (it can echo
+ * request input), so the server's `detail` only repeats the code; these say what to fix instead.
+ */
+const GATEWAY_HINTS: Record<string, string> = {
+  marketplaces_disabled:
+    'git marketplaces are off. Set SandboxGateway:MarketplaceStorePath (or MARKETPLACE_STORE_PATH on an ' +
+    'external gateway) and restart.',
+  invalid_alias: 'an alias is 1-64 characters of A-Z, a-z, 0-9, - and _.',
+  invalid_url: 'use an https:// git repository URL.',
+  host_not_allowed: 'the gateway only clones from its MARKETPLACE_ALLOWED_HOSTS (default github.com).',
+  invalid_ref: 'not a valid tag, branch or commit name.',
+  ref_not_found: 'no such tag, branch or commit on the remote.',
+  alias_taken: 'an operator marketplace (PluginsDirs) already uses this alias.',
+  unsafe_checkout: 'the repository contains a symbolic link, which the gateway refuses.',
+  no_default_branch: 'the remote has no default branch for latest to follow. Pin a ref.',
+  git_failed: 'the clone or fetch failed or timed out (network, or a private repository).',
+};
+
+/** Throws with the gateway's error code (e.g. `ref_not_found`) and what it means, so the UI can say why. */
 async function throwIfFailed(response: Response, action: string): Promise<void> {
   if (response.ok) return;
-  let body: { error?: unknown; code?: unknown } | null = null;
+  let body: { error?: unknown; code?: unknown; detail?: unknown } | null = null;
   try {
     body = await response.json();
   } catch {
@@ -75,5 +94,6 @@ async function throwIfFailed(response: Response, action: string): Promise<void> 
   const refusal = operatorRefusalMessage(body?.code);
   if (refusal) throw new Error(`Could not ${action}: ${refusal}`);
   const code = typeof body?.error === 'string' ? body.error : null;
-  throw new Error(`Could not ${action} (${response.status}${code ? ` ${code}` : ''})`);
+  const detail = (code && GATEWAY_HINTS[code]) || (typeof body?.detail === 'string' ? body.detail : '');
+  throw new Error(`Could not ${action} (${response.status}${code ? ` ${code}` : ''})${detail ? `: ${detail}` : ''}`);
 }

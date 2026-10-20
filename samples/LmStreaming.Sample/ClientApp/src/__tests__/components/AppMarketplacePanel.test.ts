@@ -53,7 +53,15 @@ describe('AppMarketplacePanel', () => {
 
   it('shows the gateway error code when registration is rejected', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) =>
-      init?.method === 'PUT' ? json({ error: 'ref_not_found', detail: 'x' }, 400) : json([])
+      init?.method === 'PUT'
+        ? json(
+            {
+              error: 'ref_not_found',
+              detail: "Sandbox gateway returned 400 for registering app marketplace 'team' (error_code ref_not_found).",
+            },
+            400
+          )
+        : json([])
     );
     const wrapper = mount(AppMarketplacePanel);
     await flushPromises();
@@ -65,9 +73,34 @@ describe('AppMarketplacePanel', () => {
     await flushPromises();
 
     expect(wrapper.find('[data-testid="app-marketplace-error"]').text()).toBe(
-      "Could not register 'team' (400 ref_not_found)"
+      "Could not register 'team' (400 ref_not_found): no such tag, branch or commit on the remote."
     );
     expect(wrapper.emitted('changed')).toBeUndefined();
+  });
+
+  it('falls back to the server detail for a code it has no hint for', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      json({ error: 'marketplace_gateway_unavailable', detail: 'Sandbox gateway was unreachable.' }, 503)
+    );
+    const wrapper = mount(AppMarketplacePanel);
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="app-marketplace-error"]').text()).toBe(
+      'Could not list git marketplaces (503 marketplace_gateway_unavailable): Sandbox gateway was unreachable.'
+    );
+  });
+
+  it('says which setting turns git marketplaces on when the gateway has no store', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      json({ error: 'marketplaces_disabled', detail: 'MARKETPLACE_STORE_PATH is not set' }, 404)
+    );
+    const wrapper = mount(AppMarketplacePanel);
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="app-marketplace-error"]').text()).toBe(
+      'Could not list git marketplaces (404 marketplaces_disabled): git marketplaces are off. Set ' +
+        'SandboxGateway:MarketplaceStorePath (or MARKETPLACE_STORE_PATH on an external gateway) and restart.'
+    );
   });
 
   it('sends the operator secret typed into the panel on register, and none on list', async () => {
