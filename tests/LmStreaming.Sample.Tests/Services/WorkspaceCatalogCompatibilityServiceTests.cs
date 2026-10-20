@@ -125,6 +125,54 @@ public sealed class WorkspaceCatalogCompatibilityServiceTests
         client.CallCount.Should().Be(1, "the timed-out callers left the one fetch running");
     }
 
+    /// <summary>
+    /// The gap this test closes: a fetch that outlives every caller's wait used to complete with
+    /// nobody left to observe it, so it never reached `_cached` and the 30s freshness check at the top
+    /// of <c>GetCatalogAsync</c> was never applied to it. The NEXT caller found `_cached` null, skipped
+    /// straight to the (long-since-completed) shared refresh, and got that snapshot back unconditionally
+    /// — even minutes later, well past <c>CacheDuration</c>.
+    /// <para>
+    /// Repro: caller A times out at t=10s (BrowseWait). The fetch completes at t=47s with nobody
+    /// waiting. The clock is then advanced past CacheDuration (30s) from that completion. Caller B must
+    /// NOT be silently handed the t=47s snapshot as if fresh — it must trigger a brand-new fetch.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task SlowCatalogFetch_CompletesUnobserved_AndStaleResultIsNotServedPastCacheDuration()
+    {
+        var time = new FakeTimeProvider();
+        var client = new GatedCatalogClient(Catalog("one"));
+        var service = new WorkspaceCatalogCompatibilityService(client, Options(), time);
+        var bound = TimeSpan.FromSeconds(5);
+
+        // Caller A: a lone browse that times out before the fetch finishes. Nobody is left awaiting
+        // the shared refresh once this returns.
+        var callerA = service.EvaluateAsync(Workspace(["one"]));
+        time.Advance(WorkspaceCatalogCompatibilityService.BrowseWait);
+        var browseResult = await callerA.WaitAsync(bound);
+        browseResult.Compatibility.Should().Be(WorkspaceCompatibility.Unavailable);
+
+        // The fetch completes later, with no caller waiting on it. Its completion continuation is
+        // registered with RunContinuationsAsynchronously (the TCS) + ExecuteSynchronously (the
+        // ContinueWith), so it fires on the thread pool essentially immediately; the short real-time
+        // delay below just gives it room to land before the clock is advanced.
+        client.Finish();
+        await Task.Delay(TimeSpan.FromMilliseconds(200));
+
+        // Advance the clock well past CacheDuration (30s) from the fetch's completion.
+        time.Advance(TimeSpan.FromSeconds(60));
+
+        // Caller B must not receive the now-stale snapshot silently: it must trigger a fresh fetch
+        // rather than reuse a completed-but-unconsumed one that is older than CacheDuration. Under the
+        // old bug, `_refresh` stayed pinned to the first (already-completed) task forever, so this call
+        // would rejoin it directly and `CallCount` would stay 1 no matter how stale the snapshot was.
+        await service.ValidateForSessionAsync(Workspace(["one"])).WaitAsync(bound);
+
+        client
+            .CallCount.Should()
+            .Be(2, "the first fetch completed unobserved and is now stale, so caller B must have started a second one");
+    }
+
     [Fact]
     public async Task ValidateForMutationThrowsTypedErrors()
     {

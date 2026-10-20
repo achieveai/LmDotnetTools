@@ -283,19 +283,24 @@ public sealed class WorkspaceCatalogCompatibilityService
                 return _cached;
             }
 
-            _refresh ??= RefreshAsync();
-            refresh = _refresh;
+            refresh = _refresh ?? StartRefreshLocked();
         }
 
-        CatalogSnapshot value;
         try
         {
-            value = await refresh.WaitAsync(wait, _timeProvider, ct);
+            // The completion continuation attached in StartRefreshLocked publishes the result to
+            // `_cached` (and clears `_refresh`) the moment the fetch finishes, independent of whether
+            // THIS caller — or any caller — is still around to see it happen. That is what lets the
+            // freshness check above do its job on the very next call: without it, a fetch that outlived
+            // every waiter's timeout would complete unobserved, leave `_cached` null, and the next
+            // caller would join the (already long-completed) shared task here and return its snapshot
+            // unconditionally, however stale it had become.
+            return await refresh.WaitAsync(wait, _timeProvider, ct);
         }
         catch (TimeoutException)
         {
-            // The fetch keeps running and stays shared (the finally below keeps an unfinished one), so
-            // the next caller joins it. Not cached: "still loading" is not an answer about the catalog.
+            // The fetch keeps running and stays shared, so the next caller joins it or finds a freshly
+            // cached snapshot. Not cached here: "still loading" is not an answer about the catalog.
             return new CatalogSnapshot(
                 false,
                 [],
@@ -305,22 +310,51 @@ public sealed class WorkspaceCatalogCompatibilityService
                 null
             );
         }
-        finally
-        {
-            lock (_sync)
-            {
-                if (ReferenceEquals(_refresh, refresh) && refresh.IsCompleted)
-                {
-                    _refresh = null;
-                }
-            }
-        }
+    }
 
+    /// <summary>
+    /// Starts the shared fetch and wires a continuation that publishes its result independent of any
+    /// caller still waiting on it. Must be called with <see cref="_sync"/> held; it assigns
+    /// <see cref="_refresh"/> itself (before the continuation can possibly run, even if the fetch
+    /// happens to complete synchronously) so <see cref="PublishRefreshResult"/> can always find it.
+    /// </summary>
+    private Task<CatalogSnapshot> StartRefreshLocked()
+    {
+        var task = RefreshAsync();
+        _refresh = task;
+        _ = task.ContinueWith(
+            PublishRefreshResult,
+            task,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default
+        );
+        return task;
+    }
+
+    /// <summary>
+    /// Runs when the shared refresh task completes, whether or not any <see cref="GetCatalogAsync"/>
+    /// caller is still awaiting it. Clears <see cref="_refresh"/> so the next cold caller starts a new
+    /// fetch instead of rejoining a stale completed one, and publishes the result to
+    /// <see cref="_cached"/> so the 30s freshness check at the top of <see cref="GetCatalogAsync"/> can
+    /// see it and expire it on schedule — closing the gap where a fetch that outlived every waiter's
+    /// timeout could later be handed to a new caller as if it were current.
+    /// </summary>
+    private void PublishRefreshResult(Task<CatalogSnapshot> completed, object? state)
+    {
+        var task = (Task<CatalogSnapshot>)state!;
         lock (_sync)
         {
-            _cached = value;
+            if (ReferenceEquals(_refresh, task))
+            {
+                _refresh = null;
+            }
+
+            if (completed.Status == TaskStatus.RanToCompletion)
+            {
+                _cached = completed.Result;
+            }
         }
-        return value;
     }
 
     private async Task<CatalogSnapshot> RefreshAsync()
