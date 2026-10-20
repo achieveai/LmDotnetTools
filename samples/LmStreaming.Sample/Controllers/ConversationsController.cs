@@ -434,6 +434,11 @@ public class ConversationsController(
                     propertiesBuilder[ConversationSubAgentModel.PropertyKey] = request.SubAgentModelId;
                 }
 
+                if (request.DisableClientTools)
+                {
+                    propertiesBuilder[ConversationClientTools.PropertyKey] = true;
+                }
+
                 if (request.Env is { Count: > 0 })
                 {
                     propertiesBuilder[ConversationSandboxEnv.PropertyKey] = new Dictionary<string, string>(

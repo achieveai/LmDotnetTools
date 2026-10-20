@@ -257,6 +257,14 @@ public record ProvisionConversationRequest
     /// the one in effect. Never logged.
     /// </summary>
     public IReadOnlyDictionary<string, string>? Env { get; init; }
+
+    /// <summary>
+    /// True for a headless conversation: no client is attached, so the agent and every sub-agent it spawns
+    /// get neither <c>AskUserQuestion</c> nor <c>NotifyClient</c>. A question asked with nobody to answer it
+    /// parks the run forever; without the tool the model has to carry on and report what it could not
+    /// decide. Default false keeps both tools, as before. Not changeable after provision.
+    /// </summary>
+    public bool DisableClientTools { get; init; }
 }
 
 /// <summary>

@@ -187,6 +187,33 @@ internal sealed class LmStreamingS2SClient
         );
 
     /// <summary>Explicit cwd uses the host's capability-gated WorkingDirectoryRelPath contract.</summary>
+    public Task<string> ProvisionAsync(
+        string workspaceId,
+        string providerId,
+        string modeId,
+        string? systemPromptAppendix,
+        string? subAgentModelId,
+        string? reasoningEffort,
+        string? workingDirectory,
+        CancellationToken ct
+    ) =>
+        ProvisionAsync(
+            workspaceId,
+            providerId,
+            modeId,
+            systemPromptAppendix,
+            subAgentModelId,
+            reasoningEffort,
+            workingDirectory,
+            disableClientTools: false,
+            ct
+        );
+
+    /// <summary>
+    /// <paramref name="disableClientTools"/> provisions a headless conversation: nobody is attached to answer
+    /// <c>AskUserQuestion</c> or see <c>NotifyClient</c>, so the host leaves both out of the whole agent tree.
+    /// Additive like <c>subAgentModelId</c>: a host that predates the field ignores it and keeps both tools.
+    /// </summary>
     public async Task<string> ProvisionAsync(
         string workspaceId,
         string providerId,
@@ -195,6 +222,7 @@ internal sealed class LmStreamingS2SClient
         string? subAgentModelId,
         string? reasoningEffort,
         string? workingDirectory,
+        bool disableClientTools,
         CancellationToken ct
     )
     {
@@ -218,6 +246,7 @@ internal sealed class LmStreamingS2SClient
                 // leaves the provider's default intact.
                 ReasoningEffort = reasoningEffort,
                 WorkingDirectoryRelPath = workingDirectory,
+                DisableClientTools = disableClientTools,
             },
             ct
         );

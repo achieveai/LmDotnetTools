@@ -189,7 +189,12 @@ $REVIEWD_HOME/bin/deploy.sh host <publish dir> <commit>    # then step 2
 - Nothing restarts by itself after a crash or reboot. Running host and batch as systemd user
   services is planned.
 
-- New PRs wait until the batch finishes its current list.
+- New PRs wait until the batch finishes its current list. So one review that never ends blocks every
+  later selection, for every repo: the batch re-reads `selection.json` only after the current list
+  returns. Seen 2026-10-19 (4+ hours, nothing new reviewed). A review now gives up when its input stays
+  `NotStarted` for 10 minutes while the host runs nothing for it and every sub-agent has settled; the
+  attempt fails and the lane moves on. A review that keeps a run going forever still blocks. If
+  `review-batch.log` shows no progress line for an hour, check the stuck slot (step 9).
 - If an author pushes while their PR is being reviewed, that PR is skipped until the next selection.
 - PRs with merge conflicts are skipped after 5 tries.
 - Some reviews post their comments but fail to save their record to NOVA_reviews ("Changes belong to

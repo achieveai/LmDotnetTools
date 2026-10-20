@@ -1,5 +1,6 @@
 extern alias Reviewd;
 
+using System.Globalization;
 using System.Net;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.Misc.Storage;
@@ -506,6 +507,139 @@ public sealed class ReviewdRunnerTests
         {
             await run.Should().ThrowAsync<TimeoutException>();
         }
+    }
+
+    // Seen live on PR 221: the confirmation read NotStarted for four hours on an idle conversation, and the
+    // batch never reached the next PR. One clock minute passes per poll.
+    [Theory]
+    [InlineData(false, "completed", true)]
+    [InlineData(true, "completed", false)]
+    [InlineData(false, "running", false)]
+    public async Task An_input_that_never_starts_on_a_settled_idle_conversation_fails_after_the_grace(
+        bool rootInProgress,
+        string childStatus,
+        bool fails
+    )
+    {
+        var runState = rootInProgress
+            ? """{"threadId":"thread","isInProgress":true,"currentRunId":"run"}"""
+            : """{"threadId":"thread","isInProgress":false,"currentRunId":null}""";
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"NotStarted","runId":null,"response":null}""")
+            .OnJson(HttpMethod.Get, "/run-state", runState)
+            .OnJson(
+                HttpMethod.Get,
+                "/subagents?",
+                $$"""{"schemaVersion":1,"nodes":[{"agentId":"child","threadId":"child-thread","parentThreadId":"thread","depth":1,"template":"reviewer","status":"{{childStatus}}"}]}"""
+            );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var now = DateTimeOffset.Parse("2026-10-19T08:00:00Z", CultureInfo.InvariantCulture);
+        var delays = 0;
+        var run = () =>
+            ReviewRunner.WaitAsync(
+                client,
+                "thread",
+                "input-1",
+                _ =>
+                {
+                    if (++delays > 30)
+                        throw new TimeoutException("Still waiting.");
+                    now = now.AddMinutes(1);
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None,
+                () => now
+            );
+
+        if (fails)
+        {
+            (await run.Should().ThrowAsync<InvalidOperationException>())
+                .Which.Message.Should()
+                .Contain("never started");
+            delays.Should().Be((int)ReviewRunner.NeverStartedGrace.TotalMinutes);
+        }
+        else
+        {
+            await run.Should().ThrowAsync<TimeoutException>();
+        }
+    }
+
+    [Fact]
+    public async Task An_input_that_starts_inside_the_grace_completes_normally()
+    {
+        var reads = 0;
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/status", StringComparison.Ordinal),
+                _ =>
+                    ++reads < (int)ReviewRunner.NeverStartedGrace.TotalMinutes
+                        ? Json("""{"status":"NotStarted","runId":null,"response":null}""")
+                        : Json("""{"status":"Completed","runId":"run","response":{"text":"done"}}""")
+            )
+            .OnJson(HttpMethod.Get, "/run-state", """{"threadId":"thread","isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var now = DateTimeOffset.Parse("2026-10-19T08:00:00Z", CultureInfo.InvariantCulture);
+
+        var status = await ReviewRunner.WaitAsync(
+            client,
+            "thread",
+            "input-1",
+            _ =>
+            {
+                now = now.AddMinutes(1);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None,
+            () => now
+        );
+
+        status!.ResponseText.Should().Be("done");
+    }
+
+    [Fact]
+    public async Task A_busy_root_between_two_idle_stretches_restarts_the_grace()
+    {
+        // Two idle NotStarted stretches of 7 polls each, split by a busy root, then completion.
+        // Together they pass the 10-minute grace; each alone does not.
+        var polls = 0;
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/status", StringComparison.Ordinal),
+                _ =>
+                    ++polls < 22
+                        ? Json("""{"status":"NotStarted","runId":null,"response":null}""")
+                        : Json("""{"status":"Completed","runId":"run","response":{"text":"done"}}""")
+            )
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/run-state", StringComparison.Ordinal),
+                _ =>
+                    polls is >= 9 and <= 13
+                        ? Json("""{"threadId":"thread","isInProgress":true,"currentRunId":"other"}""")
+                        : Json("""{"threadId":"thread","isInProgress":false,"currentRunId":null}""")
+            )
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var now = DateTimeOffset.Parse("2026-10-19T08:00:00Z", CultureInfo.InvariantCulture);
+
+        var status = await ReviewRunner.WaitAsync(
+            client,
+            "thread",
+            "input-1",
+            _ =>
+            {
+                now = now.AddMinutes(1);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None,
+            () => now
+        );
+
+        status!.ResponseText.Should().Be("done");
+        polls.Should().Be(23, "completion is confirmed by a second idle read");
     }
 
     [Theory]

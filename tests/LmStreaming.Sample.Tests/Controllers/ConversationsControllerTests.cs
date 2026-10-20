@@ -1735,6 +1735,48 @@ public class ConversationsControllerTests
 
         var readBack = await ConversationSubAgentModel.ReadAsync(store, threadId, CancellationToken.None);
         readBack.Should().BeNull();
+        (await ConversationClientTools.ReadDisabledAsync(store, threadId, CancellationToken.None))
+            .Should()
+            .BeFalse("a UI or legacy conversation keeps its client tools");
+    }
+
+    [Fact]
+    public async Task Provision_WithDisableClientTools_IsReadBackByTheAgentBuild()
+    {
+        // Same round trip as the sub-agent model: the assertion goes through the reader the agent build
+        // calls, so a flag stored and never read fails here.
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
+
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object,
+            providerRegistry: registry
+        );
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+                DisableClientTools = true,
+            },
+            CancellationToken.None
+        );
+
+        var threadId = Assert
+            .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value)
+            .ThreadId;
+
+        (await ConversationClientTools.ReadDisabledAsync(store, threadId, CancellationToken.None)).Should().BeTrue();
     }
 
     [Fact]
