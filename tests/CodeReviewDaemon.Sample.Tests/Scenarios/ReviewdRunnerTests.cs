@@ -642,6 +642,52 @@ public sealed class ReviewdRunnerTests
         polls.Should().Be(23, "completion is confirmed by a second idle read");
     }
 
+    [Fact]
+    public async Task A_busy_hierarchy_between_two_idle_stretches_restarts_the_grace()
+    {
+        // Seven idle NotStarted polls, two hierarchy_busy polls, then idle again until completion. Counted as
+        // one stretch, the second idle run would trip the 10-minute grace on its second poll.
+        var polls = 0;
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/status", StringComparison.Ordinal),
+                _ =>
+                    ++polls < 16
+                        ? Json("""{"status":"NotStarted","runId":null,"response":null}""")
+                        : Json("""{"status":"Completed","runId":"run","response":{"text":"done"}}""")
+            )
+            .OnJson(HttpMethod.Get, "/run-state", """{"threadId":"thread","isInProgress":false,"currentRunId":null}""")
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/subagents", StringComparison.Ordinal),
+                _ =>
+                    polls is 8 or 9
+                        ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                        {
+                            Content = new StringContent("""{"code":"hierarchy_busy"}"""),
+                        }
+                        : Json("""{"schemaVersion":1,"nodes":[]}""")
+            );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var now = DateTimeOffset.Parse("2026-10-19T08:00:00Z", CultureInfo.InvariantCulture);
+
+        var status = await ReviewRunner.WaitAsync(
+            client,
+            "thread",
+            "input-1",
+            _ =>
+            {
+                now = now.AddMinutes(1);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None,
+            () => now
+        );
+
+        status!.ResponseText.Should().Be("done");
+        polls.Should().Be(17, "completion is confirmed by a second idle read");
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("CodeReviewDaemon.Sample")]
@@ -2329,7 +2375,7 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/api/conversations?",
-                $$"""[{"threadId":"prior","title":"Nova-17-{{priorHead}}","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1}]"""
+                $$"""[{"threadId":"prior","title":"Nova-17-{{priorHead}}","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1,"clientToolsDisabled":true}]"""
             )
             .OnJson(HttpMethod.Put, "/metadata", "{}")
             // A provider that cannot freeze (Copilot, Codex, Claude SDK loops) refuses the thaw; it was never frozen.
@@ -2462,7 +2508,7 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/api/conversations?",
-                """[{"threadId":"prior","title":"Nova-17-dddddddd","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1}]"""
+                """[{"threadId":"prior","title":"Nova-17-dddddddd","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1,"clientToolsDisabled":true}]"""
             )
             .OnJson(HttpMethod.Put, "/metadata", "{}")
             .On(
@@ -2756,7 +2802,7 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/api/conversations?",
-                """[{"threadId":"thread","workspace":"workspace","provider":"test","mode":"workspace-agent"}]"""
+                """[{"threadId":"thread","workspace":"workspace","provider":"test","mode":"workspace-agent","clientToolsDisabled":true}]"""
             )
             .On(
                 request => request.RequestUri!.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal),
@@ -3105,6 +3151,195 @@ public sealed class ReviewdRunnerTests
             };
             return Task.FromResult(JsonNode.Parse(json)!.AsObject());
         }
+    }
+
+    // A conversation provisioned before DisableClientTools still has AskUserQuestion, and a question there
+    // parks the review with nobody to answer it. A fresh review continues only a headless conversation;
+    // anything else gets a new headless one, and the binding moves to it.
+    [Theory]
+    [InlineData(true, true, "99999999")]
+    [InlineData(true, false, "99999999")]
+    [InlineData(false, true, "99999999")]
+    [InlineData(false, false, "99999999")]
+    // The already-reviewed check still sees a conversation that is passed over for reuse.
+    [InlineData(false, false, "aaaaaaaa")]
+    public async Task Runner_continues_only_a_headless_conversation_and_provisions_a_headless_one_otherwise(
+        bool bound,
+        bool headless,
+        string priorHead
+    )
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-headless-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var flag = headless ? ""","clientToolsDisabled":true""" : "";
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .On(
+                request =>
+                    request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
+                _ => Json("""{"threadId":"fresh"}""")
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/api/conversations?",
+                $$"""[{"threadId":"prior","title":"Nova-17-{{priorHead}}","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1{{flag}}}]"""
+            )
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/unfreeze", StringComparison.Ordinal),
+                _ => new HttpResponseMessage(HttpStatusCode.Conflict)
+                {
+                    Content = new StringContent("""{"error":"not_freezable","threadId":"prior"}"""),
+                }
+            )
+            .OnJson(HttpMethod.Post, "/messages", """{"inputId":"original","idempotencyKeyHonored":true}""")
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        static Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token) =>
+            Task.FromResult(
+                phase switch
+                {
+                    "eligibility" => new JsonObject
+                    {
+                        ["prId"] = "17",
+                        ["status"] = "active",
+                        ["isDraft"] = false,
+                        ["headSha"] = new string('a', 40),
+                    },
+                    "prepare" => new JsonObject
+                    {
+                        ["mergeSha"] = new string('b', 40),
+                        ["contextPath"] = "context",
+                        ["reviewDirectory"] = "reviews",
+                        ["baselineComments"] = new JsonArray(),
+                    },
+                    _ => [],
+                }
+            );
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await new SqliteKvStore(connection).SetAsync(
+                $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                new JsonObject
+                {
+                    ["17"] = new JsonObject
+                    {
+                        ["Lifecycle"] = "Open",
+                        ["IsDraft"] = false,
+                        ["HeadSha"] = new string('a', 40),
+                    },
+                }
+            );
+            if (bound)
+                await PrThreadBindings.SetAsync(database, repo, "17", "prior", CancellationToken.None);
+            var options = CliOptions.Parse([
+                "review",
+                "run",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "test",
+                "--execute",
+            ]);
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    options,
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ => Task.CompletedTask,
+                    () => DateTimeOffset.UtcNow
+                );
+            var failure = (await run.Should().ThrowAsync<InvalidOperationException>()).Which.Message;
+            var provisions = handler
+                .Requests.Where(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations")
+                .ToList();
+            var sends = handler
+                .Requests.Where(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                .Select(r => r.Uri.AbsolutePath)
+                .ToList();
+            var binding = await PrThreadBindings.GetAsync(database, repo, "17", CancellationToken.None);
+            if (priorHead == "aaaaaaaa")
+            {
+                failure.Should().Be("PR head was already reviewed by another run; skipped.");
+                provisions.Should().BeEmpty();
+                sends.Should().BeEmpty();
+            }
+            else if (headless)
+            {
+                failure.Should().Contain("Errored");
+                provisions.Should().BeEmpty();
+                sends.Should().Equal("/api/conversations/prior/messages");
+                binding.Should().Be("prior");
+            }
+            else
+            {
+                failure.Should().Contain("Errored");
+                JsonNode.Parse(provisions.Should().ContainSingle().Subject.Body!)!["disableClientTools"]!
+                    .GetValue<bool>()
+                    .Should()
+                    .BeTrue();
+                sends.Should().Equal("/api/conversations/fresh/messages");
+                binding.Should().Be("fresh", "the next run must find the headless conversation, not the old one");
+                handler
+                    .Requests.Should()
+                    .NotContain(r =>
+                        r.Method != HttpMethod.Get
+                        && r.Uri.AbsolutePath.StartsWith("/api/conversations/prior", StringComparison.Ordinal)
+                    );
+            }
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    [Fact]
+    public async Task Find_conversation_by_title_prefix_prefers_a_headless_match_over_a_newer_one()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/api/conversations?",
+            """
+            [
+              {"threadId":"headless","title":"Nova-17-aaaaaaaa","workspace":"ws","mode":"m","provider":"p","lastUpdated":100,"clientToolsDisabled":true},
+              {"threadId":"asks","title":"Nova-17-bbbbbbbb","workspace":"ws","mode":"m","provider":"p","lastUpdated":200,"clientToolsDisabled":false},
+              {"threadId":"legacy","title":"Nova-17-cccccccc","workspace":"ws","mode":"m","provider":"p","lastUpdated":300}
+            ]
+            """
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+
+        var match = await client.FindConversationByTitlePrefixAsync("Nova-17-", "ws", "m", CancellationToken.None);
+
+        match.Should().Be(new S2SConversationMatch("headless", "p", true));
+        (await client.GetClientToolsDisabledAsync("headless", CancellationToken.None)).Should().BeTrue();
+        (await client.GetClientToolsDisabledAsync("asks", CancellationToken.None)).Should().BeFalse();
+        (await client.GetClientToolsDisabledAsync("legacy", CancellationToken.None)).Should().BeFalse();
+        (await client.GetClientToolsDisabledAsync("missing", CancellationToken.None)).Should().BeNull();
     }
 
     [Fact]

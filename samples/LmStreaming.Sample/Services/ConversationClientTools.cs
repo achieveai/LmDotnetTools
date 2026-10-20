@@ -56,4 +56,13 @@ public static class ConversationClientTools
             _ => false,
         };
     }
+
+    /// <summary>
+    /// The same read over a listing row, whose properties arrive as strings: a stored <see cref="bool"/>
+    /// <c>true</c> and a <see cref="JsonElement"/> <c>True</c> both project to <see cref="bool.TrueString"/>.
+    /// Anything else, absence included, reads as false.
+    /// </summary>
+    public static bool IsDisabled(IReadOnlyDictionary<string, string?>? listingProperties) =>
+        listingProperties?.TryGetValue(PropertyKey, out var raw) == true
+        && string.Equals(raw, bool.TrueString, StringComparison.Ordinal);
 }

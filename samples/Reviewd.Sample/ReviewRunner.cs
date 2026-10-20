@@ -453,7 +453,23 @@ internal static class ReviewRunner
                     );
             }
         }
-        var thread = await PrThreadBindings.GetAsync(database, repo, pr, ct);
+        var boundThread = await PrThreadBindings.GetAsync(database, repo, pr, ct);
+        var thread = boundThread;
+        // A fresh review continues only a headless conversation. One provisioned before DisableClientTools
+        // existed still has AskUserQuestion, and a question there parks the review with nobody to answer it.
+        // Such a thread is passed over for a new headless conversation, but kept here so a run still going on
+        // it keeps the PR ineligible. Its binding is replaced only once this review claims the slot.
+        string? questionThread = null;
+        if (
+            thread is not null
+            && !resume
+            && !cleanupOnly
+            && await client.GetClientToolsDisabledAsync(thread, ct) == false
+        )
+        {
+            questionThread = thread;
+            thread = null;
+        }
         // Durable, cross-run reuse: when this pending db has no local binding (a fresh/next batch),
         // the host itself remembers the PR's conversation via its title "{repo}-{pr}-{sha}". Reuse
         // that conversation instead of refusing or provisioning a blank one. Provider is reconciled
@@ -461,11 +477,14 @@ internal static class ReviewRunner
         if (thread is null && !resume && !cleanupOnly)
         {
             var match = await client.FindConversationByTitlePrefixAsync($"{repo.RepoName}-{pr}-", workspace, mode, ct);
-            if (match is not null)
+            if (match is { ClientToolsDisabled: false })
+                questionThread ??= match.ThreadId;
+            else if (match is not null)
             {
                 thread = match.ThreadId;
                 // Cache the host-resolved thread in this db for the fast path on subsequent steps.
-                await PrThreadBindings.SetAsync(database, repo, pr, thread, ct);
+                if (boundThread is null)
+                    await PrThreadBindings.SetAsync(database, repo, pr, thread, ct);
             }
         }
         // True when this review continues an existing conversation (prior revision of this PR) rather
@@ -492,7 +511,12 @@ internal static class ReviewRunner
         )
             throw new ReviewNotAdmittedException("PR head was already reviewed by another run; skipped.");
         var threadInFlight =
-            thread is not null && !resume && !cleanupOnly && (await client.GetRunStateAsync(thread, ct)).IsInProgress;
+            !resume
+            && !cleanupOnly
+            && (
+                (thread is not null && (await client.GetRunStateAsync(thread, ct)).IsInProgress)
+                || (questionThread is not null && (await client.GetRunStateAsync(questionThread, ct)).IsInProgress)
+            );
         if (
             !resume
             && !cleanupOnly
@@ -703,6 +727,14 @@ internal static class ReviewRunner
             ct
         );
         args["claimToken"] = claimToken;
+        // The claim overwrote the attempt that may have named the passed-over conversation, so its binding
+        // gives way now: to the headless match, or to the conversation provisioned below.
+        if (boundThread is not null && boundThread != thread && !resume && !cleanupOnly)
+        {
+            await PrThreadBindings.ClearAsync(database, repo, pr, boundThread, ct);
+            if (thread is not null)
+                await PrThreadBindings.SetAsync(database, repo, pr, thread, ct);
+        }
         // A model turn can outlast the lease window, so renew the lease on every wait poll too; otherwise
         // the reaper mistakes a live review for a dead one between checkpoints.
         async Task LeasedDelayAsync(CancellationToken token)
@@ -1212,6 +1244,8 @@ internal static class ReviewRunner
             catch (LmStreamingS2SClient.HierarchyBusyException) when (++busyReads <= MaxConsecutiveBusyReads)
             {
                 candidate = null;
+                // A busy hierarchy is activity, so the idle stretch before it does not count toward the grace.
+                stalledSince = null;
                 await delay(ct);
                 continue;
             }

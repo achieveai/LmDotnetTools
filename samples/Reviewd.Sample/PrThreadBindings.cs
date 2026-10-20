@@ -36,6 +36,24 @@ internal static class PrThreadBindings
         }
     }
 
+    /// <summary>Removes the binding only while it still names <paramref name="threadId"/>.</summary>
+    public static async Task ClearAsync(
+        string database,
+        RepoIdentity repo,
+        string prId,
+        string threadId,
+        CancellationToken ct
+    )
+    {
+        using var connection = Connection(database);
+        await connection.OpenAsync(ct);
+        using var delete = connection.CreateCommand();
+        delete.CommandText = "DELETE FROM cache WHERE key = @key AND value = @value";
+        delete.Parameters.AddWithValue("@key", Key(repo, prId));
+        delete.Parameters.AddWithValue("@value", System.Text.Json.JsonSerializer.Serialize(threadId));
+        await delete.ExecuteNonQueryAsync(ct);
+    }
+
     internal static SqliteConnection Connection(string database) =>
         new(new SqliteConnectionStringBuilder { DataSource = database }.ToString());
 

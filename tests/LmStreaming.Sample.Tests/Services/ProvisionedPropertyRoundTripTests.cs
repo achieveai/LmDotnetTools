@@ -185,6 +185,45 @@ public sealed class ProvisionedPropertyRoundTripTests : IDisposable
     }
 
     [Fact]
+    public async Task DisableClientTools_reads_true_off_the_production_stores_listing_row()
+    {
+        // The listing projects each property to its string form, so the JsonElement the file store reads
+        // back has to arrive as "True" for GET api/conversations to report the conversation as headless.
+        var headless = $"thread-{Guid.NewGuid():N}";
+        var plain = $"thread-{Guid.NewGuid():N}";
+        var store = new FileConversationStore(_root);
+        foreach (var threadId in new[] { headless, plain })
+        {
+            await store.UpdateMetadataAsync(
+                threadId,
+                existing =>
+                {
+                    var builder =
+                        existing?.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
+                    if (threadId == headless)
+                    {
+                        builder[ConversationClientTools.PropertyKey] = true;
+                    }
+
+                    return new ThreadMetadata
+                    {
+                        ThreadId = threadId,
+                        LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        Properties = builder.ToImmutable(),
+                    };
+                }
+            );
+        }
+
+        var rows = await store.ListConversationRowsAsync(
+            new HashSet<string>(StringComparer.Ordinal) { ConversationClientTools.PropertyKey }
+        );
+
+        ConversationClientTools.IsDisabled(rows.Single(r => r.ThreadId == headless).Properties).Should().BeTrue();
+        ConversationClientTools.IsDisabled(rows.Single(r => r.ThreadId == plain).Properties).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Absent_properties_still_read_as_null_after_a_round_trip()
     {
         var threadId = $"thread-{Guid.NewGuid():N}";

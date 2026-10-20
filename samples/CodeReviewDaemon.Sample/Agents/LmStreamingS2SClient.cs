@@ -657,7 +657,9 @@ internal sealed class LmStreamingS2SClient
     /// (<see cref="UpdateMetadataAsync"/>), so the host's own conversation list is the durable,
     /// cross-run PR→conversation mapping — no separate binding store is required. Provider is NOT
     /// matched here: a re-review may run a different model, and the caller reconciles it via
-    /// <see cref="EnsureConversationReusableAsync"/>.
+    /// <see cref="EnsureConversationReusableAsync"/>. A headless match
+    /// (<see cref="S2SConversationMatch.ClientToolsDisabled"/>) is preferred over a newer one that is not; a
+    /// match that is not headless is still returned when no headless one exists, so the caller can see it.
     /// </summary>
     public async Task<S2SConversationMatch?> FindConversationByTitlePrefixAsync(
         string titlePrefix,
@@ -701,14 +703,17 @@ internal sealed class LmStreamingS2SClient
                     row.TryGetProperty("lastUpdated", out var lu) && lu.ValueKind == JsonValueKind.Number
                         ? lu.GetInt64()
                         : 0;
-                if (best is null || updated >= bestUpdated)
+                // A headless match outranks any match that still has the question tools, whatever its age.
+                var headless = IsClientToolsDisabled(row);
+                if (best is null || (headless == best.ClientToolsDisabled ? updated >= bestUpdated : headless))
                 {
                     var threadId = row.GetProperty("threadId").GetString();
                     if (threadId is not null)
                     {
                         best = new S2SConversationMatch(
                             threadId,
-                            row.TryGetProperty("provider", out var pv) ? pv.GetString() : null
+                            row.TryGetProperty("provider", out var pv) ? pv.GetString() : null,
+                            headless
                         );
                         bestUpdated = updated;
                     }
@@ -721,6 +726,46 @@ internal sealed class LmStreamingS2SClient
         }
         return best;
     }
+
+    /// <summary>
+    /// Whether the listed conversation <paramref name="threadId"/> was provisioned headless, so it has no
+    /// <c>AskUserQuestion</c> or <c>NotifyClient</c>. Null when the listing does not contain the thread. A host
+    /// that predates the <c>clientToolsDisabled</c> field reports every conversation as not headless.
+    /// </summary>
+    public async Task<bool?> GetClientToolsDisabledAsync(string threadId, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
+        for (var offset = 0; offset < 10000; offset += 100)
+        {
+            var body = await SendReadAsync(
+                HttpMethod.Get,
+                $"api/conversations?limit=100&offset={offset}&sort=created",
+                body: null,
+                ct
+            );
+            using var document = JsonDocument.Parse(body);
+            var rows = document.RootElement;
+            if (rows.ValueKind != JsonValueKind.Array)
+            {
+                throw new ReviewHostContractException("Conversation metadata listing is invalid.");
+            }
+            foreach (var row in rows.EnumerateArray())
+            {
+                if (row.GetProperty("threadId").GetString() == threadId)
+                {
+                    return IsClientToolsDisabled(row);
+                }
+            }
+            if (rows.GetArrayLength() < 100)
+            {
+                break;
+            }
+        }
+        return null;
+    }
+
+    private static bool IsClientToolsDisabled(JsonElement row) =>
+        row.TryGetProperty("clientToolsDisabled", out var flag) && flag.ValueKind == JsonValueKind.True;
 
     /// <summary>
     /// Switches an idle conversation's provider (model) to <paramref name="providerId"/> via
@@ -1346,8 +1391,9 @@ internal sealed record S2SStatusResult(string Status, string? RunId, string? Res
 
 internal sealed record S2SRunState(bool IsInProgress, string? CurrentRunId);
 
-/// <summary>A hosted conversation located by title prefix: its thread id and currently-bound provider.</summary>
-internal sealed record S2SConversationMatch(string ThreadId, string? Provider);
+/// <summary>A hosted conversation located by title prefix: its thread id, currently-bound provider, and whether it
+/// was provisioned headless (no client tools).</summary>
+internal sealed record S2SConversationMatch(string ThreadId, string? Provider, bool ClientToolsDisabled);
 
 /// <summary>Outcome of a freeze/unfreeze call. <see cref="Present"/> is false when the host does not know the
 /// thread (not running there); <see cref="Refusal"/> is set when the host refused (e.g. a provider-owned

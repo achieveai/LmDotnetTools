@@ -604,6 +604,7 @@ public class ConversationsController(
                 MultiTurnAgentPool.WorkspacePropertyKey,
                 MultiTurnAgentPool.ModePropertyKey,
                 ConversationLineage.PropertyKey,
+                ConversationClientTools.PropertyKey,
             },
             scope,
             limit,
@@ -680,6 +681,7 @@ public class ConversationsController(
                     ForkedFrom = lineage?.ForkedFrom is { } origin ? ToForkOrigin(origin) : null,
                     RootThreadId = lineage?.ForkedFrom is null ? null : lineage.RootThreadId,
                     Deleted = lineage?.DeletedAt is not null,
+                    ClientToolsDisabled = ConversationClientTools.IsDisabled(t.Properties),
                 }
             );
         }
