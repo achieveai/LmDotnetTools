@@ -149,9 +149,9 @@ public sealed class CopilotResponsesLiveTests
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
         var cancellationToken = cts.Token;
 
-        // Reasoning summaries only come from a reasoning-capable model; pin gpt-5.5 (the fixture's
-        // default resolves to a nano model that does not reason).
-        const string model = "gpt-5.5";
+        // Reasoning summaries only come from a reasoning-capable model; pin gpt-6.1-sol (gpt-5.5 left the
+        // Copilot catalog; the fixture's default resolves to a nano model that does not reason).
+        const string model = "gpt-6.1-sol";
         _output.WriteLine($"OpenAI model: {model}");
 
         using var agent = CopilotResponsesAgentFactory.Create(

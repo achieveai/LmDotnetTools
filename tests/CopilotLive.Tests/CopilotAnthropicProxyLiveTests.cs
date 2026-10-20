@@ -817,21 +817,24 @@ public sealed class CopilotAnthropicProxyLiveTests
     ///     asserts that SOME rescued model reasoned, which is the claim the README makes, and logs the
     ///     per-model split. Do not tighten this to "all models": that was tried, and the third run
     ///     refuted it — nor to "all but <c>gpt-5.4</c>", which the fifth run would have refuted.
+    ///     By 2026-10-19 only two models still defaulted to "none", so one silent turn each failed the run;
+    ///     each now gets up to <see cref="ThinkingAttempts"/> tries, on a counting prompt that needs more
+    ///     reasoning than the bat-and-ball one it replaced.
     ///
     ///     Statuses are checked first, or a 400 would masquerade as "this model cannot think".
     /// </summary>
     /// <remarks>
     ///     THE TOP BUCKET, RECORDED HERE BECAUSE NOTHING ELSE IN THE REPO HOLDS IT — and it is a probe
     ///     observation, not a contract this test enforces. This test sends the <c>medium</c> bucket. The
-    ///     <c>high</c> one was measured by hand, read-only, on the same prompt through the same
-    ///     translated route: ten runs of <c>gpt-5.4</c> at <c>budget_tokens: 32768</c> gave a
-    ///     <c>thinking</c> block on 8 and none on 2. Both misses were complete, well-formed streams — one
+    ///     <c>high</c> one was measured by hand, read-only, on the bat-and-ball prompt this test then sent,
+    ///     through the same translated route: ten runs of <c>gpt-5.4</c> at <c>budget_tokens: 32768</c> gave
+    ///     a <c>thinking</c> block on 8 and none on 2. Both misses were complete, well-formed streams — one
     ///     <c>text</c> block, <c>stop_reason: "end_turn"</c>, correct answer — so they are the model
     ///     declining to reason, not truncation and not a transport failure. Deliberately not quoted as a
     ///     rate: ten samples on one model and one prompt put the true one somewhere near 49-94%, and the
     ///     medium bucket's 2-of-4 on this model is nowhere near separable from it. What the ten runs
-    ///     establish is only that misses happen at the largest budget too, which is what the README says
-    ///     and why nothing asserts it.
+    ///     establish is only that misses happen at the largest budget too, which is what the README says and
+    ///     why nothing asserts it.
     ///
     ///     One precision, so a later reader need not reconstruct it: those runs observed the OUTCOME end
     ///     to end, not the outbound <c>effort</c> field, because the translated route answers in
@@ -900,37 +903,20 @@ public sealed class CopilotAnthropicProxyLiveTests
 
         var reasoned = new List<string>();
         var stayedSilent = new List<string>();
+        // A model at a real effort still declines to reason on some turns, and the declines cluster: one
+        // hook run saw all six tries of the old bat-and-ball prompt come back without a thinking block.
+        // Measured 2026-10-19 at this budget, ten tries each: bat-and-ball gave gpt-5.4-nano 8/10 and
+        // gpt-5.3-codex 5/10; the counting prompt gave 10/10 and 6/10. Up to ThinkingAttempts tries each,
+        // stopping at the first thinking block. Retrying cannot rescue a broken mapping: at effort "none"
+        // these models never reason at all.
         foreach (var model in neverReason)
         {
-            // Shaped like Claude Code's own extended-thinking request: budget below max_tokens, and a
-            // 10240 budget lands in the medium bucket.
-            var (status, body) = await SendProxyAsync(
-                "/v1/messages",
-                new
-                {
-                    model,
-                    max_tokens = 21333,
-                    stream = true,
-                    thinking = new { type = "enabled", budget_tokens = 10240 },
-                    messages = new[]
-                    {
-                        new
-                        {
-                            role = "user",
-                            content = "A bat and a ball cost $1.10 together. The bat costs $1.00 more than "
-                                + "the ball. How much does the ball cost? Answer with the amount only.",
-                        },
-                    },
-                },
-                cts.Token
-            );
+            var thought = false;
+            for (var attempt = 1; attempt <= ThinkingAttempts && !thought; attempt++)
+            {
+                thought = await SendsAThinkingBlockAsync(model, attempt, cts.Token);
+            }
 
-            status
-                .Should()
-                .Be(HttpStatusCode.OK, "{0} failed the translated route with: {1}", model, Truncate(body, 400));
-
-            var thought = body.Contains("\"type\":\"thinking\"", StringComparison.Ordinal);
-            _output.WriteLine($"{model, -24} thinking enabled -> {(thought ? "THINKING BLOCK" : "no thinking block")}");
             (thought ? reasoned : stayedSilent).Add(model);
         }
 
@@ -1155,6 +1141,44 @@ public sealed class CopilotAnthropicProxyLiveTests
         );
     }
 
+    /// <summary>One extended-thinking request through the translated route; true when it streamed a thinking block.</summary>
+    private async Task<bool> SendsAThinkingBlockAsync(string model, int attempt, CancellationToken cancellationToken)
+    {
+        // Shaped like Claude Code's own extended-thinking request: budget below max_tokens, and a
+        // 10240 budget lands in the medium bucket.
+        var (status, body) = await SendProxyAsync(
+            "/v1/messages",
+            new
+            {
+                model,
+                max_tokens = 21333,
+                stream = true,
+                thinking = new { type = "enabled", budget_tokens = 10240 },
+                messages = new[]
+                {
+                    new
+                    {
+                        role = "user",
+                        content = "How many integers from 1 to 1000 inclusive are divisible by 6 or 15 but "
+                            + "not by 10? Answer with the number only.",
+                    },
+                },
+            },
+            cancellationToken
+        );
+
+        status.Should().Be(HttpStatusCode.OK, "{0} failed the translated route with: {1}", model, Truncate(body, 400));
+
+        var thought = body.Contains("\"type\":\"thinking\"", StringComparison.Ordinal);
+        _output.WriteLine(
+            $"{model, -24} thinking enabled (attempt {attempt}) -> {(thought ? "THINKING BLOCK" : "no thinking block")}"
+        );
+        return thought;
+    }
+
+    /// <summary>Tries per "none"-default model in <see cref="Thinking_enabled_makes_a_none_effort_model_reason"/>.</summary>
+    private const int ThinkingAttempts = 5;
+
     /// <summary>
     ///     Every model the proxy serves ONLY through <c>/responses</c>, cheap tiers first.
     ///
@@ -1172,6 +1196,7 @@ public sealed class CopilotAnthropicProxyLiveTests
                 .Where(m => m.Advertises(ModelRouter.ResponsesPath))
                 .Where(m => !m.Advertises(ModelRouter.MessagesPath))
                 .Where(m => !ProxyExcludedVendors.Contains(m.Vendor, StringComparer.OrdinalIgnoreCase))
+                .Where(m => !IsProxyExcludedModel(m.Id))
                 .Select(m => m.Id)
                 .OrderBy(id => CheapModelHints.Any(h => id.Contains(h, StringComparison.OrdinalIgnoreCase)) ? 0 : 1)
                 .ThenBy(id => id, StringComparer.OrdinalIgnoreCase),
@@ -1234,6 +1259,7 @@ public sealed class CopilotAnthropicProxyLiveTests
             .Where(m => !m.Advertises(ModelRouter.ChatCompletionsPath))
             .Where(m => !m.Advertises(ModelRouter.MessagesPath))
             .Where(m => !ProxyExcludedVendors.Contains(m.Vendor, StringComparer.OrdinalIgnoreCase))
+            .Where(m => !IsProxyExcludedModel(m.Id))
             .ToList();
 
         Skip.If(candidates.Count == 0, "This Copilot account exposes no Responses-only model the proxy will serve.");
@@ -1252,6 +1278,13 @@ public sealed class CopilotAnthropicProxyLiveTests
 
     /// <summary>Vendors <c>ProxyModelResolver</c> filters out of the catalog; picking one would 404.</summary>
     private static readonly string[] ProxyExcludedVendors = ["Google", "Microsoft"];
+
+    /// <summary>
+    ///     The id families <c>ProxyModelResolver</c> also filters out whatever their vendor
+    ///     (<c>mai-code-*</c> routers listed as <c>"Experimental"</c>); picking one would 404.
+    /// </summary>
+    private static bool IsProxyExcludedModel(string id) =>
+        id.StartsWith("mai-code-", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Substrings that mark the cheap tier of a model family, most preferred first.</summary>
     private static readonly string[] CheapModelHints = ["nano", "mini"];

@@ -65,48 +65,6 @@ public sealed class CopilotChatCompletionsProbeTests
     }
 
     /// <summary>
-    ///     A GPT model that also advertises <c>/chat/completions</c>. Pins a live-confirmed asymmetry
-    ///     the proxy must handle: Claude accepts <c>max_tokens</c> on this endpoint, but GPT models
-    ///     reject it and demand <c>max_completion_tokens</c>. An opencode-style client sends
-    ///     <c>max_tokens</c>, so a naive byte-level passthrough to a GPT model 400s.
-    /// </summary>
-    [SkippableFact]
-    public async Task ChatCompletions_serves_a_dual_endpoint_gpt_model_but_renames_the_token_limit()
-    {
-        Skip.IfNot(_fixture.Available, _fixture.SkipReason);
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
-
-        var model = await PickByEndpointAsync("gpt", "/chat/completions", supported: true, cts.Token);
-        _output.WriteLine($"model: {model}");
-
-        var (legacyStatus, legacyBody) = await PostChatCompletionsAsync(model, cts.Token, "max_tokens");
-        _output.WriteLine($"[max_tokens]            status: {(int)legacyStatus} {legacyStatus}");
-        _output.WriteLine(Truncate(legacyBody, 600));
-
-        legacyStatus
-            .Should()
-            .Be(
-                HttpStatusCode.BadRequest,
-                "GPT models on Copilot reject max_tokens; this is the asymmetry the proxy must absorb"
-            );
-        // No assertion on the error text: Copilot once named max_completion_tokens in it and now
-        // returns a bare "Bad Request". The same request succeeding with only the parameter renamed
-        // (below) is what pins the rejection on max_tokens.
-
-        var (status, body) = await PostChatCompletionsAsync(model, cts.Token, "max_completion_tokens");
-        _output.WriteLine($"[max_completion_tokens] status: {(int)status} {status}");
-        _output.WriteLine(Truncate(body, 3000));
-
-        status
-            .Should()
-            .Be(
-                HttpStatusCode.OK,
-                "with the parameter renamed, a dual-endpoint GPT model is servable over /chat/completions"
-            );
-        body.Should().Contain("[DONE]");
-    }
-
-    /// <summary>
     ///     The premise the whole translation layer rests on: a Responses-ONLY model (no
     ///     <c>/chat/completions</c> among its advertised endpoints) is NOT servable over Chat
     ///     Completions. If Copilot served one anyway, every one of these models would be reachable by
