@@ -90,6 +90,18 @@ public sealed class ModelResolverTests
     }
 
     [Fact]
+    public void ParseServableModels_no_metadata_fallback_still_vetoes_mai_code_routers()
+    {
+        const string json = """
+            {"data":[{"id":"claude-opus-4.8"},{"id":"mai-code-2-flash"},{"id":"MAI-CODE-1"}]}
+            """;
+
+        var models = ProxyModelResolver.ParseServableModels(json);
+
+        models.Select(m => m.Id).Should().Equal("claude-opus-4.8");
+    }
+
+    [Fact]
     public void Catalog_find_is_case_insensitive_and_returns_null_for_unknown_ids()
     {
         var catalog = new ProxyModelCatalog(

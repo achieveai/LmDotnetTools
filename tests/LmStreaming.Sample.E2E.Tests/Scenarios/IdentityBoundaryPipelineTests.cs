@@ -86,6 +86,7 @@ public sealed class IdentityBoundaryPipelineTests : LoggingTestBase
                     "api/admin/tenants",
                     "api/admin/tenants/{tenantId}/adopt-legacy",
                     "api/auth/webhook/{provider}",
+                    "api/sandbox/webhook",
                 ],
                 "every /api route outside the identity boundary is a deliberate, reviewed decision - "
                     + "see IdentityMiddleware.InfrastructureApiPaths for why each one is there"

@@ -354,8 +354,9 @@ running, set `MARKETPLACE_STORE_PATH` on that gateway instead. The gateway also 
    ("sandbox re-materialization is not supported by this backend"); start a new conversation.
 5. **Remove** unregisters it.
 
-Register, sync and remove need the operator secret when `Identity:OperatorSecret` is set; listing
-does not.
+Register, sync and remove always need the operator secret (`Identity:OperatorSecret`, sent as
+`X-Operator-Secret`). With no secret configured they answer `503 operator_secret_not_configured`.
+Listing needs no secret.
 
 **Errors the panel shows** (the gateway's code and what it means):
 

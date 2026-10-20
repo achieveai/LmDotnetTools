@@ -14,6 +14,8 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Tests.Sandbox;
 /// </summary>
 public class SandboxBackgroundTaskTrackerTests
 {
+    private const string BackgroundArgs = """{"command":"sleep 30","run_in_background":true}""";
+
     [Fact]
     public async Task Wrap_PrimaryStartsABackgroundTask_RecordsItsConversation_AndPassesTheResultThrough()
     {
@@ -25,7 +27,7 @@ public class SandboxBackgroundTaskTrackerTests
             "thread-a"
         );
 
-        var result = await handler("{}", new ToolCallContext(), CancellationToken.None);
+        var result = await handler(BackgroundArgs, new ToolCallContext(), CancellationToken.None);
 
         result
             .Should()
@@ -51,10 +53,55 @@ public class SandboxBackgroundTaskTrackerTests
 
         using (AgentActorScope.Begin("worker"))
         {
-            _ = await handler("{}", new ToolCallContext(), CancellationToken.None);
+            _ = await handler(BackgroundArgs, new ToolCallContext(), CancellationToken.None);
         }
 
         registry.TryTakeBackgroundTaskOwner("sess-1", "3", out _).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("""{"command":"echo 'Task started with ID: 7'"}""")]
+    [InlineData("""{"command":"echo 'Task started with ID: 7'","run_in_background":false}""")]
+    [InlineData("""{"command":"echo 'Task started with ID: 7'","run_in_background":"true"}""")]
+    [InlineData("not json")]
+    public async Task Wrap_ForegroundOutputThatPrintsTheStartText_RecordsNothing(string argsJson)
+    {
+        // A foreground command's stdout comes back raw, so it can print exactly what a background start returns.
+        await using var registry = CreateRegistry();
+        var handler = SandboxBackgroundTaskTracker.Wrap(
+            Returning("Task started with ID: 7"),
+            registry,
+            "sess-1",
+            "thread-b"
+        );
+
+        _ = await handler(argsJson, new ToolCallContext(), CancellationToken.None);
+
+        registry.TryTakeBackgroundTaskOwner("sess-1", "7", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Wrap_ALaterResultForTheSameTaskId_DoesNotTakeOverItsOwner()
+    {
+        // Owner A records task 7; foreground output in B (same session, same text) leaves 7 owned by A.
+        await using var registry = CreateRegistry();
+        _ = await SandboxBackgroundTaskTracker.Wrap(
+            Returning("Task started with ID: 7"),
+            registry,
+            "sess-1",
+            "thread-a"
+        )(BackgroundArgs, new ToolCallContext(), CancellationToken.None);
+
+        _ = await SandboxBackgroundTaskTracker.Wrap(
+            Returning("Task started with ID: 7"),
+            registry,
+            "sess-1",
+            "thread-b"
+        )("""{"command":"echo 'Task started with ID: 7'"}""", new ToolCallContext(), CancellationToken.None);
+        registry.RecordBackgroundTaskOwner("sess-1", "7", "thread-c");
+
+        registry.TryTakeBackgroundTaskOwner("sess-1", "7", out var owner).Should().BeTrue();
+        owner.Should().Be("thread-a", "the conversation that started a task keeps it");
     }
 
     [Theory]

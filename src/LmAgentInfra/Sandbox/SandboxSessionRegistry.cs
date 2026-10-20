@@ -2713,10 +2713,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
         ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
 
-        _backgroundTaskOwners.GetOrAdd(
-            sessionId,
-            _ => new ConcurrentDictionary<string, string>(StringComparer.Ordinal)
-        )[taskId] = threadId;
+        // First record wins: a task's owner is the conversation that started it, and no later result may move it.
+        _ = _backgroundTaskOwners
+            .GetOrAdd(sessionId, _ => new ConcurrentDictionary<string, string>(StringComparer.Ordinal))
+            .TryAdd(taskId, threadId);
     }
 
     /// <summary>

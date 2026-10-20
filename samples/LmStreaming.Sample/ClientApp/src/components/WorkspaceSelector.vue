@@ -917,7 +917,8 @@ watch(
               placeholder="none, e.g. agents/main"
             />
             <span class="field-hint" data-testid="workspace-create-working-dir-hint">
-              Agents can write only here. The rest of the workspace becomes read-only for them.
+              Agents can write only here. The rest of the workspace becomes read-only for them. On Windows
+              this stops a cooperative agent but is not a security boundary while an operation runs.
             </span>
           </label>
           <div class="field">

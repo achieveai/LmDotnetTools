@@ -90,6 +90,18 @@ describe('AppMarketplacePanel', () => {
     );
   });
 
+  it('treats a code named like an Object.prototype member as one it has no hint for', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      json({ error: 'constructor', detail: 'Sandbox gateway returned 400.' }, 400)
+    );
+    const wrapper = mount(AppMarketplacePanel);
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="app-marketplace-error"]').text()).toBe(
+      'Could not list git marketplaces (400 constructor): Sandbox gateway returned 400.'
+    );
+  });
+
   it('says which setting turns git marketplaces on when the gateway has no store', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
       json({ error: 'marketplaces_disabled', detail: 'MARKETPLACE_STORE_PATH is not set' }, 404)

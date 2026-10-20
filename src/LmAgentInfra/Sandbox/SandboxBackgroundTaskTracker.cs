@@ -1,3 +1,4 @@
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 
@@ -20,7 +21,9 @@ internal static class SandboxBackgroundTaskTracker
     /// Decorates a sandbox tool handler of conversation <paramref name="threadId"/> on
     /// <paramref name="sessionId"/>: when its primary agent starts a background task, the task id is recorded
     /// against the conversation. Sub-agent calls are skipped, since their gateway agent id already routes them.
-    /// The result passes through unchanged.
+    /// Only a call that asked for <c>run_in_background</c> counts: a foreground command returns its stdout raw,
+    /// so output that merely prints the start text must not claim, or take over, a task. The result passes
+    /// through unchanged.
     /// </summary>
     internal static ToolHandler Wrap(
         ToolHandler inner,
@@ -37,6 +40,7 @@ internal static class SandboxBackgroundTaskTracker
             var result = await inner(argsJson, context, cancellationToken).ConfigureAwait(false);
             if (
                 result is ToolHandlerResult.Resolved resolved
+                && RequestsBackground(argsJson)
                 && TryReadTaskId(resolved.Payload.Text, out var taskId)
                 && SandboxSubAgentIdentity.ForCurrentFlow(threadId) is null
             )
@@ -46,6 +50,27 @@ internal static class SandboxBackgroundTaskTracker
 
             return result;
         };
+    }
+
+    /// <summary>Whether the tool call's arguments set <c>run_in_background</c> to <c>true</c>.</summary>
+    internal static bool RequestsBackground(string? argsJson)
+    {
+        if (string.IsNullOrWhiteSpace(argsJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(argsJson);
+            return doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("run_in_background", out var flag)
+                && flag.ValueKind == JsonValueKind.True;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     internal static bool TryReadTaskId(string? toolResultText, out string taskId)

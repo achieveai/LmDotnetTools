@@ -35,9 +35,11 @@ public sealed class SandboxGatewayLifetimePluginMountTests
     [Fact]
     public void SpawnedGatewayKeepsAnAbsoluteMarketplaceStore()
     {
-        var start = StartInfo(new SandboxGatewayOptions { MarketplaceStorePath = @"D:\stores\mkt" });
+        // Rooted on every OS, so the test means the same thing off Windows.
+        var store = Path.Combine(Path.GetTempPath(), "stores", "mkt");
+        var start = StartInfo(new SandboxGatewayOptions { MarketplaceStorePath = store });
 
-        start.Environment["MARKETPLACE_STORE_PATH"].Should().Be(@"D:\stores\mkt");
+        start.Environment["MARKETPLACE_STORE_PATH"].Should().Be(store);
     }
 
     [Fact]

@@ -713,6 +713,9 @@ public static class ProxyModelResolver
     /// </summary>
     private static readonly string[] ExcludedModelPrefixes = ["mai-code-"];
 
+    private static bool IsExcludedModelId(string id) =>
+        ExcludedModelPrefixes.Any(p => id.StartsWith(p, StringComparison.OrdinalIgnoreCase));
+
     /// <summary>
     ///     Parses a Copilot <c>/models</c> response into the models this proxy will serve, preserving
     ///     upstream order.
@@ -723,7 +726,8 @@ public static class ProxyModelResolver
     ///
     ///     The no-metadata fallback is deliberately per RESPONSE, not per entry: only when NOT ONE entry
     ///     carries <c>supported_endpoints</c> do we conclude the response uses an older shape and keep
-    ///     every id. Otherwise a partially-annotated response would resurrect the embedding models.
+    ///     every id the prefix veto allows. Otherwise a partially-annotated response would resurrect the
+    ///     embedding models.
     /// </summary>
     public static IReadOnlyList<ProxyModelInfo> ParseServableModels(string json)
     {
@@ -732,7 +736,13 @@ public static class ProxyModelResolver
 
         if (!entries.Any(CopilotModelsResponse.HasSupportedEndpoints))
         {
-            return [.. ParseModelIds(json).Select(id => new ProxyModelInfo(id, string.Empty, []))];
+            // The id veto needs no metadata, so it holds for the older shape too.
+            return
+            [
+                .. ParseModelIds(json)
+                    .Where(id => !IsExcludedModelId(id))
+                    .Select(id => new ProxyModelInfo(id, string.Empty, [])),
+            ];
         }
 
         var models = new List<ProxyModelInfo>();
@@ -745,10 +755,7 @@ public static class ProxyModelResolver
             }
 
             var vendor = CopilotModelsResponse.GetString(item, "vendor") ?? string.Empty;
-            if (
-                ExcludedVendors.Contains(vendor, StringComparer.OrdinalIgnoreCase)
-                || ExcludedModelPrefixes.Any(p => id.StartsWith(p, StringComparison.OrdinalIgnoreCase))
-            )
+            if (ExcludedVendors.Contains(vendor, StringComparer.OrdinalIgnoreCase) || IsExcludedModelId(id))
             {
                 continue;
             }

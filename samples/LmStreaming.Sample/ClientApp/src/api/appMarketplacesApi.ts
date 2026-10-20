@@ -94,6 +94,8 @@ async function throwIfFailed(response: Response, action: string): Promise<void> 
   const refusal = operatorRefusalMessage(body?.code);
   if (refusal) throw new Error(`Could not ${action}: ${refusal}`);
   const code = typeof body?.error === 'string' ? body.error : null;
-  const detail = (code && GATEWAY_HINTS[code]) || (typeof body?.detail === 'string' ? body.detail : '');
+  // Own keys only: a code such as `constructor` must not resolve to an Object.prototype member.
+  const hint = code && Object.prototype.hasOwnProperty.call(GATEWAY_HINTS, code) ? GATEWAY_HINTS[code] : null;
+  const detail = hint || (typeof body?.detail === 'string' ? body.detail : '');
   throw new Error(`Could not ${action} (${response.status}${code ? ` ${code}` : ''})${detail ? `: ${detail}` : ''}`);
 }

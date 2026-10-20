@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
@@ -49,7 +50,7 @@ public sealed class SandboxTaskCompletionNotifier(
 )
 {
     /// <summary>The <see cref="NotifyMessage.NotifyKind"/> of a background-task notice.</summary>
-    public const string NotifyKind = "background-task";
+    public const string NotifyKind = NotifyKinds.BackgroundTask;
 
     internal const string InputIdPrefix = "bgtask-";
 
@@ -179,7 +180,10 @@ public sealed class SandboxTaskCompletionNotifier(
                 continue;
             }
 
-            var result = await sink.TryDeliverContextAsync(subAgentId, [message], ct).ConfigureAwait(false);
+            // The sink addresses a sub-agent by its scoped thread id, and appends the notice to its running
+            // turn without queueing input: a finished sub-agent is not restarted to hear about it.
+            var result = await sink.TryDeliverContextAsync(SubAgentThreadIds.For(threadId, subAgentId), [message], ct)
+                .ConfigureAwait(false);
             logger.LogInformation(
                 "Background task {TaskId} of session {SessionId}: sub-agent {SubAgentId} on {ThreadId} -> {Result}.",
                 completion.TaskId,

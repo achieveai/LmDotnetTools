@@ -25,6 +25,7 @@ public sealed class SandboxWebhookHttpTests
     private const string Secret = "unified-shared-secret-3f9d";
     private const string SessionId = "sess-unified";
     private const string ThreadId = "thread-unified";
+    private const string OtherSessionSecret = "other-session-secret-7a1c";
     private static readonly TimeSpan OwnerRecordWait = TimeSpan.FromMilliseconds(300);
 
     [Fact]
@@ -76,6 +77,22 @@ public sealed class SandboxWebhookHttpTests
         forged.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         real.StatusCode.Should().Be(HttpStatusCode.OK);
         app.Primary.SentMessages.Should().ContainSingle("the forged call must not mark the real event as seen");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(OtherSessionSecret)]
+    public async Task MissingOrAnotherSessionsSecret_Returns401_AndNothingIsDelivered(string authorization)
+    {
+        // The identity guard exempts this route, so the session secret is its only gate: a secret valid for a
+        // different session must not open this one.
+        await using var app = await TestApp.BuildAsync();
+        await app.SecretStore.SaveAsync("sess-other", OtherSessionSecret);
+
+        var response = await app.PostAsync(TaskCompleted("gw-1-7"), authorization);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        app.Primary.SentMessages.Should().BeEmpty();
     }
 
     [Fact]
@@ -254,7 +271,8 @@ public sealed class SandboxWebhookHttpTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         sink.DeliverCallCount.Should().Be(1);
-        sink.LastDeliveredAgentId.Should().Be("worker");
+        sink.LastDeliveredAgentId.Should()
+            .Be(SubAgentThreadIds.For("thread-sub", "worker"), "SubAgentManager owns only the scoped thread id");
         sink.DeliveredMessages.Should()
             .ContainSingle()
             .Which.Should()
@@ -332,16 +350,24 @@ public sealed class SandboxWebhookHttpTests
     {
         private readonly IHost _host;
 
-        private TestApp(IHost host, HttpClient client, RecordingMultiTurnAgent primary, SandboxSessionRegistry registry)
+        private TestApp(
+            IHost host,
+            HttpClient client,
+            RecordingMultiTurnAgent primary,
+            SandboxSessionRegistry registry,
+            SessionSecretStore secretStore
+        )
         {
             _host = host;
             Client = client;
             Primary = primary;
             Registry = registry;
+            SecretStore = secretStore;
         }
 
         public HttpClient Client { get; }
         public SandboxSessionRegistry Registry { get; }
+        public SessionSecretStore SecretStore { get; }
         public RecordingMultiTurnAgent Primary { get; }
 
         public async Task<HttpResponseMessage> PostAsync(string json, string authorization = Secret)
@@ -425,7 +451,7 @@ public sealed class SandboxWebhookHttpTests
                 })
                 .StartAsync();
 
-            return new TestApp(host, host.GetTestClient(), primary, registry);
+            return new TestApp(host, host.GetTestClient(), primary, registry, sessionSecretStore);
         }
 
         public async ValueTask DisposeAsync()
