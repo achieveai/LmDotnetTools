@@ -506,6 +506,251 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         stdout.Trim().Should().Be(expected);
     }
 
+    [SkippableFact]
+    public async Task A_forced_cleanup_delayed_past_another_reset_cannot_discard_the_next_owner()
+    {
+        // Two reapers read the same lapsed claim A. One resets the slot, then a lane admits PR 8 under claim B. The
+        // other was delayed before the native lock and now runs its forced cleanup for A. Without a fence it would
+        // overwrite B's marker and discard B's prepared slot; SQLite refuses A's release only afterward.
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox script cannot be run");
+        Skip.IfNot(OperatingSystem.IsLinux(), "the sandbox script scans /proc, so it runs only on Linux");
+        var root = Directory.CreateTempSubdirectory("reviewd-sandbox-").FullName;
+        try
+        {
+            var scripts = Directory.CreateDirectory(Path.Combine(root, ".claude/skills/review-setup/scripts"));
+            foreach (var (name, source) in NativeStubs)
+                await File.WriteAllTextAsync(Path.Combine(scripts.FullName, name), source);
+            var script = Path.Combine(root, "ReviewRunnerSandbox.py");
+            using (
+                var resource = typeof(ReviewRunner).Assembly.GetManifestResourceStream(
+                    "Reviewd.Sample.ReviewRunnerSandbox.py"
+                )!
+            )
+            using (var file = File.Create(script))
+                await resource.CopyToAsync(file);
+            var state = Directory.CreateDirectory(Path.Combine(root, "state")).FullName;
+            var marker = Path.Combine(
+                Directory.CreateDirectory(Path.Combine(state, "reviewd-owners")).FullName,
+                "nova-2.json"
+            );
+            var prepared = Path.Combine(state, "prepared-nova-2.json");
+            var discards = Path.Combine(state, "discards.log");
+            await File.WriteAllTextAsync(marker, """{"claimToken": "A", "pr": 7, "state": "owned"}""");
+            await File.WriteAllTextAsync(prepared, """{"pr": 7}""");
+
+            (await PhaseAsync("cleanup", 7, "A", force: true)).ExitCode.Should().Be(0, "the first reaper resets A");
+            // The stub setup stops right after admission wrote B's marker; B's prepared slot is then written by hand.
+            (await PhaseAsync("prepare", 8, "B"))
+                .Stderr.Should()
+                .Contain("Setup stopped");
+            await File.WriteAllTextAsync(prepared, """{"pr": 8}""");
+            var stale = await PhaseAsync("cleanup", 7, "A", force: true);
+
+            stale.ExitCode.Should().NotBe(0);
+            stale.Stderr.Should().Contain("admitted again since this claim");
+            JsonNode.Parse(await File.ReadAllTextAsync(marker))!["claimToken"]!.GetValue<string>().Should().Be("B");
+            JsonNode.Parse(await File.ReadAllTextAsync(prepared))!["pr"]!.GetValue<int>().Should().Be(8);
+            (await File.ReadAllLinesAsync(discards)).Should().Equal("7");
+            // B itself still cleans up its own slot.
+            (await PhaseAsync("cleanup", 8, "B"))
+                .ExitCode.Should()
+                .Be(0);
+            (await File.ReadAllLinesAsync(discards)).Should().Equal("7", "8");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+
+        async Task<(int ExitCode, string Stderr)> PhaseAsync(string phase, int pr, string claim, bool force = false)
+        {
+            var args = new JsonObject
+            {
+                ["org"] = "org",
+                ["repo"] = "Nova",
+                ["pr"] = pr,
+                ["slot"] = 2,
+                ["head"] = new string('h', 40),
+                ["claimToken"] = claim,
+            };
+            if (phase == "cleanup")
+            {
+                args["discard"] = true;
+                args["force"] = force;
+            }
+            var start = new System.Diagnostics.ProcessStartInfo(python!)
+            {
+                WorkingDirectory = root,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            foreach (var argument in new[] { Path.Combine(root, "ReviewRunnerSandbox.py"), phase, args.ToJsonString() })
+                start.ArgumentList.Add(argument);
+            using var process = System.Diagnostics.Process.Start(start)!;
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = await process.StandardError.ReadToEndAsync();
+            await stdout;
+            await process.WaitForExitAsync();
+            return (process.ExitCode, stderr);
+        }
+    }
+
+    // Just enough of the installed review-setup helpers for the sandbox script's prepare and cleanup phases to run
+    // against plain files: locks are no-ops, a discard logs the discarded PR, and setup always stops.
+    private static readonly (string Name, string Source)[] NativeStubs =
+    [
+        (
+            "review_common.py",
+            """
+            import contextlib, json
+            from pathlib import Path
+            from types import SimpleNamespace
+
+
+            class ReviewError(Exception):
+                pass
+
+
+            class ReviewState:
+                def __init__(self, root, read_only=False):
+                    self.directory = Path(root) / 'state'
+                    self.identity = 'test'
+
+                @contextlib.contextmanager
+                def lock(self, shared=False, phase=None):
+                    yield
+
+                @contextlib.contextmanager
+                def slot_lock(self, repo_key, slot, phase=None):
+                    yield
+
+                def prepared_slot_path(self, repo_key, slot):
+                    return self.directory / f'prepared-{repo_key}-{slot}.json'
+
+                def load_pool_run(self, repo_key, slot, dry_run=False):
+                    return None
+
+
+            class SourcePool:
+                def __init__(self, state, module):
+                    self.repo_key = 'nova'
+
+                def slot_relative_path(self, slot):
+                    return f'slots/{slot}'
+
+                def _verified_baseline(self):
+                    return 'baseline'
+
+                def _ensure_store(self):
+                    pass
+
+
+            def repo_slug(repo):
+                return repo.lower()
+
+
+            def safe_path(base, relative):
+                return Path(base) / relative
+
+
+            def run_git_read(path, args, check=True):
+                return SimpleNamespace(stdout='head\n', returncode=0)
+
+
+            def atomic_json(path, value):
+                Path(path).write_text(json.dumps(value))
+
+
+            def lock_session(timeout):
+                return contextlib.nullcontext()
+
+
+            def slot_writer_scope(*args, **kwargs):
+                return contextlib.nullcontext()
+
+
+            def git_status(*args, **kwargs):
+                return ''
+
+
+            def git_ignored_paths(*args, **kwargs):
+                return []
+
+
+            inspect_checkout_preservation = preserve_checkout_generation = verify_preservation_archive = None
+            preservation_generation = file_hash = None
+            """
+        ),
+        (
+            "review_pool_admin.py",
+            """
+            def select_module_by_name(root, repo):
+                return {'path': 'src/Nova', 'provider': 'github', 'owner': 'org', 'repository': 'Nova'}
+            """
+        ),
+        (
+            "review_github.py",
+            """
+            class GitHubClient:
+                def __init__(self, owner, repository):
+                    pass
+
+
+            def fetch_pr(client, pr):
+                return {'base': {'repo': {'name': 'Nova', 'owner': {'login': 'org'}}}}
+
+
+            def live_state(payload):
+                return {'prId': '8', 'status': 'active', 'isDraft': False, 'createdAt': None, 'headSha': 'h' * 40,
+                        'mergeSha': 'm' * 40}
+
+
+            def select_provider(*args, **kwargs):
+                return None
+            """
+        ),
+        (
+            "review_git_prepare.py",
+            """
+            def _verify_postconditions(*args, **kwargs):
+                pass
+
+
+            def prepare(**kwargs):
+                return 1
+            """
+        ),
+        (
+            "review_reset.py",
+            """
+            import json
+
+
+            def _discard_prepared_slot(state, pool, slot, confirm=None):
+                path = state.prepared_slot_path(pool.repo_key, slot)
+                with open(state.directory / 'discards.log', 'a') as log:
+                    log.write(f"{json.loads(path.read_text())['pr']}\n")
+                path.unlink()
+                return {'status': 'discarded'}
+
+
+            def reset_pool_run_locked(*args, **kwargs):
+                return {'status': 'reset'}
+            """
+        ),
+        (
+            "review_setup.py",
+            """
+            prepare = None
+
+
+            def route(**kwargs):
+                return 1
+            """
+        ),
+    ];
+
     // Runs a harness that loads rules from the embedded sandbox script (passed as its first argument).
     private static async Task<(int ExitCode, string Stdout, string Stderr)> RunSandboxRuleAsync(
         string harness,

@@ -215,6 +215,7 @@ internal static class PrSelection
     // The reaper resets a review whose publication was never verified only once the host shows its conversation
     // idle, and marks it failed-released with the stage it stopped at. Its own binding is then not in flight: the
     // runner reviews that same head again in that conversation (Kay9: review it again rather than wait for a push).
+    // The retry's own attempt carries the mark, so a retry refused or failed before it reviews is offered again too.
     internal static bool IsResetForRetry(JsonElement attempt, string? boundThread, string? currentHead) =>
         IsSettled(attempt)
         && attempt.GetProperty("stage").GetString() == "failed-released"

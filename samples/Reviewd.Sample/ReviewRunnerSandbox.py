@@ -139,6 +139,27 @@ def adoptable(previous, args):
                 or ((args.get('failedPreparation') or args.get('discard')) and released))
 
 
+# How many earlier claims a slot's marker remembers. A cleanup is never delayed past this many admissions of one slot.
+EARLIER_CLAIMS_KEPT = 64
+
+
+def owned_marker(previous, claim, pr):
+    # Every new owner's marker lists the slot's earlier claims, so a cleanup that read its claim before a reset and a
+    # new admission can tell that claim is gone (see superseded).
+    earlier = list((previous or {}).get('earlierClaims') or [])
+    if previous and previous.get('claimToken') and previous.get('claimToken') != claim:
+        earlier.append(previous['claimToken'])
+    return {'claimToken': claim, 'pr': pr, 'state': 'owned', 'earlierClaims': earlier[-EARLIER_CLAIMS_KEPT:]}
+
+
+def superseded(previous, args):
+    # Two reapers can both read one lapsed claim. Once one resets the slot and a lane admits the next owner, the other's
+    # forced cleanup would overwrite that owner's marker and discard its prepared slot; SQLite rejects the stale claim
+    # only after that. Admission writes the marker under the slot lock this check runs under, so the check is exact.
+    return (previous is not None and previous.get('claimToken') != args['claimToken']
+            and args['claimToken'] in (previous.get('earlierClaims') or []))
+
+
 def forced_overrides(previous, args, pr, prepared_pr):
     # A forced discard (the reaper, once a lease has been lapsed 30 minutes and no host agent is active) resets the
     # slot whatever the native records say: they disagree with ours only through bookkeeping bugs, and Kay9 wants
@@ -222,7 +243,7 @@ elif phase == 'prepare':
             admit_baseline(lambda: _verify_postconditions(writable, pool, outer, source,
                                                           run_git_read(root, ['rev-parse', 'HEAD']).stdout.strip(),
                                                           pool._verified_baseline()))
-        atomic_json(marker, {'claimToken': args['claimToken'], 'pr': pr, 'state': 'owned'})
+        atomic_json(marker, owned_marker(previous, args['claimToken'], pr))
         clear_stale_index_locks()
     # The CLI does not expose prepare's lock_timeout. Use its existing route with a bounded
     # native-lock wait so overlapping source fetches contend locally, not at a batch gate.
@@ -281,6 +302,8 @@ elif phase == 'cleanup':
     marker = writable.directory / 'reviewd-owners' / f'{pool.repo_key}-{slot}.json'
     with lock_session(120), writable.lock(shared=True, phase='reviewd-cleanup'), writable.slot_lock(pool.repo_key, slot, phase='reviewd-cleanup'):
         previous = json.loads(marker.read_text()) if marker.exists() else None
+        if superseded(previous, args):
+            raise ReviewError('Native slot was reset and admitted again since this claim; no cleanup allowed.')
         if previous is None and args.get('adopt'):
             prepared_path = state.prepared_slot_path(pool.repo_key, slot)
             if prepared_path.exists():
@@ -301,7 +324,7 @@ elif phase == 'cleanup':
             forced_path = state.prepared_slot_path(pool.repo_key, slot)
             prepared_pr = json.loads(forced_path.read_text()).get('pr') if forced_path.exists() else None
             overrides = forced_overrides(previous, args, pr, prepared_pr)
-            previous = {'claimToken': args['claimToken'], 'pr': pr, 'state': 'owned'}
+            previous = owned_marker(previous, args['claimToken'], pr)
             atomic_json(marker, previous)
         elif adoptable(previous, args):
             if state.prepared_slot_path(pool.repo_key, slot).exists() or writable.load_pool_run(pool.repo_key, slot, dry_run=True) is not None:
@@ -311,7 +334,7 @@ elif phase == 'cleanup':
             if not args.get('discard'):
                 _verify_postconditions(writable, pool, outer, source,
                                        run_git_read(root, ['rev-parse', 'HEAD']).stdout.strip(), pool._verified_baseline())
-            previous = {'claimToken': args['claimToken'], 'pr': pr, 'state': 'owned'}
+            previous = owned_marker(previous, args['claimToken'], pr)
             atomic_json(marker, previous)
         if not previous or previous.get('claimToken') != args['claimToken'] or previous.get('pr') != pr or previous.get('state') != 'owned':
             raise ReviewError('Native claim changed; no cleanup allowed.')

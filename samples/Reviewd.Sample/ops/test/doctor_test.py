@@ -107,6 +107,24 @@ class Checks(unittest.TestCase):
         self.assertEqual(kinds(found), ["no-progress"])
         self.assertEqual(found[0]["fix"], "restart-batch")
 
+    def test_a_batch_that_stopped_before_its_first_scheduling_line_is_no_progress_after_two_hours(self):
+        # The selection could not be read at start: scheduling stopped for good, but the process stays alive.
+        stopped = ("OAuth webhook only; callback http://x. No daemon workers or sign-in routes.\n"
+                   "Batch stopped: Could not find file 'selection.json'. OAuth callback remains running; no replay.\n"
+                   "Scheduling stopped. OAuth callback remains running until explicit process shutdown.\n")
+        install = make_install(self.root, batch_log=stopped)
+        memory = {}
+        self.assertEqual(self.check(install, memory, NOW), [])
+        self.assertEqual(self.check(install, memory, NOW + minutes(119)), [], "a starting batch gets two hours")
+        found = self.check(install, memory, NOW + minutes(121))
+        self.assertEqual(kinds(found), ["no-progress"])
+        self.assertEqual(found[0]["fix"], "restart-batch")
+        self.assertIn("no scheduling line yet", found[0]["detail"])
+        leased = make_install(self.root, "reviewd-leased", batch_log=stopped, rows=[owner(-130)])
+        memory = {}
+        self.assertEqual(self.check(leased, memory, NOW), [])
+        self.assertEqual(self.check(leased, memory, NOW + minutes(121)), [], "a live lease is a working batch")
+
     def test_a_long_review_whose_lane_renews_its_lease_is_not_called_no_progress(self):
         # The review prints nothing while it runs, but its lane renews the slot's lease every 5 minutes.
         install = make_install(self.root, batch_log="Org/P/R #1: prepare, operation abc\n", rows=[owner(-130)])

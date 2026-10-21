@@ -3420,7 +3420,15 @@ public sealed class ReviewdRunnerTests
             if (refusal is null)
             {
                 failure.Should().NotContain("already reviewed by another run");
-                sent.Should().ContainSingle().Which.Body.Should().Contain("stopped before its publication was");
+                // Verify accepts only what this run posts and needs a summary among it, so the retry must post a new
+                // summary rather than rely on the one its reset run may already have posted.
+                sent.Should()
+                    .ContainSingle()
+                    .Which.Body.Should()
+                    .Contain("stopped before its publication was")
+                    .And.Contain("Always post a new summary for this run")
+                    .And.Contain("only what this run posts")
+                    .And.NotContain("post only the findings and summary that are missing");
                 using var reread = PrThreadBindings.Connection(database);
                 (await new SqliteKvStore(reread).GetAsync<JsonObject>(attemptKey))!["resetCount"]!
                     .GetValue<int>()
@@ -3437,6 +3445,185 @@ public sealed class ReviewdRunnerTests
         {
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             File.Delete(database);
+        }
+    }
+
+    [Theory]
+    [InlineData("not-idle")]
+    [InlineData("capacity")]
+    public async Task A_reset_retry_refused_before_review_is_picked_and_retried_without_a_new_push(string refusal)
+    {
+        // The retry of a reset gets a fresh receipt. A slot or capacity refusal at prepare releases that receipt as
+        // failed-released, and it must still read as a reset retry: otherwise pick skips the PR behind its bound
+        // conversation, and the runner refuses the head that conversation already reviewed, until a new push.
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-reset-refused-{Guid.NewGuid():N}.db");
+        var selection = database + ".selection.json";
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/17";
+        var head = new string('a', 40);
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/api/conversations?",
+                """[{"threadId":"prior","title":"Nova-17-aaaaaaaa","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1}]"""
+            )
+            .OnJson(HttpMethod.Get, "/prior/messages", Transcript(("User", ReviewPrompt('a')), ("Assistant", "Done.")))
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/unfreeze", StringComparison.Ordinal),
+                _ => new HttpResponseMessage(HttpStatusCode.Conflict)
+                {
+                    Content = new StringContent("""{"error":"not_freezable","threadId":"prior"}"""),
+                }
+            )
+            .OnJson(HttpMethod.Post, "/messages", """{"inputId":"retry","idempotencyKeyHonored":true}""")
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        var refuse = true;
+        Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token)
+        {
+            if (phase == "prepare" && refuse)
+                throw refusal == "not-idle"
+                    ? new ReviewRunner.SlotNotIdleException("Native slot retains an owner.")
+                    : new SandboxException(SandboxErrorKind.Unavailable, "refused", 503)
+                    {
+                        ErrorCode = "operation_capacity_exhausted",
+                    };
+            return Task.FromResult(
+                phase == "prepare"
+                    ? new JsonObject
+                    {
+                        ["mergeSha"] = new string('b', 40),
+                        ["contextPath"] = "context",
+                        ["reviewDirectory"] = "reviews",
+                        ["baselineComments"] = new JsonArray(),
+                    }
+                    : []
+            );
+        }
+        try
+        {
+            using (var connection = PrThreadBindings.Connection(database))
+            {
+                var store = new SqliteKvStore(connection);
+                await store.SetAsync(
+                    $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                    new JsonObject
+                    {
+                        ["17"] = new JsonObject
+                        {
+                            ["PrId"] = 17,
+                            ["Lifecycle"] = "Open",
+                            ["IsDraft"] = false,
+                            ["HeadSha"] = head,
+                        },
+                    }
+                );
+                await store.SetAsync(
+                    attemptKey,
+                    new JsonObject
+                    {
+                        ["repository"] = repo.DisplayName,
+                        ["prId"] = "17",
+                        ["slot"] = 2,
+                        ["workspaceId"] = "workspace",
+                        ["stage"] = "failed-released",
+                        ["stageBeforeReclaim"] = "review-running",
+                        ["resetCount"] = 1,
+                        ["cleanupState"] = "released",
+                        ["claimToken"] = "reset-claim",
+                        ["reviewInputId"] = "earlier-input",
+                        ["threadId"] = "prior",
+                        ["headSha"] = head,
+                    }
+                );
+            }
+            var options = CliOptions.Parse([
+                "review",
+                "run",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "test",
+                "--execute",
+            ]);
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    options,
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ => Task.CompletedTask,
+                    () => DateTimeOffset.UtcNow
+                );
+
+            await run.Should().ThrowAsync<Exception>();
+            using (var reread = PrThreadBindings.Connection(database))
+            {
+                var refused = (await new SqliteKvStore(reread).GetAsync<JsonObject>(attemptKey))!;
+                refused["admissionRefused"].Should().NotBeNull("prepare refused the retry before it reviewed");
+                PrSelection
+                    .IsResetForRetry(System.Text.Json.JsonSerializer.SerializeToElement(refused), "prior", head)
+                    .Should()
+                    .BeTrue();
+            }
+            await PrSelection.RunAsync(
+                CliOptions.Parse([
+                    "pr",
+                    "pick",
+                    "--repo",
+                    repo.DisplayName,
+                    "--db",
+                    database,
+                    "--selection-out",
+                    selection,
+                ]),
+                CancellationToken.None,
+                DateTimeOffset.UtcNow
+            );
+            JsonNode.Parse(await File.ReadAllTextAsync(selection))!["repositories"]!
+                .AsObject()
+                .Should()
+                .ContainKey(repo.DisplayName, "the PR is offered again without a new push");
+
+            refuse = false;
+            var failure = (await run.Should().ThrowAsync<InvalidOperationException>()).Which.Message;
+
+            failure.Should().NotContain("already reviewed by another run");
+            handler
+                .Requests.Where(r =>
+                    r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal)
+                )
+                .Should()
+                .ContainSingle()
+                .Which.Body.Should()
+                .Contain("stopped before its publication was");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+            File.Delete(selection);
         }
     }
 

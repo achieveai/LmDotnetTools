@@ -198,11 +198,14 @@ def problems(f, now, memory):
     # A lane renews its slot's lease every 5 minutes for as long as it works, including while it waits on a long
     # review that prints nothing. A live lease is a working batch; long-review reports it at 3 h instead.
     working = any(owner["lapsed"] < datetime.timedelta(0) for owner in f["owners"])
+    # A batch that never logged a scheduling line counts too: one whose selection could not be read at start stops
+    # scheduling for good but keeps its process alive. The clock starts when the doctor first sees it, so a starting
+    # batch gets the same two hours.
     if seen.get("line") != [f["last_line"], f["lines"]] or not ts(seen.get("since")):
         seen["line"], seen["since"] = [f["last_line"], f["lines"]], now.isoformat()
-    elif not f["finished"] and f["lines"] and not working and now - ts(seen["since"]) >= NO_PROGRESS:
-        add("no-progress", f"no scheduling progress since {seen['since'][:16]}Z; last: {f['last_line'][:160]}",
-            "restart-batch")
+    elif not f["finished"] and not working and now - ts(seen["since"]) >= NO_PROGRESS:
+        add("no-progress", f"no scheduling progress since {seen['since'][:16]}Z; last: "
+            f"{f['last_line'][:160] or 'no scheduling line yet'}", "restart-batch")
     if (f["finished"] and now - ts(seen["since"]) >= PICK_GRACE
             and (f["last_pick"] is None or now - f["last_pick"] >= NO_PICK)):
         add("no-pick", "selection finished but no new pick for over 50 min", "run-keepalive")

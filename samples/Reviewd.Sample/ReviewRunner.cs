@@ -726,6 +726,10 @@ internal static class ReviewRunner
         // Resets of one head add up across its retries, whatever ended each one.
         if (resetsOfHead > 0)
             receipt["resetCount"] = resetsOfHead;
+        // A retry of a reset keeps that mark. A retry refused or failed before it reviews is then offered again in its
+        // own conversation, instead of reading as a failed submission there until a new push.
+        if (retryOfReset)
+            receipt["stageBeforeReclaim"] = attempt!["stageBeforeReclaim"]!.DeepClone();
         if (resume || cleanupOnly)
             receipt = attempt!.DeepClone().AsObject();
         if (cleanupOnly && attempt!["claimToken"] is null)
@@ -829,9 +833,12 @@ internal static class ReviewRunner
                         This conversation may already hold your review of this PR, of this same head
                         ({args["head"]}) or an earlier one, but the last run stopped before its publication was
                         verified, so some of it may already be on the PR. Read the PR's existing threads first:
-                        keep what is already posted, post only the findings and summary that are missing, and reply
-                        to existing finding threads instead of duplicating them. Review in full any code that
-                        changed since your last review, or the whole PR if this conversation holds no review yet.
+                        keep what is already posted, post only the findings that are missing, and reply to existing
+                        finding threads instead of duplicating them. Always post a new summary for this run, even if
+                        an earlier one is on the PR; it may say which earlier findings still stand. Record in
+                        publication_receipts.json only what this run posts: comments that were on the PR before this
+                        run are not accepted there. Review in full any code that changed since your last review, or
+                        the whole PR if this conversation holds no review yet.
 
                         """
                 : reusedConversation
