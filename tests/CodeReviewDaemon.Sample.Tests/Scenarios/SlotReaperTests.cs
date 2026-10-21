@@ -1,5 +1,6 @@
 extern alias Reviewd;
 
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.Misc.Storage;
 using CodeReviewDaemon.Sample.Agents;
@@ -348,7 +349,8 @@ public sealed class SlotReaperTests
     // left for the reaper is whether anything below the root is still working.
     private static async Task<(string OwnerKey, SqliteKvStore Store)> SeedLapsedClaimAsync(
         Microsoft.Data.Sqlite.SqliteConnection connection,
-        int slot
+        int slot,
+        TimeSpan? claimedAgo = null
     )
     {
         var repo = PrCommands.ParseRepo("O365Exchange/Weve_DA/Nova");
@@ -371,7 +373,7 @@ public sealed class SlotReaperTests
             null,
             $"reviewd/review-attempt/{repo.NormalizedKey}/100",
             CancellationToken.None,
-            DateTimeOffset.UtcNow - TimeSpan.FromHours(2)
+            DateTimeOffset.UtcNow - (claimedAgo ?? TimeSpan.FromHours(2))
         );
         var attempt = receipt.DeepClone().AsObject();
         attempt["claimToken"] = token;
@@ -382,7 +384,10 @@ public sealed class SlotReaperTests
 
     private static async Task<(IReadOnlyList<SlotReaper.ReclaimResult> Results, int Discards)> SweepAsync(
         Microsoft.Data.Sqlite.SqliteConnection connection,
-        FakeHttpMessageHandler handler
+        FakeHttpMessageHandler handler,
+        List<JsonObject>? calls = null,
+        JsonArray? forced = null,
+        Func<TimeSpan, CancellationToken, Task>? delay = null
     )
     {
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
@@ -391,8 +396,14 @@ public sealed class SlotReaperTests
         SlotReaper.SandboxExecutor sandbox = (_, args, _, _) =>
         {
             discards++;
+            calls?.Add(args.DeepClone().AsObject());
             return Task.FromResult(
-                new JsonObject { ["claimToken"] = args["claimToken"]!.DeepClone(), ["cleanBaselineVerified"] = true }
+                new JsonObject
+                {
+                    ["claimToken"] = args["claimToken"]!.DeepClone(),
+                    ["cleanBaselineVerified"] = true,
+                    ["forced"] = forced?.DeepClone() ?? new JsonArray(),
+                }
             );
         };
         var results = await SlotReaper.SweepAsync(
@@ -403,7 +414,8 @@ public sealed class SlotReaperTests
             DateTimeOffset.UtcNow,
             undatedExpired: false,
             execute: true,
-            CancellationToken.None
+            CancellationToken.None,
+            delay: delay ?? ((_, _) => Task.CompletedTask)
         );
         return (results, discards);
     }
@@ -466,6 +478,192 @@ public sealed class SlotReaperTests
             discards.Should().Be(0);
             handler.CountRequests("/freeze").Should().Be(0);
             (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("owned");
+            handler
+                .CountRequests("/subagents?recursive=true")
+                .Should()
+                .Be(
+                    SlotReaper.BusyRereads + 1,
+                    "busy is re-read a bounded number of times, then left for the next sweep"
+                );
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    [Fact]
+    public async Task Reaper_rereads_a_busy_host_and_reclaims_once_it_answers()
+    {
+        // A shared host answers hierarchy_busy whenever any conversation is publishing metadata. That is unknown,
+        // not active: re-read it instead of giving up the whole sweep.
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-busy-then-ok-{Guid.NewGuid():N}.db");
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await connection.OpenAsync();
+            var (ownerKey, store) = await SeedLapsedClaimAsync(connection, 7);
+            var handler = new FakeHttpMessageHandler()
+                .OnJson(HttpMethod.Post, "/freeze", """{"frozen":true}""")
+                .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+                .OnSequence(
+                    HttpMethod.Get,
+                    "/subagents?recursive=true",
+                    (System.Net.HttpStatusCode.ServiceUnavailable, """{"code":"hierarchy_busy"}"""),
+                    (System.Net.HttpStatusCode.ServiceUnavailable, """{"code":"hierarchy_busy"}"""),
+                    (System.Net.HttpStatusCode.OK, Tree("completed"))
+                );
+
+            var (results, discards) = await SweepAsync(connection, handler);
+
+            results.Should().ContainSingle(r => r.Status == "reclaimed");
+            discards.Should().Be(1);
+            (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("released");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    [Theory]
+    [InlineData("renewed")]
+    [InlineData("released")]
+    public async Task Reaper_leaves_a_slot_whose_owner_changed_while_it_waited(string change)
+    {
+        // A sweep can wait minutes on a busy host after choosing an owner. A lane that renewed its lease meanwhile is
+        // live, and a released owner may already belong to another PR's claim: neither is frozen or reset.
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-owner-moved-{Guid.NewGuid():N}.db");
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await connection.OpenAsync();
+            var (ownerKey, store) = await SeedLapsedClaimAsync(connection, 7);
+            var handler = new FakeHttpMessageHandler()
+                .OnJson(HttpMethod.Post, "/freeze", """{"frozen":true}""")
+                .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+                .OnSequence(
+                    HttpMethod.Get,
+                    "/subagents?recursive=true",
+                    (System.Net.HttpStatusCode.ServiceUnavailable, """{"code":"hierarchy_busy"}"""),
+                    (System.Net.HttpStatusCode.OK, Tree("completed"))
+                );
+
+            var (results, discards) = await SweepAsync(
+                connection,
+                handler,
+                delay: async (_, _) =>
+                {
+                    var owner = (await store.GetAsync<JsonObject>(ownerKey))!;
+                    if (change == "renewed")
+                        owner["leaseExpiresAt"] = DateTimeOffset.UtcNow + SlotRelease.DefaultLeaseWindow;
+                    else
+                        owner["state"] = "released";
+                    await store.SetAsync(ownerKey, owner, CancellationToken.None);
+                }
+            );
+
+            results.Should().ContainSingle(r => r.Status == "skipped" && r.Detail!.Contains("owner changed"));
+            discards.Should().Be(0);
+            handler.CountRequests("/freeze").Should().Be(0);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    [Fact]
+    public async Task Reaper_rereads_the_root_after_waiting_out_a_busy_tree()
+    {
+        // A run can start while the tree read waits on a busy host; the root read from before the wait is stale.
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-root-reread-{Guid.NewGuid():N}.db");
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await connection.OpenAsync();
+            var (ownerKey, store) = await SeedLapsedClaimAsync(connection, 7);
+            var handler = new FakeHttpMessageHandler()
+                .OnJson(HttpMethod.Post, "/freeze", """{"frozen":true}""")
+                .OnSequence(
+                    HttpMethod.Get,
+                    "/run-state",
+                    (System.Net.HttpStatusCode.OK, """{"isInProgress":false,"currentRunId":null}"""),
+                    (System.Net.HttpStatusCode.OK, """{"isInProgress":true,"currentRunId":"run-2"}""")
+                )
+                .OnSequence(
+                    HttpMethod.Get,
+                    "/subagents?recursive=true",
+                    (System.Net.HttpStatusCode.ServiceUnavailable, """{"code":"hierarchy_busy"}"""),
+                    (System.Net.HttpStatusCode.OK, Tree("completed"))
+                );
+
+            var (results, discards) = await SweepAsync(connection, handler);
+
+            results.Should().ContainSingle(r => r.Status == "skipped" && r.Detail!.Contains("in progress"));
+            discards.Should().Be(0);
+            handler.CountRequests("/freeze").Should().Be(0);
+            (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("owned");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    [Theory]
+    [InlineData("prepare-pending", false, false, "failed-released", true, 2)]
+    [InlineData("review-completed", true, false, "failed-released", true, 2)]
+    // The runner saves verify-completed before the verify result: a crash in between still posted the review.
+    [InlineData("verify-completed", true, false, "verify-completed", false, 1)]
+    [InlineData("commit-pending", true, true, "commit-pending", false, 1)]
+    public async Task Reaper_turns_a_reset_review_without_verified_publication_into_a_failed_admission(
+        string stage,
+        bool sent,
+        bool verified,
+        string expectedStage,
+        bool pickOffersItAgain,
+        int resetsAfter
+    )
+    {
+        // Seen live: 12 open PRs whose reviews stopped before publication was verified were reset by the reaper and
+        // then parked until a new push, and prepares that failed holding their slot were never retried. Kay9: review
+        // them again. A review whose publication was verified posted, so it keeps its stage and is not redone.
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-reset-retry-{Guid.NewGuid():N}.db");
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await connection.OpenAsync();
+            var (_, store) = await SeedLapsedClaimAsync(connection, 4);
+            var attemptKey =
+                $"reviewd/review-attempt/{PrCommands.ParseRepo("O365Exchange/Weve_DA/Nova").NormalizedKey}/100";
+            var seeded = (await store.GetAsync<JsonObject>(attemptKey))!;
+            seeded["stage"] = stage;
+            seeded["resetCount"] = 1;
+            if (sent)
+            {
+                seeded["reviewIdempotencyKey"] = "reviewd-key";
+                seeded["reviewInputId"] = "input-1";
+            }
+            if (verified)
+                seeded["verifiedPublication"] = new JsonObject { ["comments"] = 3 };
+            await store.SetAsync(attemptKey, seeded, CancellationToken.None);
+            var handler = new FakeHttpMessageHandler()
+                .OnJson(HttpMethod.Post, "/freeze", """{"frozen":true}""")
+                .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+                .OnJson(HttpMethod.Get, "/subagents?recursive=true", EmptyTree);
+
+            var (results, _) = await SweepAsync(connection, handler);
+
+            results.Should().ContainSingle(r => r.Status == "reclaimed");
+            var attempt = (await store.GetAsync<JsonObject>(attemptKey))!;
+            attempt["stage"]!.GetValue<string>().Should().Be(expectedStage);
+            PrSelection.IsSettled(JsonSerializer.SerializeToElement(attempt)).Should().Be(pickOffersItAgain);
+            attempt["resetCount"]!.GetValue<int>().Should().Be(resetsAfter);
         }
         finally
         {
@@ -494,6 +692,68 @@ public sealed class SlotReaperTests
             results.Should().ContainSingle(r => r.Status == "reclaimed");
             discards.Should().Be(1);
             (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("released");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    [Fact]
+    public async Task Reaper_forces_a_long_lapsed_slot_through_a_bookkeeping_mismatch()
+    {
+        // Lapsed 90 minutes, nothing active in the host: whatever the sandbox's records say, the slot comes back,
+        // and the log names what was overridden (seen live: our own half-released marker jammed a slot 8 hours).
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-force-{Guid.NewGuid():N}.db");
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await connection.OpenAsync();
+            var (ownerKey, store) = await SeedLapsedClaimAsync(connection, 2);
+            var handler = new FakeHttpMessageHandler()
+                .OnJson(HttpMethod.Post, "/freeze", """{"frozen":true}""")
+                .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+                .OnJson(HttpMethod.Get, "/subagents?recursive=true", Tree("completed"));
+            var calls = new List<JsonObject>();
+
+            var (results, _) = await SweepAsync(connection, handler, calls, ["owner marker already released"]);
+
+            calls.Should().ContainSingle().Which["force"]!.GetValue<bool>().Should().BeTrue();
+            results
+                .Should()
+                .ContainSingle(r => r.Status == "reclaimed")
+                .Which.Detail.Should()
+                .Be("forced: owner marker already released");
+            (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("released");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    [Fact]
+    public async Task Reaper_does_not_force_a_slot_whose_lease_lapsed_only_minutes_ago()
+    {
+        // Claimed 40 minutes ago, so the 30-minute lease lapsed 10 minutes ago: reclaim normally, no force.
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-noforce-{Guid.NewGuid():N}.db");
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await connection.OpenAsync();
+            await SeedLapsedClaimAsync(connection, 3, TimeSpan.FromMinutes(40));
+            var handler = new FakeHttpMessageHandler()
+                .OnJson(HttpMethod.Post, "/freeze", """{"frozen":true}""")
+                .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+                .OnJson(HttpMethod.Get, "/subagents?recursive=true", Tree("completed"));
+            var calls = new List<JsonObject>();
+
+            var (results, _) = await SweepAsync(connection, handler, calls);
+
+            calls.Should().ContainSingle().Which["force"]!.GetValue<bool>().Should().BeFalse();
+            results.Should().ContainSingle(r => r.Status == "reclaimed" && r.Detail == null);
         }
         finally
         {

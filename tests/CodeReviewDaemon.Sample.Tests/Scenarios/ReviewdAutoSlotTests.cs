@@ -409,8 +409,111 @@ public sealed class ReviewdAutoSlotTests : IDisposable
     [InlineData("broken", 1, "")]
     public async Task Prepare_refuses_a_slot_off_the_idle_baseline_as_not_idle(string verify, int exit, string output)
     {
+        // Only a ReviewError from the baseline check is a busy slot; any other failure still surfaces.
+        const string harness = """
+            import ast, json, sys
+            tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
+            rules = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('slot_not_idle', 'admit_baseline')]
+            class ReviewError(Exception): pass
+            scope = {'json': json, 'sys': sys, 'ReviewError': ReviewError}
+            exec(compile(ast.Module(rules, []), 'admission', 'exec'), scope)
+            def stale(): raise ReviewError('off baseline')
+            def broken(): raise RuntimeError('git is missing')
+            scope['admit_baseline']({'stale': stale, 'idle': lambda: None, 'broken': broken}[sys.argv[2]])
+            print('admitted')
+            """;
+        var (exitCode, stdout, stderr) = await RunSandboxRuleAsync(harness, verify);
+
+        exitCode.Should().Be(exit, stderr);
+        stdout.Trim().Should().Be(output);
+    }
+
+    [SkippableTheory]
+    // A reclaim that released the native marker and then died before releasing the SQLite owner must be able to
+    // finish on the next reap, or the slot stays blocked forever (seen live: 8 hours after a batch restart).
+    [InlineData("released", "mine", "discard", true)]
+    [InlineData("released", "other", "discard", true)]
+    [InlineData("released", "mine", "failedPreparation", true)]
+    [InlineData("owned", "other", "failedPreparation", true)]
+    [InlineData("missing", "mine", "failedPreparation", true)]
+    // A live owner, or a normal cleanup, never takes over someone else's marker or re-releases its own.
+    [InlineData("owned", "other", "discard", false)]
+    [InlineData("owned", "mine", "discard", false)]
+    [InlineData("released", "mine", "none", false)]
+    [InlineData("missing", "mine", "discard", false)]
+    public async Task Cleanup_adopts_only_a_natively_free_or_orphaned_marker(
+        string state,
+        string token,
+        string mode,
+        bool adopted
+    )
+    {
+        const string harness = """
+            import ast, json, sys
+            tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
+            rules = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'adoptable']
+            scope = {}
+            exec(compile(ast.Module(rules, []), 'cleanup', 'exec'), scope)
+            state, token, mode = sys.argv[2:5]
+            previous = None if state == 'missing' else {'claimToken': token, 'pr': 7, 'state': state}
+            args = {'claimToken': 'mine'}
+            if mode != 'none':
+                args[mode] = True
+            print(scope['adoptable'](previous, args))
+            """;
+        var (exitCode, stdout, stderr) = await RunSandboxRuleAsync(harness, state, token, mode);
+
+        exitCode.Should().Be(0, stderr);
+        stdout.Trim().Should().Be(adopted ? "True" : "False");
+    }
+
+    [SkippableTheory]
+    // A forced discard resets the slot whatever the native records say, and names each disagreement for the log.
+    [InlineData("missing", "mine", 7, "", """["owner marker missing"]""")]
+    [InlineData("owned", "other", 7, "", """["owner marker held by claim other for PR 7"]""")]
+    [InlineData("released", "mine", 7, "", """["owner marker already released"]""")]
+    [InlineData("owned", "mine", 7, "8", """["slot prepared for PR 8"]""")]
+    [InlineData("owned", "mine", 7, "7", "[]")]
+    [InlineData("owned", "mine", 7, "", "[]")]
+    public async Task A_forced_cleanup_names_every_bookkeeping_disagreement_it_overrides(
+        string state,
+        string token,
+        int markerPr,
+        string preparedPr,
+        string expected
+    )
+    {
+        const string harness = """
+            import ast, json, sys
+            tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
+            rules = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'forced_overrides']
+            scope = {}
+            exec(compile(ast.Module(rules, []), 'cleanup', 'exec'), scope)
+            state, token, marker_pr, prepared_pr = sys.argv[2:6]
+            previous = None if state == 'missing' else {'claimToken': token, 'pr': int(marker_pr), 'state': state}
+            prepared = int(prepared_pr) if prepared_pr else None
+            print(json.dumps(scope['forced_overrides'](previous, {'claimToken': 'mine'}, 7, prepared)))
+            """;
+        var (exitCode, stdout, stderr) = await RunSandboxRuleAsync(
+            harness,
+            state,
+            token,
+            markerPr.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            preparedPr
+        );
+
+        exitCode.Should().Be(0, stderr);
+        stdout.Trim().Should().Be(expected);
+    }
+
+    // Runs a harness that loads rules from the embedded sandbox script (passed as its first argument).
+    private static async Task<(int ExitCode, string Stdout, string Stderr)> RunSandboxRuleAsync(
+        string harness,
+        params string[] arguments
+    )
+    {
         var python = await ReviewdSummaryReplyTests.FindPythonAsync();
-        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox's admission rule cannot be run");
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox's rules cannot be run");
         var script = Path.Combine(Path.GetTempPath(), $"reviewd-sandbox-{Guid.NewGuid():N}.py");
         using (
             var resource = typeof(ReviewRunner).Assembly.GetManifestResourceStream(
@@ -421,33 +524,18 @@ public sealed class ReviewdAutoSlotTests : IDisposable
             await resource.CopyToAsync(file);
         try
         {
-            // Only a ReviewError from the baseline check is a busy slot; any other failure still surfaces.
-            const string harness = """
-                import ast, json, sys
-                tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
-                rules = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('slot_not_idle', 'admit_baseline')]
-                class ReviewError(Exception): pass
-                scope = {'json': json, 'sys': sys, 'ReviewError': ReviewError}
-                exec(compile(ast.Module(rules, []), 'admission', 'exec'), scope)
-                def stale(): raise ReviewError('off baseline')
-                def broken(): raise RuntimeError('git is missing')
-                scope['admit_baseline']({'stale': stale, 'idle': lambda: None, 'broken': broken}[sys.argv[2]])
-                print('admitted')
-                """;
             var start = new System.Diagnostics.ProcessStartInfo(python!)
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
             };
-            foreach (var argument in new[] { "-c", harness, script, verify })
+            foreach (var argument in new[] { "-c", harness, script }.Concat(arguments))
                 start.ArgumentList.Add(argument);
             using var process = System.Diagnostics.Process.Start(start)!;
             var stdout = await process.StandardOutput.ReadToEndAsync();
             var stderr = await process.StandardError.ReadToEndAsync();
             await process.WaitForExitAsync();
-
-            process.ExitCode.Should().Be(exit, stderr);
-            stdout.Trim().Should().Be(output);
+            return (process.ExitCode, stdout, stderr);
         }
         finally
         {

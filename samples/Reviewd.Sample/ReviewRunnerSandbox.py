@@ -123,6 +123,38 @@ def admit_baseline(verify):
         slot_not_idle(f'Native slot is not at the idle baseline: {failure}')
 
 
+def adoptable(previous, args):
+    # An interrupted preparation can leave an orphaned 'owned' marker whose claimToken belongs to a dead attempt
+    # (e.g. the batch process was killed between claiming the slot and finishing the fetch). prepare then refuses
+    # the slot ('unreleased reviewd owner') and cleanup refused it too ('Native claim changed'), so the slot stayed
+    # blocked forever -- violating the slot-never-blocks invariant. A failed-attempt reset may reclaim it.
+    orphan_owned = (previous is not None and previous.get('state') == 'owned'
+                    and previous.get('claimToken') != args['claimToken'])
+    # A 'released' marker means the slot is natively free already, so only the SQLite owner is stale: a preparation
+    # failed before claiming (an older claim), or a cleanup released the marker and then died before releasing the
+    # SQLite owner (this very claim; seen live after a batch restart, and every later reap refused it). A
+    # failed-attempt reset or a reaper discard may adopt it.
+    released = previous is not None and previous.get('state') == 'released'
+    return bool((args.get('failedPreparation') and (previous is None or orphan_owned))
+                or ((args.get('failedPreparation') or args.get('discard')) and released))
+
+
+def forced_overrides(previous, args, pr, prepared_pr):
+    # A forced discard (the reaper, once a lease has been lapsed 30 minutes and no host agent is active) resets the
+    # slot whatever the native records say: they disagree with ours only through bookkeeping bugs, and Kay9 wants
+    # the slot back rather than a jam. Names each disagreement it overrides, for the batch log.
+    found = []
+    if previous is None:
+        found.append('owner marker missing')
+    elif previous.get('claimToken') != args['claimToken'] or previous.get('pr') != pr:
+        found.append(f"owner marker held by claim {previous.get('claimToken')} for PR {previous.get('pr')}")
+    elif previous.get('state') != 'owned':
+        found.append(f"owner marker already {previous.get('state')}")
+    if prepared_pr is not None and prepared_pr != pr:
+        found.append(f'slot prepared for PR {prepared_pr}')
+    return found
+
+
 def inspect_prepared():
     manifest = json.loads(state.prepared_slot_path(pool.repo_key, slot).read_text())
     _, merge = live()
@@ -260,23 +292,18 @@ elif phase == 'cleanup':
                                        run_git_read(root, ['rev-parse', 'HEAD']).stdout.strip(), pool._verified_baseline())
             previous = {'claimToken': args['claimToken'], 'pr': pr, 'state': 'owned'}
             atomic_json(marker, previous)
-        # An interrupted preparation can leave an orphaned 'owned' marker whose claimToken belongs to
-        # a dead attempt (e.g. the batch process was killed between claiming the slot and finishing the
-        # fetch). prepare then refuses the slot ('unreleased reviewd owner') and this cleanup refused it
-        # too ('Native claim changed'), so the slot stayed blocked forever -- violating the
-        # slot-never-blocks invariant. Under slot_lock (serialised against any live prepare), a marker
-        # with no prepared slot and no pool run is a provable orphan, so a failed-attempt reset may
-        # reclaim it. The prepared_slot/pool_run guard below still refuses to steal a genuinely prepared
-        # predecessor, and lock serialisation guarantees we never race a live in-progress prepare.
-        orphan_owned = (previous is not None and previous.get('state') == 'owned'
-                        and previous.get('claimToken') != args['claimToken'])
-        # A preparation that failed before claiming leaves the marker 'released' under an older claim:
-        # natively the slot is already free, so only the SQLite owner is stale. A failed-attempt reset or
-        # a reaper discard may adopt it under the same no-prepared-slot/no-pool-run guard.
-        released_other = (previous is not None and previous.get('state') == 'released'
-                          and previous.get('claimToken') != args['claimToken'])
-        if ((args.get('failedPreparation') and (previous is None or orphan_owned))
-                or ((args.get('failedPreparation') or args.get('discard')) and released_other)):
+        # Under slot_lock (serialised against any live prepare), a marker with no prepared slot and no pool
+        # run is a provable orphan. The prepared_slot/pool_run guard below still refuses to steal a genuinely
+        # prepared predecessor, and lock serialisation guarantees we never race a live in-progress prepare.
+        force = bool(args.get('force') and args.get('discard'))
+        overrides = []
+        if force:
+            forced_path = state.prepared_slot_path(pool.repo_key, slot)
+            prepared_pr = json.loads(forced_path.read_text()).get('pr') if forced_path.exists() else None
+            overrides = forced_overrides(previous, args, pr, prepared_pr)
+            previous = {'claimToken': args['claimToken'], 'pr': pr, 'state': 'owned'}
+            atomic_json(marker, previous)
+        elif adoptable(previous, args):
             if state.prepared_slot_path(pool.repo_key, slot).exists() or writable.load_pool_run(pool.repo_key, slot, dry_run=True) is not None:
                 raise ReviewError('Unclaimed native predecessor remains; no failed-attempt reset allowed.')
             # A discard resets the slot to baseline below, so only a non-discarding adoption must
@@ -290,7 +317,7 @@ elif phase == 'cleanup':
             raise ReviewError('Native claim changed; no cleanup allowed.')
         clear_stale_index_locks()
         prepared_path = state.prepared_slot_path(pool.repo_key, slot)
-        if prepared_path.exists() and json.loads(prepared_path.read_text()).get('pr') != pr:
+        if not force and prepared_path.exists() and json.loads(prepared_path.read_text()).get('pr') != pr:
             raise ReviewError('Native prepared owner changed; no reset allowed.')
         discard = bool(args.get('discard'))
         if not discard and (git_status(source, read_only=True) or git_ignored_paths(source, read_only=True)):
@@ -310,7 +337,9 @@ elif phase == 'cleanup':
         with slot_writer_scope(writable, pool.repo_key, slot, phase='pooled-reset'):
             legacy = writable.load_pool_run(pool.repo_key, slot, dry_run=True)
             if legacy is not None and legacy.get('pr') != pr and legacy.get('pr_number') != pr:
-                raise ReviewError('Legacy native owner differs; no automatic reset allowed.')
+                if not force:
+                    raise ReviewError('Legacy native owner differs; no automatic reset allowed.')
+                overrides.append(f"legacy pool run for PR {legacy.get('pr') or legacy.get('pr_number')}")
             if prepared_path.exists():
                 result = _discard_prepared_slot(writable, pool, slot, confirm='YES')
             elif legacy is not None:
@@ -333,7 +362,8 @@ elif phase == 'cleanup':
             previous['state'] = 'released'
             atomic_json(marker, previous)
             print(json.dumps({'claimToken': args['claimToken'], 'cleanBaselineVerified': True,
-                              'evidencePreserved': preserved is not None, 'preservation': preserved, 'reset': result}))
+                              'evidencePreserved': preserved is not None, 'preservation': preserved, 'reset': result,
+                              'forced': overrides}))
 elif phase == 'verify':
     inspect_prepared()
     receipt = json.loads(safe_path(outer, directory + '/publication_receipts.json').read_text())

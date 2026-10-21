@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.Sandbox;
 using Microsoft.Data.Sqlite;
 
@@ -181,6 +182,16 @@ internal static class ReviewBatch
                 Console.Error.WriteLine(
                     $"Reaper reclaimed {reclaimed.Count} lapsed-lease slot(s): "
                         + string.Join(", ", reclaimed.Select(result => $"{result.Repo}#{result.Pr}/slot{result.Slot}"))
+                );
+            // Every result here is an owner whose lease lapsed. A forced reclaim names what it overrode; a skip is a
+            // slot still blocked (usually on active host agents) and is said on every sweep: a silent skip hid a jam 8 hours.
+            foreach (var forced in reclaimed.Where(result => result.Detail is not null))
+                Console.Error.WriteLine(
+                    $"Reaper forced lapsed-lease slot {forced.Repo}#{forced.Pr}/slot{forced.Slot}: {forced.Detail}"
+                );
+            foreach (var skipped in results.Where(result => result.Status == "skipped"))
+                Console.Error.WriteLine(
+                    $"Reaper waiting on lapsed-lease slot {skipped.Repo}#{skipped.Pr}/slot{skipped.Slot}: {skipped.Detail}"
                 );
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
@@ -479,6 +490,7 @@ internal static class ReviewBatch
                                 or "age-excluded"
                                 or "held"
                                 or "closed-held"
+                                or "quarantined"
                             )
                     )
                     .ToArray();
@@ -508,6 +520,20 @@ internal static class ReviewBatch
                     continue;
                 entry ??= candidates.OrderBy(value => value["order"]!.GetValue<long>()).First();
                 attempt ??= await ReadAsync(database, AttemptKey(entry));
+                // A head that failed the same way three times is skipped until the PR is pushed again. Only a free
+                // slot is left this way: an owned attempt still goes through the resume and held rules below.
+                if (
+                    (attempt is null || Reusable(attempt))
+                    && IsQuarantined(await ReadAsync(database, FailureKey(entry)), entry["head"]!.GetValue<string>())
+                )
+                {
+                    await SaveAsync(() =>
+                    {
+                        entry["status"] = "quarantined";
+                        entry["reason"] = "The same failure three times on this head; skipped until a new push.";
+                    });
+                    continue;
+                }
                 // AttemptKey is per repo/pr, not per head. A completed-verified attempt whose slot
                 // was already released belongs to an EARLIER head of this PR; once the PR advances,
                 // its new head is a fresh review, not a stuck retry. Drop the stale attempt so the
@@ -545,6 +571,7 @@ internal static class ReviewBatch
                     continue;
                 }
                 var launched = false;
+                var launchedFresh = false;
                 string? attemptBeforeLaunch = null;
                 try
                 {
@@ -655,6 +682,7 @@ internal static class ReviewBatch
                         return;
                     }
                     attemptBeforeLaunch = (await ReadAsync(database, AttemptKey(entry)))?.ToJsonString();
+                    launchedFresh = freshAdmission;
                     launched = true;
                     await run(CliOptions.Parse([.. arguments]));
                     var receipt = await ReadAsync(database, ReceiptKey(entry));
@@ -666,6 +694,7 @@ internal static class ReviewBatch
                         entry["status"] = "verified";
                         entry.Remove("retryAt");
                     });
+                    await ForgetFailuresAsync(entry);
                     launchHolds = 0;
                 }
                 catch (OperationCanceledException) when (scheduling.IsCancellationRequested)
@@ -686,6 +715,39 @@ internal static class ReviewBatch
                     // once and briefly exceeds it. Back off without spending the PR's retries, or admitted reviews
                     // are held and their slots wait for the reaper.
                     var capacity = ex is SandboxException { Kind: SandboxErrorKind.Unavailable, StatusCode: 503 };
+                    // A fresh admission that fails says something about the PR, so it is counted. One that released
+                    // its slot quarantines now; one still owning its slot is held below, and once the reaper frees the
+                    // slot the pre-launch check skips it, so a quarantine never strands an owned slot (seen live: a
+                    // prepare that timed out three times, each time holding its slot until the reaper freed it).
+                    // A resume is not counted: it repeats one admission, which only a fresh admission can replace
+                    // (seen live: a lost input re-verified five times). Neither is a held slot, which says nothing
+                    // about the PR.
+                    var failedTimes =
+                        launchedFresh
+                        && !transientBeforeClaim
+                        && !capacity
+                        && ex is not (ReviewRunner.ReviewNotAdmittedException or ReviewRunner.SlotUnavailableException)
+                            ? await RecordFailureAsync(entry, ex.Message)
+                            : 0;
+                    if (failedTimes >= QuarantineAfter && retained is not null && Reusable(retained))
+                    {
+                        await SaveAsync(() =>
+                        {
+                            entry["status"] = "quarantined";
+                            entry["reason"] = ex.Message;
+                        });
+                        Console.Error.WriteLine(
+                            $"PR {repo}/{entry["pr"]} quarantined after {QuarantineAfter} identical failures on head {entry["head"]}: {ex.Message}. Skipped until a new push."
+                        );
+                        if (++launchHolds >= MaxLaneRetries)
+                        {
+                            Console.Error.WriteLine(
+                                $"Lane {repo}/{slot} held: {launchHolds} launches failed in a row."
+                            );
+                            return;
+                        }
+                        continue;
+                    }
                     if (
                         (launched && !transientBeforeClaim && (retained is null || !Resumable(retained)))
                         || (!capacity && entry["failures"]!.GetValue<int>() + 1 >= MaxLaneRetries)
@@ -732,6 +794,69 @@ internal static class ReviewBatch
                         $"PR {repo}/{entry["pr"]} requeued: {ex.Message}. Existing ownership retained."
                     );
                 }
+            }
+        }
+
+        // Counts consecutive identical failures of one head; a different failure or a new head starts the count over.
+        // Repeats closer together than QuarantineSpacing count once, so a short outage that fails every retry of one
+        // selection is not mistaken for a PR that fails every selection.
+        async Task<int> RecordFailureAsync(JsonObject entry, string message)
+        {
+            await writes.WaitAsync();
+            try
+            {
+                var key = FailureKey(entry);
+                var head = entry["head"]!.GetValue<string>();
+                var signature = FailureSignature(message);
+                var previous = await ReadAsync(database, key);
+                var same =
+                    previous?["head"]?.GetValue<string>() == head
+                    && previous["signature"]?.GetValue<string>() == signature;
+                if (same && previous!["at"]?.GetValue<DateTimeOffset>() is { } at && now() - at < QuarantineSpacing)
+                    return previous["count"]!.GetValue<int>();
+                var count = same ? previous!["count"]!.GetValue<int>() + 1 : 1;
+                using var connection = Connection(database, SqliteOpenMode.ReadWrite);
+                await connection.OpenAsync();
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    "INSERT INTO cache(key,value) VALUES(@key,@value) ON CONFLICT(key) DO UPDATE SET value=excluded.value";
+                command.Parameters.AddWithValue("@key", key);
+                command.Parameters.AddWithValue(
+                    "@value",
+                    new JsonObject
+                    {
+                        ["head"] = head,
+                        ["signature"] = signature,
+                        ["count"] = count,
+                        ["reason"] = message,
+                        ["at"] = now(),
+                    }.ToJsonString()
+                );
+                await command.ExecuteNonQueryAsync();
+                return count;
+            }
+            finally
+            {
+                writes.Release();
+            }
+        }
+
+        // A verified review settles the PR, so its failure history (and any quarantine of an older head) goes.
+        async Task ForgetFailuresAsync(JsonObject entry)
+        {
+            await writes.WaitAsync();
+            try
+            {
+                using var connection = Connection(database, SqliteOpenMode.ReadWrite);
+                await connection.OpenAsync();
+                using var command = connection.CreateCommand();
+                command.CommandText = "DELETE FROM cache WHERE key=@key";
+                command.Parameters.AddWithValue("@key", FailureKey(entry));
+                await command.ExecuteNonQueryAsync();
+            }
+            finally
+            {
+                writes.Release();
             }
         }
 
@@ -784,6 +909,36 @@ internal static class ReviewBatch
 
     // A PR that keeps failing is skipped (held) instead of looping on one lane forever.
     private const int MaxLaneRetries = 5;
+
+    // The same failure on the same head three times will not clear by retrying: skip the PR until it is pushed again
+    // (a new head) rather than spend a lane on it every selection (seen live: 88 tries on one PR).
+    internal const int QuarantineAfter = 3;
+
+    // Longer than one selection's retries (about 8 minutes of backoff), shorter than the keep-alive's next pick.
+    internal static readonly TimeSpan QuarantineSpacing = TimeSpan.FromMinutes(20);
+
+    internal static string FailureKey(string repo, string pr) =>
+        "reviewd/failure/" + PrCommands.ParseRepo(repo).NormalizedKey + "/" + pr;
+
+    private static string FailureKey(JsonObject entry) =>
+        FailureKey(entry["repo"]!.GetValue<string>(), entry["pr"]!.GetValue<string>());
+
+    // Operation ids, claim tokens, SHAs and times differ between tries of one failure; the remaining text names it.
+    // The sandbox output tail is cut at a fixed length, so its first lines shift between tries: keep the headline and
+    // the tail's last line, which names the error.
+    internal static string FailureSignature(string message)
+    {
+        var parts = message.Split(SandboxTail, 2);
+        var text = parts.Length == 2 ? parts[0] + SandboxTail + parts[1].TrimEnd().Split('\n')[^1] : message;
+        return Regex.Replace(Regex.Replace(text, "[0-9a-fA-F]{8,}", "#"), "[0-9]+", "N");
+    }
+
+    private const string SandboxTail = "\n--- sandbox output tail ---\n";
+
+    internal static bool IsQuarantined(JsonNode? failure, string? head) =>
+        head is not null
+        && failure?["head"]?.GetValue<string>() == head
+        && failure["count"]?.GetValue<int>() >= QuarantineAfter;
 
     private const string InterruptedLaunch = "Interrupted launch has no definitive non-admission evidence.";
 

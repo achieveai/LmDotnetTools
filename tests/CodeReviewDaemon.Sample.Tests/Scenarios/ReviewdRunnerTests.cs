@@ -460,6 +460,61 @@ public sealed class ReviewdRunnerTests
         handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get);
     }
 
+    // Seen live: a review parked on AskUserQuestion took the confirmation as its answer. The host ran it, but
+    // never folded the input into a run, so the input read NotStarted on an idle thread for hours and the
+    // batch, its slot and its whole store waited forever. Busy reads in between neither count nor reset.
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public async Task An_input_that_never_runs_on_an_idle_thread_is_reported_lost(bool busyBetween, bool stays)
+    {
+        var reads = 0;
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/status", StringComparison.Ordinal),
+                _ =>
+                    Json(
+                        stays || reads < 100
+                            ? """{"threadId":"thread","runId":null,"status":"NotStarted","response":null}"""
+                            : """{"threadId":"thread","runId":"run","status":"Completed","response":null}"""
+                    )
+            )
+            .OnJson(HttpMethod.Get, "/run-state", """{"threadId":"thread","isInProgress":false,"currentRunId":null}""")
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/subagents", StringComparison.Ordinal),
+                _ =>
+                    ++reads % 2 == 0 && busyBetween
+                        ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                        {
+                            Content = new StringContent("""{"code":"hierarchy_busy"}"""),
+                        }
+                        : Json("""{"schemaVersion":1,"nodes":[]}""")
+            );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var run = () =>
+            ReviewRunner.WaitAsync(
+                client,
+                "thread",
+                "input",
+                _ => reads > 5000 ? throw new TimeoutException("Still waiting.") : Task.CompletedTask,
+                CancellationToken.None
+            );
+        if (stays)
+        {
+            await run.Should().ThrowAsync<ReviewRunner.LostInputException>();
+            reads
+                .Should()
+                .Be(busyBetween ? (2 * ReviewRunner.MaxIdleNotStartedReads) - 1 : ReviewRunner.MaxIdleNotStartedReads);
+        }
+        else
+        {
+            (await run())!.Status.Should().Be("Completed");
+        }
+        handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get);
+    }
+
     // Seen live: a grader stamped "error" beside a completed publisher. A finished child that did not succeed
     // is not a failed review, so the wait settles instead of throwing. A running child keeps the wait however
     // old its activity time looks: that time is not refreshed per turn (one read four hours "idle" while it
@@ -788,6 +843,219 @@ public sealed class ReviewdRunnerTests
             .Select(entry => entry["status"]!.GetValue<string>())
             .Should()
             .Equal("held", "verified", "verified");
+    }
+
+    [Theory]
+    [InlineData(true, 3, "quarantined")]
+    [InlineData(false, 5, "held")]
+    public async Task Batch_quarantines_a_pr_after_three_identical_failures_on_one_head(
+        bool identical,
+        int expectedRuns,
+        string expectedStatus
+    )
+    {
+        // Seen live: one PR failed setup the same way 88 times, spending a lane each pick. The same failure three
+        // times on one head, each a selection apart, will not clear by retrying; a different failure still gets every
+        // retry.
+        using var batch = new BatchFixture(0);
+        batch.PutAttempt(
+            "1",
+            new JsonObject
+            {
+                ["slot"] = 0,
+                ["stage"] = "failed-released",
+                ["cleanupState"] = "released",
+                ["claimToken"] = "failed-claim",
+            }
+        );
+        var failures = 0;
+        batch.OnRunAsync = () =>
+        {
+            if (batch.Runs[^1] != "1:fresh")
+                return Task.CompletedTask;
+            batch.AdvanceSeconds((int)ReviewBatch.QuarantineSpacing.TotalSeconds);
+            throw new InvalidOperationException(
+                identical || ++failures % 2 == 0
+                    ? $"Sandbox prepare failed (exit 1, operation {Guid.NewGuid():N}); Setup stopped with exit 2."
+                    : $"Sandbox verify failed (exit 1, operation {Guid.NewGuid():N}); receipt missing."
+            );
+        };
+
+        await batch.ExecuteAsync();
+
+        batch.Runs.Count(run => run == "1:fresh").Should().Be(expectedRuns);
+        batch.Entries()[0]["status"]!.GetValue<string>().Should().Be(expectedStatus);
+        batch.Entries().Skip(1).Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
+    }
+
+    [Fact]
+    public async Task Batch_counts_identical_failures_inside_the_spacing_once()
+    {
+        // A short outage fails every retry of one selection the same way. That says nothing about the PR, so it is one
+        // failure, not a quarantine.
+        using var batch = new BatchFixture(0);
+        batch.PutAttempt(
+            "1",
+            new JsonObject
+            {
+                ["slot"] = 0,
+                ["stage"] = "failed-released",
+                ["cleanupState"] = "released",
+                ["claimToken"] = "failed-claim",
+            }
+        );
+        batch.OnRunAsync = () =>
+            batch.Runs[^1] == "1:fresh"
+                ? throw new InvalidOperationException(
+                    $"Sandbox prepare failed (exit 1, operation {Guid.NewGuid():N}); gateway timed out."
+                )
+                : Task.CompletedTask;
+
+        await batch.ExecuteAsync();
+
+        batch.Runs.Count(run => run == "1:fresh").Should().Be(5);
+        batch.Entries()[0]["status"]!.GetValue<string>().Should().Be("held");
+        batch.Read(ReviewBatch.FailureKey(BatchFixture.Repo, "1"))!["count"]!.GetValue<int>().Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData("resume")]
+    [InlineData("slot-not-idle")]
+    public async Task Batch_does_not_count_failures_that_say_nothing_about_the_pr(string kind)
+    {
+        // Seen live: a review whose input was lost re-verified on every resume, five times; only a fresh admission can
+        // replace it, so quarantining it would skip a PR that would pass. A held slot fails every PR the same way.
+        using var batch = new BatchFixture(0);
+        batch.PutAttempt(
+            "1",
+            kind == "resume"
+                ? new JsonObject
+                {
+                    ["slot"] = 0,
+                    ["stage"] = "review-running",
+                    ["cleanupState"] = "owned",
+                    ["claimToken"] = "lost-input",
+                    ["reviewInputId"] = "input-never-run",
+                }
+                : new JsonObject
+                {
+                    ["slot"] = 0,
+                    ["stage"] = "failed-released",
+                    ["cleanupState"] = "released",
+                    ["claimToken"] = "failed-claim",
+                }
+        );
+        batch.OnRunAsync = () =>
+        {
+            if (!batch.Runs[^1].StartsWith("1:", StringComparison.Ordinal))
+                return Task.CompletedTask;
+            batch.AdvanceSeconds((int)ReviewBatch.QuarantineSpacing.TotalSeconds);
+            throw kind == "resume"
+                ? new InvalidOperationException($"Sandbox verify failed (exit 1, operation {Guid.NewGuid():N}).")
+                : new ReviewRunner.SlotUnavailableException("Native slot is not idle: orphaned owner marker.");
+        };
+
+        await batch.ExecuteAsync();
+
+        batch.Runs.Should().Contain(kind == "resume" ? "1:resume" : "1:fresh");
+        batch.Entries()[0]["status"]!.GetValue<string>().Should().Be("held");
+        batch.Read(ReviewBatch.FailureKey(BatchFixture.Repo, "1")).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Batch_counts_a_failure_that_still_holds_its_slot()
+    {
+        // Seen live: a prepare that timed out kept its slot each time, so it was held, freed by the reaper, picked
+        // again and timed out again. Those failures count too; the pre-launch check skips the head once the slot is free.
+        using var batch = new BatchFixture(0);
+        batch.OnRunAsync = () =>
+        {
+            if (batch.Runs[^1] != "1:fresh")
+                return Task.CompletedTask;
+            batch.PutAttempt(
+                "1",
+                new JsonObject
+                {
+                    ["slot"] = 0,
+                    ["stage"] = "prepare-pending",
+                    ["cleanupState"] = "owned",
+                    ["claimToken"] = "timed-out",
+                }
+            );
+            throw new InvalidOperationException(
+                "The sandbox gateway's execution timeout elapsed before the command completed."
+            );
+        };
+
+        await batch.ExecuteAsync();
+
+        batch.Entries()[0]["status"]!.GetValue<string>().Should().Be("held", "its slot is still owned");
+        batch.Read(ReviewBatch.FailureKey(BatchFixture.Repo, "1"))!["count"]!.GetValue<int>().Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData('a', false)]
+    [InlineData('c', true)]
+    public async Task Batch_skips_a_quarantined_head_without_spending_a_lane(char failedHead, bool runs)
+    {
+        // The selection's head is 'a'. A quarantine recorded for head 'a' skips it; one for an older head does not.
+        using var batch = new BatchFixture(0);
+        batch.Put(
+            ReviewBatch.FailureKey(BatchFixture.Repo, "1"),
+            new JsonObject
+            {
+                ["head"] = new string(failedHead, 40),
+                ["signature"] = "Sandbox prepare failed",
+                ["count"] = ReviewBatch.QuarantineAfter,
+                ["reason"] = "Sandbox prepare failed",
+            }
+        );
+
+        await batch.ExecuteAsync();
+
+        batch.Runs.Contains("1:fresh").Should().Be(runs);
+        batch.Entries()[0]["status"]!.GetValue<string>().Should().Be(runs ? "verified" : "quarantined");
+        // A verified review settles the PR, so its old failure history goes with it.
+        (batch.Read(ReviewBatch.FailureKey(BatchFixture.Repo, "1")) is null)
+            .Should()
+            .Be(runs);
+    }
+
+    [Fact]
+    public void Failure_signature_ignores_operation_ids_and_numbers()
+    {
+        ReviewBatch
+            .FailureSignature(
+                "Sandbox prepare failed (exit 1, operation 7ba6394395f64c58aa9636e5111d7697) at 2026-10-20T15:10:51"
+            )
+            .Should()
+            .Be(
+                ReviewBatch.FailureSignature(
+                    "Sandbox prepare failed (exit 1, operation 5ad6c1a398e14dd19c4c8196527796cb) at 2026-10-21T01:02:03"
+                )
+            );
+        ReviewBatch
+            .FailureSignature("Sandbox prepare failed (exit 1)")
+            .Should()
+            .NotBe(ReviewBatch.FailureSignature("Sandbox verify failed (exit 1)"));
+        // The output tail is cut at a fixed length, so where it starts shifts between tries; its last line does not.
+        const string tail = "\n--- sandbox output tail ---\n";
+        ReviewBatch
+            .FailureSignature(
+                "Sandbox prepare failed (exit 1)." + tail + "…N: checking 9.8s\nReviewError: Setup stopped"
+            )
+            .Should()
+            .Be(
+                ReviewBatch.FailureSignature(
+                    "Sandbox prepare failed (exit 1)." + tail + "…: checking 10.2s\nReviewError: Setup stopped"
+                )
+            );
+        ReviewBatch
+            .FailureSignature("Sandbox prepare failed (exit 1)." + tail + "FileNotFoundError: receipts.json")
+            .Should()
+            .NotBe(
+                ReviewBatch.FailureSignature("Sandbox prepare failed (exit 1)." + tail + "ReviewError: Setup stopped")
+            );
     }
 
     [Theory]
@@ -1198,7 +1466,7 @@ public sealed class ReviewdRunnerTests
 
     private sealed class BatchFixture : IDisposable
     {
-        private const string Repo = "org/project/Nova";
+        public const string Repo = "org/project/Nova";
         private readonly ReviewdConfig _config = new(new ConfigurationBuilder().Build());
         private readonly string _database = Path.Combine(Path.GetTempPath(), $"reviewd-batch-{Guid.NewGuid():N}.db");
         private string _selection;
@@ -2462,6 +2730,160 @@ public sealed class ReviewdRunnerTests
     }
 
     [Theory]
+    [InlineData("prior", 1, null)]
+    [InlineData("other", 1, "PR head was already reviewed by another run; skipped.")]
+    // The batch can admit a failed entry again without a new pick, so the runner holds the reset cap too.
+    [InlineData("prior", 3, "PR head was reset 3 times; skipped until a new push.")]
+    public async Task Runner_reviews_its_own_reset_review_of_the_same_head_again(
+        string titledThread,
+        int resetCount,
+        string? refusal
+    )
+    {
+        // Kay9: a review the reaper reset before its publication was verified is reviewed again, in its own
+        // conversation, told to post only what is missing. A conversation for this head that is not ours still means
+        // another run reviewed it.
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-reset-retry-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/17";
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/api/conversations?",
+                $$"""[{"threadId":"{{titledThread}}","title":"Nova-17-aaaaaaaa","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1}]"""
+            )
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/unfreeze", StringComparison.Ordinal),
+                _ => new HttpResponseMessage(HttpStatusCode.Conflict)
+                {
+                    Content = new StringContent("""{"error":"not_freezable","threadId":"prior"}"""),
+                }
+            )
+            .OnJson(HttpMethod.Post, "/messages", """{"inputId":"original","idempotencyKeyHonored":true}""")
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        static Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token) =>
+            Task.FromResult(
+                phase switch
+                {
+                    "eligibility" => new JsonObject
+                    {
+                        ["prId"] = "17",
+                        ["status"] = "active",
+                        ["isDraft"] = false,
+                        ["headSha"] = new string('a', 40),
+                    },
+                    "prepare" => new JsonObject
+                    {
+                        ["mergeSha"] = new string('b', 40),
+                        ["contextPath"] = "context",
+                        ["reviewDirectory"] = "reviews",
+                        ["baselineComments"] = new JsonArray(),
+                    },
+                    _ => [],
+                }
+            );
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            var store = new SqliteKvStore(connection);
+            await store.SetAsync(
+                $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                new JsonObject
+                {
+                    ["17"] = new JsonObject
+                    {
+                        ["Lifecycle"] = "Open",
+                        ["IsDraft"] = false,
+                        ["HeadSha"] = new string('a', 40),
+                    },
+                }
+            );
+            await store.SetAsync(
+                attemptKey,
+                new JsonObject
+                {
+                    ["repository"] = repo.DisplayName,
+                    ["prId"] = "17",
+                    ["slot"] = 2,
+                    ["workspaceId"] = "workspace",
+                    ["stage"] = "failed-released",
+                    ["stageBeforeReclaim"] = "review-completed",
+                    ["resetCount"] = resetCount,
+                    ["cleanupState"] = "released",
+                    ["claimToken"] = "earlier-claim",
+                    ["reviewInputId"] = "earlier-input",
+                    ["threadId"] = "prior",
+                    ["headSha"] = new string('a', 40),
+                }
+            );
+            var options = CliOptions.Parse([
+                "review",
+                "run",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "test",
+                "--execute",
+            ]);
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    options,
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ => Task.CompletedTask,
+                    () => DateTimeOffset.UtcNow
+                );
+            var failure = (await run.Should().ThrowAsync<InvalidOperationException>()).Which.Message;
+            var sent = handler
+                .Requests.Where(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                .ToList();
+            if (refusal is null)
+            {
+                failure.Should().NotContain("already reviewed by another run");
+                sent.Should().ContainSingle().Which.Body.Should().Contain("stopped before its publication was");
+                using var reread = PrThreadBindings.Connection(database);
+                (await new SqliteKvStore(reread).GetAsync<JsonObject>(attemptKey))!["resetCount"]!
+                    .GetValue<int>()
+                    .Should()
+                    .Be(1);
+            }
+            else
+            {
+                failure.Should().Be(refusal);
+                sent.Should().BeEmpty();
+            }
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("xhigh")]
     public async Task Runner_records_and_provisions_optional_effort_and_guards_resume_effort_mismatch(string? effort)
@@ -2604,6 +3026,7 @@ public sealed class ReviewdRunnerTests
         var polls = 0;
         var phases = new List<string>();
         var verifySummaryThreads = new List<string>();
+        string? lostInput = null;
         var handler = new FakeHttpMessageHandler()
             .OnJson(
                 HttpMethod.Get,
@@ -2636,6 +3059,12 @@ public sealed class ReviewdRunnerTests
             )
             .OnJson(HttpMethod.Put, "/metadata", "{}")
             .OnJson(HttpMethod.Post, "/unfreeze", """{"threadId":"thread","frozen":false}""")
+            .On(
+                request =>
+                    lostInput is { } lost
+                    && request.RequestUri!.Query.EndsWith("inputId=" + lost, StringComparison.Ordinal),
+                _ => Json("""{"status":"NotStarted","runId":null}""")
+            )
             .OnJson(HttpMethod.Get, "/status?", """{"status":"Completed","runId":"run","response":{"text":"done"}}""")
             .On(
                 request => request.RequestUri!.AbsolutePath.EndsWith("/run-state", StringComparison.Ordinal),
@@ -2813,6 +3242,12 @@ public sealed class ReviewdRunnerTests
                     .Should()
                     .Be("verify-pending", "other sandbox work stopped the commit, and a rerun is safe");
             }
+            // The first verification found the confirmation lost (the host never ran it); a retry must not
+            // wait on it again, or every retry stalls the lane for the whole lost-input bound.
+            var lost = (await store.GetAsync<JsonObject>(attemptKey))!;
+            lost["confirmationLost"] = true;
+            await store.SetAsync(attemptKey, lost);
+            lostInput = lost["confirmationInputId"]!.GetValue<string>();
             var requestsBeforeResume = handler.Requests.Count;
             phases.Clear();
             await ReviewRunner.RunAsync(
@@ -2829,6 +3264,11 @@ public sealed class ReviewdRunnerTests
                 .Requests.Skip(requestsBeforeResume)
                 .Should()
                 .OnlyContain(request => request.Method == HttpMethod.Get);
+            handler
+                .Requests.Skip(requestsBeforeResume)
+                .Should()
+                .NotContain(request => request.Uri.Query.EndsWith("inputId=" + lostInput, StringComparison.Ordinal));
+            lostInput = null;
             phases.Should().Equal("inspect-prepared", "verify", "commit", "cleanup");
             var recovered = (await store.GetAsync<JsonObject>(attemptKey))!;
             recovered["stage"]!.GetValue<string>().Should().Be("completed-verified");
@@ -2913,6 +3353,31 @@ public sealed class ReviewdRunnerTests
                 .GetValue<string>()
                 .Should()
                 .Be("completed-verified");
+            // A review input the host swallowed may still have been reviewed by the run that answered the parked
+            // question (seen live), so it is confirmed and verify decides, rather than failing the review.
+            using (var removeClaim = connection.CreateCommand())
+            {
+                removeClaim.CommandText = "DELETE FROM cache WHERE key=@key";
+                removeClaim.Parameters.AddWithValue("@key", SlotRelease.OwnerKey("workspace", repo.NormalizedKey, 2));
+                await removeClaim.ExecuteNonQueryAsync();
+            }
+            await store.SetAsync(attemptKey, interrupted);
+            lostInput = interrupted["reviewInputId"]!.GetValue<string>();
+            phases.Clear();
+            await ReviewRunner.RunAsync(
+                resume,
+                config,
+                client,
+                SandboxAsync,
+                CancellationToken.None,
+                _ => Task.CompletedTask
+            );
+            lostInput = null;
+            sends.Should().Be(count + 2, "a lost review is confirmed, never resent");
+            phases.Should().Equal("inspect-prepared", "inspect", "verify", "commit", "cleanup");
+            var confirmed = (await store.GetAsync<JsonObject>(attemptKey))!;
+            confirmed["stage"]!.GetValue<string>().Should().Be("completed-verified");
+            confirmed["reviewLost"]!.GetValue<bool>().Should().BeTrue();
 
             Task SnapshotAsync(char head) =>
                 store.SetAsync(

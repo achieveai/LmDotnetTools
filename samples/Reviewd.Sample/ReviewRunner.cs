@@ -36,6 +36,12 @@ internal static class ReviewRunner
         internal JsonNode? Owner { get; } = owner;
     }
 
+    /// <summary>
+    ///     The host accepted an input but never ran it while the conversation sat idle (see
+    ///     <see cref="MaxIdleNotStartedReads"/>), so no status for it will ever arrive.
+    /// </summary>
+    internal sealed class LostInputException(string message) : InvalidOperationException(message);
+
     /// <summary>Exit code of an automatic <c>review run</c> that found no usable slot.</summary>
     internal const int NoSlotExitCode = 3;
 
@@ -472,11 +478,33 @@ internal static class ReviewRunner
         // than a freshly-provisioned blank one. Drives the incremental re-review prompt below: the
         // conversation already holds the earlier review's full message history.
         var reusedConversation = thread is not null && !resume && !cleanupOnly;
+        // The reaper resets a review that stopped before its publication was verified, and the PR is admitted again
+        // in its own conversation (Kay9: review it again rather than skip it until a new push).
+        var retryOfReset =
+            reusedConversation
+            && attempt is not null
+            && PrSelection.IsResetForRetry(
+                JsonSerializer.SerializeToElement(attempt),
+                thread,
+                current["HeadSha"]?.GetValue<string>()
+            );
+        var resetsOfHead =
+            attempt is null || resume || cleanupOnly
+                ? 0
+                : PrSelection.ResetsOfHead(
+                    JsonSerializer.SerializeToElement(attempt),
+                    current["HeadSha"]?.GetValue<string>()
+                );
+        // Whatever keeps failing it, a head the reaper reset MaxResetRetries times waits for a new push. The batch can
+        // admit a failed entry again without a new pick, so the runner holds the line too.
+        if (resetsOfHead >= PrSelection.MaxResetRetries)
+            throw new ReviewNotAdmittedException($"PR head was reset {resetsOfHead} times; skipped until a new push.");
         // A prior conversation without a receipt in THIS db is only a risk if it is still running: its
         // receipt may live in whichever db ran it. Ask the host, not our bookkeeping.
         // The host is also the cross-db record of what was already admitted: a conversation titled for this
         // exact head means this revision was reviewed from another db, and re-admitting it would post
         // duplicate PR comments.
+        // Our own reset review of this head is the one exception.
         if (
             !resume
             && !cleanupOnly
@@ -488,7 +516,8 @@ internal static class ReviewRunner
                 mode,
                 ct
             )
-                is not null
+                is { } reviewed
+            && !(retryOfReset && reviewed.ThreadId == thread)
         )
             throw new ReviewNotAdmittedException("PR head was already reviewed by another run; skipped.");
         var threadInFlight =
@@ -677,6 +706,9 @@ internal static class ReviewRunner
             receipt["reasoningEffort"] = reasoningEffort;
         if (selection is not null)
             receipt["slotSelection"] = selection.DeepClone();
+        // Resets of one head add up across its retries, whatever ended each one.
+        if (resetsOfHead > 0)
+            receipt["resetCount"] = resetsOfHead;
         if (resume || cleanupOnly)
             receipt = attempt!.DeepClone().AsObject();
         if (cleanupOnly && attempt!["claimToken"] is null)
@@ -774,17 +806,28 @@ internal static class ReviewRunner
             var publishing = github
                 ? $"Publish to GitHub through the sandbox egress proxy, an approved route and not a bypass: python3 /marketplaces/sandbox-plugins/sandbox-auth/scripts/sandbox-auth-fetch.py --url https://api.github.com/repos/{repo.OrgOrOwner}/{repo.RepoName}/... --method POST --header Content-Type:application/json --header Accept:application/vnd.github+json --data-file <body.json>. Post the summary as a PR conversation comment (issues/{pr}/comments, commentType issue_comment); post inline findings as a review (pulls/{pr}/reviews with event COMMENT and commit_id {args["head"]}) and record the review (commentType review) and each of its inline comments (commentType review_comment, ids from pulls/{pr}/reviews/<id>/comments); reply to an existing inline thread with pulls/{pr}/comments/<id>/replies (commentType review_comment). Never approve or request changes. The proxy adds credentials; never send an Authorization header. Give any publisher sub-agent Bash and Read."
                 : "Without Azure DevOps MCP tools, publish through the sandbox egress proxy, an approved route and not a bypass: python3 /marketplaces/sandbox-plugins/sandbox-auth/scripts/sandbox-auth-fetch.py --url <ADO REST URL> --method POST --header Content-Type:application/json --data-file <body.json>. The proxy adds credentials; never send an Authorization header. Give any publisher sub-agent Bash and Read.";
-            var reReviewPreamble = reusedConversation
-                ? $"""
-                    This conversation already reviewed an earlier revision of this same PR — your prior
-                    findings, replies and summary are in the message history above. The PR has since been
-                    updated to head {args["head"]}. Re-read your earlier review first, then focus on what
-                    changed since you last reviewed it: confirm whether prior findings are now addressed,
-                    withdraw any that no longer apply, and assess only the new/changed code. Still
-                    re-verify live PR state before posting, and reply to existing finding threads instead
-                    of duplicating them.
+            var reReviewPreamble =
+                retryOfReset
+                    ? $"""
+                        This conversation may already hold your review of this PR, of this same head
+                        ({args["head"]}) or an earlier one, but the last run stopped before its publication was
+                        verified, so some of it may already be on the PR. Read the PR's existing threads first:
+                        keep what is already posted, post only the findings and summary that are missing, and reply
+                        to existing finding threads instead of duplicating them. Review in full any code that
+                        changed since your last review, or the whole PR if this conversation holds no review yet.
 
-                    """
+                        """
+                : reusedConversation
+                    ? $"""
+                        This conversation already reviewed an earlier revision of this same PR — your prior
+                        findings, replies and summary are in the message history above. The PR has since been
+                        updated to head {args["head"]}. Re-read your earlier review first, then focus on what
+                        changed since you last reviewed it: confirm whether prior findings are now addressed,
+                        withdraw any that no longer apply, and assess only the new/changed code. Still
+                        re-verify live PR state before posting, and reply to existing finding threads instead
+                        of duplicating them.
+
+                        """
                 : "";
             var prompt = $"""
                 {reReviewPreamble}Review {repo.DisplayName} PR #{pr} in slot {repo.RepoName}-{slot}.
@@ -806,13 +849,7 @@ internal static class ReviewRunner
             }
             else
             {
-                var existing = await WaitAsync(
-                    client,
-                    thread!,
-                    receipt["reviewInputId"]!.GetValue<string>(),
-                    LeasedDelayAsync,
-                    ct
-                );
+                var existing = await WaitInputAsync("review", receipt["reviewInputId"]!.GetValue<string>());
                 receipt["reviewResponse"] = existing?.ResponseText;
                 if (receipt["confirmationInputId"] is null)
                     receipt["stage"] = "review-completed";
@@ -821,7 +858,7 @@ internal static class ReviewRunner
             await SaveAsync();
             if (resume && receipt["confirmationInputId"]?.GetValue<string>() is { Length: > 0 } confirmation)
             {
-                var existing = await WaitAsync(client, thread!, confirmation, LeasedDelayAsync, ct);
+                var existing = await WaitInputAsync("confirmation", confirmation);
                 receipt["confirmationResponse"] = existing?.ResponseText;
                 receipt["stage"] = "confirmation-completed";
                 await SaveAsync();
@@ -1051,10 +1088,31 @@ internal static class ReviewRunner
             receipt[phase + "InputId"] = input;
             receipt["stage"] = phase + "-running";
             await SaveAsync();
-            var status = await WaitAsync(client, thread!, input, LeasedDelayAsync, ct);
+            var status = await WaitInputAsync(phase, input);
             receipt[phase + "Response"] = status?.ResponseText;
             receipt["stage"] = phase + "-completed";
             await SaveAsync();
+        }
+
+        // An input the host swallowed (it answered a question the review left pending) must not hold the
+        // slot. The answering run may still have done the work (seen live: a swallowed review input was
+        // reviewed and published), so a lost review still gets its confirmation, and verify, not either
+        // response, decides success. A retry never waits again on an input already found lost.
+        async Task<S2SStatusResult?> WaitInputAsync(string phase, string input)
+        {
+            if (receipt[phase + "Lost"]?.GetValue<bool>() == true)
+                return null;
+            try
+            {
+                return await WaitAsync(client, thread!, input, LeasedDelayAsync, ct);
+            }
+            catch (LostInputException ex)
+            {
+                var next = phase == "review" ? "Confirming" : "Verifying publication";
+                Console.WriteLine($"{repo.DisplayName} #{pr}: {ex.Message} {next} instead.");
+                receipt[phase + "Lost"] = true;
+                return null;
+            }
         }
     }
 
@@ -1150,6 +1208,11 @@ internal static class ReviewRunner
     // before giving up. Twelve, the old bound, aborted dozens of live reviews mid-run.
     internal const int MaxConsecutiveBusyReads = 600;
 
+    // An idle thread drains a queued input at once, so an input still NotStarted after this many idle, settled
+    // reads (about ten minutes at the 1s poll) was swallowed. Seen live: a review parked on AskUserQuestion
+    // took the confirmation as its answer, and the host ran it without ever folding the input into a run.
+    internal const int MaxIdleNotStartedReads = 600;
+
     // Error and Stopped are terminal: the child is done, it just did not succeed. That is not a review
     // failure — a grader can error while the publisher still publishes — so it settles rather than throws.
     // Whether the review succeeded is decided by the root input's status and then by verify, never by a
@@ -1179,6 +1242,7 @@ internal static class ReviewRunner
     {
         string? candidate = null;
         var busyReads = 0;
+        var idleNotStartedReads = 0;
         while (true)
         {
             var status = input is null ? null : await client.GetStatusByInputIdAsync(thread, input, ct);
@@ -1203,11 +1267,19 @@ internal static class ReviewRunner
                 throw new InvalidOperationException($"Review input ended with {status.Status}; not success.");
             }
             var now = DateTimeOffset.UtcNow;
+            var settled =
+                !global.IsInProgress && global.CurrentRunId is null && tree.Nodes.All(n => IsSettledNode(n, now));
             var idle =
-                !global.IsInProgress
-                && global.CurrentRunId is null
-                && (status is null || status.Status.Equals("completed", StringComparison.OrdinalIgnoreCase))
-                && tree.Nodes.All(n => IsSettledNode(n, now));
+                settled && (status is null || status.Status.Equals("completed", StringComparison.OrdinalIgnoreCase));
+            if (settled && status is not null && status.Status.Equals("notstarted", StringComparison.OrdinalIgnoreCase))
+            {
+                if (++idleNotStartedReads >= MaxIdleNotStartedReads)
+                    throw new LostInputException(
+                        $"Input {input} stayed NotStarted while the conversation was idle; the host will never run it."
+                    );
+            }
+            else
+                idleNotStartedReads = 0;
             var signature = JsonSerializer.Serialize(
                 new
                 {
