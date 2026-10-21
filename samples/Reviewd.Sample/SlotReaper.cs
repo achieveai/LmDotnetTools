@@ -245,8 +245,15 @@ internal static class SlotReaper
                     "Discard-reset postconditions were not verified; slot remains claimed."
                 );
 
-            // 4) Release the SQLite owner on the exact claim token, stamping the attempt released.
-            attempt["reclaim"] = new JsonObject { ["freeze"] = freezeState, ["operation"] = operation };
+            // 4) Release the SQLite owner on the exact claim token, stamping the attempt released. A forced reset keeps
+            //    what it overrode on the attempt too, not just in the log.
+            var overrides = result["forced"] as JsonArray is { Count: > 0 } named ? named : null;
+            attempt["reclaim"] = new JsonObject
+            {
+                ["freeze"] = freezeState,
+                ["operation"] = operation,
+                ["forced"] = overrides?.DeepClone(),
+            };
             // A review whose publication was never verified becomes a failed admission once its slot is reset: the next
             // pick admits the PR again in its own conversation, which checks what already posted (Kay9: review it again
             // rather than skip it until a new push; seen live: 12 open PRs parked that way, and prepares that failed
@@ -264,7 +271,7 @@ internal static class SlotReaper
             }
             await SlotRelease.ReleaseAsync(connection, ownerKey, claimToken, attemptKey, attempt, ct);
 
-            var forced = result["forced"] is JsonArray { Count: > 0 } overrides
+            var forced = overrides is not null
                 ? "forced: " + string.Join("; ", overrides.Select(o => o!.GetValue<string>()))
                 : null;
             // Deliberately leave the host agent frozen — it has no slot to resume into, and host-side
@@ -285,6 +292,24 @@ internal static class SlotReaper
 
     internal static bool IsForceDue(JsonObject owner, DateTimeOffset now) =>
         owner["leaseExpiresAt"]?.GetValue<DateTimeOffset>() is not { } expiry || now - expiry >= ForceAfterLapse;
+
+    /// <summary>
+    /// For reclaim-slot, which targets one slot instead of sweeping lapsed leases: it forces exactly when the reaper
+    /// would, once the slot's owner row still holding this claim has been lapsed <see cref="ForceAfterLapse"/>.
+    /// </summary>
+    internal static async Task<bool> IsForceDueAsync(
+        SqliteConnection connection,
+        string workspace,
+        RepoIdentity repo,
+        int slot,
+        string claimToken,
+        DateTimeOffset now,
+        CancellationToken ct
+    ) =>
+        await ReadAsync(connection, SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot), ct) is { } owner
+        && owner["claimToken"]?.GetValue<string>() == claimToken
+        && SlotRelease.IsLeaseExpired(owner, now, undatedExpired: true)
+        && IsForceDue(owner, now);
 
     // How long a frozen conversation's tree gets to settle before the reclaim gives up on it as live.
     private static readonly TimeSpan QuiescenceDeadline = TimeSpan.FromSeconds(20);

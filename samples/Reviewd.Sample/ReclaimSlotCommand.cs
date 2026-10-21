@@ -57,6 +57,16 @@ internal static class ReclaimSlotCommand
         SlotReaper.SandboxExecutor sandbox = (phase, args, operation, token) =>
             ReviewRunner.ExecuteSandboxAsync(sandboxClient, session, phase, args, operation, token);
 
+        // Forces through native records that disagree with ours exactly when the reaper would.
+        var force = await SlotReaper.IsForceDueAsync(
+            connection,
+            workspace,
+            repo,
+            slot,
+            claimToken!,
+            DateTimeOffset.UtcNow,
+            ct
+        );
         var result = await SlotReaper.ReclaimOneAsync(
             connection,
             client,
@@ -68,7 +78,8 @@ internal static class ReclaimSlotCommand
             attempt!,
             claimToken!,
             execute,
-            ct
+            ct,
+            force
         );
         Console.WriteLine(JsonSerializer.Serialize(result));
         return 0;

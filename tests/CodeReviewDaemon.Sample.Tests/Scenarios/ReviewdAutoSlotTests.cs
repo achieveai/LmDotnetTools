@@ -744,6 +744,94 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         }
     }
 
+    [SkippableTheory]
+    // The journal's writer reuses this test process's live pid, group and session, recorded in another PID namespace
+    // (or in this one), started this many minutes ago.
+    [InlineData("other", 31, "reaped: expired")]
+    [InlineData("other", 5, "refused: Recorded slot writer is in another boot/PID namespace")]
+    [InlineData("same", 31, "refused: Recorded slot writer process group is still executable")]
+    public async Task The_kit_reaps_another_namespaces_journal_by_age_and_never_by_a_reused_pid(
+        string pidNamespace,
+        int startedMinutesAgo,
+        string outcome
+    )
+    {
+        // The kit cannot see a process in another PID namespace, so it never looks the writer up there: a pid reused
+        // by a live process here neither blocks nor confuses the reclaim. Such a journal is reaped once over 30
+        // minutes old. A writer recorded in this namespace is checked live, and a live group blocks.
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the kit cannot be run");
+        Skip.IfNot(OperatingSystem.IsLinux(), "the kit reads /proc, so it runs only on Linux");
+        var scripts = Path.Combine(
+            "samples",
+            "CodeReviewDaemon.Sample",
+            "review-host-kit",
+            "skills",
+            "review-setup",
+            "scripts"
+        );
+        var kit = new DirectoryInfo(AppContext.BaseDirectory);
+        while (kit is not null && !File.Exists(Path.Combine(kit.FullName, scripts, "review_common.py")))
+            kit = kit.Parent;
+        Skip.If(kit is null, "the review-host kit is not in this checkout");
+        const string harness = """
+            import json, os, sys, types
+            from datetime import datetime, timedelta, timezone
+            from pathlib import Path
+            sys.path.insert(0, sys.argv[1])
+            import review_common as rc
+            state = types.SimpleNamespace(directory=Path(sys.argv[2]), identity='test')
+            me = rc.process_identity(os.getpid())
+            writer = dict(me, pid_namespace='pid:[1]') if sys.argv[3] == 'other' else me
+            started = datetime.now(timezone.utc) - timedelta(minutes=int(sys.argv[4]))
+            journal = state.directory / 'slot-writers' / 'nova-2.json'
+            journal.parent.mkdir(parents=True)
+            journal.write_text(json.dumps({
+                'schema_version': 1, 'workspace_identity': 'test', 'repo_key': 'nova', 'slot_number': 2,
+                'operation': {'id': 'a' * 32, 'phase': 'pooled-reset', 'spawn_pending': False,
+                              'started_at': started.isoformat(), 'coordinator': writer, 'process': writer}}))
+            try:
+                print('reaped:', rc._slot_writer_assert_quiescent(state, 'nova', 2, reap_stale=True), journal.exists())
+            except rc.ReviewError as error:
+                print('refused:', error, journal.exists())
+            """;
+        var state = Directory.CreateTempSubdirectory("reviewd-kit-").FullName;
+        try
+        {
+            var start = new System.Diagnostics.ProcessStartInfo(python!)
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            foreach (
+                var argument in new[]
+                {
+                    "-I",
+                    "-c",
+                    harness,
+                    Path.Combine(kit!.FullName, scripts),
+                    state,
+                    pidNamespace,
+                    startedMinutesAgo.ToString(CultureInfo.InvariantCulture),
+                }
+            )
+                start.ArgumentList.Add(argument);
+            using var process = System.Diagnostics.Process.Start(start)!;
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            process.ExitCode.Should().Be(0, stderr);
+            var output = (await stdout).Trim();
+            output.Should().StartWith(outcome);
+            output.Should().EndWith(outcome.StartsWith("reaped", StringComparison.Ordinal) ? "False" : "True");
+        }
+        finally
+        {
+            Directory.Delete(state, recursive: true);
+        }
+    }
+
     // A temporary workspace holding the sandbox script and the native stubs below, with an empty state directory.
     private static async Task<string> NativeRootAsync()
     {

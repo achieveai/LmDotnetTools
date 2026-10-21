@@ -967,9 +967,49 @@ public sealed class SlotReaperTests
             attempt["stage"]!.GetValue<string>().Should().Be("verify-pending");
             attempt["verifiedPublication"].Should().NotBeNull();
             attempt["resetCount"].Should().BeNull();
+            attempt["reclaim"]!["forced"]!
+                .AsArray()
+                .Select(o => o!.GetValue<string>())
+                .Should()
+                .Equal("owner marker held by claim other for PR 100");
             var released = JsonSerializer.SerializeToElement(attempt);
             PrSelection.IsReleasedForEarlierHead(released, "def456").Should().BeTrue("the new head is a fresh review");
             PrSelection.IsReleasedForEarlierHead(released, "abc123").Should().BeFalse("the posted head is not redone");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    [Theory]
+    [InlineData(120, true, true)]
+    [InlineData(40, true, false)] // the lease lapsed only 10 minutes ago
+    [InlineData(120, false, false)] // another claim holds the slot now
+    public async Task Reclaim_slot_forces_exactly_when_the_reaper_would(int claimedMinutesAgo, bool sameClaim, bool due)
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-reclaim-force-{Guid.NewGuid():N}.db");
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await connection.OpenAsync();
+            var (ownerKey, store) = await SeedLapsedClaimAsync(connection, 1, TimeSpan.FromMinutes(claimedMinutesAgo));
+            var token = (await store.GetAsync<JsonObject>(ownerKey))!["claimToken"]!.GetValue<string>();
+
+            (
+                await SlotReaper.IsForceDueAsync(
+                    connection,
+                    "workspace",
+                    PrCommands.ParseRepo("O365Exchange/Weve_DA/Nova"),
+                    1,
+                    sameClaim ? token : "other",
+                    DateTimeOffset.UtcNow,
+                    CancellationToken.None
+                )
+            )
+                .Should()
+                .Be(due);
         }
         finally
         {
