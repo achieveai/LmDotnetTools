@@ -208,7 +208,9 @@ internal static class SlotReaper
                 return Moved(freezeState);
             }
 
-            // 3) Discard-reset the native slot (release the owner marker, discard the prepared slot/pool run).
+            // 3) Discard-reset the native slot (release the owner marker, discard the prepared slot/pool run). The reset
+            //    renews the lease while it runs, so another reaper reading the same lapsed lease leaves the slot alone.
+            var ownerKey = SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot);
             var operation = Guid.NewGuid().ToString("N");
             var args = new JsonObject
             {
@@ -222,7 +224,19 @@ internal static class SlotReaper
                 ["discard"] = true,
                 ["force"] = force,
             };
-            var result = await sandbox("cleanup", args, operation, ct);
+            var result = await ReviewRunner.RunLeasedStepAsync(
+                connection,
+                ownerKey,
+                claimToken,
+                threadId is { Length: > 0 }
+                    ? async token => await FindActivityAsync(client, threadId, delay, token) is not null
+                    : null,
+                (phase, stepArgs, stepOperation, token) => sandbox(phase, stepArgs, stepOperation, token),
+                "cleanup",
+                args,
+                operation,
+                ct
+            );
             if (
                 result["claimToken"]?.GetValue<string>() != claimToken
                 || result["cleanBaselineVerified"]?.GetValue<bool>() != true
@@ -232,7 +246,6 @@ internal static class SlotReaper
                 );
 
             // 4) Release the SQLite owner on the exact claim token, stamping the attempt released.
-            var ownerKey = SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot);
             attempt["reclaim"] = new JsonObject { ["freeze"] = freezeState, ["operation"] = operation };
             // A review whose publication was never verified becomes a failed admission once its slot is reset: the next
             // pick admits the PR again in its own conversation, which checks what already posted (Kay9: review it again
@@ -290,7 +303,7 @@ internal static class SlotReaper
     /// wait uses (<see cref="ReviewRunner.IsSettledNode"/>). A busy hierarchy means the descendants are
     /// unknown, which is never quiet. A thread the host does not know at all has nothing running.
     /// </summary>
-    private static async Task<string?> FindActivityAsync(
+    internal static async Task<string?> FindActivityAsync(
         LmStreamingS2SClient client,
         string threadId,
         Func<TimeSpan, CancellationToken, Task> delay,

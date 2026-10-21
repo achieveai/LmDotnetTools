@@ -2174,6 +2174,167 @@ public sealed class ReviewdRunnerTests
     }
 
     [Fact]
+    public async Task A_long_owner_cleanup_keeps_its_lease_and_its_agent_mark_so_nothing_stops_it()
+    {
+        // Seen on the ADO store: a slot reset on a Windows bind mount took over 10 minutes. Owner cleanup renewed no
+        // lease, so past the 30-minute lease plus the reaper's 30-minute force wait the reaper could reset the slot
+        // under it. And while an agent on the conversation wakes, the step's watchdog must not stop it (Kay9).
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-cleanup-lease-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/17";
+        var ownerKey = SlotRelease.OwnerKey("workspace", repo.NormalizedKey, 2);
+        var agentBusy = false;
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"old-run","response":null}""")
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .On(
+                request => request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath.EndsWith("/run-state"),
+                _ =>
+                    Json(
+                        agentBusy
+                            ? """{"isInProgress":true,"currentRunId":"woken"}"""
+                            : """{"isInProgress":false,"currentRunId":null}"""
+                    )
+            )
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        var marks = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        IReadOnlyList<SlotReaper.ReclaimResult>? swept = null;
+        var reaperPhases = new List<string>();
+        var previousInterval = ReviewRunner.LeaseRenewInterval;
+        ReviewRunner.LeaseRenewInterval = TimeSpan.FromMilliseconds(20);
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            var store = new SqliteKvStore(connection);
+            var attempt = new JsonObject
+            {
+                ["repository"] = repo.DisplayName,
+                ["prId"] = "17",
+                ["slot"] = 2,
+                ["workspaceId"] = "workspace",
+                ["sessionId"] = "session",
+                ["providerId"] = "gemini-3.8-flash",
+                ["reasoningEffort"] = "high",
+                ["headSha"] = new string('a', 40),
+                ["stage"] = "review-running",
+                ["cleanupState"] = "owned",
+                ["claimToken"] = "exact-token",
+                ["threadId"] = "original",
+                ["reviewInputId"] = "original-input",
+                ["prepared"] = new JsonObject { ["mergeSha"] = new string('b', 40) },
+            };
+            await store.SetAsync(attemptKey, attempt);
+            await PrThreadBindings.SetAsync(database, repo, "17", "original", CancellationToken.None);
+            var claim = attempt.DeepClone().AsObject();
+            claim["state"] = "owned";
+            await store.SetAsync(ownerKey, claim);
+            var options = CliOptions.Parse([
+                "review",
+                "run",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "gpt-6-luna",
+                "--cleanup-only",
+                "--execute",
+                "--head",
+                new string('f', 40),
+            ]);
+            async Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token)
+            {
+                if (phase == "step-activity")
+                {
+                    marks.Enqueue(args["operation"]!.GetValue<string>());
+                    return [];
+                }
+                phase.Should().Be("cleanup");
+                // The cleanup has now run for over an hour: the lease it took when it started has lapsed past the
+                // reaper's force wait.
+                var owner = (await store.GetAsync<JsonObject>(ownerKey))!;
+                owner["leaseExpiresAt"] = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(61);
+                await store.SetAsync(ownerKey, owner);
+                await WaitForAsync(async () =>
+                    (await store.GetAsync<JsonObject>(ownerKey))!["leaseExpiresAt"]!.GetValue<DateTimeOffset>()
+                    > DateTimeOffset.UtcNow
+                );
+                using (var sweep = PrThreadBindings.Connection(database))
+                {
+                    await sweep.OpenAsync(token);
+                    swept = await SlotReaper.SweepAsync(
+                        sweep,
+                        client,
+                        (reaperPhase, _, _, _) =>
+                        {
+                            reaperPhases.Add(reaperPhase);
+                            return Task.FromResult(new JsonObject());
+                        },
+                        "workspace",
+                        DateTimeOffset.UtcNow,
+                        undatedExpired: false,
+                        execute: true,
+                        token
+                    );
+                }
+                agentBusy = true;
+                await WaitForAsync(() => Task.FromResult(marks.Contains(operation)));
+                agentBusy = false;
+                return new JsonObject
+                {
+                    ["claimToken"] = "exact-token",
+                    ["cleanBaselineVerified"] = true,
+                    ["evidencePreserved"] = true,
+                };
+            }
+
+            await ReviewRunner.RunAsync(
+                options,
+                config,
+                client,
+                Sandbox,
+                CancellationToken.None,
+                _ => Task.CompletedTask
+            );
+
+            swept.Should().BeEmpty("the running cleanup kept its lease, so the reaper did not even consider the slot");
+            reaperPhases.Should().BeEmpty();
+            marks.Should().NotBeEmpty("an agent woke while the cleanup ran, so the step was marked active");
+            (await store.GetAsync<JsonObject>(attemptKey))!["cleanupState"]!.GetValue<string>().Should().Be("released");
+        }
+        finally
+        {
+            ReviewRunner.LeaseRenewInterval = previousInterval;
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+
+        static async Task WaitForAsync(Func<Task<bool>> condition)
+        {
+            for (var deadline = DateTime.UtcNow.AddSeconds(5); DateTime.UtcNow < deadline; await Task.Delay(20))
+            {
+                if (await condition())
+                    return;
+            }
+        }
+    }
+
+    [Fact]
     public async Task Runner_renews_the_slot_lease_while_a_long_sandbox_step_runs()
     {
         // A large PR's prepare outlasts the 30-minute lease. Without renewal the reaper reclaims the slot

@@ -1,16 +1,101 @@
 """Executed only through Gateway; uses the installed review-setup helpers."""
+import atexit
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import signal
 import subprocess
 import sys
+import threading
+import time
 from urllib.parse import quote
 
 phase, encoded = sys.argv[1:]
 args = json.loads(encoded)
 root = Path.cwd()
+
+# The gateway cannot cancel a running operation, so its timeout is only a backstop. This watchdog stops a step,
+# and only once it has been idle for STEP_IDLE seconds and STEP_MIN seconds have passed since it started,
+# whichever comes last (Kay9: activity decides, never time alone). Activity is CPU or I/O by the step or any of
+# its children, or a fresh mark the client writes while an agent on the conversation is active.
+STEP_IDLE, STEP_MIN, STEP_SAMPLE, STEP_STOPPED = 600, 3600, 30, 124
+
+
+def step_should_stop(started, last_active, now):
+    return now - last_active >= STEP_IDLE and now - started >= STEP_MIN
+
+
+def step_processes(parent):
+    # Every descendant by parent link: the kit starts its git children in their own sessions.
+    links = {}
+    for entry in os.listdir('/proc'):
+        try:
+            links[int(entry)] = int(open(f'/proc/{entry}/stat').read().rsplit(')', 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+    found, frontier = [], [parent]
+    while frontier:
+        current = frontier.pop()
+        children = [pid for pid, ppid in links.items() if ppid == current]
+        found += children
+        frontier += children
+    return found
+
+
+def step_activity(step):
+    # CPU ticks and I/O bytes so far of the step's main thread (not this watchdog's thread) and its descendants.
+    total = 0
+    for path in [f'/proc/{step}/task/{step}'] + [f'/proc/{pid}' for pid in step_processes(step)]:
+        try:
+            fields = open(path + '/stat').read().rsplit(')', 1)[1].split()
+            total += int(fields[11]) + int(fields[12])
+            total += sum(int(line.split()[1]) for line in open(path + '/io') if line.startswith(('rchar:', 'wchar:')))
+        except (OSError, ValueError, IndexError):
+            continue
+    return total
+
+
+def watch_step(mark):
+    started = last_active = time.time()
+    seen = None
+    while True:
+        time.sleep(STEP_SAMPLE)
+        now = time.time()
+        counters = step_activity(os.getpid())
+        if counters != seen:
+            seen, last_active = counters, now
+        try:
+            last_active = max(last_active, mark.stat().st_mtime)
+        except OSError:
+            pass
+        if step_should_stop(started, last_active, now):
+            print(f'Step stopped: no activity for {(now - last_active) / 60:.0f} minutes, '
+                  f'{(now - started) / 60:.0f} minutes after it started.', file=sys.stderr, flush=True)
+            for pid in step_processes(os.getpid()):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            os._exit(STEP_STOPPED)
+
+
+# Agent marks live beside the kit's state, in the workspace repository's git directory.
+common = subprocess.run(['git', 'rev-parse', '--git-common-dir'], cwd=root, capture_output=True, text=True)
+marks = (root / common.stdout.strip()).resolve() / 'reviewd-steps'
+if phase == 'step-activity':
+    if not re.fullmatch(r'[0-9a-f]{32}', str(args.get('operation'))) or common.returncode:
+        raise SystemExit('Step-activity mark needs a step operation id and the workspace repository.')
+    marks.mkdir(exist_ok=True)
+    (marks / f"{args['operation']}.agents").touch()
+    print(json.dumps({'marked': args['operation']}))
+    raise SystemExit(0)
+mark = marks / f"{args.get('stepOperation')}.agents"
+atexit.register(lambda: mark.unlink(missing_ok=True))
+threading.Thread(target=watch_step, args=(mark,), daemon=True).start()
+
 scripts = root / '.claude/skills/review-setup/scripts'
 sys.path.insert(0, str(scripts))
 from review_common import ReviewError, ReviewState, SourcePool, repo_slug, safe_path, run_git_read
@@ -356,8 +441,16 @@ elif phase == 'cleanup':
             binding = {'schema_version': 1, 'workspace_identity': writable.identity, 'outer': inspection}
             verify_preservation_archive(Path(preserved['path']), expected_manifest_sha256=preserved['manifest_sha256'],
                                         expected_generation=preservation_generation(binding), expected_binding=binding)
+        # A discard runs only once the owning conversation is frozen and quiet, so it reaps a slot-writer journal the
+        # kit classes as stale: unreadable, or never launched or from another PID namespace and over 30 minutes old
+        # (a killed cleanup). A writer still alive in this namespace always blocks.
+        if discard:
+            from review_common import _slot_writer_assert_quiescent
+            reaped = _slot_writer_assert_quiescent(writable, pool.repo_key, slot, reap_stale=True, dry_run=True)
+            if reaped:
+                overrides.append(f'slot-writer journal ({reaped})')
         # Invoke native already-locked entry points; the exact token fence stays held through reset.
-        with slot_writer_scope(writable, pool.repo_key, slot, phase='pooled-reset'):
+        with slot_writer_scope(writable, pool.repo_key, slot, phase='pooled-reset', reap_stale=discard):
             legacy = writable.load_pool_run(pool.repo_key, slot, dry_run=True)
             if legacy is not None and legacy.get('pr') != pr and legacy.get('pr_number') != pr:
                 if not force:

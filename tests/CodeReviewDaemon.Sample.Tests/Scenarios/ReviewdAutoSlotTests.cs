@@ -1,5 +1,6 @@
 extern alias Reviewd;
 
+using System.Globalization;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.Misc.Storage;
 using AchieveAi.LmDotnetTools.Sandbox;
@@ -506,6 +507,151 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         stdout.Trim().Should().Be(expected);
     }
 
+    [SkippableTheory]
+    // Kay9: activity decides when a step stops, never time alone. A step stops only once it has been idle for 10
+    // minutes and 60 minutes have passed since it started, whichever comes last. Minutes since the step started.
+    [InlineData(60, 60, false)] // an agent still active at 60 minutes keeps it running
+    [InlineData(60, 69, false)]
+    [InlineData(55, 64, false)] // idle from 55 minutes: stopped at 65
+    [InlineData(55, 65, true)]
+    [InlineData(20, 59, false)] // idle from 20 minutes: stopped at 60
+    [InlineData(20, 60, true)]
+    public async Task A_sandbox_step_stops_only_after_ten_idle_minutes_and_an_hour(
+        int lastActiveMinute,
+        int nowMinute,
+        bool stops
+    )
+    {
+        const string harness = """
+            import ast, sys
+            tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
+            rules = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'step_should_stop']
+            scope = {}
+            exec(compile(ast.Module(rules, []), 'watchdog', 'exec'), scope)
+            scope.update(STEP_IDLE=600, STEP_MIN=3600)
+            print(scope['step_should_stop'](0, int(sys.argv[2]) * 60, int(sys.argv[3]) * 60))
+            """;
+        var (exitCode, stdout, stderr) = await RunSandboxRuleAsync(
+            harness,
+            lastActiveMinute.ToString(CultureInfo.InvariantCulture),
+            nowMinute.ToString(CultureInfo.InvariantCulture)
+        );
+
+        exitCode.Should().Be(0, stderr);
+        stdout.Trim().Should().Be(stops ? "True" : "False");
+    }
+
+    [SkippableTheory]
+    // The watchdog runs the rule on a real process tree, with the limits shortened to fractions of a second.
+    [InlineData("idle", true)] // nothing happens: it kills the step's processes, its own-session children too
+    [InlineData("agent", false)] // an agent keeps marking the step active
+    [InlineData("busy", false)] // a child process keeps using CPU
+    public async Task The_step_watchdog_kills_an_idle_step_and_spares_an_active_one(string activity, bool stopped)
+    {
+        Skip.IfNot(OperatingSystem.IsLinux(), "the watchdog reads /proc, so it runs only on Linux");
+        var pidFile = Path.Combine(Path.GetTempPath(), $"reviewd-step-{Guid.NewGuid():N}.pid");
+        var mark = Path.Combine(Path.GetTempPath(), $"reviewd-step-{Guid.NewGuid():N}.agents");
+        const string harness = """
+            import ast, subprocess, sys, threading, time
+            from pathlib import Path
+            tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
+            names = {'step_should_stop', 'step_processes', 'step_activity', 'watch_step'}
+            scope = {}
+            exec('import os, signal, sys, time', scope)
+            exec(compile(ast.Module([n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names], []), 'watchdog', 'exec'), scope)
+            scope.update(STEP_IDLE=0.5, STEP_MIN=0.2, STEP_SAMPLE=0.05, STEP_STOPPED=124)
+            activity, pid_file, mark = sys.argv[2], sys.argv[3], Path(sys.argv[4])
+            work = 'import time\nend = time.time() + 1.5\nwhile time.time() < end: pass' if activity == 'busy' else 'import time; time.sleep(30)'
+            # The kit starts its git children in their own sessions, so a process-group kill would miss them.
+            child = subprocess.Popen([sys.executable, '-c', work], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            open(pid_file, 'w').write(str(child.pid))
+            def keep_marking():
+                while True:
+                    mark.touch()
+                    time.sleep(0.05)
+            if activity == 'agent':
+                threading.Thread(target=keep_marking, daemon=True).start()
+            threading.Thread(target=scope['watch_step'], args=(mark,), daemon=True).start()
+            time.sleep(1.2 if activity != 'idle' else 10)
+            child.kill()
+            print('not stopped')
+            """;
+        try
+        {
+            var (exitCode, stdout, stderr) = await RunSandboxRuleAsync(harness, activity, pidFile, mark);
+
+            if (stopped)
+            {
+                exitCode.Should().Be(124, stdout + stderr);
+                stderr.Should().Contain("Step stopped: no activity");
+                var child = int.Parse(await File.ReadAllTextAsync(pidFile), CultureInfo.InvariantCulture);
+                var stat = $"/proc/{child}/stat";
+                for (var wait = 0; wait < 50 && File.Exists(stat) && !IsZombie(stat); wait++)
+                    await Task.Delay(20);
+                (!File.Exists(stat) || IsZombie(stat)).Should().BeTrue("the watchdog kills the step's children too");
+            }
+            else
+            {
+                exitCode.Should().Be(0, stderr);
+                stdout.Trim().Should().Be("not stopped");
+            }
+        }
+        finally
+        {
+            File.Delete(pidFile);
+            File.Delete(mark);
+        }
+
+        static bool IsZombie(string stat)
+        {
+            try
+            {
+                return File.ReadAllText(stat).Split(')')[^1].TrimStart().StartsWith('Z');
+            }
+            catch (IOException)
+            {
+                return true;
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Every_sandbox_step_leaves_stopping_to_its_watchdog_and_names_its_operation()
+    {
+        // Nothing can cancel a gateway operation or extend its timeout, so a 10-minute timeout killed cleanups that
+        // were still working. Each step submits only a 24-hour backstop and tells its watchdog its own operation id,
+        // which is where the client's agent marks for that step go.
+        var gateway = new ScriptedSandboxGateway { CommandStdout = """{"ok":true}""" };
+        using var http = new HttpClient(gateway, disposeHandler: false);
+        using var sandbox = new SandboxClient(
+            new SandboxClientOptions(
+                new Uri("http://127.0.0.1:8080"),
+                "app",
+                "",
+                TimeSpan.FromMinutes(10),
+                TimeSpan.FromSeconds(30)
+            ),
+            http
+        );
+        var operation = Guid.NewGuid().ToString("N");
+
+        var result = await ReviewRunner.ExecuteSandboxAsync(
+            sandbox,
+            "sess-1",
+            "cleanup",
+            new JsonObject { ["pr"] = "7" },
+            operation,
+            CancellationToken.None
+        );
+
+        result["ok"]!.GetValue<bool>().Should().BeTrue();
+        using var body = System.Text.Json.JsonDocument.Parse(gateway.LastSubmitBody!);
+        body.RootElement.GetProperty("timeout_secs").GetInt64().Should().Be(24 * 60 * 60);
+        var payload = JsonNode.Parse(body.RootElement.GetProperty("args")[3].GetString()!)!;
+        payload["stepOperation"]!.GetValue<string>().Should().Be(operation);
+        payload["pr"]!.GetValue<string>().Should().Be("7");
+    }
+
     [SkippableFact]
     public async Task A_forced_cleanup_delayed_past_another_reset_cannot_discard_the_next_owner()
     {
@@ -515,21 +661,10 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         var python = await ReviewdSummaryReplyTests.FindPythonAsync();
         Skip.If(python is null, "no Python interpreter on PATH, so the sandbox script cannot be run");
         Skip.IfNot(OperatingSystem.IsLinux(), "the sandbox script scans /proc, so it runs only on Linux");
-        var root = Directory.CreateTempSubdirectory("reviewd-sandbox-").FullName;
+        var root = await NativeRootAsync();
         try
         {
-            var scripts = Directory.CreateDirectory(Path.Combine(root, ".claude/skills/review-setup/scripts"));
-            foreach (var (name, source) in NativeStubs)
-                await File.WriteAllTextAsync(Path.Combine(scripts.FullName, name), source);
-            var script = Path.Combine(root, "ReviewRunnerSandbox.py");
-            using (
-                var resource = typeof(ReviewRunner).Assembly.GetManifestResourceStream(
-                    "Reviewd.Sample.ReviewRunnerSandbox.py"
-                )!
-            )
-            using (var file = File.Create(script))
-                await resource.CopyToAsync(file);
-            var state = Directory.CreateDirectory(Path.Combine(root, "state")).FullName;
+            var state = Path.Combine(root, "state");
             var marker = Path.Combine(
                 Directory.CreateDirectory(Path.Combine(state, "reviewd-owners")).FullName,
                 "nova-2.json"
@@ -565,35 +700,105 @@ public sealed class ReviewdAutoSlotTests : IDisposable
 
         async Task<(int ExitCode, string Stderr)> PhaseAsync(string phase, int pr, string claim, bool force = false)
         {
-            var args = new JsonObject
-            {
-                ["org"] = "org",
-                ["repo"] = "Nova",
-                ["pr"] = pr,
-                ["slot"] = 2,
-                ["head"] = new string('h', 40),
-                ["claimToken"] = claim,
-            };
-            if (phase == "cleanup")
-            {
-                args["discard"] = true;
-                args["force"] = force;
-            }
-            var start = new System.Diagnostics.ProcessStartInfo(python!)
-            {
-                WorkingDirectory = root,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            };
-            foreach (var argument in new[] { Path.Combine(root, "ReviewRunnerSandbox.py"), phase, args.ToJsonString() })
-                start.ArgumentList.Add(argument);
-            using var process = System.Diagnostics.Process.Start(start)!;
-            var stdout = process.StandardOutput.ReadToEndAsync();
-            var stderr = await process.StandardError.ReadToEndAsync();
-            await stdout;
-            await process.WaitForExitAsync();
-            return (process.ExitCode, stderr);
+            var (exitCode, _, stderr) = await NativePhaseAsync(python!, root, phase, pr, claim, force);
+            return (exitCode, stderr);
         }
+    }
+
+    [SkippableFact]
+    public async Task A_reclaim_reaps_the_journal_of_a_killed_cleanup_and_names_it()
+    {
+        // Seen on the ADO runner: the gateway killed an owner cleanup, which left a slot-writer journal from another
+        // PID namespace with nothing alive behind it, and reclaim-slot then refused with "operator-scoped recovery
+        // required". A discard (reaper or reclaim-slot, after freeze and quiescence) reaps such a journal under the
+        // kit's own stale rule and names it in the overrides it logs.
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox script cannot be run");
+        Skip.IfNot(OperatingSystem.IsLinux(), "the sandbox script scans /proc, so it runs only on Linux");
+        var root = await NativeRootAsync();
+        try
+        {
+            var state = Path.Combine(root, "state");
+            await File.WriteAllTextAsync(
+                Path.Combine(state, "reviewd-owners", "nova-2.json"),
+                """{"claimToken": "A", "pr": 7, "state": "owned"}"""
+            );
+            await File.WriteAllTextAsync(Path.Combine(state, "prepared-nova-2.json"), """{"pr": 7}""");
+            var journal = Path.Combine(state, "slot-writer.json");
+            await File.WriteAllTextAsync(journal, "{}");
+
+            var (exitCode, stdout, stderr) = await NativePhaseAsync(python!, root, "cleanup", 7, "A");
+
+            exitCode.Should().Be(0, stderr);
+            JsonNode.Parse(stdout)!["forced"]!
+                .AsArray()
+                .Select(o => o!.GetValue<string>())
+                .Should()
+                .Equal("slot-writer journal (expired)");
+            File.Exists(journal).Should().BeFalse();
+            (await File.ReadAllLinesAsync(Path.Combine(state, "discards.log"))).Should().Equal("7");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    // A temporary workspace holding the sandbox script and the native stubs below, with an empty state directory.
+    private static async Task<string> NativeRootAsync()
+    {
+        var root = Directory.CreateTempSubdirectory("reviewd-sandbox-").FullName;
+        var scripts = Directory.CreateDirectory(Path.Combine(root, ".claude/skills/review-setup/scripts"));
+        foreach (var (name, source) in NativeStubs)
+            await File.WriteAllTextAsync(Path.Combine(scripts.FullName, name), source);
+        using (
+            var resource = typeof(ReviewRunner).Assembly.GetManifestResourceStream(
+                "Reviewd.Sample.ReviewRunnerSandbox.py"
+            )!
+        )
+        using (var file = File.Create(Path.Combine(root, "ReviewRunnerSandbox.py")))
+            await resource.CopyToAsync(file);
+        Directory.CreateDirectory(Path.Combine(root, "state", "reviewd-owners"));
+        return root;
+    }
+
+    private static async Task<(int ExitCode, string Stdout, string Stderr)> NativePhaseAsync(
+        string python,
+        string root,
+        string phase,
+        int pr,
+        string claim,
+        bool force = false,
+        bool discard = true
+    )
+    {
+        var args = new JsonObject
+        {
+            ["org"] = "org",
+            ["repo"] = "Nova",
+            ["pr"] = pr,
+            ["slot"] = 2,
+            ["head"] = new string('h', 40),
+            ["claimToken"] = claim,
+        };
+        if (phase == "cleanup")
+        {
+            args["discard"] = discard;
+            args["force"] = force;
+        }
+        var start = new System.Diagnostics.ProcessStartInfo(python)
+        {
+            WorkingDirectory = root,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        foreach (var argument in new[] { Path.Combine(root, "ReviewRunnerSandbox.py"), phase, args.ToJsonString() })
+            start.ArgumentList.Add(argument);
+        using var process = System.Diagnostics.Process.Start(start)!;
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return (process.ExitCode, await stdout, stderr);
     }
 
     // Just enough of the installed review-setup helpers for the sandbox script's prepare and cleanup phases to run
@@ -666,7 +871,23 @@ public sealed class ReviewdAutoSlotTests : IDisposable
                 return contextlib.nullcontext()
 
 
-            def slot_writer_scope(*args, **kwargs):
+            # A slot-writer journal is the file 'slot-writer.json'; it always reads as a dead writer from another PID
+            # namespace, which the kit refuses unless the caller opts into reaping it as stale.
+            def _slot_writer_assert_quiescent(state, repo_key, slot, *, reap_stale=False, requested_pr=None,
+                                              dry_run=False):
+                journal = state.directory / 'slot-writer.json'
+                if not journal.exists():
+                    return None
+                if not reap_stale:
+                    raise ReviewError('Recorded slot writer is in another boot/PID namespace; retirement is unproven '
+                                      'and operator-scoped recovery is required.')
+                if not dry_run:
+                    journal.unlink()
+                return 'expired'
+
+
+            def slot_writer_scope(state, repo_key, slot, *, phase, reap_stale=False, requested_pr=None):
+                _slot_writer_assert_quiescent(state, repo_key, slot, reap_stale=reap_stale, requested_pr=requested_pr)
                 return contextlib.nullcontext()
 
 
@@ -769,7 +990,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
             await resource.CopyToAsync(file);
         try
         {
-            var start = new System.Diagnostics.ProcessStartInfo(python!)
+            var start = new System.Diagnostics.ProcessStartInfo(python)
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
