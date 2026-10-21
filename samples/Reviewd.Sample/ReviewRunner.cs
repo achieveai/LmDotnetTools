@@ -16,6 +16,12 @@ internal static class ReviewRunner
     /// </summary>
     internal sealed class ReviewNotAdmittedException(string message) : InvalidOperationException(message);
 
+    /// <summary>
+    /// A refusal before any slot claim because an earlier conversation for the PR is still running, or its
+    /// hierarchy could not be read. That passes, so the batch retries the PR with backoff instead of holding it.
+    /// </summary>
+    internal sealed class ReviewDeferredException(string message) : InvalidOperationException(message);
+
     internal class SettledSandboxException(string phase, string message) : InvalidOperationException(message)
     {
         internal string Phase { get; } = phase;
@@ -528,26 +534,32 @@ internal static class ReviewRunner
             )
                 reusedConversation = false;
         }
-        var threadInFlight =
-            !resume
-            && !cleanupOnly
-            && (
-                (thread is not null && (await client.GetRunStateAsync(thread, ct)).IsInProgress)
-                || (questionThread is not null && await TreeInFlightAsync(client, questionThread, now(), ct))
-            );
         if (
             !resume
             && !cleanupOnly
             && !PrSelection.IsEligible(
                 JsonSerializer.SerializeToElement(current),
                 successful is null ? null : JsonSerializer.SerializeToElement(successful),
-                threadInFlight,
+                hasThread: false,
                 DateTimeOffset.UtcNow
             )
         )
         {
             throw new ReviewNotAdmittedException("PR is not eligible for review.");
         }
+        // A conversation still running is not a verdict on the PR, so it defers the review rather than refusing
+        // it. The continued thread counts only without a receipt: after one, the reuse path waits on it before
+        // sending. A passed-over thread is never waited on, so its live tree defers the review whatever the
+        // receipt says.
+        if (
+            !resume
+            && !cleanupOnly
+            && (
+                (successful is null && thread is not null && (await client.GetRunStateAsync(thread, ct)).IsInProgress)
+                || (questionThread is not null && await TreeInFlightAsync(client, questionThread, now(), ct))
+            )
+        )
+            throw new ReviewDeferredException("An earlier conversation for this PR is still running; retry deferred.");
         if (
             resume
             && !cleanupResume
@@ -1270,7 +1282,7 @@ internal static class ReviewRunner
 
     // A passed-over thread is never waited on, so its whole tree decides admission: a sub-agent still running
     // there can publish for the PR after a fresh review starts. A busy hierarchy read is not proof of
-    // settlement either. Either way the PR stays ineligible and the batch requeues it.
+    // settlement either. Either way the review is deferred and the batch retries the PR.
     private static async Task<bool> TreeInFlightAsync(
         LmStreamingS2SClient client,
         string thread,

@@ -1006,6 +1006,23 @@ public sealed class ReviewdRunnerTests
     }
 
     [Fact]
+    public async Task Batch_retries_a_pr_whose_earlier_conversation_is_still_running_instead_of_holding_it()
+    {
+        // A busy hierarchy read, or a child still running in an earlier conversation, defers the review before
+        // the claim. That passes, yet one transient busy read held the PR for the rest of the selection.
+        using var batch = new BatchFixture(0);
+        batch.OnRunAsync = () =>
+            batch.Runs.Count == 1
+                ? throw new ReviewRunner.ReviewDeferredException(
+                    "An earlier conversation for this PR is still running; retry deferred."
+                )
+                : Task.CompletedTask;
+        await batch.ExecuteAsync();
+        batch.Runs.Should().Equal("1:fresh", "2:fresh", "3:fresh", "1:fresh");
+        batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
+    }
+
+    [Fact]
     public async Task Batch_shutdown_drains_and_same_request_restart_skips_verified_work()
     {
         using var batch = new BatchFixture(0);
@@ -2866,9 +2883,7 @@ public sealed class ReviewdRunnerTests
                     .ThrowAsync<InvalidOperationException>()
                     .WithMessage("PR head was already reviewed by another run; skipped.");
             else if (running)
-                await run.Should()
-                    .ThrowAsync<InvalidOperationException>()
-                    .WithMessage("PR is not eligible for review.");
+                await run.Should().ThrowAsync<ReviewRunner.ReviewDeferredException>();
             else
                 (await run.Should().ThrowAsync<InvalidOperationException>())
                     .Which.Message.Should()
@@ -3873,9 +3888,14 @@ public sealed class ReviewdRunnerTests
     }
 
     // A passed-over legacy thread is never waited on, so a sub-agent still running there could publish for the PR
-    // beside a fresh review. Its whole tree keeps the PR ineligible (and the batch requeues it) until it settles.
-    [Fact]
-    public async Task Runner_admits_no_fresh_review_while_a_passed_over_thread_still_has_a_live_child()
+    // beside a fresh review. Its whole tree defers the review (the batch retries it) until it settles, whether or
+    // not an earlier head's review completed: the child may have started after that review's cleanup.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Runner_admits_no_fresh_review_while_a_passed_over_thread_still_has_a_live_child(
+        bool earlierReceipt
+    )
     {
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-legacy-child-{Guid.NewGuid():N}.db");
         var repo = PrCommands.ParseRepo("org/project/Nova");
@@ -3952,6 +3972,16 @@ public sealed class ReviewdRunnerTests
                     },
                 }
             );
+            if (earlierReceipt)
+                await new SqliteKvStore(connection).SetAsync(
+                    $"reviewd/review-run/{repo.NormalizedKey}/17",
+                    new JsonObject
+                    {
+                        ["stage"] = "completed-verified",
+                        ["reviewedHeadSha"] = new string('9', 40),
+                        ["reviewCompletedAt"] = DateTimeOffset.UtcNow.AddHours(-1),
+                    }
+                );
             var options = CliOptions.Parse([
                 "review",
                 "run",
@@ -3985,8 +4015,7 @@ public sealed class ReviewdRunnerTests
             {
                 child = live;
                 await run.Should()
-                    .ThrowAsync<ReviewRunner.ReviewNotAdmittedException>()
-                    .WithMessage("PR is not eligible for review.", $"a {live} child tree has not settled");
+                    .ThrowAsync<ReviewRunner.ReviewDeferredException>($"a {live} child tree has not settled");
                 handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "nothing is claimed or sent");
             }
 

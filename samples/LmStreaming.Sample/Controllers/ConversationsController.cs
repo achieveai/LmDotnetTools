@@ -2268,7 +2268,9 @@ public class ConversationsController(
     /// <summary>
     /// The settings a fork carries over from its source: what the conversation runs with. Everything
     /// else - usage, context and todo projections, the collaboration identity, provider session ids -
-    /// describes the source's own runs and starts empty on the fork.
+    /// describes the source's own runs and starts empty on the fork. The headless flag
+    /// (<see cref="ConversationClientTools.PropertyKey"/>) is deliberately not carried: a fork is a new
+    /// conversation someone continues by hand, so it gets the client tools back.
     /// </summary>
     private static readonly string[] ForkCarriedPropertyKeys =
     [
