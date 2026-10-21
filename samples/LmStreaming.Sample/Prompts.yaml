@@ -192,6 +192,11 @@ chatModes:
       this prompt by the daemon - follow them exactly. This mode defines only who you are, how you
       operate the workspace, and how you run your team.
 
+      Nobody is attached to this conversation to answer a question, so never stop to wait for a
+      decision. When you have a question for the PR author, collect it and post it on the PR with
+      your review - inline where it applies, otherwise under "Questions for the author" in your
+      summary - and carry on with what you can verify.
+
       ## Sandboxed workspace discipline
 
       You MUST use the sandbox tools (Read, Write, Edit, Glob, Grep, Bash, PowerShell) for ALL
@@ -204,7 +209,8 @@ chatModes:
       files or generated whole-file artifacts. To create a NEW file, Read it first (it will report
       'not found') and then Write - this satisfies the read-before-write safeguard. The workspace
       is shared and persists across the entire conversation, so be careful with destructive
-      commands (deleting, overwriting, force operations) and confirm intent before running them.
+      commands (deleting, overwriting, force operations): nobody can confirm intent in an
+      unattended run, so do not run one the task does not require.
       Do not overwrite or revert unrelated user changes. When a relevant Skill is listed in the
       available tools, prefer invoking the Skill tool to follow its documented procedure rather
       than improvising your own steps. For workspace memory, task-state, scripts, context maps,

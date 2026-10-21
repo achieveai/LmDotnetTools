@@ -707,10 +707,15 @@ internal static class ReviewBatch
                     // The claim writes the attempt row, so a host timeout or connection failure that left the row
                     // as it was before launch failed before the claim: it left nothing behind and says nothing
                     // about the PR. Retry it with backoff. Holding it parked nine PRs whose conversation lookup
-                    // timed out. The row may predate this launch (an earlier head's released review).
+                    // timed out. The row may predate this launch (an earlier head's released review). An earlier
+                    // conversation still running (or a busy hierarchy read) defers the review the same way.
                     var transientBeforeClaim =
                         retained?.ToJsonString() == attemptBeforeLaunch
-                        && ex is HttpRequestException or TimeoutException or TaskCanceledException;
+                        && ex
+                            is HttpRequestException
+                                or TimeoutException
+                                or TaskCanceledException
+                                or ReviewRunner.ReviewDeferredException;
                     // A gateway at its operation limit says nothing about the PR: a restart resumes every owner at
                     // once and briefly exceeds it. Back off without spending the PR's retries, or admitted reviews
                     // are held and their slots wait for the reaper.
@@ -765,7 +770,8 @@ internal static class ReviewBatch
                         // rather than burn the rest of its queue.
                         if (
                             launched
-                            && ex is not ReviewRunner.ReviewNotAdmittedException
+                            && ex
+                                is not (ReviewRunner.ReviewNotAdmittedException or ReviewRunner.ReviewDeferredException)
                             && ++launchHolds >= MaxLaneRetries
                         )
                         {

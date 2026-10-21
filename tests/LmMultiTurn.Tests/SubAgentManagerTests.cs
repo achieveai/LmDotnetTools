@@ -3323,6 +3323,66 @@ public class SubAgentManagerTests : IAsyncLifetime
             && (nm.GetText() ?? string.Empty).Contains("[AwaitingAnswer]");
     }
 
+    // A headless conversation turns both client tools off, and the child must not be offered either: a child
+    // that asks a question nobody answers parks the whole tree.
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    public async Task SpawnAsync_OffersTheChildOnlyTheClientToolsTheOptionsKeep(
+        bool includeQuestion,
+        bool includeNotify
+    )
+    {
+        var offered = new List<string>();
+        var calls = 0;
+        _subAgentMock
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, options, _) =>
+                {
+                    lock (offered)
+                    {
+                        calls++;
+                        offered.AddRange(options?.Functions?.Select(f => f.Name) ?? []);
+                    }
+
+                    return Task.FromResult(
+                        ToAsyncEnumerable([new TextMessage { Text = "done", Role = Role.Assistant }])
+                    );
+                }
+            );
+        var options = CreateOptions() with
+        {
+            IncludeAskUserQuestionTool = includeQuestion,
+            IncludeNotifyClientTool = includeNotify,
+        };
+        _manager = new SubAgentManager(
+            parentAgent: _parentMock.Object,
+            parentContracts: [],
+            parentHandlers: new Dictionary<string, ToolHandler>(),
+            options: options,
+            source: new MutableSubAgentTemplateSource(options.Templates)
+        );
+
+        await _manager.SpawnAsync("test-agent", "do the task", runInBackground: false);
+
+        List<string> names;
+        lock (offered)
+        {
+            calls.Should().BePositive("the child made its model call");
+            names = [.. offered];
+        }
+        names.Contains(AskUserQuestionToolProvider.ToolName).Should().Be(includeQuestion);
+        names.Contains(NotifyClientToolProvider.ToolName).Should().Be(includeNotify);
+    }
+
     /// <summary>
     /// Creates a SubAgentManager with the test's mock sub-agent and parent. When
     /// <paramref name="qualifiedTemplateKey"/> is supplied, the single template is registered under
