@@ -2,8 +2,9 @@
 # Checks the ops scripts against fake installs on Linux (or WSL): a restart signals only its own
 # install's batch, never leaves it stopped, fails closed when two batches share one database, keep-alive
 # never starts a batch during a restart, and a start refuses an empty root while the old worktree still
-# holds state. Each fake install gets its own copy of the scripts in bin/, as deployed: env.sh finds the
-# install from where it lives, never from the caller's REVIEWD_HOME. Needs python3, setsid and flock.
+# holds state, and the host starts with the question tool off. Each fake install gets its own copy of
+# the scripts in bin/, as deployed: env.sh finds the install from where it lives, never from the caller's
+# REVIEWD_HOME. Needs python3, setsid and flock.
 #   ops/test/ops-scripts.test.sh
 set -uo pipefail
 OPS=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
@@ -138,6 +139,18 @@ check "keep-alive leaves a missing batch to a restart in progress" \
 for _ in $(seq 1 50); do [ -n "$(pids D)" ] && break; sleep 0.1; done
 check "and starts it once no restart holds the lock" '[ -n "$(pids D)" ]'
 check "the batch it started does not hold the restart lock" 'flock -n "$T/D/data/safe-restart.lock" true'
+
+# The review host starts with the question tool off. Its own pgrep and dotnet stand in here, so a real
+# host on :5000 is neither seen nor touched; the dotnet stand-in records only the switch, never a key.
+install H
+echo DAEMON_GATEWAY_APP_KEY=test-only > "$T/H/env/gateway-app-credentials.env"
+mkdir -p "$T/H/data/host" "$T/hostbin"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$T/hostbin/pgrep"
+printf '#!/usr/bin/env bash\necho "${ClientTools__AskUserQuestion-unset}" > "$REVIEWD_HOME/host-switch.out"\n' > "$T/hostbin/dotnet"
+chmod +x "$T/hostbin/pgrep" "$T/hostbin/dotnet"
+PATH="$T/hostbin:$PATH" "$T/H/bin/start-host.sh" > "$T/H/host.out" 2>&1
+for _ in $(seq 1 50); do [ -s "$T/H/host-switch.out" ] && break; sleep 0.1; done
+check "the host starts with the question tool off" '[ "$(cat "$T/H/host-switch.out" 2>/dev/null)" = false ]'
 
 install C
 mkdir -p "$T/legacy"

@@ -4356,7 +4356,9 @@ public partial class Program
     /// <summary>
     /// Carries conversation-wide review policy into a workflow controller's delegate options. The
     /// controller keeps ownership of workflow-local name routing, metadata, and gates; only the
-    /// conversation's type-based routing authority and reasoning floor cross this boundary.
+    /// conversation's type-based routing authority, reasoning floor and the host's question-tool
+    /// switch cross this boundary. Without the switch, a workflow delegate on an unattended host
+    /// could still park the run on a question nobody answers.
     /// </summary>
     internal static SubAgentOptions ApplyConversationSubAgentPolicyToController(
         SubAgentOptions controllerOptions,
@@ -4370,6 +4372,7 @@ public partial class Program
             {
                 ConversationEffortFloor = conversationOptions.ConversationEffortFloor,
                 SpawnTypeModelSelectionResolver = conversationOptions.SpawnTypeModelSelectionResolver,
+                IncludeAskUserQuestionTool = conversationOptions.IncludeAskUserQuestionTool,
             };
     }
 

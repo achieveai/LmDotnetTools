@@ -25,6 +25,28 @@ public class ProgramClientToolsSwitchTests
         options.IncludeAskUserQuestionTool.Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Workflow_controller_delegates_follow_the_host_question_switch(bool include)
+    {
+        // A review-mode run can launch a workflow, and the controller's delegates are spawned from their
+        // own options; they must not get the question tool back on an unattended host.
+        var conversationOptions = await BuildAsync(includeAskUserQuestionTool: include);
+
+        var controllerOptions = global::Program.ApplyConversationSubAgentPolicyToController(
+            new AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents.SubAgentOptions
+            {
+                Templates = BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(() =>
+                    Mock.Of<IStreamingAgent>()
+                ),
+            },
+            conversationOptions
+        );
+
+        controllerOptions.IncludeAskUserQuestionTool.Should().Be(include);
+    }
+
     private static async Task<AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents.SubAgentOptions> BuildAsync(
         bool? includeAskUserQuestionTool
     )
