@@ -23,14 +23,26 @@ public sealed class WorkspacesController(
         try
         {
             var workspaces = await store.GetAllAsync(ct);
+
+            // Evaluated CONCURRENTLY, not one row at a time: each EvaluateAsync call waits on the same
+            // shared, single-flight catalog fetch (see WorkspaceCatalogCompatibilityService), and that
+            // fetch runs once no matter how many rows ask for it. A sequential `foreach` therefore cost
+            // up to N x BrowseWait when the catalog was cold (N rows, a 10s wait apiece) even though
+            // only one real fetch was ever in flight; firing them together bounds the whole list to
+            // roughly one BrowseWait, the same as a single row.
+            var results = await Task.WhenAll(
+                workspaces.Select(workspace => compatibility.EvaluateAsync(workspace, ct))
+            );
             var views = new List<WorkspaceView>(workspaces.Count);
-            WorkspaceCompatibilityResult? gatewayProbe = null;
-            foreach (var workspace in workspaces)
+            for (var i = 0; i < workspaces.Count; i++)
             {
-                var result = await compatibility.EvaluateAsync(workspace, ct);
-                gatewayProbe ??= result;
-                views.Add(workspace.ToView(result));
+                views.Add(workspaces[i].ToView(results[i]));
             }
+
+            // The gateway probe is the FIRST workspace's result specifically (not the first to settle,
+            // which concurrent evaluation would otherwise make nondeterministic) — same as the prior
+            // sequential loop's `gatewayProbe ??= result` on its first iteration.
+            var gatewayProbe = results.Length > 0 ? results[0] : null;
 
             // Only "the catalog could not be read" makes the gateway unavailable. An Incompatible
             // probe means the catalog answered — the gateway is up, this workspace just names

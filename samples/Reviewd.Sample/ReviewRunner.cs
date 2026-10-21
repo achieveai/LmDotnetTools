@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.Misc.Storage;
@@ -120,6 +121,11 @@ internal static class ReviewRunner
 
     // Well inside SlotRelease.DefaultLeaseWindow, so a long step never lets its lease lapse.
     internal static TimeSpan LeaseRenewInterval { get; set; } = TimeSpan.FromMinutes(5);
+
+    // A send the host refuses with 503 is retried every SendRetryPolls delay polls (30 s at the default
+    // 1 s poll) up to SendAttempts sends: about 5 minutes, longer than the slowest cold catalog build seen.
+    internal const int SendAttempts = 11;
+    internal const int SendRetryPolls = 30;
 
     internal static async Task<JsonObject> ExecuteSandboxAsync(
         SandboxClient sandbox,
@@ -501,10 +507,10 @@ internal static class ReviewRunner
             throw new ReviewNotAdmittedException($"PR head was reset {resetsOfHead} times; skipped until a new push.");
         // A prior conversation without a receipt in THIS db is only a risk if it is still running: its
         // receipt may live in whichever db ran it. Ask the host, not our bookkeeping.
-        // The host is also the cross-db record of what was already admitted: a conversation titled for this
-        // exact head means this revision was reviewed from another db, and re-admitting it would post
-        // duplicate PR comments.
-        // Our own reset review of this head is the one exception.
+        // The host is also the cross-db record of what was already admitted: a conversation holding this exact
+        // head's review means this revision was reviewed from another db, and re-admitting it would post
+        // duplicate PR comments. The title alone is not that record. It is stamped before the review is sent,
+        // so an attempt that failed at the send leaves a conversation titled for this head that reviewed nothing.
         if (
             !resume
             && !cleanupOnly
@@ -516,10 +522,21 @@ internal static class ReviewRunner
                 mode,
                 ct
             )
-                is { } reviewed
-            && !(retryOfReset && reviewed.ThreadId == thread)
+                is { } headMatch
         )
-            throw new ReviewNotAdmittedException("PR head was already reviewed by another run; skipped.");
+        {
+            var transcript = await client.GetConversationTranscriptAsync(headMatch.ThreadId, ct);
+            // Our own reset review of this head is the one exception: it is told to post only what is missing.
+            if (ReviewedHead(transcript, liveHead) && !(retryOfReset && headMatch.ThreadId == thread))
+                throw new ReviewNotAdmittedException("PR head was already reviewed by another run; skipped.");
+            // A conversation with no output (never sent, or sent and never answered) holds no earlier review, so the
+            // prompt must not claim one.
+            if (
+                headMatch.ThreadId == thread
+                && transcript.All(entry => entry.Role.Equals("User", StringComparison.OrdinalIgnoreCase))
+            )
+                reusedConversation = false;
+        }
         var threadInFlight =
             thread is not null && !resume && !cleanupOnly && (await client.GetRunStateAsync(thread, ct)).IsInProgress;
         if (
@@ -1084,7 +1101,26 @@ internal static class ReviewRunner
             receipt[phase + "IdempotencyKey"] = idempotency;
             receipt["stage"] = phase + "-send-pending";
             await SaveAsync();
-            var input = await client.SendMessageAsync(thread!, text, false, idempotency, ct);
+            string input;
+            for (var sendAttempt = 1; ; sendAttempt++)
+            {
+                try
+                {
+                    input = await client.SendMessageAsync(thread!, text, false, idempotency, ct);
+                    break;
+                }
+                // A 503 means the host refused the turn: a cold gateway catalog takes minutes to build. The
+                // same idempotency key makes a resend safe even if a 503 ever followed an accepted turn.
+                catch (HttpRequestException failure)
+                    when (failure.StatusCode == HttpStatusCode.ServiceUnavailable && sendAttempt < SendAttempts)
+                {
+                    Console.Error.WriteLine(
+                        $"{phase} send got 503 (attempt {sendAttempt}/{SendAttempts}); retrying with the same key."
+                    );
+                    for (var poll = 0; poll < SendRetryPolls; poll++)
+                        await LeasedDelayAsync(ct);
+                }
+            }
             receipt[phase + "InputId"] = input;
             receipt["stage"] = phase + "-running";
             await SaveAsync();
@@ -1114,6 +1150,23 @@ internal static class ReviewRunner
                 return null;
             }
         }
+    }
+
+    /// <summary>
+    ///     True when the conversation shows a review of <paramref name="head"/> ran: a user prompt naming the full
+    ///     head SHA (every review prompt does), followed by output from that run.
+    /// </summary>
+    internal static bool ReviewedHead(IReadOnlyList<ReviewAgentTranscriptEntry> transcript, string head)
+    {
+        var prompted = false;
+        foreach (var entry in transcript)
+        {
+            var user = entry.Role.Equals("User", StringComparison.OrdinalIgnoreCase);
+            if (prompted && !user)
+                return true;
+            prompted |= user && entry.Body.Contains(head, StringComparison.Ordinal);
+        }
+        return false;
     }
 
     internal static bool CanRetryPreparation(JsonNode attempt, string session) =>
