@@ -219,7 +219,17 @@ internal static class WorkspaceCommands
                 $"PR {options.Required("pr")} already has conversation '{existing}'; no new agent was submitted."
             );
         }
-        var threadId = await client.ProvisionAsync(workspace.Id, provider, mode, null, null, null, directory, ct);
+        var threadId = await client.ProvisionAsync(
+            workspace.Id,
+            provider,
+            mode,
+            null,
+            null,
+            null,
+            directory,
+            disableClientTools: true,
+            ct
+        );
         Console.WriteLine($"threadId\t{threadId}");
         if (repo is not null)
         {

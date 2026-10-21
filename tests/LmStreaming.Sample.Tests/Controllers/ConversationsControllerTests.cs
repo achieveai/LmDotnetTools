@@ -89,6 +89,7 @@ public class ConversationsControllerTests
                                 MultiTurnAgentPool.WorkspacePropertyKey,
                                 MultiTurnAgentPool.ModePropertyKey,
                                 ConversationLineage.PropertyKey,
+                                ConversationClientTools.PropertyKey,
                             }
                         )
                     ),
@@ -1735,6 +1736,98 @@ public class ConversationsControllerTests
 
         var readBack = await ConversationSubAgentModel.ReadAsync(store, threadId, CancellationToken.None);
         readBack.Should().BeNull();
+        (await ConversationClientTools.ReadDisabledAsync(store, threadId, CancellationToken.None))
+            .Should()
+            .BeFalse("a UI or legacy conversation keeps its client tools");
+    }
+
+    [Fact]
+    public async Task Provision_WithDisableClientTools_IsReadBackByTheAgentBuild()
+    {
+        // Same round trip as the sub-agent model: the assertion goes through the reader the agent build
+        // calls, so a flag stored and never read fails here.
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
+
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object,
+            providerRegistry: registry
+        );
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+                DisableClientTools = true,
+            },
+            CancellationToken.None
+        );
+
+        var threadId = Assert
+            .IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value)
+            .ThreadId;
+
+        (await ConversationClientTools.ReadDisabledAsync(store, threadId, CancellationToken.None)).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task List_ReportsWhetherEachConversationWasProvisionedHeadless()
+    {
+        // Reviewd reuses a conversation only when this field says it has no client tools; a thread
+        // provisioned before the flag existed must read false so it is replaced, not continued.
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object,
+            providerRegistry: registry
+        );
+
+        async Task<string> ProvisionAsync(bool headless) =>
+            Assert
+                .IsType<ProvisionConversationResponse>(
+                    Assert
+                        .IsType<OkObjectResult>(
+                            await controller.Provision(
+                                new ProvisionConversationRequest
+                                {
+                                    WorkspaceId = "ws-1",
+                                    ProviderId = "test",
+                                    ModeId = SystemChatModes.DefaultModeId,
+                                    DisableClientTools = headless,
+                                },
+                                CancellationToken.None
+                            )
+                        )
+                        .Value
+                )
+                .ThreadId;
+
+        var headlessThread = await ProvisionAsync(headless: true);
+        var plainThread = await ProvisionAsync(headless: false);
+
+        var rows = Assert.IsType<List<ConversationSummary>>(
+            Assert.IsType<OkObjectResult>(await controller.List()).Value
+        );
+        rows.Single(r => r.ThreadId == headlessThread).ClientToolsDisabled.Should().BeTrue();
+        rows.Single(r => r.ThreadId == plainThread).ClientToolsDisabled.Should().BeFalse();
     }
 
     [Fact]

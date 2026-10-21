@@ -405,6 +405,83 @@ public class AskUserQuestionEarlySettleTests
         await cts.CancelAsync();
     }
 
+    // ---------------------------------------------------------------- folded inputs claim their receipts
+
+    // Reviewd's PR 221 batch waited four hours on a confirmation sent while the review was parked on a
+    // question: the input was folded into history and delivered by the delayed child run, but no run
+    // claimed its receipt, so status-by-inputId read NotStarted forever.
+
+    [Fact]
+    public async Task UserTextMessage_WhileParkedOnQuestion_IsClaimedByTheChildRunThatDeliversIt()
+    {
+        var store = new InMemoryConversationStore();
+        var fixture = await ParkOnQuestionAsync(store, "claim-settle-thread", persistRunLedger: true);
+
+        var receipt = await fixture.Loop.SendAsync([new TextMessage { Text = "confirmed, go on", Role = Role.User }]);
+        await fixture.Collector.WaitForCompletionsAsync(2);
+
+        await AssertClaimedByCompletedRunAsync(store, fixture, "claim-settle-thread", receipt.ReceiptId);
+        await fixture.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task PureNotificationBatch_WhileParkedOnQuestion_IsClaimedByTheChildRunOnceTheQuestionResolves()
+    {
+        var store = new InMemoryConversationStore();
+        var fixture = await ParkOnQuestionAsync(store, "claim-notify-thread", persistRunLedger: true);
+
+        var receipt = await fixture.Loop.SendAsync([
+            NotifyMessage.Create(
+                NotifyKinds.SubAgentCompletion,
+                detail: "bg done",
+                sourceToolName: "Agent",
+                sourceToolCallId: "call-x"
+            ),
+        ]);
+        await AchieveAi.LmDotnetTools.LmTestUtils.Wait.UntilAsync(
+            () => fixture.Collector.Snapshot().OfType<NotifyMessage>().Any(n => n.Detail == "bg done"),
+            because: "the parked loop folded the notify into history"
+        );
+
+        (await fixture.Loop.TryResolveToolCallAsync(QuestionCallId, "Blue"))
+            .Should()
+            .Be(ResolveToolCallOutcome.Resolved);
+        await fixture.Collector.WaitForCompletionsAsync(2);
+
+        await AssertClaimedByCompletedRunAsync(store, fixture, "claim-notify-thread", receipt.ReceiptId);
+        await fixture.DisposeAsync();
+    }
+
+    /// <summary>
+    /// The receipt resolves the way the host's status endpoint resolves it: one ledger run lists it,
+    /// that run completed, its acceptance record is gone, and its live assignment echoed the receipt.
+    /// </summary>
+    private static async Task AssertClaimedByCompletedRunAsync(
+        InMemoryConversationStore store,
+        Fixture fixture,
+        string threadId,
+        string receiptId
+    )
+    {
+        RunLedgerEntry? claimant = null;
+        await AchieveAi.LmDotnetTools.LmTestUtils.Wait.UntilAsync(
+            async () =>
+            {
+                var runs = await store.ListRunLedgerAsync(threadId);
+                claimant = runs.SingleOrDefault(r => r.InputIds.Contains(receiptId));
+                return claimant?.Status == RunStatus.Completed;
+            },
+            because: "the child run that delivered the folded input claims its receipt and completes"
+        );
+
+        (await store.ListAcceptedInputIdsAsync(threadId)).Should().NotContain(receiptId);
+        fixture
+            .Collector.Snapshot()
+            .OfType<RunAssignmentMessage>()
+            .Should()
+            .Contain(m => m.Assignment.RunId == claimant!.RunId && m.Assignment.InputIds!.Contains(receiptId));
+    }
+
     // ---------------------------------------------------------------- harness
 
     /// <summary>
@@ -441,7 +518,11 @@ public class AskUserQuestionEarlySettleTests
     /// Turn 1 asks the question and parks; every later turn answers with plain text. Returns once the
     /// question is confirmed outstanding.
     /// </summary>
-    private async Task<Fixture> ParkOnQuestionAsync(IConversationStore? store = null, string? threadId = null)
+    private async Task<Fixture> ParkOnQuestionAsync(
+        IConversationStore? store = null,
+        string? threadId = null,
+        bool persistRunLedger = false
+    )
     {
         var requests = new List<List<IMessage>>();
         var gate = new object();
@@ -477,7 +558,8 @@ public class AskUserQuestionEarlySettleTests
             new FunctionRegistry(),
             threadId ?? "early-settle-thread",
             store: store,
-            logger: _loggerMock.Object
+            logger: _loggerMock.Object,
+            persistRunLedger: persistRunLedger
         );
 
         var cts = new CancellationTokenSource();
