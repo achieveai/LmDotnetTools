@@ -2038,6 +2038,15 @@ try
                     // the root mode deliberately hides the ordinary Agent tool family. Build the options for
                     // either consumer; ApplySubAgentToolNarrowing below still keeps the root surface closed when
                     // caps.SubAgents is false.
+                    // A headless conversation (ProvisionConversationRequest.DisableClientTools) has no client
+                    // to answer a question or show a notification, so the whole tree loses both client tools;
+                    // the host-wide ClientTools:AskUserQuestion switch still applies on top.
+                    var clientToolsDisabled = ConversationClientTools
+                        .ReadDisabledAsync(sp.GetRequiredService<IConversationStore>(), threadId)
+                        .GetAwaiter()
+                        .GetResult();
+                    var questionToolEnabled = askUserQuestionToolEnabled && !clientToolsDisabled;
+                    var notifyClientToolEnabled = !clientToolsDisabled;
                     var subAgentOptions =
                         !caps.SubAgents && !workspaceWorkflowEnabled
                             ? null
@@ -2057,7 +2066,8 @@ try
                                     // `with` clauses above only rewrite SystemPrompt), so pass the
                                     // unaugmented profile.
                                     mode,
-                                    includeAskUserQuestionTool: askUserQuestionToolEnabled
+                                    includeAskUserQuestionTool: questionToolEnabled,
+                                    includeNotifyClientTool: notifyClientToolEnabled
                                 )
                                 .GetAwaiter()
                                 .GetResult();
@@ -2257,6 +2267,10 @@ try
                             {
                                 Templates = controllerTemplates,
                                 MaxConcurrentSubAgents = BuiltInSubAgentTemplates.DefaultMaxConcurrentSubAgents,
+                                // Delegates are part of the same conversation tree, so the same client-tool
+                                // policy reaches them.
+                                IncludeAskUserQuestionTool = questionToolEnabled,
+                                IncludeNotifyClientTool = notifyClientToolEnabled,
                                 // Structural transparency guard: keep the controller's own workflow-state/launch
                                 // tools OUT of the snapshot its delegates inherit, so an inherit-all delegate
                                 // template can never drive/mutate the workflow it is a task of. The transparent
@@ -2571,8 +2585,8 @@ try
                                     filteredRegistry,
                                     composedSystemPrompt,
                                     loopDefaultOptions,
-                                    IncludeAskUserQuestionTool: askUserQuestionToolEnabled,
-                                    IncludeNotifyClientTool: true,
+                                    IncludeAskUserQuestionTool: questionToolEnabled,
+                                    IncludeNotifyClientTool: notifyClientToolEnabled,
                                     SubAgentOptions: subAgentOptions,
                                     LoggerFactory: loggerFactory,
                                     // This builder made providerAgent for this switch alone, and no child
@@ -2600,9 +2614,9 @@ try
                             threadId,
                             // The designated constructor (the only one taking `compaction:`); both client tools
                             // stay registered exactly as before unless ClientTools:AskUserQuestion turns the
-                            // question tool off for an unattended host.
-                            includeAskUserQuestionTool: askUserQuestionToolEnabled,
-                            includeNotifyClientTool: true,
+                            // question tool off for an unattended host, or the conversation is headless.
+                            includeAskUserQuestionTool: questionToolEnabled,
+                            includeNotifyClientTool: notifyClientToolEnabled,
                             systemPrompt: composedSystemPrompt,
                             defaultOptions: loopDefaultOptions,
                             // LmStreaming.Sample allows longer agentic runs than the library's 50-turn
@@ -4567,7 +4581,8 @@ public partial class Program
         IWorkspaceStore workspaceStore,
         Microsoft.Extensions.Logging.ILogger logger,
         AgentProfile mode,
-        bool includeAskUserQuestionTool = true
+        bool includeAskUserQuestionTool = true,
+        bool includeNotifyClientTool = true
     )
     {
         // Base catalog: mock providers go through the ITestAgentBuilder seam (built-ins by default,
@@ -4587,11 +4602,12 @@ public partial class Program
             return null;
         }
 
-        // The host's ClientTools:AskUserQuestion switch applies to the whole tree, test seam included:
-        // an unattended host must not have a child park the run on a question either.
+        // The client-tool switches apply to the whole tree, test seam included: an unattended host or a
+        // headless conversation must not have a child park the run on a question either.
         baseOptions = baseOptions with
         {
             IncludeAskUserQuestionTool = includeAskUserQuestionTool,
+            IncludeNotifyClientTool = includeNotifyClientTool,
         };
 
         // #670: a FRESH sink per conversation, so a run's measurements are that run's. The library

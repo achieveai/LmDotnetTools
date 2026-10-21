@@ -23,6 +23,30 @@ public class ProgramClientToolsSwitchTests
         var options = await BuildAsync(includeAskUserQuestionTool: false);
 
         options.IncludeAskUserQuestionTool.Should().BeFalse();
+        options.IncludeNotifyClientTool.Should().BeTrue("the host switch covers only the question tool");
+    }
+
+    [Fact]
+    public async Task Sub_agent_options_drop_both_client_tools_for_a_headless_conversation()
+    {
+        var options = await global::Program.BuildSubAgentOptionsAsync(
+            isTestMode: false,
+            testAgentBuilder: Mock.Of<ITestAgentBuilder>(),
+            loggerFactory: NullLoggerFactory.Instance,
+            providerAgentFactory: () => Mock.Of<IStreamingAgent>(),
+            characteristicsAgentFactory: _ => throw new InvalidOperationException("not spawned here"),
+            sandboxSession: null,
+            workspaceLoader: null!,
+            marketplaceLoader: null!,
+            workspaceStore: null!,
+            logger: NullLogger.Instance,
+            mode: new AgentProfile("mode-1", "Mode One", "primary prompt"),
+            includeAskUserQuestionTool: false,
+            includeNotifyClientTool: false
+        );
+
+        options!.IncludeAskUserQuestionTool.Should().BeFalse();
+        options.IncludeNotifyClientTool.Should().BeFalse();
     }
 
     private static async Task<AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents.SubAgentOptions> BuildAsync(

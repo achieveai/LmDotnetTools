@@ -350,6 +350,7 @@ internal static class MergeRunner
                     null,
                     null,
                     args["directory"]!.GetValue<string>(),
+                    disableClientTools: true,
                     ct
                 );
                 receipt[threadField] = thread;
