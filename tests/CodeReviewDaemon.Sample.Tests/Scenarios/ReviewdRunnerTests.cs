@@ -235,7 +235,7 @@ public sealed class ReviewdRunnerTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             Directory.Delete(directory, recursive: true);
         }
     }
@@ -363,7 +363,7 @@ public sealed class ReviewdRunnerTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             Directory.Delete(directory, recursive: true);
         }
     }
@@ -806,7 +806,7 @@ public sealed class ReviewdRunnerTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -1590,7 +1590,7 @@ public sealed class ReviewdRunnerTests
         {
             Cancellation.Dispose();
             _config.Dispose();
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(_database);
             File.Delete(_database);
         }
     }
@@ -1679,7 +1679,7 @@ public sealed class ReviewdRunnerTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -1729,7 +1729,7 @@ public sealed class ReviewdRunnerTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -1842,7 +1842,7 @@ public sealed class ReviewdRunnerTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             Directory.Delete(directory, recursive: true);
         }
     }
@@ -2097,7 +2097,7 @@ public sealed class ReviewdRunnerTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -2206,7 +2206,7 @@ public sealed class ReviewdRunnerTests
         finally
         {
             ReviewRunner.LeaseRenewInterval = previousInterval;
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -2366,7 +2366,7 @@ public sealed class ReviewdRunnerTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -2495,7 +2495,7 @@ public sealed class ReviewdRunnerTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -2635,7 +2635,7 @@ public sealed class ReviewdRunnerTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -2760,7 +2760,7 @@ public sealed class ReviewdRunnerTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -2897,7 +2897,7 @@ public sealed class ReviewdRunnerTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -3029,7 +3029,7 @@ public sealed class ReviewdRunnerTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -3200,7 +3200,7 @@ public sealed class ReviewdRunnerTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -3332,7 +3332,7 @@ public sealed class ReviewdRunnerTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -3674,7 +3674,7 @@ public sealed class ReviewdRunnerTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
             File.Delete(database + ".review-lock");
         }
@@ -3882,7 +3882,7 @@ public sealed class ReviewdRunnerTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -4038,7 +4038,7 @@ public sealed class ReviewdRunnerTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }

@@ -87,7 +87,7 @@ public sealed class SlotReaperTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -188,7 +188,7 @@ public sealed class SlotReaperTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -262,7 +262,7 @@ public sealed class SlotReaperTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -326,7 +326,7 @@ public sealed class SlotReaperTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -435,7 +435,7 @@ public sealed class SlotReaperTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -469,7 +469,7 @@ public sealed class SlotReaperTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -497,7 +497,7 @@ public sealed class SlotReaperTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -539,7 +539,7 @@ public sealed class SlotReaperTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }

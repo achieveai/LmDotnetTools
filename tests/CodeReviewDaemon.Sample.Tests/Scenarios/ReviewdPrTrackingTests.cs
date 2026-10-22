@@ -126,7 +126,7 @@ public sealed class ReviewdPrTrackingTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -240,7 +240,7 @@ public sealed class ReviewdPrTrackingTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
@@ -428,7 +428,7 @@ public sealed class ReviewdPrTrackingTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
             File.Delete(selection);
         }
