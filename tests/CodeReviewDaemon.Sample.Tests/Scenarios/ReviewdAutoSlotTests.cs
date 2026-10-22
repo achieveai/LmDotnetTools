@@ -552,12 +552,12 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         var pidFile = Path.Combine(Path.GetTempPath(), $"reviewd-step-{Guid.NewGuid():N}.pid");
         var mark = Path.Combine(Path.GetTempPath(), $"reviewd-step-{Guid.NewGuid():N}.agents");
         const string harness = """
-            import ast, subprocess, sys, threading, time
+            import ast, json, os, subprocess, sys, threading, time
             from pathlib import Path
             tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
-            names = {'step_should_stop', 'step_processes', 'step_activity', 'watch_step'}
+            names = {'step_should_stop', 'step_processes', 'step_activity', 'process_start', 'watch_step'}
             scope = {}
-            exec('import os, signal, sys, time', scope)
+            exec('import json, os, signal, sys, time', scope)
             exec(compile(ast.Module([n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names], []), 'watchdog', 'exec'), scope)
             scope.update(STEP_IDLE=0.5, STEP_MIN=0.2, STEP_SAMPLE=0.05, STEP_STOPPED=124)
             activity, pid_file, mark = sys.argv[2], sys.argv[3], Path(sys.argv[4])
@@ -571,10 +571,12 @@ public sealed class ReviewdAutoSlotTests : IDisposable
                     time.sleep(0.05)
             if activity == 'agent':
                 threading.Thread(target=keep_marking, daemon=True).start()
-            threading.Thread(target=scope['watch_step'], args=(mark,), daemon=True).start()
+            # The heartbeat step-stop reads: this process, beating on every sample.
+            beat = Path(pid_file + '.watchdog')
+            threading.Thread(target=scope['watch_step'], args=(mark, beat), daemon=True).start()
             time.sleep(1.2 if activity != 'idle' else 10)
             child.kill()
-            print('not stopped')
+            print('not stopped', json.loads(beat.read_text())['pid'] == os.getpid(), time.time() - beat.stat().st_mtime < 0.5)
             """;
         try
         {
@@ -593,12 +595,13 @@ public sealed class ReviewdAutoSlotTests : IDisposable
             else
             {
                 exitCode.Should().Be(0, stderr);
-                stdout.Trim().Should().Be("not stopped");
+                stdout.Trim().Should().Be("not stopped True True");
             }
         }
         finally
         {
             File.Delete(pidFile);
+            File.Delete(pidFile + ".watchdog");
             File.Delete(mark);
         }
 
@@ -612,6 +615,75 @@ public sealed class ReviewdAutoSlotTests : IDisposable
             {
                 return true;
             }
+        }
+    }
+
+    [SkippableTheory]
+    // Kay9 (gap 1): when the watchdog itself is stuck, the client asks step-stop to end the step. It kills the step's
+    // recorded process tree, own-session children too, only once the heartbeat is 15 minutes stale and no agent mark is
+    // fresh.
+    [InlineData("stale", true)]
+    [InlineData("fresh", false)] // the watchdog beat a minute ago
+    [InlineData("agent", false)] // stale, but an agent marked the step active just now
+    public async Task Step_stop_kills_a_step_only_when_its_watchdog_is_stale_and_no_agent_is_active(
+        string state,
+        bool killed
+    )
+    {
+        Skip.IfNot(OperatingSystem.IsLinux(), "step-stop reads /proc, so it runs only on Linux");
+        var marks = Directory.CreateTempSubdirectory("reviewd-steps-");
+        const string harness = """
+            import ast, json, os, subprocess, sys, time
+            from pathlib import Path
+            tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
+            names = {'step_processes', 'process_start', 'stop_step'}
+            scope = {}
+            exec('import json, os, signal', scope)
+            exec(compile(ast.Module([n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names], []), 'step_stop', 'exec'), scope)
+            scope.update(STEP_IDLE=600, STEP_STALE=900)
+            state, marks, operation = sys.argv[2], Path(sys.argv[3]), 'a' * 32
+            work = 'import subprocess, sys, time\nsubprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)\ntime.sleep(30)'
+            step = subprocess.Popen([sys.executable, '-c', work])
+            children = []
+            for _ in range(500):
+                children = scope['step_processes'](step.pid)
+                if children:
+                    break
+                time.sleep(0.01)
+            beat = marks / f'{operation}.watchdog'
+            beat.write_text(json.dumps({'pid': step.pid, 'start': scope['process_start'](step.pid)}))
+            now = time.time()
+            os.utime(beat, (now, now - (60 if state == 'fresh' else 1000)))
+            if state == 'agent':
+                (marks / f'{operation}.agents').touch()
+            result = scope['stop_step'](marks, operation, time.time())
+            def ended(pid):
+                for _ in range(200 if result['stopped'] else 1):
+                    try:
+                        if open(f'/proc/{pid}/stat').read().rsplit(')', 1)[1].split()[0] == 'Z':
+                            return True
+                    except OSError:
+                        return True
+                    time.sleep(0.01)
+                return False
+            print(result['stopped'], bool(children) and all(ended(pid) for pid in children + [step.pid]))
+            for pid in children + [step.pid]:
+                try:
+                    os.kill(pid, 9)
+                except OSError:
+                    pass
+            step.wait()
+            """;
+        try
+        {
+            var (exitCode, stdout, stderr) = await RunSandboxRuleAsync(harness, state, marks.FullName);
+
+            exitCode.Should().Be(0, stderr);
+            stdout.Trim().Should().Be(killed ? "True True" : "False False");
+        }
+        finally
+        {
+            marks.Delete(recursive: true);
         }
     }
 

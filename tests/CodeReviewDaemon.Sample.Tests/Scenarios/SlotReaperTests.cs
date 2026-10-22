@@ -724,7 +724,7 @@ public sealed class SlotReaperTests
             SlotReaper.SandboxExecutor? sandbox = null;
             sandbox = async (phase, args, _, token) =>
             {
-                if (phase == "step-activity")
+                if (phase is "step-activity" or "step-stop")
                     return [];
                 if (++resets == 1)
                 {
@@ -805,7 +805,7 @@ public sealed class SlotReaperTests
             var resets = 0;
             SlotReaper.SandboxExecutor sandbox = async (phase, args, _, token) =>
             {
-                if (phase == "step-activity")
+                if (phase is "step-activity" or "step-stop")
                     return [];
                 if (++resets == 1)
                 {
@@ -883,6 +883,93 @@ public sealed class SlotReaperTests
         }
         finally
         {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    [Theory]
+    // Kay9 (gap 1): a step whose watchdog is stuck would run, leased, until the 24-hour backstop. While no agent is
+    // active, each renewal asks the sandbox's step-stop, which kills the step only if the watchdog heartbeat is 15
+    // minutes stale. From then on the lease is not renewed, and the killed step puts back the lease it found.
+    [InlineData("quiet", true)] // the heartbeat is stale at the third check: killed, lease put back
+    [InlineData("quiet", false)] // the watchdog keeps beating: renewed, the step runs to its end
+    [InlineData("active", true)] // an agent is active: never asked, renewed
+    [InlineData("unknown", true)] // the agent read fails: counts as active
+    public async Task A_step_whose_watchdog_is_stuck_is_stopped_only_while_no_agent_is_active(string agents, bool stale)
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-step-stop-{Guid.NewGuid():N}.db");
+        var previousInterval = ReviewRunner.LeaseRenewInterval;
+        ReviewRunner.LeaseRenewInterval = TimeSpan.FromMilliseconds(20);
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await connection.OpenAsync();
+            var (ownerKey, store) = await SeedLapsedClaimAsync(connection, 2);
+            var owner = (await store.GetAsync<JsonObject>(ownerKey))!;
+            var lapsed = owner["leaseExpiresAt"]!.GetValue<DateTimeOffset>();
+            var reads = 0;
+            var checks = 0;
+            var killed = false;
+            Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token) =>
+                phase switch
+                {
+                    "step-activity" => Task.FromResult(new JsonObject()),
+                    "step-stop" => Task.FromResult(new JsonObject { ["stopped"] = killed = ++checks >= 3 && stale }),
+                    _ => StepAsync(),
+                };
+            async Task<JsonObject> StepAsync()
+            {
+                for (var deadline = DateTime.UtcNow.AddSeconds(10); DateTime.UtcNow < deadline; await Task.Delay(10))
+                {
+                    if (killed)
+                        throw new ReviewRunner.SettledSandboxException("verify", "Sandbox verify failed (exit -9).");
+                    if (reads >= 6)
+                        return new JsonObject { ["ok"] = true };
+                }
+                throw new TimeoutException("The step never ended.");
+            }
+            var step = () =>
+                ReviewRunner.RunLeasedStepAsync(
+                    connection,
+                    ownerKey,
+                    owner["claimToken"]!.GetValue<string>(),
+                    _ =>
+                    {
+                        reads++;
+                        return agents == "unknown"
+                            ? throw new HttpRequestException("host unreachable")
+                            : Task.FromResult(agents == "active");
+                    },
+                    Sandbox,
+                    "verify",
+                    [],
+                    Guid.NewGuid().ToString("N"),
+                    CancellationToken.None
+                );
+
+            if (agents == "quiet" && stale)
+                await step.Should().ThrowAsync<ReviewRunner.SettledSandboxException>();
+            else
+                (await step())["ok"]!.GetValue<bool>().Should().BeTrue();
+            var lease = (await store.GetAsync<JsonObject>(ownerKey))!["leaseExpiresAt"]!.GetValue<DateTimeOffset>();
+
+            if (agents == "quiet" && stale)
+            {
+                checks.Should().Be(3, "the client stops asking, and renewing, once the step is killed");
+                lease.Should().Be(lapsed, "the killed step put back the lease its renewals extended");
+            }
+            else
+            {
+                checks
+                    .Should()
+                    .Be(agents == "quiet" ? reads : 0, "only a quiet tick asks the sandbox to stop the step");
+                lease.Should().BeAfter(DateTimeOffset.UtcNow);
+            }
+        }
+        finally
+        {
+            ReviewRunner.LeaseRenewInterval = previousInterval;
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             File.Delete(database);
         }

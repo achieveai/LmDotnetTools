@@ -139,7 +139,9 @@ internal static class ReviewRunner
     /// <summary>
     /// Runs one sandbox step while renewing the slot lease every <see cref="LeaseRenewInterval"/>, so the reaper never
     /// resets a slot under a step that is still allowed to run. Each renewal also checks the conversation: while any
-    /// agent or sub-agent on it is active, the step gets a fresh agent mark, so its watchdog never stops it then.
+    /// agent or sub-agent on it is active, the step gets a fresh agent mark, so its watchdog never stops it then. While
+    /// none is, the client asks step-stop to kill the step if its watchdog's heartbeat has gone stale (the watchdog
+    /// itself is stuck); a step stopped that way is no longer renewed, and its failure puts the lease back.
     /// </summary>
     internal static async Task<JsonObject> RunLeasedStepAsync(
         Microsoft.Data.Sqlite.SqliteConnection connection,
@@ -156,19 +158,20 @@ internal static class ReviewRunner
         // The renewal shares the connection, so it stops before the caller writes again.
         using var stepDone = CancellationTokenSource.CreateLinkedTokenSource(ct);
         (string Before, string After)? renewed = null;
+        var stopped = false;
         var renewal = RenewAsync(stepDone.Token);
         try
         {
             return await sandbox(phase, args, operation, ct);
         }
-        catch (SettledSandboxException) when (phase == "cleanup")
+        catch (SettledSandboxException)
         {
-            // A cleanup or reset that ended in failure puts back the lease its renewals extended, so the next reaper
-            // sweep retries it instead of the slot waiting out a lease nobody renews (Kay9: never hold a slot
-            // needlessly). Only a settled failure: a step whose outcome is unknown may still be running.
+            // A cleanup or reset that ended in failure, or a step this client stopped, puts back the lease its renewals
+            // extended, so the next reaper sweep resets the slot instead of waiting out a lease nobody renews (Kay9:
+            // never hold a slot needlessly). Only a settled failure: a step whose outcome is unknown may still be running.
             stepDone.Cancel();
             await renewal;
-            if (renewed is { } lease)
+            if ((phase == "cleanup" || stopped) && renewed is { } lease)
                 _ = await SlotRelease.RestoreLeaseAsync(
                     connection,
                     ownerKey,
@@ -191,11 +194,24 @@ internal static class ReviewRunner
                 while (true)
                 {
                     await Task.Delay(LeaseRenewInterval, token);
+                    // A failed read counts as active, like an unknown or busy one: a step is never stopped on a guess.
+                    bool active;
+                    try
+                    {
+                        active = agentsActive is not null && await agentsActive(token);
+                    }
+                    catch (Exception failure) when (failure is not OperationCanceledException)
+                    {
+                        Console.Error.WriteLine($"Step {operation}: agent read failed: {failure.Message}");
+                        active = true;
+                    }
+                    if (!active && await StopStuckStepAsync())
+                        return;
                     if (await SlotRelease.RenewAsync(connection, ownerKey, claimToken, token) is { } lease)
                         renewed = (renewed?.Before ?? lease.Before, lease.After);
                     try
                     {
-                        if (agentsActive is not null && await agentsActive(token))
+                        if (active)
                             _ = await sandbox(
                                 "step-activity",
                                 new JsonObject { ["operation"] = operation },
@@ -211,6 +227,34 @@ internal static class ReviewRunner
                 }
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        }
+
+        // The sandbox kills the step only if its watchdog heartbeat is 15 minutes stale and no agent mark is fresh. The
+        // call runs on the caller's token, so a step that ends meanwhile still learns it was stopped.
+        async Task<bool> StopStuckStepAsync()
+        {
+            try
+            {
+                var result = await sandbox(
+                    "step-stop",
+                    new JsonObject { ["operation"] = operation },
+                    Guid.NewGuid().ToString("N"),
+                    ct
+                );
+                if (result["stopped"]?.GetValue<bool>() != true)
+                    return false;
+                stopped = true;
+                Console.Error.WriteLine(
+                    $"Step {operation} ({phase}) killed: its watchdog stopped beating and no agent is active. "
+                        + "Its lease is no longer renewed."
+                );
+                return true;
+            }
+            catch (Exception failure) when (failure is not OperationCanceledException)
+            {
+                Console.Error.WriteLine($"Step {operation}: watchdog check failed: {failure.Message}");
+                return false;
+            }
         }
     }
 

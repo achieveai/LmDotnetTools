@@ -2491,6 +2491,9 @@ public sealed class ReviewdRunnerTests
                     marks.Enqueue(args["operation"]!.GetValue<string>());
                     return [];
                 }
+                // The watchdog is alive, so a quiet tick's step-stop finds nothing to stop.
+                if (phase == "step-stop")
+                    return new JsonObject { ["stopped"] = false };
                 phase.Should().Be("cleanup");
                 // The cleanup has now run for over an hour: the lease it took when it started has lapsed past the
                 // reaper's force wait.

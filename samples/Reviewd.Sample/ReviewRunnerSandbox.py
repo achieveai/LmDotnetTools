@@ -21,7 +21,9 @@ root = Path.cwd()
 # and only once it has been idle for STEP_IDLE seconds and STEP_MIN seconds have passed since it started,
 # whichever comes last (Kay9: activity decides, never time alone). Activity is CPU or I/O by the step or any of
 # its children, or a fresh mark the client writes while an agent on the conversation is active.
-STEP_IDLE, STEP_MIN, STEP_SAMPLE, STEP_STOPPED = 600, 3600, 30, 124
+# The watchdog touches a heartbeat on every sample. One STEP_STALE seconds old means the watchdog itself is stuck, and
+# then the client asks step-stop to kill the step (Kay9: only while no agent on the conversation is active).
+STEP_IDLE, STEP_MIN, STEP_SAMPLE, STEP_STOPPED, STEP_STALE = 600, 3600, 30, 124, 900
 
 
 def step_should_stop(started, last_active, now):
@@ -58,9 +60,52 @@ def step_activity(step):
     return total
 
 
-def watch_step(mark):
+def process_start(pid):
+    # Clock ticks from boot to the process's start: with the PID it names one process, never a later one reusing it.
+    return int(open(f'/proc/{pid}/stat').read().rsplit(')', 1)[1].split()[19])
+
+
+def stop_step(marks, operation, now):
+    # Kills the step only if its watchdog stopped beating STEP_STALE seconds ago and no agent marked it active within
+    # STEP_IDLE, and only the process the heartbeat recorded, with its descendants.
+    beat = marks / f'{operation}.watchdog'
+    try:
+        recorded, age = json.loads(beat.read_text()), now - beat.stat().st_mtime
+    except (OSError, ValueError):
+        return {'stopped': False, 'reason': 'no watchdog heartbeat'}
+    if age < STEP_STALE:
+        return {'stopped': False, 'reason': 'watchdog alive'}
+    try:
+        if now - (marks / f'{operation}.agents').stat().st_mtime < STEP_IDLE:
+            return {'stopped': False, 'reason': 'agent active'}
+    except OSError:
+        pass
+    try:
+        step = int(recorded['pid'])
+        if process_start(step) != recorded['start']:
+            raise ValueError('PID reused')
+    except (OSError, ValueError, IndexError, KeyError, TypeError):
+        return {'stopped': False, 'reason': 'step already ended'}
+    # Find the descendants first: once the step dies they are no longer its children.
+    tree = step_processes(step) + [step]
+    for pid in tree:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    beat.unlink(missing_ok=True)
+    return {'stopped': True, 'killed': len(tree), 'heartbeatMinutes': round(age / 60)}
+
+
+def watch_step(mark, beat):
     started = last_active = time.time()
     seen = None
+    if beat:
+        try:
+            beat.parent.mkdir(exist_ok=True)
+            beat.write_text(json.dumps({'pid': os.getpid(), 'start': process_start(os.getpid())}))
+        except (OSError, ValueError, IndexError):
+            beat = None
     while True:
         time.sleep(STEP_SAMPLE)
         now = time.time()
@@ -80,21 +125,32 @@ def watch_step(mark):
                 except OSError:
                     pass
             os._exit(STEP_STOPPED)
+        if beat:
+            try:
+                os.utime(beat)
+            except OSError:
+                pass
 
 
 # Agent marks live beside the kit's state, in the workspace repository's git directory.
 common = subprocess.run(['git', 'rev-parse', '--git-common-dir'], cwd=root, capture_output=True, text=True)
 marks = (root / common.stdout.strip()).resolve() / 'reviewd-steps'
-if phase == 'step-activity':
+if phase in ('step-activity', 'step-stop'):
     if not re.fullmatch(r'[0-9a-f]{32}', str(args.get('operation'))) or common.returncode:
-        raise SystemExit('Step-activity mark needs a step operation id and the workspace repository.')
+        raise SystemExit(f'{phase} needs a step operation id and the workspace repository.')
+    if phase == 'step-stop':
+        print(json.dumps(stop_step(marks, args['operation'], time.time())))
+        raise SystemExit(0)
     marks.mkdir(exist_ok=True)
     (marks / f"{args['operation']}.agents").touch()
     print(json.dumps({'marked': args['operation']}))
     raise SystemExit(0)
 mark = marks / f"{args.get('stepOperation')}.agents"
-atexit.register(lambda: mark.unlink(missing_ok=True))
-threading.Thread(target=watch_step, args=(mark,), daemon=True).start()
+# Only a step the client can name, in the workspace repository, records a heartbeat a later step-stop can find.
+named = re.fullmatch(r'[0-9a-f]{32}', str(args.get('stepOperation'))) and not common.returncode
+beat = marks / f"{args['stepOperation']}.watchdog" if named else None
+atexit.register(lambda: [path.unlink(missing_ok=True) for path in (mark, beat) if path])
+threading.Thread(target=watch_step, args=(mark, beat), daemon=True).start()
 
 scripts = root / '.claude/skills/review-setup/scripts'
 sys.path.insert(0, str(scripts))
