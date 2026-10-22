@@ -1,0 +1,11 @@
+[Unit]
+Description=Reviewd doctor every 15 minutes
+
+[Timer]
+OnCalendar=*:04/15
+AccuracySec=1min
+Persistent=true
+Unit=reviewd-doctor.service
+
+[Install]
+WantedBy=timers.target

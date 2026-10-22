@@ -191,9 +191,10 @@ $REVIEWD_HOME/bin/deploy.sh host <publish dir> <commit>    # then step 2
 
 - New PRs wait until the batch finishes its current list. So one review that never ends blocks every
   later selection, for every repo: the batch re-reads `selection.json` only after the current list
-  returns. Seen 2026-10-19 (4+ hours, nothing new reviewed). A review now gives up when its input stays
-  `NotStarted` for 10 minutes while the host runs nothing for it and every sub-agent has settled; the
-  attempt fails and the lane moves on. A review that keeps a run going forever still blocks. If
+  returns. Seen 2026-10-19 (4+ hours, nothing new reviewed). A review now stops waiting on an input that
+  stays `NotStarted` for 10 minutes while the host runs nothing for it and every sub-agent has settled.
+  It records the input as lost and goes on to its confirmation and verify, which decide the outcome, so
+  the lane moves on. A review that keeps a run going forever still blocks. If
   `review-batch.log` shows no progress line for an hour, check the stuck slot (step 9).
 - If an author pushes while their PR is being reviewed, that PR is skipped until the next selection.
 - PRs with merge conflicts are skipped after 5 tries.

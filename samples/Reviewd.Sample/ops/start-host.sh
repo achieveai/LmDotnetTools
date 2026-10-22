@@ -12,6 +12,9 @@ refuse_unmigrated_state || exit 1
 H=$(readlink -f "$REVIEWD_HOME/host")
 D=$REVIEWD_HOME/data/host
 export DOTNET_hostBuilder__reloadConfigOnChange=false
+# No human watches a review, so a question parks the run and holds its slot until someone notices.
+# This switch removes the question tool from every agent in the tree, sub-agents included.
+export ClientTools__AskUserQuestion=false
 export SandboxGateway__AppKey="$DAEMON_GATEWAY_APP_KEY"
 # The agency MCP bridge (agency.internal:8765) needs `Authorization: Bearer <token>`. The token lives
 # only in agency-bridge.env. A sandbox gets this rule when it is created; a running one keeps its policy.
