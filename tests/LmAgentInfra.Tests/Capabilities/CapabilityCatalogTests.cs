@@ -1,10 +1,12 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Capabilities;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.Sandbox;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Tests.Capabilities;
 
 /// <summary>
-/// Real in-memory FTS5: each ranking mechanism, query safety, skill resolution and selector parsing.
+/// Real in-memory FTS5: each ranking mechanism, per-kind isolation, query safety, skill resolution and
+/// selector parsing per kind.
 /// </summary>
 public class CapabilityCatalogTests
 {
@@ -307,6 +309,250 @@ public class CapabilityCatalogTests
 
         mismatches.Should().Be(0);
     }
+
+    // Per-kind tables: agents and plugins that repeat the skills' words change neither which skills a query
+    // finds nor their scores, even when they come first and shift every row id.
+    [Fact]
+    public void Search_RanksEachKindAgainstItsOwnRows_OtherKindsNeverMoveASkillResult()
+    {
+        CapabilityItem[] skills = [Pdf, PdfHeavyDescription, Debugging, Standup];
+        CapabilityItem[] others =
+        [
+            Agent("debugging:bug-hunter", "Debugging any bug or test failure, then merging the pdf fix."),
+            Agent("engineering:standup-writer", "Writes the daily standup from commits: standup, standup, standup."),
+            new(
+                "plugin:official/debugging",
+                CapabilityCatalog.PluginKind,
+                "debugging",
+                "debugging",
+                "official",
+                "Debugging skills and agents for any bug or test failure."
+            ),
+        ];
+        using var skillsOnly = CapabilityCatalog.Build(skills);
+        using var mixed = CapabilityCatalog.Build([.. others, .. skills]);
+
+        foreach (var query in new[] { "bug in tests", "daily standup", "merging pdfs", "systmatic", "debugging" })
+        {
+            mixed
+                .SearchScored(query, CapabilityCatalog.SkillKind, 5)
+                .Should()
+                .Equal(skillsOnly.SearchScored(query, CapabilityCatalog.SkillKind, 5), query);
+        }
+
+        mixed
+            .Search("bug-hunter standup-writer", CapabilityCatalog.SkillKind, 5)
+            .Select(i => i.Key)
+            .Should()
+            .BeEquivalentTo(Debugging.Key, Standup.Key);
+        mixed
+            .Search("pdf debugging standup", CapabilityCatalog.AgentKind, 5)
+            .Select(i => i.Key)
+            .Should()
+            .BeEquivalentTo("agent:debugging:bug-hunter", "agent:engineering:standup-writer");
+    }
+
+    // Typo fallback reads its own kind's vocabulary: an agent's word must not hide a skill-word correction.
+    [Fact]
+    public void Search_CorrectsATypoFromItsOwnKindsWordsOnly()
+    {
+        var skill = Skill("/m/official/ops/skills/cluster", "ops:cluster", "ops", "Scales kubernetes deployments.");
+        var agent = Agent("ops:helper", "Spells it kubernetis.");
+        using var catalog = CapabilityCatalog.Build([skill, agent]);
+
+        catalog.Search("kubernetis", CapabilityCatalog.SkillKind, 5).Should().Equal(skill);
+        catalog.Search("kubernetis", CapabilityCatalog.AgentKind, 5).Should().Equal(agent);
+    }
+
+    [Fact]
+    public void ResolveSelectors_AgentKind_ResolvesTemplateKeysAndSegments_SkillCallSkipsThem()
+    {
+        var templates = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal)
+        {
+            ["review:code-reviewer"] = Template("Reviews a finished branch."),
+            ["progress:architect"] = Template("Records accepted architecture changes."),
+            ["development:architect"] = Template("Designs the smallest testable slice."),
+            ["general-purpose"] = Template(null),
+        };
+
+        var items = CapabilityCatalog.FromTemplates(templates);
+
+        items
+            .Should()
+            .Equal(
+                new CapabilityItem(
+                    "agent:development:architect",
+                    CapabilityCatalog.AgentKind,
+                    "development:architect",
+                    "development",
+                    null,
+                    "Designs the smallest testable slice."
+                ),
+                new CapabilityItem(
+                    "agent:general-purpose",
+                    CapabilityCatalog.AgentKind,
+                    "general-purpose",
+                    null,
+                    null,
+                    ""
+                ),
+                new CapabilityItem(
+                    "agent:progress:architect",
+                    CapabilityCatalog.AgentKind,
+                    "progress:architect",
+                    "progress",
+                    null,
+                    "Records accepted architecture changes."
+                ),
+                new CapabilityItem(
+                    "agent:review:code-reviewer",
+                    CapabilityCatalog.AgentKind,
+                    "review:code-reviewer",
+                    "review",
+                    null,
+                    "Reviews a finished branch."
+                )
+            );
+        CapabilityCatalog
+            .FromTemplates(templates.Reverse().ToDictionary(StringComparer.Ordinal))
+            .Should()
+            .Equal(items, "the same templates give the same items whatever the dictionary order");
+
+        using var catalog = CapabilityCatalog.Build([.. items, Debugging]);
+        string[] selectors =
+        [
+            "agent:development:architect",
+            "agent:code-reviewer", // the only template whose last segment is code-reviewer
+            "agent:architect", // two templates end with :architect
+            "agent:nope",
+            "skill:debugging:systematic-debugging", // the skill call's business
+            "tool:Bash",
+        ];
+
+        var (agentKeys, agentIssues) = Resolve(catalog, CapabilityCatalog.AgentKind, selectors);
+        var (skillKeys, skillIssues) = Resolve(catalog, CapabilityCatalog.SkillKind, selectors);
+        var (legacyKeys, legacyIssues) = Resolve(catalog, null, ["agent:development:architect"]);
+
+        agentKeys.Should().Equal("agent:development:architect", "agent:review:code-reviewer");
+        SelectorIssue[] expectedAgentIssues =
+        [
+            new("agent:architect", SelectorProblem.Ambiguous, ["development:architect", "progress:architect"]),
+            new("agent:nope", SelectorProblem.Unknown, []),
+            new("tool:Bash", SelectorProblem.Malformed, []),
+        ];
+        agentIssues.Should().BeEquivalentTo(expectedAgentIssues, options => options.WithStrictOrdering());
+        skillKeys.Should().Equal(Debugging.Key);
+        skillIssues.Should().BeEquivalentTo([new SelectorIssue("tool:Bash", SelectorProblem.Malformed, [])]);
+        // The slice-1 form (no kind) still reports an agent selector instead of skipping it.
+        legacyKeys.Should().BeEmpty();
+        legacyIssues
+            .Should()
+            .BeEquivalentTo([new SelectorIssue("agent:development:architect", SelectorProblem.Malformed, [])]);
+    }
+
+    [Fact]
+    public void ResolveSelectors_PluginSelector_ExpandsToItemsOfTheRequestedKind()
+    {
+        var gateway = new SandboxSkillCatalog(
+            "sess-1",
+            "",
+            SandboxSkillTier.Included,
+            new SandboxSkillCounts(1, 0, 0, 0),
+            [
+                new SandboxSkillMarketplace(
+                    "gb-plugins",
+                    [
+                        new SandboxSkillPlugin(
+                            "debugging",
+                            "1.0.0",
+                            "Systematic debugging.",
+                            [
+                                GatewaySkill(
+                                    "debugging:systematic-debugging",
+                                    "/marketplaces/gb-plugins/debugging/skills/systematic-debugging"
+                                ),
+                            ]
+                        ),
+                        new SandboxSkillPlugin("clean-builds", null, "Zero-warning builds.", []),
+                    ]
+                ),
+            ],
+            [],
+            false
+        );
+        var plugins = CapabilityCatalog.FromPlugins(gateway);
+        var agents = CapabilityCatalog.FromTemplates(
+            new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal)
+            {
+                ["debugging:logging-review"] = Template("Reviews logging."), // no marketplace: matched by plugin name
+                ["review:debugging"] = Template("Named debugging, in plugin review."),
+            }
+        );
+        using var catalog = CapabilityCatalog.Build([.. CapabilityCatalog.FromSkills(gateway), .. plugins, .. agents]);
+        string[] selectors =
+        [
+            "plugin:gb-plugins/debugging",
+            "plugin:gb-plugins/clean-builds",
+            "plugin:gb-plugins/nope",
+        ];
+        var unknown = new SelectorIssue("plugin:gb-plugins/nope", SelectorProblem.Unknown, []);
+
+        var (skillKeys, skillIssues) = Resolve(catalog, CapabilityCatalog.SkillKind, selectors);
+        var (agentKeys, agentIssues) = Resolve(catalog, CapabilityCatalog.AgentKind, selectors);
+        var (pluginKeys, pluginIssues) = Resolve(catalog, CapabilityCatalog.PluginKind, selectors);
+
+        plugins
+            .Should()
+            .Equal(
+                new CapabilityItem(
+                    "plugin:gb-plugins/debugging",
+                    CapabilityCatalog.PluginKind,
+                    "debugging",
+                    "debugging",
+                    "gb-plugins",
+                    "Systematic debugging."
+                ),
+                new CapabilityItem(
+                    "plugin:gb-plugins/clean-builds",
+                    CapabilityCatalog.PluginKind,
+                    "clean-builds",
+                    "clean-builds",
+                    "gb-plugins",
+                    "Zero-warning builds."
+                )
+            );
+        // clean-builds has a plugin row but no skill or agent: nothing to load, and not an issue.
+        skillKeys.Should().Equal("skill:/marketplaces/gb-plugins/debugging/skills/systematic-debugging");
+        skillIssues.Should().BeEquivalentTo([unknown]);
+        agentKeys.Should().Equal("agent:debugging:logging-review");
+        agentIssues.Should().BeEquivalentTo([unknown]);
+        pluginKeys.Should().Equal("plugin:gb-plugins/debugging", "plugin:gb-plugins/clean-builds");
+        pluginIssues.Should().BeEquivalentTo([unknown]);
+    }
+
+    private static (IReadOnlyList<string> Keys, List<SelectorIssue> Issues) Resolve(
+        CapabilityCatalog catalog,
+        string? kind,
+        string[] selectors
+    )
+    {
+        var issues = new List<SelectorIssue>();
+        var keys = catalog.ResolveSelectors(selectors, issues, kind);
+        return (keys, issues);
+    }
+
+    private static CapabilityItem Agent(string templateKey, string description) =>
+        CapabilityCatalog.FromTemplates(
+            new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal) { [templateKey] = Template(description) }
+        )[0];
+
+    private static SubAgentTemplate Template(string? description) =>
+        new()
+        {
+            Description = description,
+            SystemPrompt = "Test template.",
+            AgentFactory = () => throw new NotSupportedException("Catalog tests never spawn."),
+        };
 
     private static string Names(IReadOnlyList<CapabilityItem> items) => string.Join('|', items.Select(i => i.Name));
 

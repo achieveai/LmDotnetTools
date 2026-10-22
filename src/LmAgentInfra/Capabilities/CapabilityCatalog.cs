@@ -1,15 +1,28 @@
 using System.Text.RegularExpressions;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.Sandbox;
 using Microsoft.Data.Sqlite;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Capabilities;
 
-/// <summary>One searchable capability (slice 1: a skill).</summary>
-/// <param name="Key">Stable identity. Skills: <c>skill:&lt;path&gt;</c> (a skill's path is unique per sandbox).</param>
-/// <param name="Kind">The kind searched by (<see cref="CapabilityCatalog.SkillKind"/>).</param>
-/// <param name="Name">What the agent calls it by (a skill's gateway name, plugin-qualified for marketplace skills).</param>
-/// <param name="Plugin">The owning plugin; <c>null</c> for a workspace skill.</param>
-/// <param name="Marketplace">The owning marketplace alias; <c>null</c> for a workspace skill.</param>
+/// <summary>One searchable capability: a skill, a sub-agent template or a plugin.</summary>
+/// <param name="Key">
+/// Stable identity. Skills: <c>skill:&lt;path&gt;</c> (a skill's path is unique per sandbox). Agents:
+/// <c>agent:&lt;template key&gt;</c>. Plugins: <c>plugin:&lt;marketplace&gt;/&lt;plugin&gt;</c>.
+/// </param>
+/// <param name="Kind">
+/// The kind searched by (<see cref="CapabilityCatalog.SkillKind"/>, <see cref="CapabilityCatalog.AgentKind"/>,
+/// <see cref="CapabilityCatalog.PluginKind"/>).
+/// </param>
+/// <param name="Name">
+/// What the agent calls it by: a skill's gateway name (plugin-qualified for marketplace skills), an agent's
+/// template key (its <c>subagent_type</c>), a plugin's name.
+/// </param>
+/// <param name="Plugin">The owning plugin; <c>null</c> for a workspace skill or an agent whose key names none.</param>
+/// <param name="Marketplace">
+/// The owning marketplace alias; <c>null</c> for a workspace skill, and for every agent (a template key does
+/// not carry its marketplace).
+/// </param>
 /// <param name="Description">The description shown to the agent.</param>
 public sealed record CapabilityItem(
     string Key,
@@ -43,6 +56,11 @@ public sealed record SelectorIssue(string Selector, SelectorProblem Problem, IRe
 /// </summary>
 /// <remarks>
 /// <para>
+/// <b>One FTS5 table and one typo vocabulary per kind</b>, in the same database. A search ranks only its
+/// kind's rows, against that kind's BM25 statistics and words, so adding agents or plugins never moves a
+/// skill result. One shared table cost skill recall@5 0.905 → 0.881 on the eval set.
+/// </para>
+/// <para>
 /// <b>Ranking</b> (tuned against the slice-1 search eval set): each query word outside a stop list
 /// becomes one quoted FTS5 phrase, ORed, so no query text is ever parsed as FTS5 syntax. Words of four or
 /// more characters match as stem prefixes (<c>"failing"*</c> also finds <c>failures</c>). BM25 weights:
@@ -64,6 +82,18 @@ public sealed partial class CapabilityCatalog : IDisposable
 
     /// <summary>The key prefix of every skill item; the rest of the key is the skill's path.</summary>
     public const string SkillKeyPrefix = "skill:";
+
+    /// <summary>The kind of every sub-agent template item.</summary>
+    public const string AgentKind = "agent";
+
+    /// <summary>The key prefix of every agent item; the rest of the key is the template key.</summary>
+    public const string AgentKeyPrefix = "agent:";
+
+    /// <summary>The kind of every plugin item.</summary>
+    public const string PluginKind = "plugin";
+
+    /// <summary>The key prefix of every plugin item; the rest of the key is <c>&lt;marketplace&gt;/&lt;plugin&gt;</c>.</summary>
+    public const string PluginKeyPrefix = "plugin:";
 
     private const int MaxQueryWords = 32;
     private const int PrefixMinLength = 4;
@@ -89,16 +119,16 @@ public sealed partial class CapabilityCatalog : IDisposable
 
     private readonly object _gate = new();
     private readonly SqliteConnection _connection;
-    private readonly CapabilityItem[] _items; // rowid = index + 1
+    private readonly CapabilityItem[] _items; // rowid = index + 1, in every kind's table
     private readonly Dictionary<string, CapabilityItem> _byKey;
-    private readonly string[] _vocabulary; // sorted ordinal, lower-case
+    private readonly Dictionary<string, KindIndex> _kinds; // by kind; a kind with no items has no entry
     private bool _disposed;
 
-    private CapabilityCatalog(SqliteConnection connection, CapabilityItem[] items, string[] vocabulary)
+    private CapabilityCatalog(SqliteConnection connection, CapabilityItem[] items, Dictionary<string, KindIndex> kinds)
     {
         _connection = connection;
         _items = items;
-        _vocabulary = vocabulary;
+        _kinds = kinds;
         _byKey = new Dictionary<string, CapabilityItem>(StringComparer.Ordinal);
         foreach (var item in items)
         {
@@ -109,7 +139,7 @@ public sealed partial class CapabilityCatalog : IDisposable
     /// <summary>Every indexed item, in index order.</summary>
     public IReadOnlyList<CapabilityItem> Items => _items;
 
-    /// <summary>Builds the index. Item keys must be unique.</summary>
+    /// <summary>Builds the index: one FTS5 table and vocabulary per kind. Item keys must be unique.</summary>
     /// <exception cref="ArgumentException">Two items share a key.</exception>
     public static CapabilityCatalog Build(IReadOnlyList<CapabilityItem> items)
     {
@@ -124,68 +154,83 @@ public sealed partial class CapabilityCatalog : IDisposable
         try
         {
             connection.Open();
-            var vocabulary = new SortedSet<string>(StringComparer.Ordinal);
+            var kinds = new Dictionary<string, KindIndex>(StringComparer.Ordinal);
             using (var transaction = connection.BeginTransaction())
             {
-                Execute(
-                    connection,
-                    "CREATE VIRTUAL TABLE items USING fts5(name, name_words, plugin, marketplace, description, "
-                        + "kind UNINDEXED, tokenize = 'porter unicode61')"
-                );
-                // Persistent rank function, so ORDER BY rank (FTS5's fast path) uses the tuned weights.
-                Execute(connection, $"INSERT INTO items(items, rank) VALUES ('rank', 'bm25({Bm25Weights})')");
-                Execute(connection, "CREATE VIRTUAL TABLE vocab USING fts5(word, tokenize = 'trigram')");
-
-                using var insert = connection.CreateCommand();
-                insert.CommandText =
-                    "INSERT INTO items(rowid, name, name_words, plugin, marketplace, description, kind) "
-                    + "VALUES ($id, $name, $words, $plugin, $mkt, $desc, $kind)";
-                var id = insert.Parameters.Add("$id", SqliteType.Integer);
-                var name = insert.Parameters.Add("$name", SqliteType.Text);
-                var words = insert.Parameters.Add("$words", SqliteType.Text);
-                var plugin = insert.Parameters.Add("$plugin", SqliteType.Text);
-                var mkt = insert.Parameters.Add("$mkt", SqliteType.Text);
-                var desc = insert.Parameters.Add("$desc", SqliteType.Text);
-                var kind = insert.Parameters.Add("$kind", SqliteType.Text);
-                for (var i = 0; i < items.Count; i++)
+                // Table names are numbered, so kind text never reaches SQL.
+                foreach (var group in items.Select((item, i) => (Item: item, RowId: i + 1L)).GroupBy(r => r.Item.Kind))
                 {
-                    var item = items[i];
-                    var nameWords = NameWords(item.Name);
-                    id.Value = i + 1;
-                    name.Value = item.Name;
-                    words.Value = string.Join(' ', nameWords);
-                    plugin.Value = item.Plugin ?? string.Empty;
-                    mkt.Value = item.Marketplace ?? string.Empty;
-                    desc.Value = item.Description;
-                    kind.Value = item.Kind;
-                    _ = insert.ExecuteNonQuery();
-
-                    vocabulary.UnionWith(nameWords);
-                    vocabulary.UnionWith(Words(item.Name));
-                    vocabulary.UnionWith(Words(item.Plugin ?? string.Empty));
-                    vocabulary.UnionWith(Words(item.Marketplace ?? string.Empty));
-                    vocabulary.UnionWith(Words(item.Description));
-                }
-
-                using var insertWord = connection.CreateCommand();
-                insertWord.CommandText = "INSERT INTO vocab(word) VALUES ($w)";
-                var word = insertWord.Parameters.Add("$w", SqliteType.Text);
-                foreach (var w in vocabulary)
-                {
-                    word.Value = w;
-                    _ = insertWord.ExecuteNonQuery();
+                    var index = new KindIndex($"items{kinds.Count}", $"vocab{kinds.Count}", []);
+                    kinds[group.Key] = index with { Vocabulary = IndexKind(connection, index, group) };
                 }
 
                 transaction.Commit();
             }
 
-            return new CapabilityCatalog(connection, [.. items], [.. vocabulary]);
+            return new CapabilityCatalog(connection, [.. items], kinds);
         }
         catch
         {
             connection.Dispose();
             throw;
         }
+    }
+
+    /// <summary>Creates and fills one kind's item and vocabulary tables; returns its sorted vocabulary.</summary>
+    private static string[] IndexKind(
+        SqliteConnection connection,
+        KindIndex index,
+        IEnumerable<(CapabilityItem Item, long RowId)> rows
+    )
+    {
+        Execute(
+            connection,
+            $"CREATE VIRTUAL TABLE {index.Items} USING fts5(name, name_words, plugin, marketplace, description, "
+                + "tokenize = 'porter unicode61')"
+        );
+        // Persistent rank function, so ORDER BY rank (FTS5's fast path) uses the tuned weights.
+        Execute(connection, $"INSERT INTO {index.Items}({index.Items}, rank) VALUES ('rank', 'bm25({Bm25Weights})')");
+        Execute(connection, $"CREATE VIRTUAL TABLE {index.Vocab} USING fts5(word, tokenize = 'trigram')");
+
+        var vocabulary = new SortedSet<string>(StringComparer.Ordinal);
+        using var insert = connection.CreateCommand();
+        insert.CommandText =
+            $"INSERT INTO {index.Items}(rowid, name, name_words, plugin, marketplace, description) "
+            + "VALUES ($id, $name, $words, $plugin, $mkt, $desc)";
+        var id = insert.Parameters.Add("$id", SqliteType.Integer);
+        var name = insert.Parameters.Add("$name", SqliteType.Text);
+        var words = insert.Parameters.Add("$words", SqliteType.Text);
+        var plugin = insert.Parameters.Add("$plugin", SqliteType.Text);
+        var mkt = insert.Parameters.Add("$mkt", SqliteType.Text);
+        var desc = insert.Parameters.Add("$desc", SqliteType.Text);
+        foreach (var (item, rowId) in rows)
+        {
+            var nameWords = NameWords(item.Name);
+            id.Value = rowId;
+            name.Value = item.Name;
+            words.Value = string.Join(' ', nameWords);
+            plugin.Value = item.Plugin ?? string.Empty;
+            mkt.Value = item.Marketplace ?? string.Empty;
+            desc.Value = item.Description;
+            _ = insert.ExecuteNonQuery();
+
+            vocabulary.UnionWith(nameWords);
+            vocabulary.UnionWith(Words(item.Name));
+            vocabulary.UnionWith(Words(item.Plugin ?? string.Empty));
+            vocabulary.UnionWith(Words(item.Marketplace ?? string.Empty));
+            vocabulary.UnionWith(Words(item.Description));
+        }
+
+        using var insertWord = connection.CreateCommand();
+        insertWord.CommandText = $"INSERT INTO {index.Vocab}(word) VALUES ($w)";
+        var word = insertWord.Parameters.Add("$w", SqliteType.Text);
+        foreach (var w in vocabulary)
+        {
+            word.Value = w;
+            _ = insertWord.ExecuteNonQuery();
+        }
+
+        return [.. vocabulary];
     }
 
     /// <summary>
@@ -226,6 +271,56 @@ public sealed partial class CapabilityCatalog : IDisposable
         return items;
     }
 
+    /// <summary>
+    /// One item per plugin of each gateway marketplace, keyed <c>plugin:&lt;marketplace&gt;/&lt;plugin&gt;</c>
+    /// and described by its <c>plugin.json</c>. A plugin the gateway leaves out (for example one with no
+    /// skills) has no item.
+    /// </summary>
+    public static IReadOnlyList<CapabilityItem> FromPlugins(SandboxSkillCatalog catalog)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        return
+        [
+            .. catalog.Marketplaces.SelectMany(marketplace =>
+                marketplace.Plugins.Select(plugin => new CapabilityItem(
+                    PluginKeyPrefix + marketplace.Alias + "/" + plugin.Name,
+                    PluginKind,
+                    plugin.Name,
+                    plugin.Name,
+                    marketplace.Alias,
+                    plugin.Description
+                ))
+            ),
+        ];
+    }
+
+    /// <summary>
+    /// One item per sub-agent template, keyed <c>agent:&lt;template key&gt;</c>, in ordinal key order (so
+    /// the same templates always give the same items). The plugin is the part of the key before its first
+    /// <c>:</c> (marketplace templates are keyed <c>plugin:name</c>); a template key carries no marketplace.
+    /// </summary>
+    public static IReadOnlyList<CapabilityItem> FromTemplates(IReadOnlyDictionary<string, SubAgentTemplate> templates)
+    {
+        ArgumentNullException.ThrowIfNull(templates);
+        return
+        [
+            .. templates
+                .OrderBy(t => t.Key, StringComparer.Ordinal)
+                .Select(t =>
+                {
+                    var colon = t.Key.IndexOf(':', StringComparison.Ordinal);
+                    return new CapabilityItem(
+                        AgentKeyPrefix + t.Key,
+                        AgentKind,
+                        t.Key,
+                        colon > 0 ? t.Key[..colon] : null,
+                        null,
+                        t.Value.Description ?? string.Empty
+                    );
+                }),
+        ];
+    }
+
     /// <summary>The skill path a skill key names.</summary>
     public static string SkillPathOf(string key)
     {
@@ -241,9 +336,16 @@ public sealed partial class CapabilityCatalog : IDisposable
     /// <summary>
     /// Ranked items of <paramref name="kind"/> for free text <paramref name="query"/>, best first, at most
     /// <paramref name="limit"/>. Any text is accepted: it is reduced to words and never reaches FTS5 as
-    /// syntax. A query with no searchable word returns an empty list.
+    /// syntax. A query with no searchable word, or a kind with no items, returns an empty list.
     /// </summary>
-    public IReadOnlyList<CapabilityItem> Search(string query, string kind, int limit)
+    public IReadOnlyList<CapabilityItem> Search(string query, string kind, int limit) =>
+        [.. SearchScored(query, kind, limit).Select(hit => hit.Item)];
+
+    /// <summary>
+    /// <see cref="Search"/> with each hit's score: the negated weighted BM25 of its kind's table plus the
+    /// name bonus. Higher is better; scores compare only within one kind.
+    /// </summary>
+    internal IReadOnlyList<(CapabilityItem Item, double Score)> SearchScored(string query, string kind, int limit)
     {
         ArgumentNullException.ThrowIfNull(query);
         ArgumentNullException.ThrowIfNull(kind);
@@ -258,14 +360,23 @@ public sealed partial class CapabilityCatalog : IDisposable
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
+            if (!_kinds.TryGetValue(kind, out var index))
+            {
+                return [];
+            }
+
             var terms = words.Select(Term).ToList();
-            var scores = RunMatch(terms, kind);
+            var scores = RunMatch(index, terms);
             if (scores.Count < limit)
             {
-                var corrections = words.SelectMany(Corrections).Select(Term).Where(t => !terms.Contains(t)).ToList();
+                var corrections = words
+                    .SelectMany(w => Corrections(index, w))
+                    .Select(Term)
+                    .Where(t => !terms.Contains(t))
+                    .ToList();
                 if (corrections.Count > 0)
                 {
-                    scores = RunMatch([.. terms, .. corrections], kind);
+                    scores = RunMatch(index, [.. terms, .. corrections]);
                 }
             }
 
@@ -282,7 +393,7 @@ public sealed partial class CapabilityCatalog : IDisposable
                     .OrderByDescending(kv => kv.Value)
                     .ThenBy(kv => _items[kv.Key - 1].Name, StringComparer.Ordinal)
                     .Take(limit)
-                    .Select(kv => _items[kv.Key - 1]),
+                    .Select(kv => (_items[kv.Key - 1], kv.Value)),
             ];
         }
     }
@@ -295,21 +406,41 @@ public sealed partial class CapabilityCatalog : IDisposable
     /// </summary>
     public bool TryResolveSkill(string nameOrPath, out CapabilityItem item)
     {
-        var matches = MatchSkill(nameOrPath);
+        var matches = MatchItem(SkillKind, nameOrPath);
         item = matches.Count == 1 ? matches[0] : null!;
         return matches.Count == 1;
     }
 
     /// <summary>
-    /// Resolves config selectors to item keys, de-duplicated, in first-seen order. A selector is
-    /// <c>&lt;kind&gt;:&lt;ref&gt;</c>, split at the FIRST colon: <c>skill:&lt;name|path&gt;</c> (see
-    /// <see cref="TryResolveSkill"/>) or <c>plugin:&lt;marketplace&gt;/&lt;plugin&gt;</c> (every skill of
-    /// that plugin). A selector that resolves to nothing goes to <paramref name="issues"/> and loads nothing.
+    /// Resolves config selectors to the keys of items of <paramref name="kind"/>, de-duplicated, in
+    /// first-seen order. A selector is <c>&lt;kind&gt;:&lt;ref&gt;</c>, split at the FIRST colon:
+    /// <list type="bullet">
+    /// <item><c>skill:&lt;name|path&gt;</c> (see <see cref="TryResolveSkill"/>) and <c>agent:&lt;ref&gt;</c> (a
+    /// template key, or the trailing <c>:</c>-segments of only one) name one item. A selector of the other
+    /// of these two kinds is skipped: it belongs to that kind's call.</item>
+    /// <item><c>plugin:&lt;marketplace&gt;/&lt;plugin&gt;</c> loads every item of <paramref name="kind"/> in that
+    /// plugin. An item with no marketplace (an agent) matches on the plugin name alone. A plugin with nothing
+    /// of this kind loads nothing and is not an issue; one the catalog has nothing from is Unknown.</item>
+    /// </list>
+    /// A selector that resolves to nothing goes to <paramref name="issues"/> and loads nothing. Any other
+    /// kind (<c>tool:</c> included) is <see cref="SelectorProblem.Malformed"/>.
     /// </summary>
-    public IReadOnlyList<string> ResolveSelectors(IEnumerable<string> selectors, ICollection<SelectorIssue> issues)
+    /// <param name="selectors">The selectors, in config order.</param>
+    /// <param name="issues">Receives one issue per selector that loads nothing.</param>
+    /// <param name="kind">
+    /// The kind to resolve for. <c>null</c> is the slice-1 form, kept until the host passes a kind: skills,
+    /// with a selector of any other kind (<c>agent:</c> included) reported Malformed instead of skipped.
+    /// </param>
+    public IReadOnlyList<string> ResolveSelectors(
+        IEnumerable<string> selectors,
+        ICollection<SelectorIssue> issues,
+        string? kind = null
+    )
     {
         ArgumentNullException.ThrowIfNull(selectors);
         ArgumentNullException.ThrowIfNull(issues);
+        var otherKindIsMalformed = kind is null;
+        kind ??= SkillKind;
         var keys = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var selector in selectors)
@@ -321,13 +452,20 @@ public sealed partial class CapabilityCatalog : IDisposable
                 continue;
             }
 
-            var kind = selector[..colon];
+            var selectorKind = selector[..colon];
             var reference = selector[(colon + 1)..];
             IReadOnlyList<CapabilityItem> resolved;
-            switch (kind)
+            switch (selectorKind)
             {
-                case SkillKind:
-                    var matches = MatchSkill(reference);
+                case SkillKind or AgentKind when selectorKind != kind:
+                    if (otherKindIsMalformed)
+                    {
+                        issues.Add(new SelectorIssue(selector, SelectorProblem.Malformed, []));
+                    }
+
+                    continue;
+                case SkillKind or AgentKind:
+                    var matches = MatchItem(kind, reference);
                     if (matches.Count != 1)
                     {
                         issues.Add(
@@ -342,14 +480,15 @@ public sealed partial class CapabilityCatalog : IDisposable
 
                     resolved = matches;
                     break;
-                case "plugin":
-                    resolved = MatchPlugin(reference);
-                    if (resolved.Count == 0)
+                case PluginKind:
+                    var inPlugin = MatchPlugin(reference);
+                    if (inPlugin.Count == 0)
                     {
                         issues.Add(new SelectorIssue(selector, SelectorProblem.Unknown, []));
                         continue;
                     }
 
+                    resolved = [.. inPlugin.Where(i => i.Kind == kind)];
                     break;
                 default:
                     issues.Add(new SelectorIssue(selector, SelectorProblem.Malformed, []));
@@ -383,16 +522,21 @@ public sealed partial class CapabilityCatalog : IDisposable
         }
     }
 
-    private List<CapabilityItem> MatchSkill(string reference)
+    /// <summary>
+    /// Items of <paramref name="kind"/> a reference names: the exact key <c>&lt;kind&gt;:&lt;reference&gt;</c>
+    /// (a skill's path, an agent's template key), else every item with that exact name, else every item
+    /// whose name ends with <c>:&lt;reference&gt;</c>, ordinal by name.
+    /// </summary>
+    private List<CapabilityItem> MatchItem(string kind, string reference)
     {
         ArgumentNullException.ThrowIfNull(reference);
-        if (_byKey.TryGetValue(SkillKeyPrefix + reference, out var byPath) && byPath.Kind == SkillKind)
+        if (_byKey.TryGetValue(kind + ":" + reference, out var byKey) && byKey.Kind == kind)
         {
-            return [byPath];
+            return [byKey];
         }
 
-        var skills = _items.Where(i => i.Kind == SkillKind);
-        var byName = skills.Where(i => string.Equals(i.Name, reference, StringComparison.Ordinal)).ToList();
+        var ofKind = _items.Where(i => i.Kind == kind);
+        var byName = ofKind.Where(i => string.Equals(i.Name, reference, StringComparison.Ordinal)).ToList();
         if (byName.Count > 0)
         {
             return byName;
@@ -403,12 +547,16 @@ public sealed partial class CapabilityCatalog : IDisposable
         var suffix = ":" + reference;
         return
         [
-            .. skills
+            .. ofKind
                 .Where(i => i.Name.EndsWith(suffix, StringComparison.Ordinal))
                 .OrderBy(i => i.Name, StringComparer.Ordinal),
         ];
     }
 
+    /// <summary>
+    /// Items of every kind in plugin <c>&lt;marketplace&gt;/&lt;plugin&gt;</c>, in index order. An item with no
+    /// marketplace matches on the plugin name alone.
+    /// </summary>
     private List<CapabilityItem> MatchPlugin(string reference)
     {
         var slash = reference.IndexOf('/', StringComparison.Ordinal);
@@ -422,21 +570,19 @@ public sealed partial class CapabilityCatalog : IDisposable
         return
         [
             .. _items.Where(i =>
-                i.Kind == SkillKind
-                && string.Equals(i.Marketplace, marketplace, StringComparison.Ordinal)
-                && string.Equals(i.Plugin, plugin, StringComparison.Ordinal)
+                string.Equals(i.Plugin, plugin, StringComparison.Ordinal)
+                && (i.Marketplace is null || string.Equals(i.Marketplace, marketplace, StringComparison.Ordinal))
             ),
         ];
     }
 
-    private Dictionary<long, double> RunMatch(IReadOnlyList<string> terms, string kind)
+    private Dictionary<long, double> RunMatch(KindIndex index, IReadOnlyList<string> terms)
     {
         using var command = _connection.CreateCommand();
         command.CommandText =
-            "SELECT rowid, rank FROM items WHERE items MATCH $match AND kind = $kind "
+            $"SELECT rowid, rank FROM {index.Items} WHERE {index.Items} MATCH $match "
             + $"ORDER BY rank LIMIT {CandidateRows}";
         _ = command.Parameters.AddWithValue("$match", string.Join(" OR ", terms));
-        _ = command.Parameters.AddWithValue("$kind", kind);
         var scores = new Dictionary<long, double>();
         using var reader = command.ExecuteReader();
         while (reader.Read())
@@ -449,19 +595,20 @@ public sealed partial class CapabilityCatalog : IDisposable
     }
 
     /// <summary>
-    /// The closest indexed words for a query word no indexed word starts with (so the prefix match found
-    /// nothing for it): all words with the best trigram Dice score, when that score is at least 0.5.
+    /// The closest words of the kind's vocabulary for a query word none of them starts with (so the prefix
+    /// match found nothing for it): all words with the best trigram Dice score, when that score is at least 0.5.
     /// </summary>
-    private IEnumerable<string> Corrections(string word)
+    private IEnumerable<string> Corrections(KindIndex index, string word)
     {
-        if (word.Length < PrefixMinLength || HasVocabularyPrefix(word))
+        if (word.Length < PrefixMinLength || HasVocabularyPrefix(index.Vocabulary, word))
         {
             return [];
         }
 
         var grams = Trigrams(word);
         using var command = _connection.CreateCommand();
-        command.CommandText = $"SELECT word FROM vocab WHERE vocab MATCH $match ORDER BY rank LIMIT {CandidateRows}";
+        command.CommandText =
+            $"SELECT word FROM {index.Vocab} WHERE {index.Vocab} MATCH $match ORDER BY rank LIMIT {CandidateRows}";
         _ = command.Parameters.AddWithValue("$match", string.Join(" OR ", grams.Select(Quote)));
         var scored = new List<(string Word, double Score)>();
         using (var reader = command.ExecuteReader())
@@ -486,16 +633,16 @@ public sealed partial class CapabilityCatalog : IDisposable
         return [.. scored.Where(s => s.Score == best).Select(s => s.Word)];
     }
 
-    private bool HasVocabularyPrefix(string word)
+    private static bool HasVocabularyPrefix(string[] vocabulary, string word)
     {
-        var index = Array.BinarySearch(_vocabulary, word, StringComparer.Ordinal);
+        var index = Array.BinarySearch(vocabulary, word, StringComparer.Ordinal);
         if (index >= 0)
         {
             return true;
         }
 
         index = ~index;
-        return index < _vocabulary.Length && _vocabulary[index].StartsWith(word, StringComparison.Ordinal);
+        return index < vocabulary.Length && vocabulary[index].StartsWith(word, StringComparison.Ordinal);
     }
 
     private static double NameBonus(string name, string normalizedQuery, string joinedWords)
@@ -588,6 +735,9 @@ public sealed partial class CapabilityCatalog : IDisposable
         command.CommandText = sql;
         _ = command.ExecuteNonQuery();
     }
+
+    /// <summary>One kind's FTS5 item table, its trigram vocabulary table, and that vocabulary sorted ordinal.</summary>
+    private sealed record KindIndex(string Items, string Vocab, string[] Vocabulary);
 
     [GeneratedRegex(@"[\p{L}\p{M}\p{N}]+", RegexOptions.CultureInvariant)]
     private static partial Regex WordPattern();

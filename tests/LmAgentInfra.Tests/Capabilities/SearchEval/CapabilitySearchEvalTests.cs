@@ -9,8 +9,9 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Tests.Capabilities.SearchEval;
 public sealed class SearchEvalCollection;
 
 /// <summary>
-/// The skill corpus (315 real skills from four marketplaces, see THIRD-PARTY-NOTICES.md) indexed the way
-/// slice 1 indexes a sandbox: skills only. Loaded and built once for both eval tests.
+/// The whole corpus (315 skills, 63 agents and 36 plugins from four marketplaces, see THIRD-PARTY-NOTICES.md)
+/// in one catalog, each row shaped the way the host builds it. Each kind has its own table, so the skill
+/// results equal a skills-only index. Loaded and built once for both eval tests.
 /// </summary>
 public sealed class SearchEvalFixture : IDisposable
 {
@@ -27,23 +28,24 @@ public sealed class SearchEvalFixture : IDisposable
         var items = new List<CapabilityItem>();
         foreach (var row in corpus.RootElement.EnumerateArray())
         {
-            if (row.GetProperty("kind").GetString() != CapabilityCatalog.SkillKind)
-            {
-                continue;
-            }
-
+            var key = row.GetProperty("key").GetString()!;
+            var kind = row.GetProperty("kind").GetString()!;
+            var name = row.GetProperty("name").GetString()!;
             var plugin = row.GetProperty("plugin").GetString()!;
             var marketplace = row.GetProperty("marketplace").GetString()!;
+            var alias = GatewayAlias.GetValueOrDefault(marketplace, marketplace);
+            var description = row.GetProperty("description").GetString()!;
             items.Add(
-                new CapabilityItem(
-                    row.GetProperty("key").GetString()!,
-                    CapabilityCatalog.SkillKind,
+                kind switch
+                {
                     // The gateway name of a marketplace skill is plugin-qualified.
-                    plugin + ":" + row.GetProperty("name").GetString(),
-                    plugin,
-                    GatewayAlias.GetValueOrDefault(marketplace, marketplace),
-                    row.GetProperty("description").GetString()!
-                )
+                    CapabilityCatalog.SkillKind => new(key, kind, plugin + ":" + name, plugin, alias, description),
+                    // FromTemplates: named by the template key `plugin:name`, which carries no marketplace.
+                    CapabilityCatalog.AgentKind => new(key, kind, plugin + ":" + name, plugin, null, description),
+                    // FromPlugins: one row per gateway marketplace plugin.
+                    CapabilityCatalog.PluginKind => new(key, kind, name, name, alias, description),
+                    _ => throw new InvalidOperationException($"Unknown corpus kind '{kind}' for {key}."),
+                }
             );
         }
 
@@ -51,18 +53,18 @@ public sealed class SearchEvalFixture : IDisposable
         [
             .. File.ReadAllLines(Path.Combine(directory, "queries.jsonl"))
                 .Where(line => line.Length > 0)
-                .Select(line => JsonSerializer.Deserialize<EvalQuery>(line, JsonOptions)!)
-                .Where(q => q.Kind == CapabilityCatalog.SkillKind),
+                .Select(line => JsonSerializer.Deserialize<EvalQuery>(line, JsonOptions)!),
         ];
 
-        var keys = items.Select(i => i.Key).ToHashSet(StringComparer.Ordinal);
+        var kinds = items.ToDictionary(i => i.Key, i => i.Kind, StringComparer.Ordinal);
         var missing = Queries
-            .SelectMany(q => q.Relevant.Where(k => !keys.Contains(k)).Select(k => $"{q.Id}:{k}"))
+            .SelectMany(q => q.Relevant.Where(k => kinds.GetValueOrDefault(k) != q.Kind).Select(k => $"{q.Id}:{k}"))
             .ToList();
         if (missing.Count > 0)
         {
             throw new InvalidOperationException(
-                "Labelled keys missing from the skill corpus: " + string.Join(", ", missing)
+                "Labelled keys missing from the corpus, or of another kind than their query: "
+                    + string.Join(", ", missing)
             );
         }
 
@@ -90,7 +92,8 @@ public sealed record EvalQuery(string Id, string Query, string Kind, string[] Re
 /// <summary>
 /// Plan proof for capability search: recall@5 ≥ 0.90 over the labelled skill queries (E1) and query
 /// p95 ≤ 5 ms on a quiet machine (E2, printed by the latency test, which asserts a looser bound). Labels
-/// are frozen; a red E1 is fixed in the engine, never in queries.jsonl.
+/// are frozen; a red E1 is fixed in the engine, never in queries.jsonl. Agent and plugin recall, and every
+/// hit of the off-topic queries (empty expected set) with its score, are printed for precision work.
 /// </summary>
 [Collection(nameof(SearchEvalCollection))]
 public class CapabilitySearchEvalTests(SearchEvalFixture fixture, ITestOutputHelper output)
@@ -102,12 +105,19 @@ public class CapabilitySearchEvalTests(SearchEvalFixture fixture, ITestOutputHel
     public void SearchEval_MeanRecallAt5_IsAtLeast0_90()
     {
         var recalls = new List<(EvalQuery Query, double Recall)>();
+        var offTopicHits = new List<(EvalQuery Query, double Score)>();
         foreach (var query in fixture.Queries)
         {
-            var hits = fixture.Catalog.Search(query.Query, query.Kind, TopK).Select(h => h.Key).ToList();
+            var scored = fixture.Catalog.SearchScored(query.Query, query.Kind, TopK);
+            var hits = scored.Select(h => h.Item.Key).ToList();
             if (query.Relevant.Length == 0)
             {
-                output.WriteLine($"none {query.Id} | {query.Query} | got {Short(hits)}");
+                offTopicHits.AddRange(scored.Select(h => (query, h.Score)));
+                output.WriteLine(
+                    $"none {query.Id} | {query.Kind} | {query.Query} | got ["
+                        + string.Join(", ", scored.Select(h => $"{ShortKey(h.Item.Key)} {h.Score:F2}"))
+                        + "]"
+                );
                 continue;
             }
 
@@ -116,20 +126,33 @@ public class CapabilitySearchEvalTests(SearchEvalFixture fixture, ITestOutputHel
             if (recall < 1)
             {
                 output.WriteLine(
-                    $"miss {query.Id} | {query.Category} | {query.Query} | want {Short(query.Relevant)} | got {Short(hits)}"
+                    $"miss {query.Id} | {query.Kind} | {query.Category} | {query.Query} | want {Short(query.Relevant)} | got {Short(hits)}"
                 );
             }
         }
 
-        var mean = recalls.Average(r => r.Recall);
         output.WriteLine($"items {fixture.ItemCount}, build {fixture.BuildMs:F1} ms");
-        output.WriteLine($"recall@5 {mean:F3} over {recalls.Count} labelled skill queries");
-        foreach (var group in recalls.GroupBy(r => r.Query.Category).OrderBy(g => g.Key, StringComparer.Ordinal))
+        foreach (var kind in recalls.GroupBy(r => r.Query.Kind).OrderBy(g => g.Key, StringComparer.Ordinal))
         {
-            output.WriteLine($"  {group.Key}: {group.Average(r => r.Recall):F3} ({group.Count()})");
+            output.WriteLine(
+                $"{kind.Key} recall@5 {kind.Average(r => r.Recall):F3} = {kind.Sum(r => r.Recall):F2}/{kind.Count()}"
+            );
         }
 
-        mean.Should().BeGreaterThanOrEqualTo(0.90);
+        var skills = recalls.Where(r => r.Query.Kind == CapabilityCatalog.SkillKind).ToList();
+        foreach (var group in skills.GroupBy(r => r.Query.Category).OrderBy(g => g.Key, StringComparer.Ordinal))
+        {
+            output.WriteLine($"  skill {group.Key}: {group.Average(r => r.Recall):F3} ({group.Count()})");
+        }
+
+        foreach (var kind in offTopicHits.GroupBy(h => h.Query.Kind).OrderBy(g => g.Key, StringComparer.Ordinal))
+        {
+            output.WriteLine(
+                $"off-topic {kind.Key}: {kind.Count()} hits at top-{TopK} over {kind.Select(h => h.Query.Id).Distinct().Count()} queries, max score {kind.Max(h => h.Score):F2}"
+            );
+        }
+
+        skills.Average(r => r.Recall).Should().BeGreaterThanOrEqualTo(0.90);
     }
 
     [Fact]
@@ -166,6 +189,7 @@ public class CapabilitySearchEvalTests(SearchEvalFixture fixture, ITestOutputHel
         At(0.95).Should().BeLessThanOrEqualTo(20.0);
     }
 
-    private static string Short(IEnumerable<string> keys) =>
-        "[" + string.Join(", ", keys.Select(k => k[(k.IndexOf('/', StringComparison.Ordinal) + 1)..])) + "]";
+    private static string Short(IEnumerable<string> keys) => "[" + string.Join(", ", keys.Select(ShortKey)) + "]";
+
+    private static string ShortKey(string key) => key[(key.IndexOf('/', StringComparison.Ordinal) + 1)..];
 }

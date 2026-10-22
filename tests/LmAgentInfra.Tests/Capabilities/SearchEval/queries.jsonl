@@ -91,3 +91,11 @@
 {"id":"q091","query":"plugin for controlling smart-home lights and thermostats","kind":"plugin","relevant":[],"category":"none","note":"No home-automation plugin."}
 {"id":"q092","query":"automated pull-request review with specialized checks","kind":"plugin","relevant":["plugin:ClaudePlugins/code-reviewer","plugin:knowledge-work-plugins/engineering"],"category":"multi-answer","note":"engineering includes a code-review skill; gh/ado tend PRs but do not review them."}
 {"id":"q093","query":"enterprise search across email chat and wikis","kind":"plugin","relevant":["plugin:knowledge-work-plugins/enterprise-search"],"category":"keyword","note":""}
+{"id":"q094","query":"recommend a wine to pair with grilled salmon for dinner","kind":"skill","relevant":[],"category":"none","note":"No food or drink skill."}
+{"id":"q095","query":"tune the PID gains in my quadcopter flight controller firmware","kind":"skill","relevant":[],"category":"none","note":"No embedded or drone skill; 'flight' appears only in people-report and probe-sdk descriptions."}
+{"id":"q096","query":"underwater welding certification","kind":"skill","relevant":[],"category":"none","note":"Seen by the slice-1 Manual Tester returning confident hits. No trades or certification skill."}
+{"id":"q097","query":"zzqx nonexistent quantum basket weaving","kind":"skill","relevant":[],"category":"none","note":"Nonsense plus unrelated words, seen by the slice-1 Manual Tester returning confident hits."}
+{"id":"q098","query":"an agent that composes orchestral music for a short film","kind":"agent","relevant":[],"category":"none","note":"No music agent. 'orchestral' stems like 'orchestrator', which many agent descriptions use."}
+{"id":"q099","query":"agent that tracks my workouts and builds a weekly diet plan","kind":"agent","relevant":[],"category":"none","note":"No fitness or nutrition agent."}
+{"id":"q100","query":"plugin for planning a vegetable garden and a watering schedule","kind":"plugin","relevant":[],"category":"none","note":"No gardening plugin; 'schedule' appears in meeting-scheduling plugins."}
+{"id":"q101","query":"plugin for editing podcast audio and removing background noise","kind":"plugin","relevant":[],"category":"none","note":"No audio-editing plugin; zoom streams meeting audio but does not edit it."}
