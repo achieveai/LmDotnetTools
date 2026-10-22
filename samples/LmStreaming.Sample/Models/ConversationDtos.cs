@@ -158,7 +158,8 @@ public record SwitchModeRequest
 /// <summary>
 /// Response to a successful mode switch. <see cref="Warning"/> is populated (otherwise null) when the
 /// switched-away agent had an armed <c>Wait</c> that the recreate discarded, so a headless caller can
-/// surface that a pending park-and-wake was dropped.
+/// surface that a pending park-and-wake was dropped, and when the mode's skill tiers did not fully take
+/// (both texts, joined by a space, when both apply).
 /// </summary>
 public record SwitchModeResponse
 {
@@ -183,7 +184,8 @@ public record SwitchProviderRequest
 
 /// <summary>
 /// Response to a successful provider switch. <see cref="Warning"/> mirrors <see cref="SwitchModeResponse.Warning"/>:
-/// non-null when the recreate discarded an armed <c>Wait</c> on the thread.
+/// non-null when the recreate discarded an armed <c>Wait</c> on the thread, or when the mode's skill tiers did not
+/// fully take on the rebuild.
 /// </summary>
 public record SwitchProviderResponse
 {

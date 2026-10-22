@@ -230,6 +230,89 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
     }
 
     /// <summary>
+    /// F-013: an in-place switch that applies moves the live root's tiers with it, both ways. Tiered → untiered: the
+    /// root reads as the default gateway agent and sends Workspace Agent's tools[]. Untiered → tiered: the root
+    /// reads as its own gateway agent and lists Skill and SearchSkill. Both switches answer <c>warning: null</c>.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task AppliedInPlaceSwitch_MovesTheLiveRootsTiers_BothDirections(bool fromTiered)
+    {
+        var (fromMode, toMode) = fromTiered
+            ? (_host.TieredModeId, _host.UntieredModeId)
+            : (_host.UntieredModeId, _host.TieredModeId);
+        var threadId = await _host.ProvisionAsync(fromMode);
+        _ = await _host.FirstRequestAsync(threadId, fromMode);
+
+        (await SwitchAppliedInPlaceAsync(threadId, toMode)).Should().BeNull("the tiers took");
+
+        var (after, presentedAs) = await ReadAfterSwitchAsync(threadId, toMode, fromTiered ? "untiered" : "tiered");
+        if (fromTiered)
+        {
+            presentedAs.Should().BeNull("the untiered root reads as the default gateway agent");
+            after.ToolsJson.Should().Be(_host.Reference.ToolsJson, "the untiered root sends Workspace Agent's tools[]");
+        }
+        else
+        {
+            presentedAs.Should().Be(threadId, "the tiered root reads as its own gateway agent");
+            after.ToolNames.Should().Contain(["Skill", CapabilityTiers.SearchSkillToolName]);
+        }
+    }
+
+    /// <summary>
+    /// R8: a switch into a tiered mode whose tier PATCH fails still applies, and says so: the response warns that the
+    /// tiers were not applied and will be retried, with no skill names, agent ids or gateway error text.
+    /// </summary>
+    [Fact]
+    public async Task AppliedSwitch_TierPatchFails_ResponseWarns()
+    {
+        var threadId = await _host.ProvisionAsync(_host.UntieredModeId);
+        _ = await _host.FirstRequestAsync(threadId, _host.UntieredModeId);
+        _host.Gateway.FailPatchesFor(threadId);
+
+        var warning = await SwitchAppliedInPlaceAsync(threadId, _host.TieredModeId);
+
+        warning
+            .Should()
+            .Be("Skill tiers could not be applied to the sandbox; they will be retried at the next compaction.");
+        _host
+            .Gateway.Patches.Should()
+            .Contain(p => p.AgentId == threadId, "guard: the switch attempted the root's PATCH");
+    }
+
+    /// <summary>
+    /// R8b: a tiered setup that goes inert says why on the switch that built it, here with the sandbox catalog down. A
+    /// mode switch into the tiered mode and a provider switch on a tiered conversation both rebuild through the
+    /// factory, and both answer with the plain warning: no skill names, agent ids or gateway error text.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AppliedSwitch_CatalogUnavailable_ResponseWarns_ModeAndProviderSwitch(bool providerSwitch)
+    {
+        var fromMode = providerSwitch ? _host.TieredModeId : _host.UntieredModeId;
+        var threadId = await _host.ProvisionAsync(fromMode);
+        _ = await _host.FirstRequestAsync(threadId, fromMode);
+        _host.Gateway.FailCatalogFor(_host.SessionOf(threadId));
+
+        using var switched = providerSwitch
+            ? await _host.SwitchProviderAsync(threadId, "test-anthropic")
+            : await _host.SwitchModeAsync(threadId, _host.TieredModeId);
+        var warning = await AppliedInPlaceWarningAsync(threadId, switched);
+
+        warning
+            .Should()
+            .Be(
+                "Skill tiers could not be set up for this mode (the sandbox catalog was unavailable); this conversation runs without tiers until its next mode switch."
+            );
+        _host
+            .Logs.Count("Capabilities apply failed", "ThreadId", threadId)
+            .Should()
+            .Be(1, "guard: the switch's build could not read the catalog");
+    }
+
+    /// <summary>
     /// A tiered root that used a skill rotates at its next checkpoint, and the next request lists the new set. This
     /// reaches three host seams: the build registers the tiers provider (Skill and SearchSkill on the first request),
     /// the sandbox listing hands the root's Skill to the tiers instance (so a rotation can swap its text), and the
@@ -356,6 +439,26 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
             .Logs.Count("Refusing to reconfigure thread {ThreadId}: a manual compaction", "ThreadId", threadId)
             .Should()
             .Be(1, "guard: refused by the live loop, after the factory built the target mode");
+    }
+
+    /// <summary>Switches an idle conversation, which the factory serves in place; the response's <c>warning</c>.</summary>
+    private async Task<string?> SwitchAppliedInPlaceAsync(string threadId, string targetModeId)
+    {
+        using var switched = await _host.SwitchModeAsync(threadId, targetModeId);
+        return await AppliedInPlaceWarningAsync(threadId, switched);
+    }
+
+    /// <summary>The <c>warning</c> of a mode or provider switch that must have applied, in place.</summary>
+    private async Task<string?> AppliedInPlaceWarningAsync(string threadId, HttpResponseMessage switched)
+    {
+        var body = await switched.Content.ReadAsStringAsync();
+        switched.StatusCode.Should().Be(HttpStatusCode.OK, "the switch must apply; body was: {0}", body);
+        _host
+            .Logs.Count("Reconfigured the live agent for thread {ThreadId} in place", "ThreadId", threadId)
+            .Should()
+            .Be(1, "guard: the switch was served in place");
+        using var doc = JsonDocument.Parse(body);
+        return doc.RootElement.GetProperty("warning").GetString();
     }
 
     /// <summary>
@@ -535,6 +638,9 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                         !ctx.HasToolResult
                         && (ctx.LatestUserMessage?.Contains(SwitchReadPrefix, StringComparison.Ordinal) ?? false)
                 )
+                // One turn per ReadAfterSwitchAsync in the class: two refused switches, two applied ones.
+                .Turn(t => t.ToolCall("Read", new { file_path = ReadPath }))
+                .Turn(t => t.ToolCall("Read", new { file_path = ReadPath }))
                 .Turn(t => t.ToolCall("Read", new { file_path = ReadPath }))
                 .Turn(t => t.ToolCall("Read", new { file_path = ReadPath }))
                 .ForRole(
@@ -717,6 +823,9 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
         public Task<HttpResponseMessage> SwitchModeAsync(string threadId, string modeId) =>
             _http!.PostAsJsonAsync($"/api/conversations/{threadId}/mode", new { modeId });
 
+        public Task<HttpResponseMessage> SwitchProviderAsync(string threadId, string providerId) =>
+            _http!.PostAsJsonAsync($"/api/conversations/{threadId}/provider", new { providerId });
+
         public Task<HttpResponseMessage> RequestCompactionAsync(string threadId) =>
             _http!.PostAsJsonAsync($"/api/conversations/{threadId}/compaction", new { });
 
@@ -816,6 +925,26 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
         private readonly object _gate = new();
         private readonly List<string> _sessions = [];
         private readonly List<SkillPatch> _patches = [];
+        private readonly HashSet<string> _failingPatchAgents = new(StringComparer.Ordinal);
+        private readonly HashSet<string> _failingCatalogSessions = new(StringComparer.Ordinal);
+
+        /// <summary>From now on, a PATCH for <paramref name="agentId"/> is recorded and answered with a 500.</summary>
+        public void FailPatchesFor(string agentId)
+        {
+            lock (_gate)
+            {
+                _ = _failingPatchAgents.Add(agentId);
+            }
+        }
+
+        /// <summary>From now on, a skills catalog GET on <paramref name="sessionId"/> is answered with a 500.</summary>
+        public void FailCatalogFor(string sessionId)
+        {
+            lock (_gate)
+            {
+                _ = _failingCatalogSessions.Add(sessionId);
+            }
+        }
 
         public IReadOnlyList<string> Sessions
         {
@@ -894,9 +1023,32 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                     {
                         var agent = AgentIdOf(request.RequestUri.Query);
                         var patch = request.Method == HttpMethod.Patch;
+                        if (!patch && _failingCatalogSessions.Contains(session))
+                        {
+                            return new HttpResponseMessage(HttpStatusCode.InternalServerError)
+                            {
+                                Content = new StringContent(
+                                    """{"error":"catalog store down"}""",
+                                    System.Text.Encoding.UTF8,
+                                    "application/json"
+                                ),
+                            };
+                        }
+
                         if (patch)
                         {
                             _patches.Add(new SkillPatch(session, agent, body ?? ""));
+                            if (_failingPatchAgents.Contains(agent))
+                            {
+                                return new HttpResponseMessage(HttpStatusCode.InternalServerError)
+                                {
+                                    Content = new StringContent(
+                                        """{"error":"tier store down"}""",
+                                        System.Text.Encoding.UTF8,
+                                        "application/json"
+                                    ),
+                                };
+                            }
                         }
 
                         return Json(Catalog(session, agent, patch));

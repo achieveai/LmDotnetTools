@@ -4129,7 +4129,8 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <para>
     /// <paramref name="companionTools"/> (<see cref="SubAgentOptions.CompanionToolNames"/>) apply after the
     /// required-tools union, so a required key brings its companions too. A companion the spawn's
-    /// <paramref name="removeTools"/> names stays out: an explicit removal wins over an implied grant.
+    /// <paramref name="removeTools"/> names stays out: an explicit removal wins over an implied grant. So
+    /// does one missing from <paramref name="inheritableToolNames"/> (when given): the parent cannot grant it.
     /// </para>
     /// </remarks>
     internal static HashSet<string>? BuildEnabledToolSet(
@@ -4213,7 +4214,14 @@ public sealed class SubAgentManager : IAsyncDisposable
 
                 foreach (var companion in companions)
                 {
-                    if (removeTools is null || !removeTools.Contains(companion, StringComparer.Ordinal))
+                    // A companion the parent lacks would never materialize, yet it would still read as part of the
+                    // base set, so a remove_tools naming it would stop reporting that it withheld nothing.
+                    if (
+                        (
+                            inheritableToolNames is null
+                            || inheritableToolNames.Contains(companion, StringComparer.Ordinal)
+                        ) && (removeTools is null || !removeTools.Contains(companion, StringComparer.Ordinal))
+                    )
                     {
                         _ = result.Add(companion);
                     }

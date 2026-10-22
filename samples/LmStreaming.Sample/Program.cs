@@ -1005,6 +1005,8 @@ try
         // other environment: no effect.
         var tierConfiguration = sp.GetRequiredService<IConfiguration>();
         var tierDevFaultsAllowed = sp.GetRequiredService<IHostEnvironment>().IsDevelopment();
+        // A mode switch's own request, while the factory builds for it: where a tier setup that did not take is noted.
+        var tierRequests = sp.GetRequiredService<IHttpContextAccessor>();
 
         var pool = new MultiTurnAgentPool(
             AttachingToMirror(context =>
@@ -1847,6 +1849,12 @@ try
                     )
                     .GetAwaiter()
                     .GetResult();
+                // A mode or provider switch answers with this (its Warning) once the build is the conversation's.
+                if (tierStage.SetupWarning is { } tierWarning && tierRequests.HttpContext is { } tierRequest)
+                {
+                    tierRequest.Items[ConversationsController.TierSetupWarningItem] = tierWarning;
+                }
+
                 // This build's own sandbox listing presents the staged agent id; the live loop keeps the live one.
                 using var tierBuildFlow = tierStage.EnterBuildFlow();
                 if (tierStage.IsActive)

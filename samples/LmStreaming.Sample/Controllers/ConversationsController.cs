@@ -239,6 +239,12 @@ public class ConversationsController(
     private const string ArmedWaitDiscardedWarning =
         "A pending Wait was armed on this conversation; it was discarded when the agent was recreated for the switch.";
 
+    /// <summary>
+    /// The <c>HttpContext.Items</c> key under which the agent factory notes, for the mode or provider switch it builds
+    /// for, that the mode's skill tiers did not fully take (<c>CapabilityTiers.Stage.SetupWarning</c>).
+    /// </summary>
+    internal const string TierSetupWarningItem = "LmStreaming.SkillTiers.SetupWarning";
+
     /// <summary>Reason code for a raw agent-owned read that must go through the transcript route.</summary>
     internal const string AgentOwnedThreadReadCode = "use_transcript_route";
 
@@ -2729,18 +2735,24 @@ public class ConversationsController(
             );
         }
 
+        // The warning describes a TEARDOWN, so it belongs to the recreate branch alone. An in-place
+        // switch keeps the loop and its trigger runtime, so the wait is still armed and telling the
+        // caller it was discarded would be plainly false.
+        var waitWarning =
+            hadArmedWait && switchKind == MultiTurnAgentPool.AgentSwitchKind.Recreated
+                ? ArmedWaitDiscardedWarning
+                : null;
+        // Set by the agent factory while it built this switch: the mode's skill tiers did not fully take.
+        var tierWarning = HttpContext?.Items[TierSetupWarningItem] as string;
         return Ok(
             new SwitchModeResponse
             {
                 ModeId = mode.Id,
                 ModeName = mode.Name,
-                // The warning describes a TEARDOWN, so it belongs to the recreate branch alone. An
-                // in-place switch keeps the loop and its trigger runtime, so the wait is still armed and
-                // telling the caller it was discarded would be plainly false.
                 Warning =
-                    hadArmedWait && switchKind == MultiTurnAgentPool.AgentSwitchKind.Recreated
-                        ? ArmedWaitDiscardedWarning
-                        : null,
+                    waitWarning is null ? tierWarning
+                    : tierWarning is null ? waitWarning
+                    : $"{waitWarning} {tierWarning}",
             }
         );
     }
@@ -2949,16 +2961,22 @@ public class ConversationsController(
             );
         }
 
+        // See SwitchMode: the warning describes a teardown, so it belongs to the recreate branch
+        // alone. In place the trigger runtime is kept and the wait is still armed.
+        var waitWarning =
+            hadArmedWait && switchKind == MultiTurnAgentPool.AgentSwitchKind.Recreated
+                ? ArmedWaitDiscardedWarning
+                : null;
+        // A provider switch rebuilds through the same factory, which stages the mode's skill tiers again.
+        var tierWarning = HttpContext?.Items[TierSetupWarningItem] as string;
         return Ok(
             new SwitchProviderResponse
             {
                 ProviderId = request.ProviderId,
-                // See SwitchMode: the warning describes a teardown, so it belongs to the recreate branch
-                // alone. In place the trigger runtime is kept and the wait is still armed.
                 Warning =
-                    hadArmedWait && switchKind == MultiTurnAgentPool.AgentSwitchKind.Recreated
-                        ? ArmedWaitDiscardedWarning
-                        : null,
+                    waitWarning is null ? tierWarning
+                    : tierWarning is null ? waitWarning
+                    : $"{waitWarning} {tierWarning}",
             }
         );
     }

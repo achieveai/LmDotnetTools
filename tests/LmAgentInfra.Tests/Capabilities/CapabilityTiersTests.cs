@@ -548,6 +548,118 @@ public class CapabilityTiersTests
         logger.Starting("Capabilities inert").Should().BeEmpty();
     }
 
+    // F-016: a root rotation that lands between a build's stage and its commit (a compaction that finished while a
+    // switch was building) is not undone by the commit. The next window starts after that rotation's checkpoint, the
+    // persisted revision never goes down, and the build's newly pinned key is still listed.
+    [Fact]
+    public async Task RootRotationBetweenStageAndCommit_KeepsTheRotatedWindowAndRevision_AddsTheNewPin()
+    {
+        var store = await StoreAsync(T);
+        var gw = new FakeSkillGateway();
+        var logger = new RecordingLogger();
+        using var tiers = new CapabilityTiers(T, store, logger);
+        (await BuildAsync(tiers, Tiers([], [PinP]), gw, T)).Should().BeTrue();
+
+        using var stage = await tiers.StageAsync(Tiers([], [PinP, "skill:alpha:b"]), gw.For(T), default);
+        stage.IsActive.Should().BeTrue("guard: the staged mode is tiered");
+        stage.TryAttachRootSkill(gw.SkillContract(T), SkillHandler).Should().BeTrue();
+        (await tiers.OnCheckpointActivatedAsync(Activation(T, 10, 9, SkillCall(6, "beta:c")), default))
+            .Should()
+            .BeTrue();
+        await AssertViewAsync(store, T, ["alpha:p", "beta:c"], 2, 10);
+
+        await stage.CommitAsync(default);
+        // The thread's rows still hold the call at 6, which the first rotation already counted.
+        (await tiers.OnCheckpointActivatedAsync(Activation(T, 20, 19, SkillCall(6, "beta:c")), default))
+            .Should()
+            .BeTrue();
+
+        var second = logger.Starting("Capabilities rotated").Should().HaveCount(2).And.Subject.Last();
+        ((IEnumerable<string>)second.Props["Used"]!).Should().BeEmpty("the window starts after checkpoint 10");
+        var persisted = await ViewAsync(store, T);
+        persisted!.Revision.Should().BeGreaterThan(2, "the persisted revision never goes down, and the view changed");
+        persisted.RotatedThroughSeq.Should().Be(20);
+        gw.ListedNames(T).Should().Equal(["alpha:b", "alpha:p"], "the stage's new pinned key is listed");
+    }
+
+    // R8, R8b: a build whose tiers did not fully take carries a plain warning for the switch that asked for it: a
+    // tiered setup that went inert says why (it runs untiered), and a failed PATCH says the gateway retries at the next
+    // rotation. An untiered build and an applied one carry none.
+    [Fact]
+    public async Task StageSetupWarning_OnlyWhenTheTieredSetupDidNotTake()
+    {
+        var gw = new FakeSkillGateway();
+        using var tiers = new CapabilityTiers(T, await StoreAsync(T), NullLogger.Instance)
+        {
+            ConfigureBudget = TimeSpan.FromMilliseconds(50),
+        };
+        var settings = Tiers(["skill:alpha:a"], [PinP]);
+
+        using (var untiered = await tiers.StageAsync(null, null, default))
+        {
+            untiered.SetupWarning.Should().BeNull();
+        }
+
+        using (var applied = await tiers.StageAsync(settings, gw.For(T), default))
+        {
+            applied.SetupWarning.Should().BeNull();
+        }
+
+        gw.FailPatches = 1;
+        using (var patchFailed = await tiers.StageAsync(settings, gw.For(T), default))
+        {
+            patchFailed.IsActive.Should().BeTrue("guard: a failed PATCH leaves the build tiered");
+            patchFailed
+                .SetupWarning.Should()
+                .Be("Skill tiers could not be applied to the sandbox; they will be retried at the next compaction.");
+        }
+
+        var hanging = gw.For(T) with { PatchTiers = (_, _, ct) => Task.Delay(Timeout.Infinite, ct) };
+        using (var timedOut = await tiers.StageAsync(settings, hanging, default).WaitAsync(TimeSpan.FromSeconds(5)))
+        {
+            timedOut.IsActive.Should().BeFalse("guard: past the budget the build is inert");
+            timedOut.SetupWarning.Should().Be(NotSetUp("setup timed out"));
+        }
+
+        var catalogDown = gw.For(T) with
+        {
+            GetCatalog = _ => throw new HttpRequestException("catalog down at 10.0.0.7"),
+        };
+        using (var noCatalog = await tiers.StageAsync(settings, catalogDown, default))
+        {
+            noCatalog.IsActive.Should().BeFalse("guard: without a catalog the build is inert");
+            noCatalog.SetupWarning.Should().Be(NotSetUp("the sandbox catalog was unavailable"));
+        }
+
+        var newerStore = new InMemoryConversationStore();
+        await newerStore.SaveMetadataAsync(
+            T,
+            new ThreadMetadata
+            {
+                ThreadId = T,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty.Add(
+                    CapabilityTiers.ViewPropertyKey,
+                    """{"schemaVersion":2,"loaded":["skill:alpha:a"],"revision":7,"rotatedThroughSeq":40}"""
+                ),
+            }
+        );
+        using (var newerTiers = new CapabilityTiers(T, newerStore, NullLogger.Instance))
+        using (var newer = await newerTiers.StageAsync(settings, gw.For(T), default))
+        {
+            newer.IsActive.Should().BeFalse("guard: a newer saved view leaves the build inert");
+            newer.SetupWarning.Should().Be(NotSetUp("the saved tiers come from a newer version"));
+        }
+
+        using var badIdTiers = new CapabilityTiers("a/b", await StoreAsync("a/b"), NullLogger.Instance);
+        using var badId = await badIdTiers.StageAsync(settings, gw.For("a/b"), default);
+        badId.IsActive.Should().BeFalse("guard: an invalid thread id leaves the build inert");
+        badId.SetupWarning.Should().Be(NotSetUp("the thread id is not a valid agent id"));
+
+        static string NotSetUp(string cause) =>
+            $"Skill tiers could not be set up for this mode ({cause}); this conversation runs without tiers until its next mode switch.";
+    }
+
     // R3: one budget bounds a build's tiers. A gateway that hangs leaves the build inert with one WARN naming the
     // thread, and nothing persisted.
     [Fact]

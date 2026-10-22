@@ -187,10 +187,47 @@ public sealed class SubAgentInheritedToolOverrideTests : IAsyncLifetime
         offered.Should().BeEquivalentTo([SkillTool, SearchTool, ReadTool]);
     }
 
+    // F-014 / F-015: remove_tools naming a companion. Untiered (the parent has no SearchSkill): nothing was withheld,
+    // and the receipt says so as it did before companions. Tiered: the explicit removal wins over the companion, and
+    // the receipt does not claim the removal withheld nothing.
+    [Theory]
+    [InlineData(false, new[] { SkillTool }, true)]
+    [InlineData(true, new[] { SkillTool, ReadTool }, false)]
+    public async Task RemoveToolsNamesTheCompanion_ChildLacksIt_ReceiptWithheldNothingOnlyWhenTheParentLacksIt(
+        bool parentExposesSearch,
+        string[] enabledTools,
+        bool expectWithheldNothing
+    )
+    {
+        var manager = CreateManager(
+            enabledTools,
+            (_, _) => ValueTask.FromResult<IFunctionProvider?>(null),
+            companions: new Dictionary<string, IReadOnlyList<string>> { [SkillTool] = [SearchTool] },
+            parentExposesSearch
+        );
+
+        var receipt = await manager.SpawnAsync("worker", "work", runInBackground: true, removeTools: [SearchTool]);
+        var tools = await ChildRequestToolsAsync();
+
+        tools.Select(t => t.Name).Should().Contain(SkillTool).And.NotContain(SearchTool);
+        using var doc = JsonDocument.Parse(receipt);
+        var reported = doc.RootElement.TryGetProperty("remove_tools_withheld_nothing", out var withheldNothing);
+        if (expectWithheldNothing)
+        {
+            reported.Should().BeTrue(receipt);
+            withheldNothing.EnumerateArray().Select(e => e.GetString()).Should().Equal(SearchTool);
+        }
+        else
+        {
+            reported.Should().BeFalse(receipt);
+        }
+    }
+
     private SubAgentManager CreateManager(
         IReadOnlyList<string>? enabledTools,
         Func<InheritedTool, CancellationToken, ValueTask<IFunctionProvider?>> inheritedToolOverride,
-        IReadOnlyDictionary<string, IReadOnlyList<string>>? companions = null
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? companions = null,
+        bool parentExposesSearch = true
     )
     {
         var template = new SubAgentTemplate
@@ -226,7 +263,9 @@ public sealed class SubAgentInheritedToolOverrideTests : IAsyncLifetime
             CompanionToolNames = companions,
         };
 
-        FunctionContract[] parentContracts = [ParentSkill, Contract(SearchTool), Contract(ReadTool)];
+        FunctionContract[] parentContracts = parentExposesSearch
+            ? [ParentSkill, Contract(SearchTool), Contract(ReadTool)]
+            : [ParentSkill, Contract(ReadTool)];
         var manager = new SubAgentManager(
             parentAgent: _parentMock.Object,
             parentContracts: parentContracts,

@@ -222,7 +222,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
         var stage = new Stage(this);
         if (settings is null || gateway is null)
         {
-            stage.InertReason = "not configured";
+            stage.InertReason = Stage.NotConfiguredReason;
             return stage;
         }
 
@@ -251,7 +251,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
                 $"configure exceeded {ConfigureBudget.TotalSeconds:0.###} s"
             );
             ReleaseCandidate(stage);
-            stage.MakeInert("configure timed out");
+            stage.MakeInert(Stage.TimedOutReason);
         }
         catch
         {
@@ -277,7 +277,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
                 "Capabilities inert: thread id {RootThreadId} is not a valid gateway agent id",
                 _rootThreadId
             );
-            stage.InertReason = "invalid thread id";
+            stage.InertReason = Stage.InvalidThreadIdReason;
             return;
         }
 
@@ -295,7 +295,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
                 RootAgentKey,
                 ex.Message
             );
-            stage.InertReason = "catalog unavailable";
+            stage.InertReason = Stage.CatalogUnavailableReason;
             return;
         }
 
@@ -305,7 +305,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
         var pinned = Resolve(RootAgentKey, catalog, settings.Pinned).ToHashSet(StringComparer.Ordinal);
         if (await LoadViewAsync(root, pinned, settings.Loaded, catalog, ct).ConfigureAwait(false) is not { } loaded)
         {
-            stage.InertReason = "persisted view has a newer schema";
+            stage.InertReason = Stage.NewerSchemaReason;
             return;
         }
 
@@ -343,7 +343,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
             if (stage.RootId is not { } rootId || stage.View is not { } view || stage.Settings is not { } settings)
             {
                 ReleaseCandidate(stage);
-                BecomeInert(stage.InertReason ?? "not configured");
+                BecomeInert(stage.InertReason ?? Stage.NotConfiguredReason);
                 return;
             }
 
@@ -351,6 +351,16 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
             // A rotation that ran between stage and commit left the gateway on its own view: the next rotation
             // applies this one again.
             var raced = !ReferenceEquals(root.View, stage.LiveViewAtStage);
+            if (raced && root.View is { } rotated)
+            {
+                // It also persisted its revision and window, which the stage's older view must not roll back: keep
+                // them, and add this build's pins, so the next window starts after that rotation's checkpoint.
+                view = rotated with
+                {
+                    Loaded = Union(rotated.Loaded, stage.Pinned),
+                };
+            }
+
             if (!_active)
             {
                 _logger.LogInformation(
@@ -1404,6 +1414,12 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
     /// </summary>
     public sealed class Stage : IDisposable
     {
+        internal const string NotConfiguredReason = "not configured";
+        internal const string TimedOutReason = "configure timed out";
+        internal const string InvalidThreadIdReason = "invalid thread id";
+        internal const string CatalogUnavailableReason = "catalog unavailable";
+        internal const string NewerSchemaReason = "persisted view has a newer schema";
+
         private const int Pending = 0;
         private const int Committed = 1;
         private const int Discarded = 2;
@@ -1422,6 +1438,22 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
         /// <c>Skill</c> through <see cref="TryAttachRootSkill"/>. False wires tools as without tiers.
         /// </summary>
         public bool IsActive => RootId is not null;
+
+        /// <summary>
+        /// Plain text for whoever asked for this build when its tiers did not fully take; null for an untiered build
+        /// and for one whose PATCH landed. A tiered build that went inert (timed out, catalog unavailable, newer
+        /// saved view, invalid thread id) runs untiered and says why; with a failed PATCH, the tiers are live and the
+        /// gateway catches up at the next rotation. Names no skill, agent id or gateway error.
+        /// </summary>
+        public string? SetupWarning =>
+            InertReason switch
+            {
+                null or NotConfiguredReason => IsActive && !Applied
+                    ? "Skill tiers could not be applied to the sandbox; they will be retried at the next compaction."
+                    : null,
+                _ =>
+                    $"Skill tiers could not be set up for this mode ({SetupFailureCause(InertReason)}); this conversation runs without tiers until its next mode switch.",
+            };
 
         /// <summary>
         /// The build's <c>Skill</c> and <c>SearchSkill</c>: the staged ones until the commit, the conversation's live
@@ -1508,6 +1540,16 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
         }
 
         internal bool TryMarkCommitted() => Interlocked.CompareExchange(ref _state, Committed, Pending) == Pending;
+
+        private static string SetupFailureCause(string reason) =>
+            reason switch
+            {
+                TimedOutReason => "setup timed out",
+                CatalogUnavailableReason => "the sandbox catalog was unavailable",
+                NewerSchemaReason => "the saved tiers come from a newer version",
+                InvalidThreadIdReason => "the thread id is not a valid agent id",
+                _ => "setup failed",
+            };
 
         private sealed class StagedRootProvider(Stage stage) : IFunctionProvider
         {
