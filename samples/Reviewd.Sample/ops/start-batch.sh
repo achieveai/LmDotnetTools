@@ -13,5 +13,5 @@ cd "$REVIEWD_HOME"
 echo "[$(date -Is)] batch start" >> "$LOGS/review-batch.log"
 exec $R review batch --selection "$SEL" --db "$DB" --session "$SESSION" --workspace "$WS" \
     --provider "$PROVIDER" --mode code-review-daemon --reasoning-effort "$EFFORT" \
-    --max-age-hours "$MAX_AGE_HOURS" --listen http://127.0.0.1:5235 --config "$CFG" --execute \
+    --max-age-hours "$MAX_AGE_HOURS" --listen "${BATCH_LISTEN:-http://127.0.0.1:5235}" --config "$CFG" --execute \
     >> "$LOGS/review-batch.log" 2>&1

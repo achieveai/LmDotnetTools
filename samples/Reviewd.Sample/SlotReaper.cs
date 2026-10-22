@@ -86,9 +86,13 @@ internal static class SlotReaper
         JsonObject attempt,
         string claimToken,
         bool execute,
-        CancellationToken ct
+        CancellationToken ct,
+        bool force = false,
+        Func<TimeSpan, CancellationToken, Task>? delay = null,
+        Func<CancellationToken, Task<bool?>>? recheck = null
     )
     {
+        delay ??= Task.Delay;
         var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/{pr}";
         var threadId = attempt["threadId"]?.GetValue<string>();
         var head =
@@ -100,7 +104,7 @@ internal static class SlotReaper
         //    undated owner swept under --include-undated, the active session, or a background child still
         //    writing after its root went idle). Leave it wholly untouched — never freeze it — so in-flight
         //    work is not interrupted. A later sweep retries once the whole tree goes quiet.
-        if (threadId is { Length: > 0 } && await FindActivityAsync(client, threadId, ct) is { } liveActivity)
+        if (threadId is { Length: > 0 } && await FindActivityAsync(client, threadId, delay, ct) is { } liveActivity)
             return new ReclaimResult(
                 repo.DisplayName,
                 pr,
@@ -110,6 +114,8 @@ internal static class SlotReaper
                 "skipped",
                 Detail: $"{liveActivity}; left untouched (not frozen)."
             );
+        if (!await StillOursAsync())
+            return Moved("not-frozen");
 
         // 1) Freeze the conversation we own. Present == false means the host does not know it — not
         //    running there, which for a reclaim is the same end state as frozen.
@@ -130,6 +136,31 @@ internal static class SlotReaper
         {
             freezeState = "no-thread";
         }
+
+        // The sweep chose this owner minutes ago and each activity read can wait out a busy host, so the owner row is
+        // re-read before the conversation is frozen and again before the slot is reset. A lane that renewed or
+        // re-claimed the slot meanwhile, or another PR that claimed it, is left alone, and force is recomputed from
+        // the row as it is now.
+        async Task<bool> StillOursAsync()
+        {
+            if (recheck is null)
+                return true;
+            if (await recheck(ct) is not { } forceNow)
+                return false;
+            force = forceNow;
+            return true;
+        }
+
+        ReclaimResult Moved(string freeze) =>
+            new(
+                repo.DisplayName,
+                pr,
+                slot,
+                threadId,
+                freeze,
+                "skipped",
+                Detail: "The slot owner changed while the reaper waited (renewed, re-claimed or released); left untouched."
+            );
 
         async Task RestoreIfFrozenAsync()
         {
@@ -154,7 +185,7 @@ internal static class SlotReaper
             if (frozenActive)
             {
                 var deadline = DateTimeOffset.UtcNow + QuiescenceDeadline;
-                while (await FindActivityAsync(client, threadId!, ct) is { } activity)
+                while (await FindActivityAsync(client, threadId!, delay, ct) is { } activity)
                 {
                     if (DateTimeOffset.UtcNow >= deadline)
                         throw new InvalidOperationException(
@@ -171,7 +202,15 @@ internal static class SlotReaper
                 return new ReclaimResult(repo.DisplayName, pr, slot, threadId, freezeState, "would-reclaim");
             }
 
-            // 3) Discard-reset the native slot (release the owner marker, discard the prepared slot/pool run).
+            if (!await StillOursAsync())
+            {
+                await RestoreIfFrozenAsync();
+                return Moved(freezeState);
+            }
+
+            // 3) Discard-reset the native slot (release the owner marker, discard the prepared slot/pool run). The reset
+            //    renews the lease while it runs, so another reaper reading the same lapsed lease leaves the slot alone.
+            var ownerKey = SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot);
             var operation = Guid.NewGuid().ToString("N");
             var args = new JsonObject
             {
@@ -183,8 +222,21 @@ internal static class SlotReaper
                 ["head"] = head,
                 ["claimToken"] = claimToken,
                 ["discard"] = true,
+                ["force"] = force,
             };
-            var result = await sandbox("cleanup", args, operation, ct);
+            var result = await ReviewRunner.RunLeasedStepAsync(
+                connection,
+                ownerKey,
+                claimToken,
+                threadId is { Length: > 0 }
+                    ? async token => await FindActivityAsync(client, threadId, delay, token) is not null
+                    : null,
+                (phase, stepArgs, stepOperation, token) => sandbox(phase, stepArgs, stepOperation, token),
+                "cleanup",
+                args,
+                operation,
+                ct
+            );
             if (
                 result["claimToken"]?.GetValue<string>() != claimToken
                 || result["cleanBaselineVerified"]?.GetValue<bool>() != true
@@ -193,14 +245,38 @@ internal static class SlotReaper
                     "Discard-reset postconditions were not verified; slot remains claimed."
                 );
 
-            // 4) Release the SQLite owner on the exact claim token, stamping the attempt released.
-            var ownerKey = SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot);
-            attempt["reclaim"] = new JsonObject { ["freeze"] = freezeState, ["operation"] = operation };
+            // 4) Release the SQLite owner on the exact claim token, stamping the attempt released. A forced reset keeps
+            //    what it overrode on the attempt too, not just in the log.
+            var overrides = result["forced"] as JsonArray is { Count: > 0 } named ? named : null;
+            attempt["reclaim"] = new JsonObject
+            {
+                ["freeze"] = freezeState,
+                ["operation"] = operation,
+                ["forced"] = overrides?.DeepClone(),
+            };
+            // A review whose publication was never verified becomes a failed admission once its slot is reset: the next
+            // pick admits the PR again in its own conversation, which checks what already posted (Kay9: review it again
+            // rather than skip it until a new push; seen live: 12 open PRs parked that way, and prepares that failed
+            // holding their slot). A verified publication keeps its stage; only its artifact commit is missing. The
+            // runner saves verify-completed before it stores the verify result, so that stage counts as verified too.
+            if (
+                attempt["verifiedPublication"] is null
+                && attempt["stage"]?.GetValue<string>()
+                    is not ("verify-completed" or "commit-pending" or "commit-completed" or "completed-verified")
+            )
+            {
+                attempt["stageBeforeReclaim"] = attempt["stage"]?.DeepClone();
+                attempt["stage"] = "failed-released";
+                attempt["resetCount"] = (attempt["resetCount"]?.GetValue<int>() ?? 0) + 1;
+            }
             await SlotRelease.ReleaseAsync(connection, ownerKey, claimToken, attemptKey, attempt, ct);
 
+            var forced = overrides is not null
+                ? "forced: " + string.Join("; ", overrides.Select(o => o!.GetValue<string>()))
+                : null;
             // Deliberately leave the host agent frozen — it has no slot to resume into, and host-side
             // eviction reclaims the in-memory instance.
-            return new ReclaimResult(repo.DisplayName, pr, slot, threadId, freezeState, "reclaimed", operation);
+            return new ReclaimResult(repo.DisplayName, pr, slot, threadId, freezeState, "reclaimed", operation, forced);
         }
         catch
         {
@@ -209,10 +285,65 @@ internal static class SlotReaper
         }
     }
 
+    // A live lane renews its lease every step, so a lease lapsed this long means no lane has watched the slot for an
+    // hour: only our own bookkeeping still holds it. From here a reclaim forces through any disagreement between the
+    // sandbox's records and ours. It still never resets while an agent on the conversation is active.
+    internal static readonly TimeSpan ForceAfterLapse = TimeSpan.FromMinutes(30);
+
+    internal static bool IsForceDue(JsonObject owner, DateTimeOffset now) =>
+        owner["leaseExpiresAt"]?.GetValue<DateTimeOffset>() is not { } expiry || now - expiry >= ForceAfterLapse;
+
+    /// <summary>
+    /// For reclaim-slot, which targets one slot instead of sweeping lapsed leases: it forces when the startup sweep
+    /// would, once the slot's owner row still holding this claim has been lapsed <see cref="ForceAfterLapse"/>, or at
+    /// once for an owner from before leases, which has no lease at all.
+    /// </summary>
+    internal static async Task<bool> IsForceDueAsync(
+        SqliteConnection connection,
+        string workspace,
+        RepoIdentity repo,
+        int slot,
+        string claimToken,
+        DateTimeOffset now,
+        CancellationToken ct
+    ) =>
+        await ReadAsync(connection, SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot), ct) is { } owner
+        && owner["claimToken"]?.GetValue<string>() == claimToken
+        && SlotRelease.IsLeaseExpired(owner, now, undatedExpired: true)
+        && IsForceDue(owner, now);
+
+    /// <summary>
+    /// The owner recheck reclaim-slot gives <see cref="ReclaimOneAsync"/>, as the sweep gives its own: once the owner row
+    /// differs from what the command first read (renewed, re-claimed or released), the slot is left alone. Otherwise
+    /// force is recomputed from the row as it is now.
+    /// </summary>
+    internal static async Task<Func<CancellationToken, Task<bool?>>> ReclaimSlotRecheckAsync(
+        SqliteConnection connection,
+        string workspace,
+        RepoIdentity repo,
+        int slot,
+        string claimToken,
+        CancellationToken ct
+    )
+    {
+        var key = SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot);
+        var first = (await ReadAsync(connection, key, ct))?.ToJsonString();
+        return async cancel =>
+            (await ReadAsync(connection, key, cancel))?.ToJsonString() == first
+                ? await IsForceDueAsync(connection, workspace, repo, slot, claimToken, DateTimeOffset.UtcNow, cancel)
+                : null;
+    }
+
     // How long a frozen conversation's tree gets to settle before the reclaim gives up on it as live.
     private static readonly TimeSpan QuiescenceDeadline = TimeSpan.FromSeconds(20);
 
     private static readonly TimeSpan QuiescencePoll = TimeSpan.FromSeconds(1);
+
+    // The host answers hierarchy_busy while any conversation's metadata publication is pending, which on a host shared
+    // by 22 batches is most of the time (measured: 19 of 30 reads, with quiet gaps between). Busy means unknown, never
+    // quiet: re-read every 5 seconds for up to two minutes to catch a gap, then leave it to the next sweep.
+    internal const int BusyRereads = 24;
+    internal static readonly TimeSpan BusyReread = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// Describes why <paramref name="threadId"/>'s tree is not quiet, or returns null when it is: the root
@@ -220,27 +351,44 @@ internal static class SlotReaper
     /// wait uses (<see cref="ReviewRunner.IsSettledNode"/>). A busy hierarchy means the descendants are
     /// unknown, which is never quiet. A thread the host does not know at all has nothing running.
     /// </summary>
-    private static async Task<string?> FindActivityAsync(
+    internal static async Task<string?> FindActivityAsync(
         LmStreamingS2SClient client,
         string threadId,
+        Func<TimeSpan, CancellationToken, Task> delay,
         CancellationToken ct
     )
     {
         var root = await client.GetRunStateAsync(threadId, ct);
         if (root.IsInProgress || root.CurrentRunId is not null)
             return "Conversation is in progress";
-        ReviewSubAgentTreeSnapshot tree;
-        try
+        ReviewSubAgentTreeSnapshot? tree = null;
+        var busyReads = 0;
+        while (tree is null)
         {
-            tree = await client.GetSubAgentTreeAsync(threadId, ct);
+            try
+            {
+                tree = await client.GetSubAgentTreeAsync(threadId, ct);
+            }
+            catch (LmStreamingS2SClient.HierarchyBusyException) when (busyReads < BusyRereads)
+            {
+                busyReads++;
+                await delay(BusyReread, ct);
+            }
+            catch (LmStreamingS2SClient.HierarchyBusyException)
+            {
+                return "Host hierarchy is busy, so descendants are unknown";
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                return null;
+            }
         }
-        catch (LmStreamingS2SClient.HierarchyBusyException)
+        // A run can start while the tree is busy, so a quiet verdict never rests on a root read older than the tree.
+        if (busyReads > 0)
         {
-            return "Host hierarchy is busy, so descendants are unknown";
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
-        {
-            return null;
+            root = await client.GetRunStateAsync(threadId, ct);
+            if (root.IsInProgress || root.CurrentRunId is not null)
+                return "Conversation is in progress";
         }
         var now = DateTimeOffset.UtcNow;
         var active = tree.Nodes.Where(n => !ReviewRunner.IsSettledNode(n, now)).ToList();
@@ -264,10 +412,11 @@ internal static class SlotReaper
         DateTimeOffset now,
         bool undatedExpired,
         bool execute,
-        CancellationToken ct
+        CancellationToken ct,
+        Func<TimeSpan, CancellationToken, Task>? delay = null
     )
     {
-        var owners = new List<(RepoIdentity Repo, string Pr, int Slot)>();
+        var owners = new List<(RepoIdentity Repo, string Pr, int Slot, bool Force)>();
         using (var scan = connection.CreateCommand())
         {
             scan.CommandText = "SELECT value FROM cache WHERE key LIKE @prefix";
@@ -287,12 +436,12 @@ internal static class SlotReaper
                     || owner["slot"]?.GetValue<int>() is not { } slot
                 )
                     continue;
-                owners.Add((PrCommands.ParseRepo(repository), pr, slot));
+                owners.Add((PrCommands.ParseRepo(repository), pr, slot, IsForceDue(owner, now)));
             }
         }
 
         var results = new List<ReclaimResult>();
-        foreach (var (repo, pr, slot) in owners)
+        foreach (var (repo, pr, slot, force) in owners)
         {
             try
             {
@@ -314,7 +463,22 @@ internal static class SlotReaper
                         attempt!,
                         token!,
                         execute,
-                        ct
+                        ct,
+                        force,
+                        delay,
+                        async cancel =>
+                        {
+                            var owner = await ReadAsync(
+                                connection,
+                                SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot),
+                                cancel
+                            );
+                            var stillLapsed =
+                                owner is not null
+                                && owner["claimToken"]?.GetValue<string>() == token
+                                && SlotRelease.IsLeaseExpired(owner, DateTimeOffset.UtcNow, undatedExpired);
+                            return stillLapsed ? IsForceDue(owner!, DateTimeOffset.UtcNow) : null;
+                        }
                     )
                 );
             }

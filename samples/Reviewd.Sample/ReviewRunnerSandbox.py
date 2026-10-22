@@ -1,16 +1,179 @@
 """Executed only through Gateway; uses the installed review-setup helpers."""
+import atexit
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import signal
 import subprocess
 import sys
+import threading
+import time
 from urllib.parse import quote
 
 phase, encoded = sys.argv[1:]
 args = json.loads(encoded)
 root = Path.cwd()
+
+# The gateway cannot cancel a running operation, so its timeout is only a backstop. This watchdog stops a step,
+# and only once it has been idle for STEP_IDLE seconds and STEP_MIN seconds have passed since it started,
+# whichever comes last (Kay9: activity decides, never time alone). Activity is CPU or I/O by the step or any of
+# its children, or a fresh mark the client writes while an agent on the conversation is active.
+# The watchdog writes a heartbeat on every sample. One STEP_STALE seconds old means the watchdog itself is stuck, and
+# then the client asks step-stop to kill the step, never before STEP_MIN either (Kay9: only while no agent on the
+# conversation is active).
+# Both measure time on the monotonic clock, so a wall-clock step neither ends a live step nor makes its watchdog look
+# stuck.
+STEP_IDLE, STEP_MIN, STEP_SAMPLE, STEP_STOPPED, STEP_STALE = 600, 3600, 30, 124, 900
+
+
+def step_should_stop(started, last_active, now):
+    return now - last_active >= STEP_IDLE and now - started >= STEP_MIN
+
+
+def step_processes(parent):
+    # Every descendant by parent link: the kit starts its git children in their own sessions.
+    links = {}
+    for entry in os.listdir('/proc'):
+        try:
+            links[int(entry)] = int(open(f'/proc/{entry}/stat').read().rsplit(')', 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+    found, frontier = [], [parent]
+    while frontier:
+        current = frontier.pop()
+        children = [pid for pid, ppid in links.items() if ppid == current]
+        found += children
+        frontier += children
+    return found
+
+
+def step_activity(step):
+    # CPU ticks and I/O bytes so far of the step's main thread (not this watchdog's thread) and its descendants.
+    total = 0
+    for path in [f'/proc/{step}/task/{step}'] + [f'/proc/{pid}' for pid in step_processes(step)]:
+        try:
+            fields = open(path + '/stat').read().rsplit(')', 1)[1].split()
+            total += int(fields[11]) + int(fields[12])
+            total += sum(int(line.split()[1]) for line in open(path + '/io') if line.startswith(('rchar:', 'wchar:')))
+        except (OSError, ValueError, IndexError):
+            continue
+    return total
+
+
+def process_start(pid):
+    # Clock ticks from boot to the process's start: with the PID it names one process, never a later one reusing it.
+    return int(open(f'/proc/{pid}/stat').read().rsplit(')', 1)[1].split()[19])
+
+
+def stop_step(marks, operation, now):
+    # Kills the step only if its watchdog stopped beating STEP_STALE seconds ago, the step started at least STEP_MIN
+    # seconds ago, and no agent marked it active within STEP_IDLE; and only the process the heartbeat recorded, with its
+    # descendants. now is monotonic, like the beat, the start and the agent mark.
+    beat = marks / f'{operation}.watchdog'
+    try:
+        recorded = json.loads(beat.read_text())
+        age, ran = now - recorded['beat'], now - recorded['since']
+    except (OSError, ValueError, KeyError, TypeError):
+        return {'stopped': False, 'reason': 'no watchdog heartbeat'}
+    if age < STEP_STALE:
+        return {'stopped': False, 'reason': 'watchdog alive'}
+    if ran < STEP_MIN:
+        return {'stopped': False, 'reason': 'step started less than an hour ago'}
+    try:
+        if now - json.loads((marks / f'{operation}.agents').read_text())['at'] < STEP_IDLE:
+            return {'stopped': False, 'reason': 'agent active'}
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, KeyError, TypeError):
+        # Unknown counts as active, like an agent read the client could not make.
+        return {'stopped': False, 'reason': 'agent mark unreadable'}
+    try:
+        step = int(recorded['pid'])
+        if process_start(step) != recorded['start']:
+            raise ValueError('PID reused')
+    except (OSError, ValueError, IndexError, KeyError, TypeError):
+        return {'stopped': False, 'reason': 'step already ended'}
+    # Find the descendants first: once the step dies they are no longer its children.
+    tree = step_processes(step) + [step]
+    for pid in tree:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    beat.unlink(missing_ok=True)
+    return {'stopped': True, 'killed': len(tree), 'heartbeatMinutes': round(age / 60)}
+
+
+def watch_step(mark, beat):
+    started = last_active = time.monotonic()
+    seen = marked = record = None
+
+    def beat_now():
+        # Replaced whole, so step-stop never reads half a heartbeat.
+        fresh = beat.with_name(beat.name + '.new')
+        fresh.write_text(json.dumps({**record, 'beat': time.monotonic()}))
+        os.replace(fresh, beat)
+
+    if beat:
+        try:
+            beat.parent.mkdir(exist_ok=True)
+            record = {'pid': os.getpid(), 'start': process_start(os.getpid()), 'since': started}
+            beat_now()
+        except (OSError, ValueError, IndexError):
+            beat = None
+    while True:
+        time.sleep(STEP_SAMPLE)
+        now = time.monotonic()
+        counters = step_activity(os.getpid())
+        if counters != seen:
+            seen, last_active = counters, now
+        # A new agent mark counts when it is seen, not by its wall-clock time.
+        try:
+            stamp = mark.stat().st_mtime_ns
+            if stamp != marked:
+                marked, last_active = stamp, now
+        except OSError:
+            pass
+        if step_should_stop(started, last_active, now):
+            print(f'Step stopped: no activity for {(now - last_active) / 60:.0f} minutes, '
+                  f'{(now - started) / 60:.0f} minutes after it started.', file=sys.stderr, flush=True)
+            for pid in step_processes(os.getpid()):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            os._exit(STEP_STOPPED)
+        if beat:
+            try:
+                beat_now()
+            except OSError:
+                pass
+
+
+# Agent marks live beside the kit's state, in the workspace repository's git directory.
+common = subprocess.run(['git', 'rev-parse', '--git-common-dir'], cwd=root, capture_output=True, text=True)
+marks = (root / common.stdout.strip()).resolve() / 'reviewd-steps'
+if phase in ('step-activity', 'step-stop'):
+    if not re.fullmatch(r'[0-9a-f]{32}', str(args.get('operation'))) or common.returncode:
+        raise SystemExit(f'{phase} needs a step operation id and the workspace repository.')
+    if phase == 'step-stop':
+        print(json.dumps(stop_step(marks, args['operation'], time.monotonic())))
+        raise SystemExit(0)
+    marks.mkdir(exist_ok=True)
+    # The watchdog sees a new mark by its change; step-stop reads its monotonic time.
+    (marks / f"{args['operation']}.agents").write_text(json.dumps({'at': time.monotonic()}))
+    print(json.dumps({'marked': args['operation']}))
+    raise SystemExit(0)
+mark = marks / f"{args.get('stepOperation')}.agents"
+# Only a step the client can name, in the workspace repository, records a heartbeat a later step-stop can find.
+named = re.fullmatch(r'[0-9a-f]{32}', str(args.get('stepOperation'))) and not common.returncode
+beat = marks / f"{args['stepOperation']}.watchdog" if named else None
+atexit.register(lambda: [path.unlink(missing_ok=True) for path in (mark, beat) if path])
+threading.Thread(target=watch_step, args=(mark, beat), daemon=True).start()
+
 scripts = root / '.claude/skills/review-setup/scripts'
 sys.path.insert(0, str(scripts))
 from review_common import ReviewError, ReviewState, SourcePool, repo_slug, safe_path, run_git_read
@@ -123,6 +286,59 @@ def admit_baseline(verify):
         slot_not_idle(f'Native slot is not at the idle baseline: {failure}')
 
 
+def adoptable(previous, args):
+    # An interrupted preparation can leave an orphaned 'owned' marker whose claimToken belongs to a dead attempt
+    # (e.g. the batch process was killed between claiming the slot and finishing the fetch). prepare then refuses
+    # the slot ('unreleased reviewd owner') and cleanup refused it too ('Native claim changed'), so the slot stayed
+    # blocked forever -- violating the slot-never-blocks invariant. A failed-attempt reset may reclaim it.
+    orphan_owned = (previous is not None and previous.get('state') == 'owned'
+                    and previous.get('claimToken') != args['claimToken'])
+    # A 'released' marker means the slot is natively free already, so only the SQLite owner is stale: a preparation
+    # failed before claiming (an older claim), or a cleanup released the marker and then died before releasing the
+    # SQLite owner (this very claim; seen live after a batch restart, and every later reap refused it). A
+    # failed-attempt reset or a reaper discard may adopt it.
+    released = previous is not None and previous.get('state') == 'released'
+    return bool((args.get('failedPreparation') and (previous is None or orphan_owned))
+                or ((args.get('failedPreparation') or args.get('discard')) and released))
+
+
+# How many earlier claims a slot's marker remembers. A cleanup is never delayed past this many admissions of one slot.
+EARLIER_CLAIMS_KEPT = 64
+
+
+def owned_marker(previous, claim, pr):
+    # Every new owner's marker lists the slot's earlier claims, so a cleanup that read its claim before a reset and a
+    # new admission can tell that claim is gone (see superseded).
+    earlier = list((previous or {}).get('earlierClaims') or [])
+    if previous and previous.get('claimToken') and previous.get('claimToken') != claim:
+        earlier.append(previous['claimToken'])
+    return {'claimToken': claim, 'pr': pr, 'state': 'owned', 'earlierClaims': earlier[-EARLIER_CLAIMS_KEPT:]}
+
+
+def superseded(previous, args):
+    # Two reapers can both read one lapsed claim. Once one resets the slot and a lane admits the next owner, the other's
+    # forced cleanup would overwrite that owner's marker and discard its prepared slot; SQLite rejects the stale claim
+    # only after that. Admission writes the marker under the slot lock this check runs under, so the check is exact.
+    return (previous is not None and previous.get('claimToken') != args['claimToken']
+            and args['claimToken'] in (previous.get('earlierClaims') or []))
+
+
+def forced_overrides(previous, args, pr, prepared_pr):
+    # A forced discard (the reaper, once a lease has been lapsed 30 minutes and no host agent is active) resets the
+    # slot whatever the native records say: they disagree with ours only through bookkeeping bugs, and Kay9 wants
+    # the slot back rather than a jam. Names each disagreement it overrides, for the batch log.
+    found = []
+    if previous is None:
+        found.append('owner marker missing')
+    elif previous.get('claimToken') != args['claimToken'] or previous.get('pr') != pr:
+        found.append(f"owner marker held by claim {previous.get('claimToken')} for PR {previous.get('pr')}")
+    elif previous.get('state') != 'owned':
+        found.append(f"owner marker already {previous.get('state')}")
+    if prepared_pr is not None and prepared_pr != pr:
+        found.append(f'slot prepared for PR {prepared_pr}')
+    return found
+
+
 def inspect_prepared():
     manifest = json.loads(state.prepared_slot_path(pool.repo_key, slot).read_text())
     _, merge = live()
@@ -161,6 +377,25 @@ def clear_stale_index_locks():
             print(f'Removed stale {lock} ({int(age)}s old; no process in the slot).', file=sys.stderr)
 
 
+def expected_review_branch():
+    # The branch that retains this head's review. None means the usual review/<repo>-<pr>, or the branch the slot
+    # is already on. Use review/<repo>-<pr>-<head8> instead when review/<repo>-<pr> is taken:
+    # - an earlier review of this PR, in any slot, left it in the shared review repository. A detached slot refuses
+    #   to switch to or overwrite it.
+    # - the store remote has it on history this slot does not share, so the push would be refused. The retired
+    #   CodeReviewDaemon left these on older store history (MCQdbDEV #11267).
+    # The earlier record is left as it is: nothing is merged into it or force-pushed over it.
+    from review_common import read_parent_remote_ref
+    branch = f'review/{repo_slug(repo)}-{pr}'
+    if not run_git_read(outer, ['symbolic-ref', '-q', 'HEAD'], check=False).returncode:
+        return None
+    if run_git_read(outer, ['rev-parse', '-q', '--verify', 'refs/heads/' + branch], check=False).returncode:
+        tip = read_parent_remote_ref(outer, 'refs/heads/' + branch)
+        if tip is None or not run_git_read(outer, ['merge-base', '--is-ancestor', tip, 'HEAD'], check=False).returncode:
+            return None
+    return f"{branch}-{args['head'][:8]}"
+
+
 if phase == 'eligibility':
     current = eligibility()
     print(json.dumps({key: current[key] for key in ('prId', 'status', 'isDraft', 'createdAt', 'headSha', 'mergeSha')}))
@@ -190,7 +425,7 @@ elif phase == 'prepare':
             admit_baseline(lambda: _verify_postconditions(writable, pool, outer, source,
                                                           run_git_read(root, ['rev-parse', 'HEAD']).stdout.strip(),
                                                           pool._verified_baseline()))
-        atomic_json(marker, {'claimToken': args['claimToken'], 'pr': pr, 'state': 'owned'})
+        atomic_json(marker, owned_marker(previous, args['claimToken'], pr))
         clear_stale_index_locks()
     # The CLI does not expose prepare's lock_timeout. Use its existing route with a bounded
     # native-lock wait so overlapping source fetches contend locally, not at a batch gate.
@@ -249,6 +484,8 @@ elif phase == 'cleanup':
     marker = writable.directory / 'reviewd-owners' / f'{pool.repo_key}-{slot}.json'
     with lock_session(120), writable.lock(shared=True, phase='reviewd-cleanup'), writable.slot_lock(pool.repo_key, slot, phase='reviewd-cleanup'):
         previous = json.loads(marker.read_text()) if marker.exists() else None
+        if superseded(previous, args):
+            raise ReviewError('Native slot was reset and admitted again since this claim; no cleanup allowed.')
         if previous is None and args.get('adopt'):
             prepared_path = state.prepared_slot_path(pool.repo_key, slot)
             if prepared_path.exists():
@@ -260,23 +497,18 @@ elif phase == 'cleanup':
                                        run_git_read(root, ['rev-parse', 'HEAD']).stdout.strip(), pool._verified_baseline())
             previous = {'claimToken': args['claimToken'], 'pr': pr, 'state': 'owned'}
             atomic_json(marker, previous)
-        # An interrupted preparation can leave an orphaned 'owned' marker whose claimToken belongs to
-        # a dead attempt (e.g. the batch process was killed between claiming the slot and finishing the
-        # fetch). prepare then refuses the slot ('unreleased reviewd owner') and this cleanup refused it
-        # too ('Native claim changed'), so the slot stayed blocked forever -- violating the
-        # slot-never-blocks invariant. Under slot_lock (serialised against any live prepare), a marker
-        # with no prepared slot and no pool run is a provable orphan, so a failed-attempt reset may
-        # reclaim it. The prepared_slot/pool_run guard below still refuses to steal a genuinely prepared
-        # predecessor, and lock serialisation guarantees we never race a live in-progress prepare.
-        orphan_owned = (previous is not None and previous.get('state') == 'owned'
-                        and previous.get('claimToken') != args['claimToken'])
-        # A preparation that failed before claiming leaves the marker 'released' under an older claim:
-        # natively the slot is already free, so only the SQLite owner is stale. A failed-attempt reset or
-        # a reaper discard may adopt it under the same no-prepared-slot/no-pool-run guard.
-        released_other = (previous is not None and previous.get('state') == 'released'
-                          and previous.get('claimToken') != args['claimToken'])
-        if ((args.get('failedPreparation') and (previous is None or orphan_owned))
-                or ((args.get('failedPreparation') or args.get('discard')) and released_other)):
+        # Under slot_lock (serialised against any live prepare), a marker with no prepared slot and no pool
+        # run is a provable orphan. The prepared_slot/pool_run guard below still refuses to steal a genuinely
+        # prepared predecessor, and lock serialisation guarantees we never race a live in-progress prepare.
+        force = bool(args.get('force') and args.get('discard'))
+        overrides = []
+        if force:
+            forced_path = state.prepared_slot_path(pool.repo_key, slot)
+            prepared_pr = json.loads(forced_path.read_text()).get('pr') if forced_path.exists() else None
+            overrides = forced_overrides(previous, args, pr, prepared_pr)
+            previous = owned_marker(previous, args['claimToken'], pr)
+            atomic_json(marker, previous)
+        elif adoptable(previous, args):
             if state.prepared_slot_path(pool.repo_key, slot).exists() or writable.load_pool_run(pool.repo_key, slot, dry_run=True) is not None:
                 raise ReviewError('Unclaimed native predecessor remains; no failed-attempt reset allowed.')
             # A discard resets the slot to baseline below, so only a non-discarding adoption must
@@ -284,13 +516,13 @@ elif phase == 'cleanup':
             if not args.get('discard'):
                 _verify_postconditions(writable, pool, outer, source,
                                        run_git_read(root, ['rev-parse', 'HEAD']).stdout.strip(), pool._verified_baseline())
-            previous = {'claimToken': args['claimToken'], 'pr': pr, 'state': 'owned'}
+            previous = owned_marker(previous, args['claimToken'], pr)
             atomic_json(marker, previous)
         if not previous or previous.get('claimToken') != args['claimToken'] or previous.get('pr') != pr or previous.get('state') != 'owned':
             raise ReviewError('Native claim changed; no cleanup allowed.')
         clear_stale_index_locks()
         prepared_path = state.prepared_slot_path(pool.repo_key, slot)
-        if prepared_path.exists() and json.loads(prepared_path.read_text()).get('pr') != pr:
+        if not force and prepared_path.exists() and json.loads(prepared_path.read_text()).get('pr') != pr:
             raise ReviewError('Native prepared owner changed; no reset allowed.')
         discard = bool(args.get('discard'))
         if not discard and (git_status(source, read_only=True) or git_ignored_paths(source, read_only=True)):
@@ -306,11 +538,21 @@ elif phase == 'cleanup':
             binding = {'schema_version': 1, 'workspace_identity': writable.identity, 'outer': inspection}
             verify_preservation_archive(Path(preserved['path']), expected_manifest_sha256=preserved['manifest_sha256'],
                                         expected_generation=preservation_generation(binding), expected_binding=binding)
+        # A discard runs only once the owning conversation is frozen and quiet, so it reaps a slot-writer journal the
+        # kit classes as stale: unreadable, or never launched or from another PID namespace and over 30 minutes old
+        # (a killed cleanup). A writer still alive in this namespace always blocks.
+        if discard:
+            from review_common import _slot_writer_assert_quiescent
+            reaped = _slot_writer_assert_quiescent(writable, pool.repo_key, slot, reap_stale=True, dry_run=True)
+            if reaped:
+                overrides.append(f'slot-writer journal ({reaped})')
         # Invoke native already-locked entry points; the exact token fence stays held through reset.
-        with slot_writer_scope(writable, pool.repo_key, slot, phase='pooled-reset'):
+        with slot_writer_scope(writable, pool.repo_key, slot, phase='pooled-reset', reap_stale=discard):
             legacy = writable.load_pool_run(pool.repo_key, slot, dry_run=True)
             if legacy is not None and legacy.get('pr') != pr and legacy.get('pr_number') != pr:
-                raise ReviewError('Legacy native owner differs; no automatic reset allowed.')
+                if not force:
+                    raise ReviewError('Legacy native owner differs; no automatic reset allowed.')
+                overrides.append(f"legacy pool run for PR {legacy.get('pr') or legacy.get('pr_number')}")
             if prepared_path.exists():
                 result = _discard_prepared_slot(writable, pool, slot, confirm='YES')
             elif legacy is not None:
@@ -333,7 +575,8 @@ elif phase == 'cleanup':
             previous['state'] = 'released'
             atomic_json(marker, previous)
             print(json.dumps({'claimToken': args['claimToken'], 'cleanBaselineVerified': True,
-                              'evidencePreserved': preserved is not None, 'preservation': preserved, 'reset': result}))
+                              'evidencePreserved': preserved is not None, 'preservation': preserved, 'reset': result,
+                              'forced': overrides}))
 elif phase == 'verify':
     inspect_prepared()
     receipt = json.loads(safe_path(outer, directory + '/publication_receipts.json').read_text())
@@ -412,13 +655,7 @@ elif phase == 'commit':
         shutil.move(str(nested), str(target))
         print(f'Quarantined {directory}/{relative} to {target}', file=sys.stderr)
         dirs[:] = [] if nested == Path(current) else [d for d in dirs if d != '.git']
-    # An earlier review of this PR, in any slot, leaves review/<repo>-<pr> in the shared review repository, and a
-    # detached slot refuses to switch to or overwrite it. Retain this head's review on its own branch instead.
-    expected = None
-    branch = f'review/{repo_slug(repo)}-{pr}'
-    if (run_git_read(outer, ['symbolic-ref', '-q', 'HEAD'], check=False).returncode
-            and not run_git_read(outer, ['rev-parse', '-q', '--verify', 'refs/heads/' + branch], check=False).returncode):
-        expected = f"{branch}-{args['head'][:8]}"
-    print(json.dumps(commit_review(root, repo, pr, slot, source_sha=args['head'], expected_branch=expected)))
+    print(json.dumps(commit_review(root, repo, pr, slot, source_sha=args['head'],
+                                   expected_branch=expected_review_branch())))
 else:
     raise ReviewError('Unknown review-runner sandbox phase.')
