@@ -226,14 +226,44 @@ internal static class ReviewBatch
                 // Linux ESRCH: the process exited after its proc entry was opened.
                 continue;
             }
-            var arguments = System.Text.Encoding.UTF8.GetString(commandLine).Split('\0');
-            if (
-                arguments.Any(argument =>
-                    Path.GetFileName(argument) is "CodeReviewDaemon.Sample" or "CodeReviewDaemon.Sample.dll"
-                )
-            )
+            if (RunsDaemon(System.Text.Encoding.UTF8.GetString(commandLine).Split('\0')))
                 throw new InvalidOperationException("Competing daemon producer detected.");
         }
+    }
+
+    // Value-taking options of `dotnet exec`, which come before the app's path.
+    private static readonly HashSet<string> DotnetHostOptions =
+    [
+        "--additionalprobingpath",
+        "--additional-deps",
+        "--depsfile",
+        "--fx-version",
+        "--roll-forward",
+        "--roll-forward-on-no-candidate-fx",
+        "--runtimeconfig",
+    ];
+
+    /// <summary>
+    /// True only for a process running the daemon: its apphost, or <c>dotnet [exec [options]]</c> whose first .dll is
+    /// the daemon's. A tool that merely names the daemon's folder or file (grep, ls, git) once stopped every live batch.
+    /// </summary>
+    private static bool RunsDaemon(IReadOnlyList<string> arguments)
+    {
+        if (arguments.Count == 0)
+            return false;
+        var program = Path.GetFileName(arguments[0]);
+        if (program == "CodeReviewDaemon.Sample")
+            return true;
+        if (program != "dotnet")
+            return false;
+        for (var index = 1; index < arguments.Count; index++)
+        {
+            if (DotnetHostOptions.Contains(arguments[index]))
+                index++;
+            else if (arguments[index].EndsWith(".dll", StringComparison.Ordinal))
+                return Path.GetFileName(arguments[index]) == "CodeReviewDaemon.Sample.dll";
+        }
+        return false;
     }
 
     internal static async Task<bool> ClaimAsync(string database, string digest, string selection, CancellationToken ct)

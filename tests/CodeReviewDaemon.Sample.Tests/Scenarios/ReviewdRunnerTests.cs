@@ -749,8 +749,8 @@ public sealed class ReviewdRunnerTests
 
     [Theory]
     [InlineData(null)]
-    [InlineData("CodeReviewDaemon.Sample")]
-    [InlineData("CodeReviewDaemon.Sample.dll")]
+    [InlineData("/app/CodeReviewDaemon.Sample")]
+    [InlineData("dotnet /app/CodeReviewDaemon.Sample.dll")]
     public void Producer_scan_skips_exited_process_and_still_detects_later_competitor(string? competitor)
     {
         if (!OperatingSystem.IsLinux())
@@ -764,9 +764,7 @@ public sealed class ReviewdRunnerTests
                     reads.Add(path);
                     if (path == "/proc/11/cmdline")
                         throw new IOException("No such process", 3);
-                    return System.Text.Encoding.UTF8.GetBytes(
-                        competitor is not null ? $"dotnet\0/app/{competitor}\0" : "dotnet\0/app/Reviewd.Sample.dll\0"
-                    );
+                    return CommandLine(competitor ?? "dotnet /app/Reviewd.Sample.dll");
                 }
             );
         if (competitor is not null)
@@ -775,6 +773,34 @@ public sealed class ReviewdRunnerTests
             scan.Should().NotThrow();
         reads.Should().Equal("/proc/11/cmdline", "/proc/12/cmdline");
     }
+
+    // Kay9: only a process running the daemon competes, never a tool that names its folder or file. Seen live: a
+    // grep over the daemon's source folder stopped every running batch.
+    [Theory]
+    [InlineData("grep -rn Lease samples/CodeReviewDaemon.Sample", false)]
+    [InlineData("ls samples/CodeReviewDaemon.Sample", false)]
+    [InlineData("git -C /repo log -- samples/CodeReviewDaemon.Sample", false)]
+    [InlineData("code /x/CodeReviewDaemon.Sample.dll", false)]
+    [InlineData("dotnet test tests/CodeReviewDaemon.Sample.Tests/CodeReviewDaemon.Sample.Tests.csproj", false)]
+    [InlineData("dotnet /x/Reviewd.Sample.dll /x/CodeReviewDaemon.Sample.dll", false)]
+    [InlineData("dotnet /x/CodeReviewDaemon.Sample.dll", true)]
+    [InlineData("dotnet exec --depsfile a.json /x/CodeReviewDaemon.Sample.dll", true)]
+    [InlineData("/usr/bin/dotnet exec --runtimeconfig b.dll --depsfile a.json /x/CodeReviewDaemon.Sample.dll", true)]
+    [InlineData("/x/CodeReviewDaemon.Sample --serve", true)]
+    public void Producer_scan_counts_only_a_process_running_the_daemon(string commandLine, bool competes)
+    {
+        if (!OperatingSystem.IsLinux())
+            return;
+        var scan = () => ReviewBatch.EnsureNoDaemon(() => ["/proc/12"], _ => CommandLine(commandLine));
+        if (competes)
+            scan.Should().Throw<InvalidOperationException>().WithMessage("Competing daemon producer detected.");
+        else
+            scan.Should().NotThrow();
+    }
+
+    // /proc/<pid>/cmdline: each argument ends with a NUL.
+    private static byte[] CommandLine(string spaced) =>
+        System.Text.Encoding.UTF8.GetBytes(string.Concat(spaced.Split(' ').Select(argument => argument + "\0")));
 
     [Theory]
     [InlineData("Reviewd.Sample", false)]
