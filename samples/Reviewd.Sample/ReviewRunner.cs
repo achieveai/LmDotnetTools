@@ -903,7 +903,12 @@ internal static class ReviewRunner
         // A retry of a reset keeps that mark. A retry refused or failed before it reviews is then offered again in its
         // own conversation, instead of reading as a failed submission there until a new push.
         if (retryOfReset)
+        {
             receipt["stageBeforeReclaim"] = attempt!["stageBeforeReclaim"]!.DeepClone();
+            // A passed-over reset conversation is not this receipt's thread, so it is named for the next retry.
+            if (resetThread != thread)
+                receipt["resetThreadId"] = resetThread;
+        }
         if (resume || cleanupOnly)
             receipt = attempt!.DeepClone().AsObject();
         if (cleanupOnly && attempt!["claimToken"] is null)

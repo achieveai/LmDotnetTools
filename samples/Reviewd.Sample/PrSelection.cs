@@ -216,15 +216,19 @@ internal static class PrSelection
     // idle, and marks it failed-released with the stage it stopped at. Its own binding is then not in flight: the
     // runner reviews that same head again in that conversation (Kay9: review it again rather than wait for a push).
     // The retry's own attempt carries the mark, so a retry refused or failed before it reviews is offered again too.
+    // A retry that passed over a reset conversation from before headless provisioning names it as resetThreadId, since
+    // a retry refused before its new conversation exists has no threadId of its own.
     internal static bool IsResetForRetry(JsonElement attempt, string? boundThread, string? currentHead) =>
         IsSettled(attempt)
         && attempt.GetProperty("stage").GetString() == "failed-released"
         && attempt.TryGetProperty("stageBeforeReclaim", out var before)
         && before.ValueKind == JsonValueKind.String
-        && attempt.TryGetProperty("threadId", out var thread)
-        && thread.ValueKind == JsonValueKind.String
         && !string.IsNullOrEmpty(boundThread)
-        && thread.GetString() == boundThread
+        && new[] { "threadId", "resetThreadId" }.Any(name =>
+            attempt.TryGetProperty(name, out var thread)
+            && thread.ValueKind == JsonValueKind.String
+            && thread.GetString() == boundThread
+        )
         && attempt.TryGetProperty("headSha", out var head)
         && head.ValueKind == JsonValueKind.String
         && !string.IsNullOrWhiteSpace(currentHead)

@@ -3850,9 +3850,15 @@ public sealed class ReviewdRunnerTests
     }
 
     [Theory]
-    [InlineData("not-idle")]
-    [InlineData("capacity")]
-    public async Task A_reset_retry_refused_before_review_is_picked_and_retried_without_a_new_push(string refusal)
+    [InlineData("not-idle", true)]
+    [InlineData("capacity", true)]
+    // A reset conversation from before headless provisioning is passed over, and the refusal comes before the retry's
+    // new conversation exists.
+    [InlineData("not-idle", false)]
+    public async Task A_reset_retry_refused_before_review_is_picked_and_retried_without_a_new_push(
+        string refusal,
+        bool headless
+    )
     {
         // The retry of a reset gets a fresh receipt. A slot or capacity refusal at prepare releases that receipt as
         // failed-released, and it must still read as a reset retry: otherwise pick skips the PR behind its bound
@@ -3871,7 +3877,12 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/api/conversations?",
-                """[{"threadId":"prior","title":"Nova-17-aaaaaaaa","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1,"clientToolsDisabled":true}]"""
+                $$"""[{"threadId":"prior","title":"Nova-17-aaaaaaaa","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1,"clientToolsDisabled":{{(headless ? "true" : "false")}}}]"""
+            )
+            .On(
+                request =>
+                    request.RequestUri!.AbsolutePath == "/api/conversations" && request.Method == HttpMethod.Post,
+                _ => Json("""{"threadId":"fresh"}""")
             )
             .OnJson(HttpMethod.Get, "/prior/messages", Transcript(("User", ReviewPrompt('a')), ("Assistant", "Done.")))
             .OnJson(HttpMethod.Put, "/metadata", "{}")
@@ -4011,14 +4022,15 @@ public sealed class ReviewdRunnerTests
             var failure = (await run.Should().ThrowAsync<InvalidOperationException>()).Which.Message;
 
             failure.Should().NotContain("already reviewed by another run");
-            handler
+            var sent = handler
                 .Requests.Where(r =>
                     r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal)
                 )
                 .Should()
                 .ContainSingle()
-                .Which.Body.Should()
-                .Contain("stopped before its publication was");
+                .Which;
+            sent.Uri.AbsolutePath.Should().Contain(headless ? "/prior/" : "/fresh/");
+            sent.Body.Should().Contain("stopped before its publication was");
         }
         finally
         {
