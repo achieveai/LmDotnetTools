@@ -294,8 +294,9 @@ internal static class SlotReaper
         owner["leaseExpiresAt"]?.GetValue<DateTimeOffset>() is not { } expiry || now - expiry >= ForceAfterLapse;
 
     /// <summary>
-    /// For reclaim-slot, which targets one slot instead of sweeping lapsed leases: it forces exactly when the reaper
-    /// would, once the slot's owner row still holding this claim has been lapsed <see cref="ForceAfterLapse"/>.
+    /// For reclaim-slot, which targets one slot instead of sweeping lapsed leases: it forces when the startup sweep
+    /// would, once the slot's owner row still holding this claim has been lapsed <see cref="ForceAfterLapse"/>, or at
+    /// once for an owner from before leases, which has no lease at all.
     /// </summary>
     internal static async Task<bool> IsForceDueAsync(
         SqliteConnection connection,
@@ -310,6 +311,28 @@ internal static class SlotReaper
         && owner["claimToken"]?.GetValue<string>() == claimToken
         && SlotRelease.IsLeaseExpired(owner, now, undatedExpired: true)
         && IsForceDue(owner, now);
+
+    /// <summary>
+    /// The owner recheck reclaim-slot gives <see cref="ReclaimOneAsync"/>, as the sweep gives its own: once the owner row
+    /// differs from what the command first read (renewed, re-claimed or released), the slot is left alone. Otherwise
+    /// force is recomputed from the row as it is now.
+    /// </summary>
+    internal static async Task<Func<CancellationToken, Task<bool?>>> ReclaimSlotRecheckAsync(
+        SqliteConnection connection,
+        string workspace,
+        RepoIdentity repo,
+        int slot,
+        string claimToken,
+        CancellationToken ct
+    )
+    {
+        var key = SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot);
+        var first = (await ReadAsync(connection, key, ct))?.ToJsonString();
+        return async cancel =>
+            (await ReadAsync(connection, key, cancel))?.ToJsonString() == first
+                ? await IsForceDueAsync(connection, workspace, repo, slot, claimToken, DateTimeOffset.UtcNow, cancel)
+                : null;
+    }
 
     // How long a frozen conversation's tree gets to settle before the reclaim gives up on it as live.
     private static readonly TimeSpan QuiescenceDeadline = TimeSpan.FromSeconds(20);

@@ -21,8 +21,10 @@ root = Path.cwd()
 # and only once it has been idle for STEP_IDLE seconds and STEP_MIN seconds have passed since it started,
 # whichever comes last (Kay9: activity decides, never time alone). Activity is CPU or I/O by the step or any of
 # its children, or a fresh mark the client writes while an agent on the conversation is active.
-# The watchdog touches a heartbeat on every sample. One STEP_STALE seconds old means the watchdog itself is stuck, and
+# The watchdog writes a heartbeat on every sample. One STEP_STALE seconds old means the watchdog itself is stuck, and
 # then the client asks step-stop to kill the step (Kay9: only while no agent on the conversation is active).
+# Both measure time on the monotonic clock, so a wall-clock step neither ends a live step nor makes its watchdog look
+# stuck.
 STEP_IDLE, STEP_MIN, STEP_SAMPLE, STEP_STOPPED, STEP_STALE = 600, 3600, 30, 124, 900
 
 
@@ -67,16 +69,17 @@ def process_start(pid):
 
 def stop_step(marks, operation, now):
     # Kills the step only if its watchdog stopped beating STEP_STALE seconds ago and no agent marked it active within
-    # STEP_IDLE, and only the process the heartbeat recorded, with its descendants.
+    # STEP_IDLE, and only the process the heartbeat recorded, with its descendants. now is monotonic, like the beat.
     beat = marks / f'{operation}.watchdog'
     try:
-        recorded, age = json.loads(beat.read_text()), now - beat.stat().st_mtime
-    except (OSError, ValueError):
+        recorded = json.loads(beat.read_text())
+        age = now - recorded['beat']
+    except (OSError, ValueError, KeyError, TypeError):
         return {'stopped': False, 'reason': 'no watchdog heartbeat'}
     if age < STEP_STALE:
         return {'stopped': False, 'reason': 'watchdog alive'}
     try:
-        if now - (marks / f'{operation}.agents').stat().st_mtime < STEP_IDLE:
+        if time.time() - (marks / f'{operation}.agents').stat().st_mtime < STEP_IDLE:
             return {'stopped': False, 'reason': 'agent active'}
     except OSError:
         pass
@@ -98,22 +101,33 @@ def stop_step(marks, operation, now):
 
 
 def watch_step(mark, beat):
-    started = last_active = time.time()
-    seen = None
+    started = last_active = time.monotonic()
+    seen = marked = record = None
+
+    def beat_now():
+        # Replaced whole, so step-stop never reads half a heartbeat.
+        fresh = beat.with_name(beat.name + '.new')
+        fresh.write_text(json.dumps({**record, 'beat': time.monotonic()}))
+        os.replace(fresh, beat)
+
     if beat:
         try:
             beat.parent.mkdir(exist_ok=True)
-            beat.write_text(json.dumps({'pid': os.getpid(), 'start': process_start(os.getpid())}))
+            record = {'pid': os.getpid(), 'start': process_start(os.getpid())}
+            beat_now()
         except (OSError, ValueError, IndexError):
             beat = None
     while True:
         time.sleep(STEP_SAMPLE)
-        now = time.time()
+        now = time.monotonic()
         counters = step_activity(os.getpid())
         if counters != seen:
             seen, last_active = counters, now
+        # A new agent mark counts when it is seen, not by its wall-clock time.
         try:
-            last_active = max(last_active, mark.stat().st_mtime)
+            stamp = mark.stat().st_mtime_ns
+            if stamp != marked:
+                marked, last_active = stamp, now
         except OSError:
             pass
         if step_should_stop(started, last_active, now):
@@ -127,7 +141,7 @@ def watch_step(mark, beat):
             os._exit(STEP_STOPPED)
         if beat:
             try:
-                os.utime(beat)
+                beat_now()
             except OSError:
                 pass
 
@@ -139,7 +153,7 @@ if phase in ('step-activity', 'step-stop'):
     if not re.fullmatch(r'[0-9a-f]{32}', str(args.get('operation'))) or common.returncode:
         raise SystemExit(f'{phase} needs a step operation id and the workspace repository.')
     if phase == 'step-stop':
-        print(json.dumps(stop_step(marks, args['operation'], time.time())))
+        print(json.dumps(stop_step(marks, args['operation'], time.monotonic())))
         raise SystemExit(0)
     marks.mkdir(exist_ok=True)
     (marks / f"{args['operation']}.agents").touch()

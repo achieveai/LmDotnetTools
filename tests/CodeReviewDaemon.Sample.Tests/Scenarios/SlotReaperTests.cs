@@ -1105,6 +1105,88 @@ public sealed class SlotReaperTests
         }
     }
 
+    [Theory]
+    [InlineData("renewed", "skipped")]
+    [InlineData("unchanged", "reclaimed")]
+    public async Task Reclaim_slot_leaves_a_slot_whose_owner_changed_while_it_waited(string change, string status)
+    {
+        // Like the sweep, reclaim-slot rechecks the owner before the freeze and the reset. A lane that renewed its lease
+        // while the command waited on a busy host is live, so its slot is neither frozen nor reset.
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-reclaim-recheck-{Guid.NewGuid():N}.db");
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await connection.OpenAsync();
+            var repo = PrCommands.ParseRepo("O365Exchange/Weve_DA/Nova");
+            var (ownerKey, store) = await SeedLapsedClaimAsync(connection, 9);
+            var token = (await store.GetAsync<JsonObject>(ownerKey))!["claimToken"]!.GetValue<string>();
+            var attempt = (await store.GetAsync<JsonObject>($"reviewd/review-attempt/{repo.NormalizedKey}/100"))!;
+            var handler = new FakeHttpMessageHandler()
+                .OnJson(HttpMethod.Post, "/freeze", """{"frozen":true}""")
+                .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+                .OnSequence(
+                    HttpMethod.Get,
+                    "/subagents?recursive=true",
+                    (System.Net.HttpStatusCode.ServiceUnavailable, """{"code":"hierarchy_busy"}"""),
+                    (System.Net.HttpStatusCode.OK, Tree("completed"))
+                );
+            using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+            var discards = 0;
+            SlotReaper.SandboxExecutor sandbox = (_, args, _, _) =>
+            {
+                discards++;
+                return Task.FromResult(
+                    new JsonObject
+                    {
+                        ["claimToken"] = args["claimToken"]!.DeepClone(),
+                        ["cleanBaselineVerified"] = true,
+                    }
+                );
+            };
+            var recheck = await SlotReaper.ReclaimSlotRecheckAsync(
+                connection,
+                "workspace",
+                repo,
+                9,
+                token,
+                CancellationToken.None
+            );
+
+            var result = await SlotReaper.ReclaimOneAsync(
+                connection,
+                new LmStreamingS2SClient(http, null, null, null),
+                sandbox,
+                repo,
+                "100",
+                9,
+                "workspace",
+                attempt,
+                token,
+                execute: true,
+                CancellationToken.None,
+                force: true,
+                delay: async (_, _) =>
+                {
+                    if (change != "renewed")
+                        return;
+                    var owner = (await store.GetAsync<JsonObject>(ownerKey))!;
+                    owner["leaseExpiresAt"] = DateTimeOffset.UtcNow + SlotRelease.DefaultLeaseWindow;
+                    await store.SetAsync(ownerKey, owner, CancellationToken.None);
+                },
+                recheck: recheck
+            );
+
+            result.Status.Should().Be(status);
+            discards.Should().Be(status == "reclaimed" ? 1 : 0);
+            handler.CountRequests("/freeze").Should().Be(status == "reclaimed" ? 1 : 0);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
     [Fact]
     public async Task Reaper_does_not_force_a_slot_whose_lease_lapsed_only_minutes_ago()
     {

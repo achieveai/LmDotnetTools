@@ -545,6 +545,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
     // The watchdog runs the rule on a real process tree, with the limits shortened to fractions of a second.
     [InlineData("idle", true)] // nothing happens: it kills the step's processes, its own-session children too
     [InlineData("agent", false)] // an agent keeps marking the step active
+    [InlineData("clock", false)] // an agent keeps marking it while the wall clock steps an hour forward
     [InlineData("busy", false)] // a child process keeps using CPU
     public async Task The_step_watchdog_kills_an_idle_step_and_spares_an_active_one(string activity, bool stopped)
     {
@@ -552,7 +553,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         var pidFile = Path.Combine(Path.GetTempPath(), $"reviewd-step-{Guid.NewGuid():N}.pid");
         var mark = Path.Combine(Path.GetTempPath(), $"reviewd-step-{Guid.NewGuid():N}.agents");
         const string harness = """
-            import ast, json, os, subprocess, sys, threading, time
+            import ast, json, os, subprocess, sys, threading, time, types
             from pathlib import Path
             tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
             names = {'step_should_stop', 'step_processes', 'step_activity', 'process_start', 'watch_step'}
@@ -569,14 +570,25 @@ public sealed class ReviewdAutoSlotTests : IDisposable
                 while True:
                     mark.touch()
                     time.sleep(0.05)
-            if activity == 'agent':
+            if activity in ('agent', 'clock'):
                 threading.Thread(target=keep_marking, daemon=True).start()
+            if activity == 'clock':
+                # The wall clock steps an hour forward once the watchdog has started; the monotonic clock does not.
+                begin = time.time()
+                scope['time'] = types.SimpleNamespace(
+                    time=lambda: time.time() + (3600 if time.time() - begin > 0.3 else 0),
+                    monotonic=time.monotonic,
+                    sleep=time.sleep,
+                )
             # The heartbeat step-stop reads: this process, beating on every sample.
             beat = Path(pid_file + '.watchdog')
+            watching = time.monotonic()
             threading.Thread(target=scope['watch_step'], args=(mark, beat), daemon=True).start()
             time.sleep(1.2 if activity != 'idle' else 10)
             child.kill()
-            print('not stopped', json.loads(beat.read_text())['pid'] == os.getpid(), time.time() - beat.stat().st_mtime < 0.5)
+            recorded = json.loads(beat.read_text())
+            # Beaten again well after it started. One sample scans all of /proc, which takes a few tenths of a second.
+            print('not stopped', recorded['pid'] == os.getpid(), recorded['beat'] - watching > 0.5)
             """;
         try
         {
@@ -602,6 +614,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         {
             File.Delete(pidFile);
             File.Delete(pidFile + ".watchdog");
+            File.Delete(pidFile + ".watchdog.new");
             File.Delete(mark);
         }
 
@@ -624,6 +637,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
     // fresh.
     [InlineData("stale", true)]
     [InlineData("fresh", false)] // the watchdog beat a minute ago
+    [InlineData("clock", false)] // it beat a minute ago, though the wall clock stepped since and its file looks old
     [InlineData("agent", false)] // stale, but an agent marked the step active just now
     public async Task Step_stop_kills_a_step_only_when_its_watchdog_is_stale_and_no_agent_is_active(
         string state,
@@ -638,7 +652,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
             tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
             names = {'step_processes', 'process_start', 'stop_step'}
             scope = {}
-            exec('import json, os, signal', scope)
+            exec('import json, os, signal, time', scope)
             exec(compile(ast.Module([n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names], []), 'step_stop', 'exec'), scope)
             scope.update(STEP_IDLE=600, STEP_STALE=900)
             state, marks, operation = sys.argv[2], Path(sys.argv[3]), 'a' * 32
@@ -651,12 +665,14 @@ public sealed class ReviewdAutoSlotTests : IDisposable
                     break
                 time.sleep(0.01)
             beat = marks / f'{operation}.watchdog'
-            beat.write_text(json.dumps({'pid': step.pid, 'start': scope['process_start'](step.pid)}))
+            beat_age = 60 if state in ('fresh', 'clock') else 1000
+            beat.write_text(json.dumps({'pid': step.pid, 'start': scope['process_start'](step.pid), 'beat': time.monotonic() - beat_age}))
+            # A wall-clock step changes only the file's time, never the monotonic beat inside it.
             now = time.time()
             os.utime(beat, (now, now - (60 if state == 'fresh' else 1000)))
             if state == 'agent':
                 (marks / f'{operation}.agents').touch()
-            result = scope['stop_step'](marks, operation, time.time())
+            result = scope['stop_step'](marks, operation, time.monotonic())
             def ended(pid):
                 for _ in range(200 if result['stopped'] else 1):
                     try:
