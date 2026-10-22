@@ -1,7 +1,9 @@
 # Source this in every terminal and from every ops script: `source <ops dir>/env.sh`.
 # Everything the reviews need lives under REVIEWD_HOME, outside any git checkout, so cleaning a
 # worktree or rebooting loses nothing. Keys come from owner-only files: source them, never print them.
-: "${REVIEWD_HOME:=$HOME/.local/share/lmdotnettools-review-daemon/reviewd}"
+# Always the folder above this bin/, so each install (Nova, or a review store's reviewd-<group>) uses its own,
+# even when a shell already holds another install's REVIEWD_HOME.
+REVIEWD_HOME=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
 set -a
 source "$REVIEWD_HOME/env/review-host.env"
 source "$REVIEWD_HOME/env/review-daemon.env"

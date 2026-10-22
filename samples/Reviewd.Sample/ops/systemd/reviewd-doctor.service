@@ -1,0 +1,10 @@
+[Unit]
+Description=Reviewd doctor: check every store, apply safe fixes, alert on the rest, daily digest
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.local/share/lmdotnettools-review-daemon/reviewd/bin/doctor.py tick
+# A batch restarted by safe-restart-batch.sh must outlive this oneshot run.
+KillMode=process
+Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+TimeoutStartSec=45min

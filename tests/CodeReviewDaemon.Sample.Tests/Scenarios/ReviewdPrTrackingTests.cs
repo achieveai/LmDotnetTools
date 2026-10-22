@@ -366,11 +366,29 @@ public sealed class ReviewdPrTrackingTests
     }
 
     [Theory]
-    [InlineData('d', true)]
-    [InlineData('a', false)]
-    public async Task Picking_offers_a_new_head_after_its_slot_was_released_mid_review(char attemptHead, bool picked)
+    [InlineData('d', "review-completed", null, "thread", null, false, true)]
+    [InlineData('a', "review-completed", null, "thread", null, false, false)]
+    // Kay9: a same-head review the reaper reset before its publication was verified is offered again, but only in
+    // its own conversation; a failed attempt the reaper did not reset may still be running behind its binding.
+    [InlineData('a', "failed-released", "review-completed", "thread", 2, false, true)]
+    [InlineData('a', "failed-released", "review-completed", "thread", 2, true, true)]
+    [InlineData('a', "failed-released", null, "thread", null, false, false)]
+    [InlineData('a', "failed-released", "review-completed", "other", null, false, false)]
+    // A head reset three times waits for a new push, whatever kept failing it and even after an earlier head's review.
+    [InlineData('a', "failed-released", "review-completed", "thread", 3, false, false)]
+    [InlineData('a', "failed-released", "review-completed", "thread", 3, true, false)]
+    [InlineData('d', "failed-released", "review-completed", "thread", 3, false, true)]
+    public async Task Picking_offers_a_new_head_after_its_slot_was_released_mid_review(
+        char attemptHead,
+        string stage,
+        string? stageBeforeReclaim,
+        string attemptThread,
+        int? resetCount,
+        bool earlierHeadReviewed,
+        bool picked
+    )
     {
-        // The reaper released this review's slot at review-completed; the stage and thread binding stayed.
+        // The reaper released this review's slot mid-review; the thread binding stayed.
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-pick-{Guid.NewGuid():N}.db");
         var selection = database + ".selection.json";
         var repo = PrCommands.ParseRepo("org/project/Nova");
@@ -398,14 +416,95 @@ public sealed class ReviewdPrTrackingTests
                     $"reviewd/review-attempt/{repo.NormalizedKey}/17",
                     new System.Text.Json.Nodes.JsonObject
                     {
-                        ["stage"] = "review-completed",
+                        ["stage"] = stage,
+                        ["stageBeforeReclaim"] = stageBeforeReclaim,
                         ["cleanupState"] = "released",
                         ["claimToken"] = "claim",
+                        ["threadId"] = attemptThread,
+                        ["resetCount"] = resetCount,
                         ["headSha"] = new string(attemptHead, 40),
                     }
                 );
+                if (earlierHeadReviewed)
+                    await store.SetAsync(
+                        $"reviewd/review-run/{repo.NormalizedKey}/17",
+                        new System.Text.Json.Nodes.JsonObject
+                        {
+                            ["stage"] = "completed-verified",
+                            ["reviewedHeadSha"] = new string('b', 40),
+                            ["reviewCompletedAt"] = (now.AddHours(-2) - DateTimeOffset.UnixEpoch).TotalSeconds,
+                        }
+                    );
             }
             await PrThreadBindings.SetAsync(database, repo, "17", "thread", CancellationToken.None);
+            var options = CliOptions.Parse([
+                "pr",
+                "pick",
+                "--repo",
+                repo.DisplayName,
+                "--db",
+                database,
+                "--max-age-hours",
+                "72",
+                "--selection-out",
+                selection,
+            ]);
+
+            await PrSelection.RunAsync(options, CancellationToken.None, now);
+
+            var queued = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(selection))![
+                "repositories"
+            ]!.AsObject();
+            queued.Count.Should().Be(picked ? 1 : 0);
+        }
+        finally
+        {
+            ReviewdSqlitePools.Clear(database);
+            File.Delete(database);
+            File.Delete(selection);
+        }
+    }
+
+    [Theory]
+    [InlineData('a', false)]
+    [InlineData('c', true)]
+    public async Task Pick_leaves_out_a_head_quarantined_for_repeated_identical_failures(char failedHead, bool picked)
+    {
+        // A head that failed the same way three times stays out until the PR is pushed again (a new head).
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-quarantine-{Guid.NewGuid():N}.db");
+        var selection = database + ".selection.json";
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var now = DateTimeOffset.Parse("2026-10-20T12:00:00Z");
+        try
+        {
+            using (var connection = PrThreadBindings.Connection(database))
+            {
+                var store = new SqliteKvStore(connection);
+                await store.SetAsync(
+                    $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                    new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["17"] = new System.Text.Json.Nodes.JsonObject
+                        {
+                            ["PrId"] = 17,
+                            ["Lifecycle"] = "Open",
+                            ["IsDraft"] = false,
+                            ["HeadSha"] = new string('a', 40),
+                            ["CreatedAt"] = now.AddHours(-1).ToString("O"),
+                        },
+                    }
+                );
+                await store.SetAsync(
+                    ReviewBatch.FailureKey(repo.DisplayName, "17"),
+                    new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["head"] = new string(failedHead, 40),
+                        ["signature"] = "Sandbox prepare failed",
+                        ["count"] = ReviewBatch.QuarantineAfter,
+                        ["reason"] = "Sandbox prepare failed",
+                    }
+                );
+            }
             var options = CliOptions.Parse([
                 "pr",
                 "pick",
