@@ -83,6 +83,16 @@ public sealed class SandboxInfo
     /// </summary>
     public string? WorkspaceHome { get; }
 
+    /// <summary>
+    /// The skill-tier policy the gateway resolved for the sandbox (ADR 0041), echoed on a
+    /// <see cref="SandboxClient.CreateAsync"/> result whether or not the request carried
+    /// <see cref="SandboxCreateRequest.Skills"/>: its <see cref="SandboxSkillsPolicy.DefaultTier"/> is always
+    /// set and its <see cref="SandboxSkillsPolicy.Included"/> holds the resolved skill keys (directory paths),
+    /// not the refs the request sent. <see langword="null"/> when the gateway did not report one (a gateway
+    /// that predates skill tiers, and list results).
+    /// </summary>
+    public SandboxSkillsPolicy? Skills { get; }
+
     public SandboxInfo(
         string sessionId,
         string? containerId = null,
@@ -95,7 +105,8 @@ public sealed class SandboxInfo
         string? image = null,
         string? imageDigest = null,
         SandboxImageReport? imageReport = null,
-        string? workspaceHome = null
+        string? workspaceHome = null,
+        SandboxSkillsPolicy? skills = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -114,5 +125,6 @@ public sealed class SandboxInfo
         ImageDigest = imageDigest;
         ImageReport = imageReport;
         WorkspaceHome = workspaceHome;
+        Skills = skills;
     }
 }

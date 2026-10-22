@@ -1,7 +1,7 @@
 namespace AchieveAi.LmDotnetTools.Sandbox;
 
 /// <summary>
-/// One git marketplace this client's app registered with the gateway (ADR 0041), as
+/// One git marketplace this client's app registered with the gateway (ADR 0045), as
 /// <see cref="SandboxClient.RegisterAppMarketplaceAsync"/>, <see cref="SandboxClient.ListAppMarketplacesAsync"/>
 /// and <see cref="SandboxClient.SyncAppMarketplaceAsync"/> report it. A sandbox mounts it at
 /// <c>/marketplaces/&lt;alias&gt;/</c>, at the commit <see cref="ResolvedSha"/> named when the sandbox was created.

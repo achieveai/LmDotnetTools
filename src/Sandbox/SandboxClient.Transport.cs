@@ -447,7 +447,8 @@ public sealed partial class SandboxClient
     /// <summary>
     /// Builds the classified <see cref="SandboxException"/> for a non-2xx response from its (possibly
     /// absent) parsed error body: the kind from <see cref="MapGatewayErrorKind"/>, plus every structured
-    /// field the gateway sent (<c>error_code</c>, <c>retryable</c>, <c>keys</c>, <c>snapshots</c>) and a
+    /// field the gateway sent (<c>error_code</c>, <c>retryable</c>, <c>keys</c>, <c>snapshots</c>, <c>ref</c>,
+    /// <c>candidates</c>) and a
     /// delta-seconds <c>Retry-After</c>. Shared by the control-plane and direct-API mappers so both speak
     /// one vocabulary.
     /// </summary>
@@ -474,6 +475,8 @@ public sealed partial class SandboxClient
             SnapshotIds = error?.Snapshots,
             RetryAfter = response.Headers.RetryAfter?.Delta,
             ImageReport = error?.Report is { } report ? TryToImageReport(report) : null,
+            SkillRef = error?.Ref,
+            SkillCandidates = error?.Candidates,
         };
     }
 
@@ -692,6 +695,8 @@ public sealed partial class SandboxClient
             "marketplaces_disabled" or "git_failed" or "store_failed" or "registry_failed" =>
                 SandboxErrorKind.Unavailable,
             "workspace_purged" => SandboxErrorKind.WorkspacePurged,
+            // Skill tiers (ADR 0041, api/skills.rs): a ref or tier request the caller must fix.
+            "skill_not_found" or "skill_ambiguous" or "invalid_skills" => SandboxErrorKind.SkillRejected,
             "image_not_allowed" or "image_unsupported_backend" or "image_not_found" or "image_unsupported" =>
                 SandboxErrorKind.ImageRejected,
             "operation_api_unavailable"

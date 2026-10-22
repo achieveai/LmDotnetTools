@@ -187,7 +187,8 @@ public sealed partial class SandboxClient
                 ? [.. request.PluginMounts.Select(mount => new PluginMountDto(mount.Path, mount.Name, mount.Origin))]
                 : null,
             Image: request.Image,
-            Home: request.Home
+            Home: request.Home,
+            Skills: request.Skills is { } skills ? ToSkillsPolicyDto(skills) : null
         );
 
     private static PluginRefDto ToPluginRefDto(SandboxPluginRef pluginRef) =>
@@ -229,7 +230,8 @@ public sealed partial class SandboxClient
             dto.Image,
             dto.ImageDigest,
             dto.ImageReport is null ? null : ToImageReportOrThrow(dto.ImageReport, operation, statusCode),
-            dto.Volumes?.Workspace?.Home
+            dto.Volumes?.Workspace?.Home,
+            dto.Skills is null ? null : ToSkillsPolicy(dto.Skills, operation, statusCode)
         );
 
     /// <summary>

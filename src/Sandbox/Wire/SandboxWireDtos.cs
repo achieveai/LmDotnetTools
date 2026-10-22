@@ -25,7 +25,9 @@ internal sealed record CreateSandboxRequestDto(
     // Client image (ADR 0039) and workspace home (issue #142). Top-level `home` mirrors the top-level
     // `workspace` this DTO already sends (the gateway accepts both it and `mounts.home`). Omitted when unset.
     [property: JsonPropertyName("image")] string? Image = null,
-    [property: JsonPropertyName("home")] string? Home = null
+    [property: JsonPropertyName("home")] string? Home = null,
+    // Skill tiers (ADR 0041). Omitted when the caller set no policy, keeping legacy requests byte-identical.
+    [property: JsonPropertyName("skills")] SkillsPolicyDto? Skills = null
 );
 
 internal sealed record PluginMountDto(
@@ -90,7 +92,9 @@ internal sealed record CreateSandboxResponseDto(
     // that report them (never `image_report`).
     [property: JsonPropertyName("image")] string? Image = null,
     [property: JsonPropertyName("image_digest")] string? ImageDigest = null,
-    [property: JsonPropertyName("image_report")] ImageReportDto? ImageReport = null
+    [property: JsonPropertyName("image_report")] ImageReportDto? ImageReport = null,
+    // ADR 0041: the resolved skills policy, echoed on the CREATE response (absent before v0.1.17).
+    [property: JsonPropertyName("skills")] SkillsPolicyDto? Skills = null
 );
 
 /// <summary>
@@ -317,7 +321,11 @@ internal sealed record GatewayErrorDto(
     // Present on only_partial_snapshots (409): the gateway-minted partial snapshot ids to restore from.
     [property: JsonPropertyName("snapshots")] IReadOnlyList<string>? Snapshots = null,
     // Present on a 422 image_unsupported conformance-probe rejection: the runtime's report on the image.
-    [property: JsonPropertyName("report")] ImageReportDto? Report = null
+    [property: JsonPropertyName("report")] ImageReportDto? Report = null,
+    // Present on skill_not_found / skill_ambiguous (400, ADR 0041): the caller's own skill ref, and for an
+    // ambiguous one the qualified skill names it could mean.
+    [property: JsonPropertyName("ref")] string? Ref = null,
+    [property: JsonPropertyName("candidates")] IReadOnlyList<string>? Candidates = null
 );
 
 // --- Session env REST contract (gateway PR #183 / v0.1.11) ---

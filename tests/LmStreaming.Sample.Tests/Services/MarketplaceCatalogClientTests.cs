@@ -94,7 +94,7 @@ public class MarketplaceCatalogClientTests
 
         _ = await client.GetCatalogAsync();
 
-        // app_id (gateway ADR 0041) lets a dev gateway include this app's git marketplaces; no marketplaces filter.
+        // app_id (gateway ADR 0045) lets a dev gateway include this app's git marketplaces; no marketplaces filter.
         handler
             .LastRequest!.RequestUri!.ToString()
             .Should()

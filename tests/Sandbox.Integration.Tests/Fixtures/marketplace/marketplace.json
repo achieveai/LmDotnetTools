@@ -1,0 +1,10 @@
+{
+  "name": "lmtest",
+  "plugins": [
+    {
+      "name": "skilltiers",
+      "description": "Two skills for the SDK skill-tier live contract test",
+      "source": "./skilltiers"
+    }
+  ]
+}

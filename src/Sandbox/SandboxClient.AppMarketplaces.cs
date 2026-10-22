@@ -5,7 +5,7 @@ using AchieveAi.LmDotnetTools.Sandbox.Wire;
 namespace AchieveAi.LmDotnetTools.Sandbox;
 
 /// <summary>
-/// Per-app git marketplaces (gateway ADR 0041, <c>/api/v1/apps/self/marketplaces</c>). An app registers a public
+/// Per-app git marketplaces (gateway ADR 0045, <c>/api/v1/apps/self/marketplaces</c>). An app registers a public
 /// git repository under an alias once; the gateway clones it and mounts it into the app's sandboxes at
 /// <c>/marketplaces/&lt;alias&gt;/</c> next to the operator's marketplaces. Creating a sandbox without
 /// <see cref="SandboxCreateRequest.Marketplaces"/> mounts the operator default set plus ALL of the app's

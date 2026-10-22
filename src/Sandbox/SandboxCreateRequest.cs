@@ -18,7 +18,7 @@ public sealed class SandboxCreateRequest
     /// Marketplace aliases to activate for this sandbox, defensively copied at construction. Empty
     /// means "omit the field" so the gateway applies its own default set, matching the gateway's
     /// distinction between "no marketplaces selected" (which would need an explicit empty array)
-    /// and "caller expressed no preference". Since gateway ADR 0041 that default is the operator set PLUS every
+    /// and "caller expressed no preference". Since gateway ADR 0045 that default is the operator set PLUS every
     /// git marketplace the app registered (<see cref="SandboxClient.RegisterAppMarketplaceAsync"/>).
     /// </summary>
     public IReadOnlyList<string> Marketplaces { get; }
@@ -67,6 +67,15 @@ public sealed class SandboxCreateRequest
     /// </summary>
     public string? Home { get; }
 
+    /// <summary>
+    /// The sandbox's skill-tier policy (gateway ADR 0041), sent as the create request's <c>skills</c> block.
+    /// <c>null</c> omits the field, so the request is byte-identical to one built before this property
+    /// existed and the gateway applies its own default (every admitted skill included). The resolved
+    /// policy comes back on <see cref="SandboxInfo.Skills"/>; a ref that does not resolve fails the create
+    /// with <see cref="SandboxErrorKind.SkillRejected"/>.
+    /// </summary>
+    public SandboxSkillsPolicy? Skills { get; }
+
     public SandboxCreateRequest(
         string workspace,
         IReadOnlyList<string>? marketplaces = null,
@@ -77,7 +86,8 @@ public sealed class SandboxCreateRequest
         IReadOnlyDictionary<string, string>? env = null,
         IReadOnlyList<SandboxPluginMount>? pluginMounts = null,
         string? image = null,
-        string? home = null
+        string? home = null,
+        SandboxSkillsPolicy? skills = null
     )
     {
         // Null is rejected but an EMPTY string is a valid workspace leaf (the gateway's root) — this
@@ -107,6 +117,7 @@ public sealed class SandboxCreateRequest
 
         Image = image;
         Home = home;
+        Skills = skills;
         Env = env is null
             ? new Dictionary<string, string>(StringComparer.Ordinal)
             : new Dictionary<string, string>(env, StringComparer.Ordinal);

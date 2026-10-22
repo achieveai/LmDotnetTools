@@ -181,4 +181,17 @@ public enum SandboxErrorKind
     /// route never means "that browser is gone". Retrying cannot help; configure a browser-enabled gateway.
     /// </summary>
     BrowserUnsupported,
+
+    /// <summary>
+    /// The gateway rejected a skill ref or a skill-tier request (gateway ADR 0041), from
+    /// <see cref="SandboxClient.PatchSkillTiersAsync"/>, <see cref="SandboxClient.GetSkillCatalogAsync"/> or a
+    /// create carrying <see cref="SandboxCreateRequest.Skills"/>. <see cref="SandboxException.ErrorCode"/> names
+    /// the reason: <c>skill_not_found</c> (a ref matches no admitted skill; <see cref="SandboxException.SkillRef"/>
+    /// is that ref), <c>skill_ambiguous</c> (a bare name matches several skills;
+    /// <see cref="SandboxException.SkillRef"/> is the ref and <see cref="SandboxException.SkillCandidates"/> the
+    /// qualified names to use instead), or <c>invalid_skills</c> (a bad tier, a malformed body, or one skill given
+    /// two tiers). The request is all-or-nothing, so nothing was applied, and retrying it unchanged fails the
+    /// same way.
+    /// </summary>
+    SkillRejected,
 }

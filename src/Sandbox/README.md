@@ -70,6 +70,11 @@ state and leased browsers need it. Per-app git marketplaces (below) are built ag
   `SandboxCommand.ExecutionTimeout` (1–120 s, default 30); the reserved operation ids `stream` and
   `capabilities` are refused client-side.
 
+Separately, per-agent [skill tiers](#skill-tiers-per-agent-gateway-adr-0041-v0117) (gateway ADR 0041)
+are synced to `origin/master` `5c4eeefc` (v0.1.17). Only that surface is synced, not the rest of
+v0.1.17; below v0.1.17 its routes do not exist. It adds the error kind `SkillRejected`
+(`skill_not_found`, `skill_ambiguous`, `invalid_skills`).
+
 ## What this release covers
 
 - **Lifecycle:** `CreateAsync`, `GetAsync`, `ListAsync`, `DeleteAsync` — explicit sandbox
@@ -442,12 +447,11 @@ Relay error codes: `browser_capacity` / `browser_launch_failed` / `browser_unrea
 `Unavailable` (capacity carries `RetryAfter`); `invalid_browser_id` / `invalid_cdp_path` /
 `unknown_browser_mcp` / `body_too_large` → `Protocol`; `cdp_upgrade_rejected` → `NotFound`.
 
-## Per-app git marketplaces (gateway ADR 0041)
+## Per-app git marketplaces (gateway ADR 0045)
 
 An app can register public git repositories as its own plugin marketplaces. The gateway clones each one
-and mounts it at `/marketplaces/<alias>/` next to the operator's marketplaces. Requires a gateway build
-containing commit `bac5a32` (not yet released; absent from v0.1.16, and numbered ADR 0040 on that
-commit's own branch) with `MARKETPLACE_STORE_PATH` set.
+and mounts it at `/marketplaces/<alias>/` next to the operator's marketplaces. Requires gateway v0.1.17
+or later (commit `bac5a32`; absent from v0.1.16) with `MARKETPLACE_STORE_PATH` set.
 
 - `RegisterAppMarketplaceAsync(alias, url, gitRef?)` — register, or re-point an existing alias (a different
   URL or ref replaces it). `gitRef` null means `latest` (follow the default branch); a tag, branch or commit
@@ -497,6 +501,40 @@ to the default agent, whose id is `""`.
 
 Only the gateway's `/mcp` endpoint reads the agent header. No REST call takes it, so the SDK has
 none to send.
+
+## Skill tiers per agent (gateway ADR 0041, v0.1.17)
+
+Synced to `SandboxedOstoolsMcpServer` `origin/master` `5c4eeefc` (v0.1.17) for this surface only:
+the create `skills` block, `GET` and `PATCH /api/v1/sandboxes/{id}/skills`. Nothing else new in v0.1.17
+is synced.
+
+Each agent sees every admitted skill in one of three tiers. `Included` skills are listed in that
+agent's `Skill` tool description. `Available` skills are not listed but load by exact name.
+`Unavailable` skills are refused. Whether the agent has loaded a skill is a separate flag.
+
+- **Create:** `new SandboxCreateRequest(..., skills: new SandboxSkillsPolicy(defaultTier, included,
+  unlistedHint))`. `DefaultTier` is `Included` or `Available`; `null` uses the gateway's default.
+  `Included` takes skill names (`plugin:skill`) or skill paths. `UnlistedHint`: `null` keeps the
+  gateway's trailer, `""` removes it. No policy sends no `skills` field, so old requests are unchanged.
+  `SandboxInfo.Skills` is the policy the gateway resolved (its `Included` holds skill paths).
+- **`GetSkillCatalogAsync(sessionId, agentId, tier, loaded)`:** one agent's catalog: marketplaces,
+  then plugins (name, version, description), then skills (name, path, description, tier, tier origin,
+  loaded, loaded at, notified, shadowed), plus workspace skills, the default tier and counts.
+  `tier` and `loaded` filter the rows; `Counts` always covers the whole catalog.
+- **`PatchSkillTiersAsync(sessionId, agentId, set, reset)`:** sets tiers for one agent only, by skill
+  name or path. All or nothing; loads are untouched. Returns the catalog with `ToolsListChanged`
+  true. The gateway sends no MCP `list_changed`, so re-run `tools/list` for that agent afterwards.
+- **Agent id:** `null` or `""` is the default agent (sent as no `agent_id` query). Any other id must
+  pass `SandboxAgentId.IsValid`. A catalog for a different agent than asked is `Protocol`.
+- **Errors:** `400 skill_not_found`, `skill_ambiguous` and `invalid_skills` are `SkillRejected`.
+  `ErrorCode` says which. `SkillRef` is the ref the gateway named; `SkillCandidates` lists the
+  qualified names an ambiguous ref could mean.
+- **Default tier tip:** `Available` keeps a newly discovered skill from changing an agent's
+  description: it loads by name at once but is listed only after a `PATCH` includes it.
+
+Live contract: `SandboxSkillTiersLiveContractTests` needs a gateway of v0.1.17 or later that serves at
+least one marketplace plugin with two skills. CI mounts `tests/Sandbox.Integration.Tests/Fixtures/marketplace`
+for this through `PLUGINS_DIRS` (see `.github/workflows/sandbox-contract.yml`).
 
 
 ## Errors
