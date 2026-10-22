@@ -145,6 +145,58 @@ public class RunLedgerRecoveryTests
         await agent.DisposeAsync();
     }
 
+    [Fact]
+    public async Task Reconcile_SkipsInputThisInstanceAccepted_ButStillSynthesizesPriorProcessOrphan()
+    {
+        // The agent pool starts RunAsync on a background task and hands the agent straight to the
+        // send path, so a new thread's first input can be durably accepted before startup
+        // reconciliation reads the accepted-input records. That input sits in this instance's own
+        // channel and is about to run; it is not a crash leftover and must not get a synthetic
+        // Interrupted row. An input the previous process accepted (seeded before this agent exists)
+        // is still an orphan, which is what keeps the fix from being "never synthesize".
+        var store = new InMemoryConversationStore();
+        const string threadId = "recovery-own-accept";
+        const string priorOrphanId = "prior-process-orphan";
+        const string ownInputId = "own-first-input";
+        await store.RecordAcceptedInputAsync(threadId, priorOrphanId, DateTimeOffset.UtcNow);
+
+        var agent = new RecoveryTestAgent(threadId, store: store, persistRunLedger: true);
+
+        // Accepted before RunAsync is even called: the pool's Task.Run has not been scheduled yet.
+        var receipt = await agent.TrySendAsync([new TextMessage { Text = "Hi", Role = Role.User }], ownInputId);
+        receipt.Should().NotBeNull();
+
+        using var cts = new CancellationTokenSource();
+        _ = agent.RunAsync(cts.Token);
+
+        var completed = await WaitUntilAsync(
+            async () =>
+                (await store.ListRunLedgerAsync(threadId)).Any(e =>
+                    e.InputIds.Contains(ownInputId) && e.Status == RunStatus.Completed
+                ),
+            TimeSpan.FromSeconds(5)
+        );
+        completed.Should().BeTrue("the input this instance accepted must run");
+
+        // Reconciliation finished before the loop drained anything, so these rows are final.
+        var entries = await store.ListRunLedgerAsync(threadId);
+        entries
+            .Where(e => e.InputIds.Contains(ownInputId))
+            .Should()
+            .ContainSingle("an input accepted by the running instance is not a restart orphan")
+            .Which.Status.Should()
+            .Be(RunStatus.Completed);
+        entries
+            .Where(e => e.InputIds.Contains(priorOrphanId))
+            .Should()
+            .ContainSingle("an input accepted by the previous process is still an orphan")
+            .Which.Status.Should()
+            .Be(RunStatus.Interrupted);
+
+        await cts.CancelAsync();
+        await agent.DisposeAsync();
+    }
+
     #endregion
 
     #region Once-per-instance idempotency
