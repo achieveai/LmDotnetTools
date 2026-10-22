@@ -3826,7 +3826,12 @@ public sealed class SubAgentManager : IAsyncDisposable
                     continue;
                 }
 
-                _ = registry.AddFunction(contract, handler, "ParentTools");
+                // The host may hand this child its own version of the tool; only a tool that passed the
+                // filter above is ever offered, so an override can replace an inherited tool, never add one.
+                var own = await OverrideInheritedToolAsync(agentId, contract, handler).ConfigureAwait(false);
+                _ = own is not null
+                    ? registry.AddProvider(own)
+                    : registry.AddFunction(contract, handler, "ParentTools");
                 inheritedToolNames.Add(contract.Name);
             }
 
@@ -4209,6 +4214,39 @@ public sealed class SubAgentManager : IAsyncDisposable
     {
         var trimmed = tool?.Trim();
         return trimmed is "*" or "*:*";
+    }
+
+    /// <summary>
+    /// The child's own version of one inherited tool from <see cref="SubAgentOptions.InheritedToolOverride"/>, or
+    /// null to inherit the parent's function. A host exception is logged and also yields null: a host fault
+    /// never fails a spawn. No caller token reaches a spawn, so the host's own timeout is just another failure.
+    /// </summary>
+    private async ValueTask<IFunctionProvider?> OverrideInheritedToolAsync(
+        string agentId,
+        FunctionContract contract,
+        ToolHandler handler
+    )
+    {
+        if (_options.InheritedToolOverride is not { } inheritedToolOverride)
+        {
+            return null;
+        }
+
+        try
+        {
+            return await inheritedToolOverride(new InheritedTool(agentId, contract, handler), CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Inherited tool override failed for sub-agent {AgentId} tool {ToolName}; it inherits the parent's tool",
+                agentId,
+                contract.Name
+            );
+            return null;
+        }
     }
 
     /// <summary>

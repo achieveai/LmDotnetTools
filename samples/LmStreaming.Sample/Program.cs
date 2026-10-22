@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Text;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
@@ -15,6 +16,7 @@ using AchieveAi.LmDotnetTools.GithubCopilotProvider.Reasoning;
 using AchieveAi.LmDotnetTools.LmAgentInfra;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Capabilities;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Context;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Lifecycle;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
@@ -987,6 +989,19 @@ try
                 return result;
             };
 
+        // Loaded-vs-available skill tiers, one per conversation: keyed by the conversation's tool scope,
+        // which the pool already carries across switches, and owned by it, so it is disposed with the
+        // pool entry. The mode store is read directly because the pool's AgentProfile has no Tiers.
+        var capabilityTiersByScope = new ConditionalWeakTable<ConversationToolScope, CapabilityTiers>();
+        var chatModeStore = sp.GetRequiredService<IChatModeStore>();
+        // Dev-only fault switches for the manual "PATCH fails" scenarios: in Development only,
+        // SkillTiers:DevFailPatch=true fails every tier PATCH before a request is sent, and
+        // SkillTiers:DevDelayPatchMs=N holds every tier PATCH N ms first (past the 10 s bounds = a timeout). Read
+        // per call, so an edit to appsettings.Development.json takes effect live. Absent (the default) or any
+        // other environment: no effect.
+        var tierConfiguration = sp.GetRequiredService<IConfiguration>();
+        var tierDevFaultsAllowed = sp.GetRequiredService<IHostEnvironment>().IsDevelopment();
+
         var pool = new MultiTurnAgentPool(
             AttachingToMirror(context =>
             {
@@ -1590,6 +1605,14 @@ try
                     _ = carriedOver.Add(scope);
                 }
 
+                if (!capabilityTiersByScope.TryGetValue(scope, out var capabilityTiers))
+                {
+                    capabilityTiers = scope.Own(
+                        new CapabilityTiers(threadId, conversationStore, loggerFactory.CreateLogger<CapabilityTiers>())
+                    );
+                    capabilityTiersByScope.Add(scope, capabilityTiers);
+                }
+
                 var taskManager = scope.Board;
                 _ = conversationRegistry.AddFunctionsFromObject(taskManager, providerName: "TaskManager");
 
@@ -1755,6 +1778,65 @@ try
                     );
                 }
 
+                // Skill tiers run BEFORE the sandbox connect below: that connect's tools/list goes out with
+                // the root's gateway agent id, so the Skill text it registers already lists only the root's
+                // loaded + pinned skills. A mode without `tiers`, without sandbox tools or without Skill
+                // leaves the instance inert: no gateway call, no agent id, no SearchSkill.
+                var tierSessionId =
+                    caps.SandboxTools
+                    && sandboxSession is not null
+                    && (caps.SandboxToolAllowList is null || caps.SandboxToolAllowList.Contains("Skill"))
+                        ? sandboxSession.SessionId
+                        : null;
+                var modeTiers = tierSessionId is null
+                    ? null
+                    : chatModeStore.GetModeAsync(mode.Id).GetAwaiter().GetResult()?.Tiers;
+                // The sandbox client this build connects below; a rotation lists Skill again through it.
+                McpClient? tierSkillClient = null;
+                capabilityTiers
+                    .ConfigureAsync(
+                        modeTiers is null ? null : ToTierSettings(modeTiers),
+                        modeTiers is null
+                            ? null
+                            : new SkillTierGateway(
+                                ct => sandboxRegistry.GetSkillCatalogAsync(tierSessionId!, agentId: null, ct),
+                                async (agentId, set, ct) =>
+                                {
+                                    if (
+                                        tierDevFaultsAllowed
+                                        && tierConfiguration.GetValue<bool>("SkillTiers:DevFailPatch")
+                                    )
+                                    {
+                                        throw new InvalidOperationException(
+                                            "Dev fault switch SkillTiers:DevFailPatch is on; the tier PATCH was not sent."
+                                        );
+                                    }
+
+                                    if (
+                                        tierDevFaultsAllowed
+                                        && tierConfiguration.GetValue<int>("SkillTiers:DevDelayPatchMs")
+                                            is > 0
+                                                and var delayMs
+                                    )
+                                    {
+                                        await Task.Delay(delayMs, ct).ConfigureAwait(false);
+                                    }
+
+                                    await sandboxRegistry
+                                        .PatchSkillTiersAsync(tierSessionId!, agentId, set, reset: true, ct)
+                                        .ConfigureAwait(false);
+                                },
+                                ct => ListSandboxToolAsync(tierSkillClient, CapabilityTiers.SkillToolName, ct)
+                            ),
+                        CancellationToken.None
+                    )
+                    .GetAwaiter()
+                    .GetResult();
+                if (capabilityTiers.IsActive)
+                {
+                    _ = filteredRegistry.AddProvider(capabilityTiers.RootProvider);
+                }
+
                 if (caps.SandboxTools)
                 {
                     // Expose the sandbox file/shell tools via the gateway's MCP endpoint, bound to this
@@ -1815,14 +1897,21 @@ try
                         existingClient: keptSandboxClient,
                         namedHandlerDecorator: cwdDecorator,
                         // Per-agent gateway state (ADR 0040): a sub-agent calling these inherited tools sends
-                        // its stable X-Sbx-Agent-ID (SandboxSubAgentIdentity); the primary sends none. No
-                        // cleanup when a sub-agent stops (product decision) — a future "retire sub-agent"
-                        // action is where SandboxClient.DeleteAgentAsync will be called.
-                        agentIdResolver: () => SandboxSubAgentIdentity.ForCurrentFlow(threadId)
+                        // its stable X-Sbx-Agent-ID (SandboxSubAgentIdentity); the primary sends none unless
+                        // the mode has skill tiers, when it sends its thread id. No cleanup when a sub-agent
+                        // stops (product decision) — a future "retire sub-agent" action is where
+                        // SandboxClient.DeleteAgentAsync will be called. A client kept across a switch keeps
+                        // the first build's closure; it reads the same per-conversation tiers instance.
+                        agentIdResolver: () =>
+                            SandboxSubAgentIdentity.ForCurrentFlow(threadId) ?? capabilityTiers.RootGatewayAgentId,
+                        // Tiered: the root's Skill is served by the tiers instance, which swaps its text when
+                        // a rotation changes what the root lists. Untiered: registered as before.
+                        contractSink: capabilityTiers.IsActive ? capabilityTiers.TryAttachRootSkill : null
                     );
 
                     if (sandboxClients.Count > 0)
                     {
+                        tierSkillClient = sandboxClients[0];
                         if (keptSandboxClient is not null && sandboxClients.Contains(keptSandboxClient))
                         {
                             _ = carriedOver.Add(keptSandboxClient);
@@ -2082,6 +2171,17 @@ try
                         {
                             TaskToolNames = ModeSubAgentRequiredTools.TaskToolNames,
                             TaskAssignmentProbe = name => HasOpenTaskAssignedTo(taskManager, name),
+                        };
+                    }
+
+                    // Skill tiers per sub-agent: a spawning child that inherits Skill/SearchSkill gets its own
+                    // (its own view, gateway id and Skill text). This conversation's tiers instance answers null
+                    // while inert, so an untiered child inherits exactly as before.
+                    if (subAgentOptions is not null)
+                    {
+                        subAgentOptions = subAgentOptions with
+                        {
+                            InheritedToolOverride = capabilityTiers.ForInheritedToolAsync,
                         };
                     }
 
@@ -2635,12 +2735,19 @@ try
                             collaboration: rootCollaboration,
                             // Null unless the Compaction section puts some route above Off (#721). The window
                             // comes from the same capacity resolver the context panel reads; spawned children
-                            // inherit this setup through SubAgentOptions.Compaction.
+                            // inherit this setup through SubAgentOptions.Compaction. The checkpoint hook rotates
+                            // skill tiers; this conversation's tiers instance answers false while inert.
                             compaction: CompactionHostSetup.Create(
                                 compactionOptions,
                                 capacityResolver,
                                 normalizedProviderId
-                            ),
+                            )
+                                is { } compactionSetup
+                                ? compactionSetup with
+                                {
+                                    OnCheckpointActivated = capabilityTiers.OnCheckpointActivatedAsync,
+                                }
+                                : null,
                             // Experimental: null when the ElapsedTimeNotice section is disabled, which leaves
                             // the turn loop exactly as before. ConversationsController.GetMessages hides the
                             // persisted notice rows from the browser on reload.
@@ -5762,6 +5869,10 @@ public partial class Program
     ///     Sandbox clients only: evaluated per request to stamp <c>X-Sbx-Agent-ID</c> (see
     ///     <see cref="SandboxAgentIdHandler"/>); null omits the handler entirely.
     /// </param>
+    /// <param name="contractSink">
+    ///     Offered each selected tool with its final (decorated) handler before registration; a tool it takes
+    ///     (returns true) is not added to <paramref name="registry"/>. Null registers every selected tool.
+    /// </param>
     private static List<McpClient> ConnectFilteredHttpMcpClient(
         FunctionRegistry registry,
         string name,
@@ -5774,7 +5885,8 @@ public partial class Program
         HttpMessageHandler? transportHandler = null,
         McpClient? existingClient = null,
         Func<FunctionContract, ToolHandler, ToolHandler>? namedHandlerDecorator = null,
-        Func<string?>? agentIdResolver = null
+        Func<string?>? agentIdResolver = null,
+        Func<FunctionContract, ToolHandler, bool>? contractSink = null
     )
     {
         var createdClients = new List<McpClient>();
@@ -5801,8 +5913,12 @@ public partial class Program
                     && handlers.TryGetValue(contract.Name, out var handler)
                 )
                 {
-                    var wrapped = namedHandlerDecorator?.Invoke(contract, handler) ?? handler;
-                    _ = registry.AddFunction(contract, handlerDecorator(wrapped), name);
+                    var wrapped = handlerDecorator(namedHandlerDecorator?.Invoke(contract, handler) ?? handler);
+                    // A sink that takes a tool serves it itself; everything else registers as always.
+                    if (contractSink?.Invoke(contract, wrapped) != true)
+                    {
+                        _ = registry.AddFunction(contract, wrapped, name);
+                    }
                 }
             }
 
@@ -5838,6 +5954,43 @@ public partial class Program
         }
 
         return createdClients;
+    }
+
+    /// <summary>
+    ///     Lists the sandbox MCP server's tools again through <paramref name="client"/> and returns
+    ///     <paramref name="toolName"/>'s contract, converted exactly as <see cref="ConnectFilteredHttpMcpClient"/>
+    ///     converts it at build time (so unchanged text gives identical bytes); null when the server lists no such tool.
+    /// </summary>
+    private static async Task<FunctionContract?> ListSandboxToolAsync(
+        McpClient? client,
+        string toolName,
+        CancellationToken ct
+    )
+    {
+        var connected =
+            client ?? throw new InvalidOperationException("This build has no sandbox MCP client to list tools with.");
+        var scratch = new FunctionRegistry();
+        _ = await scratch
+            .AddMcpClientsAsync(
+                new Dictionary<string, McpClient> { ["sandbox"] = connected },
+                "sandbox",
+                cancellationToken: ct,
+                omitServerPrefix: true
+            )
+            .ConfigureAwait(false);
+        return scratch.BuildContracts().FirstOrDefault(c => c.Name == toolName);
+    }
+
+    /// <summary>A mode's <c>tiers</c> block as <see cref="CapabilityTiers"/> settings; absent lists are empty.</summary>
+    private static TierSettings ToTierSettings(ModeTiers tiers)
+    {
+        var settings = new TierSettings(
+            tiers.Loaded ?? [],
+            tiers.Pinned ?? [],
+            tiers.SubAgent?.Loaded ?? [],
+            tiers.SubAgent?.Pinned ?? []
+        );
+        return tiers.Caps?.Skill is { } skillCap ? settings with { SkillCap = skillCap } : settings;
     }
 
     private static SandboxClient CreateBrowserGatewayClient(string gatewayUrl, SandboxCredential credential) =>

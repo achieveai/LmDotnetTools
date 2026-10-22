@@ -30,4 +30,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\LmAgentInfra\AchieveAi.LmDotnetTools.LmAgentInfra.csproj" />
   </ItemGroup>
+  <!-- Capability search eval set (corpus + labelled queries), read from the output directory. -->
+  <ItemGroup>
+    <None Include="Capabilities\SearchEval\*.json*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

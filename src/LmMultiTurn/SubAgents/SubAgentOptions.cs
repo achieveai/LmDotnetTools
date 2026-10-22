@@ -375,6 +375,18 @@ public record SubAgentOptions
     public Func<string, IFunctionProvider?>? ChildToolProviderFactory { get; init; }
 
     /// <summary>
+    /// Host hook that may give a spawning child its OWN version of a tool it is about to inherit. The manager
+    /// awaits it once per parent tool that passed the inheritance filter (template <c>EnabledTools</c>,
+    /// <c>add_tools</c>/<c>remove_tools</c>, never-inherited tools), so it can only replace what the child
+    /// would have inherited, never widen it. A non-null provider is added to the child's registry in place of
+    /// the plain inherited function; null inherits the parent's function exactly as before. An exception is
+    /// logged as a warning and also inherits the parent's function: a host fault never fails a spawn. The host
+    /// bounds its own work. Inherited verbatim through <see cref="ForChildLoop"/>. Null (default) = every
+    /// child inherits as before.
+    /// </summary>
+    public Func<InheritedTool, CancellationToken, ValueTask<IFunctionProvider?>>? InheritedToolOverride { get; init; }
+
+    /// <summary>
     /// The ordinal sequence behind <c>agent-1</c>, <c>agent-2</c>, … for the ROOT conversation (#705).
     /// Null at the root: the root's manager creates the allocator and hands it down through
     /// <see cref="ForChildLoop"/>, so every descendant numbers from the one sequence.
@@ -433,3 +445,12 @@ public sealed record SubAgentSpawnModelSelection(string? Model, int? ModelIntell
 /// authored label is shortened rather than failing the spawn.
 /// </summary>
 public sealed record SubAgentSpawnMetadata(string Role, string Description);
+
+/// <summary>
+/// One parent tool a spawning child is about to inherit, as <see cref="SubAgentOptions.InheritedToolOverride"/>
+/// sees it.
+/// </summary>
+/// <param name="AgentId">The child's agent id (<c>agent-N</c>).</param>
+/// <param name="Contract">The parent's contract the child would inherit.</param>
+/// <param name="Handler">The parent's handler the child would inherit.</param>
+public sealed record InheritedTool(string AgentId, FunctionContract Contract, ToolHandler Handler);

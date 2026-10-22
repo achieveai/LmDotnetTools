@@ -52,9 +52,13 @@ internal sealed record CompactionRuntimeHost
 
     /// <summary>
     ///     Estimated tokens of the tool definitions every request carries. The policy's estimate includes them;
-    ///     the tool list is static for the life of the loop.
+    ///     the tool list changes only at a reconfiguration or when <see cref="CompactionSetup.OnCheckpointActivated" />
+    ///     says it changed (see <see cref="RefreshToolSchemaTokens" />).
     /// </summary>
     public Func<long> ToolSchemaTokens { get; init; } = () => 0;
+
+    /// <summary>Re-estimates <see cref="ToolSchemaTokens" /> from the tools the next request will carry.</summary>
+    public Action RefreshToolSchemaTokens { get; init; } = () => { };
 
     /// <summary>Records the summary pass's usage under the compaction execution kind.</summary>
     public Action<UsageMessage, string, string?>? RecordSummaryUsage { get; init; }
@@ -2517,6 +2521,8 @@ internal sealed class CompactionRuntime
             )
             .ConfigureAwait(false);
 
+        await NotifyCheckpointActivatedAsync(rows, checkpoint.CheckpointId, result.RowSeq, ct).ConfigureAwait(false);
+
         return new CompactionOutcome(
             kind,
             fallback is not null
@@ -2535,6 +2541,65 @@ internal sealed class CompactionRuntime
             result.LatencyMs,
             trigger
         );
+    }
+
+    /// <summary>
+    ///     Tells the host about an activated checkpoint (<see cref="CompactionSetup.OnCheckpointActivated" />) from the
+    ///     rows this attempt already loaded, and re-estimates the tool definitions when the host says it changed them.
+    ///     A failing hook never fails the compaction: it is logged and the checkpoint stays applied.
+    /// </summary>
+    private async Task NotifyCheckpointActivatedAsync(
+        IReadOnlyList<SequencedMessage> rows,
+        string checkpointId,
+        long? checkpointSeq,
+        CancellationToken ct
+    )
+    {
+        if (_setup.OnCheckpointActivated is not { } hook)
+        {
+            return;
+        }
+
+        if (checkpointSeq is not { } seq)
+        {
+            _host.Logger.LogWarning(
+                "Checkpoint {CheckpointId} of thread {ThreadId} activated without a row sequence; the checkpoint hook is not called",
+                checkpointId,
+                _host.ThreadId
+            );
+            return;
+        }
+
+        var messages = rows.Where(r => !r.IsCheckpointRow).ToList();
+        var activation = new CheckpointActivation(
+            _host.ThreadId,
+            _host.AgentId,
+            checkpointId,
+            seq,
+            messages.Count == 0 ? 0 : messages.Max(r => r.Seq),
+            [.. messages.SelectMany(r => ToolRows.CallsOf(r.Message).Select(call => (r.Seq, call)))]
+        );
+
+        bool changed;
+        try
+        {
+            changed = await hook(activation, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            _host.Logger.LogWarning(
+                ex,
+                "Checkpoint hook failed for thread {ThreadId} checkpoint {CheckpointId}; the checkpoint stays applied",
+                _host.ThreadId,
+                checkpointId
+            );
+            return;
+        }
+
+        if (changed)
+        {
+            _host.RefreshToolSchemaTokens();
+        }
     }
 
     /// <summary>

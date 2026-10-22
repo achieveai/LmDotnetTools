@@ -126,6 +126,15 @@ public record ChatMode
     public IReadOnlyDictionary<string, string>? Env { get; init; }
 
     /// <summary>
+    /// Loaded-vs-available skill tiers for conversations in this mode: which skills each agent's
+    /// <c>Skill</c> tool lists up front, with every other admitted skill found through
+    /// <c>SearchSkill</c>. <see langword="null"/> (every mode predating this field) turns the feature off
+    /// and keeps today's behaviour; it is not written, so an untiered mode's JSON is unchanged.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ModeTiers? Tiers { get; init; }
+
+    /// <summary>
     /// Whether this mode is system-defined (read-only) or user-created.
     /// </summary>
     public bool IsSystemDefined { get; init; }
@@ -185,6 +194,7 @@ public record ChatModeCreateUpdate
     private IReadOnlyDictionary<string, int>? _subAgentModelIntelligenceByType;
     private int? _defaultSubAgentModelIntelligence;
     private IReadOnlyDictionary<string, string>? _env;
+    private ModeTiers? _tiers;
 
     /// <summary>
     /// Display name of the mode.
@@ -377,6 +387,60 @@ public record ChatModeCreateUpdate
 
     [JsonIgnore]
     internal bool EnvIsSet { get; private init; }
+
+    /// <summary>Skill tiers. See <see cref="ChatMode.Tiers"/>. Omission preserves the stored tiers on
+    /// update; explicit JSON <c>null</c> clears them (feature off).</summary>
+    public ModeTiers? Tiers
+    {
+        get => _tiers;
+        init
+        {
+            _tiers = value;
+            TiersIsSet = true;
+        }
+    }
+
+    [JsonIgnore]
+    internal bool TiersIsSet { get; private init; }
+}
+
+/// <summary>
+/// A mode's skill tiers (<see cref="ChatMode.Tiers"/>). Each entry is a selector
+/// <c>&lt;kind&gt;:&lt;ref&gt;</c>, split at the first colon: <c>skill:&lt;gateway name or path&gt;</c>
+/// (for example <c>skill:debugging:systematic-debugging</c>; a bare skill name only when it is unique)
+/// or <c>plugin:&lt;marketplace&gt;/&lt;plugin&gt;</c> (all of that plugin's skills). A selector that
+/// matches nothing or more than one skill is logged and ignored.
+/// </summary>
+public sealed record ModeTiers
+{
+    /// <summary>Skills the root agent starts with listed in its <c>Skill</c> tool. Null = none.</summary>
+    public IReadOnlyList<string>? Loaded { get; init; }
+
+    /// <summary>Skills the root agent always has listed. Null = none.</summary>
+    public IReadOnlyList<string>? Pinned { get; init; }
+
+    /// <summary>The same two lists for sub-agents. Null = none.</summary>
+    public ModeSubAgentTiers? SubAgent { get; init; }
+
+    /// <summary>Per-kind limits. Null = defaults.</summary>
+    public ModeTierCaps? Caps { get; init; }
+}
+
+/// <summary>Sub-agent skill tiers. See <see cref="ModeTiers"/>.</summary>
+public sealed record ModeSubAgentTiers
+{
+    /// <summary>Skills each sub-agent starts with listed. Null = none.</summary>
+    public IReadOnlyList<string>? Loaded { get; init; }
+
+    /// <summary>Skills each sub-agent always has listed. Null = none.</summary>
+    public IReadOnlyList<string>? Pinned { get; init; }
+}
+
+/// <summary>Per-kind limits on non-pinned loaded items. See <see cref="ModeTiers"/>.</summary>
+public sealed record ModeTierCaps
+{
+    /// <summary>Most non-pinned skills kept loaded per agent. Null = the default.</summary>
+    public int? Skill { get; init; }
 }
 
 /// <summary>

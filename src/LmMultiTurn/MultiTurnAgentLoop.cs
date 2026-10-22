@@ -252,6 +252,10 @@ public sealed class MultiTurnAgentLoop
     /// <summary>Estimated tokens of the tool definitions every request carries (compaction's fixed prefix).</summary>
     internal long ToolSchemaTokens { get; private set; }
 
+    // The contracts the current registry gives a request (rebuilt per request by the tool middleware), kept so a
+    // checkpoint hook that changed a tool can have ToolSchemaTokens re-estimated. Replaced with the stack.
+    private Func<IEnumerable<FunctionContract>> _toolContracts = () => [];
+
     internal bool HasPendingLoopWork => PendingInputCount > 0 || !_delayed.IsEmpty || _delayed.HasPendingCauses;
 
     // Guards _wakeScheduled so at most one wake sentinel is ever outstanding on the input channel.
@@ -612,6 +616,8 @@ public sealed class MultiTurnAgentLoop
                     PublishLive = PublishToAllAsync,
                     RecordSummaryUsage = RecordCompactionUsage,
                     ToolSchemaTokens = () => ToolSchemaTokens,
+                    RefreshToolSchemaTokens = () =>
+                        ToolSchemaTokens = CompactionTokenEstimate.EstimateToolSchemas(_toolContracts()),
                     Lifecycle = Lifecycle,
                     Logger = Logger,
                 },
@@ -740,6 +746,7 @@ public sealed class MultiTurnAgentLoop
         _toolHandlers = stack.ToolHandlers;
         _functionsRequiringArgs = stack.FunctionsRequiringArgs;
         ToolSchemaTokens = stack.ToolSchemaTokens;
+        _toolContracts = stack.ToolContracts;
     }
 
     /// <summary>The provider-dependent parts a loop serves a turn with, built from one registry and one provider.</summary>
@@ -747,7 +754,8 @@ public sealed class MultiTurnAgentLoop
         IStreamingAgent Agent,
         IDictionary<string, ToolHandler> ToolHandlers,
         HashSet<string> FunctionsRequiringArgs,
-        long ToolSchemaTokens
+        long ToolSchemaTokens,
+        Func<IEnumerable<FunctionContract>> ToolContracts
     );
 
     /// <summary>
@@ -797,7 +805,8 @@ public sealed class MultiTurnAgentLoop
             agent,
             finalHandlers,
             functionsRequiringArgs,
-            CompactionTokenEstimate.EstimateToolSchemas(registeredContracts)
+            CompactionTokenEstimate.EstimateToolSchemas(registeredContracts),
+            functionRegistry.BuildContracts
         );
     }
 
@@ -1016,6 +1025,7 @@ public sealed class MultiTurnAgentLoop
         _toolHandlers = stack.ToolHandlers;
         _functionsRequiringArgs = stack.FunctionsRequiringArgs;
         ToolSchemaTokens = stack.ToolSchemaTokens;
+        _toolContracts = stack.ToolContracts;
         SubAgentTools = subAgentTools;
 
         // Ownership moves with the commit, and only with it: a refusal or a build failure above never
