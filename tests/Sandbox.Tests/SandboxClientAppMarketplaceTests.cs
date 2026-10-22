@@ -129,6 +129,9 @@ public sealed class SandboxClientAppMarketplaceTests
     [InlineData(500, "registry_failed", SandboxErrorKind.Unavailable)]
     [InlineData(400, "ref_not_found", SandboxErrorKind.Protocol)]
     [InlineData(400, "host_not_allowed", SandboxErrorKind.Protocol)]
+    [InlineData(400, "invalid_app_id", SandboxErrorKind.Protocol)]
+    [InlineData(422, "unsafe_checkout", SandboxErrorKind.Protocol)]
+    [InlineData(422, "no_default_branch", SandboxErrorKind.Protocol)]
     public async Task SyncAppMarketplaceAsync_GatewayErrorCode_ClassifiesByCode(
         int status,
         string errorCode,

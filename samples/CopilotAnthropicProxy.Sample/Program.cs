@@ -29,9 +29,9 @@ using ILogger = Microsoft.Extensions.Logging.ILogger;
 // The servable catalog is DISCOVERED at startup, never hard-coded — see
 // ProxyModelResolver.ParseServableModels. A model is kept when it advertises at
 // least one of /v1/messages, /chat/completions or /responses AND its vendor is not
-// denied (Google, Microsoft). Entries advertising no endpoints at all are dropped,
-// which is where text-embedding-* lives, so an embedding model can never surface as
-// a chat model. The default is the highest-version Claude opus among the
+// denied (Google, Microsoft) AND it is not a mai-code-* router under any vendor.
+// Entries advertising no endpoints at all are dropped, which is where
+// text-embedding-* lives, so an embedding model can never surface as a chat model. The default is the highest-version Claude opus among the
 // Messages-capable ids; it catches only requests naming a model this account does
 // not have, and then only after family mapping (see ModelFamilies).
 //
@@ -172,7 +172,7 @@ catch (Exception ex) when (ex is InvalidOperationException or OperationCanceledE
 
 // 2) Resolve the outbound model catalog (env wins and pins a single model; else discover every
 //    servable Copilot model — any of /v1/messages, /chat/completions, /responses, minus the vendor
-//    denylist — and pick the highest-version `opus` Claude id as the default; else fail fast).
+//    and mai-code-* denylists — and pick the highest-version `opus` Claude id as the default; else fail fast).
 ProxyModelCatalog catalog;
 try
 {
@@ -706,16 +706,28 @@ public static class ProxyModelResolver
     private static readonly string[] ExcludedVendors = ["Google", "Microsoft"];
 
     /// <summary>
+    ///     Model-id families this proxy refuses whatever their vendor. Copilot also lists <c>mai-code-*</c>
+    ///     routers under <c>"Experimental"</c> (<c>mai-code-2-flash</c>, 2026-10-19), which the vendor veto
+    ///     misses; serving one answers every request with an upstream 500. The vendor cannot widen to
+    ///     <c>"Experimental"</c>: real chat models such as <c>gpt-5.6-sol-fast</c> share it.
+    /// </summary>
+    private static readonly string[] ExcludedModelPrefixes = ["mai-code-"];
+
+    private static bool IsExcludedModelId(string id) =>
+        ExcludedModelPrefixes.Any(p => id.StartsWith(p, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
     ///     Parses a Copilot <c>/models</c> response into the models this proxy will serve, preserving
     ///     upstream order.
     ///
     ///     A model is kept when it advertises at least one endpoint in <see cref="ReachableEndpoints"/>
-    ///     and its vendor is not in <see cref="ExcludedVendors"/>. Entries advertising NO endpoints are
+    ///     its vendor is not in <see cref="ExcludedVendors"/> and its id is not in <see cref="ExcludedModelPrefixes"/>. Entries advertising NO endpoints are
     ///     dropped — that set includes <c>text-embedding-*</c>, which must never surface as a chat model.
     ///
     ///     The no-metadata fallback is deliberately per RESPONSE, not per entry: only when NOT ONE entry
     ///     carries <c>supported_endpoints</c> do we conclude the response uses an older shape and keep
-    ///     every id. Otherwise a partially-annotated response would resurrect the embedding models.
+    ///     every id the prefix veto allows. Otherwise a partially-annotated response would resurrect the
+    ///     embedding models.
     /// </summary>
     public static IReadOnlyList<ProxyModelInfo> ParseServableModels(string json)
     {
@@ -724,7 +736,13 @@ public static class ProxyModelResolver
 
         if (!entries.Any(CopilotModelsResponse.HasSupportedEndpoints))
         {
-            return [.. ParseModelIds(json).Select(id => new ProxyModelInfo(id, string.Empty, []))];
+            // The id veto needs no metadata, so it holds for the older shape too.
+            return
+            [
+                .. ParseModelIds(json)
+                    .Where(id => !IsExcludedModelId(id))
+                    .Select(id => new ProxyModelInfo(id, string.Empty, [])),
+            ];
         }
 
         var models = new List<ProxyModelInfo>();
@@ -737,7 +755,7 @@ public static class ProxyModelResolver
             }
 
             var vendor = CopilotModelsResponse.GetString(item, "vendor") ?? string.Empty;
-            if (ExcludedVendors.Contains(vendor, StringComparer.OrdinalIgnoreCase))
+            if (ExcludedVendors.Contains(vendor, StringComparer.OrdinalIgnoreCase) || IsExcludedModelId(id))
             {
                 continue;
             }

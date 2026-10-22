@@ -23,7 +23,7 @@ public class FileWorkspaceStoreTests
     }
 
     [Fact]
-    public async Task CreateAsync_ImageAndHome_PersistAndReachTheSandboxWorkspaceRef()
+    public async Task CreateAsync_ImageAndWorkingDir_PersistAndReachTheSandboxWorkspaceRef()
     {
         var dir = NewTempDir();
         var created = await new FileWorkspaceStore(dir).CreateAsync(
@@ -31,7 +31,7 @@ public class FileWorkspaceStoreTests
             {
                 Name = "Imaged",
                 Image = " debian:bookworm-slim ",
-                Home = "  ",
+                WorkingDir = "  ",
             }
         );
 
@@ -40,14 +40,35 @@ public class FileWorkspaceStoreTests
         var reference = global::Program.BuildWorkspaceRef(created.Id, reloaded);
 
         reloaded!.Image.Should().Be("debian:bookworm-slim");
-        reloaded.Home.Should().BeNull("a blank home means the workspace root");
+        reloaded.WorkingDir.Should().BeNull("a blank working directory means none");
         reference.Image.Should().Be("debian:bookworm-slim");
-        reference.Home.Should().BeNull();
+        reference.WorkingDir.Should().BeNull();
 
-        var homed = await new FileWorkspaceStore(dir).CreateAsync(
-            new WorkspaceCreate { Name = "Homed", Home = "wt/issue-1" }
+        var scoped = await new FileWorkspaceStore(dir).CreateAsync(
+            new WorkspaceCreate { Name = "Scoped", WorkingDir = "agents/main" }
         );
-        global::Program.BuildWorkspaceRef(homed.Id, homed).Home.Should().Be("wt/issue-1");
+        var scopedReloaded = await new FileWorkspaceStore(dir).GetAsync(scoped.Id);
+        global::Program.BuildWorkspaceRef(scoped.Id, scopedReloaded).WorkingDir.Should().Be("agents/main");
+        (await File.ReadAllTextAsync(Path.Combine(dir, "workspaces.json")))
+            .Should()
+            .NotContain("\"home\"", "the legacy key is read but never written back");
+    }
+
+    [Fact]
+    public async Task GetAsync_WorkspaceSavedUnderTheLegacyHomeKey_KeepsItsWorkingDir()
+    {
+        // A workspaces.json written before the gateway renamed "home" to "working directory".
+        var dir = NewTempDir();
+        _ = Directory.CreateDirectory(dir);
+        await File.WriteAllTextAsync(
+            Path.Combine(dir, "workspaces.json"),
+            """[{"id":"w-1","name":"Old","directoryRelPath":"old","marketplaces":[],"home":"wt/issue-1"}]"""
+        );
+
+        var reloaded = await new FileWorkspaceStore(dir).GetAsync("w-1");
+
+        reloaded!.WorkingDir.Should().Be("wt/issue-1");
+        global::Program.BuildWorkspaceRef("w-1", reloaded).WorkingDir.Should().Be("wt/issue-1");
     }
 
     [Fact]

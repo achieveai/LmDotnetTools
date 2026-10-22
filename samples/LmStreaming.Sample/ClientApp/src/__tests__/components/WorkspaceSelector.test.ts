@@ -201,6 +201,26 @@ describe('WorkspaceSelector', () => {
     });
   });
 
+  it('sends a typed working directory, trimmed, in the create-workspace payload', async () => {
+    const wrapper = mountSelector();
+    await openDropdown(wrapper);
+    await wrapper.get('[data-testid="workspace-create-open"]').trigger('click');
+    await nextTick();
+
+    await wrapper.get('[data-testid="workspace-create-name"]').setValue('Demo Workspace');
+    await wrapper.get('[data-testid="workspace-create-working-dir"]').setValue('  src/app  ');
+    await nextTick();
+    await wrapper.get('[data-testid="workspace-create-form"]').trigger('submit');
+    await nextTick();
+
+    expect(wrapper.emitted('create-workspace')![0][0]).toEqual({
+      name: 'Demo Workspace',
+      directoryRelPath: 'demo-workspace',
+      marketplaces: [],
+      workingDir: 'src/app',
+    });
+  });
+
   it('renders gateway-sourced marketplaces and emits the selected alias on create', async () => {
     const wrapper = mountSelector();
     await openDropdown(wrapper);

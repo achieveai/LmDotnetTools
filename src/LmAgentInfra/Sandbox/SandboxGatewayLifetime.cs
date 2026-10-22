@@ -336,6 +336,21 @@ public sealed class SandboxGatewayLifetime : IHostedService, IAsyncDisposable
             psi.Environment["PLUGINS_BASE_PATH"] = _options.PluginsBasePath;
         }
 
+        // Absolute, because the gateway's working directory is its own exe folder, not ours.
+        if (!string.IsNullOrWhiteSpace(_options.MarketplaceStorePath))
+        {
+            psi.Environment["MARKETPLACE_STORE_PATH"] = Path.GetFullPath(
+                _options.MarketplaceStorePath,
+                AppContext.BaseDirectory
+            );
+        }
+
+        // Passed verbatim: the gateway itself refuses a relative or sandbox-writable interpreter.
+        if (!string.IsNullOrWhiteSpace(_options.LocalSandboxPython))
+        {
+            psi.Environment["LOCAL_SANDBOX_PYTHON"] = _options.LocalSandboxPython;
+        }
+
         // Egress proxy: when configured, tell the gateway where the proxy listens (it injects this as
         // HTTP(S)_PROXY into sandboxes) and where the MITM CA lives (exported to sandboxes as
         // CURL_CA_BUNDLE/SSL_CERT_FILE so their HTTPS clients trust the proxy). Set explicitly so the

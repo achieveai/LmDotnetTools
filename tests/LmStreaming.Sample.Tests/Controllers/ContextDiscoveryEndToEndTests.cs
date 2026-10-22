@@ -292,11 +292,14 @@ public sealed class ContextDiscoveryEndToEndTests
         {
             var controller = new ContextDiscoveryController(
                 SessionSecretStore,
-                Registry,
-                Loader,
-                Injector,
-                Diagnostics,
-                new AgentOutputTokenPolicy(new AgentOutputTokenOptions()),
+                new ContextDiscoveryBatchHandler(
+                    Registry,
+                    Loader,
+                    Injector,
+                    Diagnostics,
+                    new AgentOutputTokenPolicy(new AgentOutputTokenOptions()),
+                    NullLogger<ContextDiscoveryBatchHandler>.Instance
+                ),
                 NullLogger<ContextDiscoveryController>.Instance
             );
 

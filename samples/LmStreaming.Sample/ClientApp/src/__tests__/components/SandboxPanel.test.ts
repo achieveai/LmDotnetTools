@@ -23,7 +23,7 @@ function infoFor(thread: string): SandboxPanelInfo {
   return {
     workspaceId: `ws-${thread}`,
     gatewayWorkspace: `gw-${thread}`,
-    session: { sessionId: `s-${thread}`, image: null, imageDigest: null, imageWarnings: [], home: null },
+    session: { sessionId: `s-${thread}`, image: null, imageDigest: null, imageWarnings: [], workingDir: null },
   };
 }
 

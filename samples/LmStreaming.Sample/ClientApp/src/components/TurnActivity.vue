@@ -79,6 +79,8 @@ const summary = computed(() => {
     switch (notification.notification.notifyKind) {
       case 'subagent-completion':
         return 'Sub-agent completed';
+      case 'background-task':
+        return 'Background task ended';
       case 'compaction':
         return 'Context compacted';
       case 'context-discovery':
