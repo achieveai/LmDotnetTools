@@ -56,10 +56,10 @@ public sealed class SandboxSkillTiersLiveContractTests
         try
         {
             var sessionId = info.SessionId;
-            info.Skills.Should().NotBeNull("a v0.1.17 gateway echoes the resolved skills policy on create");
-            info.Skills!.DefaultTier.Should().Be(SandboxSkillTier.Available);
+            info.SkillsPolicy.Should().NotBeNull("a v0.1.17 gateway echoes the resolved skills policy on create");
+            info.SkillsPolicy!.DefaultTier.Should().Be(SandboxSkillTier.Available);
 
-            var root = await client.GetSkillCatalogAsync(sessionId, agentId: "");
+            var root = await client.GetSkillsAsync(sessionId, agentId: "");
             root.AgentId.Should().BeEmpty();
             root.SessionId.Should().Be(sessionId);
             root.DefaultTier.Should().Be(SandboxSkillTier.Available);
@@ -70,22 +70,22 @@ public sealed class SandboxSkillTiersLiveContractTests
             Row(root, other).Tier.Should().Be(SandboxSkillTier.Available);
             Row(root, other).TierOrigin.Should().Be(SandboxSkillTierOrigin.Default);
             // The echo reports resolved keys (the skill directory), not the name the request sent.
-            info.Skills.Included.Should().Equal(rootIncluded.Path);
+            info.SkillsPolicy.Included.Should().Equal(rootIncluded.Path);
             var pluginNode = root
                 .Marketplaces.Single(m => m.Alias == alias)
                 .Plugins.Single(p => p.Skills.Any(s => s.Name == included));
             pluginNode.Name.Should().Be(plugin.Name);
             pluginNode.Description.Should().Be(plugin.Description);
 
-            var child = await client.GetSkillCatalogAsync(sessionId, ChildAgent);
+            var child = await client.GetSkillsAsync(sessionId, ChildAgent);
             child.AgentId.Should().Be(ChildAgent);
             Row(child, included).Tier.Should().Be(SandboxSkillTier.Included);
             Row(child, other).Tier.Should().Be(SandboxSkillTier.Available);
 
-            var patched = await client.PatchSkillTiersAsync(
+            var patched = await client.UpdateSkillTiersAsync(
                 sessionId,
-                ChildAgent,
-                new Dictionary<string, SandboxSkillTier> { [other] = SandboxSkillTier.Included }
+                new Dictionary<string, SandboxSkillTier> { [other] = SandboxSkillTier.Included },
+                agentId: ChildAgent
             );
             patched.ToolsListChanged.Should().BeTrue();
             patched.AgentId.Should().Be(ChildAgent);
@@ -93,28 +93,27 @@ public sealed class SandboxSkillTiersLiveContractTests
             Row(patched, other).TierOrigin.Should().Be(SandboxSkillTierOrigin.Override);
             patched.Counts.Included.Should().Be(child.Counts.Included + 1);
 
-            var childIncluded = await client.GetSkillCatalogAsync(sessionId, ChildAgent, SandboxSkillTier.Included);
+            var childIncluded = await client.GetSkillsAsync(sessionId, ChildAgent, SandboxSkillTier.Included);
             Skills(childIncluded).Select(s => s.Name).Should().Contain([included, other]);
             Skills(childIncluded).Should().OnlyContain(s => s.Tier == SandboxSkillTier.Included);
 
-            var rootAfter = await client.GetSkillCatalogAsync(sessionId, agentId: null);
+            var rootAfter = await client.GetSkillsAsync(sessionId, agentId: null);
             Row(rootAfter, other).Tier.Should().Be(SandboxSkillTier.Available, "a PATCH changes only its own agent");
             Row(rootAfter, other).TierOrigin.Should().Be(SandboxSkillTierOrigin.Default);
             rootAfter.Counts.Should().Be(root.Counts);
 
             var rejected = await Assert.ThrowsAsync<SandboxException>(() =>
-                client.PatchSkillTiersAsync(
+                client.UpdateSkillTiersAsync(
                     sessionId,
-                    ChildAgent,
                     new Dictionary<string, SandboxSkillTier>
                     {
                         ["no-such-plugin:no-such-skill"] = SandboxSkillTier.Included,
-                    }
+                    },
+                    agentId: ChildAgent
                 )
             );
-            rejected.Kind.Should().Be(SandboxErrorKind.SkillRejected);
+            rejected.Kind.Should().Be(SandboxErrorKind.Protocol);
             rejected.ErrorCode.Should().Be("skill_not_found");
-            rejected.SkillRef.Should().Be("no-such-plugin:no-such-skill");
             rejected.StatusCode.Should().Be(400);
         }
         finally

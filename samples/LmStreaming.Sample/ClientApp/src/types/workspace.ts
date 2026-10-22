@@ -59,8 +59,11 @@ export interface Workspace {
   env: Record<string, string>;
   /** Client image ref the workspace's sandboxes are created from; `null`/absent = gateway default. */
   image?: string | null;
-  /** Workspace-relative home of the workspace's sandboxes; `null`/absent = the workspace root. */
-  home?: string | null;
+  /**
+   * Workspace-relative working directory of the workspace's sandboxes; `null`/absent = none. When set, agents
+   * can write only there: the rest of the workspace is read-only for them (gateway ADR 0044).
+   */
+  workingDir?: string | null;
 }
 
 /**
@@ -121,8 +124,8 @@ export interface WorkspaceCreate {
   env?: Record<string, string>;
   /** Client image ref (create only). Omit for the gateway default. */
   image?: string;
-  /** Workspace-relative home directory (create only). Omit for the workspace root. */
-  home?: string;
+  /** Workspace-relative working directory (create only). Omit for none. */
+  workingDir?: string;
 }
 
 /**

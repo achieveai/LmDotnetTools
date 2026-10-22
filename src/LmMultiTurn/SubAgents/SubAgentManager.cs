@@ -3899,12 +3899,12 @@ public sealed class SubAgentManager : IAsyncDisposable
                 registry,
                 threadId: ChildThreadId(agentId),
                 // Explicit tool-control overload: a child gets both browser-hosted client tools unless
-                // the host opted the question tool out (unattended runs), but this overload is used
+                // the host opted them out (unattended or headless runs), but this overload is used
                 // regardless because the back-compat one has no descendantQuestionSink parameter — the
                 // child's questions must route to this manager's sink rather than the child's own
                 // persist-and-publish path.
                 includeAskUserQuestionTool: _options.IncludeAskUserQuestionTool,
-                includeNotifyClientTool: true,
+                includeNotifyClientTool: _options.IncludeNotifyClientTool,
                 systemPrompt: template.SystemPrompt,
                 defaultOptions: defaultOptions,
                 maxTurnsPerRun: template.MaxTurnsPerRun,

@@ -10,13 +10,20 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 /// <param name="CreatedAt">When the gateway first saw a tool call under this id on the sandbox.</param>
 /// <param name="LastUsedAt">The agent's most recent tool call (durable rows are touched on a throttle).</param>
 /// <param name="OpenTasks">Background tasks this agent spawned that are still running on the gateway process.</param>
-/// <param name="LoadedSkills">Skills this agent currently has loaded via the <c>Skill</c> tool.</param>
+/// <param name="LoadedSkills">
+/// Skills this agent currently has loaded via the <c>Skill</c> tool. Loads persist across gateway restarts (ADR 0041).
+/// </param>
+/// <param name="IncludedSkills">
+/// How many skills the agent's <c>Skill</c> description lists (ADR 0041), or <c>null</c> from a gateway that
+/// predates skill tiers.
+/// </param>
 public sealed record SandboxAgentInfo(
     string AgentId,
     DateTimeOffset CreatedAt,
     DateTimeOffset LastUsedAt,
     int OpenTasks,
-    int LoadedSkills
+    int LoadedSkills,
+    int? IncludedSkills = null
 )
 {
     /// <summary>True for the default agent — the caller that sends no agent id.</summary>

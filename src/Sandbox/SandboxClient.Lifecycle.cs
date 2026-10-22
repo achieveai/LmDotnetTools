@@ -18,7 +18,7 @@ public sealed partial class SandboxClient
     /// (<see cref="SandboxErrorKind.Conflict"/>) or was purged (<see cref="SandboxErrorKind.WorkspacePurged"/>);
     /// an image pull or workspace restore failed (<see cref="SandboxErrorKind.Unavailable"/>); or the gateway
     /// returned an unexpected response (<see cref="SandboxErrorKind.Protocol"/>), including a create that
-    /// did not acknowledge the requested <see cref="SandboxCreateRequest.Home"/> exactly (that sandbox is
+    /// did not acknowledge the requested <see cref="SandboxCreateRequest.WorkingDir"/> exactly (that sandbox is
     /// deleted before the exception is thrown).
     /// <see cref="SandboxException.ErrorCode"/> names the exact reason; a <c>422 image_unsupported</c>
     /// also carries <see cref="SandboxException.ImageReport"/>.
@@ -40,10 +40,11 @@ public sealed partial class SandboxClient
 
         var payload = await ReadSandboxResponseOrThrowAsync(response, "sandbox creation", ct).ConfigureAwait(false);
         var info = ToSandboxInfo(payload, "sandbox creation", (int)response.StatusCode);
-        if (request.Home is { } home)
+        if (request.WorkingDir is { } workingDir)
         {
-            // Before seeding the mount cache: a sandbox whose home was not honored is deleted, not used.
-            await RequireAcknowledgedHomeAsync(info, home, (int)response.StatusCode, ct).ConfigureAwait(false);
+            // Before seeding the mount cache: a sandbox whose working directory was not honored is deleted, not used.
+            await RequireAcknowledgedWorkingDirAsync(info, workingDir, (int)response.StatusCode, ct)
+                .ConfigureAwait(false);
         }
 
         SeedWorkspaceMountId(info);
@@ -187,8 +188,21 @@ public sealed partial class SandboxClient
                 ? [.. request.PluginMounts.Select(mount => new PluginMountDto(mount.Path, mount.Name, mount.Origin))]
                 : null,
             Image: request.Image,
-            Home: request.Home,
-            Skills: request.Skills is { } skills ? ToSkillsPolicyDto(skills) : null
+            WorkingDir: request.WorkingDir,
+            Properties: request.Properties.Count > 0 ? request.Properties : null,
+            Webhook: request.Webhook is { } webhook
+                ? new SandboxWebhookDto(webhook.Url, webhook.AuthHeader, webhook.Events)
+                : null,
+            Skills: request.Skills is { } skills
+                ? new SkillsPolicyDto(
+                    skills.DefaultTier is { } tier ? ToWireTier(tier) : null,
+                    // Empty is omitted rather than sent as [], which the gateway treats the same.
+                    skills.Included.Count > 0
+                        ? [.. skills.Included]
+                        : null,
+                    skills.UnlistedHint
+                )
+                : null
         );
 
     private static PluginRefDto ToPluginRefDto(SandboxPluginRef pluginRef) =>
@@ -230,9 +244,90 @@ public sealed partial class SandboxClient
             dto.Image,
             dto.ImageDigest,
             dto.ImageReport is null ? null : ToImageReportOrThrow(dto.ImageReport, operation, statusCode),
-            dto.Volumes?.Workspace?.Home,
-            dto.Skills is null ? null : ToSkillsPolicy(dto.Skills, operation, statusCode)
+            dto.Volumes?.Workspace?.WorkingDir,
+            dto.Properties,
+            dto.Partition is null
+                ? null
+                : SelectNonNullOrThrow(dto.Partition, static key => key, $"the partition of {operation}", statusCode),
+            ToWebhookInfo(dto.Webhook, operation, statusCode),
+            ToSkillsPolicy(dto.Skills, operation, statusCode)
         );
+
+    /// <summary>Maps the GET <c>webhook</c> summary, rejecting one without a URL or flag as <see cref="SandboxErrorKind.Protocol"/>.</summary>
+    private static SandboxWebhookInfo? ToWebhookInfo(WebhookSummaryDto? dto, string operation, int statusCode)
+    {
+        if (dto is null)
+        {
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(dto.Url) || dto.AuthHeaderSet is not { } authHeaderSet)
+        {
+            throw new SandboxException(
+                SandboxErrorKind.Protocol,
+                $"Sandbox gateway returned a webhook summary without a url or auth_header_set for {operation}.",
+                statusCode
+            );
+        }
+
+        var events = dto.Events is null
+            ? null
+            : SelectNonNullOrThrow(dto.Events, static name => name, $"the webhook events of {operation}", statusCode);
+        return new SandboxWebhookInfo(dto.Url, events, authHeaderSet);
+    }
+
+    /// <summary>
+    /// Maps the create response's resolved <c>skills</c> policy. A missing or unknown default tier, or
+    /// <c>unavailable</c> (which the gateway never stores), is <see cref="SandboxErrorKind.Protocol"/>.
+    /// </summary>
+    private static SandboxSkillsPolicy? ToSkillsPolicy(SkillsPolicyDto? dto, string operation, int statusCode)
+    {
+        if (dto is null)
+        {
+            return null;
+        }
+
+        var included = SelectNonNullOrThrow(
+            dto.Included,
+            static key => key,
+            $"the included skills of {operation}",
+            statusCode
+        );
+        if (
+            ParseWireTier(dto.DefaultTier) is not { } tier
+            || tier == SandboxSkillTier.Unavailable
+            || included.Any(string.IsNullOrWhiteSpace)
+        )
+        {
+            throw new SandboxException(
+                SandboxErrorKind.Protocol,
+                $"Sandbox gateway returned a skills policy with an invalid default_tier or included skill for {operation}.",
+                statusCode
+            );
+        }
+
+        return new SandboxSkillsPolicy(tier, included, dto.UnlistedHint);
+    }
+
+    /// <summary>The gateway's lowercase spelling of a tier (<c>skills/tiers.rs</c>, <c>SkillTier::as_str</c>).</summary>
+    internal static string ToWireTier(SandboxSkillTier tier) =>
+        tier switch
+        {
+            SandboxSkillTier.Included => "included",
+            SandboxSkillTier.Available => "available",
+            SandboxSkillTier.Unavailable => "unavailable",
+            _ => throw new ArgumentOutOfRangeException(nameof(tier), tier, "Unknown skill tier."),
+        };
+
+    /// <summary>Parses a wire tier, or <see langword="null"/> for an absent or unknown one.</summary>
+    internal static SandboxSkillTier? ParseWireTier(string? tier) =>
+        tier switch
+        {
+            "included" => SandboxSkillTier.Included,
+            "available" => SandboxSkillTier.Available,
+            "unavailable" => SandboxSkillTier.Unavailable,
+            _ => null,
+        };
 
     /// <summary>
     /// Maps the gateway's plugin-resolution block. An absent block maps to <see langword="null"/>

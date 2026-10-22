@@ -54,7 +54,11 @@ the workflow is the operative pin.
 **Gateway compatibility:** error and operation semantics are synced to `SandboxedOstoolsMcpServer`
 `origin/master` `7f19413` (v0.1.16), and CI pins image tag `0.1.16`: images, homes, backups, per-agent
 state and leased browsers need it. Per-app git marketplaces (below) are built against the gateway commit
-`bac5a32`, which is NOT in v0.1.16 — on v0.1.16 their routes do not exist. That sync covers:
+`bac5a32`, which is NOT in v0.1.16 — on v0.1.16 their routes do not exist. The working directory,
+properties, skill tiers and the unified webhook (below) are synced to `origin/master` `8547483f`
+(2026-10-18, after v0.1.16, unreleased): on v0.1.16 their routes do not exist, and a requested
+`WorkingDir` fails the create (v0.1.16 echoes only the legacy `home` and does not make the workspace
+read-only). That sync covers:
 
 - REST error bodies (`{ error, code, error_code, retryable }`) read under a 64 KiB bound on every
   non-2xx except `401`/`403`, surfacing `ErrorCode`, `Retryable`, `Retry-After` (`RetryAfter`), and a
@@ -69,11 +73,6 @@ state and leased browsers need it. Per-app git marketplaces (below) are built ag
   gateway's free-text reason (poll and stream); status `cancelled` or `internal_failure` → `OperationFailed` (poll and stream); the streaming `timeout_secs` follows
   `SandboxCommand.ExecutionTimeout` (1–120 s, default 30); the reserved operation ids `stream` and
   `capabilities` are refused client-side.
-
-Separately, per-agent [skill tiers](#skill-tiers-per-agent-gateway-adr-0041-v0117) (gateway ADR 0041)
-are synced to `origin/master` `5c4eeefc` (v0.1.17). Only that surface is synced, not the rest of
-v0.1.17; below v0.1.17 its routes do not exist. It adds the error kind `SkillRejected`
-(`skill_not_found`, `skill_ambiguous`, `invalid_skills`).
 
 ## What this release covers
 
@@ -100,7 +99,7 @@ v0.1.17; below v0.1.17 its routes do not exist. It adds the error kind `SkillRej
   integrity-verified UTF-8 file round-trips and directory listing over a workspace-relative POSIX
   path. See [File transfer](#file-transfer) below.
 
-## Images, home and workspace backup (gateway v0.1.16)
+## Images, working directory and workspace backup
 
 - **Image** (ADR 0039): `new SandboxCreateRequest(ws, image: "debian:bookworm-slim")` (or `repo@sha256:…`).
   The gateway's allow-list decides; a refusal is `ImageRejected` with `ErrorCode` `image_not_allowed`,
@@ -109,11 +108,17 @@ v0.1.17; below v0.1.17 its routes do not exist. It adds the error kind `SkillRej
   (conformance + `Warnings`, e.g. "image has no pwsh"). `GetAsync` reports `Image`/`ImageDigest` when the
   gateway's GET carries them (a session recorded without an image reports the server default); older GETs
   and every `ListAsync` result leave them `null`, and `ImageReport` is create-only.
-- **Home** (issue #142): `new SandboxCreateRequest(ws, home: "worktrees/issue-142")`, sent as top-level
-  `home` beside top-level `workspace`. `CreateAsync` requires `SandboxInfo.WorkspaceHome` to equal the
-  normalized request (`./a//b/` → `a/b`); on a missing or different acknowledgement it deletes the sandbox
-  and throws `Protocol`. On Docker the home must already exist and be owned by the sandbox user: v0.1.16
-  creates a missing home root-owned and refuses it with a code-less `400`.
+- **Working directory** (ADR 0044, formerly "home", issue #142): `new SandboxCreateRequest(ws,
+  workingDir: "agents/a1")`, sent as top-level `working_dir` beside top-level `workspace` (the deprecated
+  `home` alias is never sent). **It is the only place agents can write**: the MCP tools and shells see the
+  rest of the workspace read-only (OS-enforced on Docker and Linux; on Windows AppContainer an ACL split that
+  stops a cooperative agent but is not a security boundary while an operation runs, ADR 0044), while the direct
+  file API and operations still write everywhere. Operations without a `WorkingDirectory` run at the
+  workspace ROOT, not in it, and `HOME` moves to `/home/sbx` on Docker. A git worktree cannot be the working
+  directory (its commits land in the read-only parent `.git`). `CreateAsync` requires
+  `SandboxInfo.WorkspaceWorkingDir` (`volumes.workspace.working_dir`) to equal the normalized request
+  (`./a//b/` → `a/b`); on a missing or different acknowledgement, including a legacy `home`-only echo, it
+  deletes the sandbox and throws `Protocol`.
 - **Backup** (issue #191): `ListBackupSnapshotsAsync(workspace)`, `RestoreBackupSnapshotAsync(workspace,
   snapshotId)`, `PurgeBackupWorkspaceAsync(workspace)` and `GetBackupCostsAsync(since, groupBy)`. Every call
   sends `app_id` = `AppId`, which the gateway needs with `AUTH_ENFORCE` off and ignores with it on. A
@@ -121,7 +126,31 @@ v0.1.17; below v0.1.17 its routes do not exist. It adds the error kind `SkillRej
   workspace: delete it first. **Purge is destructive**: it deletes this gateway's sandboxes on the workspace,
   then its snapshots and directory. `backup_disabled` is `Unavailable` (not `NotFound`),
   `snapshot_not_found` is `NotFound`, `backup_unavailable` is `Unavailable`, and the `400 invalid_*` /
-  `app_id_required` refusals are `Protocol` with `ErrorCode` set.
+  `app_id_required` refusals are `Protocol` with `ErrorCode` set. A partitioned app passes its partition
+  values to the overloads taking `partitionProperties` (see below).
+
+## Properties, skill tiers and the sandbox webhook (gateway `8547483f`)
+
+- **Properties and partitions** (ADR 0042): `new SandboxCreateRequest(ws, properties: …)`; the create and
+  GET results carry `Properties` (`null` from an older gateway) and `Partition`. `GetPropertiesAsync` /
+  `UpdatePropertiesAsync` read and change the bag (`null` value = unset). Keys in the app's registry
+  `partition` list are required at create, become workspace directory levels and are immutable: changing
+  one is `Conflict` (`partition_property_immutable`, keys on `InvalidKeys`). Backup calls for a partitioned
+  app take the partition values (`properties.<key>=` query / `properties` body).
+- **Skill tiers** (ADR 0041): `new SandboxCreateRequest(ws, skills: new SandboxSkillsPolicy(…))` sets the
+  default tier, the included list and the unlisted-skills trailer; the create result echoes the resolved
+  policy on `SkillsPolicy`. `GetSkillsAsync(sessionId, agentId, tier, loaded)` returns one agent's catalog;
+  `UpdateSkillTiersAsync(sessionId, set, reset, agentId)` moves skills between tiers (works before the
+  agent's first call). MCP clients must re-run `tools/list` afterwards (`ToolsListChanged`).
+  `SandboxAgentInfo.IncludedSkills` counts the listed skills.
+- **Sandbox webhook** (gateway PR #205): `new SandboxCreateRequest(ws, webhook: new
+  SandboxWebhookSettings(url, authHeader, events))` registers one URL for every event (`SandboxWebhookEvents`:
+  `sandbox_created`, `sandbox_deleted`, `context_discovery`, `auth_request`, `auth_post_response_failure`,
+  `task_completed`). `GetAsync` reports it on `Webhook` without the auth header value. The SDK only sends the
+  registration; receiving and deduplicating events (`Idempotency-Key`) is the host's job. Register either
+  this or the legacy `SandboxDiscoverySettings`, not both: with both, every discovery arrives twice. A
+  gateway at or below v0.1.16 ignores `webhook`, so keep the legacy block for it. LmAgentInfra's
+  `SandboxSessionRegistry` picks one through `WebhookOptions.UseSandboxWebhook` (default off).
 
 ## File transfer
 
@@ -504,9 +533,8 @@ none to send.
 
 ## Skill tiers per agent (gateway ADR 0041, v0.1.17)
 
-Synced to `SandboxedOstoolsMcpServer` `origin/master` `5c4eeefc` (v0.1.17) for this surface only:
-the create `skills` block, `GET` and `PATCH /api/v1/sandboxes/{id}/skills`. Nothing else new in v0.1.17
-is synced.
+The create `skills` block, `GET` and `PATCH /api/v1/sandboxes/{id}/skills`. Below v0.1.17 these
+routes do not exist.
 
 Each agent sees every admitted skill in one of three tiers. `Included` skills are listed in that
 agent's `Skill` tool description. `Available` skills are not listed but load by exact name.
@@ -516,19 +544,18 @@ agent's `Skill` tool description. `Available` skills are not listed but load by 
   unlistedHint))`. `DefaultTier` is `Included` or `Available`; `null` uses the gateway's default.
   `Included` takes skill names (`plugin:skill`) or skill paths. `UnlistedHint`: `null` keeps the
   gateway's trailer, `""` removes it. No policy sends no `skills` field, so old requests are unchanged.
-  `SandboxInfo.Skills` is the policy the gateway resolved (its `Included` holds skill paths).
-- **`GetSkillCatalogAsync(sessionId, agentId, tier, loaded)`:** one agent's catalog: marketplaces,
+  `SandboxInfo.SkillsPolicy` is the policy the gateway resolved (its `Included` holds skill paths).
+- **`GetSkillsAsync(sessionId, agentId, tier, loaded)`:** one agent's catalog: marketplaces,
   then plugins (name, version, description), then skills (name, path, description, tier, tier origin,
   loaded, loaded at, notified, shadowed), plus workspace skills, the default tier and counts.
   `tier` and `loaded` filter the rows; `Counts` always covers the whole catalog.
-- **`PatchSkillTiersAsync(sessionId, agentId, set, reset)`:** sets tiers for one agent only, by skill
+- **`UpdateSkillTiersAsync(sessionId, set, reset, agentId)`:** sets tiers for one agent only, by skill
   name or path. All or nothing; loads are untouched. Returns the catalog with `ToolsListChanged`
   true. The gateway sends no MCP `list_changed`, so re-run `tools/list` for that agent afterwards.
 - **Agent id:** `null` or `""` is the default agent (sent as no `agent_id` query). Any other id must
-  pass `SandboxAgentId.IsValid`. A catalog for a different agent than asked is `Protocol`.
-- **Errors:** `400 skill_not_found`, `skill_ambiguous` and `invalid_skills` are `SkillRejected`.
-  `ErrorCode` says which. `SkillRef` is the ref the gateway named; `SkillCandidates` lists the
-  qualified names an ambiguous ref could mean.
+  pass `SandboxAgentId.IsValid`.
+- **Errors:** `400 skill_not_found`, `skill_ambiguous`, `invalid_skills` and `invalid_agent_id` are
+  `Protocol`; `ErrorCode` says which.
 - **Default tier tip:** `Available` keeps a newly discovered skill from changing an agent's
   description: it loads by name at once but is listed only after a `PATCH` includes it.
 

@@ -500,7 +500,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     #region Conversation History Thread-Safe Access
 
     /// <summary>
-    /// Appends discovered context to the active run's history without queueing input. Only a loop whose
+    /// Appends a sandbox notice (<see cref="NotifyKinds.ContextDiscovery"/> or
+    /// <see cref="NotifyKinds.BackgroundTask"/>) to the active run's history without queueing input. Only a loop whose
     /// provider reads this history on its next call may expose it as <see cref="IContextNotificationSink"/>;
     /// a CLI-backed loop keeps its own session history, so the model would never see the append.
     /// </summary>
@@ -508,7 +509,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     {
         ArgumentNullException.ThrowIfNull(message);
         ct.ThrowIfCancellationRequested();
-        if (message.NotifyKind != NotifyKinds.ContextDiscovery)
+        // Sandbox facts for the run already in flight: discovered context, and a running sub-agent's ended
+        // background task. Other kinds expect to be answered, so they go through the input channel instead.
+        if (message.NotifyKind is not (NotifyKinds.ContextDiscovery or NotifyKinds.BackgroundTask))
         {
             return false;
         }

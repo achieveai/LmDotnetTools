@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
@@ -165,6 +167,54 @@ public sealed class ConversationToolReuseCompositionTests
                 switched.Agent.Should().NotBeSameAs(before);
             }
         );
+    }
+
+    /// <summary>
+    /// A conversation provisioned headless (<c>DisableClientTools</c>) loses both client tools on the root
+    /// loop the sample's factory builds, and keeps them off across an in-place mode switch, which rebuilds
+    /// the tool surface. A plain conversation keeps both, so the absence is the flag's doing.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task AHeadlessConversation_GetsNoClientTools_BeforeOrAfterAModeSwitch(bool headless)
+    {
+        await RunAsync(
+            async (services, pool, _, threadId) =>
+            {
+                if (headless)
+                {
+                    await services
+                        .GetRequiredService<IConversationStore>()
+                        .UpdateMetadataAsync(
+                            threadId,
+                            existing => new ThreadMetadata
+                            {
+                                ThreadId = threadId,
+                                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                                Properties = (
+                                    existing?.Properties ?? ImmutableDictionary<string, object>.Empty
+                                ).SetItem(ConversationClientTools.PropertyKey, true),
+                            }
+                        );
+                }
+
+                var loop = (MultiTurnAgentLoop)
+                    pool.GetOrCreateAgent(threadId, DefaultMode, "test", requestResponseDumpFileName: null);
+                AssertClientTools(loop, present: !headless);
+
+                var switched = await pool.SwitchModeAsync(threadId, OtherMode);
+
+                switched.Kind.Should().Be(MultiTurnAgentPool.AgentSwitchKind.ReconfiguredInPlace);
+                AssertClientTools((MultiTurnAgentLoop)switched.Agent, present: !headless);
+            }
+        );
+
+        static void AssertClientTools(MultiTurnAgentLoop loop, bool present)
+        {
+            loop.RegisteredToolNames.Contains(AskUserQuestionToolProvider.ToolName).Should().Be(present);
+            loop.RegisteredToolNames.Contains(NotifyClientToolProvider.ToolName).Should().Be(present);
+        }
     }
 
     /// <summary>

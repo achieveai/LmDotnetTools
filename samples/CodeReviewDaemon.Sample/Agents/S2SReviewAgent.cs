@@ -319,7 +319,18 @@ internal sealed class S2SReviewAgent
         }
 
         var threadId = await _client
-            .ProvisionAsync(_workspaceId, _providerId, _modeId, _systemPrompt, _subAgentModelId, _reasoningEffort, ct)
+            // Unattended: nobody can answer AskUserQuestion or see NotifyClient, so the conversation gets neither.
+            .ProvisionAsync(
+                _workspaceId,
+                _providerId,
+                _modeId,
+                _systemPrompt,
+                _subAgentModelId,
+                _reasoningEffort,
+                workingDirectory: null,
+                disableClientTools: true,
+                ct
+            )
             .ConfigureAwait(false);
         _threadId = threadId;
         _logger.LogInformation(

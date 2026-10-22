@@ -131,18 +131,6 @@ public sealed class SandboxException : Exception
     /// </summary>
     public SandboxImageReport? ImageReport { get; init; }
 
-    /// <summary>
-    /// The skill ref a <see cref="SandboxErrorKind.SkillRejected"/> failure is about (<c>skill_not_found</c> /
-    /// <c>skill_ambiguous</c>): the caller's own ref, echoed by the gateway. <c>null</c> for every other failure.
-    /// </summary>
-    public string? SkillRef { get; init; }
-
-    /// <summary>
-    /// The qualified skill names an ambiguous ref could mean (<c>skill_ambiguous</c>); patch or include one of
-    /// these instead. <c>null</c> for every other failure.
-    /// </summary>
-    public IReadOnlyList<string>? SkillCandidates { get; init; }
-
     public SandboxException(
         SandboxErrorKind kind,
         string message,

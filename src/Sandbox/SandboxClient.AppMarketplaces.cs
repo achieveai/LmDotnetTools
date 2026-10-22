@@ -24,8 +24,14 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 /// <see cref="SandboxErrorKind.Unavailable"/>; <c>409 alias_taken</c> (the alias belongs to an operator
 /// marketplace) is <see cref="SandboxErrorKind.Conflict"/>; <c>404 marketplace_not_registered</c> is
 /// <see cref="SandboxErrorKind.NotFound"/>; the <c>400</c> rejections (<c>invalid_alias</c>, <c>invalid_url</c>,
-/// <c>host_not_allowed</c>, <c>invalid_ref</c>, <c>ref_not_found</c>, <c>app_id_required</c>) are
+/// <c>host_not_allowed</c>, <c>invalid_ref</c>, <c>ref_not_found</c>, <c>app_id_required</c>, <c>invalid_app_id</c>)
+/// and the <c>422</c> refusals (<c>unsafe_checkout</c>: the checkout contains a symbolic link;
+/// <c>no_default_branch</c>: the remote advertises no default branch for <c>latest</c> to follow) are
 /// <see cref="SandboxErrorKind.Protocol"/>.
+/// </para>
+/// <para>
+/// Each sandbox keeps the commit it mounted at create, across syncs and gateway restarts. A sandbox that recorded a
+/// commit cannot be resumed on a gateway restarted without its marketplace store; create a new sandbox instead.
 /// </para>
 /// </remarks>
 public sealed partial class SandboxClient

@@ -130,6 +130,33 @@ public sealed class S2SReviewAgentTests
         provision.Body.Should().Contain("\"systemPromptAppendix\":\"REVIEW METHODOLOGY\"");
     }
 
+    [Fact]
+    public async Task ExecuteRunAsync_provisions_a_headless_conversation_without_client_tools()
+    {
+        // The daemon runs unattended: a question asked through AskUserQuestion parks the run with nobody to
+        // answer it, so the conversation is provisioned without the client tools.
+        var handler = new FakeHttpMessageHandler()
+            .OnCurrentReviewHostCapabilities()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
+            .OnJson(
+                HttpMethod.Get,
+                "/status",
+                "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"ok\"}}"
+            )
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-headless\"}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+        var agent = NewAgent(client, title: null);
+
+        _ = await DriveAsync(agent, "review this PR");
+
+        var provision = handler
+            .Requests.Should()
+            .ContainSingle(r => r.Body != null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal))
+            .Subject;
+        provision.Body.Should().Contain("\"disableClientTools\":true");
+    }
+
     /// <summary>
     /// The synthesis turn's "no new children" guarantee has to be REAL over S2S, where the children live in
     /// the host's process: the executor opens the agent's <c>SuppressSpawning</c> scope and every send inside

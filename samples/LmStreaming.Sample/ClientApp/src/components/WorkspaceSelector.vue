@@ -105,9 +105,9 @@ const submitting = ref(false);
 // Create form state
 const createName = ref('');
 const createDirectory = ref('');
-/** Optional client image and workspace home; set at create time only (a live sandbox cannot change them). */
+/** Optional client image and working directory; set at create time only (a live sandbox cannot change them). */
 const createImage = ref('');
-const createHome = ref('');
+const createWorkingDir = ref('');
 const directoryTouched = ref(false);
 const createMarketplaces = ref<string[]>([]);
 /** Tri-state, exactly as on the wire — `null` = legacy "all plugins", `[]` = none. Never `?? []`. */
@@ -423,7 +423,7 @@ function openCreateForm(): void {
   createName.value = '';
   createDirectory.value = '';
   createImage.value = '';
-  createHome.value = '';
+  createWorkingDir.value = '';
   directoryTouched.value = false;
   createMarketplaces.value = [];
   // A new workspace starts with no preference, i.e. legacy "all plugins" — NOT "no plugins".
@@ -503,8 +503,8 @@ function submitCreate(): void {
   }
   const image = createImage.value.trim();
   if (image) payload.image = image;
-  const home = createHome.value.trim();
-  if (home) payload.home = home;
+  const workingDir = createWorkingDir.value.trim();
+  if (workingDir) payload.workingDir = workingDir;
   // Keep the form open and mark it in-flight. The parent awaits the API call and
   // calls closeForm() on success or showFormError() on failure (which re-renders
   // the inline error). Closing here would unmount the error element before the
@@ -908,14 +908,18 @@ watch(
             />
           </label>
           <label class="field">
-            <span class="field-label">Home directory (optional)</span>
+            <span class="field-label">Working directory (optional)</span>
             <input
-              v-model="createHome"
+              v-model="createWorkingDir"
               class="field-input"
-              data-testid="workspace-create-home"
+              data-testid="workspace-create-working-dir"
               type="text"
-              placeholder="workspace root, e.g. worktrees/issue-1"
+              placeholder="none, e.g. agents/main"
             />
+            <span class="field-hint" data-testid="workspace-create-working-dir-hint">
+              Agents can write only here. The rest of the workspace becomes read-only for them. On Windows
+              this stops a cooperative agent but is not a security boundary while an operation runs.
+            </span>
           </label>
           <div class="field">
             <div class="field-header">
@@ -1432,6 +1436,11 @@ watch(
   border: 1px solid #ddd;
   border-radius: 4px;
   font-size: 13px;
+}
+
+.field-hint {
+  font-size: 11px;
+  color: #888;
 }
 
 .field-input:read-only {

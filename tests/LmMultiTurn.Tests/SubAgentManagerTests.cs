@@ -2964,6 +2964,83 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task TryDeliverToRunningAsync_BackgroundTaskNotice_ReachesTheRunningSubAgentsNextModelCall()
+    {
+        // A sandbox task_completed for a sub-agent's background Bash rides the same passive path as discovered
+        // context: appended to the running turn, seen on the sub-agent's next model call, never queued input.
+        var call1Entered = new TaskCompletionSource<bool>();
+        var releaseCall1 = new TaskCompletionSource<bool>();
+        var call2Entered = new TaskCompletionSource<bool>();
+        var releaseCall2 = new TaskCompletionSource<bool>();
+        List<IMessage>? secondCallMessages = null;
+        var callCount = 0;
+
+        _subAgentMock
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                async (msgs, options, ct) =>
+                {
+                    if (Interlocked.Increment(ref callCount) == 1)
+                    {
+                        _ = call1Entered.TrySetResult(true);
+                        await releaseCall1.Task.WaitAsync(ct);
+                        return ToAsyncEnumerable([
+                            new ToolCallMessage
+                            {
+                                FunctionName = "noop",
+                                FunctionArgs = "{}",
+                                ToolCallId = "call_1",
+                                Role = Role.Assistant,
+                            },
+                        ]);
+                    }
+
+                    secondCallMessages = [.. msgs];
+                    _ = call2Entered.TrySetResult(true);
+                    await releaseCall2.Task.WaitAsync(ct);
+                    return ToAsyncEnumerable([new TextMessage { Text = "done", Role = Role.Assistant }]);
+                }
+            );
+
+        _manager = CreateManager();
+        var spawnJson = await _manager.SpawnAsync("test-agent", "initial task", runInBackground: true);
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+        (await call1Entered.Task.WaitAsync(TimeSpan.FromSeconds(10))).Should().BeTrue();
+        _manager.TryGetAgent(agentId, out var child).Should().BeTrue();
+
+        const string marker = "Background task 7 has ended";
+        var notice = new NotifyMessage { NotifyKind = NotifyKinds.BackgroundTask, Detail = marker };
+        var result = await _manager.TryDeliverToRunningAsync(child!.ThreadId, [notice], CancellationToken.None);
+
+        result.Should().Be(SubAgentContextDeliveryResult.Delivered);
+        releaseCall1.SetResult(true);
+        (await call2Entered.Task.WaitAsync(TimeSpan.FromSeconds(10))).Should().BeTrue();
+        secondCallMessages!
+            .OfType<NotifyMessage>()
+            .Should()
+            .ContainSingle(m => m.NotifyKind == NotifyKinds.BackgroundTask && m.Detail == marker);
+        _parentMock.Verify(
+            p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Never
+        );
+
+        releaseCall2.SetResult(true);
+    }
+
+    [Fact]
     public async Task TryDeliverToRunningAsync_CompletedAgent_ReturnsTargetNotDeliverable_NoRestartNoRelay()
     {
         // AC3/AC5: a delivery to a completed sub-agent is dropped — the sub-agent is NOT restarted and no
@@ -3321,6 +3398,66 @@ public class SubAgentManagerTests : IAsyncLifetime
         return nm.SourceToolCallId == expectedAgentId
             && nm.Label == expectedAgentName
             && (nm.GetText() ?? string.Empty).Contains("[AwaitingAnswer]");
+    }
+
+    // A headless conversation turns both client tools off, and the child must not be offered either: a child
+    // that asks a question nobody answers parks the whole tree.
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    public async Task SpawnAsync_OffersTheChildOnlyTheClientToolsTheOptionsKeep(
+        bool includeQuestion,
+        bool includeNotify
+    )
+    {
+        var offered = new List<string>();
+        var calls = 0;
+        _subAgentMock
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (_, options, _) =>
+                {
+                    lock (offered)
+                    {
+                        calls++;
+                        offered.AddRange(options?.Functions?.Select(f => f.Name) ?? []);
+                    }
+
+                    return Task.FromResult(
+                        ToAsyncEnumerable([new TextMessage { Text = "done", Role = Role.Assistant }])
+                    );
+                }
+            );
+        var options = CreateOptions() with
+        {
+            IncludeAskUserQuestionTool = includeQuestion,
+            IncludeNotifyClientTool = includeNotify,
+        };
+        _manager = new SubAgentManager(
+            parentAgent: _parentMock.Object,
+            parentContracts: [],
+            parentHandlers: new Dictionary<string, ToolHandler>(),
+            options: options,
+            source: new MutableSubAgentTemplateSource(options.Templates)
+        );
+
+        await _manager.SpawnAsync("test-agent", "do the task", runInBackground: false);
+
+        List<string> names;
+        lock (offered)
+        {
+            calls.Should().BePositive("the child made its model call");
+            names = [.. offered];
+        }
+        names.Contains(AskUserQuestionToolProvider.ToolName).Should().Be(includeQuestion);
+        names.Contains(NotifyClientToolProvider.ToolName).Should().Be(includeNotify);
     }
 
     /// <summary>

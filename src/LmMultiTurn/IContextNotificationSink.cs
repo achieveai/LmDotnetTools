@@ -2,7 +2,10 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 
-/// <summary>Accepts discovered context without queueing input or starting a model run.</summary>
+/// <summary>
+/// Accepts sandbox notices (discovered context, an ended background task) without queueing input or starting
+/// a model run.
+/// </summary>
 public interface IContextNotificationSink
 {
     /// <summary>

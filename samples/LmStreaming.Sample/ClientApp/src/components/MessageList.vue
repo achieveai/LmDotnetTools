@@ -90,6 +90,7 @@ type RenderRow =
 
 const COLLAPSIBLE_NOTIFICATION_KINDS = new Set([
   'agent-message',
+  'background-task',
   'compaction',
   'context-discovery',
   'subagent-completion',

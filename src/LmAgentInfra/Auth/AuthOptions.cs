@@ -131,6 +131,15 @@ public sealed class WebhookOptions
     public double PollIntervalSeconds { get; set; } = 1.0;
 
     /// <summary>
+    /// Registers the gateway's unified sandbox webhook (gateway ADR 0043) at
+    /// <c>{PublicBaseUrl}/api/sandbox/webhook</c> for <c>context_discovery</c> and <c>task_completed</c>,
+    /// instead of the legacy <c>discovery.webhook</c>. The host must serve that route. Leave it off for a
+    /// gateway at or below v0.1.16: it silently ignores the <c>webhook</c> field, so no discovery would
+    /// arrive at all.
+    /// </summary>
+    public bool UseSandboxWebhook { get; set; }
+
+    /// <summary>
     /// Webhook public base URL with the trailing slash stripped — the canonical form callers
     /// concatenate route segments to. Centralised so the gateway → app callback URLs all agree
     /// even if a future operator misconfigures <see cref="PublicBaseUrl"/> with a trailing slash.

@@ -77,21 +77,34 @@ public sealed class SandboxInfo
     public SandboxImageReport? ImageReport { get; }
 
     /// <summary>
-    /// The sandbox home the gateway persisted for the workspace mount (normalized, relative to the
-    /// workspace), reported on create and GET results. <see langword="null"/> when the home is the
-    /// workspace root, and on a list result.
+    /// The working directory the gateway persisted for the workspace mount (normalized, relative to the
+    /// workspace; <c>volumes.workspace.working_dir</c>), reported on create and GET results. When set, the
+    /// rest of the workspace is read-only for agents (ADR 0044). <see langword="null"/> when none is set,
+    /// on a list result, and from a gateway that predates ADR 0044 (it reports only the legacy <c>home</c>,
+    /// which this SDK deliberately ignores because such a gateway does not make the workspace read-only).
     /// </summary>
-    public string? WorkspaceHome { get; }
+    public string? WorkspaceWorkingDir { get; }
 
     /// <summary>
-    /// The skill-tier policy the gateway resolved for the sandbox (ADR 0041), echoed on a
-    /// <see cref="SandboxClient.CreateAsync"/> result whether or not the request carried
-    /// <see cref="SandboxCreateRequest.Skills"/>: its <see cref="SandboxSkillsPolicy.DefaultTier"/> is always
-    /// set and its <see cref="SandboxSkillsPolicy.Included"/> holds the resolved skill keys (directory paths),
-    /// not the refs the request sent. <see langword="null"/> when the gateway did not report one (a gateway
-    /// that predates skill tiers, and list results).
+    /// The sandbox's property bag (ADR 0042) from a create or GET result. <see langword="null"/> on a list result
+    /// and from a gateway that predates properties; empty when the gateway reports none.
     /// </summary>
-    public SandboxSkillsPolicy? Skills { get; }
+    public IReadOnlyDictionary<string, string>? Properties { get; }
+
+    /// <summary>The partition keys the sandbox was created under (ADR 0042); empty for an unpartitioned app or when not reported.</summary>
+    public IReadOnlyList<string> Partition { get; }
+
+    /// <summary>
+    /// The webhook the sandbox registered, from a GET result (gateway PR #205). <see langword="null"/> when none is
+    /// registered, on create and list results, and from an older gateway.
+    /// </summary>
+    public SandboxWebhookInfo? Webhook { get; }
+
+    /// <summary>
+    /// The resolved skill-tier policy (ADR 0041) from a create result; its <see cref="SandboxSkillsPolicy.Included"/>
+    /// holds gateway skill keys. <see langword="null"/> on GET and list results and from an older gateway.
+    /// </summary>
+    public SandboxSkillsPolicy? SkillsPolicy { get; }
 
     public SandboxInfo(
         string sessionId,
@@ -105,8 +118,11 @@ public sealed class SandboxInfo
         string? image = null,
         string? imageDigest = null,
         SandboxImageReport? imageReport = null,
-        string? workspaceHome = null,
-        SandboxSkillsPolicy? skills = null
+        string? workspaceWorkingDir = null,
+        IReadOnlyDictionary<string, string>? properties = null,
+        IReadOnlyList<string>? partition = null,
+        SandboxWebhookInfo? webhook = null,
+        SandboxSkillsPolicy? skillsPolicy = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -124,7 +140,10 @@ public sealed class SandboxInfo
         Image = image;
         ImageDigest = imageDigest;
         ImageReport = imageReport;
-        WorkspaceHome = workspaceHome;
-        Skills = skills;
+        WorkspaceWorkingDir = workspaceWorkingDir;
+        Properties = properties is null ? null : new Dictionary<string, string>(properties, StringComparer.Ordinal);
+        Partition = partition is null ? [] : [.. partition];
+        Webhook = webhook;
+        SkillsPolicy = skillsPolicy;
     }
 }

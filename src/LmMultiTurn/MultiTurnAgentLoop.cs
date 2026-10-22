@@ -278,6 +278,13 @@ public sealed class MultiTurnAgentLoop
     private readonly object _spawnSuppressionLock = new();
     private string? _spawnSuppressedRunId;
 
+    // Receipt ids of inputs folded into history while parked (TryAppendParkedInputsAsync). The
+    // delayed child run that continues the conversation delivers them, so it must also claim them:
+    // otherwise status-by-inputId reads NotStarted forever and a caller waiting on the receipt
+    // never sees its run. Lost on restart, where reconciliation settles the acceptance instead.
+    private readonly object _foldedReceiptLock = new();
+    private readonly List<string> _foldedReceiptIds = [];
+
     private const string SpawnSuppressedRunIdProperty = "spawn_suppressed_run_id";
 
     // Automatic stream recovery is budgeted per LOGICAL INPUT, but a logical input does not always
@@ -1603,6 +1610,15 @@ public sealed class MultiTurnAgentLoop
             await admitRun(assignment.RunId, ct);
         }
 
+        // The continuation owner is the run that hands the folded inputs to the model, so it claims
+        // their receipts: in the ledger for status-by-inputId, and in the assignment for a caller
+        // waiting on its receipt. A sibling that takes no turn leaves them for the owner.
+        if (cause.IsContinuationOwner && TakeFoldedReceiptIds() is { Count: > 0 } folded)
+        {
+            await RecordInjectedInputsAsync(assignment.RunId, folded, ct);
+            assignment = assignment with { InputIds = [.. assignment.InputIds ?? [], .. folded] };
+        }
+
         await PublishToAllAsync(new RunAssignmentMessage { Assignment = assignment, ThreadId = ThreadId }, ct);
 
         if (!cause.IsContinuationOwner)
@@ -2291,6 +2307,11 @@ public sealed class MultiTurnAgentLoop
                 await PublishIfNotifyAsync(msg, ct);
                 count++;
             }
+
+            lock (_foldedReceiptLock)
+            {
+                _foldedReceiptIds.Add(input.ReceiptId);
+            }
         }
 
         Logger.LogInformation(
@@ -2299,6 +2320,16 @@ public sealed class MultiTurnAgentLoop
         );
 
         return true;
+    }
+
+    private List<string> TakeFoldedReceiptIds()
+    {
+        lock (_foldedReceiptLock)
+        {
+            var taken = _foldedReceiptIds.ToList();
+            _foldedReceiptIds.Clear();
+            return taken;
+        }
     }
 
     /// <summary>

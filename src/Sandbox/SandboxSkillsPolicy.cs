@@ -1,81 +1,66 @@
 namespace AchieveAi.LmDotnetTools.Sandbox;
 
-/// <summary>
-/// One agent's tier for one skill (gateway ADR 0041). Whether the agent has LOADED a skill is a separate
-/// flag (<see cref="SandboxSkill.Loaded"/>), never a tier: loading an available skill leaves it available.
-/// </summary>
+/// <summary>One agent's tier for one skill (gateway ADR 0041).</summary>
 public enum SandboxSkillTier
 {
-    /// <summary>Listed in the agent's <c>Skill</c> tool description (wire <c>included</c>).</summary>
+    /// <summary>Listed in the agent's <c>Skill</c> tool description and loadable.</summary>
     Included,
 
-    /// <summary>Not listed, but loads by exact name and appears in the catalog (wire <c>available</c>).</summary>
+    /// <summary>Loadable by exact name, but not listed.</summary>
     Available,
 
-    /// <summary>Refused for this agent (wire <c>unavailable</c>).</summary>
+    /// <summary>Refused for this agent.</summary>
     Unavailable,
 }
 
 /// <summary>
-/// A sandbox's skill-tier policy (gateway ADR 0041): sent as the create request's <c>skills</c> block via
-/// <see cref="SandboxCreateRequest.Skills"/>, and echoed back, resolved, on <see cref="SandboxInfo.Skills"/>.
-/// It sets the starting tier of every skill for every agent; per-agent changes after create go through
-/// <see cref="SandboxClient.PatchSkillTiersAsync"/>.
+/// A sandbox's skill-tier policy (gateway ADR 0041): sent as the create request's <c>skills</c> block, and
+/// echoed resolved on the create response (<see cref="SandboxInfo.SkillsPolicy"/>). Per-agent changes after
+/// create go through <see cref="SandboxClient.UpdateSkillTiersAsync"/>.
 /// </summary>
 public sealed class SandboxSkillsPolicy
 {
     /// <summary>
-    /// Tier of every admitted skill that is not in <see cref="Included"/> and has no agent override.
-    /// <c>null</c> omits the field so the gateway applies its <c>SKILL_DEFAULT_TIER</c> (else
-    /// <see cref="SandboxSkillTier.Included"/>). Never <see cref="SandboxSkillTier.Unavailable"/>: a sandbox
-    /// that hides every skill is rejected by the gateway, so it is rejected here first. Always set on an
-    /// echoed policy.
+    /// Tier of every admitted skill with no override and not in <see cref="Included"/>: only
+    /// <see cref="SandboxSkillTier.Included"/> or <see cref="SandboxSkillTier.Available"/>. <c>null</c> on a
+    /// request lets the gateway apply its <c>SKILL_DEFAULT_TIER</c> (else <c>included</c>).
     /// </summary>
-    /// <remarks>
-    /// <see cref="SandboxSkillTier.Available"/> is the setting that keeps a discovered skill from changing an
-    /// agent's <c>Skill</c> description: it loads by name immediately but is not listed until a
-    /// <c>PATCH</c> includes it.
-    /// </remarks>
     public SandboxSkillTier? DefaultTier { get; }
 
     /// <summary>
-    /// Skills included for every agent unless that agent overrides them, defensively copied. On a request,
-    /// each entry is a name the <c>Skill</c> tool accepts (marketplace skills are plugin-qualified, e.g.
-    /// <c>document-skills:pdf</c>; it must resolve among the sandbox's admitted marketplace skills) or a skill
-    /// directory path (accepted as-is, so a workspace skill can be included before it is discovered). On an
-    /// echoed policy the gateway reports its resolved skill keys (the skill directory paths) instead.
-    /// Empty omits the field.
+    /// Skills included for every agent unless that agent overrides them. On a request: a name the <c>Skill</c>
+    /// tool accepts (validated against the marketplace skills, <c>400 skill_not_found</c>/<c>skill_ambiguous</c>)
+    /// or a skill directory path (accepted as-is). On a response: the gateway's skill keys.
     /// </summary>
     public IReadOnlyList<string> Included { get; }
 
     /// <summary>
-    /// Replacement for the fixed trailer the gateway appends to a <c>Skill</c> description that does not
-    /// list every loadable skill. <c>null</c> keeps the gateway's default trailer; <c>""</c> suppresses the
-    /// trailer entirely.
+    /// Replaces the trailer appended to a <c>Skill</c> description that does not list every loadable skill;
+    /// <c>""</c> removes it, <c>null</c> keeps the gateway's default trailer.
     /// </summary>
     public string? UnlistedHint { get; }
 
-    /// <exception cref="ArgumentException">
-    /// <paramref name="defaultTier"/> is <see cref="SandboxSkillTier.Unavailable"/>, or an
-    /// <paramref name="included"/> entry is null or blank.
-    /// </exception>
     public SandboxSkillsPolicy(
         SandboxSkillTier? defaultTier = null,
         IReadOnlyList<string>? included = null,
         string? unlistedHint = null
     )
     {
-        if (defaultTier == SandboxSkillTier.Unavailable)
+        if (defaultTier is SandboxSkillTier.Unavailable)
         {
-            throw new ArgumentException(
-                "A sandbox default skill tier must be Included or Available; the gateway rejects Unavailable.",
-                nameof(defaultTier)
+            // The gateway answers 400 invalid_skills: a sandbox whose every skill is refused is a mistake.
+            throw new ArgumentOutOfRangeException(
+                nameof(defaultTier),
+                "The default tier can only be Included or Available."
             );
         }
 
-        if (included is not null && included.Any(string.IsNullOrWhiteSpace))
+        if (included is not null)
         {
-            throw new ArgumentException("Included skill refs must be non-blank names or paths.", nameof(included));
+            foreach (var reference in included)
+            {
+                ArgumentException.ThrowIfNullOrWhiteSpace(reference, nameof(included));
+            }
         }
 
         DefaultTier = defaultTier;

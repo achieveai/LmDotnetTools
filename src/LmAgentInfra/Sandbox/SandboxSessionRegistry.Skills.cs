@@ -21,7 +21,7 @@ public sealed partial class SandboxSessionRegistry
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
-        return ClientFor(CredentialFor(sessionId)).GetSkillCatalogAsync(sessionId, agentId, ct: ct);
+        return ClientFor(CredentialFor(sessionId)).GetSkillsAsync(sessionId, agentId, ct: ct);
     }
 
     /// <summary>
@@ -44,6 +44,6 @@ public sealed partial class SandboxSessionRegistry
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         SandboxAgentId.ThrowIfInvalid(agentId, nameof(agentId));
         ArgumentNullException.ThrowIfNull(set);
-        return ClientFor(CredentialFor(sessionId)).PatchSkillTiersAsync(sessionId, agentId, set, reset, ct);
+        return ClientFor(CredentialFor(sessionId)).UpdateSkillTiersAsync(sessionId, set, reset, agentId, ct);
     }
 }

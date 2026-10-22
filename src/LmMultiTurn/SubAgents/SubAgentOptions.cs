@@ -71,6 +71,13 @@ public record SubAgentOptions
     public bool IncludeAskUserQuestionTool { get; init; } = true;
 
     /// <summary>
+    /// Whether spawned sub-agents get the browser-hosted <c>NotifyClient</c> tool. Defaults to true, the
+    /// behaviour every host had. A headless conversation, where no client is attached to show the
+    /// notification, turns it off together with <see cref="IncludeAskUserQuestionTool"/>.
+    /// </summary>
+    public bool IncludeNotifyClientTool { get; init; } = true;
+
+    /// <summary>
     /// Opt-in sink for the coordination work a run does around the model calls themselves: per-spawn
     /// tool-registry construction and context fan-out, finished-agent reconstruction, per-turn
     /// template-catalog serialization, and full-directory <c>GetAgents</c> responses (#670).

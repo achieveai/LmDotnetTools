@@ -61,7 +61,7 @@ frictionlessly out of the box.
 
 Workspace Agent mode is configured through the **`SandboxGateway`** section of
 `appsettings.json` / `appsettings.Development.json`. The fields map to
-`Services/SandboxGatewayOptions.cs`:
+`src/LmAgentInfra/Sandbox/SandboxGatewayOptions.cs`:
 
 | Field | Default | Purpose |
 | --- | --- | --- |
@@ -76,6 +76,8 @@ Workspace Agent mode is configured through the **`SandboxGateway`** section of
 | `AgentCliPath` | — | Absolute path to the built `agent-cli.exe` (becomes `LOCAL_AGENT_CLI_PATH` when the gateway is spawned). |
 | `SkillsDir` | — | Directory whose `<skill>/SKILL.md` files become the gateway's `Skill` tool (becomes `SKILLS_DIRS`). The repo ships `sandbox-skills/repo-explorer` and `sandbox-skills/workspace-summary`. |
 | `PluginsDirs` | — | One or more comma-separated `alias=path` entries pointing at Claude-plugin **marketplace** directories (becomes `PLUGINS_DIRS`). The gateway loads each plugin's skills + `.mcp.json` MCP servers. See [Plugins](#plugins-claude-plugin-marketplaces). |
+| `MarketplaceStorePath` | `marketplace-store` | Where an auto-spawned gateway keeps the git marketplaces this app registers (becomes `MARKETPLACE_STORE_PATH`, made absolute against the app's binaries folder). Empty turns the feature off. See [Git marketplaces registered by this app](#git-marketplaces-registered-by-this-app). |
+| `LocalSandboxPython` | — | Absolute path to the Python interpreter that runs a workspace `.py` mini app on Windows (becomes `LOCAL_SANDBOX_PYTHON`). Must sit outside every sandbox-writable directory, or the gateway refuses it. Only needed for workspace `.py` apps. |
 
 Example (`appsettings.Development.json`):
 
@@ -317,6 +319,57 @@ empty plugin list, because the two look identical otherwise. Take it seriously: 
 workspace to an explicit subset while such a marketplace is enabled writes down the plugins of every
 *other* marketplace and leaves this one's out, so it will run none of them once the gateway
 recovers. Fix the marketplace first, or leave the selection on "no preference".
+
+### Git marketplaces registered by this app
+
+`PluginsDirs` is the operator's list. The app can also register **public git repositories** as its
+own marketplaces (gateway ADR 0045). The gateway clones each one and mounts it into this app's
+sandboxes at `/marketplaces/<alias>/`, next to the operator's marketplaces.
+
+The gateway keeps the clones in a **marketplace store**. The feature is off unless the store is set:
+
+| Setting | Default in this sample | Gateway variable | Purpose |
+| --- | --- | --- | --- |
+| `MarketplaceStorePath` | `marketplace-store` (beside the binaries) | `MARKETPLACE_STORE_PATH` | Where the gateway keeps clones and per-commit checkouts. A relative path resolves against the app's binaries folder. Empty turns the feature off. One gateway owns a store; do not share it between gateways. |
+
+Only an auto-spawned gateway gets this setting. If the app connects to a gateway that is already
+running, set `MARKETPLACE_STORE_PATH` on that gateway instead. The gateway also reads
+`MARKETPLACE_ALLOWED_HOSTS` (default `github.com`), `MARKETPLACE_SYNC_INTERVAL_SECS` (default
+`900`) and `MARKETPLACE_ALLOW_FILE_URLS` from its own environment.
+
+**Use it from the chat UI.** Open the header's **⋯** menu, choose **Marketplaces**, and use
+**Git marketplaces (this app)**:
+
+1. Type an alias (`team`), a repository URL (`https://github.com/owner/repo`) and, optionally, a
+   ref (a tag, branch or commit; blank means `latest`). Click **Register**. The gateway clones before
+   it answers, so a large repository takes a while.
+2. The row shows the ref and the commit new sandboxes mount. **Sync** fetches now; the gateway also
+   syncs in the background. A failed background sync shows **Last sync failed: …** on the row.
+3. The catalog below reloads and lists the repository's plugins.
+4. Create a new sandbox (new conversation in Workspace Agent mode). Ask the agent to list
+   `/marketplaces/team`. Each sandbox keeps the commit it mounted at create, across syncs; only new
+   sandboxes see a newer commit. On the **local Windows backend** the mount is read-only and
+   visible to the MCP file tools (Read, Glob, Grep), **not** to Bash: ask the agent to use Glob
+   rather than `ls`. A sandbox there also does not come back once the gateway has stopped it
+   ("sandbox re-materialization is not supported by this backend"); start a new conversation.
+5. **Remove** unregisters it.
+
+Register, sync and remove always need the operator secret (`Identity:OperatorSecret`, sent as
+`X-Operator-Secret`). With no secret configured they answer `503 operator_secret_not_configured`.
+Listing needs no secret.
+
+**Errors the panel shows** (the gateway's code and what it means):
+
+- `marketplaces_disabled` — the store is off. The panel says to set `SandboxGateway:MarketplaceStorePath`
+  (or `MARKETPLACE_STORE_PATH` on an external gateway) and restart.
+- `invalid_alias`, `invalid_url`, `host_not_allowed`, `invalid_ref`, `ref_not_found` — fix the input.
+- `alias_taken` — the alias belongs to an operator marketplace in `PluginsDirs`.
+- `unsafe_checkout` — the checkout contains a symbolic link; the gateway refuses those.
+- `no_default_branch` — the remote advertises no default branch, so `latest` has nothing to follow. Pin a ref.
+- `git_failed` — the clone or fetch failed or timed out (network, private repo).
+
+> **Turning the store off later.** A sandbox created while the store was on cannot be resumed after
+> it is turned off. Create a new sandbox instead.
 
 ### Discovered sub-agent model and reasoning options
 
