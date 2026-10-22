@@ -1,5 +1,6 @@
 extern alias Reviewd;
 
+using System.Globalization;
 using System.Net;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.Misc.Storage;
@@ -508,6 +509,185 @@ public sealed class ReviewdRunnerTests
         }
     }
 
+    // Seen live on PR 221: the confirmation read NotStarted for four hours on an idle conversation, and the
+    // batch never reached the next PR. One clock minute passes per poll.
+    [Theory]
+    [InlineData(false, "completed", true)]
+    [InlineData(true, "completed", false)]
+    [InlineData(false, "running", false)]
+    public async Task An_input_that_never_starts_on_a_settled_idle_conversation_fails_after_the_grace(
+        bool rootInProgress,
+        string childStatus,
+        bool fails
+    )
+    {
+        var runState = rootInProgress
+            ? """{"threadId":"thread","isInProgress":true,"currentRunId":"run"}"""
+            : """{"threadId":"thread","isInProgress":false,"currentRunId":null}""";
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"NotStarted","runId":null,"response":null}""")
+            .OnJson(HttpMethod.Get, "/run-state", runState)
+            .OnJson(
+                HttpMethod.Get,
+                "/subagents?",
+                $$"""{"schemaVersion":1,"nodes":[{"agentId":"child","threadId":"child-thread","parentThreadId":"thread","depth":1,"template":"reviewer","status":"{{childStatus}}"}]}"""
+            );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var now = DateTimeOffset.Parse("2026-10-19T08:00:00Z", CultureInfo.InvariantCulture);
+        var delays = 0;
+        var run = () =>
+            ReviewRunner.WaitAsync(
+                client,
+                "thread",
+                "input-1",
+                _ =>
+                {
+                    if (++delays > 30)
+                        throw new TimeoutException("Still waiting.");
+                    now = now.AddMinutes(1);
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None,
+                () => now
+            );
+
+        if (fails)
+        {
+            (await run.Should().ThrowAsync<InvalidOperationException>())
+                .Which.Message.Should()
+                .Contain("never started");
+            delays.Should().Be((int)ReviewRunner.NeverStartedGrace.TotalMinutes);
+        }
+        else
+        {
+            await run.Should().ThrowAsync<TimeoutException>();
+        }
+    }
+
+    [Fact]
+    public async Task An_input_that_starts_inside_the_grace_completes_normally()
+    {
+        var reads = 0;
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/status", StringComparison.Ordinal),
+                _ =>
+                    ++reads < (int)ReviewRunner.NeverStartedGrace.TotalMinutes
+                        ? Json("""{"status":"NotStarted","runId":null,"response":null}""")
+                        : Json("""{"status":"Completed","runId":"run","response":{"text":"done"}}""")
+            )
+            .OnJson(HttpMethod.Get, "/run-state", """{"threadId":"thread","isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var now = DateTimeOffset.Parse("2026-10-19T08:00:00Z", CultureInfo.InvariantCulture);
+
+        var status = await ReviewRunner.WaitAsync(
+            client,
+            "thread",
+            "input-1",
+            _ =>
+            {
+                now = now.AddMinutes(1);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None,
+            () => now
+        );
+
+        status!.ResponseText.Should().Be("done");
+    }
+
+    [Fact]
+    public async Task A_busy_root_between_two_idle_stretches_restarts_the_grace()
+    {
+        // Two idle NotStarted stretches of 7 polls each, split by a busy root, then completion.
+        // Together they pass the 10-minute grace; each alone does not.
+        var polls = 0;
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/status", StringComparison.Ordinal),
+                _ =>
+                    ++polls < 22
+                        ? Json("""{"status":"NotStarted","runId":null,"response":null}""")
+                        : Json("""{"status":"Completed","runId":"run","response":{"text":"done"}}""")
+            )
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/run-state", StringComparison.Ordinal),
+                _ =>
+                    polls is >= 9 and <= 13
+                        ? Json("""{"threadId":"thread","isInProgress":true,"currentRunId":"other"}""")
+                        : Json("""{"threadId":"thread","isInProgress":false,"currentRunId":null}""")
+            )
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var now = DateTimeOffset.Parse("2026-10-19T08:00:00Z", CultureInfo.InvariantCulture);
+
+        var status = await ReviewRunner.WaitAsync(
+            client,
+            "thread",
+            "input-1",
+            _ =>
+            {
+                now = now.AddMinutes(1);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None,
+            () => now
+        );
+
+        status!.ResponseText.Should().Be("done");
+        polls.Should().Be(23, "completion is confirmed by a second idle read");
+    }
+
+    [Fact]
+    public async Task A_busy_hierarchy_between_two_idle_stretches_restarts_the_grace()
+    {
+        // Seven idle NotStarted polls, two hierarchy_busy polls, then idle again until completion. Counted as
+        // one stretch, the second idle run would trip the 10-minute grace on its second poll.
+        var polls = 0;
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/status", StringComparison.Ordinal),
+                _ =>
+                    ++polls < 16
+                        ? Json("""{"status":"NotStarted","runId":null,"response":null}""")
+                        : Json("""{"status":"Completed","runId":"run","response":{"text":"done"}}""")
+            )
+            .OnJson(HttpMethod.Get, "/run-state", """{"threadId":"thread","isInProgress":false,"currentRunId":null}""")
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/subagents", StringComparison.Ordinal),
+                _ =>
+                    polls is 8 or 9
+                        ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                        {
+                            Content = new StringContent("""{"code":"hierarchy_busy"}"""),
+                        }
+                        : Json("""{"schemaVersion":1,"nodes":[]}""")
+            );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var now = DateTimeOffset.Parse("2026-10-19T08:00:00Z", CultureInfo.InvariantCulture);
+
+        var status = await ReviewRunner.WaitAsync(
+            client,
+            "thread",
+            "input-1",
+            _ =>
+            {
+                now = now.AddMinutes(1);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None,
+            () => now
+        );
+
+        status!.ResponseText.Should().Be("done");
+        polls.Should().Be(17, "completion is confirmed by a second idle read");
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("CodeReviewDaemon.Sample")]
@@ -818,6 +998,23 @@ public sealed class ReviewdRunnerTests
                 ? throw new TaskCanceledException(
                     "The request was canceled due to the configured HttpClient.Timeout of 30 seconds elapsing.",
                     new TimeoutException()
+                )
+                : Task.CompletedTask;
+        await batch.ExecuteAsync();
+        batch.Runs.Should().Equal("1:fresh", "2:fresh", "3:fresh", "1:fresh");
+        batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
+    }
+
+    [Fact]
+    public async Task Batch_retries_a_pr_whose_earlier_conversation_is_still_running_instead_of_holding_it()
+    {
+        // A busy hierarchy read, or a child still running in an earlier conversation, defers the review before
+        // the claim. That passes, yet one transient busy read held the PR for the rest of the selection.
+        using var batch = new BatchFixture(0);
+        batch.OnRunAsync = () =>
+            batch.Runs.Count == 1
+                ? throw new ReviewRunner.ReviewDeferredException(
+                    "An earlier conversation for this PR is still running; retry deferred."
                 )
                 : Task.CompletedTask;
         await batch.ExecuteAsync();
@@ -2174,6 +2371,400 @@ public sealed class ReviewdRunnerTests
         }
     }
 
+    // 2026-10-20: a cold gateway catalog made the host answer the review send with 503, and the PR was held
+    // for hours. The send must be retried with the same idempotency key instead.
+    [Fact]
+    public async Task Runner_retries_a_503_review_send_with_the_same_idempotency_key()
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-send503-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var now = DateTimeOffset.Parse("2026-10-07T22:00:00Z");
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .On(
+                request =>
+                    request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
+                _ => Json("""{"threadId":"thread"}""")
+            )
+            .OnJson(HttpMethod.Get, "/api/conversations?", "[]")
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .OnSequence(
+                HttpMethod.Post,
+                "/messages",
+                (HttpStatusCode.ServiceUnavailable, "{}"),
+                (HttpStatusCode.ServiceUnavailable, "{}"),
+                (HttpStatusCode.OK, """{"inputId":"original","idempotencyKeyHonored":true}""")
+            )
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token) =>
+            Task.FromResult(
+                phase switch
+                {
+                    "eligibility" => new JsonObject
+                    {
+                        ["prId"] = "17",
+                        ["status"] = "active",
+                        ["isDraft"] = false,
+                        ["headSha"] = new string('a', 40),
+                        ["createdAt"] = now.AddHours(-1).ToString("O"),
+                    },
+                    "prepare" => new JsonObject
+                    {
+                        ["mergeSha"] = new string('b', 40),
+                        ["contextPath"] = "context",
+                        ["reviewDirectory"] = "reviews",
+                        ["baselineComments"] = new JsonArray(),
+                    },
+                    _ => [],
+                }
+            );
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            var store = new SqliteKvStore(connection);
+            await store.SetAsync(
+                $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                new JsonObject
+                {
+                    ["17"] = new JsonObject
+                    {
+                        ["Lifecycle"] = "Open",
+                        ["IsDraft"] = false,
+                        ["HeadSha"] = new string('a', 40),
+                    },
+                }
+            );
+            var options = CliOptions.Parse([
+                "review",
+                "run",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "test",
+                "--max-age-hours",
+                "72",
+                "--execute",
+            ]);
+            var delays = 0;
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    options,
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ =>
+                    {
+                        delays++;
+                        return Task.CompletedTask;
+                    },
+                    () => now
+                );
+
+            // The scripted run then errors; this test only cares how the send got there.
+            await run.Should().ThrowAsync<InvalidOperationException>();
+
+            var sends = handler
+                .Requests.Where(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                .Select(r => r.Body)
+                .ToList();
+            sends.Should().HaveCount(3);
+            sends.Distinct().Should().ContainSingle("every resend carries the same idempotency key");
+            delays.Should().BeGreaterThanOrEqualTo(2 * ReviewRunner.SendRetryPolls);
+            var attempt = await store.GetAsync<JsonObject>($"reviewd/review-attempt/{repo.NormalizedKey}/17");
+            attempt!["reviewInputId"]!.GetValue<string>().Should().Be("original");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    // Boundary case for the retry loop above: success on exactly the LAST allowed send
+    // (SendAttempts == 11, so 10 failures then a success on attempt 11). Proves the full retry budget
+    // is usable, not just the first couple of retries.
+    [Fact]
+    public async Task Runner_retries_a_503_review_send_up_to_the_last_allowed_attempt_then_succeeds()
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-send503-last-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var now = DateTimeOffset.Parse("2026-10-07T22:00:00Z");
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .On(
+                request =>
+                    request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
+                _ => Json("""{"threadId":"thread"}""")
+            )
+            .OnJson(HttpMethod.Get, "/api/conversations?", "[]")
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .OnSequence(
+                HttpMethod.Post,
+                "/messages",
+                (HttpStatusCode.ServiceUnavailable, "{}"),
+                (HttpStatusCode.ServiceUnavailable, "{}"),
+                (HttpStatusCode.ServiceUnavailable, "{}"),
+                (HttpStatusCode.ServiceUnavailable, "{}"),
+                (HttpStatusCode.ServiceUnavailable, "{}"),
+                (HttpStatusCode.ServiceUnavailable, "{}"),
+                (HttpStatusCode.ServiceUnavailable, "{}"),
+                (HttpStatusCode.ServiceUnavailable, "{}"),
+                (HttpStatusCode.ServiceUnavailable, "{}"),
+                (HttpStatusCode.ServiceUnavailable, "{}"),
+                (HttpStatusCode.OK, """{"inputId":"original","idempotencyKeyHonored":true}""")
+            )
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token) =>
+            Task.FromResult(
+                phase switch
+                {
+                    "eligibility" => new JsonObject
+                    {
+                        ["prId"] = "17",
+                        ["status"] = "active",
+                        ["isDraft"] = false,
+                        ["headSha"] = new string('a', 40),
+                        ["createdAt"] = now.AddHours(-1).ToString("O"),
+                    },
+                    "prepare" => new JsonObject
+                    {
+                        ["mergeSha"] = new string('b', 40),
+                        ["contextPath"] = "context",
+                        ["reviewDirectory"] = "reviews",
+                        ["baselineComments"] = new JsonArray(),
+                    },
+                    _ => [],
+                }
+            );
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            var store = new SqliteKvStore(connection);
+            await store.SetAsync(
+                $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                new JsonObject
+                {
+                    ["17"] = new JsonObject
+                    {
+                        ["Lifecycle"] = "Open",
+                        ["IsDraft"] = false,
+                        ["HeadSha"] = new string('a', 40),
+                    },
+                }
+            );
+            var options = CliOptions.Parse([
+                "review",
+                "run",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "test",
+                "--max-age-hours",
+                "72",
+                "--execute",
+            ]);
+            var delays = 0;
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    options,
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ =>
+                    {
+                        delays++;
+                        return Task.CompletedTask;
+                    },
+                    () => now
+                );
+
+            // The scripted run errors AFTER the send succeeds (via the Errored status, same as the
+            // sibling test above); this test only cares that the 11th send was still attempted and
+            // accepted rather than the loop giving up before the documented budget was exhausted.
+            await run.Should().ThrowAsync<InvalidOperationException>();
+
+            var sends = handler
+                .Requests.Where(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                .Select(r => r.Body)
+                .ToList();
+            sends.Should().HaveCount(ReviewRunner.SendAttempts);
+            sends.Distinct().Should().ContainSingle("every resend carries the same idempotency key");
+            delays.Should().BeGreaterThanOrEqualTo((ReviewRunner.SendAttempts - 1) * ReviewRunner.SendRetryPolls);
+            var attempt = await store.GetAsync<JsonObject>($"reviewd/review-attempt/{repo.NormalizedKey}/17");
+            attempt!["reviewInputId"]!.GetValue<string>().Should().Be("original");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    // The other boundary: exhausting the documented 11-send retry budget without ever succeeding. The
+    // 11th 503 is NOT retried (`sendAttempt < SendAttempts` is false at that point), so it must escape
+    // as the transport failure itself rather than being silently absorbed or retried forever.
+    [Fact]
+    public async Task Runner_stops_retrying_a_503_review_send_once_the_retry_budget_is_exhausted()
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-send503-exhausted-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var now = DateTimeOffset.Parse("2026-10-07T22:00:00Z");
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .On(
+                request =>
+                    request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
+                _ => Json("""{"threadId":"thread"}""")
+            )
+            .OnJson(HttpMethod.Get, "/api/conversations?", "[]")
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            // A single entry; OnSequence repeats the last response once exhausted, so every send gets
+            // a 503 — the host never recovers in this scenario.
+            .OnSequence(HttpMethod.Post, "/messages", (HttpStatusCode.ServiceUnavailable, "{}"))
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token) =>
+            Task.FromResult(
+                phase switch
+                {
+                    "eligibility" => new JsonObject
+                    {
+                        ["prId"] = "17",
+                        ["status"] = "active",
+                        ["isDraft"] = false,
+                        ["headSha"] = new string('a', 40),
+                        ["createdAt"] = now.AddHours(-1).ToString("O"),
+                    },
+                    "prepare" => new JsonObject
+                    {
+                        ["mergeSha"] = new string('b', 40),
+                        ["contextPath"] = "context",
+                        ["reviewDirectory"] = "reviews",
+                        ["baselineComments"] = new JsonArray(),
+                    },
+                    _ => [],
+                }
+            );
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            var store = new SqliteKvStore(connection);
+            await store.SetAsync(
+                $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                new JsonObject
+                {
+                    ["17"] = new JsonObject
+                    {
+                        ["Lifecycle"] = "Open",
+                        ["IsDraft"] = false,
+                        ["HeadSha"] = new string('a', 40),
+                    },
+                }
+            );
+            var options = CliOptions.Parse([
+                "review",
+                "run",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "test",
+                "--max-age-hours",
+                "72",
+                "--execute",
+            ]);
+            var delays = 0;
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    options,
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ =>
+                    {
+                        delays++;
+                        return Task.CompletedTask;
+                    },
+                    () => now
+                );
+
+            // The 11th attempt is not retried, so the send's own transport failure must escape
+            // unchanged rather than the run reporting some other, unrelated terminal error.
+            var thrown = await run.Should().ThrowAsync<HttpRequestException>();
+            thrown.Which.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+
+            var sends = handler
+                .Requests.Where(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                .Select(r => r.Body)
+                .ToList();
+            sends.Should().HaveCount(ReviewRunner.SendAttempts, "no retry follows the last allowed attempt");
+            sends.Distinct().Should().ContainSingle("every resend carries the same idempotency key");
+            delays.Should().BeGreaterThanOrEqualTo((ReviewRunner.SendAttempts - 1) * ReviewRunner.SendRetryPolls);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
     [Theory]
     [InlineData(false, "99999999")]
     [InlineData(true, "99999999")]
@@ -2195,7 +2786,7 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/api/conversations?",
-                $$"""[{"threadId":"prior","title":"Nova-17-{{priorHead}}","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1}]"""
+                $$"""[{"threadId":"prior","title":"Nova-17-{{priorHead}}","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1,"clientToolsDisabled":true}]"""
             )
             .OnJson(HttpMethod.Put, "/metadata", "{}")
             // A provider that cannot freeze (Copilot, Codex, Claude SDK loops) refuses the thaw; it was never frozen.
@@ -2206,6 +2797,7 @@ public sealed class ReviewdRunnerTests
                     Content = new StringContent("""{"error":"not_freezable","threadId":"prior"}"""),
                 }
             )
+            .OnJson(HttpMethod.Get, "/prior/messages", Transcript(("User", ReviewPrompt('a')), ("Assistant", "Done.")))
             .OnJson(HttpMethod.Post, "/messages", """{"inputId":"original","idempotencyKeyHonored":true}""")
             .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
             .OnJson(
@@ -2284,22 +2876,22 @@ public sealed class ReviewdRunnerTests
                     _ => Task.CompletedTask,
                     () => DateTimeOffset.UtcNow
                 );
-            // A conversation titled for the live head means another db already reviewed this revision.
+            // A conversation that already ran the live head's review means another db reviewed this revision.
             var sameHead = priorHead == "aaaaaaaa";
             if (sameHead)
                 await run.Should()
                     .ThrowAsync<InvalidOperationException>()
                     .WithMessage("PR head was already reviewed by another run; skipped.");
             else if (running)
-                await run.Should()
-                    .ThrowAsync<InvalidOperationException>()
-                    .WithMessage("PR is not eligible for review.");
+                await run.Should().ThrowAsync<ReviewRunner.ReviewDeferredException>();
             else
                 (await run.Should().ThrowAsync<InvalidOperationException>())
                     .Which.Message.Should()
                     .NotBe("PR is not eligible for review.");
             handler
-                .Requests.Count(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                .Requests.Count(r =>
+                    r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal)
+                )
                 .Should()
                 .Be(running || sameHead ? 0 : 1);
         }
@@ -2309,6 +2901,158 @@ public sealed class ReviewdRunnerTests
             File.Delete(database);
         }
     }
+
+    [Theory]
+    [InlineData("never-sent")]
+    [InlineData("prompt-without-output")]
+    [InlineData("earlier-head")]
+    [InlineData("completed")]
+    public async Task Runner_skips_a_head_only_when_its_titled_conversation_shows_the_review_ran(string history)
+    {
+        // The title is stamped before the review is sent. A send that failed (a 503) left "Nova-17-aaaaaaaa" on a
+        // conversation that reviewed nothing, and every later batch skipped the PR as already reviewed.
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-titled-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var transcript = history switch
+        {
+            "never-sent" => Transcript(),
+            "prompt-without-output" => Transcript(("User", ReviewPrompt('a'))),
+            // An earlier head's review, retitled for the live head just before its own send failed.
+            "earlier-head" => Transcript(("User", ReviewPrompt('d')), ("Assistant", "Done.")),
+            _ => Transcript(("User", ReviewPrompt('a')), ("Assistant", "Done.")),
+        };
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/api/conversations?",
+                """[{"threadId":"prior","title":"Nova-17-aaaaaaaa","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1,"clientToolsDisabled":true}]"""
+            )
+            .OnJson(HttpMethod.Get, "/prior/messages", transcript)
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/unfreeze", StringComparison.Ordinal),
+                _ => new HttpResponseMessage(HttpStatusCode.Conflict)
+                {
+                    Content = new StringContent("""{"error":"not_freezable","threadId":"prior"}"""),
+                }
+            )
+            .OnJson(HttpMethod.Post, "/messages", """{"inputId":"original","idempotencyKeyHonored":true}""")
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        static Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token) =>
+            Task.FromResult(
+                phase == "prepare"
+                    ? new JsonObject
+                    {
+                        ["mergeSha"] = new string('b', 40),
+                        ["contextPath"] = "context",
+                        ["reviewDirectory"] = "reviews",
+                        ["baselineComments"] = new JsonArray(),
+                    }
+                    : []
+            );
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await new SqliteKvStore(connection).SetAsync(
+                $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                new JsonObject
+                {
+                    ["17"] = new JsonObject
+                    {
+                        ["Lifecycle"] = "Open",
+                        ["IsDraft"] = false,
+                        ["HeadSha"] = new string('a', 40),
+                    },
+                }
+            );
+            var options = CliOptions.Parse([
+                "review",
+                "run",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "test",
+                "--execute",
+            ]);
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    options,
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ => Task.CompletedTask,
+                    () => DateTimeOffset.UtcNow
+                );
+            var failure = (await run.Should().ThrowAsync<InvalidOperationException>()).Which;
+            var sends = handler
+                .Requests.Where(r =>
+                    r.Method == HttpMethod.Post
+                    && r.Uri.AbsolutePath.EndsWith("/prior/messages", StringComparison.Ordinal)
+                )
+                .ToList();
+            if (history == "completed")
+            {
+                failure.Message.Should().Be("PR head was already reviewed by another run; skipped.");
+                sends.Should().BeEmpty();
+                return;
+            }
+            // The titled conversation is reused, and the review is sent into it.
+            failure.Message.Should().NotBe("PR head was already reviewed by another run; skipped.");
+            sends.Should().ContainSingle();
+            // Only a conversation that holds an earlier review is told it has one.
+            const string reReview = "This conversation already reviewed an earlier revision";
+            if (history == "earlier-head")
+                sends[0].Body.Should().Contain(reReview);
+            else
+                sends[0].Body.Should().NotContain(reReview);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    // The persisted-message rows the host's GET api/conversations/{threadId}/messages returns.
+    private static string Transcript(params (string Role, string Text)[] messages) =>
+        new JsonArray(
+            messages
+                .Select(message =>
+                    (JsonNode)
+                        new JsonObject
+                        {
+                            ["messageType"] = "text",
+                            ["role"] = message.Role,
+                            ["timestamp"] = 1,
+                            ["messageJson"] = new JsonObject { ["text"] = message.Text }.ToJsonString(),
+                        }
+                )
+                .ToArray()
+        ).ToJsonString();
+
+    private static string ReviewPrompt(char head) =>
+        $"Review org/project/Nova PR #17 in slot Nova-2.\nExpected source head {new string(head, 40)}; prepared merge {new string('b', 40)}.";
 
     [Theory]
     [InlineData('d')]
@@ -2328,7 +3072,7 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/api/conversations?",
-                """[{"threadId":"prior","title":"Nova-17-dddddddd","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1}]"""
+                """[{"threadId":"prior","title":"Nova-17-dddddddd","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1,"clientToolsDisabled":true}]"""
             )
             .OnJson(HttpMethod.Put, "/metadata", "{}")
             .On(
@@ -2622,7 +3366,7 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/api/conversations?",
-                """[{"threadId":"thread","workspace":"workspace","provider":"test","mode":"workspace-agent"}]"""
+                """[{"threadId":"thread","workspace":"workspace","provider":"test","mode":"workspace-agent","clientToolsDisabled":true}]"""
             )
             .On(
                 request => request.RequestUri!.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal),
@@ -2971,6 +3715,358 @@ public sealed class ReviewdRunnerTests
             };
             return Task.FromResult(JsonNode.Parse(json)!.AsObject());
         }
+    }
+
+    // A conversation provisioned before DisableClientTools still has AskUserQuestion, and a question there
+    // parks the review with nobody to answer it. A fresh review continues only a headless conversation;
+    // anything else gets a new headless one, and the binding moves to it.
+    [Theory]
+    [InlineData(true, true, "99999999")]
+    [InlineData(true, false, "99999999")]
+    [InlineData(false, true, "99999999")]
+    [InlineData(false, false, "99999999")]
+    // The already-reviewed check still sees a conversation that is passed over for reuse.
+    [InlineData(false, false, "aaaaaaaa")]
+    public async Task Runner_continues_only_a_headless_conversation_and_provisions_a_headless_one_otherwise(
+        bool bound,
+        bool headless,
+        string priorHead
+    )
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-headless-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var flag = headless ? ""","clientToolsDisabled":true""" : "";
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .On(
+                request =>
+                    request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
+                _ => Json("""{"threadId":"fresh"}""")
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/api/conversations?",
+                $$"""[{"threadId":"prior","title":"Nova-17-{{priorHead}}","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1{{flag}}}]"""
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/prior/messages",
+                Transcript(("User", ReviewPrompt(priorHead[0])), ("Assistant", "Done."))
+            )
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/unfreeze", StringComparison.Ordinal),
+                _ => new HttpResponseMessage(HttpStatusCode.Conflict)
+                {
+                    Content = new StringContent("""{"error":"not_freezable","threadId":"prior"}"""),
+                }
+            )
+            .OnJson(HttpMethod.Post, "/messages", """{"inputId":"original","idempotencyKeyHonored":true}""")
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        static Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token) =>
+            Task.FromResult(
+                phase switch
+                {
+                    "eligibility" => new JsonObject
+                    {
+                        ["prId"] = "17",
+                        ["status"] = "active",
+                        ["isDraft"] = false,
+                        ["headSha"] = new string('a', 40),
+                    },
+                    "prepare" => new JsonObject
+                    {
+                        ["mergeSha"] = new string('b', 40),
+                        ["contextPath"] = "context",
+                        ["reviewDirectory"] = "reviews",
+                        ["baselineComments"] = new JsonArray(),
+                    },
+                    _ => [],
+                }
+            );
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await new SqliteKvStore(connection).SetAsync(
+                $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                new JsonObject
+                {
+                    ["17"] = new JsonObject
+                    {
+                        ["Lifecycle"] = "Open",
+                        ["IsDraft"] = false,
+                        ["HeadSha"] = new string('a', 40),
+                    },
+                }
+            );
+            if (bound)
+                await PrThreadBindings.SetAsync(database, repo, "17", "prior", CancellationToken.None);
+            var options = CliOptions.Parse([
+                "review",
+                "run",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "test",
+                "--execute",
+            ]);
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    options,
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ => Task.CompletedTask,
+                    () => DateTimeOffset.UtcNow
+                );
+            var failure = (await run.Should().ThrowAsync<InvalidOperationException>()).Which.Message;
+            var provisions = handler
+                .Requests.Where(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations")
+                .ToList();
+            var sends = handler
+                .Requests.Where(r =>
+                    r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal)
+                )
+                .Select(r => r.Uri.AbsolutePath)
+                .ToList();
+            var binding = await PrThreadBindings.GetAsync(database, repo, "17", CancellationToken.None);
+            if (priorHead == "aaaaaaaa")
+            {
+                failure.Should().Be("PR head was already reviewed by another run; skipped.");
+                provisions.Should().BeEmpty();
+                sends.Should().BeEmpty();
+            }
+            else if (headless)
+            {
+                failure.Should().Contain("Errored");
+                provisions.Should().BeEmpty();
+                sends.Should().Equal("/api/conversations/prior/messages");
+                binding.Should().Be("prior");
+            }
+            else
+            {
+                failure.Should().Contain("Errored");
+                JsonNode.Parse(provisions.Should().ContainSingle().Subject.Body!)!["disableClientTools"]!
+                    .GetValue<bool>()
+                    .Should()
+                    .BeTrue();
+                sends.Should().Equal("/api/conversations/fresh/messages");
+                binding.Should().Be("fresh", "the next run must find the headless conversation, not the old one");
+                handler
+                    .Requests.Should()
+                    .NotContain(r =>
+                        r.Method != HttpMethod.Get
+                        && r.Uri.AbsolutePath.StartsWith("/api/conversations/prior", StringComparison.Ordinal)
+                    );
+            }
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    // A passed-over legacy thread is never waited on, so a sub-agent still running there could publish for the PR
+    // beside a fresh review. Its whole tree defers the review (the batch retries it) until it settles, whether or
+    // not an earlier head's review completed: the child may have started after that review's cleanup.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Runner_admits_no_fresh_review_while_a_passed_over_thread_still_has_a_live_child(
+        bool earlierReceipt
+    )
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-legacy-child-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var child = "running";
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .On(
+                request =>
+                    request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
+                _ => Json("""{"threadId":"fresh"}""")
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/api/conversations?",
+                """[{"threadId":"prior","title":"Nova-17-99999999","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1}]"""
+            )
+            .On(
+                request => request.RequestUri!.AbsolutePath == "/api/conversations/prior/subagents",
+                _ =>
+                    child == "busy"
+                        ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                        {
+                            Content = new StringContent("""{"code":"hierarchy_busy"}"""),
+                        }
+                        : Json(
+                            $$"""{"schemaVersion":1,"nodes":[{"agentId":"child","threadId":"child-thread","parentThreadId":"prior","depth":1,"template":"publisher","status":"{{child}}"}]}"""
+                        )
+            )
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .OnJson(HttpMethod.Post, "/messages", """{"inputId":"original","idempotencyKeyHonored":true}""")
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        static Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token) =>
+            Task.FromResult(
+                phase switch
+                {
+                    "eligibility" => new JsonObject
+                    {
+                        ["prId"] = "17",
+                        ["status"] = "active",
+                        ["isDraft"] = false,
+                        ["headSha"] = new string('a', 40),
+                    },
+                    "prepare" => new JsonObject
+                    {
+                        ["mergeSha"] = new string('b', 40),
+                        ["contextPath"] = "context",
+                        ["reviewDirectory"] = "reviews",
+                        ["baselineComments"] = new JsonArray(),
+                    },
+                    _ => [],
+                }
+            );
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await new SqliteKvStore(connection).SetAsync(
+                $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                new JsonObject
+                {
+                    ["17"] = new JsonObject
+                    {
+                        ["Lifecycle"] = "Open",
+                        ["IsDraft"] = false,
+                        ["HeadSha"] = new string('a', 40),
+                    },
+                }
+            );
+            if (earlierReceipt)
+                await new SqliteKvStore(connection).SetAsync(
+                    $"reviewd/review-run/{repo.NormalizedKey}/17",
+                    new JsonObject
+                    {
+                        ["stage"] = "completed-verified",
+                        ["reviewedHeadSha"] = new string('9', 40),
+                        ["reviewCompletedAt"] = DateTimeOffset.UtcNow.AddHours(-1),
+                    }
+                );
+            var options = CliOptions.Parse([
+                "review",
+                "run",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "test",
+                "--execute",
+            ]);
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    options,
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ => Task.CompletedTask,
+                    () => DateTimeOffset.UtcNow
+                );
+            foreach (var live in new[] { "running", "busy" })
+            {
+                child = live;
+                await run.Should()
+                    .ThrowAsync<ReviewRunner.ReviewDeferredException>($"a {live} child tree has not settled");
+                handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "nothing is claimed or sent");
+            }
+
+            child = "completed";
+            (await run.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("Errored");
+            JsonNode.Parse(
+                handler
+                    .Requests.Should()
+                    .ContainSingle(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations")
+                    .Subject.Body!
+            )!["disableClientTools"]!
+                .GetValue<bool>()
+                .Should()
+                .BeTrue();
+            handler
+                .Requests.Where(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                .Select(r => r.Uri.AbsolutePath)
+                .Should()
+                .Equal("/api/conversations/fresh/messages");
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(database);
+        }
+    }
+
+    [Fact]
+    public async Task Find_conversation_by_title_prefix_prefers_a_headless_match_over_a_newer_one()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/api/conversations?",
+            """
+            [
+              {"threadId":"headless","title":"Nova-17-aaaaaaaa","workspace":"ws","mode":"m","provider":"p","lastUpdated":100,"clientToolsDisabled":true},
+              {"threadId":"asks","title":"Nova-17-bbbbbbbb","workspace":"ws","mode":"m","provider":"p","lastUpdated":200,"clientToolsDisabled":false},
+              {"threadId":"legacy","title":"Nova-17-cccccccc","workspace":"ws","mode":"m","provider":"p","lastUpdated":300}
+            ]
+            """
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+
+        var match = await client.FindConversationByTitlePrefixAsync("Nova-17-", "ws", "m", CancellationToken.None);
+
+        match.Should().Be(new S2SConversationMatch("headless", "p", true));
+        (await client.GetClientToolsDisabledAsync("headless", CancellationToken.None)).Should().BeTrue();
+        (await client.GetClientToolsDisabledAsync("asks", CancellationToken.None)).Should().BeFalse();
+        (await client.GetClientToolsDisabledAsync("legacy", CancellationToken.None)).Should().BeFalse();
+        (await client.GetClientToolsDisabledAsync("missing", CancellationToken.None)).Should().BeNull();
     }
 
     [Fact]

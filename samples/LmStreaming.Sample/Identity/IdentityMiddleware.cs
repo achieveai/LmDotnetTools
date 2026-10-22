@@ -119,11 +119,16 @@ public sealed class IdentityMiddleware
     /// so guarding it would refuse the only caller it has and grant nothing.
     /// </para>
     /// <para>
-    /// The webhook is the whole list, and it is the sharpest case: its <c>Authorization</c> header
+    /// The egress-auth webhook is the sharpest case: its <c>Authorization</c> header
     /// carries a per-session secret, not a JWT. The bearer handler tries to parse it, fails, stashes
     /// nothing, and the guard would then refuse the caller for presenting the credential its own
     /// endpoint requires. No front door in <see cref="IRequestPrincipalSource"/> recognises a
     /// session secret, so there is no principal to be had here at any price.
+    /// </para>
+    /// <para>
+    /// The unified sandbox webhook (<c>/api/sandbox/webhook</c>: context discovery and background-task
+    /// completion) is the same case. The gateway presents only the session's registered secret, which
+    /// <c>SandboxWebhookController</c> checks against <c>SessionSecretStore</c> before it dispatches anything.
     /// </para>
     /// <para>
     /// <b><c>/api/lifecycle</c> used to be here and is deliberately NOT any more (#402).</b> The
@@ -176,7 +181,7 @@ public sealed class IdentityMiddleware
     /// named here. Adding a route cannot silently land it outside the boundary.
     /// </para>
     /// </remarks>
-    private static readonly string[] InfrastructureApiPaths = ["/api/auth/webhook"];
+    private static readonly string[] InfrastructureApiPaths = ["/api/auth/webhook", "/api/sandbox/webhook"];
 
     /// <summary>
     /// Every <c>/api</c> prefix this middleware lets past without establishing a principal. Public

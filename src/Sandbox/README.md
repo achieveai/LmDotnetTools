@@ -54,7 +54,11 @@ the workflow is the operative pin.
 **Gateway compatibility:** error and operation semantics are synced to `SandboxedOstoolsMcpServer`
 `origin/master` `7f19413` (v0.1.16), and CI pins image tag `0.1.16`: images, homes, backups, per-agent
 state and leased browsers need it. Per-app git marketplaces (below) are built against the gateway commit
-`bac5a32`, which is NOT in v0.1.16 — on v0.1.16 their routes do not exist. That sync covers:
+`bac5a32`, which is NOT in v0.1.16 — on v0.1.16 their routes do not exist. The working directory,
+properties, skill tiers and the unified webhook (below) are synced to `origin/master` `8547483f`
+(2026-10-18, after v0.1.16, unreleased): on v0.1.16 their routes do not exist, and a requested
+`WorkingDir` fails the create (v0.1.16 echoes only the legacy `home` and does not make the workspace
+read-only). That sync covers:
 
 - REST error bodies (`{ error, code, error_code, retryable }`) read under a 64 KiB bound on every
   non-2xx except `401`/`403`, surfacing `ErrorCode`, `Retryable`, `Retry-After` (`RetryAfter`), and a
@@ -95,7 +99,7 @@ state and leased browsers need it. Per-app git marketplaces (below) are built ag
   integrity-verified UTF-8 file round-trips and directory listing over a workspace-relative POSIX
   path. See [File transfer](#file-transfer) below.
 
-## Images, home and workspace backup (gateway v0.1.16)
+## Images, working directory and workspace backup
 
 - **Image** (ADR 0039): `new SandboxCreateRequest(ws, image: "debian:bookworm-slim")` (or `repo@sha256:…`).
   The gateway's allow-list decides; a refusal is `ImageRejected` with `ErrorCode` `image_not_allowed`,
@@ -104,11 +108,17 @@ state and leased browsers need it. Per-app git marketplaces (below) are built ag
   (conformance + `Warnings`, e.g. "image has no pwsh"). `GetAsync` reports `Image`/`ImageDigest` when the
   gateway's GET carries them (a session recorded without an image reports the server default); older GETs
   and every `ListAsync` result leave them `null`, and `ImageReport` is create-only.
-- **Home** (issue #142): `new SandboxCreateRequest(ws, home: "worktrees/issue-142")`, sent as top-level
-  `home` beside top-level `workspace`. `CreateAsync` requires `SandboxInfo.WorkspaceHome` to equal the
-  normalized request (`./a//b/` → `a/b`); on a missing or different acknowledgement it deletes the sandbox
-  and throws `Protocol`. On Docker the home must already exist and be owned by the sandbox user: v0.1.16
-  creates a missing home root-owned and refuses it with a code-less `400`.
+- **Working directory** (ADR 0044, formerly "home", issue #142): `new SandboxCreateRequest(ws,
+  workingDir: "agents/a1")`, sent as top-level `working_dir` beside top-level `workspace` (the deprecated
+  `home` alias is never sent). **It is the only place agents can write**: the MCP tools and shells see the
+  rest of the workspace read-only (OS-enforced on Docker and Linux; on Windows AppContainer an ACL split that
+  stops a cooperative agent but is not a security boundary while an operation runs, ADR 0044), while the direct
+  file API and operations still write everywhere. Operations without a `WorkingDirectory` run at the
+  workspace ROOT, not in it, and `HOME` moves to `/home/sbx` on Docker. A git worktree cannot be the working
+  directory (its commits land in the read-only parent `.git`). `CreateAsync` requires
+  `SandboxInfo.WorkspaceWorkingDir` (`volumes.workspace.working_dir`) to equal the normalized request
+  (`./a//b/` → `a/b`); on a missing or different acknowledgement, including a legacy `home`-only echo, it
+  deletes the sandbox and throws `Protocol`.
 - **Backup** (issue #191): `ListBackupSnapshotsAsync(workspace)`, `RestoreBackupSnapshotAsync(workspace,
   snapshotId)`, `PurgeBackupWorkspaceAsync(workspace)` and `GetBackupCostsAsync(since, groupBy)`. Every call
   sends `app_id` = `AppId`, which the gateway needs with `AUTH_ENFORCE` off and ignores with it on. A
@@ -116,7 +126,31 @@ state and leased browsers need it. Per-app git marketplaces (below) are built ag
   workspace: delete it first. **Purge is destructive**: it deletes this gateway's sandboxes on the workspace,
   then its snapshots and directory. `backup_disabled` is `Unavailable` (not `NotFound`),
   `snapshot_not_found` is `NotFound`, `backup_unavailable` is `Unavailable`, and the `400 invalid_*` /
-  `app_id_required` refusals are `Protocol` with `ErrorCode` set.
+  `app_id_required` refusals are `Protocol` with `ErrorCode` set. A partitioned app passes its partition
+  values to the overloads taking `partitionProperties` (see below).
+
+## Properties, skill tiers and the sandbox webhook (gateway `8547483f`)
+
+- **Properties and partitions** (ADR 0042): `new SandboxCreateRequest(ws, properties: …)`; the create and
+  GET results carry `Properties` (`null` from an older gateway) and `Partition`. `GetPropertiesAsync` /
+  `UpdatePropertiesAsync` read and change the bag (`null` value = unset). Keys in the app's registry
+  `partition` list are required at create, become workspace directory levels and are immutable: changing
+  one is `Conflict` (`partition_property_immutable`, keys on `InvalidKeys`). Backup calls for a partitioned
+  app take the partition values (`properties.<key>=` query / `properties` body).
+- **Skill tiers** (ADR 0041): `new SandboxCreateRequest(ws, skills: new SandboxSkillsPolicy(…))` sets the
+  default tier, the included list and the unlisted-skills trailer; the create result echoes the resolved
+  policy on `SkillsPolicy`. `GetSkillsAsync(sessionId, agentId, tier, loaded)` returns one agent's catalog;
+  `UpdateSkillTiersAsync(sessionId, set, reset, agentId)` moves skills between tiers (works before the
+  agent's first call). MCP clients must re-run `tools/list` afterwards (`ToolsListChanged`).
+  `SandboxAgentInfo.IncludedSkills` counts the listed skills.
+- **Sandbox webhook** (gateway PR #205): `new SandboxCreateRequest(ws, webhook: new
+  SandboxWebhookSettings(url, authHeader, events))` registers one URL for every event (`SandboxWebhookEvents`:
+  `sandbox_created`, `sandbox_deleted`, `context_discovery`, `auth_request`, `auth_post_response_failure`,
+  `task_completed`). `GetAsync` reports it on `Webhook` without the auth header value. The SDK only sends the
+  registration; receiving and deduplicating events (`Idempotency-Key`) is the host's job. Register either
+  this or the legacy `SandboxDiscoverySettings`, not both: with both, every discovery arrives twice. A
+  gateway at or below v0.1.16 ignores `webhook`, so keep the legacy block for it. LmAgentInfra's
+  `SandboxSessionRegistry` picks one through `WebhookOptions.UseSandboxWebhook` (default off).
 
 ## File transfer
 

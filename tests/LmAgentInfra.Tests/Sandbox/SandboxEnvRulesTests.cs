@@ -38,8 +38,12 @@ public class SandboxEnvRulesTests
     [Theory]
     [InlineData("http_proxy")]
     [InlineData("Sandbox_Home")]
+    [InlineData("sandbox_workdir")] // gateway ADR 0044 exports the working directory under this name
     [InlineData("HTTP_PROXY")]
     [InlineData("sandbox_allowed_paths")]
+    [InlineData("Sandbox_Python")] // gateway #213: the trusted interpreter for Windows .py mini apps
+    [InlineData("sbx_agent_id")]
+    [InlineData("git_ssl_cainfo")]
     public void FindInvalidKeys_RejectsProtectedNames_CaseInsensitively(string key)
     {
         var invalid = SandboxEnvRules.FindInvalidKeys(Env((key, "v")));

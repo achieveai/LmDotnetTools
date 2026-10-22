@@ -74,10 +74,24 @@ public record Workspace
     public string? Image { get; init; }
 
     /// <summary>
-    /// Workspace-relative working directory (home) for every sandbox of this workspace, or
-    /// <see langword="null"/> for the workspace root. Set on create only.
+    /// Workspace-relative working directory for every sandbox of this workspace, or <see langword="null"/> for
+    /// none. When set it is the only place agents can write: the gateway makes the rest of the workspace
+    /// read-only for them (ADR 0044). Set on create only.
     /// </summary>
-    public string? Home { get; init; }
+    public string? WorkingDir { get; init; }
+
+    /// <summary>
+    /// Reads the key this field was persisted under before the gateway renamed "home" to "working directory",
+    /// so a workspace saved by an older build keeps its setting. Never written back.
+    /// </summary>
+    [JsonInclude]
+    [JsonPropertyName("home")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    private string? LegacyHome
+    {
+        get => null;
+        init => WorkingDir ??= value;
+    }
 }
 
 /// <summary>
@@ -116,8 +130,8 @@ public record WorkspaceCreate
     /// <summary>Optional client image ref. Blank is treated as none. See <see cref="Workspace.Image"/>.</summary>
     public string? Image { get; init; }
 
-    /// <summary>Optional workspace-relative home. Blank is treated as none. See <see cref="Workspace.Home"/>.</summary>
-    public string? Home { get; init; }
+    /// <summary>Optional workspace-relative working directory. Blank is treated as none. See <see cref="Workspace.WorkingDir"/>.</summary>
+    public string? WorkingDir { get; init; }
 }
 
 /// <summary>
@@ -181,7 +195,7 @@ public sealed record WorkspaceView(
     int PluginsRevision,
     IReadOnlyDictionary<string, string> Env,
     string? Image,
-    string? Home
+    string? WorkingDir
 );
 
 public sealed record WorkspaceGatewayView(string CanonicalBaseUrl, string AppId, bool Available, string? Error);
@@ -208,7 +222,7 @@ public static class WorkspaceViewMapping
             workspace.PluginsRevision,
             workspace.Env,
             workspace.Image,
-            workspace.Home
+            workspace.WorkingDir
         );
     }
 }

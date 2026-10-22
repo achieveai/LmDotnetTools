@@ -22,6 +22,16 @@ public interface IMarketplaceCatalogClient
         IReadOnlyList<string>? marketplaces = null,
         CancellationToken ct = default
     );
+
+    /// <summary>
+    /// As <see cref="GetCatalogAsync"/>, but without the browse-time bound, so a cold gateway can finish
+    /// building its catalog (47-152 s observed). Disconnecting early cancels that build, which left the
+    /// catalog cold for good. Only the transport timeout limits this call.
+    /// </summary>
+    Task<MarketplaceCatalog> FetchCatalogToCompletionAsync(
+        IReadOnlyList<string>? marketplaces = null,
+        CancellationToken ct = default
+    ) => GetCatalogAsync(marketplaces, ct);
 }
 
 /// <summary>

@@ -91,6 +91,13 @@ public record ConversationSummary
     public bool Deleted { get; init; }
 
     /// <summary>
+    /// True when the conversation was provisioned headless (<c>ProvisionConversationRequest.DisableClientTools</c>),
+    /// so its agent tree has neither <c>AskUserQuestion</c> nor <c>NotifyClient</c>. Always written: a caller
+    /// that reuses conversations (Reviewd) treats an absent field, from a host that predates it, as false.
+    /// </summary>
+    public bool ClientToolsDisabled { get; init; }
+
+    /// <summary>
     /// Renders a stored visibility for the wire. Hand-mapped the way the sharing routes hand-map
     /// <c>GrantRole</c> to <c>viewer</c>/<c>editor</c>: the enum carries no
     /// <see cref="JsonStringEnumConverter"/>, so putting it on the DTO as-is would serialize
@@ -257,6 +264,14 @@ public record ProvisionConversationRequest
     /// the one in effect. Never logged.
     /// </summary>
     public IReadOnlyDictionary<string, string>? Env { get; init; }
+
+    /// <summary>
+    /// True for a headless conversation: no client is attached, so the agent and every sub-agent it spawns
+    /// get neither <c>AskUserQuestion</c> nor <c>NotifyClient</c>. A question asked with nobody to answer it
+    /// parks the run forever; without the tool the model has to carry on and report what it could not
+    /// decide. Default false keeps both tools, as before. Not changeable after provision.
+    /// </summary>
+    public bool DisableClientTools { get; init; }
 }
 
 /// <summary>

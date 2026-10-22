@@ -7,12 +7,12 @@ using Xunit;
 namespace AchieveAi.LmDotnetTools.Sandbox.Tests;
 
 /// <summary>
-/// Client image (ADR 0039) and workspace home (gateway issue #142) on sandbox create, against response
-/// bodies captured from a live v0.1.16 gateway: the request fields, the create acknowledgement
-/// (<c>image</c>, <c>image_digest</c>, <c>image_report</c>, <c>volumes.workspace.home</c>), the exact-home
+/// Client image (ADR 0039) and working directory (ADR 0044, formerly "home") on sandbox create, against
+/// response bodies shaped like a live gateway's: the request fields, the create acknowledgement (<c>image</c>,
+/// <c>image_digest</c>, <c>image_report</c>, <c>volumes.workspace.working_dir</c>), the exact-acknowledgement
 /// check, and the 422 conformance report on the exception.
 /// </summary>
-public sealed class SandboxClientImageHomeTests
+public sealed class SandboxClientImageWorkingDirTests
 {
     private const string ReportJson = """
         {"os_id":"debian","debian_family":true,"arch":"x86_64","user":"sandbox","uid":1000,"gid":1000,
@@ -20,30 +20,37 @@ public sealed class SandboxClientImageHomeTests
          "warnings":["image has no pwsh; the PowerShell tool will fail"]}
         """;
 
-    private static string CreatedJson(string? home) =>
+    private static string CreatedJson(string? workingDir, string? legacyHome = null) =>
         "{\"session_id\":\"s-1\",\"container_id\":\"c-1\",\"volumes\":{\"workspace\":{\"container_path\":\"/workspace\","
         + "\"read_only\":false,\"id\":31"
-        + (home is null ? string.Empty : $",\"home\":\"{home}\"")
+        + (workingDir is null ? string.Empty : $",\"working_dir\":\"{workingDir}\"")
+        + (legacyHome is null ? string.Empty : $",\"home\":\"{legacyHome}\"")
         + "}},\"image\":\"debian:bookworm-slim\",\"image_digest\":\"debian@sha256:0104b3\",\"image_report\":"
         + ReportJson
         + "}";
 
     [Fact]
-    public async Task CreateAsync_ImageAndHome_AreSentAndTheAcknowledgementIsSurfaced()
+    public async Task CreateAsync_ImageAndWorkingDir_AreSentAndTheAcknowledgementIsSurfaced()
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
-        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreatedJson("worktrees/issue-1"), HttpStatusCode.Created);
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            CreatedJson("agents/a1", legacyHome: "agents/a1"),
+            HttpStatusCode.Created
+        );
 
         var info = await client.CreateAsync(
-            new SandboxCreateRequest("ws", image: "debian:bookworm-slim", home: "worktrees/issue-1")
+            new SandboxCreateRequest("ws", image: "debian:bookworm-slim", workingDir: "agents/a1")
         );
 
         using var sent = JsonDocument.Parse(handler.Requests.Single().Body!);
         sent.RootElement.GetProperty("image").GetString().Should().Be("debian:bookworm-slim");
-        sent.RootElement.GetProperty("home").GetString().Should().Be("worktrees/issue-1");
+        sent.RootElement.GetProperty("working_dir").GetString().Should().Be("agents/a1");
+        sent.RootElement.TryGetProperty("home", out _).Should().BeFalse("the deprecated alias is never sent");
         info.Image.Should().Be("debian:bookworm-slim");
         info.ImageDigest.Should().Be("debian@sha256:0104b3");
-        info.WorkspaceHome.Should().Be("worktrees/issue-1");
+        info.WorkspaceWorkingDir.Should().Be("agents/a1");
         info.ImageReport.Should()
             .BeEquivalentTo(
                 new SandboxImageReport
@@ -64,49 +71,59 @@ public sealed class SandboxClientImageHomeTests
     }
 
     [Fact]
-    public async Task CreateAsync_NoImageOrHome_OmitsBothFieldsSoTheGatewayDefaultsApply()
+    public async Task CreateAsync_NoImageOrWorkingDir_OmitsBothFieldsSoTheGatewayDefaultsApply()
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
-        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreatedJson(home: null), HttpStatusCode.Created);
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreatedJson(workingDir: null), HttpStatusCode.Created);
 
         _ = await client.CreateAsync(new SandboxCreateRequest("ws"));
 
         using var sent = JsonDocument.Parse(handler.Requests.Single().Body!);
         sent.RootElement.TryGetProperty("image", out _).Should().BeFalse();
+        sent.RootElement.TryGetProperty("working_dir", out _).Should().BeFalse();
         sent.RootElement.TryGetProperty("home", out _).Should().BeFalse();
     }
 
     [Fact]
-    public async Task CreateAsync_HomeAcknowledgedInNormalizedForm_Succeeds()
+    public async Task CreateAsync_WorkingDirAcknowledgedInNormalizedForm_Succeeds()
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
-        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreatedJson("worktrees/issue-1"), HttpStatusCode.Created);
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreatedJson("agents/a1"), HttpStatusCode.Created);
 
-        var info = await client.CreateAsync(new SandboxCreateRequest("ws", home: "./worktrees//issue-1/"));
+        var info = await client.CreateAsync(new SandboxCreateRequest("ws", workingDir: "./agents//a1/"));
 
-        info.WorkspaceHome.Should().Be("worktrees/issue-1");
+        info.WorkspaceWorkingDir.Should().Be("agents/a1");
         handler.Requests.Should().ContainSingle("a matching acknowledgement must not delete the sandbox");
     }
 
     [Theory]
-    [InlineData(null)] // a gateway that predates per-sandbox homes never sends the field
-    [InlineData("worktrees/other")]
-    public async Task CreateAsync_HomeNotAcknowledgedExactly_DeletesTheSandboxAndThrowsProtocol(string? acknowledged)
+    [InlineData(null, null)] // a gateway that predates per-sandbox directories sends neither key
+    [InlineData(null, "agents/a1")] // v0.1.16 echoes only `home` and does not make the workspace read-only
+    [InlineData("agents/other", null)]
+    public async Task CreateAsync_WorkingDirNotAcknowledgedExactly_DeletesTheSandboxAndThrowsProtocol(
+        string? acknowledged,
+        string? legacyHome
+    )
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
-        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreatedJson(acknowledged), HttpStatusCode.Created);
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            CreatedJson(acknowledged, legacyHome),
+            HttpStatusCode.Created
+        );
         handler.OnJson(HttpMethod.Delete, "/api/v1/sandboxes/s-1", "{\"session_id\":\"s-1\",\"message\":\"ok\"}");
 
-        var act = () => client.CreateAsync(new SandboxCreateRequest("ws", home: "worktrees/issue-1"));
+        var act = () => client.CreateAsync(new SandboxCreateRequest("ws", workingDir: "agents/a1"));
 
         var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
         thrown.Kind.Should().Be(SandboxErrorKind.Protocol);
-        thrown.Message.Should().Contain("s-1").And.Contain("worktrees/issue-1").And.Contain("deleted");
+        thrown.Message.Should().Contain("s-1").And.Contain("agents/a1").And.Contain("deleted");
         handler.Requests.Should().Contain(r => r.Method == HttpMethod.Delete && r.Uri.AbsolutePath.EndsWith("/s-1"));
     }
 
     [Fact]
-    public async Task CreateAsync_HomeNotAcknowledged_CallerCancelsDuringCleanup_StillDeletesTheSandbox()
+    public async Task CreateAsync_WorkingDirNotAcknowledged_CallerCancelsDuringCleanup_StillDeletesTheSandbox()
     {
         // Once CreateAsync throws, nothing else holds the session id: a caller cancelling while the cleanup DELETE
         // is in flight must not abandon it.
@@ -129,7 +146,7 @@ public sealed class SandboxClientImageHomeTests
             }
         );
 
-        var act = () => client.CreateAsync(new SandboxCreateRequest("ws", home: "worktrees/issue-1"), cts.Token);
+        var act = () => client.CreateAsync(new SandboxCreateRequest("ws", workingDir: "agents/a1"), cts.Token);
 
         var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
         thrown.Message.Should().Contain("It was deleted.");
@@ -178,7 +195,7 @@ public sealed class SandboxClientImageHomeTests
     }
 
     [Fact]
-    public async Task GetAsync_ReportsTheHome_ButNoImageFields_FromAGatewayWhoseDetailSendsNone()
+    public async Task GetAsync_ReportsTheWorkingDir_ButNoImageFields_FromAGatewayWhoseDetailSendsNone()
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
         // A gateway before the GET image fields: session, container, created_at and volumes only.
@@ -186,12 +203,12 @@ public sealed class SandboxClientImageHomeTests
             HttpMethod.Get,
             "/api/v1/sandboxes/s-1",
             "{\"session_id\":\"s-1\",\"container_id\":\"c-1\",\"created_at\":\"2026-10-09T20:55:00Z\",\"volumes\":"
-                + "{\"workspace\":{\"container_path\":\"/workspace\",\"read_only\":false,\"id\":31,\"home\":\"wt\"}}}"
+                + "{\"workspace\":{\"container_path\":\"/workspace\",\"read_only\":false,\"id\":31,\"working_dir\":\"wt\"}}}"
         );
 
         var info = await client.GetAsync("s-1");
 
-        info.WorkspaceHome.Should().Be("wt");
+        info.WorkspaceWorkingDir.Should().Be("wt");
         info.Image.Should().BeNull();
         info.ImageDigest.Should().BeNull();
         info.ImageReport.Should().BeNull();

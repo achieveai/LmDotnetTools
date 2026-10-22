@@ -49,7 +49,9 @@ internal sealed record SnapshotDto(
 internal sealed record RestoreRequestDto(
     [property: JsonPropertyName("workspace")] string Workspace,
     [property: JsonPropertyName("snapshot_id")] string SnapshotId,
-    [property: JsonPropertyName("app_id")] string AppId
+    [property: JsonPropertyName("app_id")] string AppId,
+    // A partitioned app's partition values (ADR 0042); omitted for an unpartitioned app.
+    [property: JsonPropertyName("properties")] IReadOnlyDictionary<string, string>? Properties = null
 );
 
 /// <summary>
