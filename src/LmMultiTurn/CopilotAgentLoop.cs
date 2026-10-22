@@ -567,20 +567,31 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                 return;
             }
 
-            var properties = metadata.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
+            // Atomic, so a property another writer set after the base write is kept; a separate
+            // load then save would write the stale copy back over it.
+            var id = _copilotSessionId;
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            await Store.UpdateMetadataAsync(
+                ThreadId,
+                existing =>
+                {
+                    var current = existing ?? metadata;
+                    var properties =
+                        current.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
 
-            if (!string.IsNullOrWhiteSpace(_copilotSessionId))
-            {
-                properties[CopilotSessionIdProperty] = _copilotSessionId;
-            }
+                    if (!string.IsNullOrWhiteSpace(id))
+                    {
+                        properties[CopilotSessionIdProperty] = id;
+                    }
 
-            var updatedMetadata = metadata with
-            {
-                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                Properties = properties.ToImmutable(),
-            };
-
-            await Store.SaveMetadataAsync(ThreadId, updatedMetadata, ct);
+                    return current with
+                    {
+                        LastUpdated = now,
+                        Properties = properties.ToImmutable(),
+                    };
+                },
+                ct
+            );
 
             Logger.LogInformation(
                 "{event_type} {event_status} {provider} {provider_mode} {thread_id} {copilot_session_id}",

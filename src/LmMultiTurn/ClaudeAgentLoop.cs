@@ -394,37 +394,46 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         try
         {
             var latestRun = LatestRunId;
-            var existing = await Store.LoadMetadataAsync(ThreadId, ct);
+            var sessionId = CurrentSessionId;
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
-            // Merge claude-sdk session mapping into the existing dictionary.
-            var sessionMappings = existing?.SessionMappings;
-            if (!string.IsNullOrEmpty(CurrentSessionId) && !string.IsNullOrEmpty(latestRun))
-            {
-                var merged = sessionMappings == null ? [] : new Dictionary<string, string>(sessionMappings);
-                merged[$"{SessionMappingKeyPrefix}{CurrentSessionId}"] = latestRun;
-                sessionMappings = merged;
-            }
+            // Atomic for the same reason as the base write: a separate load then save drops
+            // whatever another writer set in between.
+            await Store.UpdateMetadataAsync(
+                ThreadId,
+                existing =>
+                {
+                    // Merge claude-sdk session mapping into the existing dictionary.
+                    var sessionMappings = existing?.SessionMappings;
+                    if (!string.IsNullOrEmpty(sessionId) && !string.IsNullOrEmpty(latestRun))
+                    {
+                        var merged = sessionMappings == null ? [] : new Dictionary<string, string>(sessionMappings);
+                        merged[$"{SessionMappingKeyPrefix}{sessionId}"] = latestRun;
+                        sessionMappings = merged;
+                    }
 
-            var metadata = new ThreadMetadata
-            {
-                ThreadId = ThreadId,
-                CurrentRunId = null,
-                LatestRunId = latestRun,
-                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                Properties = existing?.Properties,
-                SessionMappings = sessionMappings,
+                    return new ThreadMetadata
+                    {
+                        ThreadId = ThreadId,
+                        CurrentRunId = null,
+                        LatestRunId = latestRun,
+                        LastUpdated = now,
+                        Properties = existing?.Properties,
+                        SessionMappings = sessionMappings,
 
-                // Carried, exactly as the base implementation does. This override REPLACES the
-                // base write rather than extending it, so the base class's carry-forward does not
-                // reach here - a field omitted below is written back as NULL, and a conversation
-                // with a null tenant is invisible to its own owner under Identity:Enforce.
-                TenantId = existing?.TenantId,
-                OwnerUserId = existing?.OwnerUserId,
-                OwnerAppId = existing?.OwnerAppId,
-                Visibility = existing?.Visibility,
-            };
-
-            await Store.SaveMetadataAsync(ThreadId, metadata, ct);
+                        // Carried, exactly as the base implementation does. This override REPLACES
+                        // the base write rather than extending it, so the base class's carry-forward
+                        // does not reach here - a field omitted below is written back as NULL, and a
+                        // conversation with a null tenant is invisible to its own owner under
+                        // Identity:Enforce.
+                        TenantId = existing?.TenantId,
+                        OwnerUserId = existing?.OwnerUserId,
+                        OwnerAppId = existing?.OwnerAppId,
+                        Visibility = existing?.Visibility,
+                    };
+                },
+                ct
+            );
         }
         catch (Exception ex)
         {

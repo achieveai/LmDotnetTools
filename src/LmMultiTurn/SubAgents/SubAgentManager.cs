@@ -5554,10 +5554,10 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <summary>
     /// Actively persists a sub-agent's just-flipped terminal status through its OWN
     /// <see cref="IConversationStore"/>, at the moment of transition. This is the causal push:
-    /// the child's own post-run metadata write (<c>MultiTurnAgentBase.UpdateMetadataAsync</c>) only
-    /// ever calls <see cref="IConversationStore.SaveMetadataAsync"/>, and a background sub-agent that
-    /// never receives another message never calls it again — so without this push, the exact
-    /// terminal status/timestamp would only ever be known in memory. Uses
+    /// the child's own post-run metadata write (<c>MultiTurnAgentBase.UpdateMetadataAsync</c>) runs
+    /// once per run, and a background sub-agent that never receives another message never writes
+    /// again — so without this push, the exact terminal status/timestamp would only ever be known in
+    /// memory. Uses
     /// <see cref="IConversationStore.UpdateMetadataAsync"/> so a concrete host integration (e.g. the
     /// sample's provenance-stamping store decorator) can layer its own metadata projection onto this
     /// touch exactly as it already does for the child's own writes; the manager itself stays

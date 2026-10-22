@@ -962,6 +962,24 @@ public class ConversationsControllerTests
         using var ct = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await WaitUntilChildAwaitingQuestionAsync(loop.SubAgentManager!, agentId, ct.Token);
 
+        // A background child that parks relays "[AwaitingAnswer]" to the parent, and that relay starts
+        // a short parent run AFTER the child is seen parked. A switch landing inside that run hits the
+        // run-in-progress guard instead of the pending-question guard under test, so wait until the
+        // parent has taken the relay in and that run has ended.
+        await Wait.UntilAsync(
+            () =>
+                Task.FromResult(
+                    loop.GetHistorySnapshot()
+                        .OfType<NotifyMessage>()
+                        .Any(n => n.NotifyKind == NotifyKinds.SubAgentCompletion && n.SourceToolCallId == agentId)
+                        && !pool.GetRunStateInfo(threadId).IsInProgress
+                ),
+            $"the parent took in the child '{agentId}' relay and its run ended",
+            TimeSpan.FromSeconds(30),
+            TimeSpan.FromMilliseconds(20),
+            cancellationToken: ct.Token
+        );
+
         return pool;
     }
 

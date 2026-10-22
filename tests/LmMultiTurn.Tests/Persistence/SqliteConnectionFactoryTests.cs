@@ -33,7 +33,12 @@ public class SqliteConnectionFactoryTests : IDisposable
 
     public void Dispose()
     {
-        SqliteConnection.ClearAllPools();
+        // Only this class's own files: a process-wide clear can dispose another test's connection mid-open.
+        foreach (var databasePath in Directory.EnumerateFiles(_root, "*.db", SearchOption.AllDirectories))
+        {
+            SqliteConnectionFactory.ClearPool(databasePath);
+        }
+
         try
         {
             Directory.Delete(_root, recursive: true);
@@ -58,13 +63,14 @@ public class SqliteConnectionFactoryTests : IDisposable
         // the operation publish-launch.ps1's atomic swap performs over a deployed notify-waits.db,
         // and it is the operation that actually failed in CI.
         //
-        // The factory sets Pooling = true, so ClearAllPools() below is REQUIRED even when disposal
-        // is correct -- a pooled connection's native handle deliberately outlives Dispose. That does
-        // not make this test vacuous, because the bug bypassed the pool entirely: base.Dispose was
+        // The factory sets Pooling = true, so ClearPool(databasePath) below is REQUIRED even when
+        // disposal is correct -- a pooled connection's native handle deliberately outlives Dispose. That
+        // does not make this test vacuous, because the bug bypassed the pool entirely: base.Dispose was
         // never invoked, so the connection was never closed OR returned, and no amount of
-        // pool-clearing reaches a handle the pool does not know it owns. ClearAllPools is therefore
-        // the precise dividing line: it releases a correctly-disposed connection and cannot release
-        // a leaked one.
+        // pool-clearing reaches a handle the pool does not know it owns. ClearPool is therefore the
+        // precise dividing line: it releases a correctly-disposed connection and cannot release a
+        // leaked one. The same line pins ClearPool itself: a ClearPool that missed this file's pool
+        // would leave the returned handle holding the file, and the rename would fail.
         var dbDirectory = Path.Combine(_root, "data");
         Directory.CreateDirectory(dbDirectory);
         var databasePath = Path.Combine(dbDirectory, "notify-waits.db");
@@ -77,7 +83,7 @@ public class SqliteConnectionFactoryTests : IDisposable
             _ = await command.ExecuteNonQueryAsync();
         }
 
-        SqliteConnection.ClearAllPools();
+        SqliteConnectionFactory.ClearPool(databasePath);
 
         var renamed = Path.Combine(_root, "data-renamed");
         var rename = () => Directory.Move(dbDirectory, renamed);
@@ -85,7 +91,7 @@ public class SqliteConnectionFactoryTests : IDisposable
         rename
             .Should()
             .NotThrow(
-                "disposing the connection must actually close it and return it to the pool -- only then can ClearAllPools release the file and let its directory be renamed"
+                "disposing the connection must actually close it and return it to the pool -- only then can ClearPool release the file and let its directory be renamed"
             );
         File.Exists(Path.Combine(renamed, "notify-waits.db")).Should().BeTrue();
     }

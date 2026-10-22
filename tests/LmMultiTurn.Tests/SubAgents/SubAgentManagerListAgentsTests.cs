@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -317,12 +318,11 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
     {
         // Task 1 (daemon-recursive-review-completion-barrier), reviewed decision: exact
         // status/timestamp must be persisted CAUSALLY from the manager's terminal-transition path,
-        // even if the child never performs another metadata write. A background sub-agent's own
-        // post-run save (MultiTurnAgentBase.UpdateMetadataAsync) only ever calls
-        // IConversationStore.SaveMetadataAsync — never UpdateMetadataAsync — so asserting that the
-        // ATOMIC UpdateMetadataAsync member was invoked for the child's thread proves the manager
-        // itself pushed the terminal transition through the child's own store, independent of
-        // whatever the child's existing post-run behavior already does.
+        // even if the child never performs another metadata write. The child's own post-run write
+        // (MultiTurnAgentBase.UpdateMetadataAsync) also goes through the atomic
+        // IConversationStore.UpdateMetadataAsync, so a call on the child's thread alone proves
+        // nothing. The push is told apart by what its update does (TerminalStatusTouch): it hands
+        // back the existing row untouched, while the child's write always builds a new record.
         var provider = new Mock<IStreamingAgent>();
         SetupStreamingResponse(
             provider,
@@ -338,6 +338,7 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         storeMock
             .Setup(s => s.LoadMetadataAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((ThreadMetadata?)null);
+        var updates = new ConcurrentQueue<(string ThreadId, Func<ThreadMetadata?, ThreadMetadata> Update)>();
         storeMock
             .Setup(s =>
                 s.UpdateMetadataAsync(
@@ -345,6 +346,9 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
                     It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
                     It.IsAny<CancellationToken>()
                 )
+            )
+            .Callback<string, Func<ThreadMetadata?, ThreadMetadata>, CancellationToken>(
+                (threadId, update, _) => updates.Enqueue((threadId, update))
             )
             .Returns(Task.CompletedTask);
 
@@ -358,17 +362,14 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
 
         _ = await manager.ObserveCompletionAsync(agentId, CancellationToken.None);
 
-        storeMock.Verify(
-            s =>
-                s.UpdateMetadataAsync(
-                    SubAgentManager.SubAgentThreadId(_parentMock.Object.ThreadId, agentId),
-                    It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
-                    It.IsAny<CancellationToken>()
-                ),
-            Times.AtLeastOnce,
-            "the manager must actively push the terminal transition through the child's own "
-                + "store, not rely solely on the child's next metadata write"
-        );
+        var childThreadId = SubAgentManager.SubAgentThreadId(_parentMock.Object.ThreadId, agentId);
+        updates
+            .Should()
+            .Contain(
+                u => u.ThreadId == childThreadId && TerminalStatusTouch.Is(u.ThreadId, u.Update),
+                "the manager must actively push the terminal transition through the child's own "
+                    + "store, not rely solely on the child's next metadata write"
+            );
     }
 
     [Fact]

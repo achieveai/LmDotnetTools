@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using FluentAssertions;
+using LmMultiTurn.Tests.Persistence;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;
@@ -2027,6 +2028,40 @@ public class MultiTurnAgentBaseTests
 
         await cts.CancelAsync();
         await agent.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task UpdateMetadataAsync_KeepsAPropertyAnotherWriterSetBetweenItsReadAndItsWrite()
+    {
+        // This write runs after every completed run, while other writers (the usage projection, a
+        // sub-agent's tier view, the todo board) update the same row through UpdateMetadataAsync. It
+        // used to read the row, rebuild it and save it back, so a property another writer set in
+        // between was erased until that writer wrote again. Seen as
+        // DuringRun_UsageAggregate_StaysInProgress finding no usage aggregate.
+        const string threadId = "test-thread-interleaved-writer";
+        var store = new InterleavingMetadataWriterStore(new InMemoryConversationStore(), threadId);
+        var agent = new TestMultiTurnAgent(threadId, store: store);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        _ = agent.RunAsync(cts.Token);
+
+        var input = new UserInput([new TextMessage { Text = "Hello", Role = Role.User }], InputId: "input-1");
+        await foreach (var _ in agent.ExecuteRunAsync(input, cts.Token))
+        {
+            // drain the run; its completion is what writes the metadata
+        }
+
+        // Disposal stops the loop, which waits for the run task and with it the end-of-run write.
+        await agent.DisposeAsync();
+
+        var saved = await store.LoadMetadataAsync(threadId);
+        _ = saved!.LatestRunId.Should().NotBeNull("non-vacuity: the end-of-run write ran");
+        _ = store.Injections.Should().BePositive("non-vacuity: another writer landed right before it");
+        _ = saved
+            .Properties.Should()
+            .ContainKey(InterleavingMetadataWriterStore.OtherWriterKey)
+            .WhoseValue.Should()
+            .Be(store.Injections, "the end-of-run write must keep what the other writer set last");
     }
 
     [Fact]

@@ -14,7 +14,6 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.Sandbox;
-using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -1312,7 +1311,7 @@ public class CapabilityTiersTests
         public async ValueTask DisposeAsync()
         {
             await Store.DisposeAsync();
-            SqliteConnection.ClearAllPools(); // releases the pooled file handles so the file can go
+            SqliteConnectionFactory.ClearPool(_path); // releases this file's pooled handles so the file can go
             foreach (var file in new[] { _path, _path + "-wal", _path + "-shm" })
             {
                 try

@@ -12,6 +12,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using FluentAssertions;
+using LmMultiTurn.Tests.Persistence;
 using Microsoft.Extensions.Logging;
 using Xunit;
 using Xunit.Abstractions;
@@ -677,6 +678,50 @@ public class CodexAgentLoopTests : LoggingTestBase
         codexThreadId?.ToString().Should().Be("codex_thread_persist_1");
 
         await cts.CancelAsync();
+    }
+
+    [Fact]
+    public async Task RunCompletionWrite_KeepsAPropertyAnotherWriterSetBetweenItsReadAndItsWrite()
+    {
+        // The override records the Codex thread id after the base end-of-run write; a read-then-save
+        // there erases whatever another writer (usage, tier view, todo board) set in between.
+        const string threadId = "thread-codex-interleaved-writer";
+        var fakeClient = new FakeCodexClient([
+            Event("thread.started", """{"type":"thread.started","thread_id":"codex_thread_interleaved"}"""),
+            Event(
+                "turn.completed",
+                """{"type":"turn.completed","usage":{"input_tokens":2,"cached_input_tokens":0,"output_tokens":1}}"""
+            ),
+        ]);
+        var store = new InterleavingMetadataWriterStore(new InMemoryConversationStore(), threadId);
+
+        await using (
+            var loop = new CodexAgentLoop(
+                new CodexSdkOptions(),
+                new Dictionary<string, CodexMcpServerConfig>(),
+                functionRegistry: null,
+                enabledTools: null,
+                threadId: threadId,
+                store: store,
+                clientFactory: (_, _) => fakeClient,
+                logger: LoggerFactory.CreateLogger<CodexAgentLoop>()
+            )
+        )
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            _ = loop.RunAsync(cts.Token);
+            var input = new UserInput([new TextMessage { Role = Role.User, Text = "hello" }]);
+            await foreach (var _ in loop.ExecuteRunAsync(input, cts.Token)) { }
+        } // disposing waits for the run task, so the end-of-run writes have landed
+
+        var metadata = await store.LoadMetadataAsync(threadId);
+        metadata!.Properties.Should().ContainKey("codex_thread_id", "non-vacuity: the override's write ran");
+        store.Injections.Should().BePositive("non-vacuity: another writer landed right before it");
+        metadata
+            .Properties.Should()
+            .ContainKey(InterleavingMetadataWriterStore.OtherWriterKey)
+            .WhoseValue.Should()
+            .Be(store.Injections, "the end-of-run writes must keep what the other writer set last");
     }
 
     /// <summary>

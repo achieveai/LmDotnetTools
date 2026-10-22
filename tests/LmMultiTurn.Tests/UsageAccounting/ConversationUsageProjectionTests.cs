@@ -6,7 +6,6 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using FluentAssertions;
-using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Tests.UsageAccounting;
@@ -88,7 +87,7 @@ public class ConversationUsageProjectionTests
         finally
         {
             await store.DisposeAsync();
-            SqliteConnection.ClearAllPools();
+            SqliteConnectionFactory.ClearPool(dbPath);
             TryDelete(dbPath);
             TryDelete(dbPath + "-wal");
             TryDelete(dbPath + "-shm");

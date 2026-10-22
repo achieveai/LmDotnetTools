@@ -172,7 +172,8 @@ public class SubAgentShutdownTerminalStatusTests
 
     /// <summary>
     /// In-memory store that records the live snapshot its provenance describe resolves to whenever the
-    /// manager pushes metadata through it, and can optionally park that push.
+    /// manager pushes metadata through it, and can optionally park that push. Only the push counts: the
+    /// child's own end-of-run write uses the same atomic update, and is passed straight through.
     /// </summary>
     private sealed class DescribingMetadataStore : IConversationStore
     {
@@ -181,13 +182,13 @@ public class SubAgentShutdownTerminalStatusTests
         private Task? _wedge;
         private int _wedgedUpdates;
 
-        /// <summary>The snapshot the describe resolved to on the most recent metadata update.</summary>
+        /// <summary>The snapshot the describe resolved to on the most recent terminal-status push.</summary>
         public SubAgentSnapshot? LastDescribed { get; private set; }
 
-        /// <summary>How many metadata updates have parked since <see cref="WedgeUpdatesUntil"/>.</summary>
+        /// <summary>How many terminal-status pushes have parked since <see cref="WedgeUpdatesUntil"/>.</summary>
         public int WedgedUpdateCount => Volatile.Read(ref _wedgedUpdates);
 
-        /// <summary>From now on, every metadata update parks on <paramref name="release"/>.</summary>
+        /// <summary>From now on, every terminal-status push parks on <paramref name="release"/>.</summary>
         public void WedgeUpdatesUntil(Task release) => _wedge = release;
 
         public DescribingMetadataStore Bind(Func<string, SubAgentSnapshot?> describe)
@@ -225,6 +226,12 @@ public class SubAgentShutdownTerminalStatusTests
             CancellationToken ct = default
         )
         {
+            if (!TerminalStatusTouch.Is(threadId, update))
+            {
+                await _inner.UpdateMetadataAsync(threadId, update, ct);
+                return;
+            }
+
             LastDescribed = _describe?.Invoke(threadId) ?? LastDescribed;
             if (_wedge is { } wedge)
             {

@@ -3,7 +3,6 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using FluentAssertions;
-using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace LmMultiTurn.Tests.Persistence;
@@ -43,6 +42,7 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
 
     private string _root = null!;
     private readonly List<IAsyncDisposable> _disposables = [];
+    private readonly List<string> _sqlitePaths = [];
 
     public Task InitializeAsync()
     {
@@ -58,7 +58,12 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
             await disposable.DisposeAsync();
         }
 
-        SqliteConnection.ClearAllPools();
+        // Only this test's own files: a process-wide clear can dispose another test's connection mid-open.
+        foreach (var path in _sqlitePaths)
+        {
+            SqliteConnectionFactory.ClearPool(path);
+        }
+
         await Task.Delay(50);
 
         // #477: the "file" store kind here is a FileConversationStore with the exclusive-create retry
@@ -187,7 +192,9 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         switch (kind)
         {
             case "sqlite":
-                var sqlite = new SqliteConversationStore(Path.Combine(_root, $"conv_{Guid.NewGuid():N}.db"));
+                var path = Path.Combine(_root, $"conv_{Guid.NewGuid():N}.db");
+                _sqlitePaths.Add(path);
+                var sqlite = new SqliteConversationStore(path);
                 _disposables.Add(sqlite);
                 return sqlite;
             case "file":

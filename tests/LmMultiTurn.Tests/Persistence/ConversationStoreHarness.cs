@@ -29,6 +29,7 @@ internal sealed class ConversationStoreHarness : IAsyncDisposable
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"seq_{Guid.NewGuid():N}");
     private readonly List<IAsyncDisposable> _disposables = [];
     private readonly Dictionary<string, string> _backing = new(StringComparer.Ordinal);
+    private readonly List<string> _sqlitePaths = [];
     private InMemoryConversationStore? _memory;
 
     public ConversationStoreHarness()
@@ -43,6 +44,7 @@ internal sealed class ConversationStoreHarness : IAsyncDisposable
         {
             case "sqlite":
                 _backing[kind] = Path.Combine(_root, $"conv_{Guid.NewGuid():N}.db");
+                _sqlitePaths.Add(_backing[kind]);
                 return Reopen(kind);
             case "file":
                 _backing[kind] = Path.Combine(_root, $"file_{Guid.NewGuid():N}");
@@ -87,7 +89,7 @@ internal sealed class ConversationStoreHarness : IAsyncDisposable
                 // Let the store create the schema, then strip the sequence numbers it assigned.
                 var store = Reopen(kind);
                 await store.AppendMessagesAsync(threadId, rows);
-                await using var connection = new SqliteConnection($"Data Source={_backing[kind]}");
+                await using var connection = new SqliteConnection($"Data Source={_backing[kind]};Pooling=False");
                 await connection.OpenAsync();
                 using var command = connection.CreateCommand();
                 command.CommandText = "UPDATE messages SET seq = NULL WHERE thread_id = $thread_id;";
@@ -128,7 +130,7 @@ internal sealed class ConversationStoreHarness : IAsyncDisposable
         int orderIdx
     )
     {
-        await using var connection = new SqliteConnection($"Data Source={_backing["sqlite"]}");
+        await using var connection = new SqliteConnection($"Data Source={_backing["sqlite"]};Pooling=False");
         await connection.OpenAsync();
         foreach (var id in ids)
         {
@@ -187,7 +189,13 @@ internal sealed class ConversationStoreHarness : IAsyncDisposable
             await disposable.DisposeAsync();
         }
 
-        SqliteConnection.ClearAllPools();
+        // Only this harness's own files: a process-wide clear can dispose another test's connection mid-open.
+        // The raw connections above are unpooled, so the stores' pools are all that can still hold a file.
+        foreach (var path in _sqlitePaths)
+        {
+            SqliteConnectionFactory.ClearPool(path);
+        }
+
         await Task.Delay(50);
         DetachedStoreTeardown.Purge(_root);
     }
