@@ -377,6 +377,25 @@ def clear_stale_index_locks():
             print(f'Removed stale {lock} ({int(age)}s old; no process in the slot).', file=sys.stderr)
 
 
+def expected_review_branch():
+    # The branch that retains this head's review. None means the usual review/<repo>-<pr>, or the branch the slot
+    # is already on. Use review/<repo>-<pr>-<head8> instead when review/<repo>-<pr> is taken:
+    # - an earlier review of this PR, in any slot, left it in the shared review repository. A detached slot refuses
+    #   to switch to or overwrite it.
+    # - the store remote has it on history this slot does not share, so the push would be refused. The retired
+    #   CodeReviewDaemon left these on older store history (MCQdbDEV #11267).
+    # The earlier record is left as it is: nothing is merged into it or force-pushed over it.
+    from review_common import read_parent_remote_ref
+    branch = f'review/{repo_slug(repo)}-{pr}'
+    if not run_git_read(outer, ['symbolic-ref', '-q', 'HEAD'], check=False).returncode:
+        return None
+    if run_git_read(outer, ['rev-parse', '-q', '--verify', 'refs/heads/' + branch], check=False).returncode:
+        tip = read_parent_remote_ref(outer, 'refs/heads/' + branch)
+        if tip is None or not run_git_read(outer, ['merge-base', '--is-ancestor', tip, 'HEAD'], check=False).returncode:
+            return None
+    return f"{branch}-{args['head'][:8]}"
+
+
 if phase == 'eligibility':
     current = eligibility()
     print(json.dumps({key: current[key] for key in ('prId', 'status', 'isDraft', 'createdAt', 'headSha', 'mergeSha')}))
@@ -636,13 +655,7 @@ elif phase == 'commit':
         shutil.move(str(nested), str(target))
         print(f'Quarantined {directory}/{relative} to {target}', file=sys.stderr)
         dirs[:] = [] if nested == Path(current) else [d for d in dirs if d != '.git']
-    # An earlier review of this PR, in any slot, leaves review/<repo>-<pr> in the shared review repository, and a
-    # detached slot refuses to switch to or overwrite it. Retain this head's review on its own branch instead.
-    expected = None
-    branch = f'review/{repo_slug(repo)}-{pr}'
-    if (run_git_read(outer, ['symbolic-ref', '-q', 'HEAD'], check=False).returncode
-            and not run_git_read(outer, ['rev-parse', '-q', '--verify', 'refs/heads/' + branch], check=False).returncode):
-        expected = f"{branch}-{args['head'][:8]}"
-    print(json.dumps(commit_review(root, repo, pr, slot, source_sha=args['head'], expected_branch=expected)))
+    print(json.dumps(commit_review(root, repo, pr, slot, source_sha=args['head'],
+                                   expected_branch=expected_review_branch())))
 else:
     raise ReviewError('Unknown review-runner sandbox phase.')
