@@ -6,6 +6,8 @@ namespace Reviewd.Sample;
 
 internal static class PrSelection
 {
+    internal const int MaxResetRetries = 3;
+
     internal static async Task<int> RunAsync(CliOptions options, CancellationToken ct, DateTimeOffset? now = null)
     {
         var database = options.Get("db") ?? "reviewd.db";
@@ -38,12 +40,41 @@ internal static class PrSelection
                 {
                     continue;
                 }
+                // A head that failed the same way three times stays out until the PR is pushed again.
+                if (
+                    await ReadAsync($"reviewd/failure/{prefix}/{entry.Name}") is { } failed
+                    && ReviewBatch.IsQuarantined(
+                        JsonNode.Parse(failed.GetRawText()),
+                        pr.TryGetProperty("HeadSha", out var failedHead) ? failedHead.GetString() : null
+                    )
+                )
+                {
+                    continue;
+                }
+                // Whatever keeps failing it, a head the reaper reset MaxResetRetries times stays out until the next push.
+                if (
+                    attempt is not null
+                    && ResetsOfHead(
+                        attempt.Value,
+                        pr.TryGetProperty("HeadSha", out var resetHead) ? resetHead.GetString() : null
+                    ) >= MaxResetRetries
+                )
+                {
+                    continue;
+                }
                 var review = await ReadAsync($"reviewd/review-run/{prefix}/{entry.Name}");
                 var thread = await ReadAsync($"reviewd/pr-thread/{prefix}/{entry.Name}");
+                var resetRetry =
+                    attempt is not null
+                    && IsResetForRetry(
+                        attempt.Value,
+                        thread is { ValueKind: JsonValueKind.String } bound ? bound.GetString() : null,
+                        pr.TryGetProperty("HeadSha", out var liveHead) ? liveHead.GetString() : null
+                    );
                 if (
-                    // That earlier attempt's binding is not an in-flight submission for this head. The runner
-                    // still asks the host whether the conversation is running before it sends anything.
-                    IsEligible(pr, review, thread is not null && !earlierHead, observedAt)
+                    // That earlier or reset attempt's binding is not an in-flight submission for this head. The
+                    // runner still asks the host whether the conversation is running before it sends anything.
+                    IsEligible(pr, review, thread is not null && !earlierHead && !resetRetry, observedAt)
                     && (
                         options.Get("max-age-hours") is not { } age
                         || IsWithinCreationAge(
@@ -181,6 +212,40 @@ internal static class PrSelection
     // The reaper and reclaim-slot release a slot mid-review and leave the attempt's stage as it was. Once the PR
     // has a new head that attempt reviewed older code: inspect refuses to publish it, so it can never finish, and
     // the new head is a fresh review. The same head stays out: its review may already have posted.
+    // The reaper resets a review whose publication was never verified only once the host shows its conversation
+    // idle, and marks it failed-released with the stage it stopped at. Its own binding is then not in flight: the
+    // runner reviews that same head again in that conversation (Kay9: review it again rather than wait for a push).
+    // The retry's own attempt carries the mark, so a retry refused or failed before it reviews is offered again too.
+    // A retry that passed over a reset conversation from before headless provisioning names it as resetThreadId, since
+    // a retry refused before its new conversation exists has no threadId of its own.
+    internal static bool IsResetForRetry(JsonElement attempt, string? boundThread, string? currentHead) =>
+        IsSettled(attempt)
+        && attempt.GetProperty("stage").GetString() == "failed-released"
+        && attempt.TryGetProperty("stageBeforeReclaim", out var before)
+        && before.ValueKind == JsonValueKind.String
+        && !string.IsNullOrEmpty(boundThread)
+        && new[] { "threadId", "resetThreadId" }.Any(name =>
+            attempt.TryGetProperty(name, out var thread)
+            && thread.ValueKind == JsonValueKind.String
+            && thread.GetString() == boundThread
+        )
+        && attempt.TryGetProperty("headSha", out var head)
+        && head.ValueKind == JsonValueKind.String
+        && !string.IsNullOrWhiteSpace(currentHead)
+        && string.Equals(head.GetString(), currentHead, StringComparison.OrdinalIgnoreCase);
+
+    // Reaper resets of the attempt's head, carried across that head's retries; an attempt for another head has none.
+    internal static int ResetsOfHead(JsonElement attempt, string? currentHead) =>
+        attempt.TryGetProperty("headSha", out var head)
+        && head.ValueKind == JsonValueKind.String
+        && !string.IsNullOrWhiteSpace(currentHead)
+        && string.Equals(head.GetString(), currentHead, StringComparison.OrdinalIgnoreCase)
+        && attempt.TryGetProperty("resetCount", out var resets)
+        && resets.ValueKind == JsonValueKind.Number
+        && resets.TryGetInt32(out var count)
+            ? count
+            : 0;
+
     internal static bool IsReleasedForEarlierHead(JsonElement attempt, string? currentHead) =>
         attempt.TryGetProperty("cleanupState", out var cleanup)
         && cleanup.GetString() == "released"

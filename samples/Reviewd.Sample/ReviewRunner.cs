@@ -43,6 +43,12 @@ internal static class ReviewRunner
         internal JsonNode? Owner { get; } = owner;
     }
 
+    /// <summary>
+    ///     The host accepted an input but never ran it while the conversation sat idle (see
+    ///     <see cref="NeverStartedGrace"/>), so no status for it will ever arrive.
+    /// </summary>
+    internal sealed class LostInputException(string message) : InvalidOperationException(message);
+
     /// <summary>Exit code of an automatic <c>review run</c> that found no usable slot.</summary>
     internal const int NoSlotExitCode = 3;
 
@@ -114,13 +120,156 @@ internal static class ReviewRunner
         );
     }
 
-    // Prepare blames every changed hunk, one Git process each. On a Windows-hosted workspace a Git
-    // process costs about 2 s, so a 180-file PR (LmDotnetTools #803) needs over 20 minutes. Other
-    // phases keep the client's 10-minute deadline.
-    internal static readonly TimeSpan PrepareTimeout = TimeSpan.FromMinutes(45);
+    // Nothing can cancel a gateway operation, and its timeout is fixed when it is submitted. So the timeout is only a
+    // backstop: the sandbox script's own watchdog stops a step once it has been idle for 10 minutes and 60 minutes
+    // have passed since it started (Kay9: activity decides, never time alone). A slow prepare (one Git process per
+    // changed hunk, about 2 s each on a Windows-hosted workspace) or a cleanup on a slow bind mount runs to the end.
+    internal static readonly TimeSpan StepCeiling = TimeSpan.FromHours(24);
 
-    // Well inside SlotRelease.DefaultLeaseWindow, so a long step never lets its lease lapse.
-    internal static TimeSpan LeaseRenewInterval { get; set; } = TimeSpan.FromMinutes(5);
+    // Well inside SlotRelease.DefaultLeaseWindow, so a long step never lets its lease lapse. A test shortens it for its
+    // own async flow only, so tests that run in parallel never see each other's interval.
+    internal static TimeSpan LeaseRenewInterval
+    {
+        get => LeaseRenewOverride.Value ?? TimeSpan.FromMinutes(5);
+        set => LeaseRenewOverride.Value = value;
+    }
+
+    private static readonly AsyncLocal<TimeSpan?> LeaseRenewOverride = new();
+
+    // How long one step-stop may take. A step-stop that hangs would otherwise stall the renewals and, once the step
+    // ends, hold its lane. A test shortens it the same way as LeaseRenewInterval.
+    internal static TimeSpan StepStopTimeout
+    {
+        get => StepStopOverride.Value ?? TimeSpan.FromMinutes(2);
+        set => StepStopOverride.Value = value;
+    }
+
+    private static readonly AsyncLocal<TimeSpan?> StepStopOverride = new();
+
+    /// <summary>
+    /// Runs one sandbox step while renewing the slot lease every <see cref="LeaseRenewInterval"/>, so the reaper never
+    /// resets a slot under a step that is still allowed to run. Each renewal also checks the conversation: while any
+    /// agent or sub-agent on it is active, the step gets a fresh agent mark, so its watchdog never stops it then. While
+    /// none is, the client asks step-stop to kill the step if its watchdog's heartbeat has gone stale (the watchdog
+    /// itself is stuck); a step stopped that way is no longer renewed, and its failure puts the lease back.
+    /// </summary>
+    internal static async Task<JsonObject> RunLeasedStepAsync(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        string ownerKey,
+        string claimToken,
+        Func<CancellationToken, Task<bool>>? agentsActive,
+        Func<string, JsonObject, string, CancellationToken, Task<JsonObject>> sandbox,
+        string phase,
+        JsonObject args,
+        string operation,
+        CancellationToken ct
+    )
+    {
+        // The renewal shares the connection, so it stops before the caller writes again.
+        using var stepDone = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        (string Before, string After)? renewed = null;
+        var stopped = false;
+        var renewal = RenewAsync(stepDone.Token);
+        try
+        {
+            return await sandbox(phase, args, operation, ct);
+        }
+        catch (SettledSandboxException)
+        {
+            // A cleanup or reset that ended in failure, or a step this client stopped, puts back the lease its renewals
+            // extended, so the next reaper sweep resets the slot instead of waiting out a lease nobody renews (Kay9:
+            // never hold a slot needlessly). Only a settled failure: a step whose outcome is unknown may still be running.
+            stepDone.Cancel();
+            await renewal;
+            if ((phase == "cleanup" || stopped) && renewed is { } lease)
+                _ = await SlotRelease.RestoreLeaseAsync(
+                    connection,
+                    ownerKey,
+                    lease.Before,
+                    lease.After,
+                    CancellationToken.None
+                );
+            throw;
+        }
+        finally
+        {
+            stepDone.Cancel();
+            await renewal;
+        }
+
+        async Task RenewAsync(CancellationToken token)
+        {
+            try
+            {
+                while (true)
+                {
+                    await Task.Delay(LeaseRenewInterval, token);
+                    // A failed read counts as active, like an unknown or busy one: a step is never stopped on a guess.
+                    bool active;
+                    try
+                    {
+                        active = agentsActive is not null && await agentsActive(token);
+                    }
+                    catch (Exception failure) when (failure is not OperationCanceledException)
+                    {
+                        Console.Error.WriteLine($"Step {operation}: agent read failed: {failure.Message}");
+                        active = true;
+                    }
+                    if (!active && await StopStuckStepAsync())
+                        return;
+                    if (await SlotRelease.RenewAsync(connection, ownerKey, claimToken, token) is { } lease)
+                        renewed = (renewed?.Before ?? lease.Before, lease.After);
+                    try
+                    {
+                        if (active)
+                            _ = await sandbox(
+                                "step-activity",
+                                new JsonObject { ["operation"] = operation },
+                                Guid.NewGuid().ToString("N"),
+                                token
+                            );
+                    }
+                    catch (Exception failure) when (failure is not OperationCanceledException)
+                    {
+                        // A missed mark only lets the watchdog judge by the step's own activity; the next renewal retries.
+                        Console.Error.WriteLine($"Step {operation}: agent mark failed: {failure.Message}");
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        }
+
+        // The sandbox kills the step only if its watchdog heartbeat is 15 minutes stale and no agent mark is fresh. The
+        // call runs on the caller's token, so a step that ends meanwhile still learns it was stopped, but only for
+        // StepStopTimeout: one that hangs counts as not stopped, and the step keeps its lease until the next check.
+        async Task<bool> StopStuckStepAsync()
+        {
+            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            bounded.CancelAfter(StepStopTimeout);
+            try
+            {
+                var result = await sandbox(
+                    "step-stop",
+                    new JsonObject { ["operation"] = operation },
+                    Guid.NewGuid().ToString("N"),
+                    bounded.Token
+                );
+                if (result["stopped"]?.GetValue<bool>() != true)
+                    return false;
+                stopped = true;
+                Console.Error.WriteLine(
+                    $"Step {operation} ({phase}) killed: its watchdog stopped beating and no agent is active. "
+                        + "Its lease is no longer renewed."
+                );
+                return true;
+            }
+            catch (Exception failure) when (failure is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                Console.Error.WriteLine($"Step {operation}: watchdog check failed: {failure.Message}");
+                return false;
+            }
+        }
+    }
 
     // A send the host refuses with 503 is retried every SendRetryPolls delay polls (30 s at the default
     // 1 s poll) up to SendAttempts sends: about 5 minutes, longer than the slowest cold catalog build seen.
@@ -141,11 +290,14 @@ internal static class ReviewRunner
             ?? throw new InvalidOperationException("Review runner sandbox helper is missing.");
         using var reader = new StreamReader(resource);
         var script = await reader.ReadToEndAsync(token);
+        // The step's watchdog reads the client's agent marks for this operation.
+        var payload = args.DeepClone().AsObject();
+        payload["stepOperation"] = operation;
         var result = await sandbox.ExecuteAsync(
             session,
-            new SandboxCommand(["python3", "-c", script, phase, args.ToJsonString()], ".", operation)
+            new SandboxCommand(["python3", "-c", script, phase, payload.ToJsonString()], ".", operation)
             {
-                ExecutionTimeout = phase == "prepare" ? PrepareTimeout : null,
+                ExecutionTimeout = StepCeiling,
             },
             token
         );
@@ -503,6 +655,32 @@ internal static class ReviewRunner
         // than a freshly-provisioned blank one. Drives the incremental re-review prompt below: the
         // conversation already holds the earlier review's full message history.
         var reusedConversation = thread is not null && !resume && !cleanupOnly;
+        // The reaper resets a review that stopped before its publication was verified, and the PR is admitted again
+        // (Kay9: review it again rather than skip it until a new push). The retry continues the reset's own
+        // conversation, or, when that one predates headless provisioning and was passed over, a new headless one.
+        var resetThread =
+            resume || cleanupOnly || attempt is null
+                ? null
+                : new[] { thread, questionThread }.FirstOrDefault(candidate =>
+                    candidate is not null
+                    && PrSelection.IsResetForRetry(
+                        JsonSerializer.SerializeToElement(attempt),
+                        candidate,
+                        current["HeadSha"]?.GetValue<string>()
+                    )
+                );
+        var retryOfReset = resetThread is not null;
+        var resetsOfHead =
+            attempt is null || resume || cleanupOnly
+                ? 0
+                : PrSelection.ResetsOfHead(
+                    JsonSerializer.SerializeToElement(attempt),
+                    current["HeadSha"]?.GetValue<string>()
+                );
+        // Whatever keeps failing it, a head the reaper reset MaxResetRetries times waits for a new push. The batch can
+        // admit a failed entry again without a new pick, so the runner holds the line too.
+        if (resetsOfHead >= PrSelection.MaxResetRetries)
+            throw new ReviewNotAdmittedException($"PR head was reset {resetsOfHead} times; skipped until a new push.");
         // A prior conversation without a receipt in THIS db is only a risk if it is still running: its
         // receipt may live in whichever db ran it. Ask the host, not our bookkeeping.
         // The host is also the cross-db record of what was already admitted: a conversation holding this exact
@@ -524,7 +702,19 @@ internal static class ReviewRunner
         )
         {
             var transcript = await client.GetConversationTranscriptAsync(headMatch.ThreadId, ct);
-            if (ReviewedHead(transcript, liveHead))
+            // Our own reset review of this head is the one exception: it is told to post only what is missing. That is
+            // any conversation the reset attempt names, as a retry's own may never have been titled for this head.
+            if (
+                ReviewedHead(transcript, liveHead)
+                && !(
+                    retryOfReset
+                    && PrSelection.IsResetForRetry(
+                        JsonSerializer.SerializeToElement(attempt),
+                        headMatch.ThreadId,
+                        liveHead
+                    )
+                )
+            )
                 throw new ReviewNotAdmittedException("PR head was already reviewed by another run; skipped.");
             // A conversation with no output (never sent, or sent and never answered) holds no earlier review, so the
             // prompt must not claim one.
@@ -731,6 +921,19 @@ internal static class ReviewRunner
             receipt["reasoningEffort"] = reasoningEffort;
         if (selection is not null)
             receipt["slotSelection"] = selection.DeepClone();
+        // Resets of one head add up across its retries, whatever ended each one.
+        if (resetsOfHead > 0)
+            receipt["resetCount"] = resetsOfHead;
+        // A retry of a reset keeps that mark. A retry refused or failed before it reviews is then offered again in its
+        // own conversation, instead of reading as a failed submission there until a new push.
+        if (retryOfReset)
+        {
+            receipt["stageBeforeReclaim"] = attempt!["stageBeforeReclaim"]!.DeepClone();
+            // A passed-over reset conversation is not this receipt's thread, so it is named for the next retry, and an
+            // earlier retry's one is carried on.
+            if ((resetThread != thread ? resetThread : attempt!["resetThreadId"]?.GetValue<string>()) is { } passedOver)
+                receipt["resetThreadId"] = passedOver;
+        }
         if (resume || cleanupOnly)
             receipt = attempt!.DeepClone().AsObject();
         if (cleanupOnly && attempt!["claimToken"] is null)
@@ -846,17 +1049,31 @@ internal static class ReviewRunner
             var publishing = github
                 ? $"Publish to GitHub through the sandbox egress proxy, an approved route and not a bypass: python3 /marketplaces/sandbox-plugins/sandbox-auth/scripts/sandbox-auth-fetch.py --url https://api.github.com/repos/{repo.OrgOrOwner}/{repo.RepoName}/... --method POST --header Content-Type:application/json --header Accept:application/vnd.github+json --data-file <body.json>. Post the summary as a PR conversation comment (issues/{pr}/comments, commentType issue_comment); post inline findings as a review (pulls/{pr}/reviews with event COMMENT and commit_id {args["head"]}) and record the review (commentType review) and each of its inline comments (commentType review_comment, ids from pulls/{pr}/reviews/<id>/comments); reply to an existing inline thread with pulls/{pr}/comments/<id>/replies (commentType review_comment). Never approve or request changes. The proxy adds credentials; never send an Authorization header. Give any publisher sub-agent Bash and Read."
                 : "Without Azure DevOps MCP tools, publish through the sandbox egress proxy, an approved route and not a bypass: python3 /marketplaces/sandbox-plugins/sandbox-auth/scripts/sandbox-auth-fetch.py --url <ADO REST URL> --method POST --header Content-Type:application/json --data-file <body.json>. The proxy adds credentials; never send an Authorization header. Give any publisher sub-agent Bash and Read.";
-            var reReviewPreamble = reusedConversation
-                ? $"""
-                    This conversation already reviewed an earlier revision of this same PR — your prior
-                    findings, replies and summary are in the message history above. The PR has since been
-                    updated to head {args["head"]}. Re-read your earlier review first, then focus on what
-                    changed since you last reviewed it: confirm whether prior findings are now addressed,
-                    withdraw any that no longer apply, and assess only the new/changed code. Still
-                    re-verify live PR state before posting, and reply to existing finding threads instead
-                    of duplicating them.
+            var reReviewPreamble =
+                retryOfReset
+                    ? $"""
+                        This conversation may already hold your review of this PR, of this same head
+                        ({args["head"]}) or an earlier one, but the last run stopped before its publication was
+                        verified, so some of it may already be on the PR. Read the PR's existing threads first:
+                        keep what is already posted, post only the findings that are missing, and reply to existing
+                        finding threads instead of duplicating them. Always post a new summary for this run, even if
+                        an earlier one is on the PR; it may say which earlier findings still stand. Record in
+                        publication_receipts.json only what this run posts: comments that were on the PR before this
+                        run are not accepted there. Review in full any code that changed since your last review, or
+                        the whole PR if this conversation holds no review yet.
 
-                    """
+                        """
+                : reusedConversation
+                    ? $"""
+                        This conversation already reviewed an earlier revision of this same PR — your prior
+                        findings, replies and summary are in the message history above. The PR has since been
+                        updated to head {args["head"]}. Re-read your earlier review first, then focus on what
+                        changed since you last reviewed it: confirm whether prior findings are now addressed,
+                        withdraw any that no longer apply, and assess only the new/changed code. Still
+                        re-verify live PR state before posting, and reply to existing finding threads instead
+                        of duplicating them.
+
+                        """
                 : "";
             var prompt = $"""
                 {reReviewPreamble}Review {repo.DisplayName} PR #{pr} in slot {repo.RepoName}-{slot}.
@@ -879,13 +1096,7 @@ internal static class ReviewRunner
             }
             else
             {
-                var existing = await WaitAsync(
-                    client,
-                    thread!,
-                    receipt["reviewInputId"]!.GetValue<string>(),
-                    LeasedDelayAsync,
-                    ct
-                );
+                var existing = await WaitInputAsync("review", receipt["reviewInputId"]!.GetValue<string>());
                 receipt["reviewResponse"] = existing?.ResponseText;
                 if (receipt["confirmationInputId"] is null)
                     receipt["stage"] = "review-completed";
@@ -894,7 +1105,7 @@ internal static class ReviewRunner
             await SaveAsync();
             if (resume && receipt["confirmationInputId"]?.GetValue<string>() is { Length: > 0 } confirmation)
             {
-                var existing = await WaitAsync(client, thread!, confirmation, LeasedDelayAsync, ct);
+                var existing = await WaitInputAsync("confirmation", confirmation);
                 receipt["confirmationResponse"] = existing?.ResponseText;
                 receipt["stage"] = "confirmation-completed";
                 await SaveAsync();
@@ -1028,7 +1239,17 @@ internal static class ReviewRunner
             Console.Error.WriteLine(
                 $"{repo.DisplayName} #{pr}: owner cleanup, operation {operation}, claim {claimToken}"
             );
-            var result = await sandbox("cleanup", args, operation, ct);
+            var result = await RunLeasedStepAsync(
+                connection,
+                ownerKey,
+                claimToken,
+                AgentsActiveAsync,
+                sandbox,
+                "cleanup",
+                args,
+                operation,
+                ct
+            );
             if (
                 result["claimToken"]?.GetValue<string>() != claimToken
                 || result["cleanBaselineVerified"]?.GetValue<bool>() != true
@@ -1050,50 +1271,37 @@ internal static class ReviewRunner
             await SaveAsync();
             Console.Error.WriteLine($"{repo.DisplayName} #{pr}: {phase}, operation {operation}");
             JsonObject result;
-            // A step can outlast the lease window (prepare may run 45 minutes), so renew the lease while it
-            // runs; otherwise the reaper reclaims the slot under a live sandbox command.
-            using var stepDone = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            var lease = RenewLeaseAsync(stepDone.Token);
+            // A step can outlast the lease window (prepare may run for hours on a slow workspace), so the lease is
+            // renewed while it runs; otherwise the reaper reclaims the slot under a live sandbox command.
             try
             {
-                result = await sandbox(phase, args, operation, ct);
+                result = await RunLeasedStepAsync(
+                    connection,
+                    ownerKey,
+                    claimToken,
+                    AgentsActiveAsync,
+                    sandbox,
+                    phase,
+                    args,
+                    operation,
+                    ct
+                );
             }
             catch (Exception refused)
                 when (phase == "commit" && (RefusedAtCapacity(refused) || CommitRetryable(refused)))
             {
                 // Verify-pending resumes by re-verifying (read-only) and then committing again.
-                await StopRenewingAsync();
                 receipt["stage"] = "verify-pending";
                 await SaveAsync();
                 throw;
             }
-            finally
-            {
-                await StopRenewingAsync();
-            }
             receipt["stage"] = phase + "-completed";
             await SaveAsync();
             return result;
-
-            // The renewal shares the connection, so it must stop before the step writes again.
-            async Task StopRenewingAsync()
-            {
-                stepDone.Cancel();
-                await lease;
-            }
-            async Task RenewLeaseAsync(CancellationToken token)
-            {
-                try
-                {
-                    while (true)
-                    {
-                        await Task.Delay(LeaseRenewInterval, token);
-                        _ = await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, token);
-                    }
-                }
-                catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-            }
         }
+        // Unknown or busy counts as active: a step is never stopped on a guess.
+        async Task<bool> AgentsActiveAsync(CancellationToken token) =>
+            thread is not null && await SlotReaper.FindActivityAsync(client, thread, Task.Delay, token) is not null;
         async Task EnsureCreationAgeAsync()
         {
             if (maxAgeHours is not { } hours)
@@ -1143,10 +1351,31 @@ internal static class ReviewRunner
             receipt[phase + "InputId"] = input;
             receipt["stage"] = phase + "-running";
             await SaveAsync();
-            var status = await WaitAsync(client, thread!, input, LeasedDelayAsync, ct);
+            var status = await WaitInputAsync(phase, input);
             receipt[phase + "Response"] = status?.ResponseText;
             receipt["stage"] = phase + "-completed";
             await SaveAsync();
+        }
+
+        // An input the host swallowed (it answered a question the review left pending) must not hold the
+        // slot. The answering run may still have done the work (seen live: a swallowed review input was
+        // reviewed and published), so a lost review still gets its confirmation, and verify, not either
+        // response, decides success. A retry never waits again on an input already found lost.
+        async Task<S2SStatusResult?> WaitInputAsync(string phase, string input)
+        {
+            if (receipt[phase + "Lost"]?.GetValue<bool>() == true)
+                return null;
+            try
+            {
+                return await WaitAsync(client, thread!, input, LeasedDelayAsync, ct, now);
+            }
+            catch (LostInputException ex)
+            {
+                var next = phase == "review" ? "Confirming" : "Verifying publication";
+                Console.WriteLine($"{repo.DisplayName} #{pr}: {ex.Message} {next} instead.");
+                receipt[phase + "Lost"] = true;
+                return null;
+            }
         }
     }
 
@@ -1261,8 +1490,9 @@ internal static class ReviewRunner
 
     // A queued input starts within seconds of the conversation going idle. One still NotStarted while the
     // root is idle and every descendant has settled has nothing left that will run it: PR 221's confirmation
-    // was folded into a parked run without its receipt, and the batch waited on it for four hours. This is
-    // a backstop, not the fix; once it trips, the attempt fails and the batch moves on.
+    // was folded into a parked run without its receipt, and the batch waited on it for four hours; a review
+    // parked on AskUserQuestion took the confirmation as its answer. This is a backstop, not the fix: once it
+    // trips, the input is lost, and the review still goes on to its confirmation and verify.
     internal static readonly TimeSpan NeverStartedGrace = TimeSpan.FromMinutes(10);
 
     // Error and Stopped are terminal: the child is done, it just did not succeed. That is not a review
@@ -1352,7 +1582,7 @@ internal static class ReviewRunner
             {
                 stalledSince ??= now;
                 if (now - stalledSince >= NeverStartedGrace)
-                    throw new InvalidOperationException(
+                    throw new LostInputException(
                         $"Input {input} never started: the conversation stayed idle with every sub-agent settled for {now - stalledSince:g}; nothing will run it."
                     );
             }

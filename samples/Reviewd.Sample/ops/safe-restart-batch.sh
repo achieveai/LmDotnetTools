@@ -6,10 +6,17 @@
 set -uo pipefail
 OPS=$(dirname "$(readlink -f "$0")")
 source "$OPS/env.sh"
+# One restart per install at a time: the doctor and rollout.sh can both ask for one, and two at once could each
+# start a batch. keepalive.sh takes the same lock before it starts a missing batch, so it cannot start one between
+# the kill and the restart below. Busy exits 75 (try again later), which the doctor does not count as an attempt.
+# The batch started below must not inherit the lock (8>&-).
+exec 8> "$REVIEWD_HOME/data/safe-restart.lock"
+flock -n 8 || { echo "another restart of this install is in progress"; exit 75; }
 POLLS=${RESTART_POLLS:-90}
 POLL_SECONDS=${RESTART_POLL_SECONDS:-10}
-# Prints 1 only when every attempt is released or waiting on a review it already sent. Anything it
-# cannot read, including a database the frozen batch holds locked, prints 0.
+# Prints 1 only when every attempt is released or is an admitted review the batch resumes (its
+# ReviewBatch.Resumable stages: sent inputs known, nothing half-sent). Anything it cannot read, including
+# a database the frozen batch holds locked, prints 0.
 resumable() {
     python3 -I - "$DB" <<'PY'
 import json, sqlite3, sys
@@ -18,7 +25,13 @@ try:
     ok = True
     for _, value in db.execute("select key, value from cache where key like 'reviewd/review-attempt/%'"):
         attempt = json.loads(value)
-        running = attempt["stage"] in ("review-running", "confirmation-running") and attempt.get("reviewInputId")
+        stage = attempt["stage"]
+        running = (
+            stage in ("review-running", "confirmation-running", "review-completed", "confirmation-completed", "verify-pending")
+            and attempt.get("reviewInputId")
+            and (attempt.get("confirmationIdempotencyKey") is None or attempt.get("confirmationInputId"))
+            and (stage.startswith("review-") or attempt.get("confirmationInputId"))
+        )
         if attempt.get("cleanupState") != "released" and not running:
             ok = False
     print("1" if ok else "0")
@@ -71,6 +84,6 @@ fi
 if [ $# -gt 0 ]; then
     "$@" || echo "command failed; restarting the batch unchanged"
 fi
-nohup setsid "$OPS/start-batch.sh" >/dev/null 2>&1 < /dev/null &
+nohup setsid "$OPS/start-batch.sh" >/dev/null 2>&1 < /dev/null 8>&- &
 sleep "${RESTART_START_SECONDS:-5}"
 [ -n "$(install_batch_pids)" ] && echo "batch restarted" || echo "batch did not start; see $LOGS/review-batch.log"
