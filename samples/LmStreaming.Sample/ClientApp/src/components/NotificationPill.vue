@@ -39,6 +39,8 @@ const kindLabel = computed<string>(() => {
       return 'Context loaded';
     case 'subagent-completion':
       return 'Sub-agent completed';
+    case 'background-task':
+      return 'Background task ended';
     case 'descendant-question':
       return 'Question pending';
     case 'client-notification':

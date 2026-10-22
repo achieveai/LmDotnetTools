@@ -5,26 +5,29 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 public sealed partial class SandboxClient
 {
     /// <summary>
-    /// Fails a create whose response did not acknowledge <paramref name="requestedHome"/> exactly. The
-    /// gateway reports the normalized, persisted home on <c>volumes.workspace.home</c>; a gateway that predates
-    /// the field never sends it, so a missing or different value is not proof the request was honored (gateway
-    /// Docs/tools-and-api.md, "Sandbox home directory"). The sandbox the gateway did create is deleted first,
+    /// Fails a create whose response did not acknowledge <paramref name="requestedWorkingDir"/> exactly. The
+    /// gateway reports the normalized, persisted directory on <c>volumes.workspace.working_dir</c>; a gateway that
+    /// predates ADR 0044 never sends it (at most the legacy <c>home</c>) and does not make the rest of the
+    /// workspace read-only, so a missing or different value is not proof the request was honored (gateway
+    /// Docs/tools-and-api.md, "Sandbox working directory"). The sandbox the gateway did create is deleted first,
     /// because nothing else holds its session id once this throws.
     /// </summary>
-    private async Task RequireAcknowledgedHomeAsync(
+    private async Task RequireAcknowledgedWorkingDirAsync(
         SandboxInfo info,
-        string requestedHome,
+        string requestedWorkingDir,
         int statusCode,
         CancellationToken ct
     )
     {
-        var expected = NormalizeHome(requestedHome);
-        if (string.Equals(info.WorkspaceHome, expected, StringComparison.Ordinal))
+        var expected = NormalizeWorkingDir(requestedWorkingDir);
+        if (string.Equals(info.WorkspaceWorkingDir, expected, StringComparison.Ordinal))
         {
             return;
         }
 
-        var acknowledged = info.WorkspaceHome is null ? "no home" : $"home '{info.WorkspaceHome}'";
+        var acknowledged = info.WorkspaceWorkingDir is null
+            ? "no working directory"
+            : $"working directory '{info.WorkspaceWorkingDir}'";
         string cleanup;
         try
         {
@@ -42,18 +45,18 @@ public sealed partial class SandboxClient
         throw new SandboxException(
             SandboxErrorKind.Protocol,
             $"Sandbox gateway created sandbox '{info.SessionId}' but acknowledged {acknowledged} instead of the "
-                + $"requested home '{expected}' (a gateway that predates per-sandbox homes ignores the field). {cleanup}",
+                + $"requested working directory '{expected}' (a gateway that predates ADR 0044 ignores the field). {cleanup}",
             statusCode
         );
     }
 
     /// <summary>
-    /// The gateway's normalized form of a home: empty and <c>.</c> components dropped, so
-    /// <c>./worktrees//issue-142/</c> becomes <c>worktrees/issue-142</c>. Anything else the gateway would
-    /// normalize differently (<c>\</c>, <c>..</c>, absolute paths) it rejects with a <c>400</c> before creating.
+    /// The gateway's normalized form of a working directory: empty and <c>.</c> components dropped, so
+    /// <c>./agents//a1/</c> becomes <c>agents/a1</c>. Anything else the gateway would normalize differently
+    /// (<c>\</c>, <c>..</c>, absolute paths) it rejects with a <c>400</c> before creating.
     /// </summary>
-    internal static string NormalizeHome(string home) =>
-        string.Join('/', home.Split('/').Where(part => part.Length > 0 && part != "."));
+    internal static string NormalizeWorkingDir(string workingDir) =>
+        string.Join('/', workingDir.Split('/').Where(part => part.Length > 0 && part != "."));
 
     /// <summary>
     /// Maps a conformance report from a successful create, rejecting a report missing a field the gateway

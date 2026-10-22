@@ -17,6 +17,9 @@ public static class NotifyKinds
     /// <summary>A context file discovered by the sandbox was injected into the conversation.</summary>
     public const string ContextDiscovery = "context-discovery";
 
+    /// <summary>A background sandbox task (<c>Bash</c>/<c>PowerShell</c> <c>run_in_background</c>) ended.</summary>
+    public const string BackgroundTask = "background-task";
+
     /// <summary>An async workflow launched via <c>StartWorkflowAgent</c> reached a terminal state.</summary>
     public const string WorkflowCompletion = "workflow-completion";
 

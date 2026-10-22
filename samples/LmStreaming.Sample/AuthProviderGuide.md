@@ -170,6 +170,18 @@ All settings live under the **`Auth`** configuration section (bound to
 | `Auth:Webhook:PublicBaseUrl` | `http://127.0.0.1:5000` | The base URL the **gateway** calls back on to reach this app's webhook. Also serves as the M365 callback base. |
 | `Auth:Webhook:HoldTimeoutSeconds` | `120` | Deferred auth: how long a not-signed-in webhook call is held open while the chat UI prompts for sign-in. `0` disables deferral (immediate deny). |
 | `Auth:Webhook:PollIntervalSeconds` | `1.0` | Deferred auth: interval between token-acquisition attempts while a webhook call is held. |
+| `Auth:Webhook:UseSandboxWebhook` | `true` in this sample (`false` in LmAgentInfra) | New sandboxes register the gateway's unified webhook (`POST {PublicBaseUrl}/api/sandbox/webhook`) for `context_discovery` and `task_completed`, instead of the legacy discovery webhook. A finished background `Bash`/`PowerShell` task then reaches the agent that started it as a "Background task ended" notice. **Set `false` for a gateway at or below v0.1.16**: it ignores the unified webhook, so discoveries would stop. |
+
+### Sandbox webhook (`api/sandbox/webhook`)
+
+`Controllers/SandboxWebhookController.cs` receives the gateway's `sbx.webhook/1` envelope:
+
+- The per-session secret arrives as the `Authorization` header and is checked before anything else.
+- Each event is processed once per `event_id`; a redelivery gets `200` and is skipped. An event whose handling throws (`5xx`) is not remembered, so the gateway's single retry is processed. A `400` (malformed data) is final: the gateway does not retry it.
+- With the switch on, the app reads each new sandbox back once and logs a warning if the gateway did not register the webhook (a gateway at or below v0.1.16).
+- `context_discovery` runs the same handler as `api/discovery/context_discovery`.
+- `task_completed` becomes a `background-task` notice. A sub-agent's task goes to that sub-agent. The primary agent sends no agent id, so the app remembers which conversation's `Bash`/`PowerShell` call returned the task id and tells that one. A fast task's event can arrive before that call returns, so with several conversations the app waits up to 2 s for the record. A task started before the app restarted goes to the workspace's only conversation, or is dropped when there are several.
+- Any other event gets `200` and is ignored.
 
 ### appsettings.json example
 

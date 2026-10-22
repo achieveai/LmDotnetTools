@@ -126,6 +126,6 @@ public sealed partial class SandboxClient
             );
         }
 
-        return new SandboxAgentInfo(dto.AgentId, createdAt, lastUsedAt, openTasks, loadedSkills);
+        return new SandboxAgentInfo(dto.AgentId, createdAt, lastUsedAt, openTasks, loadedSkills, dto.IncludedSkills);
     }
 }

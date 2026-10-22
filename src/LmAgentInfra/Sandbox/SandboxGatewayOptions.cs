@@ -229,6 +229,24 @@ public sealed class SandboxGatewayOptions
     public string? Marketplaces { get; set; }
 
     /// <summary>
+    /// Directory where the gateway keeps the git marketplaces apps register (gateway ADR 0045). Becomes
+    /// <c>MARKETPLACE_STORE_PATH</c> when the gateway is spawned; a relative path resolves against
+    /// <see cref="AppContext.BaseDirectory"/>. Unset (the default) leaves the feature off and the
+    /// <c>/api/v1/apps/self/marketplaces</c> routes answer <c>404 marketplaces_disabled</c>. An adopted
+    /// gateway must set <c>MARKETPLACE_STORE_PATH</c> itself.
+    /// </summary>
+    public string? MarketplaceStorePath { get; set; }
+
+    /// <summary>
+    /// Absolute path to the Python interpreter that runs a workspace <c>.py</c> mini app on Windows, which cannot
+    /// execute a script directly. Becomes <c>LOCAL_SANDBOX_PYTHON</c> when the gateway is spawned. Unset, such an
+    /// app fails with "python mini apps need LOCAL_SANDBOX_PYTHON set on the gateway"; a relative path or one inside
+    /// a sandbox-writable directory fails with "LOCAL_SANDBOX_PYTHON is not a trusted interpreter". Operator
+    /// <c>/plugins</c> apps and other platforms are unaffected.
+    /// </summary>
+    public string? LocalSandboxPython { get; set; }
+
+    /// <summary>
     /// Absolute path to <c>egress-proxy.exe</c>. When this and <see cref="CaCertPath"/>/<see cref="CaKeyPath"/>
     /// are set, the app adopt-or-spawns the egress proxy so sandbox outbound traffic is policy-enforced and
     /// OAuth tokens can be injected (the auth-webhook path). Without it, the gateway tells sandboxes to use a

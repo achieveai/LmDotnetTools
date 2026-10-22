@@ -38,6 +38,9 @@ public sealed class WorkspaceTranscriptLiveFileTests
 
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(30);
 
+    /// <summary>How long to wait for another process's run to release the live folder.</summary>
+    private static readonly TimeSpan LockWait = TimeSpan.FromMinutes(2);
+
     [SkippableFact]
     public async Task Mirror_ProducesARealJsonlFile_ThatParsesAndChainsByUid()
     {
@@ -46,6 +49,11 @@ public sealed class WorkspaceTranscriptLiveFileTests
             shell is null,
             "No POSIX shell (sh) on this machine, so the writer's real append script cannot be run."
         );
+
+        // The folder is fixed so the artifact can be read afterwards, which also makes it shared by every
+        // process running this test at once (two full-suite runs, a commit hook beside a manual run): one
+        // run's wipe or append lands in the other's file and reads as a repeated uid. Serialize them.
+        await using var exclusive = await AcquireLiveDirectoryLockAsync();
 
         var root = Path.Combine(Path.GetTempPath(), LiveDirectoryName);
         if (Directory.Exists(root))
@@ -121,6 +129,28 @@ public sealed class WorkspaceTranscriptLiveFileTests
     }
 
     // ---------------------------------------------------------------- helpers
+
+    /// <summary>
+    /// Opens a lock file beside <see cref="LiveDirectoryName"/> with no sharing, waiting while another
+    /// process holds it. The lock file is left behind (a zero-byte file): deleting it on close would let
+    /// a waiter hit the pending delete instead of a plain sharing violation.
+    /// </summary>
+    private static async Task<FileStream> AcquireLiveDirectoryLockAsync()
+    {
+        var lockPath = Path.Combine(Path.GetTempPath(), LiveDirectoryName + ".lock");
+        var deadline = DateTime.UtcNow + LockWait;
+        while (true)
+        {
+            try
+            {
+                return new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (IOException) when (DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(100);
+            }
+        }
+    }
 
     /// <summary>
     /// Opens a produced file, proves every record is one JSON object with a unique <c>uid</c>, and walks

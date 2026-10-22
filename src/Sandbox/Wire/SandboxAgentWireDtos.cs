@@ -12,7 +12,9 @@ internal sealed record SessionAgentDto(
     [property: JsonPropertyName("created_at")] DateTimeOffset? CreatedAt,
     [property: JsonPropertyName("last_used_at")] DateTimeOffset? LastUsedAt,
     [property: JsonPropertyName("open_tasks")] int? OpenTasks,
-    [property: JsonPropertyName("loaded_skills")] int? LoadedSkills
+    [property: JsonPropertyName("loaded_skills")] int? LoadedSkills,
+    // ADR 0041; absent on gateways before skill tiers, so it stays optional rather than a Protocol error.
+    [property: JsonPropertyName("included_skills")] int? IncludedSkills = null
 );
 
 internal sealed record SessionAgentsResponseDto(

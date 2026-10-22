@@ -39,7 +39,10 @@ public static partial class SandboxEnvRules
         "SANDBOX_ALLOWED_PATHS",
         "SANDBOX_WORKSPACE",
         "SANDBOX_HOME",
+        "SANDBOX_WORKDIR",
+        "SANDBOX_PYTHON",
         "PWSH_STATE_DIR",
+        "SBX_AGENT_ID",
         "HTTP_PROXY",
         "HTTPS_PROXY",
         "NO_PROXY",
@@ -49,6 +52,7 @@ public static partial class SandboxEnvRules
         "REQUESTS_CA_BUNDLE",
         "SSL_CERT_FILE",
         "CURL_CA_BUNDLE",
+        "GIT_SSL_CAINFO",
         "NODE_EXTRA_CA_CERTS",
         "NODE_USE_ENV_PROXY",
     ];
