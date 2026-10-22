@@ -643,15 +643,20 @@ internal static class ReviewRunner
         // conversation already holds the earlier review's full message history.
         var reusedConversation = thread is not null && !resume && !cleanupOnly;
         // The reaper resets a review that stopped before its publication was verified, and the PR is admitted again
-        // in its own conversation (Kay9: review it again rather than skip it until a new push).
-        var retryOfReset =
-            reusedConversation
-            && attempt is not null
-            && PrSelection.IsResetForRetry(
-                JsonSerializer.SerializeToElement(attempt),
-                thread,
-                current["HeadSha"]?.GetValue<string>()
-            );
+        // (Kay9: review it again rather than skip it until a new push). The retry continues the reset's own
+        // conversation, or, when that one predates headless provisioning and was passed over, a new headless one.
+        var resetThread =
+            resume || cleanupOnly || attempt is null
+                ? null
+                : new[] { thread, questionThread }.FirstOrDefault(candidate =>
+                    candidate is not null
+                    && PrSelection.IsResetForRetry(
+                        JsonSerializer.SerializeToElement(attempt),
+                        candidate,
+                        current["HeadSha"]?.GetValue<string>()
+                    )
+                );
+        var retryOfReset = resetThread is not null;
         var resetsOfHead =
             attempt is null || resume || cleanupOnly
                 ? 0
@@ -685,7 +690,7 @@ internal static class ReviewRunner
         {
             var transcript = await client.GetConversationTranscriptAsync(headMatch.ThreadId, ct);
             // Our own reset review of this head is the one exception: it is told to post only what is missing.
-            if (ReviewedHead(transcript, liveHead) && !(retryOfReset && headMatch.ThreadId == thread))
+            if (ReviewedHead(transcript, liveHead) && headMatch.ThreadId != resetThread)
                 throw new ReviewNotAdmittedException("PR head was already reviewed by another run; skipped.");
             // A conversation with no output (never sent, or sent and never answered) holds no earlier review, so the
             // prompt must not claim one.

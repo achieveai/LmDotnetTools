@@ -3668,19 +3668,23 @@ public sealed class ReviewdRunnerTests
     }
 
     [Theory]
-    [InlineData("prior", 1, null)]
-    [InlineData("other", 1, "PR head was already reviewed by another run; skipped.")]
+    [InlineData("prior", 1, null, true)]
+    [InlineData("other", 1, "PR head was already reviewed by another run; skipped.", true)]
     // The batch can admit a failed entry again without a new pick, so the runner holds the reset cap too.
-    [InlineData("prior", 3, "PR head was reset 3 times; skipped until a new push.")]
+    [InlineData("prior", 3, "PR head was reset 3 times; skipped until a new push.", true)]
+    // A reset conversation from before headless provisioning is passed over: the retry runs in a new headless one.
+    [InlineData("prior", 1, null, false)]
+    [InlineData("other", 1, "PR head was already reviewed by another run; skipped.", false)]
     public async Task Runner_reviews_its_own_reset_review_of_the_same_head_again(
         string titledThread,
         int resetCount,
-        string? refusal
+        string? refusal,
+        bool headless
     )
     {
         // Kay9: a review the reaper reset before its publication was verified is reviewed again, in its own
-        // conversation, told to post only what is missing. A conversation for this head that is not ours still means
-        // another run reviewed it.
+        // conversation or a new headless one, told to post only what is missing. A conversation for this head that is
+        // not ours still means another run reviewed it.
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-reset-retry-{Guid.NewGuid():N}.db");
         var repo = PrCommands.ParseRepo("org/project/Nova");
         var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/17";
@@ -3693,7 +3697,12 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/api/conversations?",
-                $$"""[{"threadId":"{{titledThread}}","title":"Nova-17-aaaaaaaa","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1,"clientToolsDisabled":true}]"""
+                $$"""[{"threadId":"{{titledThread}}","title":"Nova-17-aaaaaaaa","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1,"clientToolsDisabled":{{(headless ? "true" : "false")}}}]"""
+            )
+            .On(
+                request =>
+                    request.RequestUri!.AbsolutePath == "/api/conversations" && request.Method == HttpMethod.Post,
+                _ => Json("""{"threadId":"fresh"}""")
             )
             // The titled conversation ran this head's review, so only our own reset is admitted past it.
             .OnJson(
@@ -3813,7 +3822,10 @@ public sealed class ReviewdRunnerTests
                 // summary rather than rely on the one its reset run may already have posted.
                 sent.Should()
                     .ContainSingle()
-                    .Which.Body.Should()
+                    .Which.Uri.AbsolutePath.Should()
+                    .Contain(headless ? "/prior/" : "/fresh/");
+                sent.Single()
+                    .Body.Should()
                     .Contain("stopped before its publication was")
                     .And.Contain("Always post a new summary for this run")
                     .And.Contain("only what this run posts")
