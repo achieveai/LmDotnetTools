@@ -354,6 +354,7 @@ public sealed class ServiceCallerPrincipalTests
 
     [Theory]
     [InlineData("/api/auth/webhook/github")]
+    [InlineData("/api/sandbox/webhook")]
     public async Task WithEnforcementOn_AnInfrastructureCallback_IsNotRefusedByIdentity(string path)
     {
         // This sits outside the identity boundary by decision, not by omission: it authenticates

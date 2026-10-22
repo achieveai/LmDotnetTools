@@ -59,13 +59,15 @@ public sealed class ModelResolverTests
               {"id":"gpt-5.3-codex","vendor":"OpenAI","supported_endpoints":["/responses","ws:/responses"]},
               {"id":"gemini-3.5-flash","vendor":"Google","supported_endpoints":["/chat/completions"]},
               {"id":"mai-code-1-flash-picker","vendor":"Microsoft","supported_endpoints":["/responses"]},
+              {"id":"mai-code-2-flash","vendor":"Experimental","supported_endpoints":["/chat/completions","/responses"]},
+              {"id":"gpt-5.6-sol-fast","vendor":"Experimental","supported_endpoints":["/responses"]},
               {"id":"text-embedding-3-small","vendor":"Azure OpenAI","supported_endpoints":[]}
             ]}
             """;
 
         var models = ProxyModelResolver.ParseServableModels(json);
 
-        models.Select(m => m.Id).Should().Equal("claude-opus-4.8", "gpt-5.3-codex");
+        models.Select(m => m.Id).Should().Equal("claude-opus-4.8", "gpt-5.3-codex", "gpt-5.6-sol-fast");
         models[0].Vendor.Should().Be("Anthropic");
         models[0].Supports(CopilotModelsResponse.MessagesEndpoint).Should().BeTrue();
         models[0].Supports(CopilotModelsResponse.ResponsesEndpoint).Should().BeFalse();
@@ -85,6 +87,18 @@ public sealed class ModelResolverTests
 
         models.Select(m => m.Id).Should().Equal("claude-opus-4.8", "claude-sonnet-4.5");
         models.Should().OnlyContain(m => m.Endpoints.Count == 0, "no-metadata entries carry no endpoints");
+    }
+
+    [Fact]
+    public void ParseServableModels_no_metadata_fallback_still_vetoes_mai_code_routers()
+    {
+        const string json = """
+            {"data":[{"id":"claude-opus-4.8"},{"id":"mai-code-2-flash"},{"id":"MAI-CODE-1"}]}
+            """;
+
+        var models = ProxyModelResolver.ParseServableModels(json);
+
+        models.Select(m => m.Id).Should().Equal("claude-opus-4.8");
     }
 
     [Fact]

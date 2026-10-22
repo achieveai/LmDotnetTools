@@ -13,7 +13,7 @@ import {
 import OperatorSecretField from "@/components/OperatorSecretField.vue";
 
 /**
- * The inspector's Sandbox section: the image/digest/home the gateway acknowledged for the conversation's
+ * The inspector's Sandbox section: the image/digest/working directory the gateway acknowledged for the conversation's
  * live sandbox (with the image's conformance warnings), and the workspace's backups — snapshots, restore,
  * costs, and a typed-confirm purge.
  */
@@ -180,8 +180,10 @@ onBeforeUnmount(() => {
           <dd data-testid="sandbox-info-image">{{ info.session.image ?? "default" }}</dd>
           <dt>Digest</dt>
           <dd class="mono" data-testid="sandbox-info-digest">{{ info.session.imageDigest ?? "unresolved" }}</dd>
-          <dt>Home</dt>
-          <dd data-testid="sandbox-info-home">{{ info.session.home ?? "workspace root" }}</dd>
+          <dt>Working dir</dt>
+          <dd data-testid="sandbox-info-working-dir">
+            {{ info.session.workingDir ?? "none (whole workspace writable)" }}
+          </dd>
         </template>
       </dl>
       <p v-if="info && !info.session" class="muted" data-testid="sandbox-info-no-session">

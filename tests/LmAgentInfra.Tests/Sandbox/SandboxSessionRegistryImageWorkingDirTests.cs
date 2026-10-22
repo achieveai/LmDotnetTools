@@ -8,13 +8,13 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Tests.Sandbox;
 
 /// <summary>
-/// A workspace's client image and home reach the sandbox create, the gateway's acknowledgement is kept on the
+/// A workspace's client image and working directory reach the sandbox create, the gateway's acknowledgement is kept on the
 /// session, and a rejected image names its reason in the failure the UI shows.
 /// </summary>
-public class SandboxSessionRegistryImageHomeTests
+public class SandboxSessionRegistryImageWorkingDirTests
 {
     [Fact]
-    public async Task GetOrCreateSessionAsync_WorkspaceImageAndHome_ReachTheCreateAndTheAckIsKeptOnTheSession()
+    public async Task GetOrCreateSessionAsync_WorkspaceImageAndWorkingDir_ReachTheCreateAndTheAckIsKeptOnTheSession()
     {
         string? createBody = null;
         await using var registry = CreateRegistry(
@@ -25,7 +25,7 @@ public class SandboxSessionRegistryImageHomeTests
                     HttpStatusCode.Created,
                     """
                     {"session_id":"sess-1","container_id":"c-1",
-                     "volumes":{"workspace":{"container_path":"/workspace","read_only":false,"home":"wt/issue-1"}},
+                     "volumes":{"workspace":{"container_path":"/workspace","read_only":false,"working_dir":"wt/issue-1"}},
                      "image":"debian:bookworm-slim","image_digest":"debian@sha256:0104"}
                     """
                 );
@@ -33,15 +33,15 @@ public class SandboxSessionRegistryImageHomeTests
         );
 
         var session = await registry.GetOrCreateSessionAsync(
-            new WorkspaceRef("ws-1", Image: "debian:bookworm-slim", Home: "wt/issue-1")
+            new WorkspaceRef("ws-1", Image: "debian:bookworm-slim", WorkingDir: "wt/issue-1")
         );
 
         using var sent = JsonDocument.Parse(createBody!);
         sent.RootElement.GetProperty("image").GetString().Should().Be("debian:bookworm-slim");
-        sent.RootElement.GetProperty("home").GetString().Should().Be("wt/issue-1");
+        sent.RootElement.GetProperty("working_dir").GetString().Should().Be("wt/issue-1");
         session.Image.Should().Be("debian:bookworm-slim");
         session.ImageDigest.Should().Be("debian@sha256:0104");
-        session.WorkspaceHome.Should().Be("wt/issue-1");
+        session.WorkspaceWorkingDir.Should().Be("wt/issue-1");
     }
 
     [Fact]

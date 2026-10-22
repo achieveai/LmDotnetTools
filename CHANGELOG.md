@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Sandbox SDK / LmAgentInfra / LmStreaming.Sample synced to gateway `origin/master` `46be47df`**:
+  - Per-app git marketplaces cite gateway ADR 0045 (the merged number). The `400 invalid_app_id` and the new `422 unsafe_checkout` (the checkout contains a symbolic link) and `422 no_default_branch` refusals classify as `SandboxErrorKind.Protocol` with their `ErrorCode` kept. A sandbox keeps the commit it mounted; one created while the store was on cannot be resumed on a gateway restarted without it.
+  - New `SandboxGatewayOptions.MarketplaceStorePath` (becomes `MARKETPLACE_STORE_PATH`, made absolute against the app's binaries folder) and `LocalSandboxPython` (becomes `LOCAL_SANDBOX_PYTHON`, the interpreter for Windows workspace `.py` mini apps). Both apply to an auto-spawned gateway only.
+  - `SANDBOX_PYTHON`, `SBX_AGENT_ID` and `GIT_SSL_CAINFO` are protected env names (SDK rules and the sample's env editor).
+  - LmStreaming.Sample turns git marketplaces on (`SandboxGateway:MarketplaceStorePath = "marketplace-store"`). The Marketplaces panel says what each gateway refusal code means, and names the setting to change when the store is off. `SandboxWorkspaceGuide.md` documents the feature; the Sandbox README notes that the working directory's Windows AppContainer split is not a security boundary while an operation runs.
+
+- **CopilotAnthropicProxy.Sample: no longer serves `mai-code-*` routers under any vendor.** Copilot now lists
+  `mai-code-2-flash` under vendor `Experimental`, which the `Google`/`Microsoft` vendor veto missed; every request to it
+  answered an upstream 500.
+
+- **Sandbox SDK synced to gateway `origin/master` `8547483f` (after v0.1.16)**:
+  - Breaking rename: `SandboxCreateRequest.Home` → `WorkingDir` (`home:` → `workingDir:`), `SandboxInfo.WorkspaceHome` → `WorkspaceWorkingDir`, and in LmAgentInfra `WorkspaceRef.Home` → `WorkingDir`, `SandboxSession.WorkspaceHome` → `WorkspaceWorkingDir`. The wire field is now `working_dir`, and it makes the rest of the workspace read-only for agents (gateway ADR 0044). A gateway that acknowledges only the legacy `home` (v0.1.16) fails the create.
+  - Added: sandbox properties and partitions (`Properties` on create/info, `GetPropertiesAsync`, `UpdatePropertiesAsync`, partition-aware backup overloads), skill tiers (`SandboxSkillsPolicy`, `GetSkillsAsync`, `UpdateSkillTiersAsync`, `SandboxAgentInfo.IncludedSkills`), and the unified sandbox webhook (`SandboxWebhookSettings`, `SandboxInfo.Webhook`).
+  - `SANDBOX_WORKDIR` is a protected env name. LmStreaming.Sample's workspace "home" is now "working directory"; workspaces saved with the old `home` key keep their value.
+
+- **LmAgentInfra / LmStreaming.Sample: unified sandbox webhook** (gateway ADR 0043):
+  - New `WebhookOptions.UseSandboxWebhook`. When on, `SandboxSessionRegistry` registers `{PublicBaseUrl}/api/sandbox/webhook` for `context_discovery` and `task_completed` instead of the legacy discovery webhook. It never registers both. Default off, so CodeReviewDaemon and v0.1.16 gateways are unchanged.
+  - The sample turns it on. New `SandboxWebhookController` checks the session secret, skips repeated `event_id`s, sends discoveries through the shared `ContextDiscoveryBatchHandler`, and acknowledges other events.
+  - New `SandboxTaskCompletionNotifier` tells the agent that started a background task that it ended: a `background-task` notice with status, duration and output tails. It says the exit code is not real, since the gateway reports 0 for every self-ended task. A sub-agent's task goes to that sub-agent. A primary agent sends no agent id, so `SandboxBackgroundTaskTracker` records which conversation's tool call returned the task id (waiting up to 2 s for it, since the gateway sends the event as soon as the task ends); without a record (a restart), the notice goes to the session's only conversation or is dropped.
+  - With the switch on, the registry reads a new sandbox back once and warns when the gateway did not register the webhook.
+  - For a gateway at or below v0.1.16, set `Auth:Webhook:UseSandboxWebhook=false`: it ignores the unified webhook.
+
 - **Sandbox SDK synced to gateway v0.1.16 (+ per-app marketplaces at gateway `bac5a32`)** — public changes a consumer must know about:
   - `SandboxClient.CloseBrowserAsync` returns `Task`, not `Task<bool>` (source and binary break). The gateway answers `204` even for an unknown id, so the old `false` never meant "not found"; a `404` now throws `BrowserUnsupported`.
   - Error kinds reclassified. Control-plane `409` is `Conflict` (was `Protocol`), `503` is `Unavailable`, `410`/`workspace_purged` is `WorkspacePurged`, image refusals are `ImageRejected`. An operation that ends `failed` without an exit code, `internal_failure` or `cancelled` is `OperationFailed` (was `Protocol`); `executable_not_runnable` is `ExecutableNotRunnable`.
