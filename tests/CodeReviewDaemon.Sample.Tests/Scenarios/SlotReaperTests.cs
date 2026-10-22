@@ -896,11 +896,14 @@ public sealed class SlotReaperTests
     [InlineData("quiet", false)] // the watchdog keeps beating: renewed, the step runs to its end
     [InlineData("active", true)] // an agent is active: never asked, renewed
     [InlineData("unknown", true)] // the agent read fails: counts as active
+    [InlineData("hung", true)] // step-stop never answers: each check gives up in time, renewed, the step ends promptly
     public async Task A_step_whose_watchdog_is_stuck_is_stopped_only_while_no_agent_is_active(string agents, bool stale)
     {
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-step-stop-{Guid.NewGuid():N}.db");
         var previousInterval = ReviewRunner.LeaseRenewInterval;
+        var previousTimeout = ReviewRunner.StepStopTimeout;
         ReviewRunner.LeaseRenewInterval = TimeSpan.FromMilliseconds(20);
+        ReviewRunner.StepStopTimeout = TimeSpan.FromMilliseconds(50);
         try
         {
             using var connection = PrThreadBindings.Connection(database);
@@ -915,9 +918,16 @@ public sealed class SlotReaperTests
                 phase switch
                 {
                     "step-activity" => Task.FromResult(new JsonObject()),
+                    "step-stop" when agents == "hung" => HangAsync(token),
                     "step-stop" => Task.FromResult(new JsonObject { ["stopped"] = killed = ++checks >= 3 && stale }),
                     _ => StepAsync(),
                 };
+            async Task<JsonObject> HangAsync(CancellationToken token)
+            {
+                checks++;
+                await Task.Delay(Timeout.Infinite, token);
+                return new JsonObject { ["stopped"] = true };
+            }
             async Task<JsonObject> StepAsync()
             {
                 for (var deadline = DateTime.UtcNow.AddSeconds(10); DateTime.UtcNow < deadline; await Task.Delay(10))
@@ -951,7 +961,10 @@ public sealed class SlotReaperTests
             if (agents == "quiet" && stale)
                 await step.Should().ThrowAsync<ReviewRunner.SettledSandboxException>();
             else
-                (await step())["ok"]!.GetValue<bool>().Should().BeTrue();
+                (await step.Should().CompleteWithinAsync(TimeSpan.FromSeconds(5))).Subject["ok"]!
+                    .GetValue<bool>()
+                    .Should()
+                    .BeTrue();
             var lease = (await store.GetAsync<JsonObject>(ownerKey))!["leaseExpiresAt"]!.GetValue<DateTimeOffset>();
 
             if (agents == "quiet" && stale)
@@ -963,13 +976,14 @@ public sealed class SlotReaperTests
             {
                 checks
                     .Should()
-                    .Be(agents == "quiet" ? reads : 0, "only a quiet tick asks the sandbox to stop the step");
+                    .Be(agents is "quiet" or "hung" ? reads : 0, "only a quiet tick asks the sandbox to stop the step");
                 lease.Should().BeAfter(DateTimeOffset.UtcNow);
             }
         }
         finally
         {
             ReviewRunner.LeaseRenewInterval = previousInterval;
+            ReviewRunner.StepStopTimeout = previousTimeout;
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             File.Delete(database);
         }

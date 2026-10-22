@@ -22,7 +22,8 @@ root = Path.cwd()
 # whichever comes last (Kay9: activity decides, never time alone). Activity is CPU or I/O by the step or any of
 # its children, or a fresh mark the client writes while an agent on the conversation is active.
 # The watchdog writes a heartbeat on every sample. One STEP_STALE seconds old means the watchdog itself is stuck, and
-# then the client asks step-stop to kill the step (Kay9: only while no agent on the conversation is active).
+# then the client asks step-stop to kill the step, never before STEP_MIN either (Kay9: only while no agent on the
+# conversation is active).
 # Both measure time on the monotonic clock, so a wall-clock step neither ends a live step nor makes its watchdog look
 # stuck.
 STEP_IDLE, STEP_MIN, STEP_SAMPLE, STEP_STOPPED, STEP_STALE = 600, 3600, 30, 124, 900
@@ -68,21 +69,27 @@ def process_start(pid):
 
 
 def stop_step(marks, operation, now):
-    # Kills the step only if its watchdog stopped beating STEP_STALE seconds ago and no agent marked it active within
-    # STEP_IDLE, and only the process the heartbeat recorded, with its descendants. now is monotonic, like the beat.
+    # Kills the step only if its watchdog stopped beating STEP_STALE seconds ago, the step started at least STEP_MIN
+    # seconds ago, and no agent marked it active within STEP_IDLE; and only the process the heartbeat recorded, with its
+    # descendants. now is monotonic, like the beat, the start and the agent mark.
     beat = marks / f'{operation}.watchdog'
     try:
         recorded = json.loads(beat.read_text())
-        age = now - recorded['beat']
+        age, ran = now - recorded['beat'], now - recorded['since']
     except (OSError, ValueError, KeyError, TypeError):
         return {'stopped': False, 'reason': 'no watchdog heartbeat'}
     if age < STEP_STALE:
         return {'stopped': False, 'reason': 'watchdog alive'}
+    if ran < STEP_MIN:
+        return {'stopped': False, 'reason': 'step started less than an hour ago'}
     try:
-        if time.time() - (marks / f'{operation}.agents').stat().st_mtime < STEP_IDLE:
+        if now - json.loads((marks / f'{operation}.agents').read_text())['at'] < STEP_IDLE:
             return {'stopped': False, 'reason': 'agent active'}
-    except OSError:
+    except FileNotFoundError:
         pass
+    except (OSError, ValueError, KeyError, TypeError):
+        # Unknown counts as active, like an agent read the client could not make.
+        return {'stopped': False, 'reason': 'agent mark unreadable'}
     try:
         step = int(recorded['pid'])
         if process_start(step) != recorded['start']:
@@ -113,7 +120,7 @@ def watch_step(mark, beat):
     if beat:
         try:
             beat.parent.mkdir(exist_ok=True)
-            record = {'pid': os.getpid(), 'start': process_start(os.getpid())}
+            record = {'pid': os.getpid(), 'start': process_start(os.getpid()), 'since': started}
             beat_now()
         except (OSError, ValueError, IndexError):
             beat = None
@@ -156,7 +163,8 @@ if phase in ('step-activity', 'step-stop'):
         print(json.dumps(stop_step(marks, args['operation'], time.monotonic())))
         raise SystemExit(0)
     marks.mkdir(exist_ok=True)
-    (marks / f"{args['operation']}.agents").touch()
+    # The watchdog sees a new mark by its change; step-stop reads its monotonic time.
+    (marks / f"{args['operation']}.agents").write_text(json.dumps({'at': time.monotonic()}))
     print(json.dumps({'marked': args['operation']}))
     raise SystemExit(0)
 mark = marks / f"{args.get('stepOperation')}.agents"

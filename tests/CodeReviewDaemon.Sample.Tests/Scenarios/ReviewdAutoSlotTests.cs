@@ -525,10 +525,11 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         const string harness = """
             import ast, sys
             tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
+            # The script's own limits, not copies of them.
+            limits = [n for n in tree.body if isinstance(n, ast.Assign) and 'STEP_MIN' in ast.unparse(n.targets[0])]
             rules = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'step_should_stop']
             scope = {}
-            exec(compile(ast.Module(rules, []), 'watchdog', 'exec'), scope)
-            scope.update(STEP_IDLE=600, STEP_MIN=3600)
+            exec(compile(ast.Module(limits + rules, []), 'watchdog', 'exec'), scope)
             print(scope['step_should_stop'](0, int(sys.argv[2]) * 60, int(sys.argv[3]) * 60))
             """;
         var (exitCode, stdout, stderr) = await RunSandboxRuleAsync(
@@ -587,8 +588,9 @@ public sealed class ReviewdAutoSlotTests : IDisposable
             time.sleep(1.2 if activity != 'idle' else 10)
             child.kill()
             recorded = json.loads(beat.read_text())
-            # Beaten again well after it started. One sample scans all of /proc, which takes a few tenths of a second.
-            print('not stopped', recorded['pid'] == os.getpid(), recorded['beat'] - watching > 0.5)
+            # It records when the step started, and beats again well after. One sample scans all of /proc, which takes a
+            # few tenths of a second.
+            print('not stopped', recorded['pid'] == os.getpid(), 0 <= recorded['since'] - watching < 0.5, recorded['beat'] - watching > 0.5)
             """;
         try
         {
@@ -607,7 +609,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
             else
             {
                 exitCode.Should().Be(0, stderr);
-                stdout.Trim().Should().Be("not stopped True True");
+                stdout.Trim().Should().Be("not stopped True True True");
             }
         }
         finally
@@ -633,12 +635,15 @@ public sealed class ReviewdAutoSlotTests : IDisposable
 
     [SkippableTheory]
     // Kay9 (gap 1): when the watchdog itself is stuck, the client asks step-stop to end the step. It kills the step's
-    // recorded process tree, own-session children too, only once the heartbeat is 15 minutes stale and no agent mark is
-    // fresh.
+    // recorded process tree, own-session children too, only once the heartbeat is 15 minutes stale, the step started an
+    // hour ago, and no agent mark is fresh.
     [InlineData("stale", true)]
     [InlineData("fresh", false)] // the watchdog beat a minute ago
     [InlineData("clock", false)] // it beat a minute ago, though the wall clock stepped since and its file looks old
+    [InlineData("young", false)] // stale, but the step started only 30 minutes ago
     [InlineData("agent", false)] // stale, but an agent marked the step active just now
+    [InlineData("agent-clock", false)] // an agent marked it a minute ago, though the wall clock stepped since
+    [InlineData("agent-old", true)] // the last agent mark is 16 minutes old
     public async Task Step_stop_kills_a_step_only_when_its_watchdog_is_stale_and_no_agent_is_active(
         string state,
         bool killed
@@ -653,8 +658,8 @@ public sealed class ReviewdAutoSlotTests : IDisposable
             names = {'step_processes', 'process_start', 'stop_step'}
             scope = {}
             exec('import json, os, signal, time', scope)
-            exec(compile(ast.Module([n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names], []), 'step_stop', 'exec'), scope)
-            scope.update(STEP_IDLE=600, STEP_STALE=900)
+            limits = [n for n in tree.body if isinstance(n, ast.Assign) and 'STEP_MIN' in ast.unparse(n.targets[0])]
+            exec(compile(ast.Module(limits + [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names], []), 'step_stop', 'exec'), scope)
             state, marks, operation = sys.argv[2], Path(sys.argv[3]), 'a' * 32
             work = 'import subprocess, sys, time\nsubprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)\ntime.sleep(30)'
             step = subprocess.Popen([sys.executable, '-c', work])
@@ -666,12 +671,15 @@ public sealed class ReviewdAutoSlotTests : IDisposable
                 time.sleep(0.01)
             beat = marks / f'{operation}.watchdog'
             beat_age = 60 if state in ('fresh', 'clock') else 1000
-            beat.write_text(json.dumps({'pid': step.pid, 'start': scope['process_start'](step.pid), 'beat': time.monotonic() - beat_age}))
-            # A wall-clock step changes only the file's time, never the monotonic beat inside it.
+            since = time.monotonic() - (1800 if state == 'young' else 4000)
+            beat.write_text(json.dumps({'pid': step.pid, 'start': scope['process_start'](step.pid), 'since': since, 'beat': time.monotonic() - beat_age}))
+            # A wall-clock step changes only a file's time, never the monotonic time inside it.
             now = time.time()
             os.utime(beat, (now, now - (60 if state == 'fresh' else 1000)))
-            if state == 'agent':
-                (marks / f'{operation}.agents').touch()
+            if state.startswith('agent'):
+                agent = marks / f'{operation}.agents'
+                agent.write_text(json.dumps({'at': time.monotonic() - (960 if state == 'agent-old' else 0 if state == 'agent' else 60)}))
+                os.utime(agent, (now, now - (1000 if state == 'agent-clock' else 0)))
             result = scope['stop_step'](marks, operation, time.monotonic())
             def ended(pid):
                 for _ in range(200 if result['stopped'] else 1):

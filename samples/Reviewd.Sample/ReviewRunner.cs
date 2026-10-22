@@ -136,6 +136,16 @@ internal static class ReviewRunner
 
     private static readonly AsyncLocal<TimeSpan?> LeaseRenewOverride = new();
 
+    // How long one step-stop may take. A step-stop that hangs would otherwise stall the renewals and, once the step
+    // ends, hold its lane. A test shortens it the same way as LeaseRenewInterval.
+    internal static TimeSpan StepStopTimeout
+    {
+        get => StepStopOverride.Value ?? TimeSpan.FromMinutes(2);
+        set => StepStopOverride.Value = value;
+    }
+
+    private static readonly AsyncLocal<TimeSpan?> StepStopOverride = new();
+
     /// <summary>
     /// Runs one sandbox step while renewing the slot lease every <see cref="LeaseRenewInterval"/>, so the reaper never
     /// resets a slot under a step that is still allowed to run. Each renewal also checks the conversation: while any
@@ -230,16 +240,19 @@ internal static class ReviewRunner
         }
 
         // The sandbox kills the step only if its watchdog heartbeat is 15 minutes stale and no agent mark is fresh. The
-        // call runs on the caller's token, so a step that ends meanwhile still learns it was stopped.
+        // call runs on the caller's token, so a step that ends meanwhile still learns it was stopped, but only for
+        // StepStopTimeout: one that hangs counts as not stopped, and the step keeps its lease until the next check.
         async Task<bool> StopStuckStepAsync()
         {
+            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            bounded.CancelAfter(StepStopTimeout);
             try
             {
                 var result = await sandbox(
                     "step-stop",
                     new JsonObject { ["operation"] = operation },
                     Guid.NewGuid().ToString("N"),
-                    ct
+                    bounded.Token
                 );
                 if (result["stopped"]?.GetValue<bool>() != true)
                     return false;
@@ -250,7 +263,7 @@ internal static class ReviewRunner
                 );
                 return true;
             }
-            catch (Exception failure) when (failure is not OperationCanceledException)
+            catch (Exception failure) when (failure is not OperationCanceledException || !ct.IsCancellationRequested)
             {
                 Console.Error.WriteLine($"Step {operation}: watchdog check failed: {failure.Message}");
                 return false;
@@ -689,8 +702,19 @@ internal static class ReviewRunner
         )
         {
             var transcript = await client.GetConversationTranscriptAsync(headMatch.ThreadId, ct);
-            // Our own reset review of this head is the one exception: it is told to post only what is missing.
-            if (ReviewedHead(transcript, liveHead) && headMatch.ThreadId != resetThread)
+            // Our own reset review of this head is the one exception: it is told to post only what is missing. That is
+            // any conversation the reset attempt names, as a retry's own may never have been titled for this head.
+            if (
+                ReviewedHead(transcript, liveHead)
+                && !(
+                    retryOfReset
+                    && PrSelection.IsResetForRetry(
+                        JsonSerializer.SerializeToElement(attempt),
+                        headMatch.ThreadId,
+                        liveHead
+                    )
+                )
+            )
                 throw new ReviewNotAdmittedException("PR head was already reviewed by another run; skipped.");
             // A conversation with no output (never sent, or sent and never answered) holds no earlier review, so the
             // prompt must not claim one.
@@ -905,9 +929,10 @@ internal static class ReviewRunner
         if (retryOfReset)
         {
             receipt["stageBeforeReclaim"] = attempt!["stageBeforeReclaim"]!.DeepClone();
-            // A passed-over reset conversation is not this receipt's thread, so it is named for the next retry.
-            if (resetThread != thread)
-                receipt["resetThreadId"] = resetThread;
+            // A passed-over reset conversation is not this receipt's thread, so it is named for the next retry, and an
+            // earlier retry's one is carried on.
+            if ((resetThread != thread ? resetThread : attempt!["resetThreadId"]?.GetValue<string>()) is { } passedOver)
+                receipt["resetThreadId"] = passedOver;
         }
         if (resume || cleanupOnly)
             receipt = attempt!.DeepClone().AsObject();

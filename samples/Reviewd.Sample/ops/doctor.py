@@ -149,8 +149,16 @@ def facts(install, now, probe):
     rows = read_db(install)
     lines = log_lines(install.batch_log)
     scheduling = [line for line in lines if SCHEDULING.match(line)]
-    picks = [stamp for stamp in (ts(m.group(1)) for m in (re.match(r"^\[(\S+)\] pick.sh exit", line)
-                                                         for line in log_lines(install.keepalive_log)) if m) if stamp]
+    picks, picked = [], None
+    for line in log_lines(install.keepalive_log):
+        # pick.sh exits 0 even when its pr pick failed, so a pick counts only when pick.sh's own "pick exit=0" came
+        # before keep-alive's "pick.sh exit 0". Otherwise a batch whose picks keep failing never reads as unpicked.
+        if (status := re.match(r"^pick exit=(\d+)$", line)) is not None:
+            picked = status.group(1) == "0"
+        elif (done := re.match(r"^\[(\S+)\] pick.sh exit (\d+)", line)) is not None:
+            if picked and done.group(2) == "0" and ts(done.group(1)):
+                picks.append(ts(done.group(1)))
+            picked = None
     pids = probe.batch_pids(install)
     owners, in_flight = [], []
     for key, row in rows:
@@ -383,7 +391,10 @@ def tick(now, probe, dry_run=False, root=None, state_path=None, notifier=None, f
                               "detail": f"new kind of review failure: {sig[:300]}", "fix": None, "signature": sig})
     restarts, restarted, alerts = 0, set(), []
     current = {p["key"] for p in found}
-    for key in [k for k in state["problems"] if k not in current]:
+    # An install this tick could not inspect may still have its problems: unknown is not clear, so they and their attempt
+    # counts are kept. Otherwise ticks alternating with a probe error would restart it forever without an alert.
+    unknown = {p["install"] for p in found if p["kind"] == "doctor-error"}
+    for key in [k for k in state["problems"] if k not in current and k.split(":", 1)[0] not in unknown]:
         record({"key": key, "result": "cleared"}, dry_run)
         del state["problems"][key]
     for p in found:

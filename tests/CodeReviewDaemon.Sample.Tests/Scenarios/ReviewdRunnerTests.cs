@@ -3668,18 +3668,22 @@ public sealed class ReviewdRunnerTests
     }
 
     [Theory]
-    [InlineData("prior", 1, null, true)]
-    [InlineData("other", 1, "PR head was already reviewed by another run; skipped.", true)]
+    [InlineData("prior", 1, null, true, null)]
+    [InlineData("other", 1, "PR head was already reviewed by another run; skipped.", true, null)]
     // The batch can admit a failed entry again without a new pick, so the runner holds the reset cap too.
-    [InlineData("prior", 3, "PR head was reset 3 times; skipped until a new push.", true)]
+    [InlineData("prior", 3, "PR head was reset 3 times; skipped until a new push.", true, null)]
     // A reset conversation from before headless provisioning is passed over: the retry runs in a new headless one.
-    [InlineData("prior", 1, null, false)]
-    [InlineData("other", 1, "PR head was already reviewed by another run; skipped.", false)]
+    [InlineData("prior", 1, null, false, null)]
+    [InlineData("other", 1, "PR head was already reviewed by another run; skipped.", false, null)]
+    // That retry was reset in turn before its new conversation got this head's title: the titled one it passed over is
+    // still its own, and stays named for the next retry.
+    [InlineData("prior", 2, null, false, "fresh")]
     public async Task Runner_reviews_its_own_reset_review_of_the_same_head_again(
         string titledThread,
         int resetCount,
         string? refusal,
-        bool headless
+        bool headless,
+        string? retryThread
     )
     {
         // Kay9: a review the reaper reset before its publication was verified is reviewed again, in its own
@@ -3697,7 +3701,7 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/api/conversations?",
-                $$"""[{"threadId":"{{titledThread}}","title":"Nova-17-aaaaaaaa","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1,"clientToolsDisabled":{{(headless ? "true" : "false")}}}]"""
+                $$"""[{"threadId":"{{titledThread}}","title":"Nova-17-aaaaaaaa","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1,"clientToolsDisabled":{{(headless ? "true" : "false")}}}{{(retryThread is null ? "" : $$""",{"threadId":"{{retryThread}}","title":"New conversation","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":2,"clientToolsDisabled":true}""")}}]"""
             )
             .On(
                 request =>
@@ -3776,10 +3780,17 @@ public sealed class ReviewdRunnerTests
                     ["cleanupState"] = "released",
                     ["claimToken"] = "earlier-claim",
                     ["reviewInputId"] = "earlier-input",
-                    ["threadId"] = "prior",
+                    ["threadId"] = retryThread ?? "prior",
                     ["headSha"] = new string('a', 40),
                 }
             );
+            if (retryThread is not null)
+            {
+                var stored = (await store.GetAsync<JsonObject>(attemptKey))!;
+                stored["resetThreadId"] = "prior";
+                await store.SetAsync(attemptKey, stored);
+                await PrThreadBindings.SetAsync(database, repo, "17", retryThread, CancellationToken.None);
+            }
             var options = CliOptions.Parse([
                 "review",
                 "run",
@@ -3831,10 +3842,9 @@ public sealed class ReviewdRunnerTests
                     .And.Contain("only what this run posts")
                     .And.NotContain("post only the findings and summary that are missing");
                 using var reread = PrThreadBindings.Connection(database);
-                (await new SqliteKvStore(reread).GetAsync<JsonObject>(attemptKey))!["resetCount"]!
-                    .GetValue<int>()
-                    .Should()
-                    .Be(1);
+                var retried = (await new SqliteKvStore(reread).GetAsync<JsonObject>(attemptKey))!;
+                retried["resetCount"]!.GetValue<int>().Should().Be(resetCount);
+                (retried["resetThreadId"]?.GetValue<string>()).Should().Be(headless ? null : "prior");
             }
             else
             {

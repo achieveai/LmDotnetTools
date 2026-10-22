@@ -59,8 +59,9 @@ def make_install(root, name="reviewd-alpha", rows=(), batch_log="", keepalive_lo
     return doctor.Install(path)
 
 
-def picked(at):
-    return f"[{at.isoformat()}] pick.sh exit 0\n"
+def picked(at, status=0):
+    # What keep-alive's log holds for one pick: pick.sh's own status line for pr pick, then keep-alive's line.
+    return f"pick exit={status}\n[{at.isoformat()}] pick.sh exit 0\n"
 
 
 def kinds(found):
@@ -97,6 +98,14 @@ class Checks(unittest.TestCase):
         found = self.check(install, memory, NOW + minutes(15))
         self.assertEqual(kinds(found), ["no-pick"])
         self.assertEqual(found[0]["fix"], "run-keepalive")
+
+    def test_a_pick_whose_pr_pick_failed_does_not_count_as_a_pick(self):
+        # pick.sh exits 0 even when pr pick fails; only its "pick exit=0" line makes a pick.
+        install = make_install(self.root, batch_log=FINISHED,
+                               keepalive_log=picked(NOW - minutes(70)) + picked(NOW - minutes(10), status=1))
+        memory = {}
+        self.assertEqual(self.check(install, memory), [])
+        self.assertEqual(kinds(self.check(install, memory, NOW + minutes(15))), ["no-pick"])
 
     def test_no_progress_needs_two_hours_on_the_same_line_while_unfinished(self):
         install = make_install(self.root, batch_log="Org/P/R #1: prepare, operation abc\n")
@@ -278,6 +287,19 @@ class Ticks(unittest.TestCase):
         attempts = {key.split(":")[1]: entry["attempts"]
                     for key, entry in json.loads(self.state.read_text())["problems"].items()}
         self.assertEqual(attempts, {"stale-release": 1, "no-progress": 0})
+
+    def test_a_tick_that_cannot_inspect_an_install_keeps_its_restart_attempts(self):
+        # A probe error is not a cleared problem. Ticks alternating with one must still reach the alert after two
+        # restarts, not restart forever.
+        log = self.root / "reviewd" / "logs" / "review-batch.log"
+        log.write_text("Org/P/R #1: prepare, operation abc\n")
+        early = NOW.replace(hour=1)
+        self.tick(early)
+        for m in (121, 136, 151, 166, 181):
+            self.probe.hung = {"NOVA"} if m in (136, 166) else set()
+            self.tick(early + minutes(m))
+        self.assertEqual(self.fixed, ["restart-batch", "restart-batch"])
+        self.assertTrue(any("no-progress" in body for _, body in self.sent))
 
     def test_a_restart_refused_because_another_one_runs_spends_no_attempt(self):
         self.probe.release = "r1"
