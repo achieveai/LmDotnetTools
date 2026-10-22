@@ -3798,6 +3798,81 @@ public class CompactionLoopTests
             );
     }
 
+    // A child inherits the root's setup, hook included. Its compaction reports the child's own thread and agent id,
+    // and only the calls in the child's rows, though parent and child share one store (as the sample host does).
+    [Fact]
+    public async Task CheckpointHook_ChildCompaction_ReportsTheChildThread_AndOnlyItsOwnCalls()
+    {
+        var activations = new System.Collections.Concurrent.ConcurrentQueue<CheckpointActivation>();
+        var childDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var child = new ScriptedAgent(call =>
+        {
+            if (call <= 14)
+            {
+                return
+                [
+                    new ToolCallMessage
+                    {
+                        ToolCallId = $"child-tc-{call}",
+                        FunctionName = "Echo",
+                        FunctionArgs = "{}",
+                        Role = Role.Assistant,
+                    },
+                ];
+            }
+
+            childDone.TrySetResult();
+            return [new TextMessage { Text = "child done", Role = Role.Assistant }];
+        });
+        var shared = new InMemoryConversationStore();
+        var subAgents = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal)
+            {
+                ["worker"] = new SubAgentTemplate { SystemPrompt = "You work.", AgentFactory = () => child },
+            },
+            DefaultConversationStoreFactory = _ => shared,
+        };
+        await using var h = new Harness(
+            EchoThenDone(2),
+            Options(CompactionMode.Compact),
+            _ => Window,
+            store: shared,
+            subAgentOptions: subAgents,
+            onCheckpointActivated: (activation, _) =>
+            {
+                activations.Enqueue(activation);
+                return ValueTask.FromResult(false);
+            }
+        );
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+        activations.Should().BeEmpty("guard: two parent tool turns stay under the band");
+
+        var receipt = await h.Loop.SubAgentManager!.SpawnAsync("worker", "go", runInBackground: true);
+        await childDone.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        using var doc = System.Text.Json.JsonDocument.Parse(receipt);
+        var agentId = doc.RootElement.GetProperty("agent_id").GetString()!;
+        var childThread = SubAgentThreadIds.For(Thread, agentId);
+        activations.Should().NotBeEmpty("fourteen child tool turns cross the compact band");
+        activations.Should().OnlyContain(a => a.ThreadId == childThread && a.AgentId == agentId);
+        var rows = (await shared.LoadMessagesAsync(childThread))
+            .Select(p => (Seq: p.Seq!.Value, Message: MessagePersistenceConverter.FromPersistedMessage(p)))
+            .ToList();
+        foreach (var activation in activations)
+        {
+            activation
+                .ToolCalls.Select(c => c.Call.ToolCallId)
+                .Should()
+                .Equal(
+                    rows.Where(r => r.Seq < activation.CheckpointSeq)
+                        .SelectMany(r => ToolRows.CallsOf(r.Message).Select(call => call.ToolCallId)),
+                    "the child's own rows, never the parent's tc-1 and tc-2"
+                )
+                .And.OnlyContain(id => id!.StartsWith("child-tc-", StringComparison.Ordinal));
+        }
+    }
+
     /// <summary>One tool whose description a hook can change between requests, as a host's rotation does.</summary>
     private sealed class MutableToolProvider(string name = "Notes") : IFunctionProvider
     {

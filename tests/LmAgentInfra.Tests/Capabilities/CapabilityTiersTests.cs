@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Capabilities;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Core;
@@ -9,8 +11,10 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.Sandbox;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -325,6 +329,63 @@ public class CapabilityTiersTests
         reloadedGateway.ListedNames(T).Should().Equal("alpha:p", "beta:c");
     }
 
+    // The production store: SQLite hands the view back as a JsonElement string, not the string written. A break in
+    // that read re-seeds revision 1 from the config on every build and overwrites the rotated view.
+    [Fact]
+    public async Task SqliteStore_RotatedView_SurvivesReload_NotReseeded()
+    {
+        await using var sqlite = new TempSqliteStore();
+        var store = sqlite.Store;
+        await store.SaveMetadataAsync(T, new ThreadMetadata { ThreadId = T, LastUpdated = 1 });
+        var config = Tiers(["skill:alpha:a", "skill:alpha:b"], [PinP]);
+        using (var tiers = new CapabilityTiers(T, store, NullLogger.Instance))
+        {
+            (await BuildAsync(tiers, config, new FakeSkillGateway(), T)).Should().BeTrue();
+            (await tiers.OnCheckpointActivatedAsync(Activation(T, 10, 9, SkillCall(6, "beta:c")), default))
+                .Should()
+                .BeTrue();
+        }
+
+        await AssertViewAsync(store, T, ["alpha:p", "beta:c"], 2, 10);
+        var rotated = await RawViewAsync(store, T);
+
+        var reloadedGateway = new FakeSkillGateway();
+        using var reloaded = new CapabilityTiers(T, store, NullLogger.Instance);
+        (await BuildAsync(reloaded, config, reloadedGateway, T)).Should().BeTrue();
+
+        reloadedGateway.ListedNames(T).Should().Equal("alpha:p", "beta:c");
+        (await RawViewAsync(store, T)).Should().Be(rotated, "a reload reuses the view; it does not re-seed it");
+    }
+
+    // A view a newer build wrote is left byte-for-byte as it is (after a downgrade, an overwrite cannot be undone),
+    // and the mode stays inert: no PATCH, no Skill or SearchSkill of its own.
+    [Fact]
+    public async Task SqliteStore_NewerSchemaView_InertNoPatch_ViewUntouched()
+    {
+        const string Newer = """{"schemaVersion":2,"loaded":["skill:alpha:a"],"revision":7,"rotatedThroughSeq":40}""";
+        await using var sqlite = new TempSqliteStore();
+        var store = sqlite.Store;
+        await store.SaveMetadataAsync(
+            T,
+            new ThreadMetadata
+            {
+                ThreadId = T,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty.Add(CapabilityTiers.ViewPropertyKey, Newer),
+            }
+        );
+        var gw = new FakeSkillGateway();
+        var logger = new RecordingLogger();
+        using var tiers = new CapabilityTiers(T, store, logger);
+
+        (await BuildAsync(tiers, Tiers(["skill:alpha:a"], [PinP]), gw, T)).Should().BeFalse();
+
+        AssertInert(tiers, gw);
+        gw.Patches.Should().BeEmpty();
+        (await RawViewAsync(store, T)).Should().Be(Newer);
+        logger.Starting("Capabilities view of {AgentKey} has a newer schema").Should().ContainSingle();
+    }
+
     // U4: a rotation that keeps the same list sends nothing and leaves the tool bytes alone (prompt cache).
     [Fact]
     public async Task Rotation_WithUnchangedLoaded_NoPatchNoRelist_ProviderBytesIdentical()
@@ -412,6 +473,102 @@ public class CapabilityTiersTests
         gw.ListedNames(T).Should().Equal("alpha:p", "beta:c");
         SkillDescription(tiers).Should().Be(FakeSkillGateway.SkillText(["alpha:p", "beta:c"]));
         await AssertViewAsync(store, T, ["alpha:p", "beta:c"], 2, 11);
+    }
+
+    // F-004: a build whose PATCH failed leaves the gateway behind a view whose revision did not move (a newly pinned
+    // key joins at the same revision). The next activation re-PATCHes and re-lists, although Loaded is unchanged.
+    [Fact]
+    public async Task BuildApplyFailed_SameRevision_NextActivationWithSameLoaded_PatchesAndRelists()
+    {
+        var store = await StoreAsync(T);
+        var gw = new FakeSkillGateway();
+        using var tiers = new CapabilityTiers(T, store, NullLogger.Instance);
+        (await BuildAsync(tiers, Tiers(["skill:alpha:a"], [PinP]), gw, T)).Should().BeTrue();
+        gw.FailPatches = 1;
+        (await BuildAsync(tiers, Tiers(["skill:alpha:a"], [PinP, "skill:alpha:b"]), gw, T)).Should().BeTrue();
+        gw.ListedNames(T).Should().Equal(["alpha:a", "alpha:p"], "guard: the failed PATCH left the old set");
+        var patches = gw.Patches.Count;
+        var listCalls = gw.ListCalls;
+
+        (await tiers.OnCheckpointActivatedAsync(Activation(T, 6, 5, SkillCall(3, "alpha:a")), default))
+            .Should()
+            .BeTrue("the gateway and the Skill text are behind the view");
+
+        gw.Patches.Should().HaveCount(patches + 1);
+        IncludedNames(gw, gw.Patches[^1].Set).Should().Equal("alpha:a", "alpha:b", "alpha:p");
+        gw.ListCalls.Should().Be(listCalls + 1);
+        SkillDescription(tiers).Should().Be(FakeSkillGateway.SkillText(["alpha:a", "alpha:b", "alpha:p"]));
+    }
+
+    // F-001: a build that never commits (a refused switch, or a sandbox connect that throws) changes nothing live, in
+    // either direction. Its Skill attaches to the stage, and only its own flow lists as the staged agent.
+    [Fact]
+    public async Task StageDisposedUncommitted_LiveTiersUntouched_BothDirections()
+    {
+        var store = await StoreAsync(T);
+        var gw = new FakeSkillGateway();
+        var logger = new RecordingLogger();
+        using var tiers = new CapabilityTiers(T, store, logger);
+
+        using (var stage = await tiers.StageAsync(Tiers(["skill:alpha:a"], [PinP]), gw.For(T), default))
+        {
+            stage.IsActive.Should().BeTrue("guard: the staged mode is tiered");
+            stage.TryAttachRootSkill(gw.SkillContract(T), SkillHandler).Should().BeTrue();
+            stage
+                .RootProvider.GetFunctions()
+                .Select(f => f.Contract.Name)
+                .Should()
+                .Equal(CapabilityTiers.SkillToolName, CapabilityTiers.SearchSkillToolName);
+            using (stage.EnterBuildFlow())
+            {
+                tiers.RootGatewayAgentId.Should().Be(T, "the build lists Skill as the agent it stages");
+            }
+        }
+
+        AssertInert(tiers, gw);
+        (await RawViewAsync(store, T)).Should().BeNull("a mode that never committed persists no view");
+        logger.Starting("Capabilities active").Should().BeEmpty();
+
+        (await BuildAsync(tiers, Tiers(["skill:alpha:a"], [PinP]), gw, T)).Should().BeTrue();
+        var bytes = ProviderBytes(tiers);
+        using (var stage = await tiers.StageAsync(null, null, default))
+        {
+            stage.IsActive.Should().BeFalse("guard: the staged mode is untiered");
+            using (stage.EnterBuildFlow())
+            {
+                tiers.RootGatewayAgentId.Should().BeNull("the untiered build lists as the default agent");
+            }
+
+            stage.RootProvider.GetFunctions().Should().BeEmpty();
+        }
+
+        tiers.IsActive.Should().BeTrue();
+        tiers.RootGatewayAgentId.Should().Be(T);
+        ProviderBytes(tiers).Should().Be(bytes, "the live root keeps its Skill and SearchSkill");
+        logger.Starting("Capabilities inert").Should().BeEmpty();
+    }
+
+    // R3: one budget bounds a build's tiers. A gateway that hangs leaves the build inert with one WARN naming the
+    // thread, and nothing persisted.
+    [Fact]
+    public async Task Configure_GatewayHangsPastTheBudget_InertWithOneWarn_NoView()
+    {
+        var store = await StoreAsync(T);
+        var gw = new FakeSkillGateway();
+        var logger = new RecordingLogger();
+        using var tiers = new CapabilityTiers(T, store, logger) { ConfigureBudget = TimeSpan.FromMilliseconds(50) };
+        var hanging = gw.For(T) with { PatchTiers = (_, _, ct) => Task.Delay(Timeout.Infinite, ct) };
+
+        Func<Task> configure = () =>
+            tiers.ConfigureAsync(Tiers(["skill:alpha:a"], [PinP]), hanging, CancellationToken.None);
+
+        // The 50 ms budget ends the build; without it the PATCH never returns and this bound fails the test.
+        await configure.Should().CompleteWithinAsync(TimeSpan.FromSeconds(5));
+        AssertInert(tiers, gw);
+        var failed = logger.Starting("Capabilities apply failed").Should().ContainSingle().Subject;
+        failed.Level.Should().Be(LogLevel.Warning);
+        failed.Props["ThreadId"].Should().Be(T);
+        (await RawViewAsync(store, T)).Should().BeNull("a build that timed out persists no view");
     }
 
     // MT 1b: a failure row the operator cannot tie to a conversation hides behind any per-thread log filter.
@@ -593,9 +750,16 @@ public class CapabilityTiersTests
         var gw = new FakeSkillGateway();
         using var tiers = new CapabilityTiers(T, store, NullLogger.Instance);
         (await BuildAsync(tiers, SubAgentTiers, gw, T)).Should().BeTrue();
-        (await SpawnAsync(tiers, gw, "agent-1")).Should().AllSatisfy(p => p.Should().NotBeNull());
+        var childTools = await SpawnAsync(tiers, gw, "agent-1");
+        childTools.Should().AllSatisfy(p => p.Should().NotBeNull());
         var rootView = await RawViewAsync(store, T);
         var rootBytes = ProviderBytes(tiers);
+
+        // The child's own Skill text and SearchSkill marks: its view, not the root's (alpha:a, alpha:p).
+        ChildSkillDescription(childTools).Should().Be(FakeSkillGateway.SkillText(["alpha:p", "beta:c"]));
+        var marks = await ChildSearchMarksAsync(childTools);
+        marks["beta:c"].Should().Be("loaded");
+        marks["alpha:a"].Should().Be("available");
 
         (await tiers.OnCheckpointActivatedAsync(Activation(child, 9, 8, SkillCall(3, "beta:d")), default))
             .Should()
@@ -603,6 +767,7 @@ public class CapabilityTiersTests
 
         gw.Patches.Last().AgentId.Should().Be(childId);
         gw.ListedNames(childId).Should().Equal("alpha:p", "beta:d");
+        ChildSkillDescription(childTools).Should().Be(FakeSkillGateway.SkillText(["alpha:p", "beta:d"]));
         await AssertViewAsync(store, child, ["alpha:p", "beta:d"], 2, 9);
         (await RawViewAsync(store, T)).Should().Be(rootView);
         gw.ListedNames(T).Should().Equal("alpha:a", "alpha:p");
@@ -880,6 +1045,29 @@ public class CapabilityTiersTests
         ];
     }
 
+    /// <summary>The description of the <c>Skill</c> a spawned sub-agent is served (its first provider).</summary>
+    private static string? ChildSkillDescription(IFunctionProvider?[] childTools) =>
+        childTools[0]!.GetFunctions().Single(f => f.Contract.Name == SkillTool).Contract.Description;
+
+    /// <summary>Each skill's mark (<c>loaded</c> or <c>available</c>) in one search from the sub-agent's SearchSkill.</summary>
+    private static async Task<IReadOnlyDictionary<string, string>> ChildSearchMarksAsync(
+        IFunctionProvider?[] childTools
+    )
+    {
+        var search = childTools[1]!.GetFunctions().Single(f => f.Contract.Name == CapabilityTiers.SearchSkillToolName);
+        var result = await search.Handler(
+            """{"query":"alpha beta","limit":20}""",
+            new ToolCallContext(),
+            CancellationToken.None
+        );
+        var text = ((ToolHandlerResult.Resolved)result).Payload.Text;
+        // Hit rows read "1. beta:c (plugin: beta) [loaded]".
+        return text.Split('\n')
+            .Select(line => Regex.Match(line, @"^\d+\. (\S+) .*\[(loaded|available)\]$"))
+            .Where(m => m.Success)
+            .ToDictionary(m => m.Groups[1].Value, m => m.Groups[2].Value, StringComparer.Ordinal);
+    }
+
     private static async Task<InMemoryConversationStore> StoreAsync(params string[] threads)
     {
         var store = new InMemoryConversationStore();
@@ -992,9 +1180,36 @@ public class CapabilityTiersTests
     private static async Task<string?> RawViewAsync(IConversationStore store, string thread)
     {
         var metadata = await store.LoadMetadataAsync(thread);
+        // An in-memory store hands back the string written; SQLite a JsonElement holding it.
         return metadata?.Properties?.TryGetValue(CapabilityTiers.ViewPropertyKey, out var raw) == true
-            ? (string)raw
+            ? raw is JsonElement element
+                ? element.GetString()
+                : (string)raw
             : null;
+    }
+
+    /// <summary>The production conversation store on a temp file, deleted on dispose.</summary>
+    private sealed class TempSqliteStore : IAsyncDisposable
+    {
+        private readonly string _path = Path.Combine(Path.GetTempPath(), $"tiers-{Guid.NewGuid():N}.db");
+
+        public TempSqliteStore() => Store = new SqliteConversationStore(_path);
+
+        public SqliteConversationStore Store { get; }
+
+        public async ValueTask DisposeAsync()
+        {
+            await Store.DisposeAsync();
+            SqliteConnection.ClearAllPools(); // releases the pooled file handles so the file can go
+            foreach (var file in new[] { _path, _path + "-wal", _path + "-shm" })
+            {
+                try
+                {
+                    File.Delete(file);
+                }
+                catch (IOException) { }
+            }
+        }
     }
 
     private static async Task<ViewJson?> ViewAsync(IConversationStore store, string thread) =>

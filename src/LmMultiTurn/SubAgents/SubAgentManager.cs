@@ -3656,7 +3656,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             addTools,
             removeTools,
             _options.RequiredToolNames,
-            _parentToolNames
+            _parentToolNames,
+            _options.CompanionToolNames
         );
 
         IStreamingAgent providerAgent;
@@ -4125,13 +4126,19 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// nothing is now reported by <see cref="BuildSpawnCapabilityRecord"/> rather than
     /// passing quietly (#623's lesson).
     /// </para>
+    /// <para>
+    /// <paramref name="companionTools"/> (<see cref="SubAgentOptions.CompanionToolNames"/>) apply after the
+    /// required-tools union, so a required key brings its companions too. A companion the spawn's
+    /// <paramref name="removeTools"/> names stays out: an explicit removal wins over an implied grant.
+    /// </para>
     /// </remarks>
     internal static HashSet<string>? BuildEnabledToolSet(
         IReadOnlyList<string>? templateEnabledTools,
         string[]? addTools,
         string[]? removeTools,
         IReadOnlyCollection<string>? requiredTools = null,
-        IReadOnlyCollection<string>? inheritableToolNames = null
+        IReadOnlyCollection<string>? inheritableToolNames = null,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? companionTools = null
     )
     {
         if (templateEnabledTools == null && addTools == null && removeTools == null)
@@ -4192,6 +4199,25 @@ public sealed class SubAgentManager : IAsyncDisposable
             foreach (var tool in requiredTools)
             {
                 _ = result.Add(tool);
+            }
+        }
+
+        if (companionTools is { Count: > 0 } && result is not null)
+        {
+            foreach (var (tool, companions) in companionTools)
+            {
+                if (!result.Contains(tool))
+                {
+                    continue;
+                }
+
+                foreach (var companion in companions)
+                {
+                    if (removeTools is null || !removeTools.Contains(companion, StringComparer.Ordinal))
+                    {
+                        _ = result.Add(companion);
+                    }
+                }
             }
         }
 
@@ -4473,7 +4499,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             addTools,
             removeTools,
             _options.RequiredToolNames,
-            _parentToolNames
+            _parentToolNames,
+            _options.CompanionToolNames
         );
 
         string[] projected = [.. _parentToolNames.Where(name => InheritsParentTool(name, enabledSet, out _))];
@@ -4626,7 +4653,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             addTools,
             removeTools: null,
             requiredTools: null,
-            _parentToolNames
+            _parentToolNames,
+            _options.CompanionToolNames
         );
 
         if (beforeRemoval is null)

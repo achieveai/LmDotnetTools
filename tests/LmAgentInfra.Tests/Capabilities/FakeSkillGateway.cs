@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Capabilities;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.Sandbox;
 
@@ -106,7 +107,10 @@ internal sealed class FakeSkillGateway
         return "Skills: " + (names.Count == 0 ? "(none listed)" : string.Join(", ", names));
     }
 
-    /// <summary>The gateway calls bound to <paramref name="agentId"/>, the way the host binds them for a root.</summary>
+    /// <summary>
+    /// The gateway calls bound to <paramref name="agentId"/>, the way the host binds them for a root. Like the host's
+    /// resolver, a <c>Skill</c> listing made under a sub-agent's actor scope renders for that sub-agent's id.
+    /// </summary>
     public SkillTierGateway For(string agentId) =>
         new(
             ct =>
@@ -133,7 +137,9 @@ internal sealed class FakeSkillGateway
             ct =>
             {
                 _ = Interlocked.Increment(ref _listCalls);
-                return Task.FromResult<FunctionContract?>(SkillContract(agentId));
+                return Task.FromResult<FunctionContract?>(
+                    SkillContract(SandboxSubAgentIdentity.ForCurrentFlow(agentId) ?? agentId)
+                );
             }
         );
 

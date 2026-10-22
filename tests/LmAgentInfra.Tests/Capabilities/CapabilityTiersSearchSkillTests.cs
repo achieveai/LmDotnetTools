@@ -4,6 +4,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.Sandbox;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Tests.Capabilities;
@@ -124,6 +125,45 @@ public class CapabilityTiersSearchSkillTests
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be("invalid_args");
         payload.Should().Be(((ToolHandlerResult.Resolved)missing).Payload, "the same answer a missing query gets");
+    }
+
+    // Fails if a query's text reaches a log row at Information or above: it may carry user data. The Information
+    // row keeps only its length and the hit count; the text and the hit keys go to Debug.
+    [Fact]
+    public async Task SearchSkill_Log_InformationHasLengthAndCount_QueryTextIsDebugOnly()
+    {
+        const string Thread = "thread-1";
+        const string Query = "code review for acme payroll";
+        var logger = new RecordingLogger();
+        var gw = new FakeSkillGateway([("review", "code-review-01"), ("review", "code-review-02"), ("ops", "deploy")]);
+        using var tiers = new CapabilityTiers(Thread, new InMemoryConversationStore(), logger);
+        await tiers.ConfigureAsync(new TierSettings([], [], [], []), gw.For(Thread), CancellationToken.None);
+        var search = tiers
+            .RootProvider.GetFunctions()
+            .Single(f => f.Contract.Name == CapabilityTiers.SearchSkillToolName);
+
+        var result = await search.Handler($$"""{"query":"{{Query}}"}""", new ToolCallContext(), CancellationToken.None);
+
+        var hitCount = HitRows(((ToolHandlerResult.Resolved)result).Payload).Length;
+        hitCount.Should().BePositive("guard: the query must find something, or the count proves nothing");
+        var info = logger
+            .Starting("SearchSkill {")
+            .Where(r => r.Level == LogLevel.Information)
+            .Should()
+            .ContainSingle()
+            .Subject;
+        info.Props.Should().Contain("ThreadId", Thread).And.Contain("QueryLength", Query.Length);
+        info.Props.Should().Contain("HitCount", hitCount);
+        logger
+            .Rows.Where(r => r.Level >= LogLevel.Information)
+            .SelectMany(r => r.Props.Values)
+            .Select(v => v?.ToString() ?? "")
+            .Should()
+            .NotContain(v => v.Contains("payroll"), "the query text is Debug only");
+        logger
+            .Starting("SearchSkill query")
+            .Should()
+            .ContainSingle(r => r.Level == LogLevel.Debug && Equals(r.Props["Query"], Query));
     }
 
     private static string[] HitRows(ToolHandlerResultPayload payload) =>

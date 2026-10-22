@@ -1805,8 +1805,11 @@ try
                     : chatModeStore.GetModeAsync(mode.Id).GetAwaiter().GetResult()?.Tiers;
                 // The sandbox client this build connects below; a rotation lists Skill again through it.
                 McpClient? tierSkillClient = null;
-                capabilityTiers
-                    .ConfigureAsync(
+                // STAGED, not configured: the conversation's live tiers move only when this build becomes the
+                // conversation's (the commits below). A refused switch or a throw disposes the stage unused, so the
+                // live loop keeps its Skill, SearchSkill, agent id and view exactly as they were.
+                using var tierStage = capabilityTiers
+                    .StageAsync(
                         modeTiers is null ? null : ToTierSettings(modeTiers),
                         modeTiers is null
                             ? null
@@ -1844,9 +1847,11 @@ try
                     )
                     .GetAwaiter()
                     .GetResult();
-                if (capabilityTiers.IsActive)
+                // This build's own sandbox listing presents the staged agent id; the live loop keeps the live one.
+                using var tierBuildFlow = tierStage.EnterBuildFlow();
+                if (tierStage.IsActive)
                 {
-                    _ = filteredRegistry.AddProvider(capabilityTiers.RootProvider);
+                    _ = filteredRegistry.AddProvider(tierStage.RootProvider);
                 }
 
                 if (caps.SandboxTools)
@@ -1928,7 +1933,7 @@ try
                             SandboxSubAgentIdentity.ForCurrentFlow(threadId) ?? capabilityTiers.RootGatewayAgentId,
                         // Tiered: the root's Skill is served by the tiers instance, which swaps its text when
                         // a rotation changes what the root lists. Untiered: registered as before.
-                        contractSink: capabilityTiers.IsActive ? capabilityTiers.TryAttachRootSkill : null
+                        contractSink: tierStage.IsActive ? tierStage.TryAttachRootSkill : null
                     );
 
                     if (sandboxClients.Count > 0)
@@ -2208,12 +2213,18 @@ try
 
                     // Skill tiers per sub-agent: a spawning child that inherits Skill/SearchSkill gets its own
                     // (its own view, gateway id and Skill text). This conversation's tiers instance answers null
-                    // while inert, so an untiered child inherits exactly as before.
+                    // while inert, so an untiered child inherits exactly as before. A template whose tools list
+                    // names Skill also gets SearchSkill: its Skill lists only the Loaded skills, and SearchSkill
+                    // finds the rest. An untiered parent has no SearchSkill, so nothing is added there.
                     if (subAgentOptions is not null)
                     {
                         subAgentOptions = subAgentOptions with
                         {
                             InheritedToolOverride = capabilityTiers.ForInheritedToolAsync,
+                            CompanionToolNames = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
+                            {
+                                [CapabilityTiers.SkillToolName] = [CapabilityTiers.SearchSkillToolName],
+                            },
                         };
                     }
 
@@ -2727,6 +2738,9 @@ try
                             // would destroy the run now in flight.
                             throw new AgentBusyException(threadId);
                         }
+
+                        // The live loop runs on this build from here, so its tiers do too.
+                        tierStage.CommitAsync(CancellationToken.None).GetAwaiter().GetResult();
                     }
                     else
                     {
@@ -3024,6 +3038,12 @@ try
                     // instead. The pool disposes only what the next result leaves out.
                     ownedResources.Add(scope);
                     reusableResources[ConversationToolScope.ResourceKey] = scope;
+
+                    // A fresh loop becomes the conversation's with this result; an in-place one committed above.
+                    if (liveLoop is null)
+                    {
+                        tierStage.CommitAsync(CancellationToken.None).GetAwaiter().GetResult();
+                    }
 
                     return new MultiTurnAgentPool.AgentCreationResult(
                         agent,

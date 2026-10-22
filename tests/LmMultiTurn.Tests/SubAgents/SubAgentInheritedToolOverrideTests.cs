@@ -164,9 +164,33 @@ public sealed class SubAgentInheritedToolOverrideTests : IAsyncLifetime
         tools.Select(t => t.Name).Should().Contain(ReadTool).And.NotContain([SkillTool, SearchTool]);
     }
 
+    // Fails if a companion does not follow its key into an explicit tools list: a child narrowed to [Skill, Read]
+    // would get a Skill without the SearchSkill that finds the skills its Skill no longer lists.
+    [Fact]
+    public async Task TemplateListsSkillNotSearchSkill_Companion_ChildGetsBoth_OverrideOfferedBoth()
+    {
+        var offered = new ConcurrentQueue<string>();
+        var manager = CreateManager(
+            enabledTools: [SkillTool, ReadTool],
+            (tool, _) =>
+            {
+                offered.Enqueue(tool.Contract.Name);
+                return ValueTask.FromResult<IFunctionProvider?>(null);
+            },
+            companions: new Dictionary<string, IReadOnlyList<string>> { [SkillTool] = [SearchTool] }
+        );
+
+        _ = await SpawnAsync(manager);
+        var tools = await ChildRequestToolsAsync();
+
+        tools.Select(t => t.Name).Should().Contain([SkillTool, SearchTool, ReadTool]);
+        offered.Should().BeEquivalentTo([SkillTool, SearchTool, ReadTool]);
+    }
+
     private SubAgentManager CreateManager(
         IReadOnlyList<string>? enabledTools,
-        Func<InheritedTool, CancellationToken, ValueTask<IFunctionProvider?>> inheritedToolOverride
+        Func<InheritedTool, CancellationToken, ValueTask<IFunctionProvider?>> inheritedToolOverride,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? companions = null
     )
     {
         var template = new SubAgentTemplate
@@ -199,6 +223,7 @@ public sealed class SubAgentInheritedToolOverrideTests : IAsyncLifetime
             Templates = new Dictionary<string, SubAgentTemplate> { ["worker"] = template },
             MaxConcurrentSubAgents = 5,
             InheritedToolOverride = inheritedToolOverride,
+            CompanionToolNames = companions,
         };
 
         FunctionContract[] parentContracts = [ParentSkill, Contract(SearchTool), Contract(ReadTool)];

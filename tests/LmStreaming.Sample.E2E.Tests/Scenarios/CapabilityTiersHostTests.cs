@@ -11,6 +11,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.Sandbox;
@@ -41,6 +42,24 @@ namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHostTests.TiersHost>
 {
     private const string ReadPrefix = "please-read-the-notes ";
+    private const string SwitchReadPrefix = "read-after-a-refused-switch ";
+
+    /// <summary>The opening of the built-in summary prompt: only a compaction's summary call carries it.</summary>
+    private const string SummaryMarker = "You compact an agent conversation into a checkpoint.";
+
+    /// <summary>The smallest summary the checkpoint validator accepts: it recomputes the instructions from the rows.</summary>
+    private const string SummaryJson =
+        """{"instructions":[],"goals":[],"decisions":[],"tasks":[],"artifacts":[],"headlines":{},"agent_outcomes":{},"narrative":"Summarised."}""";
+
+    /// <summary>A user message that makes the root call <c>Skill(beta:c)</c> once.</summary>
+    private const string SkillUsePrefix = "use-skill-beta-then-compact ";
+
+    /// <summary>A user message that makes the root spawn one <see cref="WorkerTemplate"/> sub-agent.</summary>
+    private const string SpawnPrefix = "spawn-a-tiered-worker ";
+
+    /// <summary>The host's one sub-agent template: its tools list names Skill and Read, not SearchSkill.</summary>
+    private const string WorkerTemplate = "tiers-worker";
+    private const string WorkerPrompt = "You are the tiers worker.";
     private const string ReadPath = "/workspace/notes/sub/data.txt";
     private const string ReadResult = "Read ok";
 
@@ -163,6 +182,203 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
         }
     }
 
+    /// <summary>
+    /// A tiered → untiered switch that the factory refuses leaves the live root exactly as it was. The next request
+    /// carries byte-identical tools, Skill and SearchSkill included; the root still reads as its own gateway agent;
+    /// nothing went inert.
+    /// </summary>
+    [Fact]
+    public async Task RefusedSwitch_TieredToUntiered_LiveRootKeepsItsTiers()
+    {
+        var threadId = await _host.ProvisionAsync(_host.TieredModeId);
+        var before = await _host.FirstRequestAsync(threadId, _host.TieredModeId);
+        before
+            .ToolNames.Should()
+            .Contain(["Skill", CapabilityTiers.SearchSkillToolName], "guard: the root starts tiered");
+
+        await SwitchRefusedDuringACompactionAsync(threadId, _host.UntieredModeId);
+
+        var (after, presentedAs) = await ReadAfterSwitchAsync(threadId, _host.TieredModeId, "tiered");
+        after.ToolsJson.Should().Be(before.ToolsJson, "the refused switch changed nothing the model sees");
+        presentedAs.Should().Be(threadId, "the root still reads as its own gateway agent");
+        _host.Logs.Count("Capabilities inert", "RootThreadId", threadId).Should().Be(0);
+    }
+
+    /// <summary>
+    /// An untiered → tiered switch that the factory refuses leaves the live root untiered. The next request carries
+    /// byte-identical tools, the root reads as the default gateway agent, no view is persisted for the mode that
+    /// never committed, and the live root sends no tier PATCH.
+    /// </summary>
+    [Fact]
+    public async Task RefusedSwitch_UntieredToTiered_LiveRootStaysUntiered()
+    {
+        var threadId = await _host.ProvisionAsync(_host.UntieredModeId);
+        var before = await _host.FirstRequestAsync(threadId, _host.UntieredModeId);
+
+        await SwitchRefusedDuringACompactionAsync(threadId, _host.TieredModeId);
+        var patchesAtRefusal = _host.Gateway.Patches.Count(p => p.AgentId == threadId);
+
+        var (after, presentedAs) = await ReadAfterSwitchAsync(threadId, _host.UntieredModeId, "untiered");
+        after.ToolsJson.Should().Be(before.ToolsJson, "the refused switch changed nothing the model sees");
+        presentedAs.Should().BeNull("an untiered root reads as the default gateway agent");
+        (await _host.HasViewAsync(threadId)).Should().BeFalse("a mode that never committed persists no view");
+        _host.Logs.Count("Capabilities active", "RootThreadId", threadId).Should().Be(0);
+        _host
+            .Gateway.Patches.Count(p => p.AgentId == threadId)
+            .Should()
+            .Be(patchesAtRefusal, "the live untiered root sends no tier PATCH");
+    }
+
+    /// <summary>
+    /// A tiered root that used a skill rotates at its next checkpoint, and the next request lists the new set. This
+    /// reaches three host seams: the build registers the tiers provider (Skill and SearchSkill on the first request),
+    /// the sandbox listing hands the root's Skill to the tiers instance (so a rotation can swap its text), and the
+    /// compaction hook reaches the tiers instance (so a checkpoint rotates at all).
+    /// </summary>
+    [Fact]
+    public async Task Tiered_SkillUsedThenCheckpoint_RotatesTheRoot_NextRequestListsTheNewSet()
+    {
+        var threadId = await _host.ProvisionAsync(_host.TieredModeId);
+        var first = await TurnAsync(threadId, SkillUsePrefix + threadId);
+        first.ToolNames.Should().Contain(["Skill", CapabilityTiers.SearchSkillToolName], "the root is tiered");
+        DescriptionOf(first, "Skill").Should().Be(SandboxToolsProvider.SkillListing("alpha:a", "alpha:p"));
+
+        _host.ModelGate.AnswerRequestsContaining([SummaryMarker, SkillUsePrefix + threadId], SummaryJson);
+        try
+        {
+            using var accepted = await _host.RequestCompactionAsync(threadId);
+            accepted.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+            // The compaction runs on the loop's own task, so this turn starts after it ends.
+            var next = await TurnAsync(threadId, "plain after the checkpoint " + threadId);
+
+            _host.Logs.Count("Capabilities rotated", "ThreadId", threadId).Should().Be(1);
+            var patches = _host.Gateway.Patches.Where(p => p.AgentId == threadId).ToList();
+            patches.Should().HaveCount(2, "the build's PATCH, then the rotation's");
+            _host.Gateway.IncludedNames(patches[^1]).Should().Equal("alpha:p", "beta:c");
+            DescriptionOf(next, "Skill")
+                .Should()
+                .Be(
+                    SandboxToolsProvider.SkillListing("alpha:p", "beta:c"),
+                    "the rotation swapped the root's Skill text"
+                );
+        }
+        finally
+        {
+            _host.ModelGate.AnswerRequestsContaining(null);
+        }
+    }
+
+    /// <summary>
+    /// A tiered root's sub-agent gets its own tiers through the host's override: its own gateway agent, PATCHed with
+    /// the mode's sub-agent set, and a Skill listing made as that agent. Its template lists Skill and Read only; the
+    /// host's companion rule adds SearchSkill.
+    /// </summary>
+    [Fact]
+    public async Task TieredChild_SpawnGetsItsOwnGatewayAgentAndListing_AndSearchSkill()
+    {
+        var threadId = await _host.ProvisionAsync(_host.TieredModeId);
+        var before = _host.Llm.Count;
+
+        _ = await TurnAsync(threadId, SpawnPrefix + threadId);
+
+        var session = _host.SessionOf(threadId);
+        var childPatch = _host
+            .Gateway.Patches.Where(p =>
+                p.SessionId == session && SandboxSubAgentIdentity.TryGetSubAgentId(p.AgentId, threadId, out _)
+            )
+            .Should()
+            .ContainSingle("the child is its own gateway agent")
+            .Subject;
+        _host.Gateway.IncludedNames(childPatch).Should().Equal("beta:c");
+        _host
+            .Mcp.Calls.Should()
+            .Contain(c => c.SessionId == session && c.Method == "tools/list" && c.AgentId == childPatch.AgentId);
+        var child = _host
+            .Llm.Skip(before)
+            .Should()
+            .ContainSingle(r => r.SystemPrompt.Contains(WorkerPrompt, StringComparison.Ordinal))
+            .Subject;
+        DescriptionOf(child, "Skill").Should().Be(SandboxToolsProvider.SkillListing("beta:c"));
+        child.ToolNames.Should().Contain(CapabilityTiers.SearchSkillToolName);
+    }
+
+    /// <summary>One turn on its own connection; the first root request it sent.</summary>
+    private async Task<LlmRequest> TurnAsync(string threadId, string message)
+    {
+        await using var client = new WebSocketTestClient(await _host.ConnectAsync(threadId, _host.TieredModeId));
+        var before = _host.Llm.Count;
+        await TakeTurnAsync(client, message);
+        return _host.RootRequestsSince(before).First();
+    }
+
+    private static string? DescriptionOf(LlmRequest request, string tool)
+    {
+        using var doc = JsonDocument.Parse(request.ToolsJson);
+        return doc
+            .RootElement.EnumerateArray()
+            .Where(t => t.GetProperty("name").GetString() == tool)
+            .Select(t => t.GetProperty("description").GetString())
+            .Single();
+    }
+
+    /// <summary>
+    /// Holds an operator's manual compaction at its summary call, then switches mode. The pool's busy check does not
+    /// see a manual compaction, so the factory builds the target mode (tiers included) and reaches
+    /// <c>Reconfigure</c>, which refuses: 409. The compaction then finishes on the loop's own task, ahead of any
+    /// later turn.
+    /// </summary>
+    private async Task SwitchRefusedDuringACompactionAsync(string threadId, string targetModeId)
+    {
+        using var bound = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var inSummary = _host.ModelGate.HoldNextContaining(SummaryMarker);
+        try
+        {
+            using var accepted = await _host.RequestCompactionAsync(threadId);
+            accepted
+                .StatusCode.Should()
+                .Be(
+                    HttpStatusCode.Accepted,
+                    "guard: the compaction must run; body was: {0}",
+                    await accepted.Content.ReadAsStringAsync()
+                );
+            await inSummary.Entered.WaitAsync(bound.Token);
+
+            using var refused = await _host.SwitchModeAsync(threadId, targetModeId).WaitAsync(bound.Token);
+            refused.StatusCode.Should().Be(HttpStatusCode.Conflict, "the loop refuses a switch while it compacts");
+        }
+        finally
+        {
+            inSummary.Release();
+        }
+
+        _host
+            .Logs.Count("Refusing to reconfigure thread {ThreadId}: a manual compaction", "ThreadId", threadId)
+            .Should()
+            .Be(1, "guard: refused by the live loop, after the factory built the target mode");
+    }
+
+    /// <summary>
+    /// One turn that makes one sandbox <c>Read</c>: the turn's first root request, and the gateway agent id the root
+    /// presented on the read.
+    /// </summary>
+    private async Task<(LlmRequest First, string? PresentedAs)> ReadAfterSwitchAsync(
+        string threadId,
+        string modeId,
+        string tag
+    )
+    {
+        await using var client = new WebSocketTestClient(await _host.ConnectAsync(threadId, modeId));
+        var before = _host.Llm.Count;
+        await TakeTurnAsync(client, SwitchReadPrefix + tag);
+        var session = _host.SessionOf(threadId);
+        var read = _host
+            .Mcp.Calls.Should()
+            .ContainSingle(c => c.SessionId == session && c.Method == "tools/call" && c.ToolName == "Read")
+            .Subject;
+        return (_host.RootRequestsSince(before).First(), read.AgentId);
+    }
+
     private async Task<DiscoveryRun> ReadThenDiscoverAsync(string threadId, string modeId, string tag)
     {
         await using var client = new WebSocketTestClient(await _host.ConnectAsync(threadId, modeId));
@@ -232,6 +448,9 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
 
         public McpRecorder Mcp { get; private set; } = null!;
 
+        /// <summary>Sits in front of the scripted model; a test can hold one request there.</summary>
+        public LlmGate ModelGate { get; private set; } = null!;
+
         public FileChatModeStore Modes { get; private set; } = null!;
 
         public IReadOnlyList<LlmRequest> Llm => [.. _llm];
@@ -240,9 +459,15 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
 
         public IServiceProvider Services => _factory!.Services;
 
-        /// <summary>Root requests captured after <paramref name="index"/>: the ones carrying the sandbox tools.</summary>
+        /// <summary>
+        /// Root requests captured after <paramref name="index"/>: the ones carrying the sandbox tools, less the
+        /// worker's.
+        /// </summary>
         public IEnumerable<LlmRequest> RootRequestsSince(int index) =>
-            Llm.Skip(index).Where(r => r.ToolNames.Contains("Read"));
+            Llm.Skip(index)
+                .Where(r =>
+                    r.ToolNames.Contains("Read") && !r.SystemPrompt.Contains(WorkerPrompt, StringComparison.Ordinal)
+                );
 
         /// <summary>A copy of Workspace Agent with one loaded and one pinned skill.</summary>
         public string TieredModeId { get; private set; } = null!;
@@ -265,7 +490,12 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
             _workspaces = new FileWorkspaceStore(Path.Combine(_root, "workspaces"), "default-leaf");
             _conversations = new FileConversationStore(Path.Combine(_root, "conversations"));
 
-            var tiers = new ModeTiers { Loaded = ["skill:alpha:a"], Pinned = ["skill:alpha:p"] };
+            var tiers = new ModeTiers
+            {
+                Loaded = ["skill:alpha:a"],
+                Pinned = ["skill:alpha:p"],
+                SubAgent = new ModeSubAgentTiers { Loaded = ["skill:beta:c"] },
+            };
             TieredModeId = (await CopyAsync("Tiers host tiered", tiers)).Id;
             UntieredModeId = (await Modes.CopyModeAsync(SystemChatModes.WorkspaceAgentModeId, "Tiers host plain")).Id;
             var cleared = await CopyAsync("Tiers host cleared", tiers);
@@ -299,7 +529,42 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                 )
                 .Turn(t => t.ToolCall("Read", new { file_path = ReadPath }))
                 .Turn(t => t.ToolCall("Read", new { file_path = ReadPath }))
+                .ForRole(
+                    "switch-read",
+                    ctx =>
+                        !ctx.HasToolResult
+                        && (ctx.LatestUserMessage?.Contains(SwitchReadPrefix, StringComparison.Ordinal) ?? false)
+                )
+                .Turn(t => t.ToolCall("Read", new { file_path = ReadPath }))
+                .Turn(t => t.ToolCall("Read", new { file_path = ReadPath }))
+                .ForRole(
+                    "skill-use",
+                    ctx =>
+                        !ctx.HasToolResult
+                        && (ctx.LatestUserMessage?.Contains(SkillUsePrefix, StringComparison.Ordinal) ?? false)
+                )
+                .Turn(t => t.ToolCall("Skill", new { skill = "beta:c" }))
+                .ForRole(
+                    "spawn",
+                    ctx =>
+                        !ctx.HasToolResult
+                        && (ctx.LatestUserMessage?.Contains(SpawnPrefix, StringComparison.Ordinal) ?? false)
+                )
+                // Collaboration is on in this host, so a spawn names its role and description.
+                .Turn(t =>
+                    t.ToolCall(
+                        "Agent",
+                        new
+                        {
+                            subagent_type = WorkerTemplate,
+                            prompt = "check your skills",
+                            role = "tiers worker",
+                            description = "Checks which skills it lists.",
+                        }
+                    )
+                )
                 .Build();
+            ModelGate = new LlmGate(responder.AsAnthropicHandler());
 
             var gatewayOptions = new SandboxGatewayOptions
             {
@@ -317,8 +582,29 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
 
             _factory = new E2EWebAppFactory(
                 "test-anthropic",
-                new ScriptedBuilder(responder.AsAnthropicHandler()),
-                settings: new Dictionary<string, string?> { ["ContextDiscovery:RouteToOpeningSubAgent"] = "true" },
+                new ScriptedBuilder(
+                    ModelGate,
+                    subAgentFactory: (_, providerAgentFactory) =>
+                        new SubAgentOptions
+                        {
+                            Templates = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal)
+                            {
+                                [WorkerTemplate] = new SubAgentTemplate
+                                {
+                                    Name = "Tiers worker",
+                                    SystemPrompt = WorkerPrompt,
+                                    EnabledTools = ["Skill", "Read"],
+                                    AgentFactory = providerAgentFactory,
+                                },
+                            },
+                        }
+                ),
+                settings: new Dictionary<string, string?>
+                {
+                    ["ContextDiscovery:RouteToOpeningSubAgent"] = "true",
+                    // A one-turn conversation has a legal cut, so a test can hold an operator's compaction open.
+                    ["Compaction:MinTailTokens"] = "1",
+                },
                 configureServices: services =>
                 {
                     services.RemoveAll<IChatModeStore>();
@@ -349,10 +635,35 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
             );
             _http = _factory.CreateClient();
             Mcp.OnRead = ReportContextFileAsync;
+            // The gateway lists Skill per agent: an agent it holds tiers for sees its included skills.
+            Mcp.RewriteToolsList = (call, body) =>
+                call is { SessionId: { } session, AgentId: { } agent }
+                && Gateway.IncludedNames(session, agent) is { } names
+                    ? body.Replace(
+                        SandboxToolsProvider.SkillListing("alpha:a", "alpha:p"),
+                        SandboxToolsProvider.SkillListing([.. names]),
+                        StringComparison.Ordinal
+                    )
+                    : body;
 
             // The first build and turn on a fresh host pays its one-time start-up; the reference pays it here.
             ReferenceThread = await ProvisionAsync(SystemChatModes.WorkspaceAgentModeId);
             Reference = await FirstRequestAsync(ReferenceThread, SystemChatModes.WorkspaceAgentModeId);
+            // So do the first tiered build, the first manual compaction and the first mode switch; a warm-up
+            // conversation pays them here. Its compaction fails at the summary call (the model answers 400), as the
+            // refused-switch tests' do; the turn after it starts once it ends.
+            var warmUp = await ProvisionAsync(TieredModeId);
+            _ = await FirstRequestAsync(warmUp, TieredModeId);
+            using (var compaction = await RequestCompactionAsync(warmUp))
+            {
+                compaction.StatusCode.Should().Be(HttpStatusCode.Accepted, "the warm-up compaction must run");
+            }
+
+            _ = await FirstRequestAsync(warmUp, TieredModeId);
+            using (var switched = await SwitchModeAsync(warmUp, UntieredModeId))
+            {
+                switched.StatusCode.Should().Be(HttpStatusCode.OK, "the warm-up switch must apply");
+            }
         }
 
         public async Task DisposeAsync()
@@ -402,6 +713,12 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
 
         public Task<System.Net.WebSockets.WebSocket> ConnectAsync(string threadId, string modeId) =>
             _factory!.ConnectWebSocketAsync(threadId, modeId);
+
+        public Task<HttpResponseMessage> SwitchModeAsync(string threadId, string modeId) =>
+            _http!.PostAsJsonAsync($"/api/conversations/{threadId}/mode", new { modeId });
+
+        public Task<HttpResponseMessage> RequestCompactionAsync(string threadId) =>
+            _http!.PostAsJsonAsync($"/api/conversations/{threadId}/compaction", new { });
 
         /// <summary>Takes one plain turn on a conversation and returns the first root request it sent.</summary>
         public async Task<LlmRequest> FirstRequestAsync(string threadId, string modeId)
@@ -520,6 +837,30 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                     return [.. _patches];
                 }
             }
+        }
+
+        /// <summary>The skills <paramref name="agentId"/> lists on a session after its last PATCH; null before one.</summary>
+        public IReadOnlyList<string>? IncludedNames(string sessionId, string agentId) =>
+            Patches.LastOrDefault(p => p.SessionId == sessionId && p.AgentId == agentId) is { } last
+                ? IncludedNames(last)
+                : null;
+
+        /// <summary>
+        /// The skills a PATCH includes, as gateway names: <c>/marketplaces/mk/alpha/skills/a</c> is <c>alpha:a</c>.
+        /// </summary>
+        public IReadOnlyList<string> IncludedNames(SkillPatch patch)
+        {
+            using var doc = JsonDocument.Parse(patch.Body);
+            return
+            [
+                .. doc
+                    .RootElement.GetProperty("set")
+                    .EnumerateObject()
+                    .Where(e => e.Value.GetString() == "included")
+                    .Select(e => e.Name.Split('/', StringSplitOptions.RemoveEmptyEntries))
+                    .Select(parts => $"{parts[2]}:{parts[4]}")
+                    .Order(StringComparer.Ordinal),
+            ];
         }
 
         protected override async Task<HttpResponseMessage> SendAsync(
@@ -670,6 +1011,9 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
         /// <summary>Runs for every <c>tools/call</c> of <c>Read</c> before it reaches the server, as the gateway would.</summary>
         public Func<McpCall, Task>? OnRead { get; set; }
 
+        /// <summary>Rewrites each <c>tools/list</c> answer for the caller that asked; null leaves answers as served.</summary>
+        public Func<McpCall, string, string>? RewriteToolsList { get; set; }
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken
@@ -696,7 +1040,16 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                 await onRead(call).ConfigureAwait(false);
             }
 
-            return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (method == "tools/list" && RewriteToolsList is { } rewrite)
+            {
+                var served = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var content = new StringContent(rewrite(call, served), System.Text.Encoding.UTF8);
+                content.Headers.ContentType = response.Content.Headers.ContentType;
+                response.Content = content;
+            }
+
+            return response;
         }
 
         private static string? HeaderOf(HttpRequestMessage request, string name) =>
@@ -726,6 +1079,117 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
             {
                 return (null, null);
             }
+        }
+    }
+
+    /// <summary>Sits in front of the scripted model and can hold the next request whose body names a marker.</summary>
+    public sealed class LlmGate(HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        private readonly object _gate = new();
+        private (string Marker, Hold Hold)? _armed;
+        private (string[] Markers, string Text)? _answer;
+
+        /// <summary>
+        /// Answers every later request whose body holds all <paramref name="markers"/> here, with
+        /// <paramref name="text"/> as one non-streaming Anthropic message (a summary call is not streamed). Null
+        /// stops.
+        /// </summary>
+        public void AnswerRequestsContaining(string[]? markers, string text = "")
+        {
+            lock (_gate)
+            {
+                _answer = markers is null ? null : (markers, text);
+            }
+        }
+
+        public Hold HoldNextContaining(string marker)
+        {
+            var hold = new Hold();
+            lock (_gate)
+            {
+                _armed = (marker, hold);
+            }
+
+            return hold;
+        }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
+        {
+            Hold? hold = null;
+            string? answerText = null;
+            bool lookNow;
+            lock (_gate)
+            {
+                lookNow = _armed is not null || _answer is not null;
+            }
+
+            if (request.Content is not null && lookNow)
+            {
+                await request.Content.LoadIntoBufferAsync(cancellationToken).ConfigureAwait(false);
+                var body = await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                lock (_gate)
+                {
+                    if (_armed is { } armed && body.Contains(armed.Marker, StringComparison.Ordinal))
+                    {
+                        hold = armed.Hold;
+                        _armed = null;
+                    }
+
+                    if (_answer is { } answer && answer.Markers.All(m => body.Contains(m, StringComparison.Ordinal)))
+                    {
+                        answerText = answer.Text;
+                    }
+                }
+            }
+
+            if (hold is not null)
+            {
+                await hold.PassAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            return answerText is null
+                ? await base.SendAsync(request, cancellationToken).ConfigureAwait(false)
+                : AnthropicMessage(answerText);
+        }
+    }
+
+    private static HttpResponseMessage AnthropicMessage(string text) =>
+        new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                new JsonObject
+                {
+                    ["id"] = "msg_answered",
+                    ["type"] = "message",
+                    ["role"] = "assistant",
+                    ["model"] = "claude-scripted",
+                    ["content"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = text }),
+                    ["stop_reason"] = "end_turn",
+                    ["stop_sequence"] = null,
+                    ["usage"] = new JsonObject { ["input_tokens"] = 1, ["output_tokens"] = 1 },
+                }.ToJsonString(),
+                System.Text.Encoding.UTF8,
+                "application/json"
+            ),
+        };
+
+    /// <summary>One armed pause: the request it caught has <see cref="Entered"/> and waits for <see cref="Release"/>.</summary>
+    public sealed class Hold
+    {
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Entered => _entered.Task;
+
+        public void Release() => _released.TrySetResult();
+
+        internal async Task PassAsync(CancellationToken ct)
+        {
+            _entered.TrySetResult();
+            await _released.Task.WaitAsync(ct).ConfigureAwait(false);
         }
     }
 
@@ -768,13 +1232,17 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
     /// <summary>The sandbox MCP server's tools: a <c>Skill</c> to list and a <c>Read</c> to call.</summary>
     private sealed class SandboxToolsProvider : IFunctionProvider
     {
+        /// <summary>The Skill description the gateway serves an agent that lists <paramref name="names"/>.</summary>
+        public static string SkillListing(params string[] names) =>
+            "Loads a skill. Skills: " + string.Join(", ", names);
+
         public string ProviderName => "fake-sandbox";
 
         public int Priority => 0;
 
         public IEnumerable<FunctionDescriptor> GetFunctions() =>
             [
-                Tool("Skill", "Loads a skill. Skills: alpha:a, alpha:p", "skill"),
+                Tool("Skill", SkillListing("alpha:a", "alpha:p"), "skill"),
                 Tool("Read", "Reads a file from the workspace.", "file_path"),
             ];
 

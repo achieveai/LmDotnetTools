@@ -394,6 +394,17 @@ public record SubAgentOptions
     public Func<InheritedTool, CancellationToken, ValueTask<IFunctionProvider?>>? InheritedToolOverride { get; init; }
 
     /// <summary>
+    /// Tools that follow another tool through the inheritance filter: when a child's resolved toolset (template
+    /// <c>EnabledTools</c>, <c>add_tools</c>, <see cref="RequiredToolNames"/>) holds a key, it also holds that
+    /// key's companions, unless the spawn's <c>remove_tools</c> names them. One level only: a companion's own
+    /// companions are not followed. A companion the parent does not expose is skipped like any other name, so
+    /// this never grants a tool the parent lacks. A host sets it when one tool is of little use without another,
+    /// for example a skill loader that lists only some skills and a search tool that finds the rest. Inherited
+    /// verbatim through <see cref="ForChildLoop"/>. Null (default) = no companions.
+    /// </summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<string>>? CompanionToolNames { get; init; }
+
+    /// <summary>
     /// The ordinal sequence behind <c>agent-1</c>, <c>agent-2</c>, … for the ROOT conversation (#705).
     /// Null at the root: the root's manager creates the allocator and hands it down through
     /// <see cref="ForChildLoop"/>, so every descendant numbers from the one sequence.

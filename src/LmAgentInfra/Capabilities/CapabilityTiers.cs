@@ -22,8 +22,8 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Capabilities;
 /// </summary>
 /// <param name="Loaded">Skills the root agent starts with listed in its <c>Skill</c> tool.</param>
 /// <param name="Pinned">Skills the root agent always has listed.</param>
-/// <param name="SubAgentLoaded">Skills each sub-agent starts with listed (used from step 1c).</param>
-/// <param name="SubAgentPinned">Skills each sub-agent always has listed (used from step 1c).</param>
+/// <param name="SubAgentLoaded">Skills each sub-agent starts with listed.</param>
+/// <param name="SubAgentPinned">Skills each sub-agent always has listed.</param>
 /// <param name="SkillCap">
 /// Most non-pinned skills a rotation keeps listed per agent, most recently used first. The seed is not capped.
 /// </param>
@@ -77,7 +77,7 @@ public sealed record SkillTierGateway(
 /// <para>
 /// <b>Apply.</b> Every configure GETs the catalog (current paths), resolves the root's view, then PATCHes
 /// the root id with <c>reset</c> and EVERY path: listed ones <c>included</c>, all others
-/// <c>available</c>. The PATCH never targets the default agent (F4): the id is checked first.
+/// <c>available</c>. The PATCH never targets the default agent: the id is checked first.
 /// </para>
 /// <para>
 /// <b>The <c>Skill</c> tool is the gateway's own text.</b> The host lists it AFTER configure, sent with
@@ -109,6 +109,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
     public const string SkillToolName = "Skill";
 
     private const string RootAgentKey = "root";
+    private const string TierProviderName = "SkillTiers";
     private const int DefaultSearchLimit = 5;
     private const int MaxSearchLimit = 20;
     private const int MaxDescriptionLength = 200;
@@ -123,9 +124,13 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
     private readonly IConversationStore _store;
     private readonly ILogger _logger;
 
-    // Keyed by the agent's own thread id (F7/F8): the root, then each sub-agent at its first spawn.
+    // Keyed by the agent's own thread id: the root, then each sub-agent at its first spawn.
     private readonly ConcurrentDictionary<string, AgentState> _agents = new(StringComparer.Ordinal);
     private readonly RootFunctionProvider _rootProvider;
+
+    // The build a factory is running on this flow: while it is open, the root presents the STAGED agent id, so the
+    // build's own sandbox listing is served as the mode being built, before anything is committed.
+    private readonly AsyncLocal<BuildFlow?> _buildFlow = new();
 
     private volatile CapabilityCatalog? _catalog;
     private volatile SkillTierGateway? _gateway;
@@ -153,8 +158,17 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
     /// <summary>False while inert: the host wires tools exactly as it would without tiers.</summary>
     public bool IsActive => _active;
 
-    /// <summary>The root agent's gateway agent id while active; null while inert (the root sends none).</summary>
-    public string? RootGatewayAgentId => _rootGatewayAgentId;
+    /// <summary>
+    /// The root agent's gateway agent id while active; null while inert (the root sends none). On a build's own
+    /// flow (<see cref="Stage.EnterBuildFlow"/>) it is the staged id instead.
+    /// </summary>
+    public string? RootGatewayAgentId => _buildFlow.Value is { IsOpen: true } flow ? flow.RootId : _rootGatewayAgentId;
+
+    /// <summary>
+    /// The most one <see cref="StageAsync"/> waits for the root's gate and the gateway together. Past it the stage
+    /// goes inert (logged as a failed apply), like any other gateway fault.
+    /// </summary>
+    internal TimeSpan ConfigureBudget { get; init; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
     /// The root agent's <c>Skill</c> (once attached) and <c>SearchSkill</c>. The host registers it only on a
@@ -182,65 +196,161 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// Re-evaluates this conversation's tiers for a build. <paramref name="settings"/> or
-    /// <paramref name="gateway"/> null makes the instance inert. Never throws for a gateway failure: it
-    /// logs <c>Capabilities apply failed</c> and leaves the root on whatever the gateway already has.
+    /// Re-evaluates this conversation's tiers for a build and commits them at once: <see cref="StageAsync"/> then
+    /// <see cref="Stage.CommitAsync"/>. <paramref name="settings"/> or <paramref name="gateway"/> null makes the
+    /// instance inert. Never throws for a gateway failure: it logs <c>Capabilities apply failed</c> and leaves the
+    /// root on whatever the gateway already has.
     /// </summary>
     public async Task ConfigureAsync(TierSettings? settings, SkillTierGateway? gateway, CancellationToken ct)
     {
+        using var stage = await StageAsync(settings, gateway, ct).ConfigureAwait(false);
+        await stage.CommitAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Prepares this conversation's tiers for a build without touching the live ones. The stage GETs the catalog,
+    /// resolves the root's view and PATCHes the root's gateway agent, so the build lists a current <c>Skill</c>
+    /// text; the root's view, <c>Skill</c>, agent id and settings change only at <see cref="Stage.CommitAsync"/>,
+    /// which the host calls once the build is the conversation's. Disposing an uncommitted stage discards it, so a
+    /// refused or failed build leaves the live loop exactly as it was. <paramref name="settings"/> or
+    /// <paramref name="gateway"/> null stages an inert build. Never throws for a gateway failure or for
+    /// <see cref="ConfigureBudget"/>: the stage goes inert with a WARN. Only the caller's cancellation propagates.
+    /// </summary>
+    public async Task<Stage> StageAsync(TierSettings? settings, SkillTierGateway? gateway, CancellationToken ct)
+    {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var root = _agents.GetOrAdd(_rootThreadId, _ => new AgentState(RootAgentKey, _rootThreadId));
-        _ = Interlocked.Increment(ref _build);
+        var stage = new Stage(this);
+        if (settings is null || gateway is null)
+        {
+            stage.InertReason = "not configured";
+            return stage;
+        }
+
+        var root = RootState();
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        bounded.CancelAfter(ConfigureBudget);
+        try
+        {
+            await root.Gate.WaitAsync(bounded.Token).ConfigureAwait(false);
+            try
+            {
+                await StageUnderGateAsync(stage, root, settings, gateway, bounded.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                _ = root.Gate.Release();
+            }
+        }
+        catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                ex,
+                "Capabilities apply failed {ThreadId} {AgentKey} {Error}",
+                _rootThreadId,
+                RootAgentKey,
+                $"configure exceeded {ConfigureBudget.TotalSeconds:0.###} s"
+            );
+            ReleaseCandidate(stage);
+            stage.MakeInert("configure timed out");
+        }
+        catch
+        {
+            stage.Dispose();
+            throw;
+        }
+
+        return stage;
+    }
+
+    private async Task StageUnderGateAsync(
+        Stage stage,
+        AgentState root,
+        TierSettings settings,
+        SkillTierGateway gateway,
+        CancellationToken ct
+    )
+    {
+        var rootId = SandboxSubAgentIdentity.ForRoot(_rootThreadId);
+        if (rootId is null)
+        {
+            _logger.LogWarning(
+                "Capabilities inert: thread id {RootThreadId} is not a valid gateway agent id",
+                _rootThreadId
+            );
+            stage.InertReason = "invalid thread id";
+            return;
+        }
+
+        CapabilityCatalog catalog;
+        try
+        {
+            catalog = CandidateCatalog(await gateway.GetCatalog(ct).ConfigureAwait(false));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                ex,
+                "Capabilities apply failed {ThreadId} {AgentKey} {Error}",
+                _rootThreadId,
+                RootAgentKey,
+                ex.Message
+            );
+            stage.InertReason = "catalog unavailable";
+            return;
+        }
+
+        stage.Catalog = catalog;
+        // Pinned is never persisted: it is resolved again from config at every build, for every kind a later step
+        // resolves, and a rotation always keeps it.
+        var pinned = Resolve(RootAgentKey, catalog, settings.Pinned).ToHashSet(StringComparer.Ordinal);
+        if (await LoadViewAsync(root, pinned, settings.Loaded, catalog, ct).ConfigureAwait(false) is not { } loaded)
+        {
+            stage.InertReason = "persisted view has a newer schema";
+            return;
+        }
+
+        stage.RootId = rootId;
+        stage.Gateway = gateway;
+        stage.Settings = settings;
+        stage.Pinned = pinned;
+        stage.View = loaded.View;
+        stage.Seeded = loaded.Seeded;
+        stage.LiveViewAtStage = root.View;
+        // The host lists Skill after this returns, so a successful PATCH is all the build needs to be current.
+        stage.Applied = await ApplyAsync(root, _rootThreadId, rootId, loaded.View, catalog, gateway, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>Makes <paramref name="stage"/> the conversation's tiers; see <see cref="Stage.CommitAsync"/>.</summary>
+    private async Task CommitAsync(Stage stage, CancellationToken ct)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var root = RootState();
         await root.Gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            if (!stage.TryMarkCommitted())
+            {
+                throw new InvalidOperationException(
+                    "A capabilities stage commits once, and never after it is discarded."
+                );
+            }
+
+            // A sub-agent set up under the previous build is set up again at its next spawn.
+            _ = Interlocked.Increment(ref _build);
             // Every build lists and attaches its own Skill tool; one from an earlier build must not survive it.
-            root.Skill = null;
-            if (settings is null || gateway is null)
+            root.Skill = stage.Skill;
+            if (stage.RootId is not { } rootId || stage.View is not { } view || stage.Settings is not { } settings)
             {
-                BecomeInert("not configured");
+                ReleaseCandidate(stage);
+                BecomeInert(stage.InertReason ?? "not configured");
                 return;
             }
 
-            var rootId = SandboxSubAgentIdentity.ForRoot(_rootThreadId);
-            if (rootId is null)
-            {
-                _logger.LogWarning(
-                    "Capabilities inert: thread id {RootThreadId} is not a valid gateway agent id",
-                    _rootThreadId
-                );
-                BecomeInert("invalid thread id");
-                return;
-            }
-
-            CapabilityCatalog catalog;
-            try
-            {
-                catalog = RefreshCatalog(await gateway.GetCatalog(ct).ConfigureAwait(false));
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "Capabilities apply failed {ThreadId} {AgentKey} {Error}",
-                    _rootThreadId,
-                    RootAgentKey,
-                    ex.Message
-                );
-                BecomeInert("catalog unavailable");
-                return;
-            }
-
-            // Pinned is never persisted: it is resolved again from config at every build, for every kind a
-            // later step resolves (F1), and a rotation always keeps it.
-            root.Pinned = Resolve(root.Key, catalog, settings.Pinned).ToHashSet(StringComparer.Ordinal);
-            var view = await LoadOrSeedViewAsync(root, settings.Loaded, catalog, ct).ConfigureAwait(false);
-            if (view is null)
-            {
-                BecomeInert("persisted view has a newer schema");
-                return;
-            }
-
+            AdoptCatalog(stage.Catalog!);
+            // A rotation that ran between stage and commit left the gateway on its own view: the next rotation
+            // applies this one again.
+            var raced = !ReferenceEquals(root.View, stage.LiveViewAtStage);
             if (!_active)
             {
                 _logger.LogInformation(
@@ -250,17 +360,27 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
                 );
             }
 
+            root.Pinned = stage.Pinned;
             root.View = view;
             root.GatewayAgentId = rootId;
-            _gateway = gateway;
+            root.AppliedRevision = stage.Applied && !raced ? view.Revision : 0;
+            _gateway = stage.Gateway;
             _settings = settings;
             _skillCap = settings.SkillCap;
             _rootGatewayAgentId = rootId;
             _active = true;
-            // The host lists Skill after this returns, so a successful PATCH is all the build needs to be current.
-            if (await ApplyAsync(root, _rootThreadId, rootId, catalog, gateway, ct).ConfigureAwait(false))
+            if (stage.Seeded)
             {
-                root.AppliedRevision = view.Revision;
+                // The live loop already took this build, so nothing here may undo it: a failed write leaves the seed
+                // in memory, and the next build seeds the same view again.
+                try
+                {
+                    await PersistAsync(root, view, ct).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "Capabilities view of {AgentKey} not persisted", root.Key);
+                }
             }
         }
         finally
@@ -268,6 +388,20 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
             _ = root.Gate.Release();
         }
     }
+
+    private void DiscardStage(Stage stage)
+    {
+        ReleaseCandidate(stage);
+        if (stage.IsActive)
+        {
+            _logger.LogInformation(
+                "Capabilities build discarded {RootThreadId}: the live tiers are unchanged",
+                _rootThreadId
+            );
+        }
+    }
+
+    private AgentState RootState() => _agents.GetOrAdd(_rootThreadId, _ => new AgentState(RootAgentKey, _rootThreadId));
 
     /// <summary>
     /// <c>SubAgentOptions.InheritedToolOverride</c>: gives a spawning sub-agent its OWN <c>Skill</c> (the gateway's
@@ -402,7 +536,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
         }
 
         agent.View = view;
-        if (!await ApplyAsync(agent, agent.ThreadId, gatewayAgentId, catalog, gateway, ct).ConfigureAwait(false))
+        if (!await ApplyAsync(agent, agent.ThreadId, gatewayAgentId, view, catalog, gateway, ct).ConfigureAwait(false))
         {
             return false;
         }
@@ -423,7 +557,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
 
     /// <summary>
     /// Lists the gateway's <c>Skill</c> tool again as <paramref name="agent"/>: the root on a flow with no sub-agent
-    /// actor (A4: the host's resolver reads the agent id from the flow), a sub-agent under its own actor scope,
+    /// actor (the host's resolver reads the agent id from the flow), a sub-agent under its own actor scope,
     /// whatever flow its spawn or compaction runs on.
     /// </summary>
     private async Task<FunctionContract> ListSkillAsAsync(
@@ -508,22 +642,39 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
         _rootGatewayAgentId = null;
     }
 
-    private CapabilityCatalog RefreshCatalog(SandboxSkillCatalog gatewayCatalog)
+    /// <summary>The live catalog when the gateway's is unchanged, else a new one that only a commit adopts.</summary>
+    private CapabilityCatalog CandidateCatalog(SandboxSkillCatalog gatewayCatalog)
     {
         var items = CapabilityCatalog.FromSkills(gatewayCatalog);
         var current = _catalog;
-        if (current is not null && current.Items.SequenceEqual(items))
-        {
-            return current;
-        }
-
-        var fresh = CapabilityCatalog.Build(items);
-        _catalog = fresh;
-        // A search already holding the old instance gets ObjectDisposedException and retries on this one.
-        current?.Dispose();
-        return fresh;
+        return current is not null && current.Items.SequenceEqual(items) ? current : CapabilityCatalog.Build(items);
     }
 
+    private void AdoptCatalog(CapabilityCatalog catalog)
+    {
+        var current = _catalog;
+        if (ReferenceEquals(current, catalog))
+        {
+            return;
+        }
+
+        _catalog = catalog;
+        // A search already holding the old instance gets ObjectDisposedException and retries on this one.
+        current?.Dispose();
+    }
+
+    /// <summary>Disposes a catalog the stage built and nothing adopted.</summary>
+    private void ReleaseCandidate(Stage stage)
+    {
+        if (stage.Catalog is { } candidate && !ReferenceEquals(candidate, _catalog))
+        {
+            candidate.Dispose();
+        }
+
+        stage.Catalog = null;
+    }
+
+    /// <summary>A sub-agent's view, seeded and persisted when its thread has none; null for a newer schema.</summary>
     private async Task<AgentView?> LoadOrSeedViewAsync(
         AgentState agent,
         IReadOnlyList<string> loadedSelectors,
@@ -531,7 +682,34 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
         CancellationToken ct
     )
     {
-        var pinned = agent.Pinned;
+        if (
+            await LoadViewAsync(agent, agent.Pinned, loadedSelectors, catalog, ct).ConfigureAwait(false)
+            is not { } loaded
+        )
+        {
+            return null;
+        }
+
+        if (loaded.Seeded)
+        {
+            await PersistAsync(agent, loaded.View, ct).ConfigureAwait(false);
+        }
+
+        return loaded.View;
+    }
+
+    /// <summary>
+    /// The agent's persisted view plus <paramref name="pinned"/>, or a revision-1 seed (<c>Seeded</c>, not persisted)
+    /// when its thread has none; null when the persisted view has a newer schema.
+    /// </summary>
+    private async Task<(AgentView View, bool Seeded)?> LoadViewAsync(
+        AgentState agent,
+        IReadOnlySet<string> pinned,
+        IReadOnlyList<string> loadedSelectors,
+        CapabilityCatalog catalog,
+        CancellationToken ct
+    )
+    {
         var metadata = await _store.LoadMetadataAsync(agent.ThreadId, ct).ConfigureAwait(false);
         var persisted = ReadView(metadata, out var newerSchema);
         if (newerSchema)
@@ -555,13 +733,11 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
                 );
             }
 
-            return new AgentView(Union(known, pinned), persisted.Revision, persisted.RotatedThroughSeq);
+            return (new AgentView(Union(known, pinned), persisted.Revision, persisted.RotatedThroughSeq), false);
         }
 
         var loaded = Union(Resolve(agent.Key, catalog, loadedSelectors), pinned);
-        var seeded = new AgentView(loaded, 1, 0);
-        await PersistAsync(agent, seeded, ct).ConfigureAwait(false);
-        return seeded;
+        return (new AgentView(loaded, 1, 0), true);
     }
 
     private List<string> Resolve(string agentKey, CapabilityCatalog catalog, IReadOnlyList<string> selectors)
@@ -629,20 +805,25 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
         }
     }
 
-    /// <summary>PATCHes the agent's current view; false (and a WARN) when anything on the way fails.</summary>
+    /// <summary>
+    /// PATCHes <paramref name="view"/>; false (and a WARN) when anything on the way fails. The agent's
+    /// <c>AppliedRevision</c> drops to 0 first: once a PATCH is attempted the gateway may hold either set, so until a
+    /// caller records a success the next rotation PATCHes and lists again.
+    /// </summary>
     private async Task<bool> ApplyAsync(
         AgentState agent,
         string threadId,
         string gatewayAgentId,
+        AgentView view,
         CapabilityCatalog catalog,
         SkillTierGateway gateway,
         CancellationToken ct
     )
     {
-        var view = agent.View!;
+        agent.AppliedRevision = 0;
         try
         {
-            // F4: an empty or invalid id would reach the DEFAULT agent, shared by every conversation.
+            // An empty or invalid id would reach the DEFAULT agent, shared by every conversation.
             SandboxAgentId.ThrowIfInvalid(gatewayAgentId, nameof(gatewayAgentId));
             await gateway
                 .PatchTiers(gatewayAgentId, SkillTierSet(catalog.Items, view.Loaded), ct)
@@ -671,7 +852,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
 
     /// <summary>
     /// The PATCH body for a view: every SKILL in the catalog, <c>included</c> when the view lists it, otherwise
-    /// <c>available</c>. Items of other kinds have no skill path and are never sent (critic s234 F2).
+    /// <c>available</c>. Items of other kinds have no skill path and are never sent.
     /// </summary>
     internal static Dictionary<string, SandboxSkillTier> SkillTierSet(
         IEnumerable<CapabilityItem> items,
@@ -701,7 +882,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
     public async ValueTask<bool> OnCheckpointActivatedAsync(CheckpointActivation activation, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(activation);
-        // F7: route by the compacting thread (the root's, or a sub-agent's set up at its spawn); a sub-agent's
+        // Route by the compacting thread (the root's, or a sub-agent's set up at its spawn); a sub-agent's
         // AgentId can read "root". Any other thread is not ours.
         if (_disposed || !_active || !_agents.TryGetValue(activation.ThreadId, out var agent))
         {
@@ -759,7 +940,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
             return false;
         }
 
-        // D-1c-1: a sub-agent serving the parent's Skill tool (its setup failed, or it spawned while inert) keeps its
+        // A sub-agent serving the parent's Skill tool (its setup failed, or it spawned while inert) keeps its
         // view and gateway tiers as they are: its Skill calls went through the parent's tool, not its own.
         if (agent.ThreadId != _rootThreadId && !agent.OwnToolsInstalled)
         {
@@ -772,7 +953,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
             return false;
         }
 
-        // F1 (critic-arch): the window is ours, (RotatedThroughSeq, CheckpointSeq]. No row in it, no rotation.
+        // The window is ours, (RotatedThroughSeq, CheckpointSeq]. No row in it, no rotation.
         if (activation.LastMessageSeq <= view.RotatedThroughSeq)
         {
             _logger.LogInformation(
@@ -815,7 +996,10 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
             return false; // cache: no PATCH, no re-list, identical tool bytes
         }
 
-        if (!await ApplyAsync(agent, activation.ThreadId, gatewayAgentId, catalog, gateway, ct).ConfigureAwait(false))
+        if (
+            !await ApplyAsync(agent, activation.ThreadId, gatewayAgentId, next, catalog, gateway, ct)
+                .ConfigureAwait(false)
+        )
         {
             return false; // the old contract stays; the next activation or build tries again
         }
@@ -977,8 +1161,16 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
             hits = catalog.Search(query, CapabilityCatalog.SkillKind, limit);
         }
 
+        // The query may carry user data: Information keeps its length only, and the text goes to Debug.
         _logger.LogInformation(
-            "SearchSkill {ThreadId} {AgentKey} {Query} {HitKeys}",
+            "SearchSkill {ThreadId} {AgentKey} {QueryLength} {HitCount}",
+            viewThreadId,
+            agentKey,
+            query.Length,
+            hits.Count
+        );
+        _logger.LogDebug(
+            "SearchSkill query {ThreadId} {AgentKey} {Query} {HitKeys}",
             viewThreadId,
             agentKey,
             query,
@@ -1115,7 +1307,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
         };
 
     /// <summary>An agent's listed skills (catalog keys, sorted), and its persisted counters.</summary>
-    private sealed record AgentView(IReadOnlyList<string> Loaded, int Revision, long RotatedThroughSeq);
+    internal sealed record AgentView(IReadOnlyList<string> Loaded, int Revision, long RotatedThroughSeq);
 
     private sealed record PersistedView(
         [property: JsonPropertyName("schemaVersion")] int SchemaVersion,
@@ -1132,15 +1324,15 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
     /// An agent's own <c>Skill</c> tool: its current contract (swapped by reference) and, for the root, the handler
     /// the host attached. A sub-agent's slot has no handler: each of its providers holds the parent's handler.
     /// </summary>
-    private sealed record SkillSlot(FunctionContract Contract, ToolHandler? Handler);
+    internal sealed record SkillSlot(FunctionContract Contract, ToolHandler? Handler);
 
-    /// <summary>Per-agent state; every read-modify-apply of it runs under <see cref="Gate"/> (F8).</summary>
+    /// <summary>Per-agent state; every read-modify-apply of it runs under <see cref="Gate"/>.</summary>
     private sealed class AgentState(string key, string threadId)
     {
         /// <summary><c>root</c>, or the sub-agent's id (<c>agent-N</c>).</summary>
         public string Key { get; } = key;
 
-        /// <summary>The agent's own thread: where its view persists, and how the compaction hook finds it (F7).</summary>
+        /// <summary>The agent's own thread: where its view persists, and how the compaction hook finds it.</summary>
         public string ThreadId { get; } = threadId;
 
         /// <summary>The id its gateway tiers are set on; the root's is known once a configure goes active.</summary>
@@ -1154,7 +1346,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
 
         /// <summary>
         /// A sub-agent's: true once its latest spawn was handed a tier tool of its own. False = that spawn's registry
-        /// holds the parent's tools, so its compactions do not rotate it (D-1c-1). Unused for the root.
+        /// holds the parent's tools, so its compactions do not rotate it. Unused for the root.
         /// </summary>
         public bool OwnToolsInstalled { get; set; }
 
@@ -1172,38 +1364,186 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
         public SkillSlot? Skill { get; set; }
     }
 
+    /// <summary>The root's tier tools: its <c>Skill</c> once a handler is attached, and <c>SearchSkill</c>.</summary>
+    private IEnumerable<FunctionDescriptor> RootFunctions(SkillSlot? skill)
+    {
+        if (skill is { Handler: { } handler })
+        {
+            yield return new FunctionDescriptor
+            {
+                Contract = skill.Contract,
+                Handler = handler,
+                ProviderName = TierProviderName,
+            };
+        }
+
+        yield return new FunctionDescriptor
+        {
+            Contract = SearchSkillContract,
+            Handler = (args, _, _) => SearchSkillAsync(_rootThreadId, args),
+            ProviderName = TierProviderName,
+        };
+    }
+
     private sealed class RootFunctionProvider(CapabilityTiers owner) : IFunctionProvider
     {
-        public string ProviderName => "SkillTiers";
+        public string ProviderName => TierProviderName;
 
         public int Priority => 100;
 
-        public IEnumerable<FunctionDescriptor> GetFunctions()
+        public IEnumerable<FunctionDescriptor> GetFunctions() =>
+            owner._active
+                ? owner.RootFunctions(owner._agents.TryGetValue(owner._rootThreadId, out var root) ? root.Skill : null)
+                : [];
+    }
+
+    /// <summary>
+    /// One build's tiers, staged by <see cref="StageAsync"/>. The gateway already holds the staged view and the build
+    /// reads the staged <c>Skill</c> and agent id, but the conversation's live tiers are untouched until
+    /// <see cref="CommitAsync"/>. Disposing a stage that was never committed discards it.
+    /// </summary>
+    public sealed class Stage : IDisposable
+    {
+        private const int Pending = 0;
+        private const int Committed = 1;
+        private const int Discarded = 2;
+
+        private readonly CapabilityTiers _owner;
+        private int _state;
+
+        internal Stage(CapabilityTiers owner)
         {
-            if (!owner._active)
+            _owner = owner;
+            RootProvider = new StagedRootProvider(this);
+        }
+
+        /// <summary>
+        /// True when the build is tiered: the host registers <see cref="RootProvider"/> and attaches the root's
+        /// <c>Skill</c> through <see cref="TryAttachRootSkill"/>. False wires tools as without tiers.
+        /// </summary>
+        public bool IsActive => RootId is not null;
+
+        /// <summary>
+        /// The build's <c>Skill</c> and <c>SearchSkill</c>: the staged ones until the commit, the conversation's live
+        /// ones after it, and nothing once discarded.
+        /// </summary>
+        public IFunctionProvider RootProvider { get; }
+
+        internal string? RootId { get; set; }
+
+        internal string? InertReason { get; set; }
+
+        internal CapabilityCatalog? Catalog { get; set; }
+
+        internal SkillTierGateway? Gateway { get; set; }
+
+        internal TierSettings? Settings { get; set; }
+
+        internal IReadOnlySet<string> Pinned { get; set; } = new HashSet<string>(StringComparer.Ordinal);
+
+        internal AgentView? View { get; set; }
+
+        /// <summary>The view is a fresh seed: the commit persists it.</summary>
+        internal bool Seeded { get; set; }
+
+        /// <summary>The staged PATCH succeeded.</summary>
+        internal bool Applied { get; set; }
+
+        /// <summary>The root's live view when this stage read the store; another one at commit means a rotation ran.</summary>
+        internal AgentView? LiveViewAtStage { get; set; }
+
+        internal SkillSlot? Skill { get; private set; }
+
+        /// <summary>
+        /// Takes the root's <c>Skill</c> tool from the build's sandbox listing (made inside <see cref="EnterBuildFlow"/>,
+        /// so as the staged agent). False, and takes nothing, for any other tool, while inert or once settled.
+        /// </summary>
+        public bool TryAttachRootSkill(FunctionContract contract, ToolHandler handler)
+        {
+            ArgumentNullException.ThrowIfNull(contract);
+            ArgumentNullException.ThrowIfNull(handler);
+            if (!IsActive || Volatile.Read(ref _state) != Pending || contract.Name != SkillToolName)
             {
-                yield break;
+                return false;
             }
 
-            if (
-                owner._agents.TryGetValue(owner._rootThreadId, out var root)
-                && root.Skill is { Handler: { } handler } skill
-            )
+            Skill = new SkillSlot(contract, handler);
+            return true;
+        }
+
+        /// <summary>
+        /// Until disposed, <see cref="RootGatewayAgentId"/> on this async flow is the staged id, so the build's own
+        /// sandbox listing is served as the agent being built. Every other flow, the live loop's included, keeps the
+        /// live id.
+        /// </summary>
+        public IDisposable EnterBuildFlow()
+        {
+            var previous = _owner._buildFlow.Value;
+            var flow = new BuildFlow(RootId);
+            _owner._buildFlow.Value = flow;
+            return new BuildFlowExit(_owner, flow, previous);
+        }
+
+        /// <summary>
+        /// Makes this stage the conversation's tiers: its view, <c>Skill</c>, agent id and settings, persisting a
+        /// seeded view. Call it once the build is the conversation's, and only then. An inert stage makes the
+        /// conversation inert.
+        /// </summary>
+        public Task CommitAsync(CancellationToken ct) => _owner.CommitAsync(this, ct);
+
+        /// <summary>Discards the stage unless it was committed.</summary>
+        public void Dispose()
+        {
+            if (Interlocked.CompareExchange(ref _state, Discarded, Pending) == Pending)
             {
-                yield return new FunctionDescriptor
+                _owner.DiscardStage(this);
+            }
+        }
+
+        internal void MakeInert(string reason)
+        {
+            RootId = null;
+            View = null;
+            InertReason = reason;
+        }
+
+        internal bool TryMarkCommitted() => Interlocked.CompareExchange(ref _state, Committed, Pending) == Pending;
+
+        private sealed class StagedRootProvider(Stage stage) : IFunctionProvider
+        {
+            public string ProviderName => TierProviderName;
+
+            public int Priority => 100;
+
+            public IEnumerable<FunctionDescriptor> GetFunctions() =>
+                Volatile.Read(ref stage._state) switch
                 {
-                    Contract = skill.Contract,
-                    Handler = handler,
-                    ProviderName = ProviderName,
+                    Committed => stage._owner._rootProvider.GetFunctions(),
+                    Pending when stage.IsActive => stage._owner.RootFunctions(stage.Skill),
+                    _ => [],
                 };
+        }
+    }
+
+    /// <summary>A build's flow; closed when the build leaves it, so a context captured inside it stops reading it.</summary>
+    private sealed class BuildFlow(string? rootId)
+    {
+        public string? RootId { get; } = rootId;
+
+        public bool IsOpen { get; set; } = true;
+    }
+
+    private sealed class BuildFlowExit(CapabilityTiers owner, BuildFlow flow, BuildFlow? previous) : IDisposable
+    {
+        public void Dispose()
+        {
+            if (!flow.IsOpen)
+            {
+                return;
             }
 
-            yield return new FunctionDescriptor
-            {
-                Contract = SearchSkillContract,
-                Handler = (args, _, _) => owner.SearchSkillAsync(owner._rootThreadId, args),
-                ProviderName = ProviderName,
-            };
+            flow.IsOpen = false;
+            owner._buildFlow.Value = previous;
         }
     }
 
@@ -1220,7 +1560,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
         ToolHandler parentHandler
     ) : IFunctionProvider
     {
-        public string ProviderName => "SkillTiers";
+        public string ProviderName => TierProviderName;
 
         public int Priority => 100;
 
