@@ -1536,6 +1536,12 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
             {
                 switched.StatusCode.Should().Be(HttpStatusCode.OK, "the warm-up switch must apply");
             }
+
+            // Guard: the host's loggers reach the capture. The suite's zero-count log assertions prove nothing on a
+            // host whose logging went silent at start-up.
+            Logs.Count("Capabilities active", "RootThreadId", warmUp)
+                .Should()
+                .BePositive("guard: the warm-up's tiered build logs through the capture");
         }
 
         public async Task DisposeAsync()

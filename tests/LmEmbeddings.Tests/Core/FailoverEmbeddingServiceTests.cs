@@ -15,6 +15,9 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
     private readonly Mock<IEmbeddingService> _primaryMock = new();
     private readonly Mock<IEmbeddingService> _backupMock = new();
 
+    // The recovery clock is frozen: a test that expects the next call to stay on the backup must not depend on
+    // finishing inside the 100 ms interval, which a loaded run missed. A test that needs recovery advances its
+    // own FakeTimeProvider.
     private static FailoverOptions DefaultOptions()
     {
         return new()
@@ -22,6 +25,7 @@ public class FailoverEmbeddingServiceTests : LoggingTestBase
             PrimaryRequestTimeout = TimeSpan.FromSeconds(2),
             RecoveryInterval = TimeSpan.FromMilliseconds(100),
             FailoverOnHttpError = true,
+            TimeProvider = new FakeTimeProvider(DateTimeOffset.UtcNow),
         };
     }
 

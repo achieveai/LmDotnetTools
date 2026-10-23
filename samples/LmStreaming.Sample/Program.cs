@@ -81,6 +81,8 @@ Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
     .CreateBootstrapLogger();
 
+// The static logger this run installed: the bootstrap, then the host's own once the host is built.
+var ownLogger = Log.Logger;
 try
 {
     Log.Information("Starting LmStreaming.Sample application");
@@ -3228,6 +3230,8 @@ try
     _ = builder.Services.AddSingleton<PendingQuestionHub>();
 
     var app = builder.Build();
+    // UseSerilog made the host's logger the static one while the host was built.
+    ownLogger = Log.Logger;
 
     // Rebuild from authoritative metadata before this host serves indexed hierarchy reads. A test
     // host may replace the store, so initialize the registered instance, not the captured default.
@@ -3714,7 +3718,11 @@ catch (Exception ex)
 }
 finally
 {
-    Log.CloseAndFlush();
+    // Close only the logger this run installed. One process can run this entry point for several hosts in turn (a
+    // WebApplicationFactory per test class), and this block runs on the entry point's thread after its own host has
+    // stopped, when the next host may already have installed its logger: Log.CloseAndFlush() would dispose that one
+    // and leave every logger the next host creates afterwards silent.
+    (ownLogger as IDisposable)?.Dispose();
 }
 
 public partial class Program

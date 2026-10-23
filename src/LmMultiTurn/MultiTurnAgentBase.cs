@@ -3411,6 +3411,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             ct: ct
         );
 
+        // The run ends here, before anyone is told it ended: a subscriber that acts on the completion (a
+        // mode switch, a reconfigure) must not find this run still in progress and be refused as busy.
+        lock (_stateLock)
+        {
+            _latestRunId = runId;
+            _currentRunId = null;
+        }
+
         await PublishToAllAsync(
             new RunCompletedMessage
             {
@@ -3427,12 +3435,6 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             },
             ct
         );
-
-        lock (_stateLock)
-        {
-            _latestRunId = runId;
-            _currentRunId = null;
-        }
 
         if (isError)
         {
