@@ -202,7 +202,7 @@ internal sealed record UsageReport
 }
 
 /// <summary>
-/// Offline parser for the <c>usage.records</c> property the host persists into each thread's
+/// Offline parser for the <c>usage.records</c> property in exported file-store
 /// <c>metadata.json</c> (<c>ConversationUsageProjection.RecordsPropertyKey</c>).
 /// </summary>
 /// <remarks>

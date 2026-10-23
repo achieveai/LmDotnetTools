@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
 namespace TodoEval.Runner.Metrics;
 
@@ -26,7 +27,7 @@ namespace TodoEval.Runner.Metrics;
 /// </summary>
 internal static class ConversationStoreReader
 {
-    private const string SubAgentParentKey = "sample.subAgentOf";
+    private const string SubAgentParentKey = ConversationRelationKeys.SubAgentParentThreadId;
     private const string TodoBoardKey = "todo.board";
 
     /// <summary>

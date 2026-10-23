@@ -282,9 +282,34 @@ public sealed record ConversationContextReport
         // Usage is read ONCE from the root: every descendant relays into the root ledger, so the root's
         // records are the whole tree's, and one fold gives every row and the total from the same numbers.
         var rootMetadata = await store.LoadMetadataAsync(rootThreadId, ct).ConfigureAwait(false);
-        var aggregate = ConversationUsageProjection.FromMetadata(rootMetadata);
+        ConversationUsageAggregate? aggregate;
+        IReadOnlyList<UsageRecord> usageRecords;
+        if (store is IConversationUsageStore)
+        {
+            var usage = await ConversationUsageProjection
+                .LoadSnapshotAsync(store, rootThreadId, ct)
+                .ConfigureAwait(false);
+            aggregate =
+                usage is null ? null
+                : usage.Records.Count == 0 && usage.Aggregate is { } persisted ? persisted
+                : ConversationUsageAggregate.Fold(
+                    rootThreadId,
+                    usage.Records,
+                    usage.FoldedRevision,
+                    usage.Completeness
+                );
+            usageRecords = usage?.Records ?? [];
+        }
+        else
+        {
+            aggregate = await ConversationUsageProjection.LoadAsync(store, rootThreadId, ct).ConfigureAwait(false);
+            usageRecords = await ConversationUsageProjection
+                .LoadRecordsAsync(store, rootThreadId, ct)
+                .ConfigureAwait(false);
+        }
+
         var usageRows = ConversationUsageAggregate
-            .FoldByExecution(ConversationUsageProjection.RecordsFromMetadata(rootMetadata))
+            .FoldByExecution(usageRecords)
             .ToDictionary(r => r.ExecutionId, StringComparer.Ordinal);
 
         var agents = new List<AgentContextRow>();

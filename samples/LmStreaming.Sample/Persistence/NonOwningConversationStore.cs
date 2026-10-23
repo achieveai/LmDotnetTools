@@ -1,5 +1,7 @@
 using System.Collections.Immutable;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 
 namespace LmStreaming.Sample.Persistence;
 
@@ -29,7 +31,13 @@ namespace LmStreaming.Sample.Persistence;
 /// store owns its own lifetime and is disposed by the host, not by any child.
 /// </para>
 /// </remarks>
-public sealed class NonOwningConversationStore : IConversationStore, IConversationThreadIdLookupStore, IRunLedgerStore
+public sealed class NonOwningConversationStore
+    : IConversationStore,
+        IConversationListingStore,
+        IConversationRelationStore,
+        IConversationThreadIdLookupStore,
+        IConversationUsageStore,
+        IRunLedgerStore
 {
     private readonly IConversationStore _conversation;
     private readonly IRunLedgerStore? _runLedger;
@@ -204,8 +212,39 @@ public sealed class NonOwningConversationStore : IConversationStore, IConversati
     ) => _conversation.ListThreadsAsync(scope, limit, offset, options, ct);
 
     /// <inheritdoc />
+    public Task<IReadOnlyList<ConversationListingRow>> ListConversationRowsAsync(
+        IReadOnlySet<string> propertyKeys,
+        ConversationListScope? scope = null,
+        int limit = 50,
+        int offset = 0,
+        ConversationListOptions? options = null,
+        CancellationToken ct = default
+    ) => _conversation.ListConversationRowsAsync(propertyKeys, scope, limit, offset, options, ct);
+
+    /// <inheritdoc />
     public Task<IReadOnlyList<string>> ListThreadIdsByPrefixAsync(string prefix, CancellationToken ct = default) =>
         ConversationThreadIdLookup.ListThreadIdsByPrefixAsync(_conversation, prefix, ct);
+
+    // Optional-capability members use their compatibility fallback when the wrapped store lacks the
+    // capability: this wrapper always declares them, so throwing would break valid custom stores.
+    /// <inheritdoc />
+    public Task<IReadOnlyList<ConversationParentLink>> ListSubAgentParentLinksAsync(CancellationToken ct = default) =>
+        SubAgentProvenance.ListParentLinksAsync(_conversation, ct);
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<string>> ListDirectForkThreadIdsAsync(string threadId, CancellationToken ct = default) =>
+        ConversationForks.FindDirectForksAsync(_conversation, threadId, ct);
+
+    /// <inheritdoc />
+    public Task AppendUsageAsync(
+        ConversationUsageAggregate aggregate,
+        IReadOnlyList<UsageRecord> changedRecords,
+        CancellationToken ct = default
+    ) => ConversationUsageProjection.SaveAsync(_conversation, aggregate, changedRecords, ct);
+
+    /// <inheritdoc />
+    public Task<ConversationUsageSnapshot?> LoadUsageAsync(string threadId, CancellationToken ct = default) =>
+        ConversationUsageProjection.LoadSnapshotAsync(_conversation, threadId, ct);
 
     // === IRunLedgerStore ===
 
