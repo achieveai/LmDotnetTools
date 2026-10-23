@@ -2,7 +2,6 @@ using System.Collections.Immutable;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
-using Microsoft.Data.Sqlite;
 using TodoEval.Runner.Metrics;
 using TodoEval.Runner.Sweep;
 
@@ -19,7 +18,7 @@ public class ConversationDbExportTests : IDisposable
 
     public void Dispose()
     {
-        SqliteConnection.ClearAllPools();
+        SqliteConnectionFactory.ClearPool(Path.Combine(_temp, "conversations.db"));
         if (Directory.Exists(_temp))
         {
             Directory.Delete(_temp, recursive: true);
