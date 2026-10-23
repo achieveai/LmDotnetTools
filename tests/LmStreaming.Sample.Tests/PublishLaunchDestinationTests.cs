@@ -139,10 +139,10 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         }
 
         // Belt-and-suspenders even after the SqliteConnectionFactory.PooledConnection.DisposeAsync
-        // fix (which was the real bug: it no longer skips its own native-close call): clearing all
-        // pools guarantees every native handle this seeding step opened is genuinely closed before
+        // fix (which was the real bug: it no longer skips its own native-close call): clearing this
+        // file's pool guarantees every native handle this seeding step opened is genuinely closed before
         // the pwsh child spawned moments later attempts to rename the whole destination directory.
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        SqliteConnectionFactory.ClearPool(databasePath);
     }
 
     private static string CreateEmptyDestination(string parent, string name)
@@ -733,9 +733,15 @@ public sealed class PublishLaunchDestinationTests : IDisposable
 
     private static async Task<IReadOnlyList<NotifyWaitRecord>> ReadNotifyWaitsAsync(string databasePath)
     {
-        await using var factory = new SqliteConnectionFactory(databasePath);
-        var store = new SqliteNotifyWaitStore(factory);
-        return await store.LoadActiveAsync("thread-1");
+        IReadOnlyList<NotifyWaitRecord> rows;
+        await using (var factory = new SqliteConnectionFactory(databasePath))
+        {
+            rows = await new SqliteNotifyWaitStore(factory).LoadActiveAsync("thread-1");
+        }
+
+        // Release this file's pooled handle, or Dispose cannot delete the test's temp root.
+        SqliteConnectionFactory.ClearPool(databasePath);
+        return rows;
     }
 
     [Fact]

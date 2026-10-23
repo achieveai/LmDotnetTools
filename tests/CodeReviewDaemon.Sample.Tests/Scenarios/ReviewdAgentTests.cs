@@ -74,7 +74,7 @@ public sealed class ReviewdAgentTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }
