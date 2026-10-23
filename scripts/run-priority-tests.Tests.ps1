@@ -240,8 +240,8 @@ try {
     # is pinned so that ADDING test declarations cannot silently pass without someone classifying them.
     # Bump it in the same commit that adds the rows, or this fails with the message below while the
     # manifest itself is perfectly in sync.
-    Assert-Count $repositoryPlan.declarationSummary.known 11367 "Known .NET/script declarations"
-    Assert-Count $repositoryPlan.declarationSummary.reviewed 11367 "Reviewed policy rows"
+    Assert-Count $repositoryPlan.declarationSummary.known 11374 "Known .NET/script declarations"
+    Assert-Count $repositoryPlan.declarationSummary.reviewed 11374 "Reviewed policy rows"
     foreach ($repositoryTier in @("P0", "P1")) {
         $tierPlan = & $runner -RepositoryRoot (Join-Path $PSScriptRoot "..") -Priority $repositoryTier | ConvertFrom-Json
         $unsupportedTierSubsets = @(
@@ -258,7 +258,7 @@ try {
     }
     $repositoryDeclarations = @($repositoryPlan.tests | ForEach-Object { @($_.declarations) })
     # Same tripwire contract as the total above: bump these alongside the rows you add.
-    foreach ($tier in @(@("P0", 432), @("P1", 8533), @("P2", 2243), @("P3", 159))) {
+    foreach ($tier in @(@("P0", 432), @("P1", 8537), @("P2", 2246), @("P3", 159))) {
         Assert-Count @($repositoryDeclarations | Where-Object priority -eq $tier[0]).Count $tier[1] "Checked-in $($tier[0]) declaration count"
     }
     Assert-True (@($repositoryDeclarations | Where-Object reviewState -ne "reviewed").Count -eq 0) "The checked-in declaration policy cannot contain unreviewed families."

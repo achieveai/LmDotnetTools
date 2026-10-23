@@ -10,9 +10,9 @@ using Microsoft.Extensions.Logging;
 namespace LmStreaming.Sample.Tests.Services.RemoteMcp;
 
 /// <summary>
-/// SC7: one connect to a plugin's http MCP server through a fake transport. The egress key's headers are set on every
+/// SC7: connects to plugins' http MCP servers through a fake transport. The egress key's headers are set on every
 /// request from the key as it is now (F-007), and no failure path logs the url, the host, a header value or a key
-/// value (F-009).
+/// value (F-009). Which tools a build keeps, and what connects nothing (G4); the production transport (G5).
 /// </summary>
 public sealed class RemoteMcpConnectorTests : IDisposable
 {
@@ -143,6 +143,104 @@ public sealed class RemoteMcpConnectorTests : IDisposable
         }
     }
 
+    // G4. A name of exactly 64 characters is kept; a longer one is skipped (a provider rejects every request that lists
+    // it). The same plugin and server in a second marketplace yield the same names: the first in gateway order keeps
+    // them. Red: compare with >= instead of >, drop the length check, or let the later duplicate in.
+    [Fact]
+    public async Task Connect_KeepsA64CharacterName_SkipsALongerOne_AndASecondServersDuplicate()
+    {
+        var fits = new string('f', RemoteMcpConnector.MaxToolNameLength - "mcp_plugin_acme_api_".Length);
+        var tooLong = fits + "x";
+        var server = new FakeRemoteMcpHandler(
+            JsonSerializer.Serialize(
+                new[] { fits, tooLong }.Select(name => new { name, inputSchema = new { type = "object" } })
+            )
+        );
+        var log = new RecordingLogger();
+
+        var connection = await ConnectAsync(
+            server,
+            Keys(new TokenEndpoint("unused")),
+            log,
+            _ => Task.FromResult<IReadOnlyList<SandboxMcpServer>>([Row("mk"), Row("mk2")])
+        );
+        try
+        {
+            var kept = RemoteMcpConnector.ToolName("acme", "api", fits);
+            kept.Should().HaveLength(RemoteMcpConnector.MaxToolNameLength, "guard: the kept name is at the limit");
+            connection.Resources.Should().HaveCount(2, "guard: both servers connected");
+            connection.Tools.Select(t => t.Contract.Name).Should().Equal(kept);
+            log.Lines.Where(l => l.Contains("skipped: its name is longer than 64")).Should().HaveCount(2);
+            log.Lines.Should()
+                .ContainSingle(l => l.Contains("skipped: another server already has the name"))
+                .Which.Should()
+                .Contain($"Remote MCP tool {kept} of mk2/acme/api skipped");
+        }
+        finally
+        {
+            await DisposeAsync(connection);
+        }
+    }
+
+    // G4. Nothing connects, and nothing reaches the server: the gateway's listing failed (the next build retries), or
+    // the egress key the plan matched has no valid token (a request would go out without its credential). Red: let
+    // the listing's exception escape, or drop the connect-time key check (the per-request key handler still stops
+    // initialize, but the WARN becomes "not connected: HttpRequestException").
+    [Theory]
+    [InlineData("listing fails", "Warning Remote MCP servers not listed sess-1: Unavailable 503, retryable")]
+    [InlineData(
+        "key has no token",
+        "Warning Remote MCP server mk/acme/api not connected: its egress key has no valid token"
+    )]
+    public async Task Connect_WithNoListingOrNoValidKeyToken_ConnectsNothing_AndWarns(string failure, string warning)
+    {
+        var keys = Keys(new TokenEndpoint("unused"));
+        await keys.UpsertAsync(
+            new PredefinedKeyEntry
+            {
+                Id = "acme",
+                Host = "acme.test",
+                Kind = PredefinedKeyKind.CustomHeaders,
+                Headers = [],
+            }
+        );
+        var server = new FakeRemoteMcpHandler(LookupTool);
+        var log = new RecordingLogger();
+
+        var connection =
+            failure == "listing fails"
+                ? await ConnectAsync(
+                    server,
+                    keys,
+                    log,
+                    _ =>
+                        Task.FromException<IReadOnlyList<SandboxMcpServer>>(
+                            new SandboxException(
+                                SandboxErrorKind.Unavailable,
+                                "GET https://gw.test/mcp-servers: 503",
+                                503
+                            )
+                        )
+                )
+                : await ConnectAsync(server, keys, log);
+
+        connection.Tools.Should().BeEmpty();
+        connection.Resources.Should().BeEmpty();
+        server.Requests.Should().BeEmpty();
+        log.Lines.Should().ContainSingle(l => l.StartsWith(warning, StringComparison.Ordinal));
+        log.Lines.Should().NotContain(l => l.Contains("gw.test", StringComparison.Ordinal));
+    }
+
+    // G5. Every test injects a transport, so only this pins the production one. Red: AllowAutoRedirect = true, which
+    // lets a plugin server's 3xx carry the egress key's headers to another host.
+    [Fact]
+    public void DefaultTransportHandler_FollowsNoRedirect()
+    {
+        using var handler = RemoteMcpConnector.DefaultTransportHandler();
+
+        handler.AllowAutoRedirect.Should().BeFalse();
+    }
+
     private PredefinedKeyRegistry Keys(TokenEndpoint tokens) =>
         new(_keysDirectory.FullName, new NoTokenStore(), new HttpClient(tokens), NullLoggerFactory.Instance);
 
@@ -161,20 +259,16 @@ public sealed class RemoteMcpConnectorTests : IDisposable
         ILogger logger,
         params (string Name, string Value)[] headers
     ) =>
+        ConnectAsync(server, keys, logger, _ => Task.FromResult<IReadOnlyList<SandboxMcpServer>>([Row("mk", headers)]));
+
+    private static Task<RemoteMcpConnection> ConnectAsync(
+        FakeRemoteMcpHandler server,
+        PredefinedKeyRegistry keys,
+        ILogger logger,
+        Func<CancellationToken, Task<IReadOnlyList<SandboxMcpServer>>> fetch
+    ) =>
         RemoteMcpConnector.ConnectAsync(
-            _ =>
-                Task.FromResult<IReadOnlyList<SandboxMcpServer>>([
-                    new SandboxMcpServer
-                    {
-                        Name = "api",
-                        Plugin = "acme",
-                        Marketplace = "mk",
-                        Type = "http",
-                        Supported = true,
-                        Url = Url,
-                        Headers = [.. headers.Select(h => new SandboxMcpHeader { Name = h.Name, Value = h.Value })],
-                    },
-                ]),
+            fetch,
             keys,
             allowLoopbackHttp: false,
             server,
@@ -182,6 +276,19 @@ public sealed class RemoteMcpConnectorTests : IDisposable
             "sess-1",
             CancellationToken.None
         );
+
+    /// <summary>Plugin acme's http server "api" at <see cref="Url"/>, as marketplace <paramref name="marketplace"/> lists it.</summary>
+    private static SandboxMcpServer Row(string marketplace, params (string Name, string Value)[] headers) =>
+        new()
+        {
+            Name = "api",
+            Plugin = "acme",
+            Marketplace = marketplace,
+            Type = "http",
+            Supported = true,
+            Url = Url,
+            Headers = [.. headers.Select(h => new SandboxMcpHeader { Name = h.Name, Value = h.Value })],
+        };
 
     private static async Task DisposeAsync(RemoteMcpConnection connection)
     {

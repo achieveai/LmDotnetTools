@@ -178,6 +178,12 @@ internal static class RemoteMcpConnector
     internal static string ToolName(string plugin, string server, string tool) =>
         FunctionCollisionDetector.SanitizeName($"mcp_plugin_{plugin}_{server}_{tool}");
 
+    /// <summary>
+    /// The production transport handler. It follows no redirect: a 3xx would carry the egress key's headers to
+    /// another origin.
+    /// </summary>
+    internal static SocketsHttpHandler DefaultTransportHandler() => new() { AllowAutoRedirect = false };
+
     private static async Task<(
         SandboxMcpServer Row,
         IReadOnlyList<RemoteMcpTool> Tools,
@@ -215,7 +221,7 @@ internal static class RemoteMcpConnector
                 headers[name] = value;
             }
 
-            HttpMessageHandler handler = transportHandler ?? new SocketsHttpHandler { AllowAutoRedirect = false };
+            HttpMessageHandler handler = transportHandler ?? DefaultTransportHandler();
             if (decision.Key is not null)
             {
                 handler = new KeyHeadersHandler(decision.Key, keys, handler, ownsInner: transportHandler is null);

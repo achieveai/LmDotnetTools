@@ -219,9 +219,6 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
     private const string ExecuteToolUsage =
         "Call it as ExecuteTool({\"tool\": \"<exact name from SearchTool>\", \"arguments\": {<that tool's arguments>}}).";
 
-    // A rotation runs inside the compacting loop's request path; it never holds that path longer than this.
-    private static readonly TimeSpan RotationBudget = TimeSpan.FromSeconds(10);
-
     // Query words that name the kind itself ("an agent that ..."), so never one sub-agent or plugin (IsWeakByName).
     private static readonly HashSet<string> AgentKindWords = new(
         ["agent", "agents", "sub", "subagent", "subagents"],
@@ -248,9 +245,6 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
             )
         );
     };
-
-    // A sub-agent's own tiers are set up inside its spawn; the spawn never waits longer than this for them.
-    private static readonly TimeSpan SpawnBudget = TimeSpan.FromSeconds(10);
 
     private readonly string _rootThreadId;
     private readonly IConversationStore _store;
@@ -318,6 +312,18 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
     /// goes inert (logged as a failed apply), like any other gateway fault.
     /// </summary>
     internal TimeSpan ConfigureBudget { get; init; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// The most a spawn waits for a sub-agent's own tiers to be set up. Past it the sub-agent inherits the parent's
+    /// tools, with one WARN.
+    /// </summary>
+    internal TimeSpan SpawnBudget { get; init; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// A rotation runs inside the compacting loop's request path; it never holds that path longer than this. Past it
+    /// the rotation stops with a WARN and reports no change; the next activation or build tries again.
+    /// </summary>
+    internal TimeSpan RotationBudget { get; init; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
     /// The root agent's <c>Skill</c> (once attached) and <c>SearchSkill</c>. The host registers it only on a
@@ -1402,7 +1408,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
     )
     {
         var metadata = await _store.LoadMetadataAsync(agent.ThreadId, ct).ConfigureAwait(false);
-        var persisted = ReadView(metadata, out var newerSchema);
+        var persisted = ReadView(metadata, agent.ThreadId, out var newerSchema);
         if (newerSchema)
         {
             _logger.LogWarning(
@@ -2519,7 +2525,11 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
     private static IReadOnlyList<string> Union(IEnumerable<string> first, IEnumerable<string> second) =>
         [.. first.Concat(second).Distinct(StringComparer.Ordinal).OrderBy(k => k, StringComparer.Ordinal)];
 
-    private static PersistedView? ReadView(ThreadMetadata? metadata, out bool newerSchema)
+    /// <summary>
+    /// The thread's persisted view; null when it has none, or one that cannot be read (logged by thread only, never
+    /// its content: the caller then seeds the view again).
+    /// </summary>
+    private PersistedView? ReadView(ThreadMetadata? metadata, string threadId, out bool newerSchema)
     {
         newerSchema = false;
         if (metadata?.Properties is null || !metadata.Properties.TryGetValue(ViewPropertyKey, out var raw))
@@ -2537,7 +2547,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
         };
         if (json is null)
         {
-            return null;
+            return Unreadable("neither a string nor JSON");
         }
 
         try
@@ -2545,7 +2555,14 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
             var view = JsonSerializer.Deserialize<PersistedView>(json);
             if (view is null)
             {
-                return null;
+                return Unreadable("null");
+            }
+
+            // Every view written carries a schema version of at least 1, so an object without one was never a view.
+            // Read as one, it would be an empty view at revision 0 and the mode's Loaded items would never be seeded.
+            if (view.SchemaVersion < 1)
+            {
+                return Unreadable("not a view");
             }
 
             if (view.SchemaVersion > PersistedView.CurrentSchemaVersion)
@@ -2561,7 +2578,17 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
         }
         catch (JsonException)
         {
-            return null; // corrupt: treat as absent and re-seed
+            return Unreadable("not a view"); // corrupt: treat as absent and re-seed
+        }
+
+        PersistedView? Unreadable(string reason)
+        {
+            _logger.LogWarning(
+                "Capabilities view of {ThreadId} is unreadable ({Reason}); it is seeded again",
+                threadId,
+                reason
+            );
+            return null;
         }
     }
 

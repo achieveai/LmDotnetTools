@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Capabilities;
 using AchieveAi.LmDotnetTools.LmCore.Core;
@@ -8,6 +9,7 @@ using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Tests.Capabilities;
@@ -387,6 +389,170 @@ public class CapabilityTiersToolTests
         }
     }
 
+    // G2. ExecuteTool's refusal grammar: each malformed call gets its code, and the argument forms a weak model sends
+    // (null, missing, an object double-encoded as a string) still run. Red: drop a check (a blank "tool" then reads as
+    // tool_not_available), change a code, or stop reading null or a double-encoded object.
+    [Theory]
+    [InlineData("""{"arguments":{}}""", "invalid_args", null)]
+    [InlineData("""{"tool":"  ","arguments":{}}""", "invalid_args", null)]
+    [InlineData("""{"tool":"Bash","arguments":""", "invalid_args", null)]
+    [InlineData("""{"tool":"ExecuteTool","arguments":{}}""", "call_directly", null)]
+    [InlineData("""{"tool":"SearchTool","arguments":{}}""", "call_directly", null)]
+    [InlineData("""{"tool":"Bash","arguments":[1]}""", "invalid_args", null)]
+    [InlineData("""{"tool":"Bash","arguments":"[1]"}""", "invalid_args", null)]
+    [InlineData("""{"tool":"Bash","arguments":null}""", null, "{}")]
+    [InlineData("""{"tool":"Bash"}""", null, "{}")]
+    [InlineData("""{"tool":"Bash","arguments":"{\"command\":\"echo\"}"}""", null, """{"command":"echo"}""")]
+    public async Task ExecuteTool_GivesEachMalformedCallItsCode_AndRunsTheArgumentFormsAWeakModelSends(
+        string args,
+        string? code,
+        string? runsWith
+    )
+    {
+        using var tiers = await TiersAsync(ManagedTools);
+        var execute = RootRegistry(tiers, ManagedTools).GetProviders().OfType<IDeferredToolProvider>().Single();
+
+        var unwrap = execute.TryUnwrap(ExecuteTool, args);
+
+        unwrap.Should().NotBeNull();
+        if (code is not null)
+        {
+            unwrap!.ErrorCode.Should().Be(code);
+            unwrap.IsRefusal.Should().BeTrue();
+        }
+        else
+        {
+            unwrap!.IsRefusal.Should().BeFalse(unwrap.ErrorJson);
+            unwrap.FunctionName.Should().Be("Bash");
+            unwrap.ArgumentsJson.Should().Be(runsWith);
+        }
+    }
+
+    // G1 (data loss). The first build with tools tiered gets an empty listing (a gateway hiccup). Seeding the tool kind
+    // against it would record tools as seeded with none loaded and persist that, so the mode's loaded tools would
+    // never be seeded again. Red: drop the tools.Count == 0 guard in AttachTools (the next build lists only Read).
+    [Fact]
+    public async Task ABuildWhoseSandboxListsNoTools_StagesNone_SoTheNextBuildStillSeedsTheModesTools()
+    {
+        var store = await StoreAsync();
+        var log = new RecordingLogger();
+        using var tiers = new CapabilityTiers(T, store, log);
+
+        await BuildAsync(tiers, RotationSettings, new FakeSkillGateway().For(T), []);
+
+        log.Starting("Capabilities tools not staged").Should().ContainSingle();
+        await BuildAsync(tiers, RotationSettings, new FakeSkillGateway().For(T), RotationTools);
+        ListedTools(RootRegistry(tiers, RotationTools)).Should().BeEquivalentTo("Read", "Glob");
+        var view = (await RawViewAsync(store, T)).Should().NotBeNull().And.Subject;
+        view.Should().Contain(CapabilityCatalog.ToolKeyPrefix + "Glob");
+    }
+
+    // G3. A gateway that stops answering mid-spawn or mid-rotation costs one budget each, not a hang. The child then
+    // inherits the parent's tools (one WARN; its ExecuteTool falls back without waiting again), and the rotation
+    // reports no change with a WARN. Red: drop either CancelAfter (the 5 s wait fails), or the budget's WARN.
+    [Fact]
+    public async Task AGatewayThatHangs_CostsASpawnAndARotationOneBudgetEach_WithOneWarnEach()
+    {
+        var log = new RecordingLogger();
+        var live = new FakeSkillGateway().For(T);
+        var hang = false;
+        var hung = 0;
+        var gateway = live with { PatchTiers = (id, set, ct) => hang ? HangAsync(ct) : live.PatchTiers(id, set, ct) };
+        using var tiers = new CapabilityTiers(T, await StoreAsync(), log)
+        {
+            SpawnBudget = TimeSpan.FromMilliseconds(100),
+            RotationBudget = TimeSpan.FromMilliseconds(100),
+        };
+        await BuildAsync(tiers, RotationSettings, gateway, RotationTools);
+        ListedTools(RootRegistry(tiers, RotationTools))
+            .Should()
+            .BeEquivalentTo(
+                ["Read", "Glob"],
+                "guard: Glob is loaded, so a rotation with no uses evicts it and PATCHes"
+            );
+        hang = true;
+
+        var child = await SpawnAsync(tiers, "agent-1", "Read", "Glob", "Bash").WaitAsync(TimeSpan.FromSeconds(5));
+        var rotated = await tiers
+            .OnCheckpointActivatedAsync(Activation(T, "root", 10, 9), CancellationToken.None)
+            .AsTask()
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        hung.Should().Be(2, "guard: the spawn and the rotation each reached the hanging PATCH");
+        child
+            .BuildContracts()
+            .Select(c => c.Name)
+            .Should()
+            .BeEquivalentTo("Read", "Glob", "Bash", SearchTool, ExecuteTool);
+        child
+            .GetProviders()
+            .OfType<IDeferredToolProvider>()
+            .Should()
+            .BeEmpty("the child runs the parent's ExecuteTool");
+        rotated.Should().BeFalse();
+        log.Starting("Capabilities apply failed")
+            .Select(r => (string)r.Props["Error"]!)
+            .Should()
+            .SatisfyRespectively(
+                spawn => spawn.Should().StartWith("sub-agent setup exceeded"),
+                rotation => rotation.Should().StartWith("rotation exceeded")
+            );
+
+        async Task HangAsync(CancellationToken ct)
+        {
+            _ = Interlocked.Increment(ref hung);
+            await Task.Delay(Timeout.Infinite, ct);
+        }
+    }
+
+    // G6. A view that cannot be read is treated as absent: the build seeds the mode's view again (revision 1), and one
+    // WARN names the thread, never the content. Red: drop ReadView's JsonException catch (the build goes inert), its
+    // schema-version floor (an object that is not a view reads as an empty revision-0 view) or its WARN.
+    [Theory]
+    [InlineData("text that is not JSON")]
+    [InlineData("a JSON string holding text that is not JSON")]
+    [InlineData("a JSON array")]
+    [InlineData("a JSON object that is not a view")]
+    [InlineData("JSON null")]
+    [InlineData("a string holding null")]
+    [InlineData("a value that is neither a string nor JSON")]
+    public async Task AnUnreadablePersistedView_IsSeededAgainFromTheMode_WithAWarnNamingOnlyTheThread(string junk)
+    {
+        object value = junk switch
+        {
+            "text that is not JSON" => "{junk-g6",
+            "a JSON string holding text that is not JSON" => JsonSerializer.SerializeToElement("{junk-g6"),
+            "a JSON array" => JsonSerializer.SerializeToElement(new[] { "junk-g6" }),
+            "a JSON object that is not a view" => JsonSerializer.SerializeToElement(new { note = "junk-g6" }),
+            "JSON null" => JsonSerializer.SerializeToElement<object?>(null),
+            "a string holding null" => "null",
+            _ => new Uri("https://junk-g6.test/"),
+        };
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            T,
+            new ThreadMetadata
+            {
+                ThreadId = T,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty.Add(CapabilityTiers.ViewPropertyKey, value),
+            }
+        );
+        var log = new RecordingLogger();
+        using var tiers = new CapabilityTiers(T, store, log);
+
+        await BuildAsync(tiers, RotationSettings, new FakeSkillGateway().For(T), RotationTools);
+
+        tiers.IsActive.Should().BeTrue();
+        ListedTools(RootRegistry(tiers, RotationTools)).Should().BeEquivalentTo("Read", "Glob");
+        using var view = JsonDocument.Parse((await RawViewAsync(store, T))!);
+        view.RootElement.GetProperty("revision").GetInt32().Should().Be(1);
+        var warn = log.Starting("Capabilities view of {ThreadId} is unreadable").Should().ContainSingle().Subject;
+        warn.Level.Should().Be(LogLevel.Warning);
+        warn.Props["ThreadId"].Should().Be(T);
+        warn.Props.Values.Should().NotContain(v => v != null && v.ToString()!.Contains("junk-g6"));
+    }
+
     /// <summary>The sandbox's tools as the gateway listed them on 2026-10-22, Skill aside (it is never tier-managed).</summary>
     private static readonly (string Name, string Description)[] SandboxTools =
     [
@@ -561,14 +727,22 @@ public class CapabilityTiersToolTests
     )
     {
         var tiers = new CapabilityTiers(T, store, NullLogger.Instance);
-        using (var stage = await tiers.StageAsync(settings, new FakeSkillGateway().For(T), CancellationToken.None))
-        {
-            stage.AttachTools(tools);
-            await stage.CommitAsync(CancellationToken.None);
-        }
-
+        await BuildAsync(tiers, settings, new FakeSkillGateway().For(T), tools);
         tiers.IsActive.Should().BeTrue("guard: the build applied");
         return tiers;
+    }
+
+    /// <summary>One host build: stage, attach the tools the sandbox connect registered, commit.</summary>
+    private static async Task BuildAsync(
+        CapabilityTiers tiers,
+        TierSettings settings,
+        SkillTierGateway gateway,
+        FunctionContract[] tools
+    )
+    {
+        using var stage = await tiers.StageAsync(settings, gateway, CancellationToken.None);
+        stage.AttachTools(tools);
+        await stage.CommitAsync(CancellationToken.None);
     }
 
     private static async Task<ToolHandlerResultPayload> SearchAsync(CapabilityTiers tiers, string args)
