@@ -1,8 +1,10 @@
 using System.Collections.Immutable;
+using System.Diagnostics;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using FluentAssertions;
+using Moq;
 using Xunit;
 
 namespace LmMultiTurn.Tests.Persistence;
@@ -269,6 +271,57 @@ public sealed class ConversationForksTests : IAsyncLifetime
 
         (await store.LoadMetadataAsync(Source)).Should().NotBeNull();
         (await store.LoadMessagesAsync(ForkOfFork)).Select(m => m.Id).Should().Equal("u1", "a1");
+    }
+
+    [Fact]
+    public async Task FindDirectForksAsync_PrefersTheCompactRelationCapability()
+    {
+        var store = new Mock<IConversationStore>(MockBehavior.Strict);
+        var relations = store.As<IConversationRelationStore>();
+        using var cancellation = new CancellationTokenSource();
+        IReadOnlyList<string> expected = ["fork-a", "fork-b"];
+        relations
+            .Setup(capability => capability.ListDirectForkThreadIdsAsync(Source, cancellation.Token))
+            .ReturnsAsync(expected);
+
+        var actual = await ConversationForks.FindDirectForksAsync(store.Object, Source, cancellation.Token);
+
+        actual.Should().BeSameAs(expected);
+        relations.VerifyAll();
+        store.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task FindDirectForksAsync_FallbackWarnsOnlyOnce()
+    {
+        typeof(ConversationForks)
+            .GetField(
+                "s_relationFallbackWarningLogged",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static
+            )!
+            .SetValue(null, 0);
+        using var output = new StringWriter();
+        using var listener = new TextWriterTraceListener(output);
+        Trace.Listeners.Add(listener);
+        try
+        {
+            var store = new InMemoryConversationStore();
+
+            _ = await ConversationForks.FindDirectForksAsync(store, Source);
+            _ = await ConversationForks.FindDirectForksAsync(store, Source);
+
+            Trace.Flush();
+        }
+        finally
+        {
+            Trace.Listeners.Remove(listener);
+        }
+
+        output
+            .ToString()
+            .Split("direct-fork lookup is falling back", StringSplitOptions.None)
+            .Should()
+            .HaveCount(2, "the warning text should occur exactly once");
     }
 
     [Fact]

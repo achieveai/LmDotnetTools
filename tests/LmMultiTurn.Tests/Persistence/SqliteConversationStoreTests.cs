@@ -1,4 +1,6 @@
 using System.Collections.Immutable;
+using AchieveAi.LmDotnetTools.LmCore.Identity;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using FluentAssertions;
@@ -343,6 +345,61 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         loaded.Properties!["key1"].ToString().Should().Be("value1");
     }
 
+    [Fact]
+    public async Task MetadataWrites_KeepListingProjectionColumnsInSync()
+    {
+        var initial = ConversationLineage.Write(
+            new ThreadMetadata
+            {
+                ThreadId = "thread-1",
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty.Add(
+                    ConversationRelationKeys.SubAgentParentThreadId,
+                    "parent-a"
+                ),
+            },
+            new ConversationLineage
+            {
+                DeletedAt = 10,
+                ForkedFrom = new ForkPoint
+                {
+                    ThreadId = "source-a",
+                    MessageId = "message-a",
+                    Seq = 1,
+                },
+            }
+        );
+        await _store.SaveMetadataAsync("thread-1", initial);
+
+        (await ReadListingProjectionAsync("thread-1")).Should().Be((10L, "source-a", "parent-a"));
+
+        await _store.UpdateMetadataAsync(
+            "thread-1",
+            existing =>
+                ConversationLineage.Write(
+                    existing! with
+                    {
+                        LastUpdated = 2,
+                        Properties = existing.Properties!.SetItem(
+                            ConversationRelationKeys.SubAgentParentThreadId,
+                            "parent-b"
+                        ),
+                    },
+                    new ConversationLineage
+                    {
+                        ForkedFrom = new ForkPoint
+                        {
+                            ThreadId = "source-b",
+                            MessageId = "message-b",
+                            Seq = 2,
+                        },
+                    }
+                )
+        );
+
+        (await ReadListingProjectionAsync("thread-1")).Should().Be((null, "source-b", "parent-b"));
+    }
+
     #endregion
 
     #region DeleteThreadAsync Tests
@@ -489,6 +546,21 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         thread2Messages.Should().HaveCount(3);
     }
 
+    [Fact]
+    public async Task DeleteThreadAsync_RemovesUsageStateAndRecords_WithoutChangingAnotherThread()
+    {
+        var deleted = UsageAttempt("thread-delete", "delete-attempt", revision: 1, inputTokens: 10);
+        var kept = UsageAttempt("thread-keep", "keep-attempt", revision: 2, inputTokens: 20);
+        await _store.AppendUsageAsync(ConversationUsageAggregate.Fold("thread-delete", [deleted], 1), [deleted]);
+        await _store.AppendUsageAsync(ConversationUsageAggregate.Fold("thread-keep", [kept], 2), [kept]);
+        var keptBefore = await _store.LoadUsageAsync("thread-keep");
+
+        await _store.DeleteThreadAsync("thread-delete");
+
+        (await _store.LoadUsageAsync("thread-delete")).Should().BeNull();
+        (await _store.LoadUsageAsync("thread-keep")).Should().BeEquivalentTo(keptBefore);
+    }
+
     #endregion
 
     #region Concurrency Tests
@@ -548,9 +620,187 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task AppendUsageAsync_TwoStoreInstancesMergeConcurrentRecords_WithoutRegressingState()
+    {
+        await using var secondStore = new SqliteConversationStore(_databasePath);
+        var lower = UsageAttempt("usage-thread", "lower", revision: 2, inputTokens: 20);
+        var higher = UsageAttempt("usage-thread", "higher", revision: 7, inputTokens: 70);
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var lowerWrite = Task.Run(async () =>
+        {
+            await start.Task;
+            await _store.AppendUsageAsync(
+                ConversationUsageAggregate.Fold(
+                    "usage-thread",
+                    [lower],
+                    foldedRevision: 2,
+                    UsageCompleteness.InProgress
+                ),
+                [lower]
+            );
+        });
+        var higherWrite = Task.Run(async () =>
+        {
+            await start.Task;
+            await secondStore.AppendUsageAsync(
+                ConversationUsageAggregate.Fold(
+                    "usage-thread",
+                    [higher],
+                    foldedRevision: 7,
+                    UsageCompleteness.Complete
+                ),
+                [higher]
+            );
+        });
+
+        start.SetResult();
+        await Task.WhenAll(lowerWrite, higherWrite);
+
+        var loaded = await _store.LoadUsageAsync("usage-thread");
+        loaded!.Records.Select(record => record.ProviderAttemptId).Should().BeEquivalentTo(["lower", "higher"]);
+        loaded.FoldedRevision.Should().Be(7);
+        loaded.Completeness.Should().Be(UsageCompleteness.Complete);
+    }
+
+    [Fact]
+    public async Task AppendUsageAsync_EqualRevisionIncomingRecordWins_WithoutRegressingState()
+    {
+        var first = UsageAttempt("usage-thread", "attempt", revision: 4, inputTokens: 10);
+        var incoming = first with { InputTokens = 99 };
+        await _store.AppendUsageAsync(
+            ConversationUsageAggregate.Fold("usage-thread", [first], foldedRevision: 10, UsageCompleteness.Complete),
+            [first]
+        );
+
+        await _store.AppendUsageAsync(
+            ConversationUsageAggregate.Fold(
+                "usage-thread",
+                [incoming],
+                foldedRevision: 3,
+                UsageCompleteness.InProgress
+            ),
+            [incoming]
+        );
+
+        var loaded = await _store.LoadUsageAsync("usage-thread");
+        loaded!.Records.Should().ContainSingle().Which.InputTokens.Should().Be(99);
+        loaded.FoldedRevision.Should().Be(10);
+        loaded.Completeness.Should().Be(UsageCompleteness.Complete);
+    }
+
+    [Fact]
+    public async Task AppendUsageAsync_PreservesEarliestKnownOccurrence_AcrossArrivalOrders()
+    {
+        var early = new DateTimeOffset(2026, 10, 22, 10, 0, 0, TimeSpan.Zero);
+        var late = early.AddHours(1);
+        (
+            string ThreadId,
+            DateTimeOffset? First,
+            long FirstRevision,
+            DateTimeOffset? Second,
+            long SecondRevision,
+            DateTimeOffset Expected
+        )[] cases =
+        [
+            ("null-then-known", null, 1L, late, 2L, late),
+            ("known-then-null", early, 1L, null, 2L, early),
+            ("older-then-newer", early, 1L, late, 2L, early),
+            ("newer-then-older-equal", late, 2L, early, 2L, early),
+        ];
+
+        foreach (var (threadId, firstTime, firstRevision, secondTime, secondRevision, expected) in cases)
+        {
+            var first = UsageAttempt(threadId, "attempt", firstRevision, 10) with { OccurredAtUtc = firstTime };
+            var second = UsageAttempt(threadId, "attempt", secondRevision, 20) with { OccurredAtUtc = secondTime };
+            await _store.AppendUsageAsync(ConversationUsageAggregate.Fold(threadId, [first], firstRevision), [first]);
+            await _store.AppendUsageAsync(
+                ConversationUsageAggregate.Fold(threadId, [second], secondRevision),
+                [second]
+            );
+
+            (await _store.LoadUsageAsync(threadId))!
+                .Records.Should()
+                .ContainSingle()
+                .Which.OccurredAtUtc.Should()
+                .Be(expected);
+        }
+    }
+
     #endregion
 
     #region ListThreadsAsync Sort-Order Parity Tests
+
+    [Fact]
+    public async Task ListConversationRowsAsync_FiltersBeforePaging_AndProjectsOnlyRequestedValues()
+    {
+        const string CustomValue = """{"nested":[1,true]}""";
+        var rows = new List<ThreadMetadata>
+        {
+            ListingRow("subagent-hidden", 1_000, "tenant-a", "user-a"),
+            ListingRow("workflow-hidden", 999, "tenant-a", "user-a"),
+            ConversationLineage.Write(
+                ListingRow("deleted-hidden", 998, "tenant-a", "user-a"),
+                new ConversationLineage { DeletedAt = 5 }
+            ),
+            ListingRow("private-hidden", 997, "tenant-a", "user-b"),
+            ListingRow("other-tenant-hidden", 996, "tenant-b", "user-a"),
+            ListingRow("root-owned", 500, "tenant-a", "user-a"),
+            ListingRow(
+                "root-granted",
+                400,
+                "tenant-a",
+                "user-b",
+                ImmutableDictionary<string, object>
+                    .Empty.Add(ConversationRelationKeys.SubAgentParentThreadId, "root-parent")
+                    .Add("custom", CustomValue)
+            ),
+            ListingRow("root-published", 300, "tenant-a", "user-b", visibility: Visibility.TenantPublished),
+            ListingRow("root-tie-z", 200, "tenant-a", "user-a"),
+            ListingRow("root-tie-a", 200, "tenant-a", "user-a"),
+        };
+        foreach (var row in rows)
+        {
+            await _store.SaveMetadataAsync(row.ThreadId, row);
+        }
+
+        var scope = new ConversationListScope
+        {
+            TenantId = "tenant-a",
+            UserId = "user-a",
+            GrantedThreadIds = new HashSet<string>(StringComparer.Ordinal) { "root-granted" },
+        };
+        var options = new ConversationListOptions
+        {
+            ExcludedThreadIdPrefixes = ["subagent-", "workflow-"],
+            ExcludeDeleted = true,
+        };
+        var propertyKeys = new HashSet<string>(StringComparer.Ordinal)
+        {
+            ConversationRelationKeys.SubAgentParentThreadId,
+            "custom",
+        };
+
+        var expected = options.Order(rows.Where(scope.Admits).Where(options.Admits)).Select(row => row.ThreadId);
+        var first = await _store.ListConversationRowsAsync(propertyKeys, scope, 2, 0, options);
+        var second = await _store.ListConversationRowsAsync(propertyKeys, scope, 2, 2, options);
+        var third = await _store.ListConversationRowsAsync(propertyKeys, scope, 2, 4, options);
+        var actual = first.Concat(second).Concat(third).ToList();
+
+        actual.Select(row => row.ThreadId).Should().Equal(expected);
+        first.Should().HaveCount(2, "excluded or unauthorized rows must not consume the SQL limit");
+        var projected = actual.Single(row => row.ThreadId == "root-granted");
+        projected
+            .Properties.Should()
+            .BeEquivalentTo(
+                new Dictionary<string, string?>
+                {
+                    [ConversationRelationKeys.SubAgentParentThreadId] = "root-parent",
+                    ["custom"] = CustomValue,
+                }
+            );
+    }
 
     /// <summary>
     ///     <see cref="ConversationSortOrder.Created"/> orders by the creation time derived from the
@@ -678,6 +928,121 @@ public class SqliteConversationStoreTests : IAsyncLifetime
                 m.TenantId.Should().Be("tenant-a");
                 m.Properties!["title"].ToString().Should().Be(m.ThreadId);
             });
+    }
+
+    #endregion
+
+    #region Relation Read Tests
+
+    [Fact]
+    public async Task RelationReads_ReturnExactCompactRows_ThroughTheirCoveringIndexes()
+    {
+        await _store.SaveMetadataAsync(
+            "subagent-b",
+            CreateTestMetadata("subagent-b") with
+            {
+                Properties = ImmutableDictionary<string, object>.Empty.Add("sample.subAgentOf", "root-b"),
+            }
+        );
+        await _store.SaveMetadataAsync(
+            "subagent-a",
+            CreateTestMetadata("subagent-a") with
+            {
+                Properties = ImmutableDictionary<string, object>.Empty.Add("sample.subAgentOf", "root-a"),
+            }
+        );
+        await _store.SaveMetadataAsync(
+            "subagent-c",
+            CreateTestMetadata("subagent-c") with
+            {
+                Properties = ImmutableDictionary<string, object>.Empty.Add("sample.subAgentOf", "root-a"),
+            }
+        );
+        await _store.SaveMetadataAsync(
+            "fork-b",
+            ConversationLineage.Write(
+                CreateTestMetadata("fork-b"),
+                new ConversationLineage
+                {
+                    ForkedFrom = new ForkPoint { ThreadId = "source", Seq = 1 },
+                }
+            )
+        );
+        await _store.SaveMetadataAsync(
+            "fork-a",
+            ConversationLineage.Write(
+                CreateTestMetadata("fork-a"),
+                new ConversationLineage
+                {
+                    ForkedFrom = new ForkPoint { ThreadId = "source", Seq = 1 },
+                }
+            )
+        );
+        await _store.SaveMetadataAsync(
+            "fork-grandchild",
+            ConversationLineage.Write(
+                CreateTestMetadata("fork-grandchild"),
+                new ConversationLineage
+                {
+                    ForkedFrom = new ForkPoint { ThreadId = "fork-a", Seq = 1 },
+                }
+            )
+        );
+        await _store.SaveMetadataAsync("unrelated", CreateTestMetadata("unrelated"));
+
+        await using var connection = new SqliteConnection($"Data Source={_databasePath}");
+        await connection.OpenAsync();
+        await using (var poison = connection.CreateCommand())
+        {
+            poison.CommandText = "UPDATE thread_metadata SET metadata_json = zeroblob(2000000);";
+            _ = await poison.ExecuteNonQueryAsync();
+        }
+
+        var links = await _store.ListSubAgentParentLinksAsync();
+        var directForks = await _store.ListDirectForkThreadIdsAsync("source");
+        var noForks = await _store.ListDirectForkThreadIdsAsync("missing");
+
+        links
+            .Should()
+            .Equal(
+                new ConversationParentLink("subagent-a", "root-a"),
+                new ConversationParentLink("subagent-c", "root-a"),
+                new ConversationParentLink("subagent-b", "root-b")
+            );
+        directForks.Should().Equal("fork-a", "fork-b");
+        noForks.Should().BeEmpty();
+
+        var parentPlan = await ExplainAsync(
+            connection,
+            """
+            EXPLAIN QUERY PLAN
+            SELECT thread_id, subagent_parent_thread_id
+            FROM thread_metadata INDEXED BY idx_thread_metadata_subagent_parent
+            WHERE subagent_parent_thread_id IS NOT NULL
+            ORDER BY subagent_parent_thread_id, thread_id;
+            """
+        );
+        var forkPlan = await ExplainAsync(
+            connection,
+            """
+            EXPLAIN QUERY PLAN
+            SELECT thread_id
+            FROM thread_metadata INDEXED BY idx_thread_metadata_fork_parent
+            WHERE forked_from_thread_id = 'source'
+            ORDER BY thread_id;
+            """
+        );
+
+        parentPlan
+            .Should()
+            .ContainSingle(detail =>
+                detail.Contains("USING COVERING INDEX idx_thread_metadata_subagent_parent", StringComparison.Ordinal)
+            );
+        forkPlan
+            .Should()
+            .ContainSingle(detail =>
+                detail.Contains("USING COVERING INDEX idx_thread_metadata_fork_parent", StringComparison.Ordinal)
+            );
     }
 
     #endregion
@@ -862,6 +1227,72 @@ public class SqliteConversationStoreTests : IAsyncLifetime
             LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         };
     }
+
+    private static UsageRecord UsageAttempt(string threadId, string attemptId, long revision, int inputTokens) =>
+        new()
+        {
+            LogicalCallId = attemptId,
+            ProviderAttemptId = attemptId,
+            RootConversationId = threadId,
+            RequestedModel = "model",
+            InputTokens = inputTokens,
+            OutputTokens = 1,
+            Revision = revision,
+        };
+
+    private static async Task<IReadOnlyList<string>> ExplainAsync(SqliteConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        var plan = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            plan.Add(reader.GetString(3));
+        }
+
+        return plan;
+    }
+
+    private async Task<(long? DeletedAt, string? ForkedFrom, string? Parent)> ReadListingProjectionAsync(
+        string threadId
+    )
+    {
+        await using var connection = new SqliteConnection($"Data Source={_databasePath}");
+        await connection.OpenAsync();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT deleted_at, forked_from_thread_id, subagent_parent_thread_id
+            FROM thread_metadata
+            WHERE thread_id = $thread_id;
+            """;
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+        await using var reader = await command.ExecuteReaderAsync();
+        (await reader.ReadAsync()).Should().BeTrue();
+        return (
+            reader.IsDBNull(0) ? null : reader.GetInt64(0),
+            reader.IsDBNull(1) ? null : reader.GetString(1),
+            reader.IsDBNull(2) ? null : reader.GetString(2)
+        );
+    }
+
+    private static ThreadMetadata ListingRow(
+        string threadId,
+        long lastUpdated,
+        string tenantId,
+        string ownerUserId,
+        ImmutableDictionary<string, object>? properties = null,
+        Visibility visibility = Visibility.Private
+    ) =>
+        new()
+        {
+            ThreadId = threadId,
+            LastUpdated = lastUpdated,
+            TenantId = tenantId,
+            OwnerUserId = ownerUserId,
+            Visibility = visibility,
+            Properties = properties,
+        };
 
     #endregion
 }

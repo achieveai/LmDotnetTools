@@ -183,6 +183,113 @@ public class MultiTurnAgentLoopUsageActivationTests
     }
 
     [Fact]
+    public async Task RestartedCapabilityStore_RetriesFailedNewDelta_WithoutResendingHydratedRecords()
+    {
+        var oldRecord = new UsageRecord
+        {
+            LogicalCallId = "old",
+            ProviderAttemptId = "usage-thread:old",
+            RootConversationId = "usage-thread",
+            RequestedModel = "model",
+            InputTokens = 25,
+            Revision = 7,
+        };
+        var store = new RecordingUsageStore(
+            new ConversationUsageSnapshot
+            {
+                SchemaVersion = 1,
+                FoldedRevision = 7,
+                Completeness = UsageCompleteness.InProgress,
+                Records = [oldRecord],
+            },
+            failuresRemaining: 1
+        );
+        SetupMockAgentResponse([
+            new UsageMessage
+            {
+                Usage = new Usage { PromptTokens = 100, CompletionTokens = 40 },
+                GenerationId = "new",
+            },
+            new TextMessage { Text = "done", Role = Role.Assistant },
+        ]);
+        var loop = new MultiTurnAgentLoop(_mockAgent.Object, new FunctionRegistry(), "usage-thread", store: store);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        _ = loop.RunAsync(cts.Token);
+
+        await foreach (
+            var _ in loop.ExecuteRunAsync(
+                new UserInput([new TextMessage { Text = "Hi", Role = Role.User }], InputId: "input-1"),
+                cts.Token
+            )
+        )
+        {
+            // drain the run to completion
+        }
+
+        await loop.DisposeAsync();
+
+        var nonEmptyCalls = store.Calls.Where(call => call.RecordIds.Count > 0).ToList();
+        nonEmptyCalls.Should().HaveCount(2, "the failed delta is retried once at the next durability boundary");
+        nonEmptyCalls
+            .Should()
+            .OnlyContain(call =>
+                call.RecordIds.SequenceEqual(new[] { "usage-thread:new" })
+                && !call.RecordIds.Contains(oldRecord.ProviderAttemptId)
+            );
+        nonEmptyCalls.Count(call => call.Succeeded).Should().Be(1);
+        store
+            .Snapshot!.Records.Select(record => record.ProviderAttemptId)
+            .Should()
+            .BeEquivalentTo(["usage-thread:old", "usage-thread:new"]);
+    }
+
+    [Fact]
+    public async Task RestartedCapabilityStore_PreservesAggregateOnlyUsage_UntilARecordArrives()
+    {
+        var legacyRecord = new UsageRecord
+        {
+            LogicalCallId = "legacy",
+            ProviderAttemptId = "usage-thread:legacy",
+            RootConversationId = "usage-thread",
+            RequestedModel = "model",
+            InputTokens = 75,
+            OutputTokens = 25,
+            Revision = 7,
+        };
+        var aggregate = ConversationUsageAggregate.Fold("usage-thread", [legacyRecord], 7, UsageCompleteness.Partial);
+        var store = new RecordingUsageStore(
+            new ConversationUsageSnapshot
+            {
+                SchemaVersion = 1,
+                FoldedRevision = 7,
+                Completeness = UsageCompleteness.Partial,
+                Aggregate = aggregate,
+                Records = [],
+            },
+            failuresRemaining: 0
+        );
+        SetupMockAgentResponse([new TextMessage { Text = "done", Role = Role.Assistant }]);
+        var loop = new MultiTurnAgentLoop(_mockAgent.Object, new FunctionRegistry(), "usage-thread", store: store);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        _ = loop.RunAsync(cts.Token);
+
+        await foreach (
+            var _ in loop.ExecuteRunAsync(
+                new UserInput([new TextMessage { Text = "Hi", Role = Role.User }], InputId: "input-1"),
+                cts.Token
+            )
+        )
+        {
+            // drain the run to completion
+        }
+
+        await loop.DisposeAsync();
+
+        store.Snapshot!.Aggregate.Should().BeEquivalentTo(aggregate);
+        store.Snapshot.Records.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Run_PublishesLiveUsageFrame_ReflectingFoldedTotal()
     {
         // The loop broadcasts a ConversationUsageMessage to subscribers as usage folds in, so the client
@@ -265,5 +372,127 @@ public class MultiTurnAgentLoopUsageActivationTests
             yield return msg;
             await Task.Yield();
         }
+    }
+
+    private sealed record AppendCall(IReadOnlyList<string> RecordIds, bool Succeeded);
+
+    private sealed class RecordingUsageStore : IConversationStore, IConversationUsageStore
+    {
+        private readonly InMemoryConversationStore _inner = new();
+        private readonly object _gate = new();
+        private readonly List<AppendCall> _calls = [];
+        private int _failuresRemaining;
+        private ConversationUsageSnapshot? _snapshot;
+
+        public RecordingUsageStore(ConversationUsageSnapshot snapshot, int failuresRemaining)
+        {
+            _snapshot = snapshot;
+            _failuresRemaining = failuresRemaining;
+        }
+
+        public IReadOnlyList<AppendCall> Calls
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return [.. _calls];
+                }
+            }
+        }
+
+        public ConversationUsageSnapshot? Snapshot
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _snapshot;
+                }
+            }
+        }
+
+        public Task AppendUsageAsync(
+            ConversationUsageAggregate aggregate,
+            IReadOnlyList<UsageRecord> changedRecords,
+            CancellationToken ct = default
+        )
+        {
+            lock (_gate)
+            {
+                var ids = changedRecords.Select(record => record.ProviderAttemptId).ToArray();
+                if (_failuresRemaining > 0)
+                {
+                    _failuresRemaining--;
+                    _calls.Add(new AppendCall(ids, Succeeded: false));
+                    throw new InvalidOperationException("injected usage append failure");
+                }
+
+                var records = ConversationUsageProjection.MergeRecords(_snapshot?.Records ?? [], changedRecords);
+                var persistedAggregate =
+                    records.Count == 0
+                        ? _snapshot?.Aggregate is { } current && current.FoldedRevision > aggregate.FoldedRevision
+                            ? current
+                            : aggregate
+                        : null;
+                _snapshot = new ConversationUsageSnapshot
+                {
+                    SchemaVersion = Math.Max(_snapshot?.SchemaVersion ?? 0, aggregate.SchemaVersion),
+                    FoldedRevision = Math.Max(_snapshot?.FoldedRevision ?? 0, aggregate.FoldedRevision),
+                    Completeness = (UsageCompleteness)
+                        Math.Max(
+                            (int)(_snapshot?.Completeness ?? UsageCompleteness.InProgress),
+                            (int)aggregate.Completeness
+                        ),
+                    Aggregate = persistedAggregate,
+                    Records = records,
+                };
+                _calls.Add(new AppendCall(ids, Succeeded: true));
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public Task<ConversationUsageSnapshot?> LoadUsageAsync(string threadId, CancellationToken ct = default) =>
+            Task.FromResult(Snapshot);
+
+        public Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default
+        ) => _inner.AppendMessagesAsync(threadId, messages, ct);
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => _inner.LoadMessagesAsync(threadId, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => _inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            _inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            _inner.LoadMetadataAsync(threadId, ct);
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default
+        ) => _inner.UpdateMetadataAsync(threadId, update, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            _inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            ConversationListOptions? options = null,
+            CancellationToken ct = default
+        ) => _inner.ListThreadsAsync(limit, offset, options, ct);
     }
 }

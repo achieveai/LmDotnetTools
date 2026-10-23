@@ -144,6 +144,92 @@ public sealed class ConversationDescendantScannerTests
         nodes.Select(n => n.Depth).Should().Equal(1);
     }
 
+    [Fact]
+    public async Task ScanAsync_CompactRelations_HydratesOnlyReachableCandidates()
+    {
+        const string root = "thread-root";
+        var rows = new Dictionary<string, ThreadMetadata>(StringComparer.Ordinal)
+        {
+            [root] = new ThreadMetadata
+            {
+                ThreadId = root,
+                LastUpdated = 0,
+                TenantId = "tenant-a",
+            },
+            ["subagent-child"] = PersistedChild("subagent-child", root, "tenant-a"),
+            ["subagent-grandchild"] = PersistedChild("subagent-grandchild", "subagent-child", "tenant-a"),
+            ["subagent-foreign"] = PersistedChild("subagent-foreign", root, "tenant-b"),
+            ["subagent-unrelated"] = PersistedChild("subagent-unrelated", "other-root", "tenant-a"),
+        };
+        var loaded = new List<string>();
+        var store = new Mock<IConversationStore>(MockBehavior.Strict);
+        var relations = store.As<IConversationRelationStore>();
+        relations
+            .Setup(capability => capability.ListSubAgentParentLinksAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync([
+                new ConversationParentLink("subagent-child", root),
+                new("subagent-foreign", root),
+                new("subagent-grandchild", "subagent-child"),
+                new(root, "subagent-grandchild"),
+                new("subagent-unrelated", "other-root"),
+            ]);
+        store
+            .Setup(inner => inner.LoadMetadataAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(
+                (string threadId, CancellationToken _) =>
+                {
+                    loaded.Add(threadId);
+                    return rows.TryGetValue(threadId, out var row) ? row : null;
+                }
+            );
+        var logger = new CapturingLogger<ConversationDescendantScanner>();
+
+        var nodes = await CreateScanner(store.Object, logger: logger).ScanAsync(root);
+
+        nodes
+            .Select(node => (node.ThreadId, node.Depth))
+            .Should()
+            .Equal(("subagent-child", 1), ("subagent-grandchild", 2));
+        loaded.Should().BeEquivalentTo([root, "subagent-child", "subagent-foreign", "subagent-grandchild"]);
+        loaded.Should().NotContain("subagent-unrelated");
+        logger.Entries.Should().NotContain(entry => entry.Level == LogLevel.Warning);
+        relations.VerifyAll();
+        store.VerifyAll();
+        store.Verify(
+            catalog =>
+                catalog.ListThreadsAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<ConversationListOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Never
+        );
+    }
+
+    [Fact]
+    public async Task ScanAsync_FallbackWarnsOnlyOnce()
+    {
+        typeof(ConversationDescendantScanner)
+            .GetField(
+                "s_relationFallbackWarningLogged",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static
+            )!
+            .SetValue(null, 0);
+        var logger = new CapturingLogger<ConversationDescendantScanner>();
+        var scanner = CreateScanner(new InMemoryConversationStore(), logger: logger);
+
+        _ = await scanner.ScanAsync("root-a");
+        _ = await scanner.ScanAsync("root-b");
+
+        logger
+            .Entries.Should()
+            .ContainSingle(entry =>
+                entry.Level == LogLevel.Warning
+                && entry.Message.Contains("falling back to full conversation listing", StringComparison.Ordinal)
+            );
+    }
+
     /// <summary>
     /// The recursive HTTP listing must still answer exactly what the scanner computes — the controller is
     /// now only response shaping around this class.
@@ -755,4 +841,25 @@ public sealed class ConversationDescendantScannerTests
 
         nodes.Select(n => n.ThreadId).Should().Equal("subagent-legacy");
     }
+
+    private static ThreadMetadata PersistedChild(string threadId, string parentThreadId, string? tenantId) =>
+        new()
+        {
+            ThreadId = threadId,
+            LastUpdated = 0,
+            TenantId = tenantId,
+            Properties = SubAgentProvenance.Build(
+                parentThreadId,
+                new SubAgentSnapshot(
+                    threadId,
+                    Name: threadId,
+                    TemplateName: "worker",
+                    Task: $"task for {threadId}",
+                    Status: SubAgentStatus.Completed,
+                    ThreadId: threadId,
+                    LastActivityUtc: DateTimeOffset.UnixEpoch,
+                    TerminalAtUtc: DateTimeOffset.UnixEpoch
+                )
+            ),
+        };
 }

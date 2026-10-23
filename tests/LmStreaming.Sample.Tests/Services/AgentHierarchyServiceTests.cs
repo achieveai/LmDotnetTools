@@ -116,6 +116,111 @@ public sealed class AgentHierarchyServiceTests
         child.Template.Should().Be("worker");
     }
 
+    [Fact]
+    public async Task BuildAsync_CompactRelations_HydratesOnlyDirectChildrenInLegacyOrder()
+    {
+        var rows = new Dictionary<string, ThreadMetadata>(StringComparer.Ordinal)
+        {
+            [RootThread] = new ThreadMetadata
+            {
+                ThreadId = RootThread,
+                LastUpdated = 0,
+                TenantId = "tenant-a",
+            },
+            ["subagent-child-a"] = PersistedChild("subagent-child-a", RootThread, "tenant-a", lastUpdated: 10),
+            ["subagent-child-b"] = PersistedChild("subagent-child-b", RootThread, "tenant-a", lastUpdated: 10),
+            ["subagent-foreign"] = PersistedChild("subagent-foreign", RootThread, "tenant-b", lastUpdated: 20),
+            ["subagent-grandchild"] = PersistedChild(
+                "subagent-grandchild",
+                "subagent-child-a",
+                "tenant-a",
+                lastUpdated: 30
+            ),
+        };
+        var loaded = new List<string>();
+        var store = new Mock<IConversationStore>(MockBehavior.Strict);
+        var relations = store.As<IConversationRelationStore>();
+        relations
+            .Setup(capability => capability.ListSubAgentParentLinksAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync([
+                new ConversationParentLink("subagent-child-a", RootThread),
+                new("subagent-child-b", RootThread),
+                new("subagent-foreign", RootThread),
+                new("subagent-grandchild", "subagent-child-a"),
+            ]);
+        store
+            .Setup(inner => inner.LoadMetadataAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(
+                (string threadId, CancellationToken _) =>
+                {
+                    loaded.Add(threadId);
+                    return rows.TryGetValue(threadId, out var row) ? row : null;
+                }
+            );
+        var logger = new CapturingLogger<AgentHierarchyService>();
+        await using var pool = CreateFakeAgentPool();
+        var service = new AgentHierarchyService(
+            pool,
+            new WorkflowRunRegistry(),
+            store.Object,
+            logger,
+            new SubAgentScanCoverageCache()
+        );
+
+        var (children, isKnown, _) = await service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+        isKnown.Should().BeTrue();
+        children.Select(child => child.ThreadId).Should().Equal("subagent-child-b", "subagent-child-a");
+        loaded.Should().BeEquivalentTo([RootThread, "subagent-child-a", "subagent-child-b", "subagent-foreign"]);
+        loaded.Should().NotContain("subagent-grandchild");
+        logger.Entries.Should().NotContain(entry => entry.Level == LogLevel.Warning);
+        relations.VerifyAll();
+        store.VerifyAll();
+        store.Verify(
+            catalog =>
+                catalog.ListThreadsAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<ConversationListOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Never
+        );
+    }
+
+    [Fact]
+    public async Task BuildAsync_FallbackWarnsOnlyOnceAcrossServiceInstances()
+    {
+        typeof(AgentHierarchyService)
+            .GetField(
+                "s_relationFallbackWarningLogged",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static
+            )!
+            .SetValue(null, 0);
+        var logger = new CapturingLogger<AgentHierarchyService>();
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateFakeAgentPool();
+
+        foreach (var threadId in new[] { "root-a", "root-b" })
+        {
+            var service = new AgentHierarchyService(
+                pool,
+                new WorkflowRunRegistry(),
+                store,
+                logger,
+                new SubAgentScanCoverageCache()
+            );
+            _ = await service.BuildAsync(threadId, viewerAgentId: null, CancellationToken.None);
+        }
+
+        logger
+            .Entries.Should()
+            .ContainSingle(entry =>
+                entry.Level == LogLevel.Warning
+                && entry.Message.Contains("falling back to full conversation listing", StringComparison.Ordinal)
+            );
+    }
+
     /// <summary>
     /// The twin of
     /// <c>ConversationDescendantScannerTests.ScanAsync_ListsEveryChild_WhenAThreadIsTouchedWhileTheScanIsRunning</c>,
@@ -1428,6 +1533,32 @@ public sealed class AgentHierarchyServiceTests
                 ),
             }
         );
+
+    private static ThreadMetadata PersistedChild(
+        string threadId,
+        string parentThreadId,
+        string? tenantId,
+        long lastUpdated
+    ) =>
+        new()
+        {
+            ThreadId = threadId,
+            LastUpdated = lastUpdated,
+            TenantId = tenantId,
+            Properties = SubAgentProvenance.Build(
+                parentThreadId,
+                new SubAgentSnapshot(
+                    threadId,
+                    Name: threadId,
+                    TemplateName: "worker",
+                    Task: $"{threadId}'s task",
+                    Status: SubAgentStatus.Completed,
+                    ThreadId: threadId,
+                    LastActivityUtc: DateTimeOffset.UnixEpoch,
+                    TerminalAtUtc: DateTimeOffset.UnixEpoch
+                )
+            ),
+        };
 
     /// <summary>
     /// An agent whose reply stream never completes (it awaits an infinite delay), so a

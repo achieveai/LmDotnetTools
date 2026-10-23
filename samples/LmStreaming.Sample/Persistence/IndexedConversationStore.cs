@@ -1,8 +1,11 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using LmStreaming.Sample.Models;
 
 namespace LmStreaming.Sample.Persistence;
@@ -16,16 +19,20 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
     : IConversationStore,
         IConversationThreadIdLookupStore,
         IConversationOwnershipStore,
+        IConversationUsageStore,
         IRunLedgerStore,
         IRunLifecycleStore,
         IInputAcceptanceStore,
-        IConversationListingStore
+        IConversationListingStore,
+        IConversationRelationStore
 {
     private readonly SemaphoreSlim _initialize = new(1, 1);
     private readonly SemaphoreSlim _publish = new(1, 1);
     private static readonly StringComparer StorageComparer = OperatingSystem.IsWindows()
         ? StringComparer.OrdinalIgnoreCase
         : StringComparer.Ordinal;
+    private static int s_relationFallbackWarningLogged;
+    private static int s_ownershipFallbackWarningLogged;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _mutationGates = new(StorageComparer);
     private readonly object _gate = new();
     private Dictionary<string, string> _parents = new(StringComparer.Ordinal);
@@ -61,12 +68,30 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
         {
             if (_ready)
                 return;
-            var metadata = await inner.ListThreadsAsync(int.MaxValue, 0, ct: ct);
-            var parents = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var row in metadata)
+            Dictionary<string, string> parents;
+            if (inner is IConversationRelationStore relations)
             {
-                if (SubAgentProvenance.TryProject(row) is { ParentThreadId: { } parent })
-                    parents.Add(row.ThreadId, parent);
+                var links = await relations.ListSubAgentParentLinksAsync(ct);
+                parents = links.ToDictionary(
+                    link => link.ThreadId,
+                    link => link.ParentThreadId,
+                    StringComparer.Ordinal
+                );
+            }
+            else
+            {
+                WarnFallbackOnce(
+                    ref s_relationFallbackWarningLogged,
+                    "hierarchy initialization",
+                    nameof(IConversationRelationStore)
+                );
+                var metadata = await inner.ListThreadsAsync(int.MaxValue, 0, ct: ct);
+                parents = new Dictionary<string, string>(StringComparer.Ordinal);
+                foreach (var row in metadata)
+                {
+                    if (SubAgentProvenance.TryProject(row) is { ParentThreadId: { } parent })
+                        parents.Add(row.ThreadId, parent);
+                }
             }
             await PersistAsync(parents, ct);
             lock (_gate)
@@ -85,6 +110,19 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
 
     private Task PersistAsync(Dictionary<string, string> parents, CancellationToken ct) =>
         AtomicFile.WriteJsonAsync(indexPath, new { schemaVersion = 1, parents }, new JsonSerializerOptions(), ct);
+
+    private void WarnFallbackOnce(ref int warningLogged, string operation, string capability)
+    {
+        if (Interlocked.Exchange(ref warningLogged, 1) == 0)
+        {
+            Trace.TraceWarning(
+                "Conversation store {0} does not implement {1}; {2} is falling back to full conversation listing",
+                inner.GetType().Name,
+                capability,
+                operation
+            );
+        }
+    }
 
     private void RebuildDerived()
     {
@@ -232,6 +270,27 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
     /// <inheritdoc />
     public Task<IReadOnlyList<string>> ListThreadIdsByPrefixAsync(string prefix, CancellationToken ct = default) =>
         ConversationThreadIdLookup.ListThreadIdsByPrefixAsync(inner, prefix, ct);
+
+    // These capabilities are declared unconditionally, so each member uses a helper that falls back
+    // when the wrapped store lacks the corresponding optional capability, never a throw.
+    /// <inheritdoc />
+    public Task<IReadOnlyList<ConversationParentLink>> ListSubAgentParentLinksAsync(CancellationToken ct = default) =>
+        SubAgentProvenance.ListParentLinksAsync(inner, ct);
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<string>> ListDirectForkThreadIdsAsync(string threadId, CancellationToken ct = default) =>
+        ConversationForks.FindDirectForksAsync(inner, threadId, ct);
+
+    /// <inheritdoc />
+    public Task AppendUsageAsync(
+        ConversationUsageAggregate aggregate,
+        IReadOnlyList<UsageRecord> changedRecords,
+        CancellationToken ct = default
+    ) => ConversationUsageProjection.SaveAsync(inner, aggregate, changedRecords, ct);
+
+    /// <inheritdoc />
+    public Task<ConversationUsageSnapshot?> LoadUsageAsync(string threadId, CancellationToken ct = default) =>
+        ConversationUsageProjection.LoadSnapshotAsync(inner, threadId, ct);
 
     /// <summary>Reads current, tenant-eligible persisted nodes without a historical corpus scan.</summary>
     public async Task<IReadOnlyList<SubAgentSummary>> ReadChildrenAsync(
@@ -391,6 +450,33 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
     public async Task<int> StampUnownedThreadsAsync(string quarantineTenantId, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(quarantineTenantId);
+        await InitializeAsync(ct);
+        if (inner is IConversationOwnershipStore ownership)
+        {
+            lock (_gate)
+            {
+                _pending++;
+                _epoch++;
+            }
+            try
+            {
+                return await ownership.StampUnownedThreadsAsync(quarantineTenantId, ct);
+            }
+            finally
+            {
+                lock (_gate)
+                {
+                    _pending--;
+                    _epoch++;
+                }
+            }
+        }
+
+        WarnFallbackOnce(
+            ref s_ownershipFallbackWarningLogged,
+            "legacy tenant stamping",
+            nameof(IConversationOwnershipStore)
+        );
         var rows = await ListThreadsAsync(int.MaxValue, ct: ct);
         var count = 0;
         foreach (var row in rows.Where(m => m.TenantId is null))

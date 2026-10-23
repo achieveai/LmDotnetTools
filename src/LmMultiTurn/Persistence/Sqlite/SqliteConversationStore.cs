@@ -1,7 +1,12 @@
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
+using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 
@@ -11,15 +16,22 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 /// </summary>
 public sealed class SqliteConversationStore
     : IConversationStore,
+        IConversationListingStore,
+        IConversationRelationStore,
         IConversationThreadIdLookupStore,
         IConversationOwnershipStore,
+        IConversationUsageStore,
         IRunLedgerStore,
         IRunLifecycleStore,
         IInputAcceptanceStore,
         IAsyncDisposable
 {
+    private const int ListingBackfillBatchSize = 100;
+    private const string ListingBackfillName = "thread-metadata-v7";
+
     private readonly ISqliteConnectionFactory _connectionFactory;
     private readonly bool _ownsFactory;
+    private readonly ILogger _logger;
     private readonly SemaphoreSlim _schemaLock = new(1, 1);
     private readonly SemaphoreSlim _metadataWriteLock = new(1, 1);
     private bool _schemaInitialized;
@@ -37,9 +49,24 @@ public sealed class SqliteConversationStore
     /// <param name="connectionFactory">The connection factory to use.</param>
     /// <param name="ownsFactory">If true, the store will dispose the factory when disposed.</param>
     public SqliteConversationStore(ISqliteConnectionFactory connectionFactory, bool ownsFactory = false)
+        : this(connectionFactory, NullLogger<SqliteConversationStore>.Instance, ownsFactory) { }
+
+    /// <summary>
+    /// Creates a SqliteConversationStore with the specified connection factory and migration logger.
+    /// </summary>
+    /// <param name="connectionFactory">The connection factory to use.</param>
+    /// <param name="logger">Logger for schema data-migration progress.</param>
+    /// <param name="ownsFactory">If true, the store will dispose the factory when disposed.</param>
+    public SqliteConversationStore(
+        ISqliteConnectionFactory connectionFactory,
+        ILogger<SqliteConversationStore> logger,
+        bool ownsFactory = false
+    )
     {
         ArgumentNullException.ThrowIfNull(connectionFactory);
+        ArgumentNullException.ThrowIfNull(logger);
         _connectionFactory = connectionFactory;
+        _logger = logger;
         _ownsFactory = ownsFactory;
     }
 
@@ -49,7 +76,20 @@ public sealed class SqliteConversationStore
     /// <param name="databasePath">Path to the SQLite database file.</param>
     /// <param name="maxConnections">Maximum number of concurrent connections.</param>
     public SqliteConversationStore(string databasePath, int maxConnections = 5)
-        : this(new SqliteConnectionFactory(databasePath, maxConnections), ownsFactory: true) { }
+        : this(
+            new SqliteConnectionFactory(databasePath, maxConnections),
+            NullLogger<SqliteConversationStore>.Instance,
+            ownsFactory: true
+        ) { }
+
+    /// <summary>
+    /// Creates a SqliteConversationStore with a new connection factory and migration logger.
+    /// </summary>
+    /// <param name="databasePath">Path to the SQLite database file.</param>
+    /// <param name="logger">Logger for schema data-migration progress.</param>
+    /// <param name="maxConnections">Maximum number of concurrent connections.</param>
+    public SqliteConversationStore(string databasePath, ILogger<SqliteConversationStore> logger, int maxConnections = 5)
+        : this(new SqliteConnectionFactory(databasePath, maxConnections), logger, ownsFactory: true) { }
 
     /// <inheritdoc />
     public async Task AppendMessagesAsync(
@@ -424,10 +464,12 @@ public sealed class SqliteConversationStore
         command.CommandText = """
             INSERT INTO thread_metadata (
                 thread_id, current_run_id, last_updated, metadata_json,
-                tenant_id, owner_user_id, owner_app_id, visibility)
+                tenant_id, owner_user_id, owner_app_id, visibility,
+                deleted_at, forked_from_thread_id, subagent_parent_thread_id)
             VALUES (
                 $thread_id, $current_run_id, $last_updated, $metadata_json,
-                $tenant_id, $owner_user_id, $owner_app_id, $visibility)
+                $tenant_id, $owner_user_id, $owner_app_id, $visibility,
+                $deleted_at, $forked_from_thread_id, $subagent_parent_thread_id)
             ON CONFLICT(thread_id) DO UPDATE SET
                 current_run_id = excluded.current_run_id,
                 last_updated = excluded.last_updated,
@@ -435,9 +477,13 @@ public sealed class SqliteConversationStore
                 tenant_id = excluded.tenant_id,
                 owner_user_id = excluded.owner_user_id,
                 owner_app_id = excluded.owner_app_id,
-                visibility = excluded.visibility;
+                visibility = excluded.visibility,
+                deleted_at = excluded.deleted_at,
+                forked_from_thread_id = excluded.forked_from_thread_id,
+                subagent_parent_thread_id = excluded.subagent_parent_thread_id;
             """;
 
+        var listingValues = ListingProjectionValues.FromMetadata(metadata);
         _ = command.Parameters.AddWithValue("$thread_id", threadId);
         _ = command.Parameters.AddWithValue("$current_run_id", (object?)metadata.CurrentRunId ?? DBNull.Value);
         _ = command.Parameters.AddWithValue("$last_updated", metadata.LastUpdated);
@@ -446,6 +492,15 @@ public sealed class SqliteConversationStore
         _ = command.Parameters.AddWithValue("$owner_user_id", (object?)metadata.OwnerUserId ?? DBNull.Value);
         _ = command.Parameters.AddWithValue("$owner_app_id", (object?)metadata.OwnerAppId ?? DBNull.Value);
         _ = command.Parameters.AddWithValue("$visibility", (object?)metadata.Visibility?.ToString() ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$deleted_at", (object?)listingValues.DeletedAt ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue(
+            "$forked_from_thread_id",
+            (object?)listingValues.ForkedFromThreadId ?? DBNull.Value
+        );
+        _ = command.Parameters.AddWithValue(
+            "$subagent_parent_thread_id",
+            (object?)listingValues.SubAgentParentThreadId ?? DBNull.Value
+        );
 
         _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
@@ -500,6 +555,148 @@ public sealed class SqliteConversationStore
     }
 
     /// <inheritdoc />
+    public async Task AppendUsageAsync(
+        ConversationUsageAggregate aggregate,
+        IReadOnlyList<UsageRecord> changedRecords,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(aggregate);
+        ArgumentNullException.ThrowIfNull(changedRecords);
+        if (aggregate.SchemaVersion > ConversationUsageProjection.CurrentSchemaVersion)
+        {
+            throw new NotSupportedException(
+                $"Usage schema version {aggregate.SchemaVersion} is newer than version "
+                    + $"{ConversationUsageProjection.CurrentSchemaVersion} this build understands."
+            );
+        }
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        using var transaction = connection.BeginTransaction(deferred: false);
+        try
+        {
+            var existingSchemaVersion = await ReadUsageSchemaVersionAsync(
+                    connection,
+                    transaction,
+                    aggregate.RootConversationId,
+                    ct
+                )
+                .ConfigureAwait(false);
+            if (existingSchemaVersion > ConversationUsageProjection.CurrentSchemaVersion)
+            {
+                throw new NotSupportedException(
+                    $"Usage for thread '{aggregate.RootConversationId}' is at schema version "
+                        + $"{existingSchemaVersion}, which is newer than version "
+                        + $"{ConversationUsageProjection.CurrentSchemaVersion} this build understands."
+                );
+            }
+
+            var hasRecords =
+                changedRecords.Count == 0
+                && await HasUsageRecordsAsync(connection, transaction, aggregate.RootConversationId, ct)
+                    .ConfigureAwait(false);
+            var aggregateJson = changedRecords.Count == 0 && !hasRecords ? JsonSerializer.Serialize(aggregate) : null;
+            await UpsertUsageStateAsync(connection, transaction, aggregate, aggregateJson, ct).ConfigureAwait(false);
+            await UpsertUsageRecordsAsync(connection, transaction, aggregate.RootConversationId, changedRecords, ct)
+                .ConfigureAwait(false);
+            transaction.Commit();
+        }
+        catch
+        {
+            RollbackQuietly(transaction);
+            throw;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<ConversationUsageSnapshot?> LoadUsageAsync(string threadId, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(threadId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        using var transaction = connection.BeginTransaction();
+        try
+        {
+            int schemaVersion;
+            long foldedRevision;
+            UsageCompleteness completeness;
+            ConversationUsageAggregate? aggregate;
+            using (var state = connection.CreateCommand())
+            {
+                state.Transaction = transaction;
+                state.CommandText = """
+                    SELECT schema_version, folded_revision, completeness, aggregate_json
+                    FROM conversation_usage_state
+                    WHERE thread_id = $thread_id;
+                    """;
+                _ = state.Parameters.AddWithValue("$thread_id", threadId);
+                await using var reader = await state.ExecuteReaderAsync(ct).ConfigureAwait(false);
+                if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+                {
+                    transaction.Commit();
+                    return null;
+                }
+
+                schemaVersion = reader.GetInt32(0);
+                foldedRevision = reader.GetInt64(1);
+                completeness = ReadUsageCompleteness(reader.GetInt32(2), threadId);
+                aggregate = reader.IsDBNull(3)
+                    ? null
+                    : DeserializeMigrationAggregate(threadId, reader.GetString(3)) with
+                    {
+                        SchemaVersion = schemaVersion,
+                        FoldedRevision = foldedRevision,
+                        Completeness = completeness,
+                    };
+            }
+
+            var records = new List<UsageRecord>();
+            using (var command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText = """
+                    SELECT provider_attempt_id, revision, record_json, occurred_at_utc_ticks
+                    FROM conversation_usage_records
+                    WHERE thread_id = $thread_id
+                    ORDER BY provider_attempt_id;
+                    """;
+                _ = command.Parameters.AddWithValue("$thread_id", threadId);
+                await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+                while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                {
+                    var record = DeserializeUsageRecord(reader.GetString(2), threadId, reader.GetString(0));
+                    records.Add(
+                        record with
+                        {
+                            Revision = reader.GetInt64(1),
+                            OccurredAtUtc = reader.IsDBNull(3)
+                                ? null
+                                : new DateTimeOffset(new DateTime(reader.GetInt64(3), DateTimeKind.Utc)),
+                        }
+                    );
+                }
+            }
+
+            transaction.Commit();
+            return new ConversationUsageSnapshot
+            {
+                SchemaVersion = schemaVersion,
+                FoldedRevision = foldedRevision,
+                Completeness = completeness,
+                Aggregate = records.Count == 0 ? aggregate : null,
+                Records = records,
+            };
+        }
+        catch
+        {
+            RollbackQuietly(transaction);
+            throw;
+        }
+    }
+
+    /// <inheritdoc />
     public async Task DeleteThreadAsync(string threadId, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(threadId);
@@ -520,6 +717,8 @@ public sealed class SqliteConversationStore
             string[] threadScopedTables =
             [
                 "messages",
+                "conversation_usage_records",
+                "conversation_usage_state",
                 "thread_metadata",
                 "run_ledger",
                 "run_lifecycle",
@@ -587,6 +786,62 @@ public sealed class SqliteConversationStore
         return ids;
     }
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<ConversationParentLink>> ListSubAgentParentLinksAsync(
+        CancellationToken ct = default
+    )
+    {
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT thread_id, subagent_parent_thread_id
+            FROM thread_metadata INDEXED BY idx_thread_metadata_subagent_parent
+            WHERE subagent_parent_thread_id IS NOT NULL
+            ORDER BY subagent_parent_thread_id, thread_id;
+            """;
+
+        var links = new List<ConversationParentLink>();
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            links.Add(new ConversationParentLink(reader.GetString(0), reader.GetString(1)));
+        }
+
+        return links;
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<string>> ListDirectForkThreadIdsAsync(
+        string threadId,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT thread_id
+            FROM thread_metadata INDEXED BY idx_thread_metadata_fork_parent
+            WHERE forked_from_thread_id = $thread_id
+            ORDER BY thread_id;
+            """;
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+
+        var ids = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            ids.Add(reader.GetString(0));
+        }
+
+        return ids;
+    }
+
     private static string? PrefixUpperBound(string prefix)
     {
         var characters = prefix.ToCharArray();
@@ -610,65 +865,7 @@ public sealed class SqliteConversationStore
         int offset = 0,
         ConversationListOptions? options = null,
         CancellationToken ct = default
-    )
-    {
-        var listOptions = options ?? ConversationListOptions.Default;
-
-        // LastUsed pages in SQL (thread_metadata.last_updated exists). Created has no created_at
-        // column, so it is ordered and paged in memory through ConversationListOptions.Order - the
-        // same helper the in-memory stores use - rather than refused. See ReadCreatedPageAsync.
-        var pageInSql = listOptions.SortOrder == ConversationSortOrder.LastUsed;
-
-        await EnsureSchemaAsync(ct).ConfigureAwait(false);
-
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
-
-        using var command = connection.CreateCommand();
-        using var snapshot = pageInSql ? null : connection.BeginTransaction(deferred: true);
-        command.Transaction = snapshot;
-
-        // The exclusion is a WHERE clause, not a post-pass over the returned rows: LIMIT/OFFSET is
-        // applied by this one statement to the fully filtered set, which is the whole point. See
-        // ConversationListOptions for the production failure that a post-pass produced.
-        var exclusionClause = BuildPrefixExclusionClause(command, listOptions, "thread_id");
-        var deletedClause = DeletedExclusionClause(listOptions, "metadata_json");
-
-        command.CommandText = FormattableString.Invariant(
-            $"""
-            SELECT {(pageInSql ? MetadataColumns : CreatedKeyColumns)}
-            FROM thread_metadata
-            WHERE {exclusionClause}
-              AND {deletedClause}
-            -- thread_id breaks ties so LIMIT/OFFSET pages a total order. Without it two rows
-            -- sharing a last_updated are ordered by whatever SQLite returns, which may differ
-            -- between the page-1 and page-2 statements: one row comes back twice and another
-            -- never comes back at all. Must match ConversationListOptions.Order.
-            {(pageInSql
-                ? "ORDER BY last_updated DESC, thread_id DESC\n            LIMIT $limit OFFSET $offset"
-                : "")};
-            """
-        );
-        if (pageInSql)
-        {
-            _ = command.Parameters.AddWithValue("$limit", limit);
-            _ = command.Parameters.AddWithValue("$offset", offset);
-        }
-
-        if (!pageInSql)
-        {
-            return await ReadCreatedPageAsync(command, listOptions, limit, offset, ct).ConfigureAwait(false);
-        }
-
-        var metadataList = new List<ThreadMetadata>();
-
-        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        while (await reader.ReadAsync(ct).ConfigureAwait(false))
-        {
-            metadataList.Add(ReadMetadata(reader));
-        }
-
-        return metadataList;
-    }
+    ) => await ListThreadsCoreAsync(scope: null, limit, offset, options, ct).ConfigureAwait(false);
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
@@ -680,66 +877,169 @@ public sealed class SqliteConversationStore
     )
     {
         ArgumentNullException.ThrowIfNull(scope);
+        return await ListThreadsCoreAsync(scope, limit, offset, options, ct).ConfigureAwait(false);
+    }
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<ConversationListingRow>> ListConversationRowsAsync(
+        IReadOnlySet<string> propertyKeys,
+        ConversationListScope? scope = null,
+        int limit = 50,
+        int offset = 0,
+        ConversationListOptions? options = null,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(propertyKeys);
+
+        var keys = new HashSet<string>(propertyKeys, StringComparer.Ordinal);
         var listOptions = options ?? ConversationListOptions.Default;
-
-        // See the unscoped overload: LastUsed pages in SQL; Created is ordered and paged in memory
-        // via ConversationListOptions.Order so the scoped and unscoped listings agree.
-        var pageInSql = listOptions.SortOrder == ConversationSortOrder.LastUsed;
+        if (listOptions.SortOrder == ConversationSortOrder.Created)
+        {
+            var metadata = await ListThreadsCoreAsync(scope, limit, offset, listOptions, ct).ConfigureAwait(false);
+            return [.. metadata.Select(row => ConversationListingRow.FromMetadata(row, keys))];
+        }
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
-
         await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        using var snapshot = connection.BeginTransaction(deferred: true);
+        using var pageQuery = CreateLastUsedPageCommand(
+            connection,
+            snapshot,
+            scope,
+            listOptions,
+            ListingPageColumns,
+            limit,
+            offset
+        );
+        var page = await ReadListingPageAsync(pageQuery, ct).ConfigureAwait(false);
+        var properties = await ReadListingPropertiesAsync(connection, snapshot, page, keys, ct).ConfigureAwait(false);
+        snapshot.Commit();
 
-        // The grant branch is a bound id list rather than an EXISTS over resource_grants: that
-        // table is not guaranteed to live in this database file. See ConversationListScope.
-        //
-        // The list arrives as ONE json parameter rather than one parameter per id. Binding per id
-        // walked straight into SQLITE_MAX_VARIABLE_NUMBER, so a principal with enough individual
-        // grants got a query failure instead of a listing, and got it at exactly the moment heavy
-        // sharing made the listing matter most. The limit is 32,766 on the bundled engine (999 on
-        // builds before SQLite 3.32); neither number is worth relying on, which is why the shape
-        // changed rather than the batch size. Chunking the IN
-        // list was the other option and is worse here: LIMIT/OFFSET is applied by this one
-        // statement to the fully filtered, fully ordered set, so splitting it would mean paging in
-        // memory over a merged result - the short-page bug this whole design exists to avoid.
-        const string grantClause = "($userId IS NOT NULL AND t.thread_id IN (SELECT value FROM json_each($grants)))";
+        return
+        [
+            .. page.Select(row => new ConversationListingRow
+            {
+                ThreadId = row.ThreadId,
+                LastUpdated = row.LastUpdated,
+                TenantId = row.TenantId,
+                OwnerUserId = row.OwnerUserId,
+                OwnerAppId = row.OwnerAppId,
+                Visibility = row.Visibility,
+                Properties =
+                    properties.GetValueOrDefault(row.ThreadId)
+                    ?? new Dictionary<string, string?>(StringComparer.Ordinal),
+            }),
+        ];
+    }
 
-        using var command = connection.CreateCommand();
-        using var snapshot = pageInSql ? null : connection.BeginTransaction(deferred: true);
-        command.Transaction = snapshot;
+    private const string MetadataColumns =
+        "thread_id, current_run_id, last_updated, metadata_json, tenant_id, owner_user_id, owner_app_id, visibility";
 
-        // The presentation exclusion is ANDed over the whole authorization disjunction, not folded
-        // into one of its branches - it narrows what this surface displays regardless of WHICH
-        // branch admitted the row. It is also a WHERE clause rather than a post-pass, so LIMIT/OFFSET
-        // still applies to the fully filtered set. See ConversationListOptions.
-        var exclusionClause = BuildPrefixExclusionClause(command, listOptions, "t.thread_id");
-        var deletedClause = DeletedExclusionClause(listOptions, "t.metadata_json");
+    // Everything ConversationListOptions.CreationTimestampOf and Order read: the id and last_updated.
+    private const string CreatedKeyColumns = "t.thread_id, t.last_updated";
+    private const string ListingPageColumns =
+        "t.thread_id, t.last_updated, t.tenant_id, t.owner_user_id, t.owner_app_id, t.visibility";
 
-        // The `@userId IS NOT NULL` guards are the SQL spelling of spec 7.4 step 3: without them an
-        // app-only principal would fall through into the grant branch with a NULL subject. They do
-        // NOT protect against a null OWNER - SQL already handles that, because NULL = $userId
-        // evaluates to NULL and never satisfies the WHERE.
+    private async Task<IReadOnlyList<ThreadMetadata>> ListThreadsCoreAsync(
+        ConversationListScope? scope,
+        int limit,
+        int offset,
+        ConversationListOptions? options,
+        CancellationToken ct
+    )
+    {
+        var listOptions = options ?? ConversationListOptions.Default;
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        using var snapshot = connection.BeginTransaction(deferred: true);
+
+        IReadOnlyList<ThreadMetadata> result;
+        if (listOptions.SortOrder == ConversationSortOrder.Created)
+        {
+            using var keyQuery = CreateCreatedKeyCommand(connection, snapshot, scope, listOptions);
+            result = await ReadCreatedPageAsync(keyQuery, listOptions, limit, offset, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            using var pageQuery = CreateLastUsedPageCommand(
+                connection,
+                snapshot,
+                scope,
+                listOptions,
+                "t.thread_id",
+                limit,
+                offset
+            );
+            var page = await ReadThreadIdsAsync(pageQuery, ct).ConfigureAwait(false);
+            result = await ReadMetadataPageAsync(connection, snapshot, page, ct).ConfigureAwait(false);
+        }
+
+        snapshot.Commit();
+        return result;
+    }
+
+    private static SqliteCommand CreateLastUsedPageCommand(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ConversationListScope? scope,
+        ConversationListOptions options,
+        string selectColumns,
+        int limit,
+        int offset
+    )
+    {
+        var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        var scopeClause = BindScope(command, scope);
+        var exclusionClause = BuildPrefixExclusionClause(command, options, "t.thread_id");
+        var deletedClause = DeletedExclusionClause(options, "t.deleted_at");
         command.CommandText = FormattableString.Invariant(
             $"""
-            SELECT {(pageInSql ? MetadataColumns : CreatedKeyColumns)}
-            FROM thread_metadata t
-            WHERE ( ( t.tenant_id = $tenantId
-                      AND ( $isTenantAdmin = 1
-                            OR ($userId IS NOT NULL AND t.owner_user_id = $userId)
-                            OR ($userId IS NULL AND $appId IS NOT NULL AND t.owner_app_id = $appId)
-                            OR ($userId IS NOT NULL AND t.visibility = $tenantPublished)
-                            OR {grantClause} ) )
-                    OR ( $includeUntenanted = 1 AND t.tenant_id IS NULL ) )
+            SELECT {selectColumns}
+            FROM thread_metadata t INDEXED BY idx_thread_metadata_last_used_cover
+            WHERE {scopeClause}
               AND {exclusionClause}
               AND {deletedClause}
-            -- Same total order as the unscoped overload above, and as
-            -- ConversationListOptions.Order: a scoped listing must not page differently.
-            {(pageInSql
-                ? "ORDER BY t.last_updated DESC, t.thread_id DESC\n            LIMIT $limit OFFSET $offset"
-                : "")};
+            ORDER BY t.last_updated DESC, t.thread_id DESC
+            LIMIT $limit OFFSET $offset;
             """
         );
+        _ = command.Parameters.AddWithValue("$limit", limit);
+        _ = command.Parameters.AddWithValue("$offset", offset);
+        return command;
+    }
+
+    private static SqliteCommand CreateCreatedKeyCommand(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ConversationListScope? scope,
+        ConversationListOptions options
+    )
+    {
+        var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        var scopeClause = BindScope(command, scope);
+        var exclusionClause = BuildPrefixExclusionClause(command, options, "t.thread_id");
+        var deletedClause = DeletedExclusionClause(options, "t.deleted_at");
+        command.CommandText = FormattableString.Invariant(
+            $"""
+            SELECT {CreatedKeyColumns}
+            FROM thread_metadata t
+            WHERE {scopeClause}
+              AND {exclusionClause}
+              AND {deletedClause};
+            """
+        );
+        return command;
+    }
+
+    private static string BindScope(SqliteCommand command, ConversationListScope? scope)
+    {
+        if (scope is null)
+        {
+            return "1 = 1";
+        }
 
         _ = command.Parameters.AddWithValue("$tenantId", scope.TenantId);
         _ = command.Parameters.AddWithValue("$includeUntenanted", scope.IncludeUntenanted ? 1 : 0);
@@ -747,15 +1047,6 @@ public sealed class SqliteConversationStore
         _ = command.Parameters.AddWithValue("$appId", (object?)scope.AppId ?? DBNull.Value);
         _ = command.Parameters.AddWithValue("$isTenantAdmin", scope.IsTenantAdmin ? 1 : 0);
         _ = command.Parameters.AddWithValue("$tenantPublished", Visibility.TenantPublished.ToString());
-        if (pageInSql)
-        {
-            _ = command.Parameters.AddWithValue("$limit", limit);
-            _ = command.Parameters.AddWithValue("$offset", offset);
-        }
-
-        // An app-only principal never consults grants (7.4 step 3), so it binds the empty array
-        // rather than its own set - json_each over "[]" yields no rows, which is the same answer
-        // the old "0" literal gave and one fewer branch to keep in step with the SQL.
         _ = command.Parameters.AddWithValue(
             "$grants",
             JsonSerializer.Serialize(
@@ -764,27 +1055,50 @@ public sealed class SqliteConversationStore
             )
         );
 
-        if (!pageInSql)
-        {
-            return await ReadCreatedPageAsync(command, listOptions, limit, offset, ct).ConfigureAwait(false);
-        }
+        const string GrantClause = "($userId IS NOT NULL AND t.thread_id IN (SELECT value FROM json_each($grants)))";
+        return $"""
+            ( ( t.tenant_id = $tenantId
+                AND ( $isTenantAdmin = 1
+                      OR ($userId IS NOT NULL AND t.owner_user_id = $userId)
+                      OR ($userId IS NULL AND $appId IS NOT NULL AND t.owner_app_id = $appId)
+                      OR ($userId IS NOT NULL AND t.visibility = $tenantPublished)
+                      OR {GrantClause} ) )
+              OR ( $includeUntenanted = 1 AND t.tenant_id IS NULL ) )
+            """;
+    }
 
-        var metadataList = new List<ThreadMetadata>();
-
+    private static async Task<List<string>> ReadThreadIdsAsync(SqliteCommand command, CancellationToken ct)
+    {
+        var ids = new List<string>();
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
         {
-            metadataList.Add(ReadMetadata(reader));
+            ids.Add(reader.GetString(0));
         }
 
-        return metadataList;
+        return ids;
     }
 
-    private const string MetadataColumns =
-        "thread_id, current_run_id, last_updated, metadata_json, tenant_id, owner_user_id, owner_app_id, visibility";
+    private static async Task<List<ListingPageRow>> ReadListingPageAsync(SqliteCommand command, CancellationToken ct)
+    {
+        var rows = new List<ListingPageRow>();
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            rows.Add(
+                new ListingPageRow(
+                    reader.GetString(0),
+                    reader.GetInt64(1),
+                    reader.IsDBNull(2) ? null : reader.GetString(2),
+                    reader.IsDBNull(3) ? null : reader.GetString(3),
+                    reader.IsDBNull(4) ? null : reader.GetString(4),
+                    ParseVisibility(reader.IsDBNull(5) ? null : reader.GetString(5))
+                )
+            );
+        }
 
-    // Everything ConversationListOptions.CreationTimestampOf and Order read: the id and last_updated.
-    private const string CreatedKeyColumns = "thread_id, last_updated";
+        return rows;
+    }
 
     /// <summary>
     /// Pages a Created listing. <paramref name="keyQuery"/> selects <see cref="CreatedKeyColumns"/> for
@@ -815,15 +1129,29 @@ public sealed class SqliteConversationStore
             return [];
         }
 
-        using var load = keyQuery.Connection!.CreateCommand();
-        load.Transaction = keyQuery.Transaction;
+        return await ReadMetadataPageAsync(keyQuery.Connection!, keyQuery.Transaction!, page, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<IReadOnlyList<ThreadMetadata>> ReadMetadataPageAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        IReadOnlyList<string> page,
+        CancellationToken ct
+    )
+    {
+        if (page.Count == 0)
+        {
+            return [];
+        }
+
+        using var load = connection.CreateCommand();
+        load.Transaction = transaction;
         load.CommandText = $"""
             SELECT {MetadataColumns}
             FROM thread_metadata
             WHERE thread_id IN (SELECT value FROM json_each($ids));
             """;
         _ = load.Parameters.AddWithValue("$ids", JsonSerializer.Serialize(page, JsonOptions));
-
         var byId = new Dictionary<string, ThreadMetadata>(StringComparer.Ordinal);
         await using (var reader = await load.ExecuteReaderAsync(ct).ConfigureAwait(false))
         {
@@ -835,6 +1163,103 @@ public sealed class SqliteConversationStore
         }
 
         return [.. page.Select(id => byId[id])];
+    }
+
+    private static async Task<
+        IReadOnlyDictionary<string, IReadOnlyDictionary<string, string?>>
+    > ReadListingPropertiesAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        IReadOnlyList<ListingPageRow> page,
+        IReadOnlySet<string> propertyKeys,
+        CancellationToken ct
+    )
+    {
+        if (page.Count == 0 || propertyKeys.Count == 0)
+        {
+            return new Dictionary<string, IReadOnlyDictionary<string, string?>>(StringComparer.Ordinal);
+        }
+
+        var wantsParent = propertyKeys.Contains(ConversationRelationKeys.SubAgentParentThreadId);
+        var jsonKeys = new HashSet<string>(propertyKeys, StringComparer.Ordinal);
+        _ = jsonKeys.Remove(ConversationRelationKeys.SubAgentParentThreadId);
+        var selectColumns =
+            jsonKeys.Count == 0 ? "thread_id, subagent_parent_thread_id"
+            : wantsParent ? "thread_id, metadata_json, subagent_parent_thread_id"
+            : "thread_id, metadata_json";
+
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = $"""
+            SELECT {selectColumns}
+            FROM thread_metadata
+            WHERE thread_id IN (SELECT value FROM json_each($ids));
+            """;
+        _ = command.Parameters.AddWithValue(
+            "$ids",
+            JsonSerializer.Serialize(page.Select(row => row.ThreadId), JsonOptions)
+        );
+
+        var byId = new Dictionary<string, IReadOnlyDictionary<string, string?>>(StringComparer.Ordinal);
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            var values =
+                jsonKeys.Count == 0
+                    ? new Dictionary<string, string?>(StringComparer.Ordinal)
+                    : ProjectListingProperties(reader.IsDBNull(1) ? null : reader.GetString(1), jsonKeys);
+            if (wantsParent)
+            {
+                var parentOrdinal = jsonKeys.Count == 0 ? 1 : 2;
+                if (!reader.IsDBNull(parentOrdinal))
+                {
+                    values[ConversationRelationKeys.SubAgentParentThreadId] = reader.GetString(parentOrdinal);
+                }
+            }
+
+            byId[reader.GetString(0)] = values;
+        }
+
+        return byId;
+    }
+
+    private static Dictionary<string, string?> ProjectListingProperties(
+        string? metadataJson,
+        IReadOnlySet<string> propertyKeys
+    )
+    {
+        var values = new Dictionary<string, string?>(StringComparer.Ordinal);
+        if (string.IsNullOrEmpty(metadataJson))
+        {
+            return values;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(metadataJson);
+            if (
+                document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("properties", out var properties)
+                || properties.ValueKind != JsonValueKind.Object
+            )
+            {
+                return values;
+            }
+
+            foreach (var property in properties.EnumerateObject())
+            {
+                if (propertyKeys.Contains(property.Name))
+                {
+                    values[property.Name] = property.Value.ToString();
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // Matches full SQLite metadata reads: corrupt extension JSON contributes no properties.
+        }
+
+        return values;
     }
 
     /// <summary>
@@ -893,31 +1318,11 @@ public sealed class SqliteConversationStore
         return conjuncts.Count == 0 ? "1 = 1" : string.Join(" AND ", conjuncts);
     }
 
-    /// <summary>
-    /// The SQL spelling of <see cref="ConversationListOptions.ExcludeDeleted"/>, or <c>1 = 1</c> when
-    /// it is off. The lineage is a JSON string inside <c>metadata_json</c>, so it is extracted twice.
-    /// </summary>
-    /// <remarks>
-    /// A <c>CASE</c>, not <c>AND</c>, so an unreadable record or lineage is never parsed: SQLite does
-    /// not promise to short-circuit <c>AND</c>, and <c>json_extract</c> on malformed JSON fails the
-    /// whole statement. Unreadable counts as not deleted, as <see cref="ConversationLineage.Read(ThreadMetadata)"/> does.
-    /// </remarks>
+    /// <summary>The SQL spelling of <see cref="ConversationListOptions.ExcludeDeleted"/>.</summary>
     /// <param name="options">The resolved (never null) listing options.</param>
-    /// <param name="metadataJsonColumn">How the <c>metadata_json</c> column is spelled in this statement.</param>
-    private static string DeletedExclusionClause(ConversationListOptions options, string metadataJsonColumn)
-    {
-        if (!options.ExcludeDeleted)
-        {
-            return "1 = 1";
-        }
-
-        var lineage = FormattableString.Invariant(
-            $"json_extract({metadataJsonColumn}, '$.properties.\"{ConversationLineage.PropertyKey}\"')"
-        );
-        return FormattableString.Invariant(
-            $"(CASE WHEN json_valid({metadataJsonColumn}) IS NOT 1 THEN 1 WHEN json_valid({lineage}) IS NOT 1 THEN 1 ELSE json_extract({lineage}, '$.deleted_at') IS NULL END) = 1"
-        );
-    }
+    /// <param name="deletedAtColumn">How the compact <c>deleted_at</c> column is spelled.</param>
+    private static string DeletedExclusionClause(ConversationListOptions options, string deletedAtColumn) =>
+        options.ExcludeDeleted ? FormattableString.Invariant($"{deletedAtColumn} IS NULL") : "1 = 1";
 
     /// <inheritdoc />
     public async Task<int> StampUnownedThreadsAsync(string quarantineTenantId, CancellationToken ct = default)
@@ -1772,12 +2177,519 @@ public sealed class SqliteConversationStore
             }
 
             await SqliteSchemaInitializer.InitializeSchemaAsync(_connectionFactory, ct).ConfigureAwait(false);
+            await BackfillListingColumnsAsync(ct).ConfigureAwait(false);
             _schemaInitialized = true;
         }
         finally
         {
             _ = _schemaLock.Release();
         }
+    }
+
+    private static async Task<int> ReadUsageSchemaVersionAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string threadId,
+        CancellationToken ct
+    )
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT schema_version
+            FROM conversation_usage_state
+            WHERE thread_id = $thread_id;
+            """;
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+        var result = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return result is null or DBNull ? 0 : Convert.ToInt32(result);
+    }
+
+    private static async Task UpsertUsageStateAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ConversationUsageAggregate aggregate,
+        string? aggregateJson,
+        CancellationToken ct
+    )
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO conversation_usage_state (
+                thread_id, schema_version, folded_revision, completeness, aggregate_json)
+            VALUES ($thread_id, $schema_version, $folded_revision, $completeness, $aggregate_json)
+            ON CONFLICT(thread_id) DO UPDATE SET
+                schema_version = MAX(conversation_usage_state.schema_version, excluded.schema_version),
+                folded_revision = MAX(conversation_usage_state.folded_revision, excluded.folded_revision),
+                completeness = MAX(conversation_usage_state.completeness, excluded.completeness),
+                aggregate_json = CASE
+                    WHEN excluded.aggregate_json IS NULL THEN NULL
+                    WHEN excluded.folded_revision < conversation_usage_state.folded_revision
+                        THEN conversation_usage_state.aggregate_json
+                    ELSE excluded.aggregate_json
+                END;
+            """;
+        _ = command.Parameters.AddWithValue("$thread_id", aggregate.RootConversationId);
+        _ = command.Parameters.AddWithValue("$schema_version", aggregate.SchemaVersion);
+        _ = command.Parameters.AddWithValue("$folded_revision", aggregate.FoldedRevision);
+        _ = command.Parameters.AddWithValue("$completeness", (int)aggregate.Completeness);
+        _ = command.Parameters.AddWithValue("$aggregate_json", (object?)aggregateJson ?? DBNull.Value);
+        _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    private static async Task<bool> HasUsageRecordsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string threadId,
+        CancellationToken ct
+    )
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT EXISTS(
+                SELECT 1
+                FROM conversation_usage_records
+                WHERE thread_id = $thread_id);
+            """;
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+        return Convert.ToBoolean(await command.ExecuteScalarAsync(ct).ConfigureAwait(false));
+    }
+
+    private static async Task UpsertUsageRecordsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string threadId,
+        IReadOnlyList<UsageRecord> records,
+        CancellationToken ct
+    )
+    {
+        foreach (var record in records)
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO conversation_usage_records (
+                    thread_id, provider_attempt_id, revision, occurred_at_utc_ticks, record_json)
+                VALUES ($thread_id, $provider_attempt_id, $revision, $occurred_at_utc_ticks, $record_json)
+                ON CONFLICT(thread_id, provider_attempt_id) DO UPDATE SET
+                    revision = MAX(conversation_usage_records.revision, excluded.revision),
+                    occurred_at_utc_ticks = CASE
+                        WHEN conversation_usage_records.occurred_at_utc_ticks IS NULL
+                            THEN excluded.occurred_at_utc_ticks
+                        WHEN excluded.occurred_at_utc_ticks IS NULL
+                            THEN conversation_usage_records.occurred_at_utc_ticks
+                        ELSE MIN(
+                            conversation_usage_records.occurred_at_utc_ticks,
+                            excluded.occurred_at_utc_ticks)
+                    END,
+                    record_json = CASE
+                        WHEN excluded.revision >= conversation_usage_records.revision
+                            THEN excluded.record_json
+                        ELSE conversation_usage_records.record_json
+                    END;
+                """;
+            _ = command.Parameters.AddWithValue("$thread_id", threadId);
+            _ = command.Parameters.AddWithValue("$provider_attempt_id", record.ProviderAttemptId);
+            _ = command.Parameters.AddWithValue("$revision", record.Revision);
+            _ = command.Parameters.AddWithValue(
+                "$occurred_at_utc_ticks",
+                record.OccurredAtUtc is { } occurredAt ? occurredAt.UtcTicks : DBNull.Value
+            );
+            _ = command.Parameters.AddWithValue("$record_json", JsonSerializer.Serialize(record));
+            _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+    }
+
+    private static UsageCompleteness ReadUsageCompleteness(int value, string threadId)
+    {
+        if (!Enum.IsDefined(typeof(UsageCompleteness), value))
+        {
+            throw new InvalidDataException(
+                $"Usage for thread '{threadId}' has unrecognized completeness value {value}."
+            );
+        }
+
+        return (UsageCompleteness)value;
+    }
+
+    private static UsageRecord DeserializeUsageRecord(string json, string threadId, string providerAttemptId)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<UsageRecord>(json)
+                ?? throw new JsonException("The usage record was JSON null.");
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidDataException(
+                $"Usage record '{providerAttemptId}' for thread '{threadId}' is corrupt.",
+                ex
+            );
+        }
+    }
+
+    private async Task BackfillListingColumnsAsync(CancellationToken ct)
+    {
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        if (await ListingBackfillCompletedAsync(connection, ct).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        _logger.LogInformation(
+            "Thread metadata v7 migration started with batch size {BatchSize}",
+            ListingBackfillBatchSize
+        );
+        var stopwatch = Stopwatch.StartNew();
+        var rowsProcessed = 0;
+        var recordsMoved = 0;
+        var nextProgress = 1000;
+        bool completed;
+        do
+        {
+            var batch = await BackfillListingBatchAsync(connection, ct).ConfigureAwait(false);
+            rowsProcessed += batch.RowsProcessed;
+            recordsMoved += batch.RecordsMoved;
+            completed = batch.Completed;
+            if (rowsProcessed >= nextProgress && !completed)
+            {
+                _logger.LogInformation(
+                    "Thread metadata v7 migration progress: {RowsProcessed} rows, {RecordsMoved} usage records, {ElapsedMilliseconds} ms elapsed",
+                    rowsProcessed,
+                    recordsMoved,
+                    stopwatch.ElapsedMilliseconds
+                );
+                nextProgress = ((rowsProcessed / 1000) + 1) * 1000;
+            }
+        } while (!completed);
+
+        stopwatch.Stop();
+        _logger.LogInformation(
+            "Thread metadata v7 migration completed: {RowsProcessed} rows, {RecordsMoved} usage records, {ElapsedMilliseconds} ms elapsed",
+            rowsProcessed,
+            recordsMoved,
+            stopwatch.ElapsedMilliseconds
+        );
+    }
+
+    private static async Task<bool> ListingBackfillCompletedAsync(SqliteConnection connection, CancellationToken ct)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT completed_at IS NOT NULL
+            FROM schema_data_migrations
+            WHERE name = $name;
+            """;
+        _ = command.Parameters.AddWithValue("$name", ListingBackfillName);
+        var result = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return result is not null && result is not DBNull && Convert.ToInt64(result) == 1;
+    }
+
+    private static async Task<ListingBackfillBatchResult> BackfillListingBatchAsync(
+        SqliteConnection connection,
+        CancellationToken ct
+    )
+    {
+        using var transaction = connection.BeginTransaction(deferred: false);
+        try
+        {
+            var state = await ReadListingBackfillStateAsync(connection, transaction, ct).ConfigureAwait(false);
+            if (state.Completed)
+            {
+                transaction.Commit();
+                return new ListingBackfillBatchResult(0, 0, true);
+            }
+
+            var rows = await ReadListingBackfillRowsAsync(connection, transaction, state.Cursor, ct)
+                .ConfigureAwait(false);
+            var recordsMoved = 0;
+            foreach (var row in rows)
+            {
+                await ApplyListingBackfillRowAsync(connection, transaction, row, ct).ConfigureAwait(false);
+                recordsMoved += row.Usage.Records.Count;
+            }
+
+            var completed = rows.Count < ListingBackfillBatchSize;
+            var cursor = rows.Count == 0 ? state.Cursor : rows[^1].ThreadId;
+            await SaveListingBackfillStateAsync(connection, transaction, cursor, completed, ct).ConfigureAwait(false);
+            transaction.Commit();
+            return new ListingBackfillBatchResult(rows.Count, recordsMoved, completed);
+        }
+        catch
+        {
+            RollbackQuietly(transaction);
+            throw;
+        }
+    }
+
+    private static async Task<ListingBackfillState> ReadListingBackfillStateAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken ct
+    )
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT cursor, completed_at
+            FROM schema_data_migrations
+            WHERE name = $name;
+            """;
+        _ = command.Parameters.AddWithValue("$name", ListingBackfillName);
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        return await reader.ReadAsync(ct).ConfigureAwait(false)
+            ? new ListingBackfillState(reader.IsDBNull(0) ? null : reader.GetString(0), !reader.IsDBNull(1))
+            : new ListingBackfillState(null, false);
+    }
+
+    private static async Task<List<ListingBackfillRow>> ReadListingBackfillRowsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string? cursor,
+        CancellationToken ct
+    )
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = cursor is null
+            ? $"""
+                SELECT {MetadataColumns}
+                FROM thread_metadata
+                ORDER BY thread_id
+                LIMIT $limit;
+                """
+            : $"""
+                SELECT {MetadataColumns}
+                FROM thread_metadata
+                WHERE thread_id > $cursor
+                ORDER BY thread_id
+                LIMIT $limit;
+                """;
+        _ = command.Parameters.AddWithValue("$limit", ListingBackfillBatchSize);
+        if (cursor is not null)
+        {
+            _ = command.Parameters.AddWithValue("$cursor", cursor);
+        }
+
+        var rows = new List<ListingBackfillRow>(ListingBackfillBatchSize);
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            var metadata = ReadMetadata(reader);
+            var metadataJson = reader.IsDBNull(3) ? null : reader.GetString(3);
+            rows.Add(
+                new ListingBackfillRow(
+                    metadata.ThreadId,
+                    ListingProjectionValues.FromMetadata(metadata),
+                    ParseUsageMigrationData(metadata.ThreadId, metadataJson)
+                )
+            );
+        }
+
+        return rows;
+    }
+
+    private static async Task ApplyListingBackfillRowAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ListingBackfillRow row,
+        CancellationToken ct
+    )
+    {
+        if (row.Usage.Aggregate is { } aggregate)
+        {
+            var aggregateJson = row.Usage.Records.Count == 0 ? JsonSerializer.Serialize(aggregate) : null;
+            await UpsertUsageStateAsync(connection, transaction, aggregate, aggregateJson, ct).ConfigureAwait(false);
+            await UpsertUsageRecordsAsync(connection, transaction, row.ThreadId, row.Usage.Records, ct)
+                .ConfigureAwait(false);
+        }
+
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = row.Usage.RewriteMetadata
+            ? """
+                UPDATE thread_metadata
+                SET metadata_json = $metadata_json,
+                    deleted_at = $deleted_at,
+                    forked_from_thread_id = $forked_from_thread_id,
+                    subagent_parent_thread_id = $subagent_parent_thread_id
+                WHERE thread_id = $thread_id;
+                """
+            : """
+                UPDATE thread_metadata
+                SET deleted_at = $deleted_at,
+                    forked_from_thread_id = $forked_from_thread_id,
+                    subagent_parent_thread_id = $subagent_parent_thread_id
+                WHERE thread_id = $thread_id;
+                """;
+        _ = command.Parameters.AddWithValue("$thread_id", row.ThreadId);
+        if (row.Usage.RewriteMetadata)
+        {
+            _ = command.Parameters.AddWithValue(
+                "$metadata_json",
+                (object?)row.Usage.RewrittenMetadataJson ?? DBNull.Value
+            );
+        }
+        _ = command.Parameters.AddWithValue("$deleted_at", (object?)row.Values.DeletedAt ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue(
+            "$forked_from_thread_id",
+            (object?)row.Values.ForkedFromThreadId ?? DBNull.Value
+        );
+        _ = command.Parameters.AddWithValue(
+            "$subagent_parent_thread_id",
+            (object?)row.Values.SubAgentParentThreadId ?? DBNull.Value
+        );
+        _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    private static UsageMigrationData ParseUsageMigrationData(string threadId, string? metadataJson)
+    {
+        if (string.IsNullOrEmpty(metadataJson))
+        {
+            return UsageMigrationData.None;
+        }
+
+        MetadataExtensionData extensions;
+        try
+        {
+            extensions =
+                JsonSerializer.Deserialize<MetadataExtensionData>(metadataJson, JsonOptions)
+                ?? throw new JsonException("The metadata document was JSON null.");
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidDataException(
+                $"Thread '{threadId}' has corrupt metadata; usage migration cannot safely continue.",
+                ex
+            );
+        }
+
+        var properties = extensions.Properties;
+        if (properties is null)
+        {
+            return UsageMigrationData.None;
+        }
+
+        var hasAggregate = properties.TryGetValue(ConversationUsageProjection.PropertyKey, out var aggregateValue);
+        var hasRecords = properties.TryGetValue(ConversationUsageProjection.RecordsPropertyKey, out var recordsValue);
+        if (!hasAggregate && !hasRecords)
+        {
+            return UsageMigrationData.None;
+        }
+
+        var records = hasRecords
+            ? DeserializeMigrationRecords(threadId, RawUsageJson(recordsValue, threadId, "records"))
+            : [];
+        var aggregate = hasAggregate
+            ? DeserializeMigrationAggregate(threadId, RawUsageJson(aggregateValue, threadId, "aggregate"))
+            : ConversationUsageAggregate.Fold(
+                threadId,
+                records,
+                records.Count == 0 ? 0 : records.Max(record => record.Revision)
+            );
+
+        if (!string.Equals(aggregate.RootConversationId, threadId, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                $"Thread '{threadId}' contains usage for root '{aggregate.RootConversationId}'."
+            );
+        }
+
+        _ = properties.Remove(ConversationUsageProjection.PropertyKey);
+        _ = properties.Remove(ConversationUsageProjection.RecordsPropertyKey);
+        return new UsageMigrationData(
+            aggregate,
+            records,
+            JsonSerializer.Serialize(extensions, JsonOptions),
+            RewriteMetadata: true
+        );
+    }
+
+    private static string RawUsageJson(object? value, string threadId, string artifact)
+    {
+        var json = value switch
+        {
+            string text => text,
+            JsonElement { ValueKind: JsonValueKind.String } element => element.GetString(),
+            JsonElement element => element.GetRawText(),
+            _ => null,
+        };
+        return json ?? throw new InvalidDataException($"Thread '{threadId}' has a corrupt usage {artifact} artifact.");
+    }
+
+    private static IReadOnlyList<UsageRecord> DeserializeMigrationRecords(string threadId, string json)
+    {
+        try
+        {
+            var records =
+                JsonSerializer.Deserialize<List<UsageRecord>>(json)
+                ?? throw new JsonException("The usage records artifact was JSON null.");
+            return ConversationUsageProjection.MergeRecords([], records);
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidDataException($"Thread '{threadId}' has corrupt usage records.", ex);
+        }
+    }
+
+    private static ConversationUsageAggregate DeserializeMigrationAggregate(string threadId, string json)
+    {
+        ConversationUsageAggregate aggregate;
+        try
+        {
+            aggregate =
+                JsonSerializer.Deserialize<ConversationUsageAggregate>(json)
+                ?? throw new JsonException("The usage aggregate artifact was JSON null.");
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidDataException($"Thread '{threadId}' has a corrupt usage aggregate.", ex);
+        }
+
+        if (aggregate.SchemaVersion > ConversationUsageProjection.CurrentSchemaVersion)
+        {
+            throw new NotSupportedException(
+                $"Thread '{threadId}' has usage schema version {aggregate.SchemaVersion}, which is newer than "
+                    + $"version {ConversationUsageProjection.CurrentSchemaVersion} this build understands."
+            );
+        }
+
+        if (!Enum.IsDefined(aggregate.Completeness))
+        {
+            throw new InvalidDataException(
+                $"Thread '{threadId}' has an unrecognized usage completeness value " + $"{(int)aggregate.Completeness}."
+            );
+        }
+
+        return aggregate;
+    }
+
+    private static async Task SaveListingBackfillStateAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string? cursor,
+        bool completed,
+        CancellationToken ct
+    )
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO schema_data_migrations (name, cursor, completed_at)
+            VALUES ($name, $cursor, $completed_at)
+            ON CONFLICT(name) DO UPDATE SET
+                cursor = excluded.cursor,
+                completed_at = excluded.completed_at;
+            """;
+        _ = command.Parameters.AddWithValue("$name", ListingBackfillName);
+        _ = command.Parameters.AddWithValue("$cursor", (object?)cursor ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue(
+            "$completed_at",
+            completed ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() : DBNull.Value
+        );
+        _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
     private const string MessageSelectSql = """
@@ -2107,6 +3019,49 @@ public sealed class SqliteConversationStore
         {
             return (null, null, null);
         }
+    }
+
+    private sealed record ListingPageRow(
+        string ThreadId,
+        long LastUpdated,
+        string? TenantId,
+        string? OwnerUserId,
+        string? OwnerAppId,
+        Visibility? Visibility
+    );
+
+    private sealed record ListingProjectionValues(
+        long? DeletedAt,
+        string? ForkedFromThreadId,
+        string? SubAgentParentThreadId
+    )
+    {
+        public static ListingProjectionValues FromMetadata(ThreadMetadata metadata)
+        {
+            var lineage = ConversationLineage.Read(metadata);
+            var parent =
+                metadata.Properties?.TryGetValue(ConversationRelationKeys.SubAgentParentThreadId, out var parentValue)
+                == true
+                    ? parentValue?.ToString()
+                    : null;
+            return new ListingProjectionValues(lineage?.DeletedAt, lineage?.ForkedFrom?.ThreadId, parent);
+        }
+    }
+
+    private sealed record ListingBackfillRow(string ThreadId, ListingProjectionValues Values, UsageMigrationData Usage);
+
+    private sealed record ListingBackfillState(string? Cursor, bool Completed);
+
+    private sealed record ListingBackfillBatchResult(int RowsProcessed, int RecordsMoved, bool Completed);
+
+    private sealed record UsageMigrationData(
+        ConversationUsageAggregate? Aggregate,
+        IReadOnlyList<UsageRecord> Records,
+        string? RewrittenMetadataJson,
+        bool RewriteMetadata
+    )
+    {
+        public static UsageMigrationData None { get; } = new(null, [], null, false);
     }
 
     private sealed class MetadataExtensionData

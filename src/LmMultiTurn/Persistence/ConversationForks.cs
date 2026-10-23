@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 
@@ -80,6 +81,7 @@ public static class ConversationForks
     /// In-process only. Hosts that share one store across processes need a store-level lock instead.
     /// </remarks>
     private static readonly SemaphoreSlim LineageGate = new(1, 1);
+    private static int s_relationFallbackWarningLogged;
 
     /// <summary>
     /// Resolves <paramref name="anchor"/> against the full history of <paramref name="sourceThreadId"/>.
@@ -348,6 +350,20 @@ public static class ConversationForks
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(threadId);
+
+        if (store is IConversationRelationStore relations)
+        {
+            return await relations.ListDirectForkThreadIdsAsync(threadId, ct).ConfigureAwait(false);
+        }
+
+        if (Interlocked.Exchange(ref s_relationFallbackWarningLogged, 1) == 0)
+        {
+            Trace.TraceWarning(
+                "Conversation store {0} does not implement {1}; direct-fork lookup is falling back to full conversation listing",
+                store.GetType().Name,
+                nameof(IConversationRelationStore)
+            );
+        }
 
         // The whole catalog, not a page: a fork missed here is a fork whose shared messages get erased.
         // One call rather than paging, since the file store re-reads its whole catalog per call.

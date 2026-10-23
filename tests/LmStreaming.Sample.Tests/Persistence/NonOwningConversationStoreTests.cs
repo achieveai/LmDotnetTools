@@ -65,6 +65,27 @@ public sealed class NonOwningConversationStoreTests
     }
 
     [Fact]
+    public async Task NonOwningWrapper_ForwardsBothRelationReadsAndCancellation()
+    {
+        var underlying = new Mock<IConversationStore>(MockBehavior.Strict);
+        var relations = underlying.As<IConversationRelationStore>();
+        using var cancellation = new CancellationTokenSource();
+        IReadOnlyList<ConversationParentLink> links = [new("child", "root")];
+        IReadOnlyList<string> forks = ["fork"];
+        relations.Setup(store => store.ListSubAgentParentLinksAsync(cancellation.Token)).ReturnsAsync(links);
+        relations.Setup(store => store.ListDirectForkThreadIdsAsync("root", cancellation.Token)).ReturnsAsync(forks);
+        var wrapper = new NonOwningConversationStore(underlying.Object);
+
+        var actualLinks = await wrapper.ListSubAgentParentLinksAsync(cancellation.Token);
+        var actualForks = await wrapper.ListDirectForkThreadIdsAsync("root", cancellation.Token);
+
+        actualLinks.Should().BeSameAs(links);
+        actualForks.Should().BeSameAs(forks);
+        relations.VerifyAll();
+        underlying.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task NonOwningWrapper_ForwardsMessageWritesAndReads_ToUnderlyingStore()
     {
         var underlying = new InMemoryConversationStore();
@@ -100,6 +121,36 @@ public sealed class NonOwningConversationStoreTests
 
         var fromWrapper = await wrapper.ListAcceptedInputIdsAsync(ThreadId);
         fromWrapper.Should().Contain("input-1");
+    }
+
+    [Fact]
+    public async Task NonOwningWrapper_ForwardsListingArgumentsAndResult_ToUnderlyingStore()
+    {
+        var store = new Mock<IConversationStore>(MockBehavior.Strict);
+        var listing = store.As<IConversationListingStore>();
+        var keys = new HashSet<string>(StringComparer.Ordinal) { "title" };
+        var scope = ConversationListScope.ForTenant("tenant-a");
+        var options = new ConversationListOptions { ExcludedThreadIdPrefixes = ["subagent-"], ExcludeDeleted = true };
+        using var cancellation = new CancellationTokenSource();
+        IReadOnlyList<ConversationListingRow> expected =
+        [
+            new ConversationListingRow
+            {
+                ThreadId = "thread-1",
+                LastUpdated = 42,
+                Properties = new Dictionary<string, string?> { ["title"] = "Title" },
+            },
+        ];
+        listing
+            .Setup(inner => inner.ListConversationRowsAsync(keys, scope, 7, 3, options, cancellation.Token))
+            .ReturnsAsync(expected);
+        var wrapper = new NonOwningConversationStore(store.Object);
+
+        var actual = await wrapper.ListConversationRowsAsync(keys, scope, 7, 3, options, cancellation.Token);
+
+        actual.Should().BeSameAs(expected);
+        listing.VerifyAll();
+        store.VerifyNoOtherCalls();
     }
 
     private static NonOwningConversationStore WithProvenance(

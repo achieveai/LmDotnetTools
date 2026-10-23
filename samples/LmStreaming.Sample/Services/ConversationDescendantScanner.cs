@@ -12,8 +12,10 @@ namespace LmStreaming.Sample.Services;
 /// <remarks>
 ///     <para>
 ///         The traversal is lifted verbatim out of <c>ConversationsController.BuildDescendantTreeAsync</c>
-///         (issue #251, phase 2): one complete <see cref="IConversationStore.ListThreadsAsync(int, int, ConversationListOptions, CancellationToken)"/> paging
-///         scan, one in-memory parent→children index built from it, then a visited-set BFS from the root.
+///         (issue #251, phase 2): one complete parent-link snapshot, one in-memory parent→children index
+///         built from it, then a visited-set BFS from the root. Stores without compact relation reads
+///         retain the single <see cref="IConversationStore.ListThreadsAsync(int, int, ConversationListOptions, CancellationToken)"/>
+///         fallback.
 ///         Deliberately persisted-only — no live <c>SubAgentManager</c> union — because no current spawn
 ///         path creates a depth-&gt;1 tree anyway (nested live Agent delegation stays disabled); this
 ///         reader answers "what does the persisted graph say", which is exactly what a restarted host or
@@ -64,6 +66,7 @@ public sealed class ConversationDescendantScanner
 {
     /// <summary>Default cap on distinct roots tracked; mirrors <c>WorkflowRunRegistry</c>'s default.</summary>
     public const int DefaultCapacity = WorkflowRunRegistry.DefaultMaxPersistedEntriesPerConversation;
+    private static int s_relationFallbackWarningLogged;
 
     /// <summary>
     ///     One root's cache slot. <see cref="Version"/> is bumped by <see cref="NoteAgentActivity"/>;
@@ -308,11 +311,12 @@ public sealed class ConversationDescendantScanner
     }
 
     /// <summary>
-    ///     The complete fallback scan: project every eligible stamped sub-agent, then build the graph
-    ///     in memory without another corpus scan per node.
+    ///     Reads one complete relation snapshot, point-loads only reachable metadata, and projects every
+    ///     eligible stamped sub-agent. Stores without compact relation reads retain one complete fallback
+    ///     listing.
     /// </summary>
     /// <remarks>
-    ///     <b>One call, deliberately — not a paging loop.</b> Offset pagination over this store is unsound
+    ///     <b>One roster call, deliberately — not a paging loop.</b> Offset pagination over this store is unsound
     ///     here, and not only in theory: <see cref="IConversationStore.ListThreadsAsync(int, int, ConversationListOptions, CancellationToken)"/> is CONTRACTUALLY
     ///     "ordered by last updated descending", so every implementation sorts on a column that the live
     ///     conversations being scanned are mutating underneath the scan. A thread touched between page N
@@ -333,6 +337,64 @@ public sealed class ConversationDescendantScanner
         // wrong thing to use if it were. A root with no tenant falls back to the unscoped overload
         // rather than guessing at a sentinel one.
         var scope = await SubAgentScanScope.ForRootAsync(_store, requestingThreadId, ct);
+        if (_store is IConversationRelationStore relations)
+        {
+            var links = await relations.ListSubAgentParentLinksAsync(ct);
+            var childrenByParent = links
+                .GroupBy(link => link.ParentThreadId, StringComparer.Ordinal)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(link => link.ThreadId).ToArray(),
+                    StringComparer.Ordinal
+                );
+            var candidates = new List<string>();
+            var visited = new HashSet<string>(StringComparer.Ordinal) { requestingThreadId };
+            var queue = new Queue<string>();
+            queue.Enqueue(requestingThreadId);
+            while (queue.TryDequeue(out var parent))
+            {
+                if (!childrenByParent.TryGetValue(parent, out var children))
+                {
+                    continue;
+                }
+
+                foreach (var child in children)
+                {
+                    if (visited.Add(child))
+                    {
+                        candidates.Add(child);
+                        queue.Enqueue(child);
+                    }
+                }
+            }
+
+            var projected = new List<SubAgentSummary>();
+            foreach (var candidate in candidates)
+            {
+                var metadata = await _store.LoadMetadataAsync(candidate, ct);
+                if (metadata is null || (scope is not null && !scope.Admits(metadata)))
+                {
+                    continue;
+                }
+
+                if (SubAgentProvenance.TryProject(metadata) is { } node)
+                {
+                    projected.Add(node);
+                }
+            }
+
+            return projected;
+        }
+
+        if (Interlocked.Exchange(ref s_relationFallbackWarningLogged, 1) == 0)
+        {
+            _logger.LogWarning(
+                "Conversation store {StoreType} does not implement {Capability}; descendant discovery is falling back to full conversation listing",
+                _store.GetType().Name,
+                nameof(IConversationRelationStore)
+            );
+        }
+
         var threads =
             (
                 scope is null
