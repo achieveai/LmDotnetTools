@@ -8,9 +8,13 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
 
@@ -170,6 +174,122 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
 
         id1.Should().Be("agent-1");
         id2.Should().Be("agent-2");
+    }
+
+    [Fact]
+    public async Task Allocator_UsesPrefixCapability_AndWarnsOnceForTheListingFallback()
+    {
+        const string FastRoot = "thread-ordinal-fast-path";
+        var fastPrefix = SubAgentManager.SubAgentThreadId(FastRoot, "agent-1")[..^1];
+        var fastStore = new Mock<IConversationStore>(MockBehavior.Strict);
+        fastStore
+            .Setup(store => store.LoadMetadataAsync(FastRoot, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ThreadMetadata?)null);
+        fastStore
+            .Setup(store =>
+                store.ListThreadsAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<ConversationListOptions?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ThrowsAsync(new InvalidOperationException("The fast path must not list metadata."));
+        var lookup = fastStore.As<IConversationThreadIdLookupStore>();
+        lookup
+            .Setup(store => store.ListThreadIdsByPrefixAsync(fastPrefix, It.IsAny<CancellationToken>()))
+            .ReturnsAsync([$"{fastPrefix}2", $"{fastPrefix}not-a-number"]);
+
+        var fastAllocator = new SubAgentOrdinalAllocator(FastRoot, fastStore.Object, NullLogger.Instance);
+
+        (await fastAllocator.AllocateAsync(CancellationToken.None)).Should().Be(3);
+        lookup.Verify(store => store.ListThreadIdsByPrefixAsync(fastPrefix, It.IsAny<CancellationToken>()), Times.Once);
+        fastStore.Verify(
+            store =>
+                store.ListThreadsAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<ConversationListOptions?>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Never
+        );
+
+        const string FallbackRoot = "thread-ordinal-fallback";
+        var fallbackPrefix = SubAgentManager.SubAgentThreadId(FallbackRoot, "agent-1")[..^1];
+        var fallbackStore = new Mock<IConversationStore>(MockBehavior.Strict);
+        fallbackStore
+            .Setup(store => store.LoadMetadataAsync(FallbackRoot, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ThreadMetadata?)null);
+        fallbackStore
+            .Setup(store =>
+                store.ListThreadsAsync(500, 0, It.IsAny<ConversationListOptions?>(), It.IsAny<CancellationToken>())
+            )
+            .ReturnsAsync([
+                new ThreadMetadata { ThreadId = $"{fallbackPrefix}4", LastUpdated = 0 },
+                new ThreadMetadata { ThreadId = $"{fallbackPrefix}draft", LastUpdated = 0 },
+            ]);
+        var logger = new CapturingLogger();
+        var fallbackAllocator = new SubAgentOrdinalAllocator(FallbackRoot, fallbackStore.Object, logger);
+
+        (await fallbackAllocator.AllocateAsync(CancellationToken.None)).Should().Be(5);
+        (await fallbackAllocator.AllocateAsync(CancellationToken.None)).Should().Be(6);
+        fallbackStore.Verify(
+            store =>
+                store.ListThreadsAsync(500, 0, It.IsAny<ConversationListOptions?>(), It.IsAny<CancellationToken>()),
+            Times.Once
+        );
+        logger
+            .Warnings.Should()
+            .ContainSingle(message => message.Contains("falling back to full conversation listing"));
+    }
+
+    [Fact]
+    public async Task Allocator_WithSqliteCounterlessRoots_StartsAtOneOrResumesAbovePersistedChildren()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"ordinal_{Guid.NewGuid():N}.db");
+        var store = new SqliteConversationStore(databasePath);
+        try
+        {
+            const string FreshRoot = "thread-ordinal-sqlite-fresh";
+            await SaveRowAsync(store, FreshRoot);
+            var freshAllocator = new SubAgentOrdinalAllocator(FreshRoot, store, NullLogger.Instance);
+
+            (await freshAllocator.AllocateAsync(CancellationToken.None)).Should().Be(1);
+            var freshMetadata = await store.LoadMetadataAsync(FreshRoot);
+            freshMetadata!
+                .Properties![SubAgentManager.NextOrdinalProperty]
+                .Should()
+                .BeOfType<JsonElement>()
+                .Which.GetInt32()
+                .Should()
+                .Be(2);
+
+            const string ResumeRoot = "thread-ordinal-sqlite-resume";
+            await SaveRowAsync(store, ResumeRoot);
+            await SaveRowAsync(store, SubAgentManager.SubAgentThreadId(ResumeRoot, "agent-1"));
+            await SaveRowAsync(store, SubAgentManager.SubAgentThreadId(ResumeRoot, "agent-4"));
+            await SaveRowAsync(store, SubAgentManager.SubAgentThreadId(ResumeRoot, "agent-draft"));
+            var resumeAllocator = new SubAgentOrdinalAllocator(ResumeRoot, store, NullLogger.Instance);
+
+            (await resumeAllocator.AllocateAsync(CancellationToken.None)).Should().Be(5);
+            var resumeMetadata = await store.LoadMetadataAsync(ResumeRoot);
+            resumeMetadata!
+                .Properties![SubAgentManager.NextOrdinalProperty]
+                .Should()
+                .BeOfType<JsonElement>()
+                .Which.GetInt32()
+                .Should()
+                .Be(6);
+        }
+        finally
+        {
+            await store.DisposeAsync();
+            SqliteConnection.ClearAllPools();
+            File.Delete(databasePath);
+            File.Delete(databasePath + "-wal");
+            File.Delete(databasePath + "-shm");
+        }
     }
 
     [Fact]
@@ -473,5 +593,36 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
     {
         yield return message;
         await Task.Yield();
+    }
+
+    private sealed class CapturingLogger : ILogger
+    {
+        public List<string> Warnings { get; } = [];
+
+        public IDisposable BeginScope<TState>(TState state)
+            where TState : notnull => NullScope.Instance;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        )
+        {
+            if (logLevel == LogLevel.Warning)
+            {
+                Warnings.Add(formatter(state, exception));
+            }
+        }
+
+        private sealed class NullScope : IDisposable
+        {
+            public static readonly NullScope Instance = new();
+
+            public void Dispose() { }
+        }
     }
 }

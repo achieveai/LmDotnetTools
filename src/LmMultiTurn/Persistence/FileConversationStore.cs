@@ -14,6 +14,7 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 /// </summary>
 public sealed class FileConversationStore
     : IConversationStore,
+        IConversationThreadIdLookupStore,
         IConversationOwnershipStore,
         IRunLedgerStore,
         IRunLifecycleStore,
@@ -355,6 +356,32 @@ public sealed class FileConversationStore
         {
             _ = gate.Release();
         }
+    }
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<string>> ListThreadIdsByPrefixAsync(string prefix, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(prefix);
+        ct.ThrowIfCancellationRequested();
+
+        if (!Directory.Exists(_baseDirectory))
+        {
+            return Task.FromResult<IReadOnlyList<string>>([]);
+        }
+
+        var ids = new List<string>();
+        foreach (var directory in Directory.EnumerateDirectories(_baseDirectory))
+        {
+            ct.ThrowIfCancellationRequested();
+            var threadId = Path.GetFileName(directory);
+            if (threadId.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                ids.Add(threadId);
+            }
+        }
+
+        ids.Sort(StringComparer.Ordinal);
+        return Task.FromResult<IReadOnlyList<string>>(ids);
     }
 
     /// <inheritdoc />

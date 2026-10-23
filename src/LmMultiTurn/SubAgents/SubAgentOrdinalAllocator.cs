@@ -29,9 +29,9 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 /// When there is no counter to continue from — no root row, or a row that has never been written by
 /// this allocator — the transcripts already persisted under the root's scope
 /// (<c>subagent-{scope}-agent-N</c>) are the only record of the numbers handed out before this
-/// process, so the store is scanned once and numbering resumes above the highest of them. A child
-/// transcript that has messages but no metadata row is invisible to that scan. Without a store at all,
-/// numbering is in-process only, and still sequential.
+/// process, so their thread ids are looked up once and numbering resumes above the highest of them.
+/// Stores without the optional prefix capability fall back to the full metadata listing with a
+/// warning. Without a store at all, numbering is in-process only, and still sequential.
 /// </para>
 /// <para>
 /// Numbers are never reused. The in-process high-water mark is folded into the persisted value so a
@@ -51,6 +51,7 @@ internal sealed class SubAgentOrdinalAllocator
     private readonly SemaphoreSlim _gate = new(1, 1);
     private int _last;
     private int? _scannedHighest;
+    private bool _loggedListingFallback;
 
     public SubAgentOrdinalAllocator(string? rootThreadId, IConversationStore? store, ILogger logger)
     {
@@ -134,9 +135,9 @@ internal sealed class SubAgentOrdinalAllocator
 
     /// <summary>
     /// The highest ordinal among the transcripts already persisted under this root's scope, or 0 when
-    /// there are none. Computed once per allocator; every page of the listing is read because the
-    /// listing is ordered by last-updated, and an old conversation's children can sit behind any
-    /// number of newer threads.
+    /// there are none. Computed once per allocator through the optional prefix capability when
+    /// available. The compatibility fallback reads every listing page because the listing is ordered
+    /// by last-updated, and an old conversation's children can sit behind any number of newer threads.
     /// </summary>
     private async Task<int> ScanForHighestOrdinalAsync(CancellationToken ct)
     {
@@ -148,33 +149,63 @@ internal sealed class SubAgentOrdinalAllocator
         var scopedPrefix =
             $"{SubAgentThreadIds.Prefix}{SubAgentThreadIds.ScopeTag(RootThreadId)}-{SubAgentThreadIds.AgentIdPrefix}";
         var highest = 0;
-        for (var offset = 0; ; offset += ScanPageSize)
+
+        void Consider(string threadId)
         {
-            var page = await _store!.ListThreadsAsync(ScanPageSize, offset, options: null, ct).ConfigureAwait(false);
-            foreach (var row in page)
-            {
-                if (
-                    row.ThreadId.StartsWith(scopedPrefix, StringComparison.Ordinal)
-                    && int.TryParse(
-                        row.ThreadId.AsSpan(scopedPrefix.Length),
-                        NumberStyles.None,
-                        CultureInfo.InvariantCulture,
-                        out var ordinal
-                    )
+            if (
+                threadId.StartsWith(scopedPrefix, StringComparison.Ordinal)
+                && int.TryParse(
+                    threadId.AsSpan(scopedPrefix.Length),
+                    NumberStyles.None,
+                    CultureInfo.InvariantCulture,
+                    out var ordinal
                 )
-                {
-                    highest = Math.Max(highest, ordinal);
-                }
+            )
+            {
+                highest = Math.Max(highest, ordinal);
+            }
+        }
+
+        if (_store is IConversationThreadIdLookupStore lookup)
+        {
+            var threadIds = await lookup.ListThreadIdsByPrefixAsync(scopedPrefix, ct).ConfigureAwait(false);
+            foreach (var threadId in threadIds)
+            {
+                Consider(threadId);
+            }
+        }
+        else
+        {
+            if (!_loggedListingFallback)
+            {
+                _logger.LogWarning(
+                    "Conversation store {StoreType} does not implement {Capability}; sub-agent ordinal allocation for root {RootThreadId} is falling back to full conversation listing",
+                    _store!.GetType().Name,
+                    nameof(IConversationThreadIdLookupStore),
+                    RootThreadId
+                );
+                _loggedListingFallback = true;
             }
 
-            if (page.Count < ScanPageSize)
+            for (var offset = 0; ; offset += ScanPageSize)
             {
-                break;
+                var page = await _store!
+                    .ListThreadsAsync(ScanPageSize, offset, options: null, ct)
+                    .ConfigureAwait(false);
+                foreach (var row in page)
+                {
+                    Consider(row.ThreadId);
+                }
+
+                if (page.Count < ScanPageSize)
+                {
+                    break;
+                }
             }
         }
 
         _logger.LogDebug(
-            "Scanned the store for sub-agent transcripts under root {RootThreadId}; highest ordinal {Highest}",
+            "Inspected sub-agent transcript ids under root {RootThreadId}; highest ordinal {Highest}",
             RootThreadId,
             highest
         );

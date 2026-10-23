@@ -26,6 +26,25 @@ public sealed class NonOwningConversationStoreTests
     }
 
     [Fact]
+    public async Task NonOwningWrapper_ForwardsPrefixLookup_ToUnderlyingCapability()
+    {
+        var underlying = new Mock<IConversationStore>(MockBehavior.Strict);
+        var lookup = underlying.As<IConversationThreadIdLookupStore>();
+        lookup
+            .Setup(store => store.ListThreadIdsByPrefixAsync("subagent-scope-", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(["subagent-scope-agent-1"]);
+        var wrapper = new NonOwningConversationStore(underlying.Object);
+
+        var ids = await wrapper.ListThreadIdsByPrefixAsync("subagent-scope-");
+
+        ids.Should().Equal("subagent-scope-agent-1");
+        lookup.Verify(
+            capability => capability.ListThreadIdsByPrefixAsync("subagent-scope-", It.IsAny<CancellationToken>()),
+            Times.Once
+        );
+    }
+
+    [Fact]
     public async Task NonOwningWrapper_ForwardsMessageWritesAndReads_ToUnderlyingStore()
     {
         var underlying = new InMemoryConversationStore();

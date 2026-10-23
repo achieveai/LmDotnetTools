@@ -28,6 +28,25 @@ public sealed class IndexedConversationStoreTests : IDisposable
         };
 
     [Fact]
+    public async Task PrefixLookup_ForwardsToTheWrappedCapability()
+    {
+        var inner = new Mock<IConversationStore>(MockBehavior.Strict);
+        var lookup = inner.As<IConversationThreadIdLookupStore>();
+        lookup
+            .Setup(store => store.ListThreadIdsByPrefixAsync("subagent-scope-", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(["subagent-scope-agent-1"]);
+        var store = Create(inner.Object);
+
+        var ids = await store.ListThreadIdsByPrefixAsync("subagent-scope-");
+
+        ids.Should().Equal("subagent-scope-agent-1");
+        lookup.Verify(
+            capability => capability.ListThreadIdsByPrefixAsync("subagent-scope-", It.IsAny<CancellationToken>()),
+            Times.Once
+        );
+    }
+
+    [Fact]
     public async Task BackfillAndLiveUpdates_ReadOnlyTheRequestedHierarchyAfterInitialization()
     {
         var inner = new InMemoryConversationStore();

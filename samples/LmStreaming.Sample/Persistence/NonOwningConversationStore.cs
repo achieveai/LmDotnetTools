@@ -29,7 +29,7 @@ namespace LmStreaming.Sample.Persistence;
 /// store owns its own lifetime and is disposed by the host, not by any child.
 /// </para>
 /// </remarks>
-public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerStore
+public sealed class NonOwningConversationStore : IConversationStore, IConversationThreadIdLookupStore, IRunLedgerStore
 {
     private readonly IConversationStore _conversation;
     private readonly IRunLedgerStore? _runLedger;
@@ -78,6 +78,12 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
     private IRunLedgerStore RunLedger =>
         _runLedger
         ?? throw new NotSupportedException("The wrapped conversation store does not implement IRunLedgerStore.");
+
+    private IConversationThreadIdLookupStore ThreadIdLookup =>
+        _conversation as IConversationThreadIdLookupStore
+        ?? throw new NotSupportedException(
+            $"The wrapped conversation store does not implement {nameof(IConversationThreadIdLookupStore)}."
+        );
 
     // === IConversationStore ===
 
@@ -202,6 +208,10 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
         ConversationListOptions? options = null,
         CancellationToken ct = default
     ) => _conversation.ListThreadsAsync(scope, limit, offset, options, ct);
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<string>> ListThreadIdsByPrefixAsync(string prefix, CancellationToken ct = default) =>
+        ThreadIdLookup.ListThreadIdsByPrefixAsync(prefix, ct);
 
     // === IRunLedgerStore ===
 
