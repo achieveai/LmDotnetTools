@@ -259,6 +259,71 @@ public static class SqliteSchemaInitializer
     // a row the one before it (MessageSequence.WithParents).
     private const string AddMessagesParentColumnSql = "ALTER TABLE messages ADD COLUMN parent_message_id TEXT;";
 
+    // migration step 7 - compact listing projections. These columns deliberately follow
+    // metadata_json in the table: rebuilding a potentially multi-gigabyte table at startup would be
+    // disproportionate. The LastUsed index includes every column its page predicate needs so that
+    // query never opens the table row (and therefore never walks metadata_json's overflow pages).
+    private static readonly string[] AddThreadMetadataListingColumnsSql =
+    [
+        "ALTER TABLE thread_metadata ADD COLUMN deleted_at INTEGER;",
+        "ALTER TABLE thread_metadata ADD COLUMN forked_from_thread_id TEXT;",
+        "ALTER TABLE thread_metadata ADD COLUMN subagent_parent_thread_id TEXT;",
+    ];
+
+    private const string CreateSchemaDataMigrationsTableSql = """
+        CREATE TABLE IF NOT EXISTS schema_data_migrations (
+            name         TEXT PRIMARY KEY,
+            cursor       TEXT,
+            completed_at INTEGER
+        );
+        """;
+
+    private const string CreateConversationUsageStateTableSql = """
+        CREATE TABLE IF NOT EXISTS conversation_usage_state (
+            thread_id        TEXT PRIMARY KEY,
+            schema_version   INTEGER NOT NULL,
+            folded_revision  INTEGER NOT NULL,
+            completeness     INTEGER NOT NULL,
+            aggregate_json   TEXT
+        );
+        """;
+
+    private const string CreateConversationUsageRecordsTableSql = """
+        CREATE TABLE IF NOT EXISTS conversation_usage_records (
+            thread_id              TEXT NOT NULL,
+            provider_attempt_id    TEXT NOT NULL,
+            revision               INTEGER NOT NULL,
+            occurred_at_utc_ticks  INTEGER,
+            record_json            TEXT NOT NULL,
+            PRIMARY KEY (thread_id, provider_attempt_id)
+        ) WITHOUT ROWID;
+        """;
+
+    private const string CreateThreadMetadataLastUsedCoverIndexSql = """
+        CREATE INDEX IF NOT EXISTS idx_thread_metadata_last_used_cover
+        ON thread_metadata (
+            last_updated DESC,
+            thread_id DESC,
+            tenant_id,
+            owner_user_id,
+            owner_app_id,
+            visibility,
+            deleted_at
+        );
+        """;
+
+    private const string CreateThreadMetadataSubagentParentIndexSql = """
+        CREATE INDEX IF NOT EXISTS idx_thread_metadata_subagent_parent
+        ON thread_metadata (subagent_parent_thread_id, thread_id)
+        WHERE subagent_parent_thread_id IS NOT NULL;
+        """;
+
+    private const string CreateThreadMetadataForkParentIndexSql = """
+        CREATE INDEX IF NOT EXISTS idx_thread_metadata_fork_parent
+        ON thread_metadata (forked_from_thread_id, thread_id)
+        WHERE forked_from_thread_id IS NOT NULL;
+        """;
+
     /// <summary>One ordered migration step, applied atomically with its version bump.</summary>
     /// <param name="Version">
     /// The <c>PRAGMA user_version</c> the database holds after this step commits. This array is
@@ -306,6 +371,18 @@ public static class SqliteSchemaInitializer
         new(4, [CreateResourceGrantsTableSql, CreateResourceGrantsSubjectIndexSql]),
         new(5, [AddMessagesSeqColumnSql, CreateMessagesSeqIndexSql]),
         new(6, [AddMessagesParentColumnSql]),
+        new(
+            7,
+            [
+                .. AddThreadMetadataListingColumnsSql,
+                CreateSchemaDataMigrationsTableSql,
+                CreateConversationUsageStateTableSql,
+                CreateConversationUsageRecordsTableSql,
+                CreateThreadMetadataLastUsedCoverIndexSql,
+                CreateThreadMetadataSubagentParentIndexSql,
+                CreateThreadMetadataForkParentIndexSql,
+            ]
+        ),
     ];
 
     /// <summary>

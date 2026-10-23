@@ -1,4 +1,7 @@
+using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
+using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Xunit;
@@ -84,10 +87,11 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         SqliteSchemaInitializer
             .LatestSchemaVersion.Should()
             .Be(
-                6,
+                7,
                 "slice 2 adds the thread_metadata owner columns (3) and resource_grants (4) on top of "
                     + "slice 1's two steps, #680 adds the messages seq column and index (5), and "
-                    + "conversation fork adds the messages parent_message_id column (6)"
+                    + "conversation fork adds the messages parent_message_id column (6), while "
+                    + "compact listing projections and their indexes are step 7"
             );
     }
 
@@ -314,6 +318,351 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task VersionSixUpgrade_CreatesListingSchema_AndBackfillsEveryProjection()
+    {
+        await SeedVersionSixDatabaseAsync();
+
+        await using (var store = new SqliteConversationStore(_databasePath))
+        {
+            _ = await store.ListThreadsAsync(limit: 1);
+        }
+
+        await using var connection = await OpenAsync();
+        (await ReadUserVersionAsync(connection)).Should().Be(7);
+        (await TableExistsAsync(connection, "schema_data_migrations")).Should().BeTrue();
+        (
+            await ReadNamesAsync(
+                connection,
+                """
+                SELECT name
+                FROM pragma_table_info('thread_metadata')
+                WHERE name IN ('deleted_at', 'forked_from_thread_id', 'subagent_parent_thread_id')
+                ORDER BY name;
+                """
+            )
+        ).Should().Equal("deleted_at", "forked_from_thread_id", "subagent_parent_thread_id");
+        (
+            await ReadNamesAsync(
+                connection,
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'index'
+                  AND name IN (
+                    'idx_thread_metadata_fork_parent',
+                    'idx_thread_metadata_last_used_cover',
+                    'idx_thread_metadata_subagent_parent')
+                ORDER BY name;
+                """
+            )
+        ).Should().Equal("idx_thread_metadata_fork_parent", "idx_thread_metadata_last_used_cover", "idx_thread_metadata_subagent_parent");
+        (await ReadListingProjectionsAsync(connection))
+            .Should()
+            .Equal(
+                ("a-null", null, null, null),
+                ("b-deleted", 123L, null, null),
+                ("c-fork", null, "source-thread", null),
+                ("d-parent", null, null, "root-thread")
+            );
+
+        using var progress = connection.CreateCommand();
+        progress.CommandText = """
+            SELECT cursor, completed_at
+            FROM schema_data_migrations
+            WHERE name = 'thread-metadata-v7';
+            """;
+        await using var reader = await progress.ExecuteReaderAsync();
+        (await reader.ReadAsync()).Should().BeTrue();
+        reader.GetString(0).Should().Be("d-parent");
+        reader.IsDBNull(1).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task VersionSixUpgrade_MigratesCanonicalUsage_RemovesLegacyKeys_AndPinsAggregateOnlyRows()
+    {
+        var first = UsageAttempt("a-canonical", "a-1", revision: 1, inputTokens: 10);
+        var second = UsageAttempt("a-canonical", "a-2", revision: 2, inputTokens: 20);
+        var recordsOnly = UsageAttempt("b-records-only", "b-1", revision: 4, inputTokens: 40);
+        var aggregateOnlyRecord = UsageAttempt("c-aggregate-only", "legacy", revision: 7, inputTokens: 70);
+        var aggregateOnly = ConversationUsageAggregate.Fold(
+            "c-aggregate-only",
+            [aggregateOnlyRecord],
+            7,
+            UsageCompleteness.Partial
+        );
+        await SeedVersionSixUsageDatabaseAsync([
+            (
+                "a-canonical",
+                UsageMetadata(
+                    ConversationUsageAggregate.Fold("a-canonical", [first, second], 2, UsageCompleteness.Complete),
+                    [first, second]
+                )
+            ),
+            ("b-records-only", UsageMetadata(null, [recordsOnly])),
+            ("c-aggregate-only", UsageMetadata(aggregateOnly, null)),
+        ]);
+
+        await using (var store = new SqliteConversationStore(_databasePath))
+        {
+            _ = await store.ListThreadsAsync(limit: 1);
+
+            var canonical = await store.LoadUsageAsync("a-canonical");
+            canonical!.Records.Select(record => record.ProviderAttemptId).Should().Equal("a-1", "a-2");
+            canonical.FoldedRevision.Should().Be(2);
+            canonical.Completeness.Should().Be(UsageCompleteness.Complete);
+
+            var inferred = await store.LoadUsageAsync("b-records-only");
+            inferred!.Records.Should().ContainSingle().Which.ProviderAttemptId.Should().Be("b-1");
+            inferred.FoldedRevision.Should().Be(4);
+
+            var aggregateOnlySnapshot = await store.LoadUsageAsync("c-aggregate-only");
+            aggregateOnlySnapshot!.Records.Should().BeEmpty();
+            aggregateOnlySnapshot.Aggregate.Should().BeEquivalentTo(aggregateOnly);
+            (await ConversationUsageProjection.LoadAsync(store, "c-aggregate-only"))!
+                .Should()
+                .BeEquivalentTo(aggregateOnly);
+        }
+
+        await using var connection = await OpenAsync();
+        (await TableExistsAsync(connection, "conversation_usage_state")).Should().BeTrue();
+        (await TableExistsAsync(connection, "conversation_usage_records")).Should().BeTrue();
+        (await ReadScalarAsync(connection, "SELECT COUNT(*) FROM conversation_usage_state;")).Should().Be(3);
+        (await ReadScalarAsync(connection, "SELECT COUNT(*) FROM conversation_usage_records;")).Should().Be(3);
+        (
+            await ReadScalarAsync(
+                connection,
+                """
+                SELECT COUNT(*)
+                FROM thread_metadata
+                WHERE json_type(metadata_json, '$.properties."usage.aggregate"') IS NOT NULL
+                   OR json_type(metadata_json, '$.properties."usage.records"') IS NOT NULL;
+                """
+            )
+        ).Should().Be(0);
+        var state = await ReadBackfillStateAsync(connection);
+        state.Cursor.Should().Be("c-aggregate-only");
+        state.CompletedAt.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task UsageMigration_FailureAfterUpserts_RollsBackBatch_ThenResumesWithoutDuplicates()
+    {
+        var uninterruptedPath = _databasePath + ".uninterrupted";
+        try
+        {
+            var rows = Enumerable
+                .Range(0, 201)
+                .Select(index =>
+                {
+                    var threadId = $"thread-{index:D3}";
+                    var record = UsageAttempt(threadId, $"attempt-{index:D3}", index + 1, index + 1);
+                    return (
+                        threadId,
+                        UsageMetadata(ConversationUsageAggregate.Fold(threadId, [record], index + 1), [record])
+                    );
+                })
+                .ToArray();
+            await SeedVersionSixUsageDatabaseAsync(rows);
+            File.Copy(_databasePath, uninterruptedPath);
+
+            await using (var uninterrupted = new SqliteConversationStore(uninterruptedPath))
+            {
+                _ = await uninterrupted.ListThreadsAsync(limit: 1);
+            }
+
+            await using (var inject = await OpenAsync())
+            {
+                using var trigger = inject.CreateCommand();
+                trigger.CommandText = """
+                    CREATE TRIGGER fail_after_usage_upserts
+                    BEFORE UPDATE ON thread_metadata
+                    WHEN OLD.thread_id = 'thread-150'
+                    BEGIN
+                        SELECT RAISE(ABORT, 'injected after usage upserts');
+                    END;
+                    """;
+                _ = await trigger.ExecuteNonQueryAsync();
+            }
+
+            await using (var interrupted = new SqliteConversationStore(_databasePath))
+            {
+                var migrate = async () => await interrupted.ListThreadsAsync(limit: 1);
+                _ = (await migrate.Should().ThrowAsync<SqliteException>())
+                    .Which.Message.Should()
+                    .Contain("injected after usage upserts");
+            }
+
+            await using (var verifyRollback = await OpenAsync())
+            {
+                (await ReadScalarAsync(verifyRollback, "SELECT COUNT(*) FROM conversation_usage_state;"))
+                    .Should()
+                    .Be(100);
+                (
+                    await ReadScalarAsync(
+                        verifyRollback,
+                        "SELECT COUNT(*) FROM conversation_usage_state WHERE thread_id >= 'thread-100';"
+                    )
+                )
+                    .Should()
+                    .Be(0, "the entire second batch must roll back");
+                var progress = await ReadBackfillProgressAsync(verifyRollback);
+                progress.Cursor.Should().Be("thread-099");
+                progress.CompletedAt.Should().BeNull();
+
+                using var drop = verifyRollback.CreateCommand();
+                drop.CommandText = "DROP TRIGGER fail_after_usage_upserts;";
+                _ = await drop.ExecuteNonQueryAsync();
+            }
+
+            await using (var resumed = new SqliteConversationStore(_databasePath))
+            {
+                _ = await resumed.ListThreadsAsync(limit: 1);
+            }
+
+            (await ReadCanonicalUsageRowsAsync(_databasePath))
+                .Should()
+                .Equal(await ReadCanonicalUsageRowsAsync(uninterruptedPath));
+            await using var final = await OpenAsync();
+            (await ReadScalarAsync(final, "SELECT COUNT(*) FROM conversation_usage_state;")).Should().Be(201);
+            (await ReadScalarAsync(final, "SELECT COUNT(*) FROM conversation_usage_records;")).Should().Be(201);
+            (await ReadBackfillStateAsync(final)).Cursor.Should().Be("thread-200");
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            TryDelete(uninterruptedPath);
+            TryDelete(uninterruptedPath + "-wal");
+            TryDelete(uninterruptedPath + "-shm");
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UsageMigration_CorruptArtifact_NamesThread_AndCommitsNoneOfFailingBatch(bool corruptOuterMetadata)
+    {
+        var rows = Enumerable
+            .Range(0, 100)
+            .Select(index =>
+            {
+                var threadId = $"valid-{index:D3}";
+                var record = UsageAttempt(threadId, $"attempt-{index:D3}", index + 1, index + 1);
+                return (
+                    threadId,
+                    UsageMetadata(ConversationUsageAggregate.Fold(threadId, [record], index + 1), [record])
+                );
+            })
+            .Append(
+                (
+                    "z-invalid-thread",
+                    corruptOuterMetadata
+                        ? "{ not valid metadata"
+                        : """{"properties":{"usage.records":"{ not valid records"}}"""
+                )
+            )
+            .Append(
+                (
+                    "zz-valid-after-invalid",
+                    UsageMetadata(
+                        ConversationUsageAggregate.Fold(
+                            "zz-valid-after-invalid",
+                            [UsageAttempt("zz-valid-after-invalid", "after", 101, 101)],
+                            101
+                        ),
+                        [UsageAttempt("zz-valid-after-invalid", "after", 101, 101)]
+                    )
+                )
+            )
+            .ToArray();
+        await SeedVersionSixUsageDatabaseAsync(rows);
+
+        await using (var store = new SqliteConversationStore(_databasePath))
+        {
+            var migrate = async () => await store.ListThreadsAsync(limit: 1);
+            _ = (await migrate.Should().ThrowAsync<InvalidDataException>())
+                .Which.Message.Should()
+                .Contain("z-invalid-thread");
+        }
+
+        await using var connection = await OpenAsync();
+        (await ReadScalarAsync(connection, "SELECT COUNT(*) FROM conversation_usage_state;")).Should().Be(100);
+        (
+            await ReadScalarAsync(
+                connection,
+                "SELECT COUNT(*) FROM conversation_usage_state WHERE thread_id = 'zz-valid-after-invalid';"
+            )
+        )
+            .Should()
+            .Be(0);
+        var state = await ReadBackfillProgressAsync(connection);
+        state.Cursor.Should().Be("valid-099");
+        state.CompletedAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task InterruptedListingBackfill_ResumesAfterCursor_AndCompletedReopenDoesNotRewriteState()
+    {
+        await SeedVersionSixDatabaseAsync();
+        await using (var prepare = await OpenAsync())
+        {
+            await SqliteSchemaInitializer.InitializeSchemaAsync(prepare);
+            using var seedProgress = prepare.CreateCommand();
+            seedProgress.CommandText = """
+                UPDATE thread_metadata
+                SET deleted_at = CASE thread_id WHEN 'b-deleted' THEN 123 END
+                WHERE thread_id <= 'b-deleted';
+                INSERT INTO schema_data_migrations (name, cursor, completed_at)
+                VALUES ('thread-metadata-v7', 'b-deleted', NULL);
+                CREATE TRIGGER reject_replayed_listing_rows
+                BEFORE UPDATE OF deleted_at, forked_from_thread_id, subagent_parent_thread_id
+                ON thread_metadata
+                WHEN OLD.thread_id <= 'b-deleted'
+                BEGIN
+                    SELECT RAISE(ABORT, 'backfill replayed a committed row');
+                END;
+                """;
+            _ = await seedProgress.ExecuteNonQueryAsync();
+        }
+
+        await using (var resumed = new SqliteConversationStore(_databasePath))
+        {
+            _ = await resumed.ListThreadsAsync(limit: 1);
+        }
+
+        (string Cursor, long CompletedAt) completedState;
+        await using (var verify = await OpenAsync())
+        {
+            (await ReadListingProjectionsAsync(verify))
+                .Should()
+                .Equal(
+                    ("a-null", null, null, null),
+                    ("b-deleted", 123L, null, null),
+                    ("c-fork", null, "source-thread", null),
+                    ("d-parent", null, null, "root-thread")
+                );
+            completedState = await ReadBackfillStateAsync(verify);
+
+            using var rejectRewrite = verify.CreateCommand();
+            rejectRewrite.CommandText = """
+                CREATE TRIGGER reject_completed_marker_rewrite
+                BEFORE UPDATE ON schema_data_migrations
+                BEGIN
+                    SELECT RAISE(ABORT, 'completed marker was rewritten');
+                END;
+                """;
+            _ = await rejectRewrite.ExecuteNonQueryAsync();
+        }
+
+        await using (var reopened = new SqliteConversationStore(_databasePath))
+        {
+            _ = await reopened.ListThreadsAsync(limit: 1);
+        }
+
+        await using var final = await OpenAsync();
+        (await ReadBackfillStateAsync(final)).Should().Be(completedState);
+    }
+
+    [Fact]
     public async Task UpgradingAPopulatedDatabase_AddsTheOwnerColumns_AndKeepsEveryExistingRow()
     {
         // The real upgrade path, which no existing test covers. Step 3 is `ALTER TABLE ... ADD
@@ -400,6 +749,212 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         _ = command.Parameters.AddWithValue("$name", column);
         return Convert.ToInt64(await command.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture)
             > 0;
+    }
+
+    private async Task SeedVersionSixDatabaseAsync()
+    {
+        await using var connection = await OpenAsync();
+        using var create = connection.CreateCommand();
+        create.CommandText = """
+            CREATE TABLE thread_metadata (
+                thread_id      TEXT PRIMARY KEY,
+                current_run_id TEXT,
+                last_updated   INTEGER NOT NULL,
+                metadata_json  TEXT,
+                tenant_id      TEXT,
+                owner_user_id  TEXT,
+                owner_app_id   TEXT,
+                visibility     TEXT
+            );
+            INSERT INTO thread_metadata (thread_id, last_updated, metadata_json)
+            VALUES
+                ('a-null', 1, NULL),
+                (
+                    'b-deleted',
+                    2,
+                    '{"properties":{"fork.lineage":"{\"schema_version\":1,\"deleted_at\":123}"}}'
+                ),
+                (
+                    'c-fork',
+                    3,
+                    '{"properties":{"fork.lineage":"{\"schema_version\":1,\"forked_from\":{\"thread_id\":\"source-thread\",\"message_id\":\"m1\",\"seq\":1}}"}}'
+                ),
+                (
+                    'd-parent',
+                    4,
+                    '{"properties":{"sample.subAgentOf":"root-thread"}}'
+                );
+            PRAGMA user_version = 6;
+            """;
+        _ = await create.ExecuteNonQueryAsync();
+    }
+
+    private async Task SeedVersionSixUsageDatabaseAsync(IEnumerable<(string ThreadId, string MetadataJson)> rows)
+    {
+        await using var connection = await OpenAsync();
+        using (var create = connection.CreateCommand())
+        {
+            create.CommandText = """
+                CREATE TABLE thread_metadata (
+                    thread_id      TEXT PRIMARY KEY,
+                    current_run_id TEXT,
+                    last_updated   INTEGER NOT NULL,
+                    metadata_json  TEXT,
+                    tenant_id      TEXT,
+                    owner_user_id  TEXT,
+                    owner_app_id   TEXT,
+                    visibility     TEXT
+                );
+                PRAGMA user_version = 6;
+                """;
+            _ = await create.ExecuteNonQueryAsync();
+        }
+
+        foreach (var (threadId, metadataJson) in rows)
+        {
+            using var insert = connection.CreateCommand();
+            insert.CommandText = """
+                INSERT INTO thread_metadata (thread_id, last_updated, metadata_json)
+                VALUES ($thread_id, 1, $metadata_json);
+                """;
+            _ = insert.Parameters.AddWithValue("$thread_id", threadId);
+            _ = insert.Parameters.AddWithValue("$metadata_json", metadataJson);
+            _ = await insert.ExecuteNonQueryAsync();
+        }
+    }
+
+    private static string UsageMetadata(ConversationUsageAggregate? aggregate, IReadOnlyList<UsageRecord>? records)
+    {
+        var properties = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (aggregate is not null)
+        {
+            properties[ConversationUsageProjection.PropertyKey] = JsonSerializer.Serialize(aggregate);
+        }
+
+        if (records is not null)
+        {
+            properties[ConversationUsageProjection.RecordsPropertyKey] = JsonSerializer.Serialize(records);
+        }
+
+        return JsonSerializer.Serialize(new { properties });
+    }
+
+    private static UsageRecord UsageAttempt(string threadId, string attemptId, long revision, int inputTokens) =>
+        new()
+        {
+            LogicalCallId = attemptId,
+            ProviderAttemptId = attemptId,
+            RootConversationId = threadId,
+            RequestedModel = "model",
+            InputTokens = inputTokens,
+            OutputTokens = 1,
+            Revision = revision,
+            OccurredAtUtc = new DateTimeOffset(2026, 10, 22, 0, 0, 0, TimeSpan.Zero).AddMinutes(revision),
+        };
+
+    private static async Task<long> ReadScalarAsync(SqliteConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return Convert.ToInt64(await command.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static async Task<IReadOnlyList<string>> ReadCanonicalUsageRowsAsync(string databasePath)
+    {
+        await using var connection = new SqliteConnection($"Data Source={databasePath}");
+        await connection.OpenAsync();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT s.thread_id, s.schema_version, s.folded_revision, s.completeness,
+                   r.provider_attempt_id, r.revision, r.occurred_at_utc_ticks, r.record_json
+            FROM conversation_usage_state AS s
+            LEFT JOIN conversation_usage_records AS r ON r.thread_id = s.thread_id
+            ORDER BY s.thread_id, r.provider_attempt_id;
+            """;
+        var rows = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            rows.Add(
+                string.Join(
+                    "|",
+                    Enumerable
+                        .Range(0, reader.FieldCount)
+                        .Select(index => reader.IsDBNull(index) ? "<null>" : reader.GetValue(index).ToString())
+                )
+            );
+        }
+
+        return rows;
+    }
+
+    private static async Task<IReadOnlyList<string>> ReadNamesAsync(SqliteConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        var names = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            names.Add(reader.GetString(0));
+        }
+
+        return names;
+    }
+
+    private static async Task<
+        IReadOnlyList<(string ThreadId, long? DeletedAt, string? ForkedFrom, string? Parent)>
+    > ReadListingProjectionsAsync(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT thread_id, deleted_at, forked_from_thread_id, subagent_parent_thread_id
+            FROM thread_metadata
+            ORDER BY thread_id;
+            """;
+        var rows = new List<(string, long?, string?, string?)>();
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            rows.Add(
+                (
+                    reader.GetString(0),
+                    reader.IsDBNull(1) ? null : reader.GetInt64(1),
+                    reader.IsDBNull(2) ? null : reader.GetString(2),
+                    reader.IsDBNull(3) ? null : reader.GetString(3)
+                )
+            );
+        }
+
+        return rows;
+    }
+
+    private static async Task<(string Cursor, long CompletedAt)> ReadBackfillStateAsync(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT cursor, completed_at
+            FROM schema_data_migrations
+            WHERE name = 'thread-metadata-v7';
+            """;
+        await using var reader = await command.ExecuteReaderAsync();
+        (await reader.ReadAsync()).Should().BeTrue();
+        return (reader.GetString(0), reader.GetInt64(1));
+    }
+
+    private static async Task<(string? Cursor, long? CompletedAt)> ReadBackfillProgressAsync(
+        SqliteConnection connection
+    )
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT cursor, completed_at
+            FROM schema_data_migrations
+            WHERE name = 'thread-metadata-v7';
+            """;
+        await using var reader = await command.ExecuteReaderAsync();
+        (await reader.ReadAsync()).Should().BeTrue();
+        return (reader.IsDBNull(0) ? null : reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetInt64(1));
     }
 
     [Fact]

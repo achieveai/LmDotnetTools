@@ -151,6 +151,55 @@ public sealed class ConversationContextReportTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Build_ReportsTheSameUsage_FromSqliteCapabilityAndMetadataFallback()
+    {
+        var metadataStore = _harness.Open("memory");
+        var sqliteStore = _harness.Open("sqlite");
+        await SeedAsync(metadataStore);
+        await SeedAsync(sqliteStore);
+        var options = new ConversationContextReportOptions { TimeProvider = new FixedClock(T0.AddMinutes(1)) };
+
+        var fromMetadata = await ConversationContextReport.BuildAsync(metadataStore, Root, Roster(), options);
+        var fromCapability = await ConversationContextReport.BuildAsync(sqliteStore, Root, Roster(), options);
+
+        fromCapability.Should().BeEquivalentTo(fromMetadata);
+
+        var aggregateOnlyRecord = new UsageRecord
+        {
+            LogicalCallId = "legacy",
+            ProviderAttemptId = "legacy",
+            RootConversationId = "aggregate-only",
+            RequestedModel = "model-a",
+            InputTokens = 75,
+            OutputTokens = 25,
+            Revision = 50,
+        };
+        var aggregateOnly = ConversationUsageAggregate.Fold(
+            "aggregate-only",
+            [aggregateOnlyRecord],
+            50,
+            UsageCompleteness.Partial
+        );
+        await ConversationUsageProjection.SaveAsync(metadataStore, aggregateOnly);
+        await ConversationUsageProjection.SaveAsync(sqliteStore, aggregateOnly);
+
+        var aggregateOnlyMetadata = await ConversationContextReport.BuildAsync(
+            metadataStore,
+            "aggregate-only",
+            [],
+            options
+        );
+        var aggregateOnlyCapability = await ConversationContextReport.BuildAsync(
+            sqliteStore,
+            "aggregate-only",
+            [],
+            options
+        );
+        aggregateOnlyCapability.Should().BeEquivalentTo(aggregateOnlyMetadata);
+        aggregateOnlyCapability.Total.UsageCompleteness.Should().Be(UsageCompleteness.Partial);
+    }
+
+    [Fact]
     public async Task ALiveObservation_WinsOverThePersistedOne_AndReadsFresh()
     {
         var store = _harness.Open("memory");

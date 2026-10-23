@@ -53,7 +53,7 @@ internal sealed class SqliteWalCheckpointService : BackgroundService
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
     }
 
-    private async Task TryCheckpointAsync(CancellationToken cancellationToken)
+    internal async Task TryCheckpointAsync(CancellationToken cancellationToken)
     {
         try
         {

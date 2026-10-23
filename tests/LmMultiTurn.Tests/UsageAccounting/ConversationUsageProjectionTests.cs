@@ -13,7 +13,7 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Tests.UsageAccounting;
 
 public class ConversationUsageProjectionTests
 {
-    private static ConversationUsageAggregate SampleAggregate()
+    private static (ConversationUsageAggregate Aggregate, IReadOnlyList<UsageRecord> Records) SampleUsage()
     {
         var ledger = new UsageLedger("conv-1");
         ledger.UpsertAttempt(
@@ -42,18 +42,20 @@ public class ConversationUsageProjectionTests
                 Finalized = true,
             }
         );
-        return ledger.Snapshot(UsageCompleteness.Complete);
+        return (ledger.Snapshot(UsageCompleteness.Complete), ledger.SnapshotRecords());
     }
+
+    private static ConversationUsageAggregate SampleAggregate() => SampleUsage().Aggregate;
 
     private static async Task AssertRoundTripsAsync(IConversationStore store)
     {
-        var original = SampleAggregate();
+        var usage = SampleUsage();
 
-        await ConversationUsageProjection.SaveAsync(store, original);
+        await ConversationUsageProjection.SaveAsync(store, usage.Aggregate, usage.Records);
         var loaded = await ConversationUsageProjection.LoadAsync(store, "conv-1");
 
         loaded.Should().NotBeNull();
-        loaded.Should().BeEquivalentTo(original);
+        loaded.Should().BeEquivalentTo(usage.Aggregate);
     }
 
     [Fact]
@@ -93,6 +95,62 @@ public class ConversationUsageProjectionTests
             TryDelete(dbPath + "-wal");
             TryDelete(dbPath + "-shm");
         }
+    }
+
+    [Fact]
+    public async Task AggregateOnly_RoundTripsThroughSqliteLikeMetadata_ThenRecordsReplaceItsTotals()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"usage_proj_{Guid.NewGuid():N}.db");
+        await using var sqlite = new SqliteConversationStore(dbPath);
+        var metadata = new InMemoryConversationStore();
+        var aggregateOnly = SampleAggregate() with { FoldedRevision = 50, TotalTokens = 900 };
+
+        foreach (var store in new IConversationStore[] { sqlite, metadata })
+        {
+            await ConversationUsageProjection.SaveAsync(store, aggregateOnly);
+            (await ConversationUsageProjection.LoadAsync(store, "conv-1")).Should().BeEquivalentTo(aggregateOnly);
+        }
+
+        var record = new UsageRecord
+        {
+            LogicalCallId = "later",
+            ProviderAttemptId = "later",
+            RootConversationId = "conv-1",
+            RequestedModel = "model-later",
+            InputTokens = 10,
+            OutputTokens = 5,
+            Revision = 51,
+        };
+        var refolded = ConversationUsageAggregate.Fold("conv-1", [record], 51, UsageCompleteness.Complete);
+        foreach (var store in new IConversationStore[] { sqlite, metadata })
+        {
+            await ConversationUsageProjection.SaveAsync(store, refolded, [record]);
+            (await ConversationUsageProjection.LoadAsync(store, "conv-1")).Should().BeEquivalentTo(refolded);
+        }
+
+        SqliteConnection.ClearAllPools();
+        TryDelete(dbPath);
+        TryDelete(dbPath + "-wal");
+        TryDelete(dbPath + "-shm");
+    }
+
+    [Fact]
+    public async Task AggregateOnly_SqliteRejectsStrictlyLowerFoldedRevision()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"usage_proj_{Guid.NewGuid():N}.db");
+        await using var store = new SqliteConversationStore(dbPath);
+        var newer = SampleAggregate() with { FoldedRevision = 50, TotalTokens = 900 };
+        var stale = SampleAggregate() with { FoldedRevision = 5, TotalTokens = 100 };
+
+        await ConversationUsageProjection.SaveAsync(store, newer);
+        await ConversationUsageProjection.SaveAsync(store, stale);
+
+        (await ConversationUsageProjection.LoadAsync(store, "conv-1")).Should().BeEquivalentTo(newer);
+
+        SqliteConnection.ClearAllPools();
+        TryDelete(dbPath);
+        TryDelete(dbPath + "-wal");
+        TryDelete(dbPath + "-shm");
     }
 
     [Fact]

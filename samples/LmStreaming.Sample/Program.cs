@@ -700,10 +700,17 @@ try
         conversationDbDir ?? AppContext.BaseDirectory,
         "conversations.parent-child-index.json"
     );
-    var innerConversationStore = new SqliteConversationStore(conversationDbPath);
-    var conversationStore = new IndexedConversationStore(innerConversationStore, conversationIndexPath);
-    _ = builder.Services.AddSingleton<IConversationStore>(conversationStore);
-    _ = builder.Services.AddSingleton<IRunLedgerStore>(conversationStore);
+    SqliteConversationStore? innerConversationStore = null;
+    _ = builder.Services.AddSingleton(sp =>
+    {
+        innerConversationStore = new SqliteConversationStore(
+            conversationDbPath,
+            sp.GetRequiredService<ILogger<SqliteConversationStore>>()
+        );
+        return new IndexedConversationStore(innerConversationStore, conversationIndexPath);
+    });
+    _ = builder.Services.AddSingleton<IConversationStore>(sp => sp.GetRequiredService<IndexedConversationStore>());
+    _ = builder.Services.AddSingleton<IRunLedgerStore>(sp => sp.GetRequiredService<IndexedConversationStore>());
     _ = builder.Services.AddHostedService(sp =>
         ActivatorUtilities.CreateInstance<SqliteWalCheckpointService>(sp, conversationDbPath)
     );
@@ -3035,7 +3042,7 @@ try
     // SqliteConnection.ClearAllPools() here: it would evict the pooled connections of parallel E2E
     // hosts in the same process. The WAL is durable; the pool drains on process exit.
     app.Lifetime.ApplicationStopped.Register(() =>
-        innerConversationStore.DisposeAsync().AsTask().GetAwaiter().GetResult()
+        innerConversationStore?.DisposeAsync().AsTask().GetAwaiter().GetResult()
     );
 
     // Log startup information
