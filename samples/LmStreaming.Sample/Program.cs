@@ -136,6 +136,9 @@ try
                     new CompactJsonFormatter(),
                     logPath,
                     rollingInterval: RollingInterval.Day,
+                    fileSizeLimitBytes: context.Configuration.GetValue<long?>("LmStreaming:LogFileSizeLimitBytes")
+                        ?? 1_073_741_824,
+                    rollOnFileSizeLimit: true,
                     retainedFileCountLimit: 7,
                     shared: true
                 )
@@ -701,6 +704,9 @@ try
     var conversationStore = new IndexedConversationStore(innerConversationStore, conversationIndexPath);
     _ = builder.Services.AddSingleton<IConversationStore>(conversationStore);
     _ = builder.Services.AddSingleton<IRunLedgerStore>(conversationStore);
+    _ = builder.Services.AddHostedService(sp =>
+        ActivatorUtilities.CreateInstance<SqliteWalCheckpointService>(sp, conversationDbPath)
+    );
 
     // #145: durable notify-wait persistence. Register ONLY the (non-disposable) INotifyWaitStore and
     // construct its SqliteConnectionFactory INLINE — deliberately NOT as a separately-tracked
