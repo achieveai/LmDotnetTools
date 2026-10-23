@@ -231,7 +231,7 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
 
     /// <inheritdoc />
     public Task<IReadOnlyList<string>> ListThreadIdsByPrefixAsync(string prefix, CancellationToken ct = default) =>
-        Capability<IConversationThreadIdLookupStore>().ListThreadIdsByPrefixAsync(prefix, ct);
+        ConversationThreadIdLookup.ListThreadIdsByPrefixAsync(inner, prefix, ct);
 
     /// <summary>Reads current, tenant-eligible persisted nodes without a historical corpus scan.</summary>
     public async Task<IReadOnlyList<SubAgentSummary>> ReadChildrenAsync(

@@ -12,7 +12,6 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
-using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
@@ -268,11 +267,13 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
             const string ResumeRoot = "thread-ordinal-sqlite-resume";
             await SaveRowAsync(store, ResumeRoot);
             await SaveRowAsync(store, SubAgentManager.SubAgentThreadId(ResumeRoot, "agent-1"));
-            await SaveRowAsync(store, SubAgentManager.SubAgentThreadId(ResumeRoot, "agent-4"));
+            // agent-9 sorts after agent-10 lexicographically; the resume must take the numeric maximum.
+            await SaveRowAsync(store, SubAgentManager.SubAgentThreadId(ResumeRoot, "agent-9"));
+            await SaveRowAsync(store, SubAgentManager.SubAgentThreadId(ResumeRoot, "agent-10"));
             await SaveRowAsync(store, SubAgentManager.SubAgentThreadId(ResumeRoot, "agent-draft"));
             var resumeAllocator = new SubAgentOrdinalAllocator(ResumeRoot, store, NullLogger.Instance);
 
-            (await resumeAllocator.AllocateAsync(CancellationToken.None)).Should().Be(5);
+            (await resumeAllocator.AllocateAsync(CancellationToken.None)).Should().Be(11);
             var resumeMetadata = await store.LoadMetadataAsync(ResumeRoot);
             resumeMetadata!
                 .Properties![SubAgentManager.NextOrdinalProperty]
@@ -280,12 +281,12 @@ public class SubAgentConversationScopeTests : IAsyncLifetime
                 .BeOfType<JsonElement>()
                 .Which.GetInt32()
                 .Should()
-                .Be(6);
+                .Be(12);
         }
         finally
         {
             await store.DisposeAsync();
-            SqliteConnection.ClearAllPools();
+            SqliteConnectionFactory.ClearPool(databasePath);
             File.Delete(databasePath);
             File.Delete(databasePath + "-wal");
             File.Delete(databasePath + "-shm");

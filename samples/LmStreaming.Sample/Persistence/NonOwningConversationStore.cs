@@ -79,12 +79,6 @@ public sealed class NonOwningConversationStore : IConversationStore, IConversati
         _runLedger
         ?? throw new NotSupportedException("The wrapped conversation store does not implement IRunLedgerStore.");
 
-    private IConversationThreadIdLookupStore ThreadIdLookup =>
-        _conversation as IConversationThreadIdLookupStore
-        ?? throw new NotSupportedException(
-            $"The wrapped conversation store does not implement {nameof(IConversationThreadIdLookupStore)}."
-        );
-
     // === IConversationStore ===
 
     /// <inheritdoc />
@@ -211,7 +205,7 @@ public sealed class NonOwningConversationStore : IConversationStore, IConversati
 
     /// <inheritdoc />
     public Task<IReadOnlyList<string>> ListThreadIdsByPrefixAsync(string prefix, CancellationToken ct = default) =>
-        ThreadIdLookup.ListThreadIdsByPrefixAsync(prefix, ct);
+        ConversationThreadIdLookup.ListThreadIdsByPrefixAsync(_conversation, prefix, ct);
 
     // === IRunLedgerStore ===
 
