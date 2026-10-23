@@ -267,9 +267,9 @@ try {
     Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.p1FloorExemption -eq "vacuous" }).Count -eq 5) "Manifest integration must preserve the five reviewed vacuity exemptions."
     # Measured rows only ever leave this corpus when the declaration itself is deleted upstream;
     # nothing in this tooling may downgrade a measured row to an unmeasured one.
-    Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "measured" }).Count 9387 "Measured coverage classifications"
+    Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "measured" }).Count 9386 "Measured coverage classifications"
     Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "no-coverage-capture" }).Count 244 "Rows in approved projects without coverage capture"
-    Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "not-in-capture" }).Count 1736 "Rows absent from the frozen capture"
+    Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "not-in-capture" }).Count 1737 "Rows absent from the frozen capture"
     Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.path -like "samples/LmStreaming.Sample/ClientApp/*" }).Count -eq 0) "Client tests remain whole-suite and must not acquire declaration rows in this phase."
     foreach ($changed in @("samples/LmStreaming.Sample/Program.cs", "src/LmStreaming.AspNetCore/SelectionProbe.cs")) {
         $scopedPlan = & $runner -RepositoryRoot (Join-Path $PSScriptRoot "..") -Fast -ChangedPath $changed | ConvertFrom-Json

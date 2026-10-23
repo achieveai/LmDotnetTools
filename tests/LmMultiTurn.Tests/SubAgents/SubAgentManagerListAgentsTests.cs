@@ -339,6 +339,7 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
             .Setup(s => s.LoadMetadataAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((ThreadMetadata?)null);
         var updates = new ConcurrentQueue<(string ThreadId, Func<ThreadMetadata?, ThreadMetadata> Update)>();
+        var pushed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         storeMock
             .Setup(s =>
                 s.UpdateMetadataAsync(
@@ -348,7 +349,14 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
                 )
             )
             .Callback<string, Func<ThreadMetadata?, ThreadMetadata>, CancellationToken>(
-                (threadId, update, _) => updates.Enqueue((threadId, update))
+                (threadId, update, cancellationToken) =>
+                {
+                    updates.Enqueue((threadId, update));
+                    if (TerminalStatusTouch.Is(threadId, update))
+                    {
+                        _ = pushed.TrySetResult();
+                    }
+                }
             )
             .Returns(Task.CompletedTask);
 
@@ -361,6 +369,11 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         var agentId = ParseAgentId(spawnJson);
 
         _ = await manager.ObserveCompletionAsync(agentId, CancellationToken.None);
+
+        // The completion settles the caller first; the push is a side effect the monitor performs after it,
+        // off the run-transition gate. So wait for the push instead of assuming it has landed. A missing push
+        // times out here and fails the test.
+        await pushed.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         var childThreadId = SubAgentManager.SubAgentThreadId(_parentMock.Object.ThreadId, agentId);
         updates
