@@ -686,6 +686,20 @@ function Test-ProcessHoldsPath {
     $targetProcessName = [System.IO.Path]::GetFileNameWithoutExtension($resolvedTarget)
     $processes = & $ProcessEnumerationDelegate
     foreach ($process in $processes) {
+        # Name prefilter, BEFORE `.Path`. Reading `.Path` costs a process open and a module walk per
+        # process; over every process on a busy box (1,200+ here) that took 11-25 s per checkpoint, so
+        # a Recognized deploy's three checkpoints overran the test harness's 90 s budget under load.
+        # ProcessName comes from the same snapshot Get-Process already took, so it is effectively free.
+        # Skipping a differently named process loses nothing: ProcessName and the image path both come
+        # from the image the process was created from, and neither changes when that file is later
+        # renamed or replaced. So a process whose path is our executable is always named after it.
+        # Only a name we could not read falls through to the path check (test doubles carry Path alone).
+        $candidateName = $null
+        try { $candidateName = $process.ProcessName } catch { $candidateName = $null }
+        if ($candidateName -and -not $candidateName.Equals($targetProcessName, [System.StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+
         $candidatePath = $null
         try {
             $candidatePath = $process.Path
@@ -696,10 +710,9 @@ function Test-ProcessHoldsPath {
         }
 
         if (-not $candidatePath) {
-            # Indeterminate. Held only if this is plausibly an instance of OUR executable.
-            $candidateName = $null
-            try { $candidateName = $process.ProcessName } catch { $candidateName = $null }
-            if ($candidateName -and $candidateName.Equals($targetProcessName, [System.StringComparison]::OrdinalIgnoreCase)) {
+            # Indeterminate. Held only if this is plausibly an instance of OUR executable -- and any
+            # readable name reaching this point already matched the prefilter above.
+            if ($candidateName) {
                 return $true
             }
             continue

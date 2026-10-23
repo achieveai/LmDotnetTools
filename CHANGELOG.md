@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **LmAgentInfra: `WebhookOptions.RegisterEventWebhook` (default `true`).** When off, `SandboxSessionRegistry` registers neither the unified `webhook` nor the legacy `discovery` block, and `DiscoveryEnabled` reports `false`. A blank `PublicBaseUrl` now also registers neither, instead of sending a relative URL. LmStreaming.Sample's E2E host turns it off. That host is an in-memory `TestServer`, so the gateway could never reach it. It sent the E2E sandboxes' events to whatever else ran on `127.0.0.1:5000`, which answered 404.
+
 - **Sandbox SDK / LmAgentInfra / LmStreaming.Sample synced to gateway `origin/master` `46be47df`**:
   - Per-app git marketplaces cite gateway ADR 0045 (the merged number). The `400 invalid_app_id` and the new `422 unsafe_checkout` (the checkout contains a symbolic link) and `422 no_default_branch` refusals classify as `SandboxErrorKind.Protocol` with their `ErrorCode` kept. A sandbox keeps the commit it mounted; one created while the store was on cannot be resumed on a gateway restarted without it.
   - New `SandboxGatewayOptions.MarketplaceStorePath` (becomes `MARKETPLACE_STORE_PATH`, made absolute against the app's binaries folder) and `LocalSandboxPython` (becomes `LOCAL_SANDBOX_PYTHON`, the interpreter for Windows workspace `.py` mini apps). Both apply to an auto-spawned gateway only.
