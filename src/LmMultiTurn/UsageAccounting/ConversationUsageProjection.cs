@@ -6,10 +6,8 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 
 /// <summary>
-///     Persists and reads conversation usage inside <see cref="ThreadMetadata.Properties" /> — zero schema
-///     migration, uniform across every <see cref="IConversationStore" /> backend. Two artifacts are stored:
-///     the canonical per-attempt <b>records</b> (the durable source of truth, deduped by provider attempt)
-///     and the derived <b>aggregate</b> projection folded from them (#196).
+///     Persists and reads conversation usage through the store's dedicated capability when available,
+///     retaining the metadata property-bag representation for compatible custom, file, and in-memory stores.
 /// </summary>
 /// <remarks>
 ///     Values are stored as JSON <b>strings</b> so they round-trip identically whether the backing store
@@ -25,7 +23,7 @@ public static class ConversationUsageProjection
     public const string RecordsPropertyKey = "usage.records";
 
     /// <summary>Highest usage-aggregate schema version this build understands; newer is treated as absent.</summary>
-    private const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 1;
 
     /// <summary>
     ///     Atomically persists the aggregate and its canonical records into the conversation's metadata
@@ -58,6 +56,11 @@ public static class ConversationUsageProjection
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(aggregate);
+
+        if (store is IConversationUsageStore usageStore)
+        {
+            return usageStore.AppendUsageAsync(aggregate, records ?? [], ct);
+        }
 
         return store.UpdateMetadataAsync(
             aggregate.RootConversationId,
@@ -134,21 +137,11 @@ public static class ConversationUsageProjection
     ///     winning revision: across writers the higher revision is often the LATER observation of the same
     ///     attempt, and a per-day rollup must bucket on when the attempt happened (#307).
     /// </remarks>
-    private static IReadOnlyList<UsageRecord> MergeRecords(
+    internal static IReadOnlyList<UsageRecord> MergeRecords(
         IReadOnlyList<UsageRecord> persisted,
         IReadOnlyList<UsageRecord> incoming
     )
     {
-        if (persisted.Count == 0)
-        {
-            return incoming;
-        }
-
-        if (incoming.Count == 0)
-        {
-            return persisted;
-        }
-
         var byAttempt = new Dictionary<string, UsageRecord>(StringComparer.Ordinal);
         foreach (var record in persisted)
         {
@@ -239,8 +232,25 @@ public static class ConversationUsageProjection
     )
     {
         ArgumentNullException.ThrowIfNull(store);
-        var metadata = await store.LoadMetadataAsync(threadId, ct);
-        return FromMetadata(metadata);
+        if (store is not IConversationUsageStore)
+        {
+            return FromMetadata(await store.LoadMetadataAsync(threadId, ct).ConfigureAwait(false));
+        }
+
+        var snapshot = await LoadSnapshotAsync(store, threadId, ct).ConfigureAwait(false);
+        if (snapshot is null)
+        {
+            return null;
+        }
+
+        return snapshot.Records.Count == 0 && snapshot.Aggregate is { } aggregate
+            ? aggregate
+            : ConversationUsageAggregate.Fold(
+                threadId,
+                snapshot.Records,
+                snapshot.FoldedRevision,
+                snapshot.Completeness
+            );
     }
 
     /// <summary>Loads the persisted canonical records for a conversation (empty when none), for rebuild.</summary>
@@ -251,8 +261,47 @@ public static class ConversationUsageProjection
     )
     {
         ArgumentNullException.ThrowIfNull(store);
-        var metadata = await store.LoadMetadataAsync(threadId, ct);
-        return RecordsFromMetadata(metadata);
+        if (store is not IConversationUsageStore)
+        {
+            return RecordsFromMetadata(await store.LoadMetadataAsync(threadId, ct).ConfigureAwait(false));
+        }
+
+        var snapshot = await LoadSnapshotAsync(store, threadId, ct).ConfigureAwait(false);
+        return snapshot?.Records ?? [];
+    }
+
+    /// <summary>Loads canonical usage state and records in one store operation.</summary>
+    public static async Task<ConversationUsageSnapshot?> LoadSnapshotAsync(
+        IConversationStore store,
+        string threadId,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentException.ThrowIfNullOrEmpty(threadId);
+
+        if (store is IConversationUsageStore usageStore)
+        {
+            var snapshot = await usageStore.LoadUsageAsync(threadId, ct).ConfigureAwait(false);
+            return snapshot is { SchemaVersion: <= CurrentSchemaVersion } ? snapshot : null;
+        }
+
+        var metadata = await store.LoadMetadataAsync(threadId, ct).ConfigureAwait(false);
+        var aggregate = FromMetadata(metadata);
+        if (aggregate is null)
+        {
+            return null;
+        }
+
+        var records = RecordsFromMetadata(metadata);
+        return new ConversationUsageSnapshot
+        {
+            SchemaVersion = aggregate.SchemaVersion,
+            FoldedRevision = aggregate.FoldedRevision,
+            Completeness = aggregate.Completeness,
+            Aggregate = records.Count == 0 ? aggregate : null,
+            Records = records,
+        };
     }
 
     /// <summary>

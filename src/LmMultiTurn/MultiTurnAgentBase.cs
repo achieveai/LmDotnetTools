@@ -119,6 +119,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     // and run completion / disposal can await a final flush (#196).
     private UsagePersistenceWriter? _usageWriter;
     private readonly object _usageWriterLock = new();
+    private long _lastDurableUsageRevision;
+    private ConversationUsageAggregate? _aggregateOnlyUsage;
 
     // Terminal completeness stamped on the persisted usage aggregate (#196). InProgress while the loop is
     // live; advanced to Complete on a clean terminal flush, or Partial when the run faulted so some incurred
@@ -713,15 +715,51 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         lock (_usageWriterLock)
         {
             return _usageWriter ??= new UsagePersistenceWriter(
-                ct =>
-                    ConversationUsageProjection.SaveAsync(
-                        store,
-                        ledger.Snapshot(CurrentUsageCompleteness),
-                        ledger.SnapshotRecords(),
-                        ct
-                    ),
+                ct => PersistUsageSnapshotAsync(store, ledger, ct),
                 onError: ex => Logger.LogWarning(ex, "Failed to persist usage snapshot for thread {ThreadId}", ThreadId)
             );
+        }
+    }
+
+    private async Task PersistUsageSnapshotAsync(IConversationStore store, UsageLedger ledger, CancellationToken ct)
+    {
+        var records = ledger.SnapshotRecords();
+        var aggregate = ledger.Snapshot(CurrentUsageCompleteness);
+        lock (_usageWriterLock)
+        {
+            if (records.Count == 0 && _aggregateOnlyUsage is { } persisted)
+            {
+                aggregate = persisted with
+                {
+                    FoldedRevision = Math.Max(persisted.FoldedRevision, aggregate.FoldedRevision),
+                    Completeness = (UsageCompleteness)
+                        Math.Max((int)persisted.Completeness, (int)aggregate.Completeness),
+                };
+            }
+        }
+
+        if (store is not IConversationUsageStore)
+        {
+            await ConversationUsageProjection.SaveAsync(store, aggregate, records, ct).ConfigureAwait(false);
+            return;
+        }
+
+        long lastDurableRevision;
+        lock (_usageWriterLock)
+        {
+            lastDurableRevision = _lastDurableUsageRevision;
+        }
+
+        var changedRecords = records.Where(record => record.Revision > lastDurableRevision).ToArray();
+        await ConversationUsageProjection.SaveAsync(store, aggregate, changedRecords, ct).ConfigureAwait(false);
+
+        lock (_usageWriterLock)
+        {
+            _lastDurableUsageRevision = Math.Max(_lastDurableUsageRevision, aggregate.FoldedRevision);
+            if (changedRecords.Length > 0)
+            {
+                _aggregateOnlyUsage = null;
+            }
         }
     }
 
@@ -2706,11 +2744,15 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             _usageHydrated = true;
             try
             {
-                var records = await ConversationUsageProjection.LoadRecordsAsync(Store, ThreadId, ct);
-                if (records.Count > 0)
+                var snapshot = await ConversationUsageProjection.LoadSnapshotAsync(Store, ThreadId, ct);
+                if (snapshot is not null)
                 {
-                    var aggregate = await ConversationUsageProjection.LoadAsync(Store, ThreadId, ct);
-                    UsageLedger.SeedFromRecords(records, aggregate?.FoldedRevision ?? 0);
+                    UsageLedger.SeedFromRecords(snapshot.Records, snapshot.FoldedRevision);
+                    lock (_usageWriterLock)
+                    {
+                        _lastDurableUsageRevision = Math.Max(_lastDurableUsageRevision, snapshot.FoldedRevision);
+                        _aggregateOnlyUsage = snapshot.Aggregate;
+                    }
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)

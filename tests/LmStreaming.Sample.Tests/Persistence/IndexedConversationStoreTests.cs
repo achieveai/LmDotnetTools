@@ -1,8 +1,13 @@
 using System.Collections.Immutable;
+using System.Diagnostics;
+using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
+using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.Controllers;
 using LmStreaming.Sample.Tests.TestDoubles;
+using Microsoft.Data.Sqlite;
 
 namespace LmStreaming.Sample.Tests.Persistence;
 
@@ -64,6 +69,151 @@ public sealed class IndexedConversationStoreTests : IDisposable
         var ids = await wrapper.ListThreadIdsByPrefixAsync("subagent-scope-");
 
         ids.Should().Equal("subagent-scope-agent-1", "subagent-scope-agent-2");
+    }
+
+    [Fact]
+    public async Task InitializeAsync_BuildsFromCompactLinks_WithoutListingTheCatalog()
+    {
+        var inner = new Mock<IConversationStore>(MockBehavior.Strict);
+        var relations = inner.As<IConversationRelationStore>();
+        using var cancellation = new CancellationTokenSource();
+        relations
+            .Setup(store => store.ListSubAgentParentLinksAsync(cancellation.Token))
+            .ReturnsAsync([new ConversationParentLink("subagent-child", "root")]);
+        inner
+            .Setup(store => store.LoadMetadataAsync("root", cancellation.Token))
+            .ReturnsAsync(new ThreadMetadata { ThreadId = "root", LastUpdated = 0 });
+        inner
+            .Setup(store => store.LoadMetadataAsync("subagent-child", cancellation.Token))
+            .ReturnsAsync(Child("subagent-child", "root"));
+        var store = Create(inner.Object);
+
+        await store.InitializeAsync(cancellation.Token);
+        var children = await store.ReadChildrenAsync("root", recursive: true, cancellation.Token);
+
+        children.Should().ContainSingle(node => node.ThreadId == "subagent-child" && node.Depth == 1);
+        relations.Verify(capability => capability.ListSubAgentParentLinksAsync(cancellation.Token), Times.Once);
+        inner.Verify(
+            catalog =>
+                catalog.ListThreadsAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<ConversationListOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Never
+        );
+        inner.VerifyAll();
+    }
+
+    [Fact]
+    public async Task RelationMethods_ForwardBothReadsAndCancellation()
+    {
+        var inner = new Mock<IConversationStore>(MockBehavior.Strict);
+        var relations = inner.As<IConversationRelationStore>();
+        using var cancellation = new CancellationTokenSource();
+        IReadOnlyList<ConversationParentLink> links = [new("child", "root")];
+        IReadOnlyList<string> forks = ["fork"];
+        relations.Setup(store => store.ListSubAgentParentLinksAsync(cancellation.Token)).ReturnsAsync(links);
+        relations.Setup(store => store.ListDirectForkThreadIdsAsync("root", cancellation.Token)).ReturnsAsync(forks);
+        var store = Create(inner.Object);
+
+        var actualLinks = await store.ListSubAgentParentLinksAsync(cancellation.Token);
+        var actualForks = await store.ListDirectForkThreadIdsAsync("root", cancellation.Token);
+
+        actualLinks.Should().BeSameAs(links);
+        actualForks.Should().BeSameAs(forks);
+        relations.VerifyAll();
+        inner.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task InitializeAsync_FallbackWarnsOnlyOnceAcrossStoreInstances()
+    {
+        typeof(IndexedConversationStore)
+            .GetField(
+                "s_relationFallbackWarningLogged",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static
+            )!
+            .SetValue(null, 0);
+        using var output = new StringWriter();
+        using var listener = new TextWriterTraceListener(output);
+        Trace.Listeners.Add(listener);
+        try
+        {
+            await Create(new InMemoryConversationStore()).InitializeAsync();
+            await Create(new InMemoryConversationStore()).InitializeAsync();
+            Trace.Flush();
+        }
+        finally
+        {
+            Trace.Listeners.Remove(listener);
+        }
+
+        output
+            .ToString()
+            .Split("hierarchy initialization is falling back", StringSplitOptions.None)
+            .Should()
+            .HaveCount(2, "the warning text should occur exactly once");
+    }
+
+    [Fact]
+    public async Task StampUnownedThreadsAsync_BlocksHierarchyUntilBulkRepairCompletes()
+    {
+        var metadata = new Dictionary<string, ThreadMetadata>(StringComparer.Ordinal)
+        {
+            ["root"] = new ThreadMetadata { ThreadId = "root", LastUpdated = 0 },
+            ["subagent-child"] = Child("subagent-child", "root"),
+            ["subagent-foreign"] = Child("subagent-foreign", "root", "tenant-b"),
+        };
+        var inner = new Mock<IConversationStore>(MockBehavior.Strict);
+        var relations = inner.As<IConversationRelationStore>();
+        var ownership = inner.As<IConversationOwnershipStore>();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        relations
+            .Setup(store => store.ListSubAgentParentLinksAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new ConversationParentLink("subagent-child", "root"), new("subagent-foreign", "root")]);
+        inner
+            .Setup(store => store.LoadMetadataAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(
+                (string threadId, CancellationToken _) => metadata.TryGetValue(threadId, out var row) ? row : null
+            );
+        ownership
+            .Setup(store => store.StampUnownedThreadsAsync("legacy", It.IsAny<CancellationToken>()))
+            .Returns(
+                async (string _, CancellationToken ct) =>
+                {
+                    entered.SetResult();
+                    await release.Task.WaitAsync(ct);
+                    var unstamped = metadata.Values.Where(row => row.TenantId is null).ToArray();
+                    foreach (var row in unstamped)
+                    {
+                        metadata[row.ThreadId] = row with { TenantId = "legacy" };
+                    }
+
+                    return unstamped.Length;
+                }
+            );
+        var store = Create(inner.Object);
+
+        var stamping = store.StampUnownedThreadsAsync("legacy");
+        await entered.Task;
+        var busy = await Assert.ThrowsAsync<IndexedConversationStore.HierarchyBusyException>(() =>
+            store.ReadChildrenAsync("root", recursive: true)
+        );
+        release.SetResult();
+        var stamped = await stamping;
+        var children = await store.ReadChildrenAsync("root", recursive: true);
+
+        busy.Reason.Should().Be("pending_publication");
+        stamped.Should().Be(2);
+        metadata["root"].TenantId.Should().Be("legacy");
+        metadata["subagent-child"].TenantId.Should().Be("legacy");
+        metadata["subagent-foreign"].TenantId.Should().Be("tenant-b");
+        children.Should().ContainSingle(node => node.ThreadId == "subagent-child");
+        relations.VerifyAll();
+        ownership.VerifyAll();
     }
 
     [Fact]
@@ -309,4 +459,103 @@ public sealed class IndexedConversationStoreTests : IDisposable
             .Should()
             .BeNull();
     }
+
+    [Fact]
+    public async Task Decorators_AnswerRelationAndUsageReads_FromMetadata_WhenTheWrappedStoreLacksTheCapabilities()
+    {
+        // Both decorators declare the relation and usage capabilities whatever they wrap, so callers that
+        // test for a capability take the compact path through them. Over a store without those
+        // capabilities the members must read metadata as the callers' own fallbacks do, not throw.
+        var inner = new InMemoryConversationStore();
+        await inner.SaveMetadataAsync("subagent-b", Child("subagent-b", "root"));
+        await inner.SaveMetadataAsync("subagent-a", Child("subagent-a", "root"));
+        await inner.SaveMetadataAsync(
+            "fork",
+            ConversationLineage.Write(
+                new ThreadMetadata { ThreadId = "fork", LastUpdated = 0 },
+                new ConversationLineage
+                {
+                    ForkedFrom = new ForkPoint
+                    {
+                        ThreadId = "root",
+                        MessageId = "message-1",
+                        Seq = 1,
+                    },
+                }
+            )
+        );
+
+        foreach (var store in new IConversationStore[] { Create(inner), new NonOwningConversationStore(inner) })
+        {
+            var relations = (IConversationRelationStore)store;
+            (await relations.ListSubAgentParentLinksAsync())
+                .Should()
+                .Equal(
+                    new ConversationParentLink("subagent-a", "root"),
+                    new ConversationParentLink("subagent-b", "root")
+                );
+            (await relations.ListDirectForkThreadIdsAsync("root")).Should().Equal("fork");
+        }
+
+        // A delta writer hands over only the new record, so the metadata write must union it with the
+        // records already persisted rather than replace them.
+        var first = UsageAttempt("a1", inputTokens: 100, revision: 1);
+        var second = UsageAttempt("b1", inputTokens: 50, revision: 2);
+        await ConversationUsageProjection.SaveAsync(
+            Create(inner),
+            ConversationUsageAggregate.Fold("root", [first], foldedRevision: 1),
+            [first]
+        );
+        await ConversationUsageProjection.SaveAsync(
+            new NonOwningConversationStore(inner),
+            ConversationUsageAggregate.Fold("root", [first, second], foldedRevision: 2),
+            [second]
+        );
+
+        foreach (var store in new IConversationStore[] { Create(inner), new NonOwningConversationStore(inner) })
+        {
+            var usage = await ConversationUsageProjection.LoadSnapshotAsync(store, "root");
+            usage!.Records.Select(record => record.ProviderAttemptId).Should().BeEquivalentTo(["a1", "b1"]);
+            usage.FoldedRevision.Should().Be(2);
+        }
+    }
+
+    [Fact]
+    public async Task Decorators_ForwardUsageCapability_WithoutWritingHierarchyMetadata()
+    {
+        Directory.CreateDirectory(_directory);
+        await using var inner = new SqliteConversationStore(Path.Combine(_directory, "usage.db"));
+        var first = UsageAttempt("a1", inputTokens: 100, revision: 1);
+        var second = UsageAttempt("b1", inputTokens: 50, revision: 2);
+
+        await ConversationUsageProjection.SaveAsync(
+            Create(inner),
+            ConversationUsageAggregate.Fold("root", [first], foldedRevision: 1),
+            [first]
+        );
+        await ConversationUsageProjection.SaveAsync(
+            new NonOwningConversationStore(inner),
+            ConversationUsageAggregate.Fold("root", [first, second], foldedRevision: 2),
+            [second]
+        );
+
+        (await inner.LoadUsageAsync("root"))!
+            .Records.Select(record => record.ProviderAttemptId)
+            .Should()
+            .BeEquivalentTo(["a1", "b1"]);
+        (await inner.LoadMetadataAsync("root")).Should().BeNull();
+        SqliteConnection.ClearAllPools();
+    }
+
+    private static UsageRecord UsageAttempt(string attemptId, int inputTokens, long revision) =>
+        new()
+        {
+            LogicalCallId = attemptId,
+            ProviderAttemptId = attemptId,
+            RootConversationId = "root",
+            RequestedModel = "m",
+            InputTokens = inputTokens,
+            OutputTokens = 10,
+            Revision = revision,
+        };
 }

@@ -88,6 +88,8 @@ public sealed class AgentHierarchyService(
     SubAgentScanCoverageCache scanCoverageCache
 )
 {
+    private static int s_relationFallbackWarningLogged;
+
     /// <summary>
     ///     Assembles one conversation's agent rows: the live sub-agent/workflow snapshot, unioned with the
     ///     durable tab index, projected through the collaboration hierarchy when it is enabled.
@@ -511,7 +513,9 @@ public sealed class AgentHierarchyService(
     ///     whole persisted graph, just this one conversation's own children.
     /// </summary>
     /// <remarks>
-    ///     <b>One call, deliberately — not a paging loop.</b>
+    ///     <b>One roster call, deliberately — not a paging loop.</b> A compact-capable store returns all
+    ///     parent links in that call and only the direct candidates are point-loaded. Other stores retain
+    ///     the complete metadata-listing fallback.
     ///     <see cref="IConversationStore.ListThreadsAsync(int, int, ConversationListOptions, CancellationToken)"/> is contractually "ordered by last updated
     ///     descending", so paging with a growing offset sorts on a column the live conversations being
     ///     scanned are mutating: a thread touched between two pages moves toward the front and pushes an
@@ -533,6 +537,42 @@ public sealed class AgentHierarchyService(
         // rather than guessing at a sentinel one.
         logger.LogDebug("Reading complete persisted child roster for {ThreadId}", threadId);
         var scope = await SubAgentScanScope.ForRootAsync(store, threadId, ct);
+        if (store is IConversationRelationStore relations)
+        {
+            var links = await relations.ListSubAgentParentLinksAsync(ct);
+            var metadata = new List<ThreadMetadata>();
+            foreach (
+                var childId in links
+                    .Where(link => string.Equals(link.ParentThreadId, threadId, StringComparison.Ordinal))
+                    .Select(link => link.ThreadId)
+            )
+            {
+                var child = await store.LoadMetadataAsync(childId, ct);
+                if (child is not null && (scope is null || scope.Admits(child)))
+                {
+                    metadata.Add(child);
+                }
+            }
+
+            return
+            [
+                .. metadata
+                    .OrderByDescending(row => row.LastUpdated)
+                    .ThenByDescending(row => row.ThreadId, StringComparer.Ordinal)
+                    .Select(row => SubAgentProvenance.TryProject(row, threadId))
+                    .OfType<SubAgentSummary>(),
+            ];
+        }
+
+        if (Interlocked.Exchange(ref s_relationFallbackWarningLogged, 1) == 0)
+        {
+            logger.LogWarning(
+                "Conversation store {StoreType} does not implement {Capability}; persisted child discovery is falling back to full conversation listing",
+                store.GetType().Name,
+                nameof(IConversationRelationStore)
+            );
+        }
+
         var threads =
             (
                 scope is null

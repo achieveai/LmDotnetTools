@@ -1,7 +1,9 @@
 using System.Collections.Immutable;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
+using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using TodoEval.Runner.Metrics;
 using TodoEval.Runner.Sweep;
 
@@ -86,6 +88,91 @@ public class ConversationDbExportTests : IDisposable
         var threads = ConversationStoreReader.LoadAllThreads(exported).ToDictionary(t => t.ThreadId);
         threads["subagent-root-0001"].ParentThreadId.Should().Be("thread-root");
         threads["thread-root"].TodoBoardJson.Should().Be("""{"rows":[]}""");
+    }
+
+    [Fact]
+    public async Task Export_rehydrates_both_usage_keys_AndUsageReaderMatchesTheSourceAggregate()
+    {
+        const string ThreadId = "thread-usage";
+        var records = new[]
+        {
+            new UsageRecord
+            {
+                LogicalCallId = "call-1",
+                ProviderAttemptId = "thread-usage:g1",
+                RootConversationId = ThreadId,
+                RequestedModel = "model-a",
+                InputTokens = 100,
+                OutputTokens = 20,
+                CacheReadTokens = 30,
+                CacheWriteTokens = 10,
+                ReasoningTokens = 5,
+                ProviderReportedCostMicros = 1_000,
+                Revision = 1,
+            },
+            new UsageRecord
+            {
+                LogicalCallId = "call-2",
+                ProviderAttemptId = "thread-usage:g2",
+                RootConversationId = ThreadId,
+                RequestedModel = "model-b",
+                InputTokens = 50,
+                OutputTokens = 10,
+                EstimatedPublicCostMicros = 500,
+                Revision = 2,
+            },
+        };
+        var aggregate = ConversationUsageAggregate.Fold(
+            ThreadId,
+            records,
+            foldedRevision: 2,
+            UsageCompleteness.Complete
+        );
+        var database = Path.Combine(_temp, "conversations.db");
+        Directory.CreateDirectory(_temp);
+        await using (var sqlite = new SqliteConversationStore(database))
+        {
+            await sqlite.AppendUsageAsync(aggregate, records);
+            await sqlite.AppendUsageAsync(
+                aggregate with
+                {
+                    RootConversationId = "thread-aggregate-only",
+                    FoldedRevision = 10,
+                },
+                []
+            );
+        }
+
+        var exported = Path.Combine(_temp, "export");
+        await ConversationDbExport.ExportAsync(database, exported, CancellationToken.None);
+
+        var metadata = await new FileConversationStore(exported).LoadMetadataAsync(ThreadId);
+        metadata.Should().NotBeNull();
+        var properties = metadata!.Properties!;
+        properties.Should().ContainKey(ConversationUsageProjection.PropertyKey);
+        properties.Should().ContainKey(ConversationUsageProjection.RecordsPropertyKey);
+        var rows = UsageReader.ParseRecords(properties[ConversationUsageProjection.RecordsPropertyKey].ToString());
+        var rollup = UsageReader.Rollup(
+            rows,
+            new Dictionary<string, IReadOnlyCollection<string>>(StringComparer.Ordinal)
+        );
+        rollup.Totals.Records.Should().Be(records.Length);
+        rollup.Totals.InputTokens.Should().Be(aggregate.PerModel.Sum(row => row.InputTokens));
+        rollup.Totals.OutputTokens.Should().Be(aggregate.PerModel.Sum(row => row.OutputTokens));
+        rollup.Totals.CacheReadTokens.Should().Be(aggregate.PerModel.Sum(row => row.CacheReadTokens));
+        rollup.Totals.CacheWriteTokens.Should().Be(aggregate.PerModel.Sum(row => row.CacheWriteTokens));
+        rollup.Totals.ReasoningTokens.Should().Be(aggregate.PerModel.Sum(row => row.ReasoningTokens));
+        rollup.Totals.TotalTokens.Should().Be(aggregate.TotalTokens);
+        rollup.Cost.CostMicros.Should().Be(aggregate.PreferredCostMicros);
+
+        var aggregateOnlyMetadata = await new FileConversationStore(exported).LoadMetadataAsync(
+            "thread-aggregate-only"
+        );
+        aggregateOnlyMetadata!.Properties.Should().ContainKey(ConversationUsageProjection.PropertyKey);
+        aggregateOnlyMetadata.Properties.Should().NotContainKey(ConversationUsageProjection.RecordsPropertyKey);
+        (await ConversationUsageProjection.LoadAsync(new FileConversationStore(exported), "thread-aggregate-only"))
+            .Should()
+            .BeEquivalentTo(aggregate with { RootConversationId = "thread-aggregate-only", FoldedRevision = 10 });
     }
 
     [Fact]
