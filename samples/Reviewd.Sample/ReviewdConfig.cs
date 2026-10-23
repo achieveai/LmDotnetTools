@@ -8,6 +8,7 @@ namespace Reviewd.Sample;
 internal sealed class ReviewdConfig(IConfiguration configuration) : IDisposable
 {
     private HttpClient? _s2sTransport;
+    private ConversationListingCache? _listing;
 
     public IConfiguration Configuration { get; } = configuration;
     public string GatewayUrl =>
@@ -79,7 +80,10 @@ internal sealed class ReviewdConfig(IConfiguration configuration) : IDisposable
             BaseAddress = address,
             Timeout = TimeSpan.FromSeconds(120),
         };
-        return new LmStreamingS2SClient(_s2sTransport, S2SSecret, AppId, AppKey);
+        // Every review in this process reads one copy of the listing. A thread missing from it is fetched for again
+        // after 30s, so a conversation another process just created is not hidden for the whole copy's life.
+        _listing ??= new ConversationListingCache(TimeSpan.FromMinutes(10), TimeSpan.FromSeconds(30));
+        return new LmStreamingS2SClient(_s2sTransport, S2SSecret, AppId, AppKey, _listing);
     }
 
     public SandboxClient CreateSandboxClient(TimeSpan? executionTimeout = null) =>
