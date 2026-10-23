@@ -990,7 +990,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         );
         await _store.SaveMetadataAsync("unrelated", CreateTestMetadata("unrelated"));
 
-        await using var connection = new SqliteConnection($"Data Source={_databasePath}");
+        await using var connection = new SqliteConnection($"Data Source={_databasePath};Pooling=False");
         await connection.OpenAsync();
         await using (var poison = connection.CreateCommand())
         {
@@ -1258,7 +1258,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         string threadId
     )
     {
-        await using var connection = new SqliteConnection($"Data Source={_databasePath}");
+        await using var connection = new SqliteConnection($"Data Source={_databasePath};Pooling=False");
         await connection.OpenAsync();
         using var command = connection.CreateCommand();
         command.CommandText = """
