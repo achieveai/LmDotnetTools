@@ -70,6 +70,11 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
     {
         builder.UseEnvironment("Production");
 
+        // TestServer has no network address, so a gateway can never call this host back. Left on, every sandbox a
+        // test creates registers its event webhook at the sample's PublicBaseUrl (127.0.0.1:5000), and the gateway
+        // delivers to whatever else owns that port. Set before the per-test settings so a test can turn it back on.
+        builder.UseSetting("Auth:Webhook:RegisterEventWebhook", "false");
+
         // Per-test configuration overrides (e.g. "Auth:Webhook:HoldTimeoutSeconds") without
         // touching process-global environment variables.
         if (_settings is not null)

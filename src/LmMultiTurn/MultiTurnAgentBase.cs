@@ -138,6 +138,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     // start should treat prior Queued/InProgress rows as dangling).
     private bool _runLedgerReconciled;
 
+    // Receipt ids THIS instance durably accepted while its run-ledger reconciliation was still
+    // pending; null once reconciliation has finished. The pool starts RunAsync in the background and
+    // hands the agent straight to the send path, so a new thread's first input can be recorded
+    // before reconciliation reads the accepted-input records. Such an input is in this instance's
+    // own channel, about to run, so it is not a restart orphan. Guarded by _ownAcceptsLock.
+    private HashSet<string>? _acceptedBeforeReconcile = new(StringComparer.Ordinal);
+    private readonly object _ownAcceptsLock = new();
+
     // The same once-per-process guard for lifecycle runs, kept separate because lifecycle
     // persistence and run-ledger persistence are configured independently.
     private bool _lifecycleReconciled;
@@ -1808,6 +1816,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
         if (RunLedgerStore != null)
         {
+            // Noted BEFORE the durable write, so a reconciliation whose read can see the record is
+            // guaranteed to see that this instance owns it (see _acceptedBeforeReconcile).
+            lock (_ownAcceptsLock)
+            {
+                _ = _acceptedBeforeReconcile?.Add(receiptId);
+            }
+
             // Persist acceptance BEFORE attempting to enqueue. A store failure here propagates
             // to the caller (surfaces as an HTTP 500) with no channel write attempted, so an
             // accepted-input record is never left dangling without a corresponding enqueue
@@ -3444,7 +3459,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     ///   input was durably accepted (see <see cref="TrySendAsync(UserInput, CancellationToken)"/>) but the
     ///   process crashed
     ///   before a run was ever assigned to it. A synthetic orphan ledger row is created so
-    ///   resolving by that inputId needs no restart-specific branch of its own.
+    ///   resolving by that inputId needs no restart-specific branch of its own. An input THIS
+    ///   instance accepted is excluded: it is queued here, not left behind by a crash.
     /// Reconciliation failures are logged and swallowed — a transient store fault here must not
     /// prevent the agent from starting.
     /// </summary>
@@ -3487,9 +3503,17 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             }
 
             var acceptedInputIds = await RunLedgerStore.ListAcceptedInputIdsAsync(ThreadId, ct);
+
+            // Snapshot taken AFTER the read: every id the read could see was noted before its write.
+            HashSet<string> ownAccepts;
+            lock (_ownAcceptsLock)
+            {
+                ownAccepts = new HashSet<string>(_acceptedBeforeReconcile ?? [], StringComparer.Ordinal);
+            }
+
             foreach (var inputId in acceptedInputIds)
             {
-                if (coveredInputIds.Contains(inputId))
+                if (coveredInputIds.Contains(inputId) || ownAccepts.Contains(inputId))
                 {
                     continue;
                 }
@@ -3519,6 +3543,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                 "Run-ledger reconciliation failed for thread {ThreadId}; continuing without it",
                 ThreadId
             );
+        }
+        finally
+        {
+            // Never runs again for this instance, so later accepts need no tracking.
+            lock (_ownAcceptsLock)
+            {
+                _acceptedBeforeReconcile = null;
+            }
         }
     }
 

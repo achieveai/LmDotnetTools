@@ -29,7 +29,7 @@ namespace LmStreaming.Sample.Persistence;
 /// store owns its own lifetime and is disposed by the host, not by any child.
 /// </para>
 /// </remarks>
-public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerStore
+public sealed class NonOwningConversationStore : IConversationStore, IConversationThreadIdLookupStore, IRunLedgerStore
 {
     private readonly IConversationStore _conversation;
     private readonly IRunLedgerStore? _runLedger;
@@ -202,6 +202,10 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
         ConversationListOptions? options = null,
         CancellationToken ct = default
     ) => _conversation.ListThreadsAsync(scope, limit, offset, options, ct);
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<string>> ListThreadIdsByPrefixAsync(string prefix, CancellationToken ct = default) =>
+        ConversationThreadIdLookup.ListThreadIdsByPrefixAsync(_conversation, prefix, ct);
 
     // === IRunLedgerStore ===
 

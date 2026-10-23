@@ -682,6 +682,61 @@ public class SqliteConversationStoreTests : IAsyncLifetime
 
     #endregion
 
+    #region ListThreadIdsByPrefixAsync Tests
+
+    [Fact]
+    public async Task ListThreadIdsByPrefixAsync_UsesThePrimaryKeyWithoutReadingMetadata()
+    {
+        const string Prefix = "subagent-scope-agent-";
+        var matching = new[] { $"{Prefix}1", $"{Prefix}10", $"{Prefix}2" };
+        foreach (var threadId in matching.Append(Prefix[..^1]))
+        {
+            await _store.SaveMetadataAsync(threadId, CreateTestMetadata(threadId));
+        }
+
+        await using var connection = new SqliteConnection($"Data Source={_databasePath}");
+        await connection.OpenAsync();
+        await using (var poison = connection.CreateCommand())
+        {
+            poison.CommandText = """
+                UPDATE thread_metadata
+                SET metadata_json = zeroblob(2000000)
+                WHERE thread_id >= $prefix AND thread_id < $upper_bound;
+                """;
+            _ = poison.Parameters.AddWithValue("$prefix", Prefix);
+            _ = poison.Parameters.AddWithValue("$upper_bound", "subagent-scope-agent.");
+            _ = await poison.ExecuteNonQueryAsync();
+        }
+
+        var ids = await _store.ListThreadIdsByPrefixAsync(Prefix);
+        var absent = await _store.ListThreadIdsByPrefixAsync("subagent-absent-agent-");
+
+        ids.Should().Equal(matching);
+        absent.Should().BeEmpty();
+
+        await using var explain = connection.CreateCommand();
+        explain.CommandText = """
+            EXPLAIN QUERY PLAN
+            SELECT thread_id
+            FROM thread_metadata
+            WHERE thread_id >= $prefix
+              AND thread_id < $upper_bound
+            ORDER BY thread_id;
+            """;
+        _ = explain.Parameters.AddWithValue("$prefix", Prefix);
+        _ = explain.Parameters.AddWithValue("$upper_bound", "subagent-scope-agent.");
+        var plan = new List<string>();
+        await using var reader = await explain.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            plan.Add(reader.GetString(3));
+        }
+
+        plan.Should().ContainSingle(detail => detail.Contains("USING COVERING INDEX", StringComparison.Ordinal));
+    }
+
+    #endregion
+
     #region Schema Initialization Tests
 
     [Fact]

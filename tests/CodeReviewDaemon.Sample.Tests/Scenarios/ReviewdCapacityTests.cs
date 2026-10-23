@@ -2,6 +2,7 @@ extern alias Reviewd;
 
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.Misc.Storage;
+using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Reviewd::Reviewd.Sample;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
@@ -196,7 +197,7 @@ public sealed class ReviewdCapacityTests
             async Task<JsonObject> PreviewAsync(JsonObject supplied, string session = "new-session")
             {
                 // Pooled connections keep the file open; on Windows File.ReadAllBytes cannot open it then.
-                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+                ReviewdSqlitePools.Clear(database);
                 var before = await File.ReadAllBytesAsync(database);
                 var report = await ReviewCapacity.PreviewAsync(
                     database,
@@ -206,7 +207,7 @@ public sealed class ReviewdCapacityTests
                     supplied,
                     CancellationToken.None
                 );
-                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+                ReviewdSqlitePools.Clear(database);
                 (await File.ReadAllBytesAsync(database)).Should().Equal(before);
                 report["previewOnly"]!.GetValue<bool>().Should().BeTrue();
                 report["boundary"]!
@@ -222,7 +223,7 @@ public sealed class ReviewdCapacityTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
     }

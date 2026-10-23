@@ -1,5 +1,6 @@
 extern alias Reviewd;
 
+using System.Globalization;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.Misc.Storage;
 using AchieveAi.LmDotnetTools.Sandbox;
@@ -409,8 +410,760 @@ public sealed class ReviewdAutoSlotTests : IDisposable
     [InlineData("broken", 1, "")]
     public async Task Prepare_refuses_a_slot_off_the_idle_baseline_as_not_idle(string verify, int exit, string output)
     {
+        // Only a ReviewError from the baseline check is a busy slot; any other failure still surfaces.
+        const string harness = """
+            import ast, json, sys
+            tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
+            rules = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('slot_not_idle', 'admit_baseline')]
+            class ReviewError(Exception): pass
+            scope = {'json': json, 'sys': sys, 'ReviewError': ReviewError}
+            exec(compile(ast.Module(rules, []), 'admission', 'exec'), scope)
+            def stale(): raise ReviewError('off baseline')
+            def broken(): raise RuntimeError('git is missing')
+            scope['admit_baseline']({'stale': stale, 'idle': lambda: None, 'broken': broken}[sys.argv[2]])
+            print('admitted')
+            """;
+        var (exitCode, stdout, stderr) = await RunSandboxRuleAsync(harness, verify);
+
+        exitCode.Should().Be(exit, stderr);
+        stdout.Trim().Should().Be(output);
+    }
+
+    [SkippableTheory]
+    // A reclaim that released the native marker and then died before releasing the SQLite owner must be able to
+    // finish on the next reap, or the slot stays blocked forever (seen live: 8 hours after a batch restart).
+    [InlineData("released", "mine", "discard", true)]
+    [InlineData("released", "other", "discard", true)]
+    [InlineData("released", "mine", "failedPreparation", true)]
+    [InlineData("owned", "other", "failedPreparation", true)]
+    [InlineData("missing", "mine", "failedPreparation", true)]
+    // A live owner, or a normal cleanup, never takes over someone else's marker or re-releases its own.
+    [InlineData("owned", "other", "discard", false)]
+    [InlineData("owned", "mine", "discard", false)]
+    [InlineData("released", "mine", "none", false)]
+    [InlineData("missing", "mine", "discard", false)]
+    public async Task Cleanup_adopts_only_a_natively_free_or_orphaned_marker(
+        string state,
+        string token,
+        string mode,
+        bool adopted
+    )
+    {
+        const string harness = """
+            import ast, json, sys
+            tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
+            rules = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'adoptable']
+            scope = {}
+            exec(compile(ast.Module(rules, []), 'cleanup', 'exec'), scope)
+            state, token, mode = sys.argv[2:5]
+            previous = None if state == 'missing' else {'claimToken': token, 'pr': 7, 'state': state}
+            args = {'claimToken': 'mine'}
+            if mode != 'none':
+                args[mode] = True
+            print(scope['adoptable'](previous, args))
+            """;
+        var (exitCode, stdout, stderr) = await RunSandboxRuleAsync(harness, state, token, mode);
+
+        exitCode.Should().Be(0, stderr);
+        stdout.Trim().Should().Be(adopted ? "True" : "False");
+    }
+
+    [SkippableTheory]
+    // A forced discard resets the slot whatever the native records say, and names each disagreement for the log.
+    [InlineData("missing", "mine", 7, "", """["owner marker missing"]""")]
+    [InlineData("owned", "other", 7, "", """["owner marker held by claim other for PR 7"]""")]
+    [InlineData("released", "mine", 7, "", """["owner marker already released"]""")]
+    [InlineData("owned", "mine", 7, "8", """["slot prepared for PR 8"]""")]
+    [InlineData("owned", "mine", 7, "7", "[]")]
+    [InlineData("owned", "mine", 7, "", "[]")]
+    public async Task A_forced_cleanup_names_every_bookkeeping_disagreement_it_overrides(
+        string state,
+        string token,
+        int markerPr,
+        string preparedPr,
+        string expected
+    )
+    {
+        const string harness = """
+            import ast, json, sys
+            tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
+            rules = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'forced_overrides']
+            scope = {}
+            exec(compile(ast.Module(rules, []), 'cleanup', 'exec'), scope)
+            state, token, marker_pr, prepared_pr = sys.argv[2:6]
+            previous = None if state == 'missing' else {'claimToken': token, 'pr': int(marker_pr), 'state': state}
+            prepared = int(prepared_pr) if prepared_pr else None
+            print(json.dumps(scope['forced_overrides'](previous, {'claimToken': 'mine'}, 7, prepared)))
+            """;
+        var (exitCode, stdout, stderr) = await RunSandboxRuleAsync(
+            harness,
+            state,
+            token,
+            markerPr.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            preparedPr
+        );
+
+        exitCode.Should().Be(0, stderr);
+        stdout.Trim().Should().Be(expected);
+    }
+
+    [SkippableTheory]
+    // Kay9: activity decides when a step stops, never time alone. A step stops only once it has been idle for 10
+    // minutes and 60 minutes have passed since it started, whichever comes last. Minutes since the step started.
+    [InlineData(60, 60, false)] // an agent still active at 60 minutes keeps it running
+    [InlineData(60, 69, false)]
+    [InlineData(55, 64, false)] // idle from 55 minutes: stopped at 65
+    [InlineData(55, 65, true)]
+    [InlineData(20, 59, false)] // idle from 20 minutes: stopped at 60
+    [InlineData(20, 60, true)]
+    public async Task A_sandbox_step_stops_only_after_ten_idle_minutes_and_an_hour(
+        int lastActiveMinute,
+        int nowMinute,
+        bool stops
+    )
+    {
+        const string harness = """
+            import ast, sys
+            tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
+            # The script's own limits, not copies of them.
+            limits = [n for n in tree.body if isinstance(n, ast.Assign) and 'STEP_MIN' in ast.unparse(n.targets[0])]
+            rules = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'step_should_stop']
+            scope = {}
+            exec(compile(ast.Module(limits + rules, []), 'watchdog', 'exec'), scope)
+            print(scope['step_should_stop'](0, int(sys.argv[2]) * 60, int(sys.argv[3]) * 60))
+            """;
+        var (exitCode, stdout, stderr) = await RunSandboxRuleAsync(
+            harness,
+            lastActiveMinute.ToString(CultureInfo.InvariantCulture),
+            nowMinute.ToString(CultureInfo.InvariantCulture)
+        );
+
+        exitCode.Should().Be(0, stderr);
+        stdout.Trim().Should().Be(stops ? "True" : "False");
+    }
+
+    [SkippableTheory]
+    // The watchdog runs the rule on a real process tree, with the limits shortened to fractions of a second.
+    [InlineData("idle", true)] // nothing happens: it kills the step's processes, its own-session children too
+    [InlineData("agent", false)] // an agent keeps marking the step active
+    [InlineData("clock", false)] // an agent keeps marking it while the wall clock steps an hour forward
+    [InlineData("busy", false)] // a child process keeps using CPU
+    public async Task The_step_watchdog_kills_an_idle_step_and_spares_an_active_one(string activity, bool stopped)
+    {
+        Skip.IfNot(OperatingSystem.IsLinux(), "the watchdog reads /proc, so it runs only on Linux");
+        var pidFile = Path.Combine(Path.GetTempPath(), $"reviewd-step-{Guid.NewGuid():N}.pid");
+        var mark = Path.Combine(Path.GetTempPath(), $"reviewd-step-{Guid.NewGuid():N}.agents");
+        const string harness = """
+            import ast, json, os, subprocess, sys, threading, time, types
+            from pathlib import Path
+            tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
+            names = {'step_should_stop', 'step_processes', 'step_activity', 'process_start', 'watch_step'}
+            scope = {}
+            exec('import json, os, signal, sys, time', scope)
+            exec(compile(ast.Module([n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names], []), 'watchdog', 'exec'), scope)
+            scope.update(STEP_IDLE=0.5, STEP_MIN=0.2, STEP_SAMPLE=0.05, STEP_STOPPED=124)
+            activity, pid_file, mark = sys.argv[2], sys.argv[3], Path(sys.argv[4])
+            work = 'import time\nend = time.time() + 1.5\nwhile time.time() < end: pass' if activity == 'busy' else 'import time; time.sleep(30)'
+            # The kit starts its git children in their own sessions, so a process-group kill would miss them.
+            child = subprocess.Popen([sys.executable, '-c', work], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            open(pid_file, 'w').write(str(child.pid))
+            def keep_marking():
+                while True:
+                    mark.touch()
+                    time.sleep(0.05)
+            if activity in ('agent', 'clock'):
+                threading.Thread(target=keep_marking, daemon=True).start()
+            if activity == 'clock':
+                # The wall clock steps an hour forward once the watchdog has started; the monotonic clock does not.
+                begin = time.time()
+                scope['time'] = types.SimpleNamespace(
+                    time=lambda: time.time() + (3600 if time.time() - begin > 0.3 else 0),
+                    monotonic=time.monotonic,
+                    sleep=time.sleep,
+                )
+            # The heartbeat step-stop reads: this process, beating on every sample.
+            beat = Path(pid_file + '.watchdog')
+            watching = time.monotonic()
+            threading.Thread(target=scope['watch_step'], args=(mark, beat), daemon=True).start()
+            time.sleep(1.2 if activity != 'idle' else 10)
+            child.kill()
+            recorded = json.loads(beat.read_text())
+            # It records when the step started, and beats again well after. One sample scans all of /proc, which takes a
+            # few tenths of a second.
+            print('not stopped', recorded['pid'] == os.getpid(), 0 <= recorded['since'] - watching < 0.5, recorded['beat'] - watching > 0.5)
+            """;
+        try
+        {
+            var (exitCode, stdout, stderr) = await RunSandboxRuleAsync(harness, activity, pidFile, mark);
+
+            if (stopped)
+            {
+                exitCode.Should().Be(124, stdout + stderr);
+                stderr.Should().Contain("Step stopped: no activity");
+                var child = int.Parse(await File.ReadAllTextAsync(pidFile), CultureInfo.InvariantCulture);
+                var stat = $"/proc/{child}/stat";
+                for (var wait = 0; wait < 50 && File.Exists(stat) && !IsZombie(stat); wait++)
+                    await Task.Delay(20);
+                (!File.Exists(stat) || IsZombie(stat)).Should().BeTrue("the watchdog kills the step's children too");
+            }
+            else
+            {
+                exitCode.Should().Be(0, stderr);
+                stdout.Trim().Should().Be("not stopped True True True");
+            }
+        }
+        finally
+        {
+            File.Delete(pidFile);
+            File.Delete(pidFile + ".watchdog");
+            File.Delete(pidFile + ".watchdog.new");
+            File.Delete(mark);
+        }
+
+        static bool IsZombie(string stat)
+        {
+            try
+            {
+                return File.ReadAllText(stat).Split(')')[^1].TrimStart().StartsWith('Z');
+            }
+            catch (IOException)
+            {
+                return true;
+            }
+        }
+    }
+
+    [SkippableTheory]
+    // Kay9 (gap 1): when the watchdog itself is stuck, the client asks step-stop to end the step. It kills the step's
+    // recorded process tree, own-session children too, only once the heartbeat is 15 minutes stale, the step started an
+    // hour ago, and no agent mark is fresh.
+    [InlineData("stale", true)]
+    [InlineData("fresh", false)] // the watchdog beat a minute ago
+    [InlineData("clock", false)] // it beat a minute ago, though the wall clock stepped since and its file looks old
+    [InlineData("young", false)] // stale, but the step started only 30 minutes ago
+    [InlineData("agent", false)] // stale, but an agent marked the step active just now
+    [InlineData("agent-clock", false)] // an agent marked it a minute ago, though the wall clock stepped since
+    [InlineData("agent-old", true)] // the last agent mark is 16 minutes old
+    public async Task Step_stop_kills_a_step_only_when_its_watchdog_is_stale_and_no_agent_is_active(
+        string state,
+        bool killed
+    )
+    {
+        Skip.IfNot(OperatingSystem.IsLinux(), "step-stop reads /proc, so it runs only on Linux");
+        var marks = Directory.CreateTempSubdirectory("reviewd-steps-");
+        const string harness = """
+            import ast, json, os, subprocess, sys, time
+            from pathlib import Path
+            tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
+            names = {'step_processes', 'process_start', 'stop_step'}
+            scope = {}
+            exec('import json, os, signal, time', scope)
+            limits = [n for n in tree.body if isinstance(n, ast.Assign) and 'STEP_MIN' in ast.unparse(n.targets[0])]
+            exec(compile(ast.Module(limits + [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names], []), 'step_stop', 'exec'), scope)
+            state, marks, operation = sys.argv[2], Path(sys.argv[3]), 'a' * 32
+            work = 'import subprocess, sys, time\nsubprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)\ntime.sleep(30)'
+            step = subprocess.Popen([sys.executable, '-c', work])
+            children = []
+            for _ in range(500):
+                children = scope['step_processes'](step.pid)
+                if children:
+                    break
+                time.sleep(0.01)
+            beat = marks / f'{operation}.watchdog'
+            beat_age = 60 if state in ('fresh', 'clock') else 1000
+            since = time.monotonic() - (1800 if state == 'young' else 4000)
+            beat.write_text(json.dumps({'pid': step.pid, 'start': scope['process_start'](step.pid), 'since': since, 'beat': time.monotonic() - beat_age}))
+            # A wall-clock step changes only a file's time, never the monotonic time inside it.
+            now = time.time()
+            os.utime(beat, (now, now - (60 if state == 'fresh' else 1000)))
+            if state.startswith('agent'):
+                agent = marks / f'{operation}.agents'
+                agent.write_text(json.dumps({'at': time.monotonic() - (960 if state == 'agent-old' else 0 if state == 'agent' else 60)}))
+                os.utime(agent, (now, now - (1000 if state == 'agent-clock' else 0)))
+            result = scope['stop_step'](marks, operation, time.monotonic())
+            def ended(pid):
+                for _ in range(200 if result['stopped'] else 1):
+                    try:
+                        if open(f'/proc/{pid}/stat').read().rsplit(')', 1)[1].split()[0] == 'Z':
+                            return True
+                    except OSError:
+                        return True
+                    time.sleep(0.01)
+                return False
+            print(result['stopped'], bool(children) and all(ended(pid) for pid in children + [step.pid]))
+            for pid in children + [step.pid]:
+                try:
+                    os.kill(pid, 9)
+                except OSError:
+                    pass
+            step.wait()
+            """;
+        try
+        {
+            var (exitCode, stdout, stderr) = await RunSandboxRuleAsync(harness, state, marks.FullName);
+
+            exitCode.Should().Be(0, stderr);
+            stdout.Trim().Should().Be(killed ? "True True" : "False False");
+        }
+        finally
+        {
+            marks.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Every_sandbox_step_leaves_stopping_to_its_watchdog_and_names_its_operation()
+    {
+        // Nothing can cancel a gateway operation or extend its timeout, so a 10-minute timeout killed cleanups that
+        // were still working. Each step submits only a 24-hour backstop and tells its watchdog its own operation id,
+        // which is where the client's agent marks for that step go.
+        var gateway = new ScriptedSandboxGateway { CommandStdout = """{"ok":true}""" };
+        using var http = new HttpClient(gateway, disposeHandler: false);
+        using var sandbox = new SandboxClient(
+            new SandboxClientOptions(
+                new Uri("http://127.0.0.1:8080"),
+                "app",
+                "",
+                TimeSpan.FromMinutes(10),
+                TimeSpan.FromSeconds(30)
+            ),
+            http
+        );
+        var operation = Guid.NewGuid().ToString("N");
+
+        var result = await ReviewRunner.ExecuteSandboxAsync(
+            sandbox,
+            "sess-1",
+            "cleanup",
+            new JsonObject { ["pr"] = "7" },
+            operation,
+            CancellationToken.None
+        );
+
+        result["ok"]!.GetValue<bool>().Should().BeTrue();
+        using var body = System.Text.Json.JsonDocument.Parse(gateway.LastSubmitBody!);
+        body.RootElement.GetProperty("timeout_secs").GetInt64().Should().Be(24 * 60 * 60);
+        var payload = JsonNode.Parse(body.RootElement.GetProperty("args")[3].GetString()!)!;
+        payload["stepOperation"]!.GetValue<string>().Should().Be(operation);
+        payload["pr"]!.GetValue<string>().Should().Be("7");
+    }
+
+    [SkippableFact]
+    public async Task A_forced_cleanup_delayed_past_another_reset_cannot_discard_the_next_owner()
+    {
+        // Two reapers read the same lapsed claim A. One resets the slot, then a lane admits PR 8 under claim B. The
+        // other was delayed before the native lock and now runs its forced cleanup for A. Without a fence it would
+        // overwrite B's marker and discard B's prepared slot; SQLite refuses A's release only afterward.
         var python = await ReviewdSummaryReplyTests.FindPythonAsync();
-        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox's admission rule cannot be run");
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox script cannot be run");
+        Skip.IfNot(OperatingSystem.IsLinux(), "the sandbox script scans /proc, so it runs only on Linux");
+        var root = await NativeRootAsync();
+        try
+        {
+            var state = Path.Combine(root, "state");
+            var marker = Path.Combine(
+                Directory.CreateDirectory(Path.Combine(state, "reviewd-owners")).FullName,
+                "nova-2.json"
+            );
+            var prepared = Path.Combine(state, "prepared-nova-2.json");
+            var discards = Path.Combine(state, "discards.log");
+            await File.WriteAllTextAsync(marker, """{"claimToken": "A", "pr": 7, "state": "owned"}""");
+            await File.WriteAllTextAsync(prepared, """{"pr": 7}""");
+
+            (await PhaseAsync("cleanup", 7, "A", force: true)).ExitCode.Should().Be(0, "the first reaper resets A");
+            // The stub setup stops right after admission wrote B's marker; B's prepared slot is then written by hand.
+            (await PhaseAsync("prepare", 8, "B"))
+                .Stderr.Should()
+                .Contain("Setup stopped");
+            await File.WriteAllTextAsync(prepared, """{"pr": 8}""");
+            var stale = await PhaseAsync("cleanup", 7, "A", force: true);
+
+            stale.ExitCode.Should().NotBe(0);
+            stale.Stderr.Should().Contain("admitted again since this claim");
+            JsonNode.Parse(await File.ReadAllTextAsync(marker))!["claimToken"]!.GetValue<string>().Should().Be("B");
+            JsonNode.Parse(await File.ReadAllTextAsync(prepared))!["pr"]!.GetValue<int>().Should().Be(8);
+            (await File.ReadAllLinesAsync(discards)).Should().Equal("7");
+            // B itself still cleans up its own slot.
+            (await PhaseAsync("cleanup", 8, "B"))
+                .ExitCode.Should()
+                .Be(0);
+            (await File.ReadAllLinesAsync(discards)).Should().Equal("7", "8");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+
+        async Task<(int ExitCode, string Stderr)> PhaseAsync(string phase, int pr, string claim, bool force = false)
+        {
+            var (exitCode, _, stderr) = await NativePhaseAsync(python!, root, phase, pr, claim, force);
+            return (exitCode, stderr);
+        }
+    }
+
+    [SkippableFact]
+    public async Task A_reclaim_reaps_the_journal_of_a_killed_cleanup_and_names_it()
+    {
+        // Seen on the ADO runner: the gateway killed an owner cleanup, which left a slot-writer journal from another
+        // PID namespace with nothing alive behind it, and reclaim-slot then refused with "operator-scoped recovery
+        // required". A discard (reaper or reclaim-slot, after freeze and quiescence) reaps such a journal under the
+        // kit's own stale rule and names it in the overrides it logs.
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox script cannot be run");
+        Skip.IfNot(OperatingSystem.IsLinux(), "the sandbox script scans /proc, so it runs only on Linux");
+        var root = await NativeRootAsync();
+        try
+        {
+            var state = Path.Combine(root, "state");
+            await File.WriteAllTextAsync(
+                Path.Combine(state, "reviewd-owners", "nova-2.json"),
+                """{"claimToken": "A", "pr": 7, "state": "owned"}"""
+            );
+            await File.WriteAllTextAsync(Path.Combine(state, "prepared-nova-2.json"), """{"pr": 7}""");
+            var journal = Path.Combine(state, "slot-writer.json");
+            await File.WriteAllTextAsync(journal, "{}");
+
+            var (exitCode, stdout, stderr) = await NativePhaseAsync(python!, root, "cleanup", 7, "A");
+
+            exitCode.Should().Be(0, stderr);
+            JsonNode.Parse(stdout)!["forced"]!
+                .AsArray()
+                .Select(o => o!.GetValue<string>())
+                .Should()
+                .Equal("slot-writer journal (expired)");
+            File.Exists(journal).Should().BeFalse();
+            (await File.ReadAllLinesAsync(Path.Combine(state, "discards.log"))).Should().Equal("7");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [SkippableTheory]
+    // The journal's writer reuses this test process's live pid, group and session, recorded in another PID namespace
+    // (or in this one), started this many minutes ago.
+    [InlineData("other", 31, "reaped: expired")]
+    [InlineData("other", 5, "refused: Recorded slot writer is in another boot/PID namespace")]
+    [InlineData("same", 31, "refused: Recorded slot writer process group is still executable")]
+    public async Task The_kit_reaps_another_namespaces_journal_by_age_and_never_by_a_reused_pid(
+        string pidNamespace,
+        int startedMinutesAgo,
+        string outcome
+    )
+    {
+        // The kit cannot see a process in another PID namespace, so it never looks the writer up there: a pid reused
+        // by a live process here neither blocks nor confuses the reclaim. Such a journal is reaped once over 30
+        // minutes old. A writer recorded in this namespace is checked live, and a live group blocks.
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the kit cannot be run");
+        Skip.IfNot(OperatingSystem.IsLinux(), "the kit reads /proc, so it runs only on Linux");
+        var scripts = Path.Combine(
+            "samples",
+            "CodeReviewDaemon.Sample",
+            "review-host-kit",
+            "skills",
+            "review-setup",
+            "scripts"
+        );
+        var kit = new DirectoryInfo(AppContext.BaseDirectory);
+        while (kit is not null && !File.Exists(Path.Combine(kit.FullName, scripts, "review_common.py")))
+            kit = kit.Parent;
+        Skip.If(kit is null, "the review-host kit is not in this checkout");
+        const string harness = """
+            import json, os, sys, types
+            from datetime import datetime, timedelta, timezone
+            from pathlib import Path
+            sys.path.insert(0, sys.argv[1])
+            import review_common as rc
+            state = types.SimpleNamespace(directory=Path(sys.argv[2]), identity='test')
+            me = rc.process_identity(os.getpid())
+            writer = dict(me, pid_namespace='pid:[1]') if sys.argv[3] == 'other' else me
+            started = datetime.now(timezone.utc) - timedelta(minutes=int(sys.argv[4]))
+            journal = state.directory / 'slot-writers' / 'nova-2.json'
+            journal.parent.mkdir(parents=True)
+            journal.write_text(json.dumps({
+                'schema_version': 1, 'workspace_identity': 'test', 'repo_key': 'nova', 'slot_number': 2,
+                'operation': {'id': 'a' * 32, 'phase': 'pooled-reset', 'spawn_pending': False,
+                              'started_at': started.isoformat(), 'coordinator': writer, 'process': writer}}))
+            try:
+                print('reaped:', rc._slot_writer_assert_quiescent(state, 'nova', 2, reap_stale=True), journal.exists())
+            except rc.ReviewError as error:
+                print('refused:', error, journal.exists())
+            """;
+        var state = Directory.CreateTempSubdirectory("reviewd-kit-").FullName;
+        try
+        {
+            var start = new System.Diagnostics.ProcessStartInfo(python!)
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            foreach (
+                var argument in new[]
+                {
+                    "-I",
+                    "-c",
+                    harness,
+                    Path.Combine(kit!.FullName, scripts),
+                    state,
+                    pidNamespace,
+                    startedMinutesAgo.ToString(CultureInfo.InvariantCulture),
+                }
+            )
+                start.ArgumentList.Add(argument);
+            using var process = System.Diagnostics.Process.Start(start)!;
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            process.ExitCode.Should().Be(0, stderr);
+            var output = (await stdout).Trim();
+            output.Should().StartWith(outcome);
+            output.Should().EndWith(outcome.StartsWith("reaped", StringComparison.Ordinal) ? "False" : "True");
+        }
+        finally
+        {
+            Directory.Delete(state, recursive: true);
+        }
+    }
+
+    // A temporary workspace holding the sandbox script and the native stubs below, with an empty state directory.
+    private static async Task<string> NativeRootAsync()
+    {
+        var root = Directory.CreateTempSubdirectory("reviewd-sandbox-").FullName;
+        var scripts = Directory.CreateDirectory(Path.Combine(root, ".claude/skills/review-setup/scripts"));
+        foreach (var (name, source) in NativeStubs)
+            await File.WriteAllTextAsync(Path.Combine(scripts.FullName, name), source);
+        using (
+            var resource = typeof(ReviewRunner).Assembly.GetManifestResourceStream(
+                "Reviewd.Sample.ReviewRunnerSandbox.py"
+            )!
+        )
+        using (var file = File.Create(Path.Combine(root, "ReviewRunnerSandbox.py")))
+            await resource.CopyToAsync(file);
+        Directory.CreateDirectory(Path.Combine(root, "state", "reviewd-owners"));
+        return root;
+    }
+
+    private static async Task<(int ExitCode, string Stdout, string Stderr)> NativePhaseAsync(
+        string python,
+        string root,
+        string phase,
+        int pr,
+        string claim,
+        bool force = false,
+        bool discard = true
+    )
+    {
+        var args = new JsonObject
+        {
+            ["org"] = "org",
+            ["repo"] = "Nova",
+            ["pr"] = pr,
+            ["slot"] = 2,
+            ["head"] = new string('h', 40),
+            ["claimToken"] = claim,
+        };
+        if (phase == "cleanup")
+        {
+            args["discard"] = discard;
+            args["force"] = force;
+        }
+        var start = new System.Diagnostics.ProcessStartInfo(python)
+        {
+            WorkingDirectory = root,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        foreach (var argument in new[] { Path.Combine(root, "ReviewRunnerSandbox.py"), phase, args.ToJsonString() })
+            start.ArgumentList.Add(argument);
+        using var process = System.Diagnostics.Process.Start(start)!;
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return (process.ExitCode, await stdout, stderr);
+    }
+
+    // Just enough of the installed review-setup helpers for the sandbox script's prepare and cleanup phases to run
+    // against plain files: locks are no-ops, a discard logs the discarded PR, and setup always stops.
+    private static readonly (string Name, string Source)[] NativeStubs =
+    [
+        (
+            "review_common.py",
+            """
+            import contextlib, json
+            from pathlib import Path
+            from types import SimpleNamespace
+
+
+            class ReviewError(Exception):
+                pass
+
+
+            class ReviewState:
+                def __init__(self, root, read_only=False):
+                    self.directory = Path(root) / 'state'
+                    self.identity = 'test'
+
+                @contextlib.contextmanager
+                def lock(self, shared=False, phase=None):
+                    yield
+
+                @contextlib.contextmanager
+                def slot_lock(self, repo_key, slot, phase=None):
+                    yield
+
+                def prepared_slot_path(self, repo_key, slot):
+                    return self.directory / f'prepared-{repo_key}-{slot}.json'
+
+                def load_pool_run(self, repo_key, slot, dry_run=False):
+                    return None
+
+
+            class SourcePool:
+                def __init__(self, state, module):
+                    self.repo_key = 'nova'
+
+                def slot_relative_path(self, slot):
+                    return f'slots/{slot}'
+
+                def _verified_baseline(self):
+                    return 'baseline'
+
+                def _ensure_store(self):
+                    pass
+
+
+            def repo_slug(repo):
+                return repo.lower()
+
+
+            def safe_path(base, relative):
+                return Path(base) / relative
+
+
+            def run_git_read(path, args, check=True):
+                return SimpleNamespace(stdout='head\n', returncode=0)
+
+
+            def atomic_json(path, value):
+                Path(path).write_text(json.dumps(value))
+
+
+            def lock_session(timeout):
+                return contextlib.nullcontext()
+
+
+            # A slot-writer journal is the file 'slot-writer.json'; it always reads as a dead writer from another PID
+            # namespace, which the kit refuses unless the caller opts into reaping it as stale.
+            def _slot_writer_assert_quiescent(state, repo_key, slot, *, reap_stale=False, requested_pr=None,
+                                              dry_run=False):
+                journal = state.directory / 'slot-writer.json'
+                if not journal.exists():
+                    return None
+                if not reap_stale:
+                    raise ReviewError('Recorded slot writer is in another boot/PID namespace; retirement is unproven '
+                                      'and operator-scoped recovery is required.')
+                if not dry_run:
+                    journal.unlink()
+                return 'expired'
+
+
+            def slot_writer_scope(state, repo_key, slot, *, phase, reap_stale=False, requested_pr=None):
+                _slot_writer_assert_quiescent(state, repo_key, slot, reap_stale=reap_stale, requested_pr=requested_pr)
+                return contextlib.nullcontext()
+
+
+            def git_status(*args, **kwargs):
+                return ''
+
+
+            def git_ignored_paths(*args, **kwargs):
+                return []
+
+
+            inspect_checkout_preservation = preserve_checkout_generation = verify_preservation_archive = None
+            preservation_generation = file_hash = None
+            """
+        ),
+        (
+            "review_pool_admin.py",
+            """
+            def select_module_by_name(root, repo):
+                return {'path': 'src/Nova', 'provider': 'github', 'owner': 'org', 'repository': 'Nova'}
+            """
+        ),
+        (
+            "review_github.py",
+            """
+            class GitHubClient:
+                def __init__(self, owner, repository):
+                    pass
+
+
+            def fetch_pr(client, pr):
+                return {'base': {'repo': {'name': 'Nova', 'owner': {'login': 'org'}}}}
+
+
+            def live_state(payload):
+                return {'prId': '8', 'status': 'active', 'isDraft': False, 'createdAt': None, 'headSha': 'h' * 40,
+                        'mergeSha': 'm' * 40}
+
+
+            def select_provider(*args, **kwargs):
+                return None
+            """
+        ),
+        (
+            "review_git_prepare.py",
+            """
+            def _verify_postconditions(*args, **kwargs):
+                pass
+
+
+            def prepare(**kwargs):
+                return 1
+            """
+        ),
+        (
+            "review_reset.py",
+            """
+            import json
+
+
+            def _discard_prepared_slot(state, pool, slot, confirm=None):
+                path = state.prepared_slot_path(pool.repo_key, slot)
+                with open(state.directory / 'discards.log', 'a') as log:
+                    log.write(f"{json.loads(path.read_text())['pr']}\n")
+                path.unlink()
+                return {'status': 'discarded'}
+
+
+            def reset_pool_run_locked(*args, **kwargs):
+                return {'status': 'reset'}
+            """
+        ),
+        (
+            "review_setup.py",
+            """
+            prepare = None
+
+
+            def route(**kwargs):
+                return 1
+            """
+        ),
+    ];
+
+    // Runs a harness that loads rules from the embedded sandbox script (passed as its first argument).
+    private static async Task<(int ExitCode, string Stdout, string Stderr)> RunSandboxRuleAsync(
+        string harness,
+        params string[] arguments
+    )
+    {
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox's rules cannot be run");
         var script = Path.Combine(Path.GetTempPath(), $"reviewd-sandbox-{Guid.NewGuid():N}.py");
         using (
             var resource = typeof(ReviewRunner).Assembly.GetManifestResourceStream(
@@ -421,33 +1174,18 @@ public sealed class ReviewdAutoSlotTests : IDisposable
             await resource.CopyToAsync(file);
         try
         {
-            // Only a ReviewError from the baseline check is a busy slot; any other failure still surfaces.
-            const string harness = """
-                import ast, json, sys
-                tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
-                rules = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('slot_not_idle', 'admit_baseline')]
-                class ReviewError(Exception): pass
-                scope = {'json': json, 'sys': sys, 'ReviewError': ReviewError}
-                exec(compile(ast.Module(rules, []), 'admission', 'exec'), scope)
-                def stale(): raise ReviewError('off baseline')
-                def broken(): raise RuntimeError('git is missing')
-                scope['admit_baseline']({'stale': stale, 'idle': lambda: None, 'broken': broken}[sys.argv[2]])
-                print('admitted')
-                """;
-            var start = new System.Diagnostics.ProcessStartInfo(python!)
+            var start = new System.Diagnostics.ProcessStartInfo(python)
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
             };
-            foreach (var argument in new[] { "-c", harness, script, verify })
+            foreach (var argument in new[] { "-c", harness, script }.Concat(arguments))
                 start.ArgumentList.Add(argument);
             using var process = System.Diagnostics.Process.Start(start)!;
             var stdout = await process.StandardOutput.ReadToEndAsync();
             var stderr = await process.StandardError.ReadToEndAsync();
             await process.WaitForExitAsync();
-
-            process.ExitCode.Should().Be(exit, stderr);
-            stdout.Trim().Should().Be(output);
+            return (process.ExitCode, stdout, stderr);
         }
         finally
         {
@@ -466,7 +1204,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
 
     public void Dispose()
     {
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        ReviewdSqlitePools.Clear(_database);
         foreach (var file in Directory.GetFiles(Path.GetTempPath(), Path.GetFileName(_database) + "*"))
             File.Delete(file);
     }

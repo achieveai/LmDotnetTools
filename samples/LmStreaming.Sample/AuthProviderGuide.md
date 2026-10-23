@@ -171,6 +171,7 @@ All settings live under the **`Auth`** configuration section (bound to
 | `Auth:Webhook:HoldTimeoutSeconds` | `120` | Deferred auth: how long a not-signed-in webhook call is held open while the chat UI prompts for sign-in. `0` disables deferral (immediate deny). |
 | `Auth:Webhook:PollIntervalSeconds` | `1.0` | Deferred auth: interval between token-acquisition attempts while a webhook call is held. |
 | `Auth:Webhook:UseSandboxWebhook` | `true` in this sample (`false` in LmAgentInfra) | New sandboxes register the gateway's unified webhook (`POST {PublicBaseUrl}/api/sandbox/webhook`) for `context_discovery` and `task_completed`, instead of the legacy discovery webhook. A finished background `Bash`/`PowerShell` task then reaches the agent that started it as a "Background task ended" notice. **Set `false` for a gateway at or below v0.1.16**: it ignores the unified webhook, so discoveries would stop. |
+| `Auth:Webhook:RegisterEventWebhook` | `true` | New sandboxes register the event webhook above. Set `false` when the gateway cannot reach this host, such as an in-memory test server (the E2E tests do this): otherwise the gateway sends every event to whatever else runs on the `PublicBaseUrl` port. Auth-provider callbacks are unaffected. |
 
 ### Sandbox webhook (`api/sandbox/webhook`)
 

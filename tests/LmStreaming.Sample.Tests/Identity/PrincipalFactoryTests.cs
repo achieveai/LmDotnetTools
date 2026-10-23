@@ -5,7 +5,6 @@ using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using LmStreaming.Sample.Identity;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -146,7 +145,7 @@ public sealed class PrincipalFactoryTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
         await _factory.DisposeAsync();
-        SqliteConnection.ClearAllPools();
+        SqliteConnectionFactory.ClearPool(_databasePath);
         await Task.Delay(50);
         foreach (var suffix in new[] { "", "-wal", "-shm" })
         {

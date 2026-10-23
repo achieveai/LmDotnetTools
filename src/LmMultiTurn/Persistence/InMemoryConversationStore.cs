@@ -8,6 +8,7 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 /// </summary>
 public sealed class InMemoryConversationStore
     : IConversationStore,
+        IConversationThreadIdLookupStore,
         IConversationOwnershipStore,
         IRunLedgerStore,
         IRunLifecycleStore,
@@ -207,6 +208,22 @@ public sealed class InMemoryConversationStore
         }
 
         return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<string>> ListThreadIdsByPrefixAsync(string prefix, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(prefix);
+        ct.ThrowIfCancellationRequested();
+
+        lock (_messagesLock)
+        {
+            return Task.FromResult<IReadOnlyList<string>>([
+                .. GetAllThreadIds()
+                    .Where(threadId => threadId.StartsWith(prefix, StringComparison.Ordinal))
+                    .Order(StringComparer.Ordinal),
+            ]);
+        }
     }
 
     /// <inheritdoc />

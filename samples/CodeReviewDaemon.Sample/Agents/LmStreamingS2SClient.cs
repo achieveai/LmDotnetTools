@@ -34,13 +34,24 @@ internal sealed class LmStreamingS2SClient
     private readonly string? _sandboxAppId;
     private readonly string? _sandboxAppKey;
 
-    public LmStreamingS2SClient(HttpClient httpClient, string? s2sSecret, string? sandboxAppId, string? sandboxAppKey)
+    // A copy of the conversation listing shared by every client in the process. Without one, each lookup pages the
+    // host's list itself.
+    private readonly ConversationListingCache? _listing;
+
+    public LmStreamingS2SClient(
+        HttpClient httpClient,
+        string? s2sSecret,
+        string? sandboxAppId,
+        string? sandboxAppKey,
+        ConversationListingCache? listing = null
+    )
     {
         _httpClient = httpClient;
         _baseUrl = httpClient.BaseAddress?.ToString() ?? "the configured LmStreaming base URL";
         _s2sSecret = s2sSecret;
         _sandboxAppId = sandboxAppId;
         _sandboxAppKey = sandboxAppKey;
+        _listing = listing;
     }
 
     /// <summary>
@@ -300,6 +311,10 @@ internal sealed class LmStreamingS2SClient
             );
         }
 
+        _listing?.Apply(
+            threadId,
+            _ => new(threadId, null, workspaceId, modeId, providerId, NowMs(), disableClientTools)
+        );
         return threadId;
     }
 
@@ -312,6 +327,8 @@ internal sealed class LmStreamingS2SClient
             new { Title = title, Preview = preview },
             ct
         );
+        if (title is not null)
+            _listing?.Apply(threadId, row => row is null ? null : row with { Title = title, LastUpdated = NowMs() });
     }
 
     /// <summary>
@@ -336,10 +353,12 @@ internal sealed class LmStreamingS2SClient
 
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
+            _listing?.Apply(threadId, _ => null);
             return false;
         }
 
         _ = response.EnsureSuccessStatusCode();
+        _listing?.Apply(threadId, _ => null);
         return true;
     }
 
@@ -610,44 +629,15 @@ internal sealed class LmStreamingS2SClient
         CancellationToken ct
     )
     {
-        for (var offset = 0; offset < 10000; offset += 100)
+        var row =
+            await ListedConversationAsync(threadId, ct)
+            ?? throw new ReviewHostContractException("Bound conversation metadata was not found; no prompt sent.");
+        if (row.Workspace != workspaceId || row.Provider != providerId || row.Mode != modeId)
         {
-            var body = await SendReadAsync(
-                HttpMethod.Get,
-                $"api/conversations?limit=100&offset={offset}&sort=created",
-                body: null,
-                ct
+            throw new ReviewHostContractException(
+                "Bound conversation workspace/provider/mode differs; no prompt sent."
             );
-            using var document = JsonDocument.Parse(body);
-            var rows = document.RootElement;
-            if (rows.ValueKind != JsonValueKind.Array)
-            {
-                throw new ReviewHostContractException("Conversation metadata listing is invalid.");
-            }
-            foreach (var row in rows.EnumerateArray())
-            {
-                if (row.GetProperty("threadId").GetString() != threadId)
-                {
-                    continue;
-                }
-                if (
-                    row.GetProperty("workspace").GetString() != workspaceId
-                    || row.GetProperty("provider").GetString() != providerId
-                    || row.GetProperty("mode").GetString() != modeId
-                )
-                {
-                    throw new ReviewHostContractException(
-                        "Bound conversation workspace/provider/mode differs; no prompt sent."
-                    );
-                }
-                return;
-            }
-            if (rows.GetArrayLength() < 100)
-            {
-                break;
-            }
         }
-        throw new ReviewHostContractException("Bound conversation metadata was not found; no prompt sent.");
     }
 
     /// <summary>
@@ -671,57 +661,29 @@ internal sealed class LmStreamingS2SClient
         ArgumentException.ThrowIfNullOrWhiteSpace(titlePrefix);
         S2SConversationMatch? best = null;
         var bestUpdated = long.MinValue;
-        for (var offset = 0; offset < 10000; offset += 100)
+        foreach (var row in await ListedConversationsAsync(stopAtThread: null, ct))
         {
-            var body = await SendReadAsync(
-                HttpMethod.Get,
-                $"api/conversations?limit=100&offset={offset}&sort=created",
-                body: null,
-                ct
-            );
-            using var document = JsonDocument.Parse(body);
-            var rows = document.RootElement;
-            if (rows.ValueKind != JsonValueKind.Array)
+            if (
+                row.Title is null
+                || !row.Title.StartsWith(titlePrefix, StringComparison.Ordinal)
+                || row.Workspace != workspaceId
+                || row.Mode != modeId
+            )
             {
-                throw new ReviewHostContractException("Conversation metadata listing is invalid.");
+                continue;
             }
-            foreach (var row in rows.EnumerateArray())
-            {
-                var title = row.TryGetProperty("title", out var t) ? t.GetString() : null;
-                if (title is null || !title.StartsWith(titlePrefix, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-                if (
-                    (row.TryGetProperty("workspace", out var ws) ? ws.GetString() : null) != workspaceId
-                    || (row.TryGetProperty("mode", out var md) ? md.GetString() : null) != modeId
+            // A headless match outranks any match that still has the question tools, whatever its age.
+            if (
+                best is null
+                || (
+                    row.ClientToolsDisabled == best.ClientToolsDisabled
+                        ? row.LastUpdated >= bestUpdated
+                        : row.ClientToolsDisabled
                 )
-                {
-                    continue;
-                }
-                var updated =
-                    row.TryGetProperty("lastUpdated", out var lu) && lu.ValueKind == JsonValueKind.Number
-                        ? lu.GetInt64()
-                        : 0;
-                // A headless match outranks any match that still has the question tools, whatever its age.
-                var headless = IsClientToolsDisabled(row);
-                if (best is null || (headless == best.ClientToolsDisabled ? updated >= bestUpdated : headless))
-                {
-                    var threadId = row.GetProperty("threadId").GetString();
-                    if (threadId is not null)
-                    {
-                        best = new S2SConversationMatch(
-                            threadId,
-                            row.TryGetProperty("provider", out var pv) ? pv.GetString() : null,
-                            headless
-                        );
-                        bestUpdated = updated;
-                    }
-                }
-            }
-            if (rows.GetArrayLength() < 100)
+            )
             {
-                break;
+                best = new S2SConversationMatch(row.ThreadId, row.Provider, row.ClientToolsDisabled);
+                bestUpdated = row.LastUpdated;
             }
         }
         return best;
@@ -735,37 +697,8 @@ internal sealed class LmStreamingS2SClient
     public async Task<bool?> GetClientToolsDisabledAsync(string threadId, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
-        for (var offset = 0; offset < 10000; offset += 100)
-        {
-            var body = await SendReadAsync(
-                HttpMethod.Get,
-                $"api/conversations?limit=100&offset={offset}&sort=created",
-                body: null,
-                ct
-            );
-            using var document = JsonDocument.Parse(body);
-            var rows = document.RootElement;
-            if (rows.ValueKind != JsonValueKind.Array)
-            {
-                throw new ReviewHostContractException("Conversation metadata listing is invalid.");
-            }
-            foreach (var row in rows.EnumerateArray())
-            {
-                if (row.GetProperty("threadId").GetString() == threadId)
-                {
-                    return IsClientToolsDisabled(row);
-                }
-            }
-            if (rows.GetArrayLength() < 100)
-            {
-                break;
-            }
-        }
-        return null;
+        return (await ListedConversationAsync(threadId, ct))?.ClientToolsDisabled;
     }
-
-    private static bool IsClientToolsDisabled(JsonElement row) =>
-        row.TryGetProperty("clientToolsDisabled", out var flag) && flag.ValueKind == JsonValueKind.True;
 
     /// <summary>
     /// Switches an idle conversation's provider (model) to <paramref name="providerId"/> via
@@ -783,6 +716,7 @@ internal sealed class LmStreamingS2SClient
             new { ProviderId = providerId },
             ct
         );
+        _listing?.Apply(threadId, row => row is null ? null : row with { Provider = providerId });
     }
 
     /// <summary>
@@ -800,11 +734,52 @@ internal sealed class LmStreamingS2SClient
         CancellationToken ct
     )
     {
-        for (var offset = 0; offset < 10000; offset += 100)
+        var row =
+            await ListedConversationAsync(threadId, ct)
+            ?? throw new ReviewHostContractException("Reused conversation metadata was not found; no prompt sent.");
+        if (row.Workspace != workspaceId || row.Mode != modeId)
+        {
+            throw new ReviewHostContractException("Reused conversation workspace/mode differs; no prompt sent.");
+        }
+        if (!string.Equals(row.Provider, providerId, StringComparison.Ordinal))
+        {
+            await SwitchProviderAsync(threadId, providerId, ct);
+        }
+    }
+
+    private async Task<ConversationListingCache.Row?> ListedConversationAsync(string threadId, CancellationToken ct) =>
+        (await ListedConversationsAsync(threadId, ct)).FirstOrDefault(row => row.ThreadId == threadId);
+
+    /// <summary>
+    /// The host's conversation listing, newest first, from the shared copy when there is one. Without a copy, a
+    /// lookup for <paramref name="stopAtThread"/> stops paging at the page that holds it.
+    /// </summary>
+    private Task<IReadOnlyList<ConversationListingCache.Row>> ListedConversationsAsync(
+        string? stopAtThread,
+        CancellationToken ct
+    ) =>
+        _listing is null
+            ? FetchListingAsync(stopAtThread, ct)
+            : _listing.RowsAsync(token => FetchListingAsync(null, token), stopAtThread, ct);
+
+    // The host reads every conversation's key for each created-order page, whatever its size, so the largest page
+    // it allows costs the same per call as the smallest and needs a tenth of the calls.
+    private const int ListingPageSize = 1000;
+
+    // The newest conversations a lookup can see. Older ones are reported as not found.
+    private const int ListingWindow = 10000;
+
+    private async Task<IReadOnlyList<ConversationListingCache.Row>> FetchListingAsync(
+        string? stopAtThread,
+        CancellationToken ct
+    )
+    {
+        var listed = new List<ConversationListingCache.Row>();
+        for (var offset = 0; offset < ListingWindow; offset += ListingPageSize)
         {
             var body = await SendReadAsync(
                 HttpMethod.Get,
-                $"api/conversations?limit=100&offset={offset}&sort=created",
+                $"api/conversations?limit={ListingPageSize}&offset={offset}&sort=created",
                 body: null,
                 ct
             );
@@ -816,33 +791,40 @@ internal sealed class LmStreamingS2SClient
             }
             foreach (var row in rows.EnumerateArray())
             {
-                if (row.GetProperty("threadId").GetString() != threadId)
+                if (ListedString(row, "threadId") is not { } threadId)
                 {
                     continue;
                 }
-                if (
-                    row.GetProperty("workspace").GetString() != workspaceId
-                    || row.GetProperty("mode").GetString() != modeId
-                )
+                listed.Add(
+                    new(
+                        threadId,
+                        ListedString(row, "title"),
+                        ListedString(row, "workspace"),
+                        ListedString(row, "mode"),
+                        ListedString(row, "provider"),
+                        row.TryGetProperty("lastUpdated", out var lu) && lu.ValueKind == JsonValueKind.Number
+                            ? lu.GetInt64()
+                            : 0,
+                        row.TryGetProperty("clientToolsDisabled", out var flag) && flag.ValueKind == JsonValueKind.True
+                    )
+                );
+                if (threadId == stopAtThread)
                 {
-                    throw new ReviewHostContractException(
-                        "Reused conversation workspace/mode differs; no prompt sent."
-                    );
+                    return listed;
                 }
-                var currentProvider = row.TryGetProperty("provider", out var pv) ? pv.GetString() : null;
-                if (!string.Equals(currentProvider, providerId, StringComparison.Ordinal))
-                {
-                    await SwitchProviderAsync(threadId, providerId, ct);
-                }
-                return;
             }
-            if (rows.GetArrayLength() < 100)
+            if (rows.GetArrayLength() < ListingPageSize)
             {
                 break;
             }
         }
-        throw new ReviewHostContractException("Reused conversation metadata was not found; no prompt sent.");
+        return listed;
     }
+
+    private static string? ListedString(JsonElement row, string name) =>
+        row.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+
+    private static long NowMs() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
     public async Task<S2SRunState> GetRunStateAsync(string threadId, CancellationToken ct)
     {

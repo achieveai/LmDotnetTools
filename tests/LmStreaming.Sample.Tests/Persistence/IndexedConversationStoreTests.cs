@@ -28,6 +28,45 @@ public sealed class IndexedConversationStoreTests : IDisposable
         };
 
     [Fact]
+    public async Task PrefixLookup_ForwardsToTheWrappedCapability()
+    {
+        var inner = new Mock<IConversationStore>(MockBehavior.Strict);
+        var lookup = inner.As<IConversationThreadIdLookupStore>();
+        lookup
+            .Setup(store => store.ListThreadIdsByPrefixAsync("subagent-scope-", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(["subagent-scope-agent-1"]);
+        var store = Create(inner.Object);
+
+        var ids = await store.ListThreadIdsByPrefixAsync("subagent-scope-");
+
+        ids.Should().Equal("subagent-scope-agent-1");
+        lookup.Verify(
+            capability => capability.ListThreadIdsByPrefixAsync("subagent-scope-", It.IsAny<CancellationToken>()),
+            Times.Once
+        );
+    }
+
+    [Fact]
+    public async Task PrefixLookup_FallsBackToListing_WhenTheWrappedStoreLacksTheCapability()
+    {
+        // A wrapped store without the capability must still answer through the paged listing, or the
+        // allocator's first spawn on a counterless root throws instead of falling back.
+        var inner = new Mock<IConversationStore>(MockBehavior.Strict);
+        inner
+            .Setup(store => store.ListThreadsAsync(500, 0, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync([
+                new ThreadMetadata { ThreadId = "subagent-scope-agent-2", LastUpdated = 0 },
+                new ThreadMetadata { ThreadId = "thread-unrelated", LastUpdated = 0 },
+                new ThreadMetadata { ThreadId = "subagent-scope-agent-1", LastUpdated = 0 },
+            ]);
+        var wrapper = Create(inner.Object);
+
+        var ids = await wrapper.ListThreadIdsByPrefixAsync("subagent-scope-");
+
+        ids.Should().Equal("subagent-scope-agent-1", "subagent-scope-agent-2");
+    }
+
+    [Fact]
     public async Task BackfillAndLiveUpdates_ReadOnlyTheRequestedHierarchyAfterInitialization()
     {
         var inner = new InMemoryConversationStore();

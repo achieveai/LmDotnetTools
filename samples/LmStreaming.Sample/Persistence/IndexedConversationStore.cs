@@ -14,6 +14,7 @@ namespace LmStreaming.Sample.Persistence;
 /// </summary>
 public sealed class IndexedConversationStore(IConversationStore inner, string indexPath)
     : IConversationStore,
+        IConversationThreadIdLookupStore,
         IConversationOwnershipStore,
         IRunLedgerStore,
         IRunLifecycleStore,
@@ -227,6 +228,10 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
         ConversationListOptions? options = null,
         CancellationToken ct = default
     ) => inner.ListConversationRowsAsync(propertyKeys, scope, limit, offset, options, ct);
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<string>> ListThreadIdsByPrefixAsync(string prefix, CancellationToken ct = default) =>
+        ConversationThreadIdLookup.ListThreadIdsByPrefixAsync(inner, prefix, ct);
 
     /// <summary>Reads current, tenant-eligible persisted nodes without a historical corpus scan.</summary>
     public async Task<IReadOnlyList<SubAgentSummary>> ReadChildrenAsync(

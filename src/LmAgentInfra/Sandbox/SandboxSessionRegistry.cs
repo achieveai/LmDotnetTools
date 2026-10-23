@@ -2769,13 +2769,14 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     ];
 
     /// <summary>
-    /// True when a callback base URL is configured. The default (a loopback host) is non-empty, so
-    /// this is normally true; it only reports false if an operator explicitly blanks the webhook
-    /// PublicBaseUrl. The more actionable "why is nothing arriving?" signal is the host visible in
+    /// True when new sandboxes register an event webhook: <see cref="WebhookOptions.RegisterEventWebhook"/>
+    /// is on and a callback base URL is configured. The defaults (on, a loopback host) make this
+    /// normally true. The more actionable "why is nothing arriving?" signal is the host visible in
     /// <see cref="DiscoveryWebhookUrl"/> — a loopback callback the gateway (in a container) often
     /// cannot reach.
     /// </summary>
-    public bool DiscoveryEnabled => !string.IsNullOrWhiteSpace(_authOptions.Webhook.CallbackBaseUrl);
+    public bool DiscoveryEnabled =>
+        _authOptions.Webhook.RegisterEventWebhook && !string.IsNullOrWhiteSpace(_authOptions.Webhook.CallbackBaseUrl);
 
     /// <summary>
     /// Snapshot of the ids of every gateway session currently known to the registry. Used by the
@@ -3076,7 +3077,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// <summary>
     /// Builds where the gateway delivers this session's events: the unified <c>webhook</c> block when
     /// <see cref="WebhookOptions.UseSandboxWebhook"/> is on, else the legacy <c>discovery</c> block. Never
-    /// both, because the gateway would then send every discovery twice, once per URL. The URL is the public
+    /// both, because the gateway would then send every discovery twice, once per URL. Neither when
+    /// <see cref="DiscoveryEnabled"/> is false. The URL is the public
     /// webhook base (the same one the gateway already uses for auth callbacks) plus the route; the auth
     /// value is the gateway↔webhook shared secret, sent verbatim as the <c>Authorization</c> header.
     /// SECRET — never logged.
@@ -3085,6 +3087,15 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         string sessionSecret
     )
     {
+        if (!DiscoveryEnabled)
+        {
+            _logger.LogInformation(
+                "ContextDiscovery: no event webhook registered (Auth:Webhook:RegisterEventWebhook is off or "
+                    + "PublicBaseUrl is blank), so no discovery or background-task event will arrive."
+            );
+            return (null, null);
+        }
+
         var url = DiscoveryWebhookUrl;
         // Registration breadcrumb: logs WHERE the gateway will deliver discoveries so an operator
         // can correlate it against the diagnostics endpoint's received counts. NEVER logs the auth

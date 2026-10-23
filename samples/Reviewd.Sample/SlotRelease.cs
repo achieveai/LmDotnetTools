@@ -125,6 +125,15 @@ internal static class SlotRelease
         string token,
         CancellationToken ct,
         DateTimeOffset? nowUtc = null
+    ) => await RenewAsync(connection, key, token, ct, nowUtc) is not null;
+
+    /// <summary>The heartbeat, returning the owner row it replaced and the row it wrote (null when it wrote none).</summary>
+    internal static async Task<(string Before, string After)?> RenewAsync(
+        SqliteConnection connection,
+        string key,
+        string token,
+        CancellationToken ct,
+        DateTimeOffset? nowUtc = null
     )
     {
         using var transaction = connection.BeginTransaction();
@@ -135,17 +144,44 @@ internal static class SlotRelease
         var raw = await read.ExecuteScalarAsync(ct) as string;
         var claim = raw is null ? null : JsonNode.Parse(raw)!.AsObject();
         if (claim?["claimToken"]?.GetValue<string>() != token || claim["state"]?.GetValue<string>() != "owned")
-            return false;
+            return null;
         claim["leaseExpiresAt"] = (nowUtc ?? DateTimeOffset.UtcNow) + DefaultLeaseWindow;
+        var renewed = claim.ToJsonString();
         using var write = connection.CreateCommand();
         write.Transaction = transaction;
         write.CommandText = "UPDATE cache SET value=@value WHERE key=@key AND value=@old";
         write.Parameters.AddWithValue("@key", key);
         write.Parameters.AddWithValue("@old", raw!);
-        write.Parameters.AddWithValue("@value", claim.ToJsonString());
+        write.Parameters.AddWithValue("@value", renewed);
         var updated = await write.ExecuteNonQueryAsync(ct) == 1;
         transaction.Commit();
-        return updated;
+        return updated ? (raw!, renewed) : null;
+    }
+
+    /// <summary>
+    /// Puts back the lease a failed step's own renewals extended: <paramref name="before"/> is the row its first
+    /// renewal replaced and <paramref name="written"/> the row its last renewal wrote. A CAS on that last row, so a
+    /// lane that renewed the lease since keeps it.
+    /// </summary>
+    internal static async Task<bool> RestoreLeaseAsync(
+        SqliteConnection connection,
+        string key,
+        string before,
+        string written,
+        CancellationToken ct
+    )
+    {
+        var claim = JsonNode.Parse(written)!.AsObject();
+        if (JsonNode.Parse(before)?["leaseExpiresAt"] is { } lease)
+            claim["leaseExpiresAt"] = lease.DeepClone();
+        else
+            claim.Remove("leaseExpiresAt");
+        using var write = connection.CreateCommand();
+        write.CommandText = "UPDATE cache SET value=@value WHERE key=@key AND value=@old";
+        write.Parameters.AddWithValue("@key", key);
+        write.Parameters.AddWithValue("@old", written);
+        write.Parameters.AddWithValue("@value", claim.ToJsonString());
+        return await write.ExecuteNonQueryAsync(ct) == 1;
     }
 
     internal static async Task AssertCurrentAsync(
