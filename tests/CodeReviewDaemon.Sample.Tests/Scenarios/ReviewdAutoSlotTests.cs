@@ -1204,7 +1204,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
 
     public void Dispose()
     {
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        ReviewdSqlitePools.Clear(_database);
         foreach (var file in Directory.GetFiles(Path.GetTempPath(), Path.GetFileName(_database) + "*"))
             File.Delete(file);
     }

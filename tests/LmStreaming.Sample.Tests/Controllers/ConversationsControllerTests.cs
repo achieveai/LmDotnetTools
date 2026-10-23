@@ -908,6 +908,7 @@ public class ConversationsControllerTests
             )
             .Returns(() => Task.FromResult(ToAsyncEnumerable(childAskCall)));
 
+        var parentRunStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var parentAgent = new Mock<IStreamingAgent>();
         parentAgent
             .Setup(a =>
@@ -917,7 +918,11 @@ public class ConversationsControllerTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .Returns(() => Task.FromResult(ToAsyncEnumerable()));
+            .Returns(() =>
+            {
+                _ = parentRunStarted.TrySetResult();
+                return Task.FromResult(ToAsyncEnumerable());
+            });
 
         var subAgentOptions = new SubAgentOptions
         {
@@ -961,6 +966,18 @@ public class ConversationsControllerTests
 
         using var ct = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await WaitUntilChildAwaitingQuestionAsync(loop.SubAgentManager!, agentId, ct.Token);
+
+        // The parked background child also relays "[AwaitingAnswer]" to the primary, which starts a
+        // short primary run. Wait for that run to start and finish, or SwitchMode can land inside it
+        // and the run-in-progress guard answers before the pending-question guard under test.
+        await parentRunStarted.Task.WaitAsync(ct.Token);
+        await Wait.UntilAsync(
+            () => !pool.GetRunStateInfo(threadId).IsInProgress,
+            "the primary finished the run the child's [AwaitingAnswer] relay started",
+            TimeSpan.FromSeconds(30),
+            TimeSpan.FromMilliseconds(20),
+            cancellationToken: ct.Token
+        );
 
         return pool;
     }

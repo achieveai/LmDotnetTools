@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.Misc.Storage;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Reviewd::Reviewd.Sample;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
@@ -116,7 +117,7 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
 
     public void Dispose()
     {
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        ReviewdSqlitePools.Clear(_database);
         foreach (var file in Directory.GetFiles(Path.GetTempPath(), Path.GetFileName(_database) + "*"))
             File.Delete(file);
     }

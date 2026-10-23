@@ -26,7 +26,27 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxConnections, 1);
 
-        _connectionString = new SqliteConnectionStringBuilder
+        _connectionString = BuildConnectionString(databasePath);
+        _maxConnections = maxConnections;
+        _semaphore = new SemaphoreSlim(maxConnections, maxConnections);
+    }
+
+    /// <summary>
+    /// Releases the idle pooled handles of <paramref name="databasePath"/>: the pool every factory for that file
+    /// opens from. Prefer it to <see cref="SqliteConnection.ClearAllPools"/>, which clears every database's pool in
+    /// the process and can dispose another database's connection while it is being opened.
+    /// </summary>
+    /// <param name="databasePath">Path to the SQLite database file, as given to the constructor.</param>
+    public static void ClearPool(string databasePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
+        using var connection = new SqliteConnection(BuildConnectionString(databasePath));
+        SqliteConnection.ClearPool(connection);
+    }
+
+    // The pool is keyed by this exact string, so ClearPool must build it the same way the constructor does.
+    private static string BuildConnectionString(string databasePath) =>
+        new SqliteConnectionStringBuilder
         {
             DataSource = databasePath,
             Mode = SqliteOpenMode.ReadWriteCreate,
@@ -41,10 +61,6 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
             Cache = SqliteCacheMode.Private,
             Pooling = true,
         }.ToString();
-
-        _maxConnections = maxConnections;
-        _semaphore = new SemaphoreSlim(maxConnections, maxConnections);
-    }
 
     /// <inheritdoc />
     public async Task<SqliteConnection> GetConnectionAsync(CancellationToken ct = default)
