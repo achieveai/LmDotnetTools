@@ -294,6 +294,11 @@ public sealed class MultiTurnAgentLoop
     // The error code a tool call gets back when a deferred-tool provider threw while unwrapping it.
     private const string UnwrapFailedCode = "unwrap_failed";
 
+    // A tiered host's tool search (LmAgentInfra's CapabilityTiers.SearchToolToolName, which this project cannot
+    // reference). When the model has it, an unknown-function error says hidden tools can be found with it.
+    private const string SearchToolName = "SearchTool";
+    private const string UnlistedToolsHint = "Not every tool is listed here: find one with SearchTool.";
+
     // Automatic stream recovery is budgeted per LOGICAL INPUT, but a logical input does not always
     // fit inside one run: a turn that parks on a deferred tool call resumes in a CHILD run, and a
     // child run's turn counter — recovery budget included — is otherwise born at zero. Without this,
@@ -3238,19 +3243,21 @@ public sealed class MultiTurnAgentLoop
             if (unwrap.IsRefusal)
             {
                 Logger.LogWarning(
-                    "{WrapperName} refused {ToolCallId} before approval: {ErrorCode}",
+                    "{WrapperName} refused {ToolCallId} before approval: {ErrorCode} on thread {ThreadId}",
                     wrapperName,
                     toolCall.ToolCallId,
-                    unwrap.ErrorCode
+                    unwrap.ErrorCode,
+                    ThreadId
                 );
                 return (toolCall, BuildErrorResultMessage(toolCall, unwrap.ErrorJson, unwrap.ErrorCode));
             }
 
             Logger.LogInformation(
-                "{WrapperName} unwrapped {ToolCallId} {ToolName}",
+                "{WrapperName} unwrapped {ToolCallId} {ToolName} on thread {ThreadId}",
                 wrapperName,
                 toolCall.ToolCallId,
-                unwrap.FunctionName
+                unwrap.FunctionName,
+                ThreadId
             );
             return (toolCall with { FunctionName = unwrap.FunctionName, FunctionArgs = unwrap.ArgumentsJson }, null);
         }
@@ -3464,7 +3471,7 @@ public sealed class MultiTurnAgentLoop
                             {
                                 error = withdrawnText,
                                 code = withdrawnCode,
-                                available_functions = _toolHandlers.Keys.ToArray(),
+                                available_functions = AdvertisedFunctionNames(),
                             }
                         ),
                         withdrawnCode
@@ -3480,15 +3487,25 @@ public sealed class MultiTurnAgentLoop
                     string.Join(", ", _toolHandlers.Keys)
                 );
 
+                var available = AdvertisedFunctionNames();
                 return BuildErrorResultMessage(
                     toolCall,
-                    JsonSerializer.Serialize(
-                        new
-                        {
-                            error = $"Unknown function: {toolCall.FunctionName}",
-                            available_functions = _toolHandlers.Keys.ToArray(),
-                        }
-                    )
+                    available.Contains(SearchToolName, StringComparer.Ordinal)
+                        ? JsonSerializer.Serialize(
+                            new
+                            {
+                                error = $"Unknown function: {toolCall.FunctionName}",
+                                available_functions = available,
+                                hint = UnlistedToolsHint,
+                            }
+                        )
+                        : JsonSerializer.Serialize(
+                            new
+                            {
+                                error = $"Unknown function: {toolCall.FunctionName}",
+                                available_functions = available,
+                            }
+                        )
                 );
             }
 
@@ -3624,6 +3641,12 @@ public sealed class MultiTurnAgentLoop
             generationId: toolCall.GenerationId
         );
     }
+
+    /// <summary>
+    /// The tool names the model is sent, for an error that lists what it may call. Not the handler keys: a tool a
+    /// deferred-tool provider hides still has a handler, and an error must not advertise it.
+    /// </summary>
+    private string[] AdvertisedFunctionNames() => [.. _toolContracts().Select(c => c.Name)];
 
     /// <summary>
     /// Builds the error result the model gets back for a call that never ran (unknown function,

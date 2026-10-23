@@ -190,11 +190,13 @@ public class CapabilityCatalogTests
                 "skill:systematic-debugging",
                 "skill:nope",
                 "plugin:gb-plugins/nope",
-                "tool:Bash",
+                "tool:Bash", // the tool call's business
+                "widget:Bash",
                 "no-kind",
                 "skill:",
             ],
-            issues
+            issues,
+            CapabilityCatalog.SkillKind
         );
 
         keys.Should()
@@ -214,7 +216,7 @@ public class CapabilityCatalogTests
             ),
             new SelectorIssue("skill:nope", SelectorProblem.Unknown, []),
             new SelectorIssue("plugin:gb-plugins/nope", SelectorProblem.Unknown, []),
-            new SelectorIssue("tool:Bash", SelectorProblem.Malformed, []),
+            new SelectorIssue("widget:Bash", SelectorProblem.Malformed, []),
             new SelectorIssue("no-kind", SelectorProblem.Malformed, []),
             new SelectorIssue("skill:", SelectorProblem.Malformed, []),
         ];
@@ -240,7 +242,8 @@ public class CapabilityCatalogTests
 
         var keys = catalog.ResolveSelectors(
             ["skill:hitl:using-hitl", "skill:clean-builds:clean-builds", "skill:ns:clean-builds"],
-            issues
+            issues,
+            CapabilityCatalog.SkillKind
         );
 
         keys.Should().Equal("skill:/marketplaces/gb-plugins/clean-builds/skills/clean-builds");
@@ -255,6 +258,34 @@ public class CapabilityCatalogTests
             new SelectorIssue("skill:ns:clean-builds", SelectorProblem.Unknown, []),
         ];
         issues.Should().BeEquivalentTo(expected, options => options.WithStrictOrdering());
+    }
+
+    // D-SCW1: with only one marketplace carrying the plugin, the gateway leaves the marketplace out of the name, so a
+    // mode's marketplace-qualified selector must still find the skill by its item's own marketplace.
+    [Fact]
+    public void ResolveSelectors_MarketplaceQualifiedRef_MatchesAnUnprefixedNameInThatMarketplaceOnly()
+    {
+        var usingHitl = new CapabilityItem(
+            "skill:/marketplaces/gb-plugins/hitl/skills/using-hitl",
+            CapabilityCatalog.SkillKind,
+            "hitl:using-hitl",
+            "hitl",
+            "gb-plugins",
+            "."
+        );
+        using var catalog = CapabilityCatalog.Build([usingHitl]);
+        var issues = new List<SelectorIssue>();
+
+        var keys = catalog.ResolveSelectors(
+            ["skill:gb-plugins:hitl:using-hitl", "skill:claude-plugins:hitl:using-hitl"],
+            issues,
+            CapabilityCatalog.SkillKind
+        );
+
+        keys.Should().Equal(usingHitl.Key);
+        issues
+            .Should()
+            .BeEquivalentTo([new SelectorIssue("skill:claude-plugins:hitl:using-hitl", SelectorProblem.Unknown, [])]);
     }
 
     // C3: SearchSkill asks for skills only; agents and plugins that match the same words never fill its slots.
@@ -278,6 +309,23 @@ public class CapabilityCatalogTests
             .Should()
             .Equal("agent:/m/official/review/agents/reviewer");
         catalog.Search("review", "plugin", 5).Select(i => i.Key).Should().Equal("plugin:official/review");
+    }
+
+    // A kind with no items has no table of its own: its search is empty, never a failure (an empty sandbox, or an
+    // index holding agents but no skills).
+    [Fact]
+    public void Search_KindWithNoItems_ReturnsEmpty()
+    {
+        using var empty = CapabilityCatalog.Build([]);
+        using var agentsOnly = CapabilityCatalog.Build([Agent("documents:pdf-reviewer", "Reviews pdf files.")]);
+
+        empty.Search("pdf", CapabilityCatalog.SkillKind, 5).Should().BeEmpty();
+        agentsOnly.Search("pdf", CapabilityCatalog.SkillKind, 5).Should().BeEmpty();
+        agentsOnly
+            .Search("pdf", CapabilityCatalog.AgentKind, 5)
+            .Select(i => i.Key)
+            .Should()
+            .Equal("agent:documents:pdf-reviewer");
     }
 
     [Fact]
@@ -426,28 +474,21 @@ public class CapabilityCatalogTests
             "agent:architect", // two templates end with :architect
             "agent:nope",
             "skill:debugging:systematic-debugging", // the skill call's business
-            "tool:Bash",
+            "tool:Bash", // the tool call's business
         ];
 
         var (agentKeys, agentIssues) = Resolve(catalog, CapabilityCatalog.AgentKind, selectors);
         var (skillKeys, skillIssues) = Resolve(catalog, CapabilityCatalog.SkillKind, selectors);
-        var (legacyKeys, legacyIssues) = Resolve(catalog, null, ["agent:development:architect"]);
 
         agentKeys.Should().Equal("agent:development:architect", "agent:review:code-reviewer");
         SelectorIssue[] expectedAgentIssues =
         [
             new("agent:architect", SelectorProblem.Ambiguous, ["development:architect", "progress:architect"]),
             new("agent:nope", SelectorProblem.Unknown, []),
-            new("tool:Bash", SelectorProblem.Malformed, []),
         ];
         agentIssues.Should().BeEquivalentTo(expectedAgentIssues, options => options.WithStrictOrdering());
         skillKeys.Should().Equal(Debugging.Key);
-        skillIssues.Should().BeEquivalentTo([new SelectorIssue("tool:Bash", SelectorProblem.Malformed, [])]);
-        // The slice-1 form (no kind) still reports an agent selector instead of skipping it.
-        legacyKeys.Should().BeEmpty();
-        legacyIssues
-            .Should()
-            .BeEquivalentTo([new SelectorIssue("agent:development:architect", SelectorProblem.Malformed, [])]);
+        skillIssues.Should().BeEmpty();
     }
 
     [Fact]
@@ -530,9 +571,77 @@ public class CapabilityCatalogTests
         pluginIssues.Should().BeEquivalentTo([unknown]);
     }
 
+    // F-017: a plugin selector names a marketplace + plugin pair, and is Unknown only when no item of any kind
+    // carries that exact pair. An agent with no marketplace never makes a misspelt marketplace real.
+    [Fact]
+    public void ResolveSelectors_PluginSelector_UnknownOnlyWhenNoItemHasThatMarketplaceAndPlugin()
+    {
+        var debuggingSkill = Skill(
+            "/marketplaces/official/debugging/skills/systematic-debugging",
+            "debugging:systematic-debugging",
+            "debugging",
+            "Find the root cause of a bug."
+        );
+        var pdfSkill = Skill("/marketplaces/official/pdf/skills/pdf", "pdf:pdf", "pdf", "Fill pdf forms.");
+        var debuggingAgent = Agent("debugging:x", "Debugs.");
+        using var catalog = CapabilityCatalog.Build([debuggingSkill, pdfSkill, debuggingAgent]);
+        var typo = new SelectorIssue("plugin:typo/debugging", SelectorProblem.Unknown, []);
+
+        // A misspelt marketplace: Unknown on both passes, although an agent carries the plugin name.
+        foreach (var kind in new[] { CapabilityCatalog.SkillKind, CapabilityCatalog.AgentKind })
+        {
+            var (keys, issues) = Resolve(catalog, kind, ["plugin:typo/debugging"]);
+            keys.Should().BeEmpty(kind);
+            issues.Should().BeEquivalentTo([typo], kind);
+        }
+
+        // The real pair: each pass gets its own kind of that plugin (the agent by plugin name), with no issue.
+        var (skillKeys, skillIssues) = Resolve(catalog, CapabilityCatalog.SkillKind, ["plugin:official/debugging"]);
+        var (agentKeys, agentIssues) = Resolve(catalog, CapabilityCatalog.AgentKind, ["plugin:official/debugging"]);
+        skillKeys.Should().Equal(debuggingSkill.Key);
+        skillIssues.Should().BeEmpty();
+        agentKeys.Should().Equal(debuggingAgent.Key);
+        agentIssues.Should().BeEmpty();
+
+        // A skills-only plugin pinned in a mode that also tiers agents: the agent pass lists nothing and warns nothing.
+        var (pdfAgentKeys, pdfAgentIssues) = Resolve(catalog, CapabilityCatalog.AgentKind, ["plugin:official/pdf"]);
+        pdfAgentKeys.Should().BeEmpty();
+        pdfAgentIssues.Should().BeEmpty();
+    }
+
+    // Paper cut 1: a marketplace agent carries its own marketplace. A plugin: selector loads it only from there, and
+    // a plugin that ships only sub-agents is a known plugin in that marketplace.
+    [Fact]
+    public void ResolveSelectors_PluginSelector_LoadsAMarketplaceAgentOnlyFromItsOwnMarketplace()
+    {
+        var mk2Skill = new CapabilityItem(
+            CapabilityCatalog.SkillKeyPrefix + "/marketplaces/mk2/debugging/skills/trace",
+            CapabilityCatalog.SkillKind,
+            "debugging:trace",
+            "debugging",
+            "mk2",
+            "Trace a failure."
+        );
+        var mk1Agent = CapabilityCatalog.FromTemplates(
+            new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal)
+            {
+                ["debugging:x"] = Template("Debugs.") with { Marketplace = "mk1" },
+            }
+        )[0];
+        using var catalog = CapabilityCatalog.Build([mk2Skill, mk1Agent]);
+
+        var (mk2Keys, mk2Issues) = Resolve(catalog, CapabilityCatalog.AgentKind, ["plugin:mk2/debugging"]);
+        mk2Keys.Should().BeEmpty("the agent was kept from mk1, so mk2's debugging plugin does not hold it");
+        mk2Issues.Should().BeEmpty("mk2/debugging is a real plugin");
+
+        var (mk1Keys, mk1Issues) = Resolve(catalog, CapabilityCatalog.AgentKind, ["plugin:mk1/debugging"]);
+        mk1Keys.Should().Equal(mk1Agent.Key);
+        mk1Issues.Should().BeEmpty("a plugin that ships only sub-agents is known in its own marketplace");
+    }
+
     private static (IReadOnlyList<string> Keys, List<SelectorIssue> Issues) Resolve(
         CapabilityCatalog catalog,
-        string? kind,
+        string kind,
         string[] selectors
     )
     {

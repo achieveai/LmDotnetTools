@@ -60,10 +60,12 @@ public static class FunctionContractExtension
             "number" => JsonSchemaObject.Number(description),
             "boolean" => JsonSchemaObject.Boolean(description),
             "array" when schemaObject.Items != null => JsonSchemaObject.Array(schemaObject.Items, description),
+            // An open object (ExecuteTool's `arguments`) must stay open, or the model is told to send `{}`.
             "object" => new JsonSchemaObject
             {
                 Type = JsonSchemaTypeHelper.ToType(["object", "null"]),
                 Description = description,
+                AdditionalProperties = schemaObject.AdditionalProperties,
             },
             _ => new JsonSchemaObject
             {

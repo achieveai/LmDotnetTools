@@ -97,7 +97,8 @@ public sealed class MarketplaceSubAgentLoader
     /// <c>plugin:name</c> (the qualified spawnable <c>subagent_type</c>). This matches the gateway's
     /// full-discovery qualified name so a richer inline-markdown template, merged first, wins over the
     /// preview fallback. Marketplaces that failed to load contribute nothing; blank agent names are skipped;
-    /// duplicate qualified keys keep the first occurrence. Internal-static so tests can pin the mapping.
+    /// duplicate qualified keys keep the first occurrence. Each template carries the alias of the marketplace it
+    /// came from. Internal-static so tests can pin the mapping.
     /// </summary>
     internal static IReadOnlyDictionary<string, SubAgentTemplate> MapCatalog(
         MarketplaceCatalog catalog,
@@ -124,7 +125,8 @@ public sealed class MarketplaceSubAgentLoader
                     var bareName = agent.Name.Trim();
                     var pluginName = string.IsNullOrWhiteSpace(plugin.Name) ? agent.Plugin?.Trim() : plugin.Name.Trim();
                     var key = string.IsNullOrWhiteSpace(pluginName) ? bareName : $"{pluginName}:{bareName}";
-                    if (!result.TryAdd(key, MapToTemplate(agent, agentFactory)))
+                    var template = MapToTemplate(agent, agentFactory) with { Marketplace = marketplace.Alias };
+                    if (!result.TryAdd(key, template))
                     {
                         logger?.LogInformation(
                             "Marketplace sub-agent {Name} appears in more than one plugin/marketplace; keeping the first occurrence.",

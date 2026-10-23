@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Deferred tools, plugin MCP servers and validator error text** — public changes a consumer must know about:
+  - LmCore: new `IDeferredToolProvider` and `ToolCallUnwrap` (`AchieveAi.LmDotnetTools.LmCore.Middleware`). `FunctionRegistry.BuildContracts()` leaves out every contract that a registered `IDeferredToolProvider` does not advertise; `Build()` still returns every handler. `MultiTurnAgentLoop` asks `TryUnwrap` about each tool call before handler lookup and approval, so the target, not the wrapper, is approved, run and reported. With no such provider registered, nothing changes.
+  - LmCore: `JsonSchemaValidator.ValidateDetailed` reports one line per error anywhere in the result, `"<instance location>: <message>"` (`/` for the root), instead of each top-level detail's `error` text or `Validation failed at '<location>'`. A valid result has no errors. Code that matches the old text must change.
+  - OpenAIProvider: an object parameter keeps its own `additionalProperties` in the chat-completions tool schema. It was always sent as `false`, so an open object told the model to send `{}`. This applies to every request with an object parameter.
+  - Sandbox SDK: new `SandboxClient.GetMcpServersAsync(sessionId)` lists the MCP servers a session's plugins declare (`GET /api/v1/sandboxes/{id}/mcp-servers`). It needs gateway v0.1.18 or later; an older gateway answers `NotFound`. See the Sandbox README.
+
 - **Sandbox SDK / LmAgentInfra / LmStreaming.Sample synced to gateway `origin/master` `46be47df`**:
   - Per-app git marketplaces cite gateway ADR 0045 (the merged number). The `400 invalid_app_id` and the new `422 unsafe_checkout` (the checkout contains a symbolic link) and `422 no_default_branch` refusals classify as `SandboxErrorKind.Protocol` with their `ErrorCode` kept. A sandbox keeps the commit it mounted; one created while the store was on cannot be resumed on a gateway restarted without it.
   - New `SandboxGatewayOptions.MarketplaceStorePath` (becomes `MARKETPLACE_STORE_PATH`, made absolute against the app's binaries folder) and `LocalSandboxPython` (becomes `LOCAL_SANDBOX_PYTHON`, the interpreter for Windows workspace `.py` mini apps). Both apply to an auto-spawned gateway only.

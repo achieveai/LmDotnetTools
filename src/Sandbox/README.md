@@ -563,6 +563,19 @@ Live contract: `SandboxSkillTiersLiveContractTests` needs a gateway of v0.1.17 o
 least one marketplace plugin with two skills. CI mounts `tests/Sandbox.Integration.Tests/Fixtures/marketplace`
 for this through `PLUGINS_DIRS` (see `.github/workflows/sandbox-contract.yml`).
 
+## Plugin MCP servers (gateway issue #224, v0.1.18)
+
+`GET /api/v1/sandboxes/{id}/mcp-servers`, read by `GetMcpServersAsync(sessionId)`. Below v0.1.18 this
+route does not exist: the call fails as `NotFound`, the same kind as an unknown or foreign session.
+
+- **Rows:** the MCP servers the session's admitted plugins declare, as authored, sorted by marketplace,
+  plugin and name. Each carries `Type`, `Supported` (with `Reason` when not), `Url`, `Headers` and the
+  rest of the entry in `Extra`. `${VAR}` references come back unexpanded.
+- **Not proxied:** the gateway lists the servers but does not proxy them; the caller connects itself.
+- **Errors:** `503 marketplaces_unavailable` is `Unavailable`: retry. The gateway never answers with a
+  shorter list instead.
+- **Secret:** a row's url, header values and `Extra` can carry credentials. `SandboxMcpServer.ToString()`
+  names only the marketplace, plugin, server name and type.
 
 ## Errors
 

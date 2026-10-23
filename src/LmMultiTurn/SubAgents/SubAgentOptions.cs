@@ -405,6 +405,16 @@ public record SubAgentOptions
     public IReadOnlyDictionary<string, IReadOnlyList<string>>? CompanionToolNames { get; init; }
 
     /// <summary>
+    /// The templates the <c>Agent</c> tool lists for the agent whose thread id is passed (the manager's parent),
+    /// or null to list every template. A listing narrows only the tool's text: any template still spawns by its
+    /// exact name. Return the SAME instance until that agent's list changes: the tool's descriptor is memoized on
+    /// the reference, so an unchanged reference keeps the request bytes (and the prompt cache) identical. Inherited
+    /// verbatim through <see cref="ForChildLoop"/>; a child's manager passes the child's own thread id. Null
+    /// (default) = every template is listed.
+    /// </summary>
+    public Func<string, TemplateListing?>? ListedTemplates { get; init; }
+
+    /// <summary>
     /// The ordinal sequence behind <c>agent-1</c>, <c>agent-2</c>, … for the ROOT conversation (#705).
     /// Null at the root: the root's manager creates the allocator and hands it down through
     /// <see cref="ForChildLoop"/>, so every descendant numbers from the one sequence.
@@ -472,3 +482,13 @@ public sealed record SubAgentSpawnMetadata(string Role, string Description);
 /// <param name="Contract">The parent's contract the child would inherit.</param>
 /// <param name="Handler">The parent's handler the child would inherit.</param>
 public sealed record InheritedTool(string AgentId, FunctionContract Contract, ToolHandler Handler);
+
+/// <summary>
+/// The templates one agent's <c>Agent</c> tool lists (<see cref="SubAgentOptions.ListedTemplates"/>), and how to
+/// reach the rest.
+/// </summary>
+/// <param name="Names">Template keys to list, in any order: the tool lists them ordinally. A key the source does not
+/// hold is ignored.</param>
+/// <param name="UnlistedHint">One line for the model about the templates the tool does not list. It follows the
+/// listed templates and ends the <c>subagent_type</c> text.</param>
+public sealed record TemplateListing(IReadOnlySet<string> Names, string UnlistedHint);

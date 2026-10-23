@@ -773,6 +773,13 @@ public sealed class SubAgentManager : IAsyncDisposable
     internal SubAgentInstrumentation? Instrumentation => _options.Instrumentation;
 
     /// <summary>
+    /// The templates this manager's <c>Agent</c> tool lists (<see cref="SubAgentOptions.ListedTemplates"/>, asked for
+    /// this manager's parent thread), or null for every template. <see cref="SubAgentToolProvider"/> reads it once per
+    /// build of its surface; the host returns the same instance until the list changes.
+    /// </summary>
+    internal TemplateListing? ListedTemplates => _options.ListedTemplates?.Invoke(_parentAgent.ThreadId);
+
+    /// <summary>
     /// The usage ledger this manager relays descendant usage into, when the sink it was given is one —
     /// the owning loop's <c>UsageLedger</c>, which for a root loop is the conversation's single ledger.
     /// Exposed read-only so <see cref="SubAgentToolProvider"/> can render a per-agent VIEW of it in a

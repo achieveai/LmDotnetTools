@@ -3,7 +3,6 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using Microsoft.Extensions.Logging;
@@ -155,47 +154,8 @@ internal static class MessageMapper
     ///     The contract's parameter <em>list</em> must not be serialized directly — that yields a JSON
     ///     array, which the API rejects with "expected an object, but got an array".
     /// </summary>
-    private static JsonNode? BuildParametersSchema(FunctionContract contract)
-    {
-        var properties = new Dictionary<string, JsonSchemaObject>(StringComparer.Ordinal);
-        var required = new List<string>();
-
-        if (contract.Parameters is not null)
-        {
-            foreach (var parameter in contract.Parameters)
-            {
-                if (string.IsNullOrEmpty(parameter.Name) || parameter.ParameterType is null)
-                {
-                    continue;
-                }
-
-                // Carry the parameter description onto the property schema when it has none of its own.
-                var propertySchema =
-                    parameter.ParameterType.Description is null && parameter.Description is not null
-                        ? parameter.ParameterType with
-                        {
-                            Description = parameter.Description,
-                        }
-                        : parameter.ParameterType;
-
-                properties[parameter.Name] = propertySchema;
-                if (parameter.IsRequired)
-                {
-                    required.Add(parameter.Name);
-                }
-            }
-        }
-
-        var schema = new JsonSchemaObject
-        {
-            Type = JsonSchemaTypeHelper.ToType("object"),
-            Properties = properties,
-            Required = required.Count > 0 ? required : null,
-            AdditionalProperties = false,
-        };
-
-        return JsonSerializer.SerializeToNode(schema, s_schemaSerializerOptions);
-    }
+    private static JsonNode? BuildParametersSchema(FunctionContract contract) =>
+        JsonSerializer.SerializeToNode(contract.GetParametersSchema(), s_schemaSerializerOptions);
 
     /// <summary>
     ///     Maps a single repo-native message onto Responses API input items (or instructions),

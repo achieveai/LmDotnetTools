@@ -134,6 +134,61 @@ public class DeferredToolUnwrapTests
         result.IsError.Should().BeFalse();
     }
 
+    // SC3: the error for a name nothing handles lists only the tools the model is advertised (hidden Target is not),
+    // and points to SearchTool only when the model has it.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AnUnknownFunctionErrorListsOnlyAdvertisedTools_AndHintsSearchToolOnlyWhenListed(
+        bool hasSearchTool
+    )
+    {
+        var counts = new Counts();
+        var registry = Harness.Registry(counts);
+        _ = registry.AddProvider(new FakeDeferred());
+        if (hasSearchTool)
+        {
+            _ = registry.AddFunction(
+                new FunctionContract
+                {
+                    Name = "SearchTool",
+                    Description = "Find a tool.",
+                    Parameters = [],
+                },
+                counts.Handler("SearchTool")
+            );
+        }
+
+        var agent = new ScriptedAgent([
+            [Call("{}") with { FunctionName = "Missing" }],
+            [Done()],
+        ]);
+        await using var loop = new MultiTurnAgentLoop(agent, registry, "deferred-unknown");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        _ = loop.RunAsync(cts.Token);
+        var published = await Drain(loop, "go", cts.Token);
+        await cts.CancelAsync();
+
+        var result = published.OfType<ToolCallResultMessage>().Should().ContainSingle().Subject;
+        result.IsError.Should().BeTrue();
+        using var error = JsonDocument.Parse(result.Result);
+        error
+            .RootElement.GetProperty("available_functions")
+            .EnumerateArray()
+            .Select(e => e.GetString())
+            .Should()
+            .Contain(Wrapper)
+            .And.NotContain(Target, "a hidden tool is not advertised, so an error must not name it either");
+        if (hasSearchTool)
+        {
+            error.RootElement.GetProperty("hint").GetString().Should().Contain("SearchTool");
+        }
+        else
+        {
+            error.RootElement.TryGetProperty("hint", out _).Should().BeFalse("SearchTool is not this model's tool");
+        }
+    }
+
     [Fact]
     public async Task ToolSchemaTokensCountOnlyTheAdvertisedContracts()
     {

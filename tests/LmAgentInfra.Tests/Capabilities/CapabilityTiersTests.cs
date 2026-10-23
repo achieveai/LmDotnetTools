@@ -656,7 +656,7 @@ public class CapabilityTiersTests
         badId.SetupWarning.Should().Be(NotSetUp("the thread id is not a valid agent id"));
 
         static string NotSetUp(string cause) =>
-            $"Skill tiers could not be set up for this mode ({cause}); this conversation runs without tiers until its next mode switch.";
+            $"Skill tiers could not be set up for this mode ({cause}); this conversation runs without tiers until the agent is rebuilt.";
     }
 
     // R3: one budget bounds a build's tiers. A gateway that hangs leaves the build inert with one WARN naming the
@@ -1128,6 +1128,114 @@ public class CapabilityTiersTests
 
         gw.ListedNames(T).Should().Equal("alpha:b", "alpha:p", "beta:d");
         await AssertViewAsync(store, T, ["alpha:b", "alpha:p", "beta:d"], 3, 11);
+    }
+
+    /// <summary>
+    /// F-010: a dispose while one discovery refresh holds the root gate and a second waits on it. Red with the gates
+    /// disposed: the holder's release throws (a WARN) and the waiter is orphaned until the 10 s budget cancels it.
+    /// </summary>
+    [Fact]
+    public async Task Dispose_WhileARefreshHoldsTheRootGate_LetsTheHolderAndTheWaiterFinish()
+    {
+        var log = new RecordingLogger();
+        var tiers = new CapabilityTiers(T, await StoreAsync(T), log);
+        var inner = new FakeSkillGateway().For(T);
+        var hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blocking = false;
+        var gateway = inner with
+        {
+            GetCatalog = async ct =>
+            {
+                if (Volatile.Read(ref blocking))
+                {
+                    _ = entered.TrySetResult();
+                    await hold.Task.WaitAsync(ct);
+                }
+
+                return await inner.GetCatalog(ct);
+            },
+        };
+        await tiers.ConfigureAsync(Tiers(["skill:alpha:a"], [PinP]), gateway, CancellationToken.None);
+        tiers.IsActive.Should().BeTrue("guard: the build applied");
+        Volatile.Write(ref blocking, true);
+
+        var holder = tiers.RefreshSkillsAfterDiscoveryAsync(CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var waiter = tiers.RefreshSkillsAfterDiscoveryAsync(CancellationToken.None);
+        waiter.IsCompleted.Should().BeFalse("guard: the second refresh waits on the root gate");
+        tiers.Dispose();
+        hold.SetResult();
+
+        await Task.WhenAll(holder, waiter).WaitAsync(TimeSpan.FromSeconds(5));
+        log.Starting("Capabilities discovery refresh failed")
+            .Should()
+            .BeEmpty("no release or wait hit a disposed gate");
+    }
+
+    /// <summary>
+    /// SC6: a skill the sandbox finds mid-session is searchable at once, as available, and changes nothing the model
+    /// is sent or the view until a compaction. The next rotation's reset PATCH names its path as available: a PATCH
+    /// that left it out would put it back on the gateway default (included), and the re-listed Skill would list it.
+    /// </summary>
+    [Fact]
+    public async Task SkillDiscoveredMidSession_SearchableAtOnce_NothingSentChanges_NextRotationPatchesItAvailable()
+    {
+        const string DemoPath = "/workspace/s6/.claude/skills/s6-demo";
+        var store = await StoreAsync(T);
+        var gw = new FakeSkillGateway();
+        using var tiers = new CapabilityTiers(T, store, NullLogger.Instance);
+        (await BuildAsync(tiers, Tiers(["skill:alpha:a"], [PinP]), gw, T)).Should().BeTrue();
+        var bytes = ProviderBytes(tiers);
+        var view = await RawViewAsync(store, T);
+        var patches = gw.Patches.Count;
+        var listCalls = gw.ListCalls;
+
+        gw.DiscoverWorkspaceSkill("s6-demo", DemoPath, "Use when the sixth scenario needs a demo. It shows discovery.");
+        var found = await tiers.RefreshSkillsAfterDiscoveryAsync(CancellationToken.None);
+        var search = await RootSearchSkillTextAsync(tiers, """{"query":"sixth scenario demo"}""");
+        var again = await tiers.RefreshSkillsAfterDiscoveryAsync(CancellationToken.None);
+        var bytesAfterRefresh = ProviderBytes(tiers);
+        var viewAfterRefresh = await RawViewAsync(store, T);
+        var patchesAfterRefresh = gw.Patches.Count;
+        var listCallsAfterRefresh = gw.ListCalls;
+
+        (await tiers.OnCheckpointActivatedAsync(Activation(T, 5, 4, SkillCall(3, "beta:c")), default))
+            .Should()
+            .BeTrue("guard: the rotation changed the view, so it PATCHes and re-lists");
+        var rotationPatch = gw.Patches[^1].Set;
+
+        using (new FluentAssertions.Execution.AssertionScope())
+        {
+            rotationPatch
+                .Should()
+                .Contain(DemoPath, SandboxSkillTier.Available, "a reset PATCH that omits a path leaves it included");
+            SkillDescription(tiers)
+                .Should()
+                .Be(FakeSkillGateway.SkillText(["alpha:p", "beta:c"]), "the re-listed Skill must not gain the skill");
+            found.Select(i => i.Key).Should().Equal(CapabilityCatalog.SkillKeyPrefix + DemoPath);
+            search
+                .Split('\n')
+                .Should()
+                .Contain(
+                    line => Regex.IsMatch(line, @"^\d+\. s6-demo \(plugin: workspace\) (\[weak\] )?\[available\]$"),
+                    "SearchSkill finds it at once, as available"
+                );
+            again.Should().BeEmpty("a skill is new once");
+            bytesAfterRefresh.Should().Be(bytes, "tools[] is unchanged until a compaction");
+            viewAfterRefresh.Should().Be(view, "the view is unchanged until a compaction");
+            patchesAfterRefresh.Should().Be(patches, "a refresh PATCHes nothing");
+            listCallsAfterRefresh.Should().Be(listCalls, "a refresh re-lists nothing");
+        }
+    }
+
+    private static async Task<string> RootSearchSkillTextAsync(CapabilityTiers tiers, string argsJson)
+    {
+        var search = tiers
+            .RootProvider.GetFunctions()
+            .Single(f => f.Contract.Name == CapabilityTiers.SearchSkillToolName);
+        var result = await search.Handler(argsJson, new ToolCallContext(), CancellationToken.None);
+        return ((ToolHandlerResult.Resolved)result).Payload.Text;
     }
 
     private static TierSettings Tiers(string[] loaded, string[] pinned, int cap = 10) =>

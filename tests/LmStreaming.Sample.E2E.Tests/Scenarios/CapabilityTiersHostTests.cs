@@ -16,10 +16,13 @@ using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.Sandbox;
 using FluentAssertions;
+using LmStreaming.Sample.Controllers;
 using LmStreaming.Sample.E2E.Tests.Infrastructure;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
+using LmStreaming.Sample.Services.Discovery;
+using LmStreaming.Sample.Services.RemoteMcp;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
@@ -33,7 +36,7 @@ namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 /// <summary>
 /// Loaded-vs-available skill tiers through <c>Program.cs</c>'s real agent factory: the contracts the slice-1
 /// manual run saw hold at the host (concurrent first turn, discovery notices, untiered parity). The only fakes
-/// are the gateway's HTTP surface, its MCP endpoint and the LLM.
+/// are the gateway's HTTP surface, its MCP endpoint, one plugin's remote MCP server and the LLM.
 /// </summary>
 /// <remarks>
 /// One host serves the class. Every test provisions its own conversations, each on its own workspace and so
@@ -57,11 +60,73 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
     /// <summary>A user message that makes the root spawn one <see cref="WorkerTemplate"/> sub-agent.</summary>
     private const string SpawnPrefix = "spawn-a-tiered-worker ";
 
-    /// <summary>The host's one sub-agent template: its tools list names Skill and Read, not SearchSkill.</summary>
+    /// <summary>A user message that makes the root spawn one <see cref="OpenTemplate"/> sub-agent.</summary>
+    private const string SpawnOpenPrefix = "spawn-an-open-worker ";
+
+    /// <summary>A user message that makes the root spawn one <see cref="WorkerTemplate"/> with <c>add_tools: ExecuteTool</c>.</summary>
+    private const string ExecuteSpawnPrefix = "spawn-a-tool-tiered-worker ";
+
+    /// <summary>As <see cref="ExecuteSpawnPrefix"/>, with <c>remove_tools: SearchTool</c> as well.</summary>
+    private const string ExecuteNoSearchSpawnPrefix = "spawn-a-worker-without-search ";
+
+    /// <summary>The host's main sub-agent template: its tools list names Skill and Read, not SearchSkill.</summary>
     private const string WorkerTemplate = "tiers-worker";
     private const string WorkerPrompt = "You are the tiers worker.";
+
+    /// <summary>A template with no tools list, so its sub-agent inherits every tool the root may hand down.</summary>
+    private const string OpenTemplate = "tiers-open";
+
+    /// <summary>Contains <see cref="WorkerPrompt"/>, so its requests never count as root requests.</summary>
+    private const string OpenWorkerPrompt = WorkerPrompt + " It inherits every tool.";
     private const string ReadPath = "/workspace/notes/sub/data.txt";
     private const string ReadResult = "Read ok";
+
+    /// <summary>SC6: a user message that makes the root read once where a new skill and a new sub-agent live.</summary>
+    private const string CapabilityReadPrefix = "read-where-capabilities-live ";
+
+    /// <summary>The workspace skill and sub-agent the gateway reports for a <see cref="CapabilityReadPrefix"/> read.</summary>
+    private const string DemoSkillPath = "/workspace/s6/.claude/skills/s6-demo";
+    private const string DemoAgent = "s6-agent";
+    private const string DemoSkillDescription = "Use when the sixth scenario needs a demo. It shows discovery.";
+    private const string DemoAgentDescription = "Runs the sixth scenario demo. It reports what it found.";
+
+    /// <summary>SC2: a user message that makes a tool-tiered root run <see cref="AvailableTool"/> through <c>ExecuteTool</c>.</summary>
+    private const string ExecuteAvailablePrefix = "run-an-available-tool ";
+
+    /// <summary>A sandbox tool no mode here loads or pins, so a tool-tiered root has it available only.</summary>
+    private const string AvailableTool = "Glob";
+
+    /// <summary>SC7: a user message that makes a tool-tiered root find <see cref="RemoteTool"/>, then run it.</summary>
+    private const string RemoteToolPrefix = "find-and-run-a-remote-tool ";
+
+    /// <summary>The model-facing name of the tool the <c>acme</c> plugin's <c>api</c> server serves.</summary>
+    private const string RemoteTool = "mcp_plugin_acme_api_lookup";
+
+    /// <summary>The remote server's own name for <see cref="RemoteTool"/>, and its answer.</summary>
+    private const string RemoteServerTool = "lookup";
+    private const string RemoteResult = "acme lookup ok";
+
+    /// <summary>The fake header values of two egress keys: one for <c>acme.test:443</c>, one for another host.</summary>
+    private const string AcmeKeyValue = "Bearer acme-key-value-7c1e";
+    private const string OtherKeyValue = "Bearer other-key-value-3f9a";
+
+    /// <summary>
+    /// The plugin MCP servers the gateway lists for a <see cref="RemoteToolPrefix"/> session, as authored: one with a key
+    /// for its host, one whose credential has no key, and a stdio one.
+    /// </summary>
+    private const string RemoteRowsJson = """
+        [{"name":"api","plugin":"acme","marketplace":"mk","type":"http","supported":true,"reason":null,
+          "url":"https://acme.test/mcp",
+          "headers":[{"name":"Authorization","value":"Bearer ${ACME_TOKEN}","placeholder":null},
+                     {"name":"X-Trace","value":"on","placeholder":null}],
+          "command":null,"args":[],"env":{},"extra":{}},
+         {"name":"nokey","plugin":"acme","marketplace":"mk","type":"http","supported":true,"reason":null,
+          "url":"https://nokey.test/mcp","headers":[{"name":"X-Api-Key","value":"${K}","placeholder":"K"}],
+          "command":null,"args":[],"env":{},"extra":{}},
+         {"name":"local","plugin":"acme","marketplace":"mk","type":"stdio","supported":false,
+          "reason":"stdio servers are not supported","url":null,"headers":[],
+          "command":"npx","args":["-y","@acme/mcp"],"env":{"ACME_TOKEN":"${ACME_TOKEN}"},"extra":{}}]
+        """;
 
     private readonly TiersHost _host;
 
@@ -148,6 +213,77 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
         untieredRun.Delivered.Should().Be(0);
         untieredRun.NextRequestMessages.Should().Contain(ReadResult, "guard: the request after the read was seen");
         untieredRun.NextRequestMessages.Should().NotContain(untieredRun.Marker);
+    }
+
+    /// <summary>
+    /// SC6: a read finds a new workspace skill and a new sub-agent. A root that tiers both gets one notice per item
+    /// on its next request, naming the kind, the key and the call, with the first sentence of the description;
+    /// tools[] and the persisted view stay as they were. Another tiered conversation on the same workspace shares the
+    /// gateway session, so its catalog takes the skill too, with no notice, and its next rotation PATCHes the skill
+    /// available. An untiered root presents no agent id, so it gets none.
+    /// </summary>
+    [Fact]
+    public async Task CapabilitiesFoundByARead_FinderGetsOneNoticePerItem_ToolsAndViewUnchanged_BystanderIndexesQuietly_UntieredNone()
+    {
+        const string SkillLabel = "label=\"skill:" + DemoSkillPath + "\"";
+        const string AgentLabel = "label=\"agent:" + DemoAgent + "\"";
+        var workspaceId = await _host.CreateWorkspaceAsync();
+        var tiered = await _host.ProvisionAsync(_host.AgentTieredModeId, workspaceId);
+        var bystander = await _host.ProvisionAsync(_host.TieredModeId, workspaceId);
+        var untiered = await _host.ProvisionAsync(_host.UntieredModeId);
+
+        // The bystander is built, and uses a skill, before the read: its catalog cannot list the skill yet.
+        _ = await TurnAsync(bystander, SkillUsePrefix + bystander);
+        var tieredRun = await ReadWhereCapabilitiesLiveAsync(tiered, _host.AgentTieredModeId, "tiered");
+        var untieredRun = await ReadWhereCapabilitiesLiveAsync(untiered, _host.UntieredModeId, "untiered");
+        _host.SessionOf(bystander).Should().Be(_host.SessionOf(tiered), "guard: one workspace, one gateway session");
+
+        _host.ModelGate.AnswerRequestsContaining([SummaryMarker, SkillUsePrefix + bystander], SummaryJson);
+        try
+        {
+            using var accepted = await _host.RequestCompactionAsync(bystander);
+            accepted.StatusCode.Should().Be(HttpStatusCode.Accepted);
+            _ = await TurnAsync(bystander, "plain after the checkpoint " + bystander);
+        }
+        finally
+        {
+            _host.ModelGate.AnswerRequestsContaining(null);
+        }
+
+        var bystanderPatches = _host.Gateway.Patches.Where(p => p.AgentId == bystander).ToList();
+        bystanderPatches.Should().HaveCount(2, "guard: the build's PATCH, then the rotation's");
+        using (var rotation = JsonDocument.Parse(bystanderPatches[^1].Body))
+        {
+            rotation
+                .RootElement.GetProperty("set")
+                .TryGetProperty(DemoSkillPath, out var demoTier)
+                .Should()
+                .BeTrue("a rotation PATCH that omits the found path leaves it included for the bystander");
+            demoTier.GetString().Should().Be("available");
+        }
+
+        _host.Logs.Count("Capabilities discovered", "Owner", bystander).Should().Be(0, "a bystander gets no notice");
+
+        var notices = TextsOf(tieredRun.Requests[^1].MessagesJson);
+        notices.Sum(t => Occurrences(t, SkillLabel)).Should().Be(1, "one notice for the skill");
+        notices.Sum(t => Occurrences(t, AgentLabel)).Should().Be(1, "one notice for the sub-agent");
+        var all = string.Join('\n', notices);
+        all.Should().Contain("Skill(skill=\"s6-demo\")").And.Contain("Use when the sixth scenario needs a demo.");
+        all.Should().Contain($"Agent(subagent_type=\"{DemoAgent}\")").And.Contain("Runs the sixth scenario demo.");
+        all.Should().NotContain("It shows discovery.").And.NotContain("It reports what it found.");
+        tieredRun
+            .Requests.Select(r => r.ToolsJson)
+            .Distinct()
+            .Should()
+            .ContainSingle("tools[] is unchanged until a compaction");
+        tieredRun
+            .ViewAfter.Should()
+            .NotBeNull()
+            .And.Be(tieredRun.ViewBefore, "the view is unchanged until a compaction");
+
+        var untieredTexts = string.Join('\n', TextsOf(untieredRun.Requests[^1].MessagesJson));
+        untieredTexts.Should().Contain(ReadResult, "guard: the request after the read was seen");
+        untieredTexts.Should().NotContain(SkillLabel).And.NotContain(AgentLabel);
     }
 
     /// <summary>
@@ -304,7 +440,7 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
         warning
             .Should()
             .Be(
-                "Skill tiers could not be set up for this mode (the sandbox catalog was unavailable); this conversation runs without tiers until its next mode switch."
+                "Skill tiers could not be set up for this mode (the sandbox catalog was unavailable); this conversation runs without tiers until the agent is rebuilt."
             );
         _host
             .Logs.Count("Capabilities apply failed", "ThreadId", threadId)
@@ -386,13 +522,376 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
         child.ToolNames.Should().Contain(CapabilityTiers.SearchSkillToolName);
     }
 
-    /// <summary>One turn on its own connection; the first root request it sent.</summary>
-    private async Task<LlmRequest> TurnAsync(string threadId, string message)
+    /// <summary>
+    /// With tools tiered, a sub-agent whose tools name <c>ExecuteTool</c> (here through <c>add_tools</c>) also gets
+    /// <c>SearchTool</c>, as <c>Skill</c> brings <c>SearchSkill</c>: it runs its available tools through one and finds
+    /// them with the other. A <c>remove_tools</c> naming <c>SearchTool</c> still wins.
+    /// </summary>
+    [Fact]
+    public async Task ToolTieredChild_ExecuteToolBringsSearchTool_RemoveToolsStillWins()
     {
-        await using var client = new WebSocketTestClient(await _host.ConnectAsync(threadId, _host.TieredModeId));
+        var withSearch = await ToolTieredChildRequestAsync(ExecuteSpawnPrefix);
+        var withoutSearch = await ToolTieredChildRequestAsync(ExecuteNoSearchSpawnPrefix);
+
+        withSearch
+            .ToolNames.Should()
+            .Contain([CapabilityTiers.ExecuteToolToolName, CapabilityTiers.SearchToolToolName]);
+        withoutSearch.ToolNames.Should().Contain(CapabilityTiers.ExecuteToolToolName);
+        withoutSearch.ToolNames.Should().NotContain(CapabilityTiers.SearchToolToolName);
+    }
+
+    /// <summary>
+    /// SC2: a tool-tiered root lists its loaded and pinned tools plus <c>SearchTool</c> and <c>ExecuteTool</c>, and no
+    /// available tool. Its <c>ExecuteTool</c> call on an available tool runs that tool in the same run, in the sandbox
+    /// as itself, and the UI gets the result as that tool's, under the call's own id. Program.cs is what hands the
+    /// tiers' unwrap to the loop; without it the call would reach <c>ExecuteTool</c>'s own handler, which fails closed.
+    /// </summary>
+    [Fact]
+    public async Task ToolTieredRoot_ExecuteToolRunsAnAvailableTool_InTheSameRun_ReportedAsThatTool()
+    {
+        _host.Reference.ToolNames.Should().Contain(AvailableTool, "guard: the sandbox serves the available tool");
+        var threadId = await _host.ProvisionAsync(_host.ToolTieredModeId);
+
+        await using var client = new WebSocketTestClient(await _host.ConnectAsync(threadId, _host.ToolTieredModeId));
+        var before = _host.Llm.Count;
+        await client.SendUserMessageAsync(ExecuteAvailablePrefix + threadId);
+        using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(30));
+
+        var requests = _host.RootRequestsSince(before).ToList();
+        requests.Should().HaveCount(2, "one run: the ExecuteTool call, then the answer to its result");
+        requests[0]
+            .ToolNames.Should()
+            .BeEquivalentTo(
+                [
+                    .. _host.Reference.ToolNames.Where(n => n != AvailableTool),
+                    CapabilityTiers.SearchSkillToolName,
+                    CapabilityTiers.SearchToolToolName,
+                    CapabilityTiers.ExecuteToolToolName,
+                ],
+                "the root lists Workspace Agent's tools less the available one (Read is pinned), plus the searches "
+                    + "and the runner"
+            );
+
+        var session = _host.SessionOf(threadId);
+        _host
+            .Mcp.Calls.Where(c => c.SessionId == session && c.Method == "tools/call")
+            .Should()
+            .Equal(
+                [new McpCall(session, threadId, "tools/call", AvailableTool)],
+                "the sandbox runs the available tool itself, for the root's gateway agent"
+            );
+
+        var wrapperCallId = frames
+            .OfMessageType("tool_call_update", "tool_call", "tools_call")
+            .Where(f =>
+                f.TryGetProperty("function_name", out var name)
+                && name.GetString() == CapabilityTiers.ExecuteToolToolName
+            )
+            .Select(f => f.GetProperty("tool_call_id").GetString())
+            .Distinct()
+            .Should()
+            .ContainSingle("guard: the model called ExecuteTool once")
+            .Subject;
+        var result = frames.OfMessageType("tool_call_result").Should().ContainSingle().Subject;
+        result.GetProperty("tool_name").GetString().Should().Be(AvailableTool, "the UI is told which tool ran");
+        result.GetProperty("tool_call_id").GetString().Should().Be(wrapperCallId);
+        result.GetProperty("result").GetString().Should().Be(AvailableTool + " ok");
+        TextsOf(requests[1].MessagesJson)
+            .Should()
+            .Contain(AvailableTool + " ok", "the same run goes on with the tool's result");
+    }
+
+    /// <summary>
+    /// SC7 (H1): a tool-tiered root lists none of a plugin's remote MCP tools, finds one with <c>SearchTool</c> and
+    /// runs it through <c>ExecuteTool</c> in the same run. Every request reaches the server's own url with the headers
+    /// of the egress key for its host (never the plugin's <c>${VAR}</c> credential header, never another host's key)
+    /// plus the plugin's literal header. The server whose credential has no key is never contacted. No log line, model
+    /// request or stored view holds a key value or a server url.
+    /// </summary>
+    [Fact]
+    public async Task ToolTieredRoot_FindsAndRunsAPluginsRemoteMcpTool_WithTheTokenOfItsHostsEgressKey()
+    {
+        string threadId;
+        List<LlmRequest> requests;
+        List<(string? Tool, string? Result)> results;
+        _host.Gateway.ServeMcpServersToNewSessions(RemoteRowsJson);
+        try
+        {
+            threadId = await _host.ProvisionAsync(_host.ToolTieredModeId);
+            await using var client = new WebSocketTestClient(
+                await _host.ConnectAsync(threadId, _host.ToolTieredModeId)
+            );
+            var before = _host.Llm.Count;
+            await client.SendUserMessageAsync(RemoteToolPrefix + threadId);
+            using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(30));
+            results =
+            [
+                .. frames
+                    .OfMessageType("tool_call_result")
+                    .Select(f => (f.GetProperty("tool_name").GetString(), f.GetProperty("result").GetString())),
+            ];
+            requests = [.. _host.RootRequestsSince(before)];
+        }
+        finally
+        {
+            _host.Gateway.ServeMcpServersToNewSessions(null);
+        }
+
+        requests.Should().HaveCount(3, "one run: SearchTool, then ExecuteTool, then the answer");
+        requests
+            .SelectMany(r => r.ToolNames)
+            .Should()
+            .NotContain(n => n.StartsWith("mcp", StringComparison.Ordinal), "a remote tool is available, never listed");
+        results
+            .Should()
+            .ContainSingle(r => r.Tool == CapabilityTiers.SearchToolToolName)
+            .Which.Result.Should()
+            .Contain(RemoteTool, "SearchTool finds the plugin's remote tool");
+        results
+            .Should()
+            .ContainSingle(r => r.Tool == RemoteTool, "the UI is told which tool ran")
+            .Which.Result.Should()
+            .Be(RemoteResult);
+        TextsOf(requests[2].MessagesJson).Should().Contain(RemoteResult, "the same run goes on with the tool's result");
+
+        var remote = _host.Remote.Requests;
+        remote.Should().NotBeEmpty("guard: the build connected to the plugin's server");
+        remote
+            .Should()
+            .AllSatisfy(r =>
+            {
+                r.Host.Should().Be("acme.test", "only the server with a key for its host is contacted");
+                r.Path.Should().Be("/mcp");
+                r.Authorization.Should().Be(AcmeKeyValue, "the egress key for acme.test:443 authenticates it");
+                r.Trace.Should().Be("on", "a literal header is sent as authored");
+                r.HeaderValues.Should()
+                    .NotContain(v =>
+                        v.Contains(OtherKeyValue, StringComparison.Ordinal)
+                        || v.Contains("${", StringComparison.Ordinal)
+                    );
+            });
+        remote
+            .Where(r => r.Method == "tools/call")
+            .Select(r => r.ToolName)
+            .Should()
+            .Equal([RemoteServerTool], "ExecuteTool ran the server's own tool once, by its own name");
+
+        _host.Logs.Count("Remote MCP server {Marketplace}/{Plugin}/{Server} connected", "Server", "api").Should().Be(1);
+        _host
+            .Logs.Mentioning(
+                "Remote MCP server {Marketplace}/{Plugin}/{Server} not connected",
+                RemoteMcpServerPlan.NeedsEgressKey
+            )
+            .Should()
+            .ContainSingle("the server whose credential has no key is named, with why");
+        var view = await _host.ViewJsonAsync(threadId) ?? "";
+        foreach (var secret in new[] { AcmeKeyValue, OtherKeyValue, "acme.test", "nokey.test", "${ACME_TOKEN}" })
+        {
+            _host.Logs.AnyContains(secret).Should().BeFalse("no log line holds a key value or a server url");
+            requests
+                .Should()
+                .NotContain(
+                    r => (r.SystemPrompt + r.ToolsJson + r.MessagesJson).Contains(secret, StringComparison.Ordinal),
+                    "the model never sees a key value or a server url"
+                );
+            view.Should().NotContain(secret, "the stored view holds no row value");
+        }
+    }
+
+    /// <summary>
+    /// SC7 (H2): only a build that offers <c>ExecuteTool</c> reaches a plugin's remote MCP servers, so an untiered
+    /// build and a skills-only one never ask the gateway for them. A tool-tiered build asks once.
+    /// </summary>
+    [Fact]
+    public async Task UntieredAndSkillsOnlyBuilds_NeverFetchMcpServers()
+    {
+        foreach (var modeId in new[] { _host.UntieredModeId, _host.TieredModeId })
+        {
+            var threadId = await _host.ProvisionAsync(modeId);
+            _ = await _host.FirstRequestAsync(threadId, modeId);
+
+            _host
+                .Gateway.McpServerFetches(_host.SessionOf(threadId))
+                .Should()
+                .Be(0, "mode {0} offers no ExecuteTool", modeId);
+        }
+
+        var toolTiered = await _host.ProvisionAsync(_host.ToolTieredModeId);
+        _ = await _host.FirstRequestAsync(toolTiered, _host.ToolTieredModeId);
+        _host
+            .Gateway.McpServerFetches(_host.SessionOf(toolTiered))
+            .Should()
+            .Be(1, "guard: a tool-tiered build asks once");
+    }
+
+    /// <summary>
+    /// T7 (SC8): a tool-tiered root lists only some tools, while Workspace Agent's prompt names more of them as
+    /// mandatory. Its prompt is the reference prompt plus one fixed line that points at <c>SearchTool</c> and
+    /// <c>ExecuteTool</c>. A skills-only root has no <c>ExecuteTool</c>, and its prompt is the reference prompt (the
+    /// untiered one is pinned by <see cref="Untiered_ToolsAndPromptByteIdentical_ToWorkspaceAgent"/>).
+    /// </summary>
+    [Fact]
+    public async Task ToolTieredRoot_PromptCarriesTheFixedExecuteToolLine_ASkillsOnlyRootsPromptDoesNot()
+    {
+        const string Line = CapabilityTiers.ExecuteToolPromptLine;
+        var reference = _host.Reference.SystemPrompt.Replace(
+            _host.ReferenceThread,
+            "<thread>",
+            StringComparison.Ordinal
+        );
+        reference.Should().NotContain(Line, "guard: Workspace Agent's own prompt");
+
+        var (toolTiered, toolTieredTools) = await MaskedFirstRequestAsync(_host.ToolTieredModeId);
+        toolTieredTools.Should().Contain(CapabilityTiers.ExecuteToolToolName, "guard: the root has ExecuteTool");
+        Occurrences(toolTiered, Line).Should().Be(1, "the line is in the prompt once");
+        toolTiered
+            .Replace("\n\n" + Line, string.Empty, StringComparison.Ordinal)
+            .Should()
+            .Be(reference, "the line is the only change");
+
+        var (skillsOnly, skillsOnlyTools) = await MaskedFirstRequestAsync(_host.TieredModeId);
+        skillsOnlyTools.Should().NotContain(CapabilityTiers.ExecuteToolToolName, "guard: a skills-only root");
+        skillsOnly.Should().Be(reference);
+
+        async Task<(string Prompt, IReadOnlyList<string> Tools)> MaskedFirstRequestAsync(string modeId)
+        {
+            var threadId = await _host.ProvisionAsync(modeId);
+            var request = await _host.FirstRequestAsync(threadId, modeId);
+            return (request.SystemPrompt.Replace(threadId, "<thread>", StringComparison.Ordinal), request.ToolNames);
+        }
+    }
+
+    /// <summary>
+    /// A mode that tiers skills only, and one that names an <c>agent:</c> selector without <c>caps.agent</c>, both send
+    /// Workspace Agent's <c>Agent</c> tool byte for byte: every template listed, no hint.
+    /// </summary>
+    [Fact]
+    public async Task SkillsOnlyAndUncappedAgentSelectorModes_KeepTheUntieredAgentTool()
+    {
+        var expected = ToolJsonOf(_host.Reference, "Agent");
+
+        foreach (var modeId in new[] { _host.TieredModeId, _host.UncappedAgentSelectorModeId })
+        {
+            var threadId = await _host.ProvisionAsync(modeId);
+            var actual = await _host.FirstRequestAsync(threadId, modeId);
+
+            actual
+                .ToolNames.Should()
+                .Contain(CapabilityTiers.SearchSkillToolName, "guard: mode {0} tiers skills", modeId);
+            actual.ToolNames.Should().NotContain(CapabilityTiers.SearchAgentToolName);
+            actual.ToolNames.Should().NotContain(CapabilityTiers.SearchPluginToolName);
+            ToolJsonOf(actual, "Agent").Should().Be(expected, "mode {0} does not tier sub-agents", modeId);
+        }
+    }
+
+    /// <summary>
+    /// A skills-only root switched in place to a mode with <c>caps.agent</c> seeds the agent kind at that switch: the
+    /// next request's <c>Agent</c> tool lists the mode's loaded template and the hint, and the root can search
+    /// agents and plugins.
+    /// </summary>
+    [Fact]
+    public async Task SkillsOnlyRoot_SwitchedInPlaceToAnAgentMode_ListsTheSeededTemplate()
+    {
+        var threadId = await _host.ProvisionAsync(_host.TieredModeId);
+        var before = await _host.FirstRequestAsync(threadId, _host.TieredModeId);
+        AgentTypeDescriptionOf(before).Should().StartWith("Which sub-agent to spawn. One of: ");
+
+        (await SwitchAppliedInPlaceAsync(threadId, _host.AgentTieredModeId)).Should().BeNull("the tiers took");
+        var after = await _host.FirstRequestAsync(threadId, _host.AgentTieredModeId);
+
+        AgentTypeDescriptionOf(after)
+            .Should()
+            .Be($"Which sub-agent to spawn. Listed: {WorkerTemplate}. {CapabilityTiers.UnlistedAgentsHint}");
+        after.ToolNames.Should().Contain([CapabilityTiers.SearchAgentToolName, CapabilityTiers.SearchPluginToolName]);
+    }
+
+    /// <summary>
+    /// The root's agent searches answer from the root's own view, so a sub-agent never inherits them, even from a
+    /// template that inherits every other tool.
+    /// </summary>
+    [Fact]
+    public async Task AgentTieredRoot_SearchesAgentsAndPlugins_ItsChildInheritsNeither()
+    {
+        var threadId = await _host.ProvisionAsync(_host.AgentTieredModeId);
+        var before = _host.Llm.Count;
+
+        var root = await TurnAsync(threadId, SpawnOpenPrefix + threadId, _host.AgentTieredModeId);
+
+        root.ToolNames.Should().Contain([CapabilityTiers.SearchAgentToolName, CapabilityTiers.SearchPluginToolName]);
+        var child = _host
+            .Llm.Skip(before)
+            .Should()
+            .ContainSingle(r => r.SystemPrompt.Contains(OpenWorkerPrompt, StringComparison.Ordinal))
+            .Subject;
+        child.ToolNames.Should().Contain("Read", "guard: the open template inherits the root's tools");
+        child.ToolNames.Should().NotContain(CapabilityTiers.SearchAgentToolName);
+        child.ToolNames.Should().NotContain(CapabilityTiers.SearchPluginToolName);
+    }
+
+    /// <summary>
+    /// A workspace's <c>tiers.pinned</c>, set through <c>PUT /api/workspaces/{id}</c>, joins a tiered mode's root
+    /// list; an explicit <c>null</c> clears it for the next build. An untiered mode on that workspace stays
+    /// Workspace Agent's tools[] byte for byte: the workspace never switches tiers on.
+    /// </summary>
+    [Fact]
+    public async Task WorkspacePinned_JoinsATieredRoot_NullClearsIt_AnUntieredModeIsUnchanged()
+    {
+        var workspaceId = await _host.CreateWorkspaceAsync();
+        using (var pinned = await _host.UpdateWorkspaceAsync(workspaceId, """{"tiers":{"pinned":["skill:beta:c"]}}"""))
+        {
+            pinned.StatusCode.Should().Be(HttpStatusCode.OK);
+            (await pinned.Content.ReadAsStringAsync()).Should().Contain("skill:beta:c", "the view shows the tiers");
+        }
+
+        var tiered = await _host.ProvisionAsync(_host.TieredModeId, workspaceId);
+        var withPin = await _host.FirstRequestAsync(tiered, _host.TieredModeId);
+        DescriptionOf(withPin, "Skill")
+            .Should()
+            .Be(
+                SandboxToolsProvider.SkillListing("alpha:a", "alpha:p", "beta:c"),
+                "the workspace pin joins the mode's loaded and pinned skills"
+            );
+
+        var untiered = await _host.ProvisionAsync(_host.UntieredModeId, workspaceId);
+        (await _host.FirstRequestAsync(untiered, _host.UntieredModeId))
+            .ToolsJson.Should()
+            .Be(_host.Reference.ToolsJson, "an untiered mode ignores the workspace's tiers");
+        _host.Logs.Mentioning("Capabilities", untiered).Should().BeEmpty();
+
+        using (var cleared = await _host.UpdateWorkspaceAsync(workspaceId, """{"tiers":null}"""))
+        {
+            cleared.StatusCode.Should().Be(HttpStatusCode.OK);
+            (await cleared.Content.ReadAsStringAsync()).Should().NotContain("skill:beta:c");
+        }
+
+        var after = await _host.ProvisionAsync(_host.TieredModeId, workspaceId);
+        DescriptionOf(await _host.FirstRequestAsync(after, _host.TieredModeId), "Skill")
+            .Should()
+            .Be(SandboxToolsProvider.SkillListing("alpha:a", "alpha:p"), "null cleared the workspace pin");
+    }
+
+    /// <summary>One turn on its own connection (in the tiered mode unless named); the first root request it sent.</summary>
+    private async Task<LlmRequest> TurnAsync(string threadId, string message, string? modeId = null)
+    {
+        await using var client = new WebSocketTestClient(
+            await _host.ConnectAsync(threadId, modeId ?? _host.TieredModeId)
+        );
         var before = _host.Llm.Count;
         await TakeTurnAsync(client, message);
         return _host.RootRequestsSince(before).First();
+    }
+
+    /// <summary>The first request of the one <see cref="WorkerTemplate"/> sub-agent a fresh tool-tiered root spawns.</summary>
+    private async Task<LlmRequest> ToolTieredChildRequestAsync(string prefix)
+    {
+        var threadId = await _host.ProvisionAsync(_host.ToolTieredModeId);
+        var before = _host.Llm.Count;
+        _ = await TurnAsync(threadId, prefix + threadId, _host.ToolTieredModeId);
+        return _host
+            .Llm.Skip(before)
+            .Should()
+            .ContainSingle(r => r.SystemPrompt.Contains(WorkerPrompt, StringComparison.Ordinal))
+            .Subject;
     }
 
     private static string? DescriptionOf(LlmRequest request, string tool)
@@ -403,6 +902,29 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
             .Where(t => t.GetProperty("name").GetString() == tool)
             .Select(t => t.GetProperty("description").GetString())
             .Single();
+    }
+
+    /// <summary>One tool's JSON exactly as the request carried it.</summary>
+    private static string ToolJsonOf(LlmRequest request, string tool)
+    {
+        using var doc = JsonDocument.Parse(request.ToolsJson);
+        return doc
+            .RootElement.EnumerateArray()
+            .Where(t => t.GetProperty("name").GetString() == tool)
+            .Select(t => t.GetRawText())
+            .Single();
+    }
+
+    /// <summary>The description of the <c>Agent</c> tool's <c>subagent_type</c> (Anthropic's <c>input_schema</c>).</summary>
+    private static string? AgentTypeDescriptionOf(LlmRequest request)
+    {
+        using var doc = JsonDocument.Parse(ToolJsonOf(request, "Agent"));
+        return doc
+            .RootElement.GetProperty("input_schema")
+            .GetProperty("properties")
+            .GetProperty("subagent_type")
+            .GetProperty("description")
+            .GetString();
     }
 
     /// <summary>
@@ -495,6 +1017,80 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
         return new DiscoveryRun(discovery.Owner, discovery.Delivered, discovery.Marker, requests[1].MessagesJson);
     }
 
+    /// <summary>
+    /// A plain turn (it builds the conversation and its session), then a turn whose one read finds the demo skill and
+    /// sub-agent: every root request of both turns, and the persisted view before and after the read turn.
+    /// </summary>
+    private async Task<CapabilityReadRun> ReadWhereCapabilitiesLiveAsync(string threadId, string modeId, string tag)
+    {
+        await using var client = new WebSocketTestClient(await _host.ConnectAsync(threadId, modeId));
+        var before = _host.Llm.Count;
+        await TakeTurnAsync(client, "plain " + threadId);
+        _host.ReportCapabilitiesOn(_host.SessionOf(threadId));
+        var viewBefore = await _host.ViewJsonAsync(threadId);
+        await TakeTurnAsync(client, CapabilityReadPrefix + tag);
+        var requests = _host.RootRequestsSince(before).ToList();
+        requests.Should().HaveCount(3, "guard: one plain answer, one read, then one answer");
+        return new CapabilityReadRun(requests, viewBefore, await _host.ViewJsonAsync(threadId));
+    }
+
+    /// <summary>Every string in a request's messages JSON (texts, tool results), in order.</summary>
+    private static IReadOnlyList<string> TextsOf(string messagesJson)
+    {
+        var texts = new List<string>();
+        using var doc = JsonDocument.Parse(messagesJson);
+        Collect(doc.RootElement);
+        return texts;
+
+        void Collect(JsonElement element)
+        {
+            switch (element.ValueKind)
+            {
+                case JsonValueKind.String:
+                    texts.Add(element.GetString()!);
+                    break;
+                case JsonValueKind.Array:
+                    foreach (var item in element.EnumerateArray())
+                    {
+                        Collect(item);
+                    }
+
+                    break;
+                case JsonValueKind.Object:
+                    foreach (var property in element.EnumerateObject())
+                    {
+                        Collect(property.Value);
+                    }
+
+                    break;
+                case JsonValueKind.Undefined:
+                case JsonValueKind.Number:
+                case JsonValueKind.True:
+                case JsonValueKind.False:
+                case JsonValueKind.Null:
+                default:
+                    break;
+            }
+        }
+    }
+
+    private static int Occurrences(string text, string value)
+    {
+        var count = 0;
+        for (
+            var i = text.IndexOf(value, StringComparison.Ordinal);
+            i >= 0;
+            i = text.IndexOf(value, i + 1, StringComparison.Ordinal)
+        )
+        {
+            count++;
+        }
+
+        return count;
+    }
+
+    private sealed record CapabilityReadRun(IReadOnlyList<LlmRequest> Requests, string? ViewBefore, string? ViewAfter);
+
     private static async Task TakeTurnAsync(WebSocketTestClient client, string message)
     {
         await client.SendUserMessageAsync(message);
@@ -538,7 +1134,9 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
         );
         private readonly ConcurrentQueue<LlmRequest> _llm = new();
         private readonly ConcurrentQueue<Discovery> _discoveries = new();
+        private readonly ConcurrentDictionary<string, byte> _capabilitySessions = new(StringComparer.Ordinal);
         private WebApplication? _mcpApp;
+        private WebApplication? _remoteApp;
         private E2EWebAppFactory? _factory;
         private HttpClient? _http;
         private FileWorkspaceStore? _workspaces;
@@ -550,6 +1148,9 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
         public LogCapture Logs { get; } = new();
 
         public McpRecorder Mcp { get; private set; } = null!;
+
+        /// <summary>SC7: every plugin MCP server url the host connects to reaches this one fake server.</summary>
+        public RemoteMcpRecorder Remote { get; private set; } = null!;
 
         /// <summary>Sits in front of the scripted model; a test can hold one request there.</summary>
         public LlmGate ModelGate { get; private set; } = null!;
@@ -580,6 +1181,15 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
 
         /// <summary>A copy of Workspace Agent that was tiered and then cleared (explicit null).</summary>
         public string ClearedModeId { get; private set; } = null!;
+
+        /// <summary><see cref="TieredModeId"/>'s tiers plus <c>caps.agent</c>, loading <see cref="WorkerTemplate"/>.</summary>
+        public string AgentTieredModeId { get; private set; } = null!;
+
+        /// <summary><see cref="TieredModeId"/>'s tiers plus an <c>agent:</c> selector, without <c>caps.agent</c>.</summary>
+        public string UncappedAgentSelectorModeId { get; private set; } = null!;
+
+        /// <summary><see cref="TieredModeId"/>'s tiers plus <c>caps.tool</c>, pinning <c>Read</c>.</summary>
+        public string ToolTieredModeId { get; private set; } = null!;
 
         /// <summary>A Workspace Agent conversation built at boot: the parity reference, and the host's warm-up.</summary>
         public string ReferenceThread { get; private set; } = null!;
@@ -613,6 +1223,36 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
             );
             cleared.Tiers.Should().BeNull("guard: an explicit null clears the tiers");
             ClearedModeId = cleared.Id;
+            AgentTieredModeId = (
+                await CopyAsync(
+                    "Tiers host agents",
+                    tiers with
+                    {
+                        Loaded = ["skill:alpha:a", $"agent:{WorkerTemplate}"],
+                        Caps = new ModeTierCaps { Agent = 2 },
+                    }
+                )
+            ).Id;
+            UncappedAgentSelectorModeId = (
+                await CopyAsync(
+                    "Tiers host uncapped agent selector",
+                    tiers with
+                    {
+                        Loaded = ["skill:alpha:a", $"agent:{WorkerTemplate}"],
+                    }
+                )
+            ).Id;
+
+            ToolTieredModeId = (
+                await CopyAsync(
+                    "Tiers host tools",
+                    tiers with
+                    {
+                        Pinned = ["skill:alpha:p", "tool:Read"],
+                        Caps = new ModeTierCaps { Tool = 5 },
+                    }
+                )
+            ).Id;
 
             var responder = ScriptedSseResponder
                 .New()
@@ -629,6 +1269,14 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                     ctx =>
                         !ctx.HasToolResult
                         && (ctx.LatestUserMessage?.Contains(ReadPrefix, StringComparison.Ordinal) ?? false)
+                )
+                .Turn(t => t.ToolCall("Read", new { file_path = ReadPath }))
+                .Turn(t => t.ToolCall("Read", new { file_path = ReadPath }))
+                .ForRole(
+                    "capability-read",
+                    ctx =>
+                        !ctx.HasToolResult
+                        && (ctx.LatestUserMessage?.Contains(CapabilityReadPrefix, StringComparison.Ordinal) ?? false)
                 )
                 .Turn(t => t.ToolCall("Read", new { file_path = ReadPath }))
                 .Turn(t => t.ToolCall("Read", new { file_path = ReadPath }))
@@ -669,6 +1317,99 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                         }
                     )
                 )
+                .ForRole(
+                    "spawn-open",
+                    ctx =>
+                        !ctx.HasToolResult
+                        && (ctx.LatestUserMessage?.Contains(SpawnOpenPrefix, StringComparison.Ordinal) ?? false)
+                )
+                .Turn(t =>
+                    t.ToolCall(
+                        "Agent",
+                        new
+                        {
+                            subagent_type = OpenTemplate,
+                            prompt = "list your tools",
+                            role = "open worker",
+                            description = "Lists the tools it inherited.",
+                        }
+                    )
+                )
+                .ForRole(
+                    "spawn-execute",
+                    ctx =>
+                        !ctx.HasToolResult
+                        && (ctx.LatestUserMessage?.Contains(ExecuteSpawnPrefix, StringComparison.Ordinal) ?? false)
+                )
+                .Turn(t =>
+                    t.ToolCall(
+                        "Agent",
+                        new
+                        {
+                            subagent_type = WorkerTemplate,
+                            prompt = "list your tools",
+                            role = "tiers worker",
+                            description = "Lists the tools it got.",
+                            add_tools = "ExecuteTool",
+                        }
+                    )
+                )
+                .ForRole(
+                    "spawn-execute-no-search",
+                    ctx =>
+                        !ctx.HasToolResult
+                        && (
+                            ctx.LatestUserMessage?.Contains(ExecuteNoSearchSpawnPrefix, StringComparison.Ordinal)
+                            ?? false
+                        )
+                )
+                .Turn(t =>
+                    t.ToolCall(
+                        "Agent",
+                        new
+                        {
+                            subagent_type = WorkerTemplate,
+                            prompt = "list your tools",
+                            role = "tiers worker",
+                            description = "Lists the tools it got.",
+                            add_tools = "ExecuteTool",
+                            remove_tools = "SearchTool",
+                        }
+                    )
+                )
+                .ForRole(
+                    "execute-available",
+                    ctx =>
+                        !ctx.HasToolResult
+                        && (ctx.LatestUserMessage?.Contains(ExecuteAvailablePrefix, StringComparison.Ordinal) ?? false)
+                )
+                .Turn(t =>
+                    t.ToolCall(
+                        CapabilityTiers.ExecuteToolToolName,
+                        new { tool = AvailableTool, arguments = new { pattern = "*.md" } }
+                    )
+                )
+                .ForRole(
+                    "remote-search",
+                    ctx =>
+                        !ctx.HasToolResult
+                        && (ctx.LatestUserMessage?.Contains(RemoteToolPrefix, StringComparison.Ordinal) ?? false)
+                )
+                .Turn(t => t.ToolCall(CapabilityTiers.SearchToolToolName, new { query = "acme lookup" }))
+                // A tool result's request carries no user text: the user message is found in the body.
+                .ForRole(
+                    "remote-execute",
+                    ctx =>
+                        ctx.HasToolResult
+                        && ctx.RequestBody.GetRawText().Contains(RemoteToolPrefix, StringComparison.Ordinal)
+                        && !ctx.RequestBody.GetRawText().Contains(RemoteResult, StringComparison.Ordinal)
+                )
+                .Turn(t =>
+                    t.ToolCall(
+                        CapabilityTiers.ExecuteToolToolName,
+                        new { tool = RemoteTool, arguments = new { query = "order-7" } }
+                    )
+                )
                 .Build();
             ModelGate = new LlmGate(responder.AsAnthropicHandler());
 
@@ -685,6 +1426,9 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
             );
             (_mcpApp, var mcpHandler) = await StartInMemoryMcpServerAsync(new SandboxToolsProvider());
             Mcp = new McpRecorder(mcpHandler);
+            (_remoteApp, var remoteHandler) = await StartInMemoryMcpServerAsync(new RemoteToolsProvider());
+            Remote = new RemoteMcpRecorder(remoteHandler);
+            var keysDirectory = Path.Combine(_root, "keys");
 
             _factory = new E2EWebAppFactory(
                 "test-anthropic",
@@ -700,6 +1444,12 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                                     Name = "Tiers worker",
                                     SystemPrompt = WorkerPrompt,
                                     EnabledTools = ["Skill", "Read"],
+                                    AgentFactory = providerAgentFactory,
+                                },
+                                [OpenTemplate] = new SubAgentTemplate
+                                {
+                                    Name = "Tiers open worker",
+                                    SystemPrompt = OpenWorkerPrompt,
                                     AgentFactory = providerAgentFactory,
                                 },
                             },
@@ -735,12 +1485,28 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                     services.RemoveAll<IMarketplaceCatalogClient>();
                     services.AddSingleton<IMarketplaceCatalogClient>(new EmptyMarketplaceCatalogClient());
                     services.AddKeyedSingleton<HttpMessageHandler>(Program.SandboxMcpTransportHandlerKey, Mcp);
+                    services.AddKeyedSingleton<HttpMessageHandler>(Program.RemoteMcpTransportHandlerKey, Remote);
+                    // The host's egress keys live in this run's own directory.
+                    services.RemoveAll<PredefinedKeyRegistry>();
+                    services.AddSingleton(sp => new PredefinedKeyRegistry(
+                        keysDirectory,
+                        new FileOAuthTokenStore(keysDirectory, NullLogger<FileOAuthTokenStore>.Instance),
+                        new HttpClient(),
+                        sp.GetRequiredService<ILoggerFactory>()
+                    ));
                     // Program.cs's Serilog pipeline reads sinks from DI (ReadFrom.Services).
                     services.AddSingleton<ILogEventSink>(Logs);
                 }
             );
             _http = _factory.CreateClient();
-            Mcp.OnRead = ReportContextFileAsync;
+            var keys = Services.GetRequiredService<PredefinedKeyRegistry>();
+            await keys.UpsertAsync(EgressKey("acme-key", "acme.test", AcmeKeyValue));
+            await keys.UpsertAsync(EgressKey("other-key", "other.test", OtherKeyValue));
+            Mcp.OnRead = async read =>
+            {
+                await ReportContextFileAsync(read);
+                await ReportCapabilitiesAsync(read);
+            };
             // The gateway lists Skill per agent: an agent it holds tiers for sees its included skills.
             Mcp.RewriteToolsList = (call, body) =>
                 call is { SessionId: { } session, AgentId: { } agent }
@@ -785,7 +1551,13 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                 await _mcpApp.DisposeAsync();
             }
 
+            if (_remoteApp is not null)
+            {
+                await _remoteApp.DisposeAsync();
+            }
+
             Mcp?.Dispose();
+            Remote?.Dispose();
             try
             {
                 Directory.Delete(_root, recursive: true);
@@ -796,17 +1568,15 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
             }
         }
 
-        /// <summary>A fresh conversation on its own workspace (and so its own sandbox session).</summary>
-        public async Task<string> ProvisionAsync(string modeId)
+        /// <summary>A fresh conversation on the named workspace, else on its own (and so its own sandbox session).</summary>
+        public async Task<string> ProvisionAsync(string modeId, string? workspaceId = null)
         {
-            var workspace = await _workspaces!.CreateAsync(
-                new WorkspaceCreate { Name = $"tiers-host-{Interlocked.Increment(ref _workspaceCount)}" }
-            );
+            workspaceId ??= await CreateWorkspaceAsync();
             using var response = await _http!.PostAsJsonAsync(
                 "/api/conversations",
                 new
                 {
-                    workspaceId = workspace.Id,
+                    workspaceId,
                     providerId = "test-anthropic",
                     modeId,
                 }
@@ -816,6 +1586,21 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
             using var doc = JsonDocument.Parse(body);
             return doc.RootElement.GetProperty("threadId").GetString()!;
         }
+
+        /// <summary>A fresh user workspace; returns its id.</summary>
+        public async Task<string> CreateWorkspaceAsync() =>
+            (
+                await _workspaces!.CreateAsync(
+                    new WorkspaceCreate { Name = $"tiers-host-{Interlocked.Increment(ref _workspaceCount)}" }
+                )
+            ).Id;
+
+        /// <summary>A <c>PUT /api/workspaces/{id}</c> with the body as given.</summary>
+        public Task<HttpResponseMessage> UpdateWorkspaceAsync(string workspaceId, string json) =>
+            _http!.PutAsync(
+                $"/api/workspaces/{workspaceId}",
+                new StringContent(json, System.Text.Encoding.UTF8, "application/json")
+            );
 
         public Task<System.Net.WebSockets.WebSocket> ConnectAsync(string threadId, string modeId) =>
             _factory!.ConnectWebSocketAsync(threadId, modeId);
@@ -843,6 +1628,20 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
         {
             var registry = Services.GetRequiredService<SandboxSessionRegistry>();
             return Gateway.Sessions.Should().ContainSingle(s => registry.GetThreads(s).Contains(threadId)).Subject;
+        }
+
+        /// <summary>SC6: from now on a read on <paramref name="sessionId"/> also finds the demo skill and sub-agent.</summary>
+        public void ReportCapabilitiesOn(string sessionId) => _capabilitySessions[sessionId] = 0;
+
+        /// <summary>The persisted capability view of a thread, as stored; null when it has none.</summary>
+        public async Task<string?> ViewJsonAsync(string threadId)
+        {
+            var metadata = await _conversations!.LoadMetadataAsync(threadId);
+            return metadata?.Properties?.TryGetValue(CapabilityTiers.ViewPropertyKey, out var raw) == true
+                ? raw is JsonElement element
+                    ? element.GetRawText()
+                    : raw.ToString()
+                : null;
         }
 
         public async Task<bool> HasViewAsync(string threadId)
@@ -874,6 +1673,55 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
             _discoveries.Enqueue(new Discovery(read.SessionId!, read.AgentId, marker, delivered));
         }
 
+        /// <summary>
+        /// SC6, the gateway's side: a read on a registered session walks up to a new workspace skill and sub-agent.
+        /// The skill joins the session's catalog; then one batch for the read's agent id reaches the webhook's handler
+        /// while the read runs, as the gateway posts it.
+        /// </summary>
+        private async Task ReportCapabilitiesAsync(McpCall read)
+        {
+            if (read.SessionId is not { } session || !_capabilitySessions.ContainsKey(session))
+            {
+                return;
+            }
+
+            Gateway.DiscoverWorkspaceSkill(session, "s6-demo", DemoSkillPath, DemoSkillDescription);
+            // As the gateway does, the batch names a workspace sub-agent by its path only; its file is in the sandbox.
+            Gateway.WriteWorkspaceFile(
+                session,
+                $"s6/.claude/agents/{DemoAgent}.md",
+                $"---\nname: {DemoAgent}\ndescription: {DemoAgentDescription}\n---\nYou are the s6 demo agent.\n"
+            );
+            var handled = await Services
+                .GetRequiredService<ContextDiscoveryBatchHandler>()
+                .HandleAsync(
+                    new ContextDiscoveryEnvelope
+                    {
+                        SessionId = session,
+                        AgentId = read.AgentId ?? "",
+                        Discoveries =
+                        [
+                            new ContextDiscoveryItem
+                            {
+                                Kind = "skill",
+                                Name = "s6-demo",
+                                Description = DemoSkillDescription,
+                                Path = DemoSkillPath + "/SKILL.md",
+                            },
+                            new ContextDiscoveryItem
+                            {
+                                Kind = "subagent",
+                                Name = DemoAgent,
+                                Description = DemoAgentDescription,
+                                Path = $"/workspace/s6/.claude/agents/{DemoAgent}.md",
+                            },
+                        ],
+                    },
+                    CancellationToken.None
+                );
+            handled.Should().BeTrue("guard: the batch is well formed");
+        }
+
         private async Task<ChatMode> CopyAsync(string name, ModeTiers tiers)
         {
             var copy = await Modes.CopyModeAsync(SystemChatModes.WorkspaceAgentModeId, name);
@@ -887,6 +1735,16 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                 }
             );
         }
+
+        /// <summary>A custom-headers egress key for <paramref name="host"/>:443 that sends <paramref name="authorization"/>.</summary>
+        private static PredefinedKeyEntry EgressKey(string id, string host, string authorization) =>
+            new()
+            {
+                Id = id,
+                Host = host,
+                Kind = PredefinedKeyKind.CustomHeaders,
+                Headers = [new PredefinedHeader("Authorization", authorization)],
+            };
 
         private static LlmRequest Capture(ScriptedRequestContext ctx) =>
             new(
@@ -927,6 +1785,60 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
         private readonly List<SkillPatch> _patches = [];
         private readonly HashSet<string> _failingPatchAgents = new(StringComparer.Ordinal);
         private readonly HashSet<string> _failingCatalogSessions = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, List<(string Name, string Path, string Description)>> _workspaceSkills =
+            new(StringComparer.Ordinal);
+        private readonly Dictionary<(string SessionId, string Path), string> _workspaceFiles = [];
+        private readonly Dictionary<string, string> _mcpServers = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, int> _mcpServerFetches = new(StringComparer.Ordinal);
+        private string? _mcpServersForNewSessions;
+
+        /// <summary>
+        /// SC7: each session created from now on lists the plugin MCP servers <paramref name="rowsJson"/> (a JSON
+        /// array); null stops. Every other session lists none.
+        /// </summary>
+        public void ServeMcpServersToNewSessions(string? rowsJson)
+        {
+            lock (_gate)
+            {
+                _mcpServersForNewSessions = rowsJson;
+            }
+        }
+
+        /// <summary>How many times <paramref name="sessionId"/>'s plugin MCP servers were asked for.</summary>
+        public int McpServerFetches(string sessionId)
+        {
+            lock (_gate)
+            {
+                return _mcpServerFetches.GetValueOrDefault(sessionId);
+            }
+        }
+
+        /// <summary>From now on the files API of <paramref name="sessionId"/> serves <paramref name="text"/> at the
+        /// workspace-relative <paramref name="path"/>.</summary>
+        public void WriteWorkspaceFile(string sessionId, string path, string text)
+        {
+            lock (_gate)
+            {
+                _workspaceFiles[(sessionId, path)] = text;
+            }
+        }
+
+        /// <summary>From now on the catalog of <paramref name="sessionId"/> lists this workspace skill, untiered.</summary>
+        public void DiscoverWorkspaceSkill(string sessionId, string name, string path, string description)
+        {
+            lock (_gate)
+            {
+                if (!_workspaceSkills.TryGetValue(sessionId, out var skills))
+                {
+                    _workspaceSkills[sessionId] = skills = [];
+                }
+
+                if (!skills.Any(s => s.Path == path))
+                {
+                    skills.Add((name, path, description));
+                }
+            }
+        }
 
         /// <summary>From now on, a PATCH for <paramref name="agentId"/> is recorded and answered with a 500.</summary>
         public void FailPatchesFor(string agentId)
@@ -1013,6 +1925,11 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                 {
                     var created = "sess-" + Guid.NewGuid().ToString("N");
                     _sessions.Add(created);
+                    if (_mcpServersForNewSessions is { } rows)
+                    {
+                        _mcpServers[created] = rows;
+                    }
+
                     return SessionResponse(created);
                 }
 
@@ -1051,12 +1968,45 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                             }
                         }
 
-                        return Json(Catalog(session, agent, patch));
+                        return Json(Catalog(session, agent, patch, _workspaceSkills.GetValueOrDefault(session) ?? []));
                     }
 
                     if (path.EndsWith(prefix + "/env", StringComparison.Ordinal))
                     {
                         return Json(new JsonObject { ["env"] = new JsonObject() }.ToJsonString());
+                    }
+
+                    if (
+                        request.Method == HttpMethod.Get
+                        && path.EndsWith(prefix + "/mcp-servers", StringComparison.Ordinal)
+                    )
+                    {
+                        _mcpServerFetches[session] = _mcpServerFetches.GetValueOrDefault(session) + 1;
+                        return Json(
+                            new JsonObject
+                            {
+                                ["session_id"] = session,
+                                ["mcp_servers"] = JsonNode.Parse(_mcpServers.GetValueOrDefault(session) ?? "[]"),
+                            }.ToJsonString()
+                        );
+                    }
+
+                    if (request.Method == HttpMethod.Get && path.Contains(prefix + "/files/", StringComparison.Ordinal))
+                    {
+                        var file = Uri.UnescapeDataString(request.RequestUri.Query.TrimStart('?')["path=".Length..]);
+                        return _workspaceFiles.TryGetValue((session, file), out var text)
+                            ? new HttpResponseMessage(HttpStatusCode.OK)
+                            {
+                                Content = new ByteArrayContent(System.Text.Encoding.UTF8.GetBytes(text)),
+                            }
+                            : new HttpResponseMessage(HttpStatusCode.NotFound)
+                            {
+                                Content = new StringContent(
+                                    """{"error":"path_not_found","code":404,"error_code":"path_not_found","retryable":false}""",
+                                    System.Text.Encoding.UTF8,
+                                    "application/json"
+                                ),
+                            };
                     }
 
                     if (request.Method == HttpMethod.Get && path.EndsWith(prefix, StringComparison.Ordinal))
@@ -1082,7 +2032,12 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
             return "";
         }
 
-        private static string Catalog(string sessionId, string agentId, bool patch)
+        private static string Catalog(
+            string sessionId,
+            string agentId,
+            bool patch,
+            IReadOnlyList<(string Name, string Path, string Description)> workspaceSkills
+        )
         {
             static JsonObject Skill(string plugin, string skill) =>
                 new()
@@ -1126,7 +2081,21 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                         ),
                     }
                 ),
-                ["workspace"] = new JsonObject { ["skills"] = new JsonArray() },
+                ["workspace"] = new JsonObject
+                {
+                    ["skills"] = new JsonArray([
+                        .. workspaceSkills.Select(s => new JsonObject
+                        {
+                            ["name"] = s.Name,
+                            ["path"] = s.Path,
+                            ["description"] = s.Description,
+                            ["tier"] = "included",
+                            ["tier_origin"] = "default",
+                            ["loaded"] = false,
+                            ["notified"] = true,
+                        }),
+                    ]),
+                },
             };
             if (patch)
             {
@@ -1147,7 +2116,12 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                     ["container_id"] = "container-1",
                     ["volumes"] = new JsonObject
                     {
-                        ["workspace"] = new JsonObject { ["container_path"] = "/workspace", ["read_only"] = false },
+                        ["workspace"] = new JsonObject
+                        {
+                            ["container_path"] = "/workspace",
+                            ["read_only"] = false,
+                            ["id"] = 7,
+                        },
                     },
                 }.ToJsonString()
             );
@@ -1207,7 +2181,7 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
         private static string? HeaderOf(HttpRequestMessage request, string name) =>
             request.Headers.TryGetValues(name, out var values) ? values.Single() : null;
 
-        private static (string? Method, string? Tool) JsonRpcCallOf(string body)
+        internal static (string? Method, string? Tool) JsonRpcCallOf(string body)
         {
             try
             {
@@ -1232,6 +2206,60 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                 return (null, null);
             }
         }
+    }
+
+    /// <summary>One request a plugin's remote MCP server got: where it was sent, its credential headers, every header value and its call.</summary>
+    public sealed record RemoteRequest(
+        string Host,
+        string Path,
+        string? Authorization,
+        string? Trace,
+        IReadOnlyList<string> HeaderValues,
+        string? Method,
+        string? ToolName
+    );
+
+    /// <summary>SC7: sits in front of the fake remote MCP server (every plugin url reaches it) and records each request.</summary>
+    public sealed class RemoteMcpRecorder(HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        private readonly ConcurrentQueue<RemoteRequest> _requests = new();
+
+        public IReadOnlyList<RemoteRequest> Requests => [.. _requests];
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
+        {
+            string? method = null;
+            string? tool = null;
+            if (request.Content is not null)
+            {
+                await request.Content.LoadIntoBufferAsync(cancellationToken).ConfigureAwait(false);
+                (method, tool) = McpRecorder.JsonRpcCallOf(
+                    await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false)
+                );
+            }
+
+            _requests.Enqueue(
+                new RemoteRequest(
+                    request.RequestUri!.Host,
+                    request.RequestUri.AbsolutePath,
+                    HeaderOf(request, "Authorization"),
+                    HeaderOf(request, "X-Trace"),
+                    [
+                        .. request.Headers.SelectMany(h => h.Value),
+                        .. request.Content?.Headers.SelectMany(h => h.Value) ?? [],
+                    ],
+                    method,
+                    tool
+                )
+            );
+            return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+
+        private static string? HeaderOf(HttpRequestMessage request, string name) =>
+            request.Headers.TryGetValues(name, out var values) ? string.Join(", ", values) : null;
     }
 
     /// <summary>Sits in front of the scripted model and can hold the next request whose body names a marker.</summary>
@@ -1348,7 +2376,11 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
     /// <summary>Every Serilog event the host writes: its template and its scalar properties.</summary>
     public sealed class LogCapture : ILogEventSink
     {
-        private readonly ConcurrentQueue<(string Template, IReadOnlyDictionary<string, string?> Props)> _events = new();
+        private readonly ConcurrentQueue<(
+            string Template,
+            IReadOnlyDictionary<string, string?> Props,
+            string Text
+        )> _events = new();
 
         public void Emit(LogEvent logEvent) =>
             _events.Enqueue(
@@ -1357,8 +2389,18 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                     logEvent.Properties.ToDictionary(
                         p => p.Key,
                         p => p.Value is ScalarValue scalar ? scalar.Value?.ToString() : p.Value.ToString()
-                    )
+                    ),
+                    logEvent.RenderMessage(System.Globalization.CultureInfo.InvariantCulture)
+                        + "\n"
+                        + logEvent.Exception
                 )
+            );
+
+        /// <summary>True when any event's rendered message, exception or property holds <paramref name="text"/>.</summary>
+        public bool AnyContains(string text) =>
+            _events.Any(e =>
+                e.Text.Contains(text, StringComparison.Ordinal)
+                || e.Props.Values.Any(v => v?.Contains(text, StringComparison.Ordinal) == true)
             );
 
         /// <summary>Events whose template starts with <paramref name="templatePrefix"/> and whose property matches.</summary>
@@ -1381,7 +2423,10 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
             ];
     }
 
-    /// <summary>The sandbox MCP server's tools: a <c>Skill</c> to list and a <c>Read</c> to call.</summary>
+    /// <summary>
+    /// The sandbox MCP server's tools: a <c>Skill</c> to list, a <c>Read</c> to call and <see cref="AvailableTool"/>
+    /// for a tool-tiered root to run through <c>ExecuteTool</c>.
+    /// </summary>
     private sealed class SandboxToolsProvider : IFunctionProvider
     {
         /// <summary>The Skill description the gateway serves an agent that lists <paramref name="names"/>.</summary>
@@ -1396,6 +2441,7 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
             [
                 Tool("Skill", SkillListing("alpha:a", "alpha:p"), "skill"),
                 Tool("Read", "Reads a file from the workspace.", "file_path"),
+                Tool(AvailableTool, "Finds workspace files by pattern.", "pattern"),
             ];
 
         private FunctionDescriptor Tool(string name, string description, string parameter) =>
@@ -1418,6 +2464,37 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                 },
                 Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(name + " ok")),
             };
+    }
+
+    /// <summary>SC7: the fake remote MCP server's one tool, <see cref="RemoteServerTool"/>.</summary>
+    private sealed class RemoteToolsProvider : IFunctionProvider
+    {
+        public string ProviderName => "fake-remote";
+
+        public int Priority => 0;
+
+        public IEnumerable<FunctionDescriptor> GetFunctions() =>
+            [
+                new()
+                {
+                    ProviderName = ProviderName,
+                    Contract = new FunctionContract
+                    {
+                        Name = RemoteServerTool,
+                        Description = "Looks up an order in the acme ledger.",
+                        Parameters =
+                        [
+                            new FunctionParameterContract
+                            {
+                                Name = "query",
+                                ParameterType = JsonSchemaObject.String("query"),
+                                IsRequired = true,
+                            },
+                        ],
+                    },
+                    Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(RemoteResult)),
+                },
+            ];
     }
 
     /// <summary>Empty, available marketplace catalog: compatible with a workspace that selects none.</summary>

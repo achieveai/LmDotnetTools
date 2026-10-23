@@ -130,6 +130,25 @@ public class MarketplaceSubAgentLoaderTests
         result["same:dup"].Description.Should().Be("FIRST");
     }
 
+    // Paper cut 1: two marketplaces can ship a plugin with the same name. The kept template carries the alias of
+    // the marketplace container it came from (not the agent row's own field), so SearchPlugin lists it only there.
+    [Fact]
+    public void MapCatalog_DuplicateKeyAcrossMarketplaces_KeepsTheFirstWithItsContainersAlias()
+    {
+        var catalog = Catalog(
+            Marketplace("mk1", error: null, Plugin("debugging", Agent("x", description: "FROM MK1"))),
+            Marketplace("mk2", error: null, Plugin("debugging", Agent("x", description: "FROM MK2")))
+        );
+
+        var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
+
+        result.Should().ContainSingle();
+        result["debugging:x"].Description.Should().Be("FROM MK1");
+        result["debugging:x"]
+            .Marketplace.Should()
+            .Be("mk1", "the alias comes from the marketplace container; each agent row says \"official\"");
+    }
+
     [Fact]
     public void MapCatalog_BlankPluginContainerName_FallsBackToAgentPlugin()
     {

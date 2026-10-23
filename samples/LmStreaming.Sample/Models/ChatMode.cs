@@ -405,18 +405,24 @@ public record ChatModeCreateUpdate
 }
 
 /// <summary>
-/// A mode's skill tiers (<see cref="ChatMode.Tiers"/>). Each entry is a selector
+/// A mode's capability tiers (<see cref="ChatMode.Tiers"/>). Each entry is a selector
 /// <c>&lt;kind&gt;:&lt;ref&gt;</c>, split at the first colon: <c>skill:&lt;gateway name or path&gt;</c>
-/// (for example <c>skill:debugging:systematic-debugging</c>; a bare skill name only when it is unique)
-/// or <c>plugin:&lt;marketplace&gt;/&lt;plugin&gt;</c> (all of that plugin's skills). A selector that
-/// matches nothing or more than one skill is logged and ignored.
+/// (for example <c>skill:debugging:systematic-debugging</c>; a bare skill name only when it is unique),
+/// <c>agent:&lt;template key&gt;</c> (for example <c>agent:debugging:logging-review</c>; root lists only, and only
+/// with <see cref="ModeTierCaps.Agent"/> set), <c>tool:&lt;tool name&gt;</c> (for example <c>tool:Read</c>; only with
+/// <see cref="ModeTierCaps.Tool"/> set) or <c>plugin:&lt;marketplace&gt;/&lt;plugin&gt;</c> (all of that
+/// plugin's skills, and its sub-agents when agents are tiered). A selector that matches nothing or more than one
+/// item is logged and ignored.
 /// </summary>
 public sealed record ModeTiers
 {
-    /// <summary>Skills the root agent starts with listed in its <c>Skill</c> tool. Null = none.</summary>
+    /// <summary>
+    /// Skills the root agent starts with listed in its <c>Skill</c> tool, and, with <see cref="ModeTierCaps.Agent"/>,
+    /// sub-agent templates listed in its <c>Agent</c> tool. Null = none.
+    /// </summary>
     public IReadOnlyList<string>? Loaded { get; init; }
 
-    /// <summary>Skills the root agent always has listed. Null = none.</summary>
+    /// <summary>Skills (and, with <see cref="ModeTierCaps.Agent"/>, templates) the root agent always has listed. Null = none.</summary>
     public IReadOnlyList<string>? Pinned { get; init; }
 
     /// <summary>The same two lists for sub-agents. Null = none.</summary>
@@ -426,13 +432,16 @@ public sealed record ModeTiers
     public ModeTierCaps? Caps { get; init; }
 }
 
-/// <summary>Sub-agent skill tiers. See <see cref="ModeTiers"/>.</summary>
+/// <summary>Sub-agent skill and tool tiers. See <see cref="ModeTiers"/>.</summary>
 public sealed record ModeSubAgentTiers
 {
-    /// <summary>Skills each sub-agent starts with listed. Null = none.</summary>
+    /// <summary>
+    /// Skills, and with <see cref="ModeTierCaps.Tool"/> sandbox tools, each sub-agent starts with listed: a tool only
+    /// when the sub-agent inherited it. Null = none.
+    /// </summary>
     public IReadOnlyList<string>? Loaded { get; init; }
 
-    /// <summary>Skills each sub-agent always has listed. Null = none.</summary>
+    /// <summary>Skills, and with <see cref="ModeTierCaps.Tool"/> sandbox tools, each sub-agent always has listed. Null = none.</summary>
     public IReadOnlyList<string>? Pinned { get; init; }
 }
 
@@ -441,6 +450,21 @@ public sealed record ModeTierCaps
 {
     /// <summary>Most non-pinned skills kept loaded per agent. Null = the default.</summary>
     public int? Skill { get; init; }
+
+    /// <summary>
+    /// Most non-pinned sub-agent templates the root keeps listed in its <c>Agent</c> tool. Null = templates are not
+    /// tiered: <c>Agent</c> lists every template, and <c>agent:</c> selectors are ignored. Set = <c>Agent</c> lists
+    /// the root's loaded and pinned templates, and <c>SearchAgent</c> and <c>SearchPlugin</c> find the rest.
+    /// </summary>
+    public int? Agent { get; init; }
+
+    /// <summary>
+    /// Most non-pinned sandbox tools an agent keeps in its tool list after its compaction, most recently used first.
+    /// Null = sandbox tools are not tiered: every one is listed, and <c>tool:</c> selectors are ignored. Set = the
+    /// root's tool list holds only its loaded and pinned sandbox tools; <c>SearchTool</c> finds the rest and
+    /// <c>ExecuteTool</c> runs them. A sub-agent given its own <c>ExecuteTool</c> does the same over its own tools.
+    /// </summary>
+    public int? Tool { get; init; }
 }
 
 /// <summary>

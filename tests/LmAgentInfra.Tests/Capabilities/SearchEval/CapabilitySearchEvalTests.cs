@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Capabilities;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Tests.Capabilities.SearchEval;
@@ -10,8 +11,9 @@ public sealed class SearchEvalCollection;
 
 /// <summary>
 /// The whole corpus (315 skills, 63 agents and 36 plugins from four marketplaces, see THIRD-PARTY-NOTICES.md)
-/// in one catalog, each row shaped the way the host builds it. Each kind has its own table, so the skill
-/// results equal a skills-only index. Loaded and built once for both eval tests.
+/// in one catalog, each row shaped the way the host builds it (agents through the host's own
+/// <see cref="CapabilityCatalog.FromTemplates"/>). Each kind has its own table, so the skill results equal a
+/// skills-only index. Loaded and built once for both eval tests.
 /// </summary>
 public sealed class SearchEvalFixture : IDisposable
 {
@@ -26,6 +28,8 @@ public sealed class SearchEvalFixture : IDisposable
         var directory = Path.Combine(AppContext.BaseDirectory, "Capabilities", "SearchEval");
         using var corpus = JsonDocument.Parse(File.ReadAllText(Path.Combine(directory, "corpus.json")));
         var items = new List<CapabilityItem>();
+        var templates = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal);
+        var corpusKeyOf = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var row in corpus.RootElement.EnumerateArray())
         {
             var key = row.GetProperty("key").GetString()!;
@@ -35,19 +39,38 @@ public sealed class SearchEvalFixture : IDisposable
             var marketplace = row.GetProperty("marketplace").GetString()!;
             var alias = GatewayAlias.GetValueOrDefault(marketplace, marketplace);
             var description = row.GetProperty("description").GetString()!;
-            items.Add(
-                kind switch
-                {
+            switch (kind)
+            {
+                case CapabilityCatalog.SkillKind:
                     // The gateway name of a marketplace skill is plugin-qualified.
-                    CapabilityCatalog.SkillKind => new(key, kind, plugin + ":" + name, plugin, alias, description),
-                    // FromTemplates: named by the template key `plugin:name`, which carries no marketplace.
-                    CapabilityCatalog.AgentKind => new(key, kind, plugin + ":" + name, plugin, null, description),
+                    items.Add(new(key, kind, plugin + ":" + name, plugin, alias, description));
+                    break;
+                case CapabilityCatalog.AgentKind:
+                    // A marketplace template, keyed `plugin:name` and carrying its marketplace, as the host loads it.
+                    templates.Add(
+                        plugin + ":" + name,
+                        new SubAgentTemplate
+                        {
+                            Description = description,
+                            Marketplace = alias,
+                            SystemPrompt = "The search eval never spawns.",
+                            AgentFactory = () => throw new NotSupportedException("The search eval never spawns."),
+                        }
+                    );
+                    corpusKeyOf.Add(plugin + ":" + name, key);
+                    break;
+                case CapabilityCatalog.PluginKind:
                     // FromPlugins: one row per gateway marketplace plugin.
-                    CapabilityCatalog.PluginKind => new(key, kind, name, name, alias, description),
-                    _ => throw new InvalidOperationException($"Unknown corpus kind '{kind}' for {key}."),
-                }
-            );
+                    items.Add(new(key, kind, name, name, alias, description));
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unknown corpus kind '{kind}' for {key}.");
+            }
         }
+
+        // The host's own agent rows; only the key is renamed to the corpus key the frozen labels use (search never
+        // reads a key).
+        items.AddRange(CapabilityCatalog.FromTemplates(templates).Select(i => i with { Key = corpusKeyOf[i.Name] }));
 
         Queries =
         [

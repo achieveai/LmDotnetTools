@@ -37,8 +37,10 @@ public sealed record SubAgentSessionBinding(MutableSubAgentTemplateSource Source
 /// calls.</param>
 /// <param name="WorkspaceRelPath">Workspace path relative to the gateway's workspace base, as
 /// requested at creation time.</param>
-/// <param name="HostPath">Absolute host path of the mounted workspace (long-path <c>\\?\</c>
-/// prefix stripped) — the path the model uses for absolute-path file tools.</param>
+/// <param name="HostPath">Despite the name, the workspace path INSIDE the sandbox container as the gateway
+/// reported it (<see cref="SandboxInfo.WorkspaceContainerPath"/>, e.g. <c>/workspace</c>, long-path <c>\\?\</c>
+/// prefix stripped), never a local host path: the path the model uses for absolute-path file tools. Read files
+/// under it through the gateway, not the local file system.</param>
 /// <param name="PluginResolution">How the gateway resolved this session's plugin selection, exactly
 /// as it reported at creation. <see langword="null"/> when the gateway reported no resolution block
 /// at all — a strictly weaker claim than a resolution saying filtering is unsupported, and the two
@@ -302,9 +304,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
 
     /// <summary>
     /// Reverse map from gateway session id to the <see cref="SandboxSession"/> it represents.
-    /// Populated by <see cref="CreateSessionAsync"/> after a session is created so the
-    /// context-discovery webhook (which only knows the session id) can resolve back to the
-    /// session's <c>HostPath</c> for path-containment checks.
+    /// Populated by <see cref="CreateSessionAsync"/> after a session is created so a caller that
+    /// knows only the session id (the context-discovery webhook, the env applier, diagnostics) can
+    /// resolve the session through <see cref="TryGetSessionById"/>, and so
+    /// <see cref="ToWorkspaceRelativePath"/> can strip the session's <c>HostPath</c>.
     /// </summary>
     private readonly ConcurrentDictionary<string, SandboxSession> _sessionsById = new(StringComparer.Ordinal);
 

@@ -384,4 +384,61 @@ public class JsonSchemaValidatorTests
         var result = _validator.Validate("{\"objectParam\": {\"nested\": \"value\"}}", contract);
         Assert.True(result);
     }
+
+    // ExecuteTool hands these errors to the model with the schema, so each must say where and what.
+    [Fact]
+    public void ValidateDetailed_MissingRequiredParameter_ErrorNamesIt()
+    {
+        var contract = new FunctionContract
+        {
+            Name = "testFunction",
+            Parameters =
+            [
+                new FunctionParameterContract
+                {
+                    Name = "command",
+                    IsRequired = true,
+                    ParameterType = new JsonSchemaObject { Type = "string" },
+                },
+            ],
+        };
+
+        var result = _validator.ValidateDetailed("{\"cmd\": \"echo\"}", contract);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("command", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ValidateDetailed_WrongTypeInsideANestedObject_ErrorNamesItsPath()
+    {
+        var contract = new FunctionContract
+        {
+            Name = "testFunction",
+            Parameters =
+            [
+                new FunctionParameterContract
+                {
+                    Name = "objectParam",
+                    IsRequired = true,
+                    ParameterType = new JsonSchemaObject
+                    {
+                        Type = "object",
+                        Properties = new Dictionary<string, JsonSchemaObject>
+                        {
+                            {
+                                "nested",
+                                new JsonSchemaObject { Type = "string" }
+                            },
+                        },
+                    },
+                },
+            ],
+        };
+
+        var result = _validator.ValidateDetailed("{\"objectParam\": {\"nested\": 42}}", contract);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.StartsWith("/objectParam/nested: ", StringComparison.Ordinal));
+    }
 }

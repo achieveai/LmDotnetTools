@@ -74,9 +74,9 @@ internal sealed class FakeSkillGateway
         );
     }
 
-    public SandboxSkillCatalog Catalog { get; }
+    public SandboxSkillCatalog Catalog { get; private set; }
 
-    public IReadOnlyList<(string Name, string Path)> Skills { get; }
+    public IReadOnlyList<(string Name, string Path)> Skills { get; private set; }
 
     /// <summary>How many of the next PATCHes throw (after being recorded).</summary>
     public int FailPatches { get; set; }
@@ -93,6 +93,36 @@ internal sealed class FakeSkillGateway
             {
                 return [.. _patches];
             }
+        }
+    }
+
+    /// <summary>
+    /// The gateway's discovery walk finds a workspace skill mid-session: from now on the catalog lists it, with no
+    /// tier of its own, so an agent whose last reset PATCH left its path out lists it (the default, included).
+    /// </summary>
+    public void DiscoverWorkspaceSkill(string name, string path, string description)
+    {
+        lock (_lock)
+        {
+            Skills = [.. Skills, (name, path)];
+            Catalog = Catalog with
+            {
+                WorkspaceSkills =
+                [
+                    .. Catalog.WorkspaceSkills,
+                    new SandboxSkill(
+                        name,
+                        path,
+                        description,
+                        SandboxSkillTier.Included,
+                        SandboxSkillTierOrigin.Default,
+                        false,
+                        null,
+                        true,
+                        false
+                    ),
+                ],
+            };
         }
     }
 

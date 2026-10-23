@@ -121,25 +121,39 @@ public class JsonSchemaValidator : IJsonSchemaValidator
         return JsonSchema.FromText(schemaText);
     }
 
+    /// <summary>
+    ///     One line per error anywhere in the hierarchical result, <c>"&lt;instance location&gt;: &lt;message&gt;"</c>
+    ///     (<c>/</c> for the root), in evaluation order: a node's own errors, then its details depth-first. None for a
+    ///     valid result, whose failed <c>anyOf</c>/<c>oneOf</c> branches may still carry errors.
+    /// </summary>
     private static List<string> ExtractValidationErrors(EvaluationResults result)
     {
         var errors = new List<string>();
-
-        if (result.HasErrors)
+        if (!result.IsValid)
         {
-            // Extract error details from the evaluation result
-            foreach (var detail in result.Details)
-            {
-                if (detail.HasErrors)
-                {
-                    var errorMessage = !string.IsNullOrEmpty(detail.Errors?["error"])
-                        ? detail.Errors["error"]
-                        : $"Validation failed at '{detail.InstanceLocation}'";
-                    errors.Add(errorMessage);
-                }
-            }
+            Collect(result);
         }
 
         return errors;
+
+        void Collect(EvaluationResults node)
+        {
+            if (node.HasErrors)
+            {
+                var location = node.InstanceLocation.ToString();
+                foreach (var message in node.Errors!.Values)
+                {
+                    errors.Add($"{(location.Length == 0 ? "/" : location)}: {message}");
+                }
+            }
+
+            if (node.HasDetails)
+            {
+                foreach (var detail in node.Details)
+                {
+                    Collect(detail);
+                }
+            }
+        }
     }
 }

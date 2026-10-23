@@ -45,6 +45,12 @@ public record SubAgentTemplate
     public string? Name { get; init; }
 
     /// <summary>
+    /// The alias of the marketplace that contributed this template, or null for a built-in or workspace
+    /// template. Two marketplaces can ship a plugin with the same name; this tells their agents apart.
+    /// </summary>
+    public string? Marketplace { get; init; }
+
+    /// <summary>
     /// One-line summary of what this sub-agent does. Embedded in the Agent tool
     /// description's template catalog so the parent LLM can pick the right type.
     /// </summary>

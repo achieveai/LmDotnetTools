@@ -72,16 +72,18 @@ public sealed class ContextDiscoveryBatchHandler(
         // as one ordered chain. Both groups are awaited together.
         var pending = new List<Task>(payloads.Count);
         var contextFiles = new List<ContextDiscoveryPayload>();
+        var skills = new List<ContextDiscoveryPayload>();
 
         foreach (var payload in payloads)
         {
             logger.LogInformation(
-                "ContextDiscovery: kind={Kind} name={Name} path={Path} description={Description} session={SessionId} truncated={Truncated}",
+                "ContextDiscovery: kind={Kind} name={Name} path={Path} description={Description} session={SessionId} agent={AgentId} truncated={Truncated}",
                 payload.Kind,
                 payload.Name,
                 payload.Path,
                 payload.Description,
                 payload.SessionId,
+                payload.AgentId,
                 payload.Truncated
             );
 
@@ -100,11 +102,21 @@ public sealed class ContextDiscoveryBatchHandler(
             {
                 contextFiles.Add(payload);
             }
+            else if (string.Equals(payload.Kind, ContextDiscoveryKinds.Skill, StringComparison.Ordinal))
+            {
+                // One catalog refresh per session covers every skill and finder of the batch.
+                skills.Add(payload);
+            }
         }
 
         if (contextFiles.Count > 0)
         {
             pending.Add(InjectContextFilesInOrderAsync(contextFiles, cancellationToken));
+        }
+
+        if (skills.Count > 0)
+        {
+            pending.Add(AnnounceSkillsInOrderAsync(skills, cancellationToken));
         }
 
         await Task.WhenAll(pending).ConfigureAwait(false);
@@ -127,6 +139,40 @@ public sealed class ContextDiscoveryBatchHandler(
         foreach (var payload in contextFiles)
         {
             await contextInjector.InjectAsync(payload, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// SC6: per session, every tiered conversation on it indexes the skills new to it, and each finder's conversation
+    /// is told, one notice per skill. Best-effort like every discovery: a failure is logged and swallowed.
+    /// </summary>
+    private async Task AnnounceSkillsInOrderAsync(
+        IReadOnlyList<ContextDiscoveryPayload> skills,
+        CancellationToken cancellationToken
+    )
+    {
+        foreach (var session in skills.GroupBy(p => p.SessionId, StringComparer.Ordinal))
+        {
+            string?[] finders = [.. session.Select(p => p.AgentId).Distinct(StringComparer.Ordinal)];
+            try
+            {
+                _ = await contextInjector
+                    .AnnounceSkillsAsync(session.Key, finders, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(
+                    ex,
+                    "ContextDiscovery skills: announcing to finders {AgentIds} on session {SessionId} failed.",
+                    finders,
+                    session.Key
+                );
+            }
         }
     }
 
@@ -224,6 +270,25 @@ public sealed class ContextDiscoveryBatchHandler(
         SubAgentTemplate? template = null;
         var loaded = false;
 
+        // SC6: the conversation whose root the batch belongs to hears of a template new to it (a sub-agent's batch
+        // names no root, and a sub-agent searches no agents).
+        // The binding is found only by a root thread id, which only a tiered root presents; say which finder this was.
+        if (!sessionRegistry.TryGetSubAgentBinding(body.SessionId, body.AgentId ?? string.Empty, out var ownerBinding))
+        {
+            logger.LogDebug(
+                "Capabilities agent notice skipped {SessionId} {AgentId} {Name} {Reason}",
+                body.SessionId,
+                body.AgentId,
+                body.Name,
+                string.IsNullOrWhiteSpace(body.AgentId) ? "the finder sent no agent id (a root that does not tier)"
+                    : sessionRegistry
+                        .GetThreads(body.SessionId)
+                        .Any(thread => SandboxSubAgentIdentity.TryGetSubAgentId(body.AgentId, thread, out _))
+                        ? "the finder is a sub-agent (sub-agents run no agents)"
+                    : "the batch's finder is bound to no conversation on the session"
+            );
+        }
+
         var registrationKey = string.IsNullOrWhiteSpace(body.QualifiedName) ? body.Name! : body.QualifiedName;
         foreach (var binding in bindings)
         {
@@ -285,6 +350,10 @@ public sealed class ContextDiscoveryBatchHandler(
                     conversationTemplate.Name,
                     body.SessionId
                 );
+                if (ReferenceEquals(binding, ownerBinding))
+                {
+                    await AnnounceAgentAsync(body, registrationKey, conversationTemplate, ct).ConfigureAwait(false);
+                }
             }
             else
             {
@@ -296,6 +365,41 @@ public sealed class ContextDiscoveryBatchHandler(
                     body.SessionId
                 );
             }
+        }
+    }
+
+    private async Task AnnounceAgentAsync(
+        ContextDiscoveryPayload body,
+        string registrationKey,
+        SubAgentTemplate template,
+        CancellationToken ct
+    )
+    {
+        try
+        {
+            _ = await contextInjector
+                .AnnounceAgentAsync(
+                    body.SessionId!,
+                    body.AgentId!,
+                    registrationKey,
+                    template.Description ?? body.Description,
+                    ct
+                )
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "ContextDiscovery subagent {Name}: announcing to owner {AgentId} on session {SessionId} failed.",
+                body.Name,
+                body.AgentId,
+                body.SessionId
+            );
         }
     }
 }

@@ -1,27 +1,28 @@
 using System.Text.RegularExpressions;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.Sandbox;
 using Microsoft.Data.Sqlite;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Capabilities;
 
-/// <summary>One searchable capability: a skill, a sub-agent template or a plugin.</summary>
+/// <summary>One searchable capability: a skill, a sub-agent template, a plugin or a tool.</summary>
 /// <param name="Key">
 /// Stable identity. Skills: <c>skill:&lt;path&gt;</c> (a skill's path is unique per sandbox). Agents:
-/// <c>agent:&lt;template key&gt;</c>. Plugins: <c>plugin:&lt;marketplace&gt;/&lt;plugin&gt;</c>.
+/// <c>agent:&lt;template key&gt;</c>. Plugins: <c>plugin:&lt;marketplace&gt;/&lt;plugin&gt;</c>. Tools:
+/// <c>tool:&lt;name&gt;</c>.
 /// </param>
 /// <param name="Kind">
 /// The kind searched by (<see cref="CapabilityCatalog.SkillKind"/>, <see cref="CapabilityCatalog.AgentKind"/>,
-/// <see cref="CapabilityCatalog.PluginKind"/>).
+/// <see cref="CapabilityCatalog.PluginKind"/>, <see cref="CapabilityCatalog.ToolKind"/>).
 /// </param>
 /// <param name="Name">
 /// What the agent calls it by: a skill's gateway name (plugin-qualified for marketplace skills), an agent's
-/// template key (its <c>subagent_type</c>), a plugin's name.
+/// template key (its <c>subagent_type</c>), a plugin's name, a tool's registered name.
 /// </param>
 /// <param name="Plugin">The owning plugin; <c>null</c> for a workspace skill or an agent whose key names none.</param>
 /// <param name="Marketplace">
-/// The owning marketplace alias; <c>null</c> for a workspace skill, and for every agent (a template key does
-/// not carry its marketplace).
+/// The owning marketplace alias; <c>null</c> for a workspace skill, and for a built-in or workspace agent.
 /// </param>
 /// <param name="Description">The description shown to the agent.</param>
 public sealed record CapabilityItem(
@@ -94,6 +95,12 @@ public sealed partial class CapabilityCatalog : IDisposable
 
     /// <summary>The key prefix of every plugin item; the rest of the key is <c>&lt;marketplace&gt;/&lt;plugin&gt;</c>.</summary>
     public const string PluginKeyPrefix = "plugin:";
+
+    /// <summary>The kind of every tier-managed tool item.</summary>
+    public const string ToolKind = "tool";
+
+    /// <summary>The key prefix of every tool item; the rest of the key is the tool's registered name.</summary>
+    public const string ToolKeyPrefix = "tool:";
 
     private const int MaxQueryWords = 32;
     private const int PrefixMinLength = 4;
@@ -297,7 +304,8 @@ public sealed partial class CapabilityCatalog : IDisposable
     /// <summary>
     /// One item per sub-agent template, keyed <c>agent:&lt;template key&gt;</c>, in ordinal key order (so
     /// the same templates always give the same items). The plugin is the part of the key before its first
-    /// <c>:</c> (marketplace templates are keyed <c>plugin:name</c>); a template key carries no marketplace.
+    /// <c>:</c> (marketplace templates are keyed <c>plugin:name</c>). The marketplace is the template's own
+    /// <see cref="SubAgentTemplate.Marketplace"/>: the key does not carry it.
     /// </summary>
     public static IReadOnlyList<CapabilityItem> FromTemplates(IReadOnlyDictionary<string, SubAgentTemplate> templates)
     {
@@ -314,10 +322,32 @@ public sealed partial class CapabilityCatalog : IDisposable
                         AgentKind,
                         t.Key,
                         colon > 0 ? t.Key[..colon] : null,
-                        null,
+                        t.Value.Marketplace,
                         t.Value.Description ?? string.Empty
                     );
                 }),
+        ];
+    }
+
+    /// <summary>
+    /// One item per tool, keyed <c>tool:&lt;name&gt;</c>, in ordinal name order (so the same tools always give the same
+    /// items, whatever order the server listed them in). A tool has no plugin or marketplace.
+    /// </summary>
+    public static IReadOnlyList<CapabilityItem> FromTools(IEnumerable<FunctionContract> tools)
+    {
+        ArgumentNullException.ThrowIfNull(tools);
+        return
+        [
+            .. tools
+                .OrderBy(t => t.Name, StringComparer.Ordinal)
+                .Select(t => new CapabilityItem(
+                    ToolKeyPrefix + t.Name,
+                    ToolKind,
+                    t.Name,
+                    null,
+                    null,
+                    t.Description ?? string.Empty
+                )),
         ];
     }
 
@@ -412,35 +442,46 @@ public sealed partial class CapabilityCatalog : IDisposable
     }
 
     /// <summary>
+    /// Resolves a sub-agent reference the way the <c>Agent</c> tool's <c>subagent_type</c> names one: an exact
+    /// template key, else the trailing <c>:</c>-segments of only one key. False when nothing or more than one
+    /// template matches.
+    /// </summary>
+    public bool TryResolveAgent(string templateKey, out CapabilityItem item)
+    {
+        var matches = MatchItem(AgentKind, templateKey);
+        item = matches.Count == 1 ? matches[0] : null!;
+        return matches.Count == 1;
+    }
+
+    /// <summary>
     /// Resolves config selectors to the keys of items of <paramref name="kind"/>, de-duplicated, in
     /// first-seen order. A selector is <c>&lt;kind&gt;:&lt;ref&gt;</c>, split at the FIRST colon:
     /// <list type="bullet">
-    /// <item><c>skill:&lt;name|path&gt;</c> (see <see cref="TryResolveSkill"/>) and <c>agent:&lt;ref&gt;</c> (a
-    /// template key, or the trailing <c>:</c>-segments of only one) name one item. A selector of the other
-    /// of these two kinds is skipped: it belongs to that kind's call.</item>
+    /// <item><c>skill:&lt;name|path&gt;</c> (see <see cref="TryResolveSkill"/>), <c>agent:&lt;ref&gt;</c> (a
+    /// template key, or the trailing <c>:</c>-segments of only one) and <c>tool:&lt;name&gt;</c> (a tool's exact
+    /// name) name one item. A selector of another of these three kinds is skipped: it belongs to that kind's
+    /// call.</item>
     /// <item><c>plugin:&lt;marketplace&gt;/&lt;plugin&gt;</c> loads every item of <paramref name="kind"/> in that
-    /// plugin. An item with no marketplace (an agent) matches on the plugin name alone. A plugin with nothing
-    /// of this kind loads nothing and is not an issue; one the catalog has nothing from is Unknown.</item>
+    /// plugin. An item with no marketplace (a built-in or workspace agent) matches on the plugin name alone. The
+    /// selector is Unknown only when no item of any kind carries exactly that marketplace and plugin (such an
+    /// agent's plugin name alone does not count); a real plugin with nothing of this kind loads nothing and is not
+    /// an issue.</item>
     /// </list>
     /// A selector that resolves to nothing goes to <paramref name="issues"/> and loads nothing. Any other
-    /// kind (<c>tool:</c> included) is <see cref="SelectorProblem.Malformed"/>.
+    /// kind is <see cref="SelectorProblem.Malformed"/>.
     /// </summary>
     /// <param name="selectors">The selectors, in config order.</param>
     /// <param name="issues">Receives one issue per selector that loads nothing.</param>
-    /// <param name="kind">
-    /// The kind to resolve for. <c>null</c> is the slice-1 form, kept until the host passes a kind: skills,
-    /// with a selector of any other kind (<c>agent:</c> included) reported Malformed instead of skipped.
-    /// </param>
+    /// <param name="kind">The kind to resolve for.</param>
     public IReadOnlyList<string> ResolveSelectors(
         IEnumerable<string> selectors,
         ICollection<SelectorIssue> issues,
-        string? kind = null
+        string kind
     )
     {
         ArgumentNullException.ThrowIfNull(selectors);
         ArgumentNullException.ThrowIfNull(issues);
-        var otherKindIsMalformed = kind is null;
-        kind ??= SkillKind;
+        ArgumentNullException.ThrowIfNull(kind);
         var keys = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var selector in selectors)
@@ -457,14 +498,9 @@ public sealed partial class CapabilityCatalog : IDisposable
             IReadOnlyList<CapabilityItem> resolved;
             switch (selectorKind)
             {
-                case SkillKind or AgentKind when selectorKind != kind:
-                    if (otherKindIsMalformed)
-                    {
-                        issues.Add(new SelectorIssue(selector, SelectorProblem.Malformed, []));
-                    }
-
+                case SkillKind or AgentKind or ToolKind when selectorKind != kind:
                     continue;
-                case SkillKind or AgentKind:
+                case SkillKind or AgentKind or ToolKind:
                     var matches = MatchItem(kind, reference);
                     if (matches.Count != 1)
                     {
@@ -481,8 +517,7 @@ public sealed partial class CapabilityCatalog : IDisposable
                     resolved = matches;
                     break;
                 case PluginKind:
-                    var inPlugin = MatchPlugin(reference);
-                    if (inPlugin.Count == 0)
+                    if (!TryMatchPlugin(reference, out var inPlugin))
                     {
                         issues.Add(new SelectorIssue(selector, SelectorProblem.Unknown, []));
                         continue;
@@ -524,8 +559,9 @@ public sealed partial class CapabilityCatalog : IDisposable
 
     /// <summary>
     /// Items of <paramref name="kind"/> a reference names: the exact key <c>&lt;kind&gt;:&lt;reference&gt;</c>
-    /// (a skill's path, an agent's template key), else every item with that exact name, else every item
-    /// whose name ends with <c>:&lt;reference&gt;</c>, ordinal by name.
+    /// (a skill's path, an agent's template key), else every item with that exact name, else every item whose
+    /// <c>&lt;marketplace&gt;:&lt;name&gt;</c> is the reference, else every item whose name ends with
+    /// <c>:&lt;reference&gt;</c>, ordinal by name.
     /// </summary>
     private List<CapabilityItem> MatchItem(string kind, string reference)
     {
@@ -542,6 +578,19 @@ public sealed partial class CapabilityCatalog : IDisposable
             return byName;
         }
 
+        // The gateway puts the marketplace in a skill's name only when two marketplaces carry its plugin, so a
+        // qualified `gb-plugins:hitl:using-hitl` must also name `hitl:using-hitl` where gb-plugins alone carries it.
+        var byQualifiedName = ofKind
+            .Where(i =>
+                i.Marketplace is not null
+                && string.Equals(i.Marketplace + ":" + i.Name, reference, StringComparison.Ordinal)
+            )
+            .ToList();
+        if (byQualifiedName.Count > 0)
+        {
+            return byQualifiedName;
+        }
+
         // Trailing whole segments: `using-hitl` and `hitl:using-hitl` both name `gb-plugins:hitl:using-hitl`,
         // the form the gateway gives every skill of a plugin that two marketplaces carry.
         var suffix = ":" + reference;
@@ -554,26 +603,40 @@ public sealed partial class CapabilityCatalog : IDisposable
     }
 
     /// <summary>
-    /// Items of every kind in plugin <c>&lt;marketplace&gt;/&lt;plugin&gt;</c>, in index order. An item with no
-    /// marketplace matches on the plugin name alone.
+    /// Items of every kind in plugin <c>&lt;marketplace&gt;/&lt;plugin&gt;</c>, in index order; an item with no
+    /// marketplace (a built-in or workspace agent) matches on the plugin name alone, and a marketplace agent only in
+    /// its own marketplace. False when no item of any kind carries exactly that marketplace and plugin: a misspelt
+    /// marketplace is Unknown even when an agent with no marketplace shares the plugin name.
     /// </summary>
-    private List<CapabilityItem> MatchPlugin(string reference)
+    private bool TryMatchPlugin(string reference, out List<CapabilityItem> items)
     {
+        items = [];
         var slash = reference.IndexOf('/', StringComparison.Ordinal);
         if (slash <= 0 || slash == reference.Length - 1)
         {
-            return [];
+            return false;
         }
 
         var marketplace = reference[..slash];
         var plugin = reference[(slash + 1)..];
-        return
+        if (
+            !_items.Any(i =>
+                string.Equals(i.Marketplace, marketplace, StringComparison.Ordinal)
+                && string.Equals(i.Plugin, plugin, StringComparison.Ordinal)
+            )
+        )
+        {
+            return false;
+        }
+
+        items =
         [
             .. _items.Where(i =>
                 string.Equals(i.Plugin, plugin, StringComparison.Ordinal)
                 && (i.Marketplace is null || string.Equals(i.Marketplace, marketplace, StringComparison.Ordinal))
             ),
         ];
+        return true;
     }
 
     private Dictionary<long, double> RunMatch(KindIndex index, IReadOnlyList<string> terms)
@@ -696,6 +759,53 @@ public sealed partial class CapabilityCatalog : IDisposable
 
     private static IEnumerable<string> Words(string text) =>
         WordPattern().Matches(text).Select(m => m.Value.ToLowerInvariant());
+
+    /// <summary>
+    /// Whether a searchable word of <paramref name="query"/> is a word of <paramref name="name"/>: one of its name
+    /// tokens (<c>KillShell</c> has <c>kill</c> and <c>shell</c>) or the whole name (<c>powershell</c>).
+    /// </summary>
+    internal static bool QueryNamesItem(string query, string name)
+    {
+        var nameWords = NameWords(name);
+        nameWords.AddRange(Words(name));
+        return QueryWords(query).Any(nameWords.Contains);
+    }
+
+    /// <summary>
+    /// Whether a searchable word of <paramref name="query"/>, other than <paramref name="ignoredWords"/>, is a word of
+    /// <paramref name="name"/>'s own part (after its plugin) that no other own part among <paramref name="names"/> has.
+    /// A word that many names share, like "review" in a code-review plugin, names none of them.
+    /// </summary>
+    internal static bool QueryNamesItemUniquely(
+        string query,
+        string name,
+        IEnumerable<string> names,
+        IReadOnlySet<string> ignoredWords
+    )
+    {
+        var own = LastSegment(name);
+        var ownWords = OwnPartWords(own);
+        var named = QueryWords(query).Where(word => !ignoredWords.Contains(word) && ownWords.Contains(word)).ToList();
+        if (named.Count == 0)
+        {
+            return false;
+        }
+
+        var others = names
+            .Select(LastSegment)
+            .Where(other => !string.Equals(other, own, StringComparison.Ordinal))
+            .Distinct(StringComparer.Ordinal)
+            .Select(OwnPartWords)
+            .ToList();
+        return named.Any(word => !others.Any(words => words.Contains(word)));
+    }
+
+    private static HashSet<string> OwnPartWords(string ownPart)
+    {
+        var words = NameWords(ownPart);
+        words.AddRange(Words(ownPart));
+        return [.. words];
+    }
 
     /// <summary>Name tokens with camelCase, snake_case, kebab-case and colons split apart, lower-cased.</summary>
     internal static List<string> NameWords(string name)

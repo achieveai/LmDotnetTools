@@ -1,3 +1,5 @@
+using System.Net;
+using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using LmStreaming.Sample.Services.Discovery;
 
@@ -11,36 +13,13 @@ namespace LmStreaming.Sample.Tests.Services.Discovery;
 /// propagates; null args throw. The webhook handler relies on uniform null-on-failure so it can
 /// log + 200 without branching on each failure mode.
 /// </summary>
-public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
+public class WorkspaceSubAgentLoaderLoadOneAsyncTests
 {
     private const string SessionId = "session-load-one-test";
     private const string GatewayBaseUrl = "http://localhost:3000";
 
     private static readonly Mock<IStreamingAgent> AgentStub = new();
     private static readonly Func<IStreamingAgent> AgentFactory = () => AgentStub.Object;
-
-    private readonly string _hostPath;
-
-    public WorkspaceSubAgentLoaderLoadOneAsyncTests()
-    {
-        _hostPath = Path.Combine(Path.GetTempPath(), "wi77-loadone-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(Path.Combine(_hostPath, ".claude", "agents"));
-    }
-
-    public void Dispose()
-    {
-        try
-        {
-            if (Directory.Exists(_hostPath))
-            {
-                Directory.Delete(_hostPath, recursive: true);
-            }
-        }
-        catch
-        {
-            // best-effort cleanup
-        }
-    }
 
     private static readonly string WellFormedMarkdown = """
         ---
@@ -55,14 +34,17 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
             WorkspaceId: "default",
             SessionId: SessionId,
             WorkspaceRelPath: "default",
-            HostPath: hostPathOverride ?? _hostPath
+            HostPath: hostPathOverride ?? "/workspace"
         );
 
-    private WorkspaceSubAgentLoader CreateLoader()
+    /// <summary>
+    /// A loader over a registry whose gateway answers with <paramref name="respond"/>. Without one, any HTTP call
+    /// throws: the case under test must not reach the gateway.
+    /// </summary>
+    private WorkspaceSubAgentLoader CreateLoader(Func<HttpRequestMessage, HttpResponseMessage>? respond = null)
     {
-        // Registry is not exercised by LoadOneAsync — pass a stub HttpClient that throws if used.
         static HttpResponseMessage UnusedRespond(HttpRequestMessage _) =>
-            throw new InvalidOperationException("HTTP not expected in LoadOneAsync tests");
+            throw new InvalidOperationException("HTTP not expected in this LoadOneAsync test");
 
         var gateway = new SandboxGatewayLifetime(
             new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl },
@@ -74,7 +56,7 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
             gateway,
             new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl },
             NullLogger<SandboxSessionRegistry>.Instance,
-            new HttpClient(new StubHandler(UnusedRespond)),
+            new HttpClient(new StubHandler(respond ?? UnusedRespond)),
             new AuthOptions(),
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
@@ -93,12 +75,87 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
         string? qualifiedName = null
     ) => new(kind, name, $"{name} description", path, content, qualifiedName);
 
+    /// <summary>
+    /// The gateway's files API over <paramref name="files"/> (workspace-relative path to text): a files GET answers
+    /// the named file or a 404, and any other GET resolves the session's workspace mount (id 7), recording each
+    /// request into <paramref name="requests"/> when given.
+    /// </summary>
+    private static Func<HttpRequestMessage, HttpResponseMessage> GatewayFiles(
+        Dictionary<string, string> files,
+        List<HttpRequestMessage>? requests = null
+    ) =>
+        request =>
+        {
+            requests?.Add(request);
+            if (!request.RequestUri!.AbsolutePath.Contains("/files/", StringComparison.Ordinal))
+            {
+                return Json(
+                    """{"session_id":"session-load-one-test","volumes":{"workspace":{"container_path":"/workspace","read_only":false,"id":7}}}"""
+                );
+            }
+
+            return files.TryGetValue(FilePathOf(request), out var text)
+                ? new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(Encoding.UTF8.GetBytes(text)),
+                }
+                : new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent(
+                        """{"error":"path_not_found","code":404,"error_code":"path_not_found","retryable":false}""",
+                        Encoding.UTF8,
+                        "application/json"
+                    ),
+                };
+        };
+
+    /// <summary>The workspace-relative path a files GET names.</summary>
+    private static string FilePathOf(HttpRequestMessage request) =>
+        Uri.UnescapeDataString(request.RequestUri!.Query.TrimStart('?')["path=".Length..]);
+
+    private static HttpResponseMessage Json(string body) =>
+        new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+
+    [Fact]
+    public async Task LoadOneAsync_ContainerSession_ReadsTheAgentFileThroughTheGateway()
+    {
+        // D-SC6-2: on a Docker-backed gateway the session's HostPath is the container path "/workspace", and the
+        // webhook names a workspace sub-agent by its container path with no content. The file is not on this host, so
+        // the loader must read it through the gateway's files API.
+        var requests = new List<HttpRequestMessage>();
+        var loader = CreateLoader(
+            GatewayFiles(
+                new()
+                {
+                    ["s6/.claude/agents/s6-agent.md"] =
+                        "---\nname: s6-agent\ndescription: Runs the sixth scenario demo.\n---\nYou are the s6 agent.\n",
+                },
+                requests
+            )
+        );
+
+        var template = await loader.LoadOneAsync(
+            CreateSession(hostPathOverride: "/workspace"),
+            Item("subagent", "s6-agent", "/workspace/s6/.claude/agents/s6-agent.md"),
+            AgentFactory
+        );
+
+        template.Should().NotBeNull();
+        template!.Name.Should().Be("s6-agent");
+        template.Description.Should().Be("Runs the sixth scenario demo.");
+        requests
+            .Where(r => r.RequestUri!.AbsolutePath.Contains("/files/", StringComparison.Ordinal))
+            .Select(FilePathOf)
+            .Should()
+            .Equal("s6/.claude/agents/s6-agent.md");
+    }
+
     [Fact]
     public async Task LoadOneAsync_HappyPath_ReturnsMappedTemplate()
     {
-        var relPath = Path.Combine(".claude", "agents", "echo.md");
-        await File.WriteAllTextAsync(Path.Combine(_hostPath, relPath), WellFormedMarkdown);
-        var loader = CreateLoader();
+        // A workspace-relative path reads the same file as its /workspace container path.
+        const string relPath = ".claude/agents/echo.md";
+        var loader = CreateLoader(GatewayFiles(new() { [relPath] = WellFormedMarkdown }));
 
         var template = await loader.LoadOneAsync(CreateSession(), Item("subagent", "echo", relPath), AgentFactory);
 
@@ -150,7 +207,9 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
     {
         // Webhook receives this from an UNTRUSTED gateway payload. The traversal guard MUST sit
         // at LoadOneAsync's boundary, otherwise a malicious "../../etc/passwd" path could be read.
-        var loader = CreateLoader();
+        // The read is refused before it reaches the gateway, which would otherwise serve the file.
+        var requests = new List<HttpRequestMessage>();
+        var loader = CreateLoader(GatewayFiles(new() { ["../outside.md"] = WellFormedMarkdown }, requests));
 
         var template = await loader.LoadOneAsync(
             CreateSession(),
@@ -159,12 +218,13 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
         );
 
         template.Should().BeNull();
+        requests.Should().BeEmpty();
     }
 
     [Fact]
     public async Task LoadOneAsync_MissingFile_ReturnsNull()
     {
-        var loader = CreateLoader();
+        var loader = CreateLoader(GatewayFiles([]));
 
         var template = await loader.LoadOneAsync(
             CreateSession(),
@@ -178,9 +238,8 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
     [Fact]
     public async Task LoadOneAsync_MalformedMarkdown_ReturnsNull()
     {
-        var relPath = Path.Combine(".claude", "agents", "bad.md");
-        await File.WriteAllTextAsync(Path.Combine(_hostPath, relPath), "no frontmatter at all\n");
-        var loader = CreateLoader();
+        const string relPath = ".claude/agents/bad.md";
+        var loader = CreateLoader(GatewayFiles(new() { [relPath] = "no frontmatter at all\n" }));
 
         var template = await loader.LoadOneAsync(CreateSession(), Item("subagent", "bad", relPath), AgentFactory);
 
@@ -221,9 +280,8 @@ public class WorkspaceSubAgentLoaderLoadOneAsyncTests : IDisposable
     {
         // Cancellation MUST propagate (the only exception not absorbed into null) so a webhook
         // tied to an aborted request can bail rather than continue mapping a half-read file.
-        var relPath = Path.Combine(".claude", "agents", "echo.md");
-        await File.WriteAllTextAsync(Path.Combine(_hostPath, relPath), WellFormedMarkdown);
-        var loader = CreateLoader();
+        const string relPath = ".claude/agents/echo.md";
+        var loader = CreateLoader(GatewayFiles(new() { [relPath] = WellFormedMarkdown }));
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
