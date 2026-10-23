@@ -36,7 +36,7 @@ public static class SubAgentProvenance
     public const string ThreadIdPrefix = SubAgentThreadIds.Prefix;
 
     /// <summary>Thread id of the parent conversation that spawned the sub-agent.</summary>
-    public const string ParentThreadIdKey = "sample.subAgentOf";
+    public const string ParentThreadIdKey = ConversationRelationKeys.SubAgentParentThreadId;
 
     /// <summary>
     /// The sub-agent's own id (<c>agent-N</c>, #705). Stamped so the roster never has to be reverse-engineered
@@ -303,6 +303,37 @@ public static class SubAgentProvenance
             RequestedReasoningEffort = ReadString(metadata, RequestedReasoningEffortKey),
             ShapedReasoningEffort = ReadString(metadata, ShapedReasoningEffortKey),
         };
+    }
+
+    /// <summary>
+    /// Every persisted sub-agent parent link. A store with compact relation reads answers directly;
+    /// any other store is listed once and read with the same key and ordering the SQLite projection
+    /// uses, so a decorator can offer the capability whatever store it wraps.
+    /// </summary>
+    public static async Task<IReadOnlyList<ConversationParentLink>> ListParentLinksAsync(
+        IConversationStore store,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        if (store is IConversationRelationStore relations)
+        {
+            return await relations.ListSubAgentParentLinksAsync(ct).ConfigureAwait(false);
+        }
+
+        var metadata = await store.ListThreadsAsync(int.MaxValue, 0, ct: ct).ConfigureAwait(false);
+        return
+        [
+            .. metadata
+                .Select(row =>
+                    ReadString(row, ParentThreadIdKey) is { } parent
+                        ? new ConversationParentLink(row.ThreadId, parent)
+                        : null
+                )
+                .OfType<ConversationParentLink>()
+                .OrderBy(link => link.ParentThreadId, StringComparer.Ordinal)
+                .ThenBy(link => link.ThreadId, StringComparer.Ordinal),
+        ];
     }
 
     /// <summary>

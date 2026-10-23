@@ -1,5 +1,7 @@
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
+using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using Microsoft.Data.Sqlite;
 
 namespace TodoEval.Runner.Metrics;
@@ -28,8 +30,9 @@ internal static class ConversationDbExport
             );
         }
 
-        var threadIds = await ReadThreadIdsAsync(databasePath, ct);
         await using var source = new SqliteConversationStore(databasePath);
+        _ = await source.LoadMetadataAsync(string.Empty, ct);
+        var threadIds = await ReadThreadIdsAsync(databasePath, ct);
         var target = new FileConversationStore(conversationsDir);
         foreach (var threadId in threadIds)
         {
@@ -39,6 +42,20 @@ internal static class ConversationDbExport
             if (await source.LoadMetadataAsync(threadId, ct) is { } metadata)
             {
                 await target.SaveMetadataAsync(threadId, metadata, ct);
+            }
+
+            if (await ConversationUsageProjection.LoadSnapshotAsync(source, threadId, ct) is { } usage)
+            {
+                var aggregate =
+                    usage.Records.Count == 0 && usage.Aggregate is { } persisted
+                        ? persisted
+                        : ConversationUsageAggregate.Fold(
+                            threadId,
+                            usage.Records,
+                            usage.FoldedRevision,
+                            usage.Completeness
+                        );
+                await ConversationUsageProjection.SaveAsync(target, aggregate, usage.Records, ct);
             }
         }
 
@@ -62,6 +79,8 @@ internal static class ConversationDbExport
             SELECT thread_id FROM messages
             UNION
             SELECT thread_id FROM thread_metadata
+            UNION
+            SELECT thread_id FROM conversation_usage_state
             ORDER BY thread_id;
             """;
         var threadIds = new List<string>();
