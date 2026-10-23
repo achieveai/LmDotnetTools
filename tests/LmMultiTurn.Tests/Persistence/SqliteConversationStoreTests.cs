@@ -694,7 +694,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
             await _store.SaveMetadataAsync(threadId, CreateTestMetadata(threadId));
         }
 
-        await using var connection = new SqliteConnection($"Data Source={_databasePath}");
+        await using var connection = new SqliteConnection($"Data Source={_databasePath};Pooling=False");
         await connection.OpenAsync();
         await using (var poison = connection.CreateCommand())
         {

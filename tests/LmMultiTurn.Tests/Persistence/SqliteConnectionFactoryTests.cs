@@ -236,7 +236,10 @@ public class SqliteConnectionFactoryTests : IDisposable
 
         SqliteConnectionFactory.ClearPool(cleared.DatabasePath);
 
-        var renameCleared = () => Directory.Move(cleared.Directory, cleared.Directory + "-renamed");
+        // Only the rename that must succeed retries past a scanner's transient hold; the kept file's hold is permanent,
+        // so a bare move is the one that must throw.
+        var renameCleared = () =>
+            MoveDirectoryAllowingTransientScannerHold(cleared.Directory, cleared.Directory + "-renamed");
         var renameKept = () => Directory.Move(kept.Directory, kept.Directory + "-renamed");
         renameCleared.Should().NotThrow("ClearPool released the idle handle of the file it was given");
         renameKept
