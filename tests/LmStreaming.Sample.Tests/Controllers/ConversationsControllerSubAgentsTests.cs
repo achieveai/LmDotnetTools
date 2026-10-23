@@ -3,6 +3,7 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmTestUtils;
@@ -520,6 +521,123 @@ public sealed class ConversationsControllerSubAgentsTests
             .Should()
             .Contain("\"failureCode\":\"view_exceeds_window\"", "the S2S client reads the camel-cased wire name");
     }
+
+    [Fact]
+    public async Task ListSubAgents_Recursive_ReportsAPersistedRunningChild_AsInterrupted_WhenNothingLiveHoldsIt()
+    {
+        // The host was killed while the child ran, so its disk row still says running. A review's slot reaper
+        // reads the recursive tree and waited on that row forever.
+        const string threadId = "thread-killed-host";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(threadId, new ThreadMetadata { ThreadId = threadId, LastUpdated = 0 });
+        await SavePersistedChildAsync(store, threadId, RunningSnapshot("orphan", "subagent-killed-host-orphan"));
+        await using var pool = CreateFakeAgentPool();
+        var controller = CreateController(pool, new WorkflowRunRegistry(), store);
+
+        var flat = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(
+            Assert.IsType<OkObjectResult>(await controller.ListSubAgents(threadId)).Value
+        );
+        var tree = Assert.IsType<SubAgentTreeResponse>(
+            Assert.IsType<OkObjectResult>(await controller.ListSubAgents(threadId, recursive: true)).Value
+        );
+
+        flat.Single().Status.Should().Be(SubAgentSummary.InterruptedStatus);
+        tree.Nodes.Single()
+            .Status.Should()
+            .Be(SubAgentSummary.InterruptedStatus, "the tree must agree with the flat listing");
+    }
+
+    // A review root runs with collaboration on, which the flat listing answers from a different path.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ListSubAgents_Recursive_KeepsTheChildTheLiveLoopHolds_Running_AndRetainsTheOneItDoesNot(
+        bool collaborating
+    )
+    {
+        const string threadId = "thread-live-root";
+        var subAgentOptions = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new SubAgentTemplate
+                {
+                    Name = "worker",
+                    SystemPrompt = "You are a worker.",
+                    AgentFactory = () => BlockingProvider(),
+                },
+            },
+            MaxConcurrentSubAgents = 5,
+        };
+        await using var loop = new MultiTurnAgentLoop(
+            BlockingProvider(),
+            new FunctionRegistry(),
+            threadId: threadId,
+            subAgentOptions: subAgentOptions,
+            collaboration: collaborating
+                ? AgentCollaborationSetup.CreateRoot(
+                    new AgentCollaborationOptions(),
+                    collaborationId: threadId,
+                    agentId: threadId,
+                    name: "root"
+                )
+                : null
+        );
+        await using var pool = CreatePoolReturning(loop);
+        _ = pool.GetOrCreateAgent(threadId, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+        var liveId = ParseAgentId(
+            await loop.SubAgentManager!.SpawnAsync(
+                "worker",
+                "still working",
+                name: "alpha",
+                runInBackground: true,
+                role: collaborating ? "reviewer" : null,
+                description: collaborating ? "reviews one file" : null
+            )
+        );
+        var live = loop.SubAgentManager.ListAgents().Single(s => s.AgentId == liveId);
+        live.Status.Should().Be(SubAgentStatus.Running);
+
+        // The live child's own row, and one left behind by an earlier process that this loop does not hold.
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(threadId, new ThreadMetadata { ThreadId = threadId, LastUpdated = 0 });
+        await SavePersistedChildAsync(store, threadId, live);
+        await SavePersistedChildAsync(store, threadId, RunningSnapshot("earlier", "subagent-live-root-earlier"));
+        var controller = CreateController(pool, new WorkflowRunRegistry(), store);
+
+        var tree = Assert.IsType<SubAgentTreeResponse>(
+            Assert.IsType<OkObjectResult>(await controller.ListSubAgents(threadId, recursive: true)).Value
+        );
+
+        tree.Nodes.Single(n => n.AgentId == liveId).Status.Should().Be("running");
+        tree.Nodes.Single(n => n.AgentId == "earlier").Status.Should().Be(SubAgentSummary.InterruptedStatus);
+    }
+
+    private static SubAgentSnapshot RunningSnapshot(string agentId, string childThreadId) =>
+        new(
+            agentId,
+            Name: agentId,
+            TemplateName: "worker",
+            Task: "interrupted work",
+            Status: SubAgentStatus.Running,
+            ThreadId: childThreadId,
+            LastActivityUtc: DateTimeOffset.UnixEpoch
+        );
+
+    private static Task SavePersistedChildAsync(
+        IConversationStore store,
+        string parentThreadId,
+        SubAgentSnapshot child
+    ) =>
+        store.SaveMetadataAsync(
+            child.ThreadId,
+            new ThreadMetadata
+            {
+                ThreadId = child.ThreadId,
+                LastUpdated = 0,
+                Properties = SubAgentProvenance.Build(parentThreadId, child),
+            }
+        );
 
     private static IStreamingAgent ThrowingProvider(Exception failure)
     {
