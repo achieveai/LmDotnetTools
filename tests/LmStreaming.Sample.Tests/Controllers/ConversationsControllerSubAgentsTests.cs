@@ -551,7 +551,7 @@ public sealed class ConversationsControllerSubAgentsTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task ListSubAgents_Recursive_KeepsTheChildTheLiveLoopHolds_Running_AndRetainsTheOneItDoesNot(
+    public async Task ListSubAgents_Recursive_KeepsTheChildTheLiveLoopHolds_Running_AndRetainsTheOneItDoesNot_WithItsSubtree(
         bool collaborating
     )
     {
@@ -599,10 +599,17 @@ public sealed class ConversationsControllerSubAgentsTests
         live.Status.Should().Be(SubAgentStatus.Running);
 
         // The live child's own row, and one left behind by an earlier process that this loop does not hold.
+        // Each has a running sub-agent of its own: the review that jammed a slot had one under a dead child.
         var store = new InMemoryConversationStore();
         await store.SaveMetadataAsync(threadId, new ThreadMetadata { ThreadId = threadId, LastUpdated = 0 });
         await SavePersistedChildAsync(store, threadId, live);
+        await SavePersistedChildAsync(store, live.ThreadId, RunningSnapshot("live-nested", "subagent-live-nested"));
         await SavePersistedChildAsync(store, threadId, RunningSnapshot("earlier", "subagent-live-root-earlier"));
+        await SavePersistedChildAsync(
+            store,
+            "subagent-live-root-earlier",
+            RunningSnapshot("earlier-nested", "subagent-live-root-earlier-nested")
+        );
         var controller = CreateController(pool, new WorkflowRunRegistry(), store);
 
         var tree = Assert.IsType<SubAgentTreeResponse>(
@@ -610,7 +617,11 @@ public sealed class ConversationsControllerSubAgentsTests
         );
 
         tree.Nodes.Single(n => n.AgentId == liveId).Status.Should().Be("running");
+        tree.Nodes.Single(n => n.AgentId == "live-nested").Status.Should().Be("running");
         tree.Nodes.Single(n => n.AgentId == "earlier").Status.Should().Be(SubAgentSummary.InterruptedStatus);
+        tree.Nodes.Single(n => n.AgentId == "earlier-nested")
+            .Status.Should()
+            .Be(SubAgentSummary.InterruptedStatus, "it ran in the dead child's loop");
     }
 
     private static SubAgentSnapshot RunningSnapshot(string agentId, string childThreadId) =>

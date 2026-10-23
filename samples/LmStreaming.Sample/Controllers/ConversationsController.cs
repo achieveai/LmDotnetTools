@@ -1181,10 +1181,9 @@ public class ConversationsController(
     /// Builds the versioned recursive descendant graph (schema v1) for <paramref name="rootThreadId"/>:
     /// one bounded store scan, one in-memory parent→children index built from it, then a visited-set
     /// BFS from the root — all of which now lives in <see cref="ConversationDescendantScanner"/>, which
-    /// the transcript writer shares (issue #251). Deliberately persisted-only — no live
-    /// <c>SubAgentManager</c> union — because no current spawn path creates a depth-&gt;1 tree anyway
-    /// (nested live Agent delegation stays disabled); this reader exists to answer "what does the
-    /// persisted graph say", which is exactly what a restarted host or a finished run still has. The
+    /// the transcript writer shares (issue #251). The graph comes from the store, which is what a
+    /// restarted host or a finished run still has; <see cref="ReconcileWithLiveState"/> then corrects the
+    /// statuses that only live state can disprove. No live <c>SubAgentManager</c> union adds nodes. The
     /// root itself is never emitted as a node, only its descendants.
     /// </summary>
     /// <remarks>
@@ -1221,8 +1220,9 @@ public class ConversationsController(
     /// Liveness is decided by presence alone, never by how old a row looks. With no pooled root nothing in
     /// the tree can be running here. A pooled loop holds the sub-agents it spawned in its
     /// <see cref="SubAgentManager"/>, with or without collaboration, so a direct sub-agent child it does not
-    /// hold is retained. Anything else keeps its persisted status: a deeper row, or a root whose live state
-    /// this endpoint cannot see into.
+    /// hold is retained, and so is everything under it: a child's own sub-agents ran in that child's loop,
+    /// which is gone. Anything else keeps its persisted status: a row under a held child, or a root whose
+    /// live state this endpoint cannot see into.
     /// </remarks>
     private IReadOnlyList<SubAgentSummary> ReconcileWithLiveState(
         string rootThreadId,
@@ -1240,16 +1240,24 @@ public class ConversationsController(
         }
 
         var liveChildThreads = manager.ListAgents().Select(child => child.ThreadId).ToHashSet(StringComparer.Ordinal);
-        return
-        [
-            .. nodes.Select(node =>
-                node.Kind == SubAgentSummary.SubAgentTabKind
-                && node.ParentThreadId == rootThreadId
-                && !liveChildThreads.Contains(node.ThreadId)
-                    ? node.AsRetained()
-                    : node
-            ),
-        ];
+        // The scan is breadth-first, so a parent's verdict is known before its children are reached.
+        var deadThreads = new HashSet<string>(StringComparer.Ordinal);
+        var reconciled = new List<SubAgentSummary>(nodes.Count);
+        foreach (var node in nodes)
+        {
+            var dead =
+                node.ParentThreadId == rootThreadId
+                    ? node.Kind == SubAgentSummary.SubAgentTabKind && !liveChildThreads.Contains(node.ThreadId)
+                    : node.ParentThreadId is { } parent && deadThreads.Contains(parent);
+            if (dead)
+            {
+                _ = deadThreads.Add(node.ThreadId);
+            }
+
+            reconciled.Add(dead ? node.AsRetained() : node);
+        }
+
+        return reconciled;
     }
 
     [HttpGet("capabilities")]
