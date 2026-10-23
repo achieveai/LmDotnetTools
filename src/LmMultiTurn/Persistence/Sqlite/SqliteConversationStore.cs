@@ -11,6 +11,7 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 /// </summary>
 public sealed class SqliteConversationStore
     : IConversationStore,
+        IConversationThreadIdLookupStore,
         IConversationOwnershipStore,
         IRunLedgerStore,
         IRunLifecycleStore,
@@ -542,6 +543,63 @@ public sealed class SqliteConversationStore
             transaction.Rollback();
             throw;
         }
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<string>> ListThreadIdsByPrefixAsync(string prefix, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(prefix);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        var upperBound = PrefixUpperBound(prefix);
+        command.CommandText = upperBound is null
+            ? """
+                SELECT thread_id
+                FROM thread_metadata
+                WHERE thread_id >= $prefix
+                ORDER BY thread_id;
+                """
+            : """
+                SELECT thread_id
+                FROM thread_metadata
+                WHERE thread_id >= $prefix
+                  AND thread_id < $upperBound
+                ORDER BY thread_id;
+                """;
+        _ = command.Parameters.AddWithValue("$prefix", prefix);
+        if (upperBound is not null)
+        {
+            _ = command.Parameters.AddWithValue("$upperBound", upperBound);
+        }
+
+        var ids = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            ids.Add(reader.GetString(0));
+        }
+
+        return ids;
+    }
+
+    private static string? PrefixUpperBound(string prefix)
+    {
+        var characters = prefix.ToCharArray();
+        for (var index = characters.Length - 1; index >= 0; index--)
+        {
+            if (characters[index] == char.MaxValue)
+            {
+                continue;
+            }
+
+            characters[index]++;
+            return new string(characters, 0, index + 1);
+        }
+
+        return null;
     }
 
     /// <inheritdoc />
