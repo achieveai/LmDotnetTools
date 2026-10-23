@@ -3,6 +3,7 @@ using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
+using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Xunit;
@@ -28,8 +29,9 @@ public class SqliteConversationStoreTests : IAsyncLifetime
     {
         await _store.DisposeAsync();
 
-        // Clear the connection pool to release file handles
-        SqliteConnection.ClearAllPools();
+        // Clear only this database's pool: ClearAllPools also disposes connections that tests in other classes
+        // are using in parallel (ObjectDisposedException on SQLitePCL.sqlite3).
+        SqliteConnectionFactory.ClearPool(_databasePath);
 
         // Give time for pool to release
         await Task.Delay(50);
@@ -688,6 +690,41 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         loaded!.Records.Should().ContainSingle().Which.InputTokens.Should().Be(99);
         loaded.FoldedRevision.Should().Be(10);
         loaded.Completeness.Should().Be(UsageCompleteness.Complete);
+    }
+
+    [Fact]
+    public async Task AppendUsageAsync_StaleLowerRevisionReplay_KeepsTheHigherRevisionPayloadAndTotals()
+    {
+        // A replayed lower revision of a finalized attempt (a retried or out-of-order save) must not overwrite
+        // its payload, or the folded totals regress to the stale counts and cost.
+        var finalized = UsageAttempt("usage-thread", "attempt", revision: 8, inputTokens: 120) with
+        {
+            OutputTokens = 30,
+            EstimatedPublicCostMicros = 900,
+            Finalized = true,
+        };
+        var stale = UsageAttempt("usage-thread", "attempt", revision: 5, inputTokens: 40) with
+        {
+            OutputTokens = 2,
+            EstimatedPublicCostMicros = 100,
+        };
+        await _store.AppendUsageAsync(
+            ConversationUsageAggregate.Fold("usage-thread", [finalized], foldedRevision: 8, UsageCompleteness.Complete),
+            [finalized]
+        );
+
+        await _store.AppendUsageAsync(
+            ConversationUsageAggregate.Fold("usage-thread", [stale], foldedRevision: 5, UsageCompleteness.InProgress),
+            [stale]
+        );
+
+        var loaded = await _store.LoadUsageAsync("usage-thread");
+        loaded!.Records.Should().ContainSingle().Which.Should().BeEquivalentTo(finalized);
+        loaded.FoldedRevision.Should().Be(8);
+        loaded.Completeness.Should().Be(UsageCompleteness.Complete);
+        var totals = await ConversationUsageProjection.LoadAsync(_store, "usage-thread");
+        totals!.TotalTokens.Should().Be(150);
+        totals.EstimatedPublicCostMicros.Should().Be(900);
     }
 
     [Fact]

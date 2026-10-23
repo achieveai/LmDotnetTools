@@ -49,6 +49,42 @@ public class UsageLedgerTests
     }
 
     [Fact]
+    public async Task SnapshotWithRecords_AggregateCoversExactlyTheReturnedRecords_WhileUpsertsRace()
+    {
+        // The usage writer persists these records with this aggregate and then advances its durable watermark to
+        // the aggregate's revision. An aggregate ahead of its records makes that watermark skip the missing
+        // attempt, so a capture must never split around a concurrent upsert.
+        var ledger = new UsageLedger("conv-1");
+        var writer = Task.Run(() =>
+        {
+            for (var i = 0; i < 20_000; i++)
+            {
+                ledger.UpsertAttempt(Obs($"a{i % 50}", "model-A", input: i, output: 1));
+            }
+        });
+
+        var captures = 0;
+        var split = new List<string>();
+        while (!writer.IsCompleted || captures == 0)
+        {
+            var (aggregate, records) = ledger.SnapshotWithRecords();
+            var coveredRevision = records.Count == 0 ? 0 : records.Max(record => record.Revision);
+            var foldedTokens = ConversationUsageAggregate.Fold("conv-1", records, coveredRevision).TotalTokens;
+            if (aggregate.FoldedRevision != coveredRevision || aggregate.TotalTokens != foldedTokens)
+            {
+                split.Add(
+                    $"aggregate r{aggregate.FoldedRevision}/{aggregate.TotalTokens} vs records r{coveredRevision}/{foldedTokens}"
+                );
+            }
+
+            captures++;
+        }
+
+        await writer;
+        split.Should().BeEmpty("{0} captures raced the writer", captures);
+    }
+
+    [Fact]
     public void UpsertAttempt_Replay_IsIdempotent()
     {
         var ledger = new UsageLedger("conv-1");
