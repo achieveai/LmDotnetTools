@@ -68,10 +68,12 @@ public class SqliteConnectionFactoryTests : IDisposable
         var dbDirectory = Path.Combine(_root, "data");
         Directory.CreateDirectory(dbDirectory);
         var databasePath = Path.Combine(dbDirectory, "notify-waits.db");
+        SqliteConnection? disposedConnection = null;
 
         await using (var factory = new SqliteConnectionFactory(databasePath))
         {
             await using var connection = await factory.GetConnectionAsync();
+            disposedConnection = connection;
             using var command = connection.CreateCommand();
             command.CommandText = "CREATE TABLE probe (id INTEGER PRIMARY KEY);";
             _ = await command.ExecuteNonQueryAsync();
@@ -80,7 +82,7 @@ public class SqliteConnectionFactoryTests : IDisposable
         SqliteConnection.ClearAllPools();
 
         var renamed = Path.Combine(_root, "data-renamed");
-        var rename = () => Directory.Move(dbDirectory, renamed);
+        var rename = () => MoveDirectoryAllowingTransientScannerHold(dbDirectory, renamed);
 
         rename
             .Should()
@@ -88,6 +90,37 @@ public class SqliteConnectionFactoryTests : IDisposable
                 "disposing the connection must actually close it and return it to the pool -- only then can ClearAllPools release the file and let its directory be renamed"
             );
         File.Exists(Path.Combine(renamed, "notify-waits.db")).Should().BeTrue();
+
+        // Keeps the disposed connection reachable through the whole rename window. Its native handle
+        // is a finalizable SafeHandle, so if disposal leaked it, a GC during the retry could finalize
+        // it and let the rename succeed -- the retry would then pass the very defect this test pins.
+        GC.KeepAlive(disposedConnection);
+    }
+
+    /// <summary>
+    /// <see cref="Directory.Move(string, string)"/> with a bounded retry for a TRANSIENT hold. Defender
+    /// or the search indexer can briefly open a file that was just written and closed, and renaming its
+    /// directory then fails with "access is denied" -- the same shape as #371, seen here under a
+    /// pre-commit hook's parallel test load and never in isolation. A genuinely leaked handle never
+    /// clears, so the last attempt, about five seconds in, still throws.
+    /// </summary>
+    private static void MoveDirectoryAllowingTransientScannerHold(string from, string to)
+    {
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        var delayMs = 25;
+        while (true)
+        {
+            try
+            {
+                Directory.Move(from, to);
+                return;
+            }
+            catch (IOException) when (elapsed.Elapsed < TimeSpan.FromSeconds(5))
+            {
+                Thread.Sleep(delayMs);
+                delayMs = Math.Min(delayMs * 2, 500);
+            }
+        }
     }
 
     [Fact]

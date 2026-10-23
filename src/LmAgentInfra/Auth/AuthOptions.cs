@@ -140,6 +140,14 @@ public sealed class WebhookOptions
     public bool UseSandboxWebhook { get; set; }
 
     /// <summary>
+    /// Registers the event webhook (the unified <c>webhook</c> block or the legacy <c>discovery</c> block, per
+    /// <see cref="UseSandboxWebhook"/>) on every sandbox create. Turn it off for a host the gateway can never call
+    /// back, such as an in-memory test server: it has no network address, so the gateway would deliver every event
+    /// to whatever else listens on <see cref="PublicBaseUrl"/>. Auth-provider callbacks are not affected.
+    /// </summary>
+    public bool RegisterEventWebhook { get; set; } = true;
+
+    /// <summary>
     /// Webhook public base URL with the trailing slash stripped — the canonical form callers
     /// concatenate route segments to. Centralised so the gateway → app callback URLs all agree
     /// even if a future operator misconfigures <see cref="PublicBaseUrl"/> with a trailing slash.

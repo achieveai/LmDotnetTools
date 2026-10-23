@@ -72,7 +72,7 @@ internal sealed class ConversationListingCache(
             lock (_gate)
             {
                 var current = fetched;
-                foreach (var (thread, change) in _writesDuringFetch!)
+                foreach (var (thread, change) in _writesDuringFetch)
                     current = Changed(current, thread, change);
                 _writesDuringFetch = null;
                 _rows = current;

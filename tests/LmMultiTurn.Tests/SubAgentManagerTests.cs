@@ -2109,6 +2109,15 @@ public class SubAgentManagerTests : IAsyncLifetime
 
         _manager = CreateManager(maxConcurrent: 1);
 
+        SubAgentState? child = null;
+        var completionsClassified = 0;
+        _manager.BeforeClassifyingRunCompletionForTest = (state, _) =>
+        {
+            child = state;
+            Interlocked.Increment(ref completionsClassified);
+            return Task.CompletedTask;
+        };
+
         var foregroundTask = _manager.SpawnAsync(
             "test-agent",
             "Pick a color",
@@ -2144,14 +2153,20 @@ public class SubAgentManagerTests : IAsyncLifetime
 
         (await loop!.TryResolveToolCallAsync("tc_color", "Red")).Should().Be(ResolveToolCallOutcome.Resolved);
 
-        // The resolution-triggered run is the one the latch is for. Wait for it to have happened and be
-        // absorbed — the caller still blocked is what "absorbed" looks like from here.
+        // The resolution-triggered run is the one the latch is for. Wait for its completion to be absorbed,
+        // which consumes the latch. Reaching the provider is not enough: a message sent while that run is
+        // still in flight makes its completion pending work, which leaves the latch armed, and the run below
+        // is then the one absorbed. The latch is armed before the first completion is classified and only
+        // this absorption clears it, so "second completion classified and latch clear" is that absorption.
         await Wait.UntilAsync(
-            () => Volatile.Read(ref providerCalls) >= 2,
-            "the resolution-triggered run reached the provider",
+            () => Volatile.Read(ref completionsClassified) >= 2 && child is { ParkedOnQuestion: false },
+            "the resolution-triggered run's completion was absorbed and consumed the parked latch",
             TimeSpan.FromSeconds(10),
             TimeSpan.FromMilliseconds(50),
-            observed: () => $"provider calls: {Volatile.Read(ref providerCalls)}"
+            observed: () =>
+                $"provider calls: {Volatile.Read(ref providerCalls)}, "
+                + $"completions classified: {Volatile.Read(ref completionsClassified)}, "
+                + $"parked latch: {child?.ParkedOnQuestion}"
         );
 
         // Act: a second run with nothing to say. The latch is spent, so this one is terminal.

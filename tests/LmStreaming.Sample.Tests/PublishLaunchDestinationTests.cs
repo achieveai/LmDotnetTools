@@ -139,10 +139,10 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         }
 
         // Belt-and-suspenders even after the SqliteConnectionFactory.PooledConnection.DisposeAsync
-        // fix (which was the real bug: it no longer skips its own native-close call): clearing all
-        // pools guarantees every native handle this seeding step opened is genuinely closed before
+        // fix (which was the real bug: it no longer skips its own native-close call): clearing this
+        // file's pool guarantees every native handle this seeding step opened is genuinely closed before
         // the pwsh child spawned moments later attempts to rename the whole destination directory.
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        SqliteConnectionFactory.ClearPool(databasePath);
     }
 
     private static string CreateEmptyDestination(string parent, string name)
@@ -733,9 +733,15 @@ public sealed class PublishLaunchDestinationTests : IDisposable
 
     private static async Task<IReadOnlyList<NotifyWaitRecord>> ReadNotifyWaitsAsync(string databasePath)
     {
-        await using var factory = new SqliteConnectionFactory(databasePath);
-        var store = new SqliteNotifyWaitStore(factory);
-        return await store.LoadActiveAsync("thread-1");
+        IReadOnlyList<NotifyWaitRecord> rows;
+        await using (var factory = new SqliteConnectionFactory(databasePath))
+        {
+            rows = await new SqliteNotifyWaitStore(factory).LoadActiveAsync("thread-1");
+        }
+
+        // Release this file's pooled handle, or Dispose cannot delete the test's temp root.
+        SqliteConnectionFactory.ClearPool(databasePath);
+        return rows;
     }
 
     [Fact]
@@ -1306,6 +1312,50 @@ public sealed class PublishLaunchDestinationTests : IDisposable
             .Be(
                 "false",
                 "an unrelated SYSTEM process that merely refuses to reveal its path must not be mistaken for our executable"
+            );
+    }
+
+    [Fact]
+    public void ProcessHoldsPath_ReadsPathOnlyForProcessesNamedLikeTheTarget()
+    {
+        // Reading `.Path` costs a process open and a module walk. Over every process on a busy box
+        // (1,200+) the three checkpoints of a Recognized deploy took long enough to time out
+        // Deploy_Recognized_PreservesListedPathsByteForByte_... at the harness's 90 s, twice in
+        // recorded runs. Counted rather than timed (#343): fifty differently named processes come
+        // first and must cost no path read at all; the one named after the target, last, must still
+        // be read and matched. Before the name prefilter this read every path: 51, not 1.
+        var exePath = Path.Combine(_root, "target.exe");
+        File.WriteAllText(exePath, "x");
+        var quotedExePath = PublishLaunchScriptHost.QuoteSingle(exePath);
+
+        var enumeration =
+            "{ param() $global:__pldPathReads = 0; "
+            + "$all = foreach ($n in 1..50) { "
+            + "$p = [pscustomobject]@{ Id = $n; ProcessName = ('unrelated' + $n) }; "
+            + "$p | Add-Member -MemberType ScriptProperty -Name Path -Value { $global:__pldPathReads++; 'C:\\Windows\\System32\\svchost.exe' } -PassThru }; "
+            + "$ours = [pscustomobject]@{ Id = 51; ProcessName = 'target' }; "
+            + "$ours | Add-Member -MemberType ScriptProperty -Name Path -Value { $global:__pldPathReads++; '"
+            + quotedExePath
+            + "' }; "
+            + "return @($all) + $ours }";
+
+        var result = PublishLaunchScriptHost.InvokeForJson(
+            "& { $held = Test-ProcessHoldsPath -ExecutablePath '"
+                + quotedExePath
+                + "' -ProcessEnumerationDelegate "
+                + enumeration
+                + " -ExclusiveOpenProbeDelegate "
+                + ProbeDelegateReportingNotHeld
+                + "; [pscustomobject]@{ Held = $held; PathReads = $global:__pldPathReads } }"
+        );
+
+        result.Succeeded.Should().BeTrue(result.StandardError);
+        result
+            .StandardOutput.Trim()
+            .Should()
+            .Be(
+                "{\"Held\":true,\"PathReads\":1}",
+                "only the process named after the target may have its path read, and that read must still find it"
             );
     }
 
