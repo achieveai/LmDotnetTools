@@ -36,4 +36,14 @@
     <Touch Files="$(MSBuildThisFileDirectory).husky/_/install.stamp" AlwaysCreate="true" />
   </Target>
 
+  <!--
+    Only projects that declare an AchieveAi.LmDotnetTools.* PackageId ship as packages. The SDK makes
+    every non-test project packable, so without this `dotnet pack LmDotnetTools.sln` (what CI publishes
+    from) would also push the samples and examples. PackageId is not defaulted yet at this point, so a
+    project that never sets one reads as empty here and is excluded.
+  -->
+  <PropertyGroup Condition="!$(PackageId.StartsWith('AchieveAi.LmDotnetTools.'))">
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
 </Project>
