@@ -630,7 +630,7 @@ internal sealed class LmStreamingS2SClient
     )
     {
         var row =
-            await ListedConversationAsync(threadId, ct)
+            await CurrentConversationAsync(threadId, ct)
             ?? throw new ReviewHostContractException("Bound conversation metadata was not found; no prompt sent.");
         if (row.Workspace != workspaceId || row.Provider != providerId || row.Mode != modeId)
         {
@@ -735,7 +735,7 @@ internal sealed class LmStreamingS2SClient
     )
     {
         var row =
-            await ListedConversationAsync(threadId, ct)
+            await CurrentConversationAsync(threadId, ct)
             ?? throw new ReviewHostContractException("Reused conversation metadata was not found; no prompt sent.");
         if (row.Workspace != workspaceId || row.Mode != modeId)
         {
@@ -749,6 +749,21 @@ internal sealed class LmStreamingS2SClient
 
     private async Task<ConversationListingCache.Row?> ListedConversationAsync(string threadId, CancellationToken ct) =>
         (await ListedConversationsAsync(threadId, ct)).FirstOrDefault(row => row.ThreadId == threadId);
+
+    /// <summary>
+    /// <paramref name="threadId"/>'s row as the host lists it now, read past the shared copy, which then takes it.
+    /// A binding check must see the current workspace, mode and provider: another caller may have switched the
+    /// conversation since the copy was fetched, and the copy would pass a binding the host no longer has.
+    /// ReviewRunner holds its per-PR lease; MergeRunner holds its source-ref lease. Both await binding before
+    /// their own writes to the same conversation. This whole-row refresh relies on that ordering rather than
+    /// merging an overlapping own write.
+    /// </summary>
+    private async Task<ConversationListingCache.Row?> CurrentConversationAsync(string threadId, CancellationToken ct)
+    {
+        var current = (await FetchListingAsync(threadId, ct)).FirstOrDefault(row => row.ThreadId == threadId);
+        _listing?.Apply(threadId, cached => cached is null ? null : current);
+        return current;
+    }
 
     /// <summary>
     /// The host's conversation listing, newest first, from the shared copy when there is one. Without a copy, a
@@ -775,6 +790,10 @@ internal sealed class LmStreamingS2SClient
     )
     {
         var listed = new List<ConversationListingCache.Row>();
+        // Pages are read by offset, so a conversation created between two page reads pushes the last row of one
+        // page onto the next and it is listed twice. One row per thread, or a write applied to the first copy
+        // leaves the second one behind.
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         for (var offset = 0; offset < ListingWindow; offset += ListingPageSize)
         {
             var body = await SendReadAsync(
@@ -791,7 +810,7 @@ internal sealed class LmStreamingS2SClient
             }
             foreach (var row in rows.EnumerateArray())
             {
-                if (ListedString(row, "threadId") is not { } threadId)
+                if (ListedString(row, "threadId") is not { } threadId || !seen.Add(threadId))
                 {
                     continue;
                 }

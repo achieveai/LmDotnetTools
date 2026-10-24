@@ -35,9 +35,11 @@ public class ConversationListingCacheTests
         (await launch.FindConversationByTitlePrefixAsync("Nova-17-", "ws", "m", CancellationToken.None))
             .Should()
             .Be(new S2SConversationMatch("t1", "p", true));
-        await launch.EnsureConversationReusableAsync("t1", "ws", "p2", "m", CancellationToken.None);
+        await launch.SwitchProviderAsync("t1", "p2", CancellationToken.None);
         // The provider switch above shows in the copy the other client reads.
-        await another.EnsureConversationBindingAsync("t1", "ws", "p2", "m", CancellationToken.None);
+        (await another.FindConversationByTitlePrefixAsync("Nova-17-", "ws", "m", CancellationToken.None))
+            .Should()
+            .Be(new S2SConversationMatch("t1", "p2", true));
         (await another.FindConversationByTitlePrefixAsync("Nova-99-", "ws", "m", CancellationToken.None))
             .Should()
             .BeNull();
@@ -83,6 +85,78 @@ public class ConversationListingCacheTests
             .Be(new S2SConversationMatch("fresh", "p", true));
         (await client.GetClientToolsDisabledAsync("t2", CancellationToken.None)).Should().BeNull();
         handler.CountRequests("/api/conversations?").Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Binding_checks_read_the_hosts_current_binding_not_the_copy()
+    {
+        // Another caller (the browser, another process) switches t1 after this process fetched its copy.
+        var provider = "p";
+        var mode = "m";
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                r => r.Method == HttpMethod.Get && r.RequestUri!.Query.Contains("offset=", StringComparison.Ordinal),
+                _ => new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        $$"""[{"threadId":"t1","title":"Nova-17-aaaaaaaa","workspace":"ws","mode":"{{mode}}","provider":"{{provider}}","lastUpdated":100,"clientToolsDisabled":true}]"""
+                    ),
+                }
+            )
+            .OnJson(HttpMethod.Post, "/provider", "{}");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null, NewCache());
+        _ = await client.FindConversationByTitlePrefixAsync("Nova-17-", "ws", "m", CancellationToken.None);
+
+        provider = "p-other";
+        var resume = () => client.EnsureConversationBindingAsync("t1", "ws", "p", "m", CancellationToken.None);
+        _ = await resume.Should().ThrowAsync<ReviewHostContractException>().WithMessage("*differs*");
+        // The check left the current row in the copy.
+        (await client.FindConversationByTitlePrefixAsync("Nova-17-", "ws", "m", CancellationToken.None))
+            .Should()
+            .Be(new S2SConversationMatch("t1", "p-other", true));
+
+        await client.EnsureConversationReusableAsync("t1", "ws", "p", "m", CancellationToken.None);
+        handler.Requests.Should().ContainSingle(r => r.Method == HttpMethod.Post).Which.Body.Should().Contain("\"p\"");
+
+        mode = "m-other";
+        var reuse = () => client.EnsureConversationReusableAsync("t1", "ws", "p", "m", CancellationToken.None);
+        _ = await reuse.Should().ThrowAsync<ReviewHostContractException>().WithMessage("*workspace/mode differs*");
+    }
+
+    [Fact]
+    public async Task A_thread_listed_on_two_pages_is_one_row_that_a_write_updates_and_a_delete_removes()
+    {
+        // A conversation created between the two page reads pushed t onto the second page as well.
+        var first = string.Join(
+            ",",
+            Enumerable.Range(0, 999).Select(i => $$"""{"threadId":"n{{i}}"}""").Append(TwoPageRow)
+        );
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "offset=0&", $"[{first}]")
+            .OnJson(HttpMethod.Get, "offset=1000&", $"[{TwoPageRow}]")
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .On(r => r.Method == HttpMethod.Delete, _ => new HttpResponseMessage(HttpStatusCode.NoContent));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null, NewCache());
+        (await client.FindConversationByTitlePrefixAsync("Nova-5-old", "ws", "m", CancellationToken.None))
+            .Should()
+            .Be(new S2SConversationMatch("t", "p", false));
+
+        await client.UpdateMetadataAsync("t", "Nova-5-new", null, CancellationToken.None);
+        (await client.FindConversationByTitlePrefixAsync("Nova-5-old", "ws", "m", CancellationToken.None))
+            .Should()
+            .BeNull();
+        (await client.FindConversationByTitlePrefixAsync("Nova-5-new", "ws", "m", CancellationToken.None))
+            .Should()
+            .Be(new S2SConversationMatch("t", "p", false));
+
+        _ = await client.DeleteConversationAsync("t", CancellationToken.None);
+        (await client.GetClientToolsDisabledAsync("t", CancellationToken.None)).Should().BeNull();
+        (await client.FindConversationByTitlePrefixAsync("Nova-5-", "ws", "m", CancellationToken.None))
+            .Should()
+            .BeNull();
+        handler.CountRequests("/api/conversations?").Should().Be(2);
     }
 
     [Fact]
@@ -173,6 +247,9 @@ public class ConversationListingCacheTests
                 "?limit=1000&offset=1000&sort=created"
             );
     }
+
+    private const string TwoPageRow =
+        """{"threadId":"t","title":"Nova-5-old","workspace":"ws","mode":"m","provider":"p","lastUpdated":50}""";
 
     private ConversationListingCache NewCache() => new(TimeSpan.FromMinutes(10), TimeSpan.FromSeconds(30), () => _now);
 

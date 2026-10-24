@@ -416,7 +416,8 @@ public sealed class LifecycleDeliveryPipelineTests
         harness.Options.AllowedCallbackHosts = [];
         await harness.Pipeline.PublishAsync(Event(1));
         await harness.Pipeline.PublishAsync(Event(2));
-        await harness.Resolver.WaitForResolutionsAsync(3);
+        // Resolution starts before re-authorization; wait until both refusals are observable.
+        await harness.WaitForDropsAsync(2);
 
         // Widened again, to prove the refusal was a refusal and not a quarantine: nothing has to
         // expire before delivery resumes.
