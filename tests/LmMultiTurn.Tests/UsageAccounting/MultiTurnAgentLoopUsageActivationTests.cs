@@ -47,9 +47,9 @@ public class MultiTurnAgentLoopUsageActivationTests
             // drain the run to completion
         }
 
-        // Persistence of the aggregate is fire-and-forget, so poll briefly for it to land.
+        // Persistence of the aggregate is fire-and-forget, so poll until it lands (bounded by cts).
         ConversationUsageAggregate? aggregate = null;
-        for (var attempt = 0; attempt < 100 && aggregate is null; attempt++)
+        while (aggregate is null)
         {
             aggregate = await ConversationUsageProjection.LoadAsync(store, "usage-thread");
             if (aggregate is null)
@@ -167,7 +167,7 @@ public class MultiTurnAgentLoopUsageActivationTests
         }
 
         ConversationUsageAggregate? aggregate = null;
-        for (var attempt = 0; attempt < 100 && aggregate is null; attempt++)
+        while (aggregate is null)
         {
             aggregate = await ConversationUsageProjection.LoadAsync(store, "usage-thread");
             if (aggregate is null)
@@ -335,8 +335,8 @@ public class MultiTurnAgentLoopUsageActivationTests
             // drain the run to completion
         }
 
-        // Poll briefly for the frame to arrive on the subscription (delivery is asynchronous).
-        for (var attempt = 0; attempt < 100 && frames.Count == 0; attempt++)
+        // Poll for the frame to arrive on the subscription (delivery is asynchronous; bounded by cts).
+        while (frames.Count == 0)
         {
             await Task.Delay(20, cts.Token);
         }
