@@ -4672,6 +4672,30 @@ public sealed class MultiTurnAgentLoop
         return Task.FromResult<IReadOnlyList<DeferredToolCallInfo>>(snapshot);
     }
 
+    /// <summary>
+    /// Whether this loop, or any sub-agent under it, holds work that only this process can finish: a
+    /// deferred tool call (a parked <c>Wait</c>, an unanswered <c>AskUserQuestion</c>), or a sub-agent
+    /// that is queued or running (see <see cref="SubAgentManager.HasLiveWorkAsync"/>). Freeing the loop
+    /// would lose that work, because its runtime half is not persisted (#830). A disposed loop holds
+    /// nothing.
+    /// </summary>
+    public async ValueTask<bool> HasLiveWorkAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            if ((await GetDeferredToolCallsAsync(ct)).Count > 0)
+            {
+                return true;
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
+
+        return SubAgentManager is { } manager && await manager.HasLiveWorkAsync(ct);
+    }
+
     /// <inheritdoc />
     /// <summary>
     ///     Persists a row and tells the compaction runtime the id it got, so the runtime can place the

@@ -26,6 +26,8 @@ public class MultiTurnAgentPoolBindingTests
             Published.Add((threadId, binding));
 
         public void ClearEstablishedBinding(string threadId) => Cleared.Add(threadId);
+
+        public bool HasPendingBackgroundTask(string threadId) => false;
     }
 
     [Fact]

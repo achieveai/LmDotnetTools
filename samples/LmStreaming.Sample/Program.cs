@@ -3204,6 +3204,10 @@ try
         return pool;
     });
 
+    // #830: unload conversations with no work in hand, so the pool holds the active set rather than
+    // every conversation since start. Settings and the idle rule are on the service.
+    _ = builder.Services.AddHostedService<AgentPoolIdleUnloadService>();
+
     // Workspace plugin-selection migration (prepare-then-replace). Two narrow registrations:
     //
     // 1. The pool is the only component that knows whether a thread has a run in progress, but it is

@@ -495,6 +495,8 @@ public class MultiTurnAgentPoolSandboxRefreshTests
             Published.Add((threadId, binding));
 
         public void ClearEstablishedBinding(string threadId) { }
+
+        public bool HasPendingBackgroundTask(string threadId) => false;
     }
 
     /// <summary>

@@ -134,9 +134,10 @@ public sealed record SandboxEstablishedBinding(
 );
 
 /// <summary>
-/// The seam the agent pool uses to publish/clear a conversation's <see cref="SandboxEstablishedBinding"/>
-/// without holding a reference to the whole registry. Implemented by <see cref="SandboxSessionRegistry"/>.
-/// Both operations are lock-free and safe to call while the pool holds its per-thread lock.
+/// The seam the agent pool uses to publish/clear a conversation's <see cref="SandboxEstablishedBinding"/>,
+/// and to ask about its sandbox work, without holding a reference to the whole registry. Implemented by
+/// <see cref="SandboxSessionRegistry"/>. Every operation is lock-free and safe to call while the pool holds
+/// its per-thread lock.
 /// </summary>
 public interface ISandboxBindingSink
 {
@@ -145,6 +146,12 @@ public interface ISandboxBindingSink
 
     /// <summary>Clears any binding for <paramref name="threadId"/>. Idempotent; never destroys a live session.</summary>
     void ClearEstablishedBinding(string threadId);
+
+    /// <summary>
+    /// Whether <paramref name="threadId"/> started a sandbox background task that has not yet reported its
+    /// end. Its completion notice reaches the conversation only while the conversation is loaded (#830).
+    /// </summary>
+    bool HasPendingBackgroundTask(string threadId);
 }
 
 /// <summary>The outcome of resolving a conversation thread to its sandbox workspace session.</summary>
@@ -2721,6 +2728,11 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             .GetOrAdd(sessionId, _ => new ConcurrentDictionary<string, string>(StringComparer.Ordinal))
             .TryAdd(taskId, threadId);
     }
+
+    /// <inheritdoc />
+    public bool HasPendingBackgroundTask(string threadId) =>
+        !_disposed
+        && _backgroundTaskOwners.Values.Any(owners => owners.Values.Contains(threadId, StringComparer.Ordinal));
 
     /// <summary>
     /// Removes and returns the conversation recorded by <see cref="RecordBackgroundTaskOwner"/> for a task
