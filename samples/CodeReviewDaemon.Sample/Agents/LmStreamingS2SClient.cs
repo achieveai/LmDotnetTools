@@ -870,6 +870,76 @@ internal sealed class LmStreamingS2SClient
     }
 
     /// <summary>
+    /// Reads the host's provider catalog (<c>GET api/providers</c>): provider id to its availability now. Ids
+    /// compare case-insensitively, as the host normalizes them.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, bool>> GetProvidersAsync(CancellationToken ct)
+    {
+        using var document = JsonDocument.Parse(await SendReadAsync(HttpMethod.Get, "api/providers", null, ct));
+        if (
+            !document.RootElement.TryGetProperty("providers", out var providers)
+            || providers.ValueKind != JsonValueKind.Array
+        )
+        {
+            throw new JsonException("The provider catalog has no providers list.");
+        }
+
+        var catalog = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        foreach (var provider in providers.EnumerateArray())
+        {
+            if (provider.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String)
+            {
+                catalog[id.GetString()!] =
+                    !provider.TryGetProperty("available", out var available)
+                    || available.ValueKind != JsonValueKind.False;
+            }
+        }
+
+        return catalog;
+    }
+
+    /// <summary>Whether the host resolves chat mode <paramref name="modeId"/> (<c>GET api/chat-modes/{id}</c>; 404 = no).</summary>
+    public async Task<bool> ModeExistsAsync(string modeId, CancellationToken ct)
+    {
+        using var response = await ExecuteAsync(
+            HttpMethod.Get,
+            $"api/chat-modes/{Uri.EscapeDataString(modeId)}",
+            body: null,
+            ct
+        );
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return false;
+        }
+
+        _ = response.EnsureSuccessStatusCode();
+        return true;
+    }
+
+    /// <summary>
+    /// Reads the conversation-wide usage and cost aggregate (root plus every descendant) via
+    /// <c>GET api/conversations/{threadId}/usage</c>, as the host serialized it. Returns <c>null</c> when the
+    /// host answers 404: it has recorded no usage for the thread, or does not know it. Any other failure throws.
+    /// </summary>
+    public async Task<JsonElement?> GetUsageAsync(string threadId, CancellationToken ct)
+    {
+        using var response = await ExecuteAsync(
+            HttpMethod.Get,
+            $"api/conversations/{Uri.EscapeDataString(threadId)}/usage",
+            body: null,
+            ct
+        );
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
+        _ = response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+        return document.RootElement.Clone();
+    }
+
+    /// <summary>
     /// Reads the versioned recursive descendant graph (schema v1) for <paramref name="rootThreadId"/> via
     /// <c>GET api/conversations/{rootThreadId}/subagents?recursive=true</c>, for the S2S review-completion
     /// source to feed the shared review-completion barrier.

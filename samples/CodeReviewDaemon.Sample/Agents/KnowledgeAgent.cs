@@ -601,7 +601,7 @@ internal sealed class KnowledgeAgent
     }
 
     /// <summary>Merges <paramref name="existing"/> source-PR refs with <paramref name="sourcePrRef"/>, preserving order and de-duplicating.</summary>
-    private static IReadOnlyList<string> MergeSourcePrs(IReadOnlyList<string>? existing, string sourcePrRef)
+    internal static IReadOnlyList<string> MergeSourcePrs(IReadOnlyList<string>? existing, string sourcePrRef)
     {
         List<string> merged = existing is null ? [] : [.. existing];
         if (!merged.Contains(sourcePrRef, StringComparer.Ordinal))
@@ -618,7 +618,7 @@ internal sealed class KnowledgeAgent
     /// because that is the only shape <see cref="KnowledgeIndex.ParseFrontmatter"/> reads back — so the
     /// entry round-trips through the index parser.
     /// </summary>
-    private static string BuildEntry(
+    internal static string BuildEntry(
         string title,
         IReadOnlyList<string> tags,
         string scope,

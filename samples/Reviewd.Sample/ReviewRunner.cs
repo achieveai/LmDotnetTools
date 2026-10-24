@@ -49,6 +49,16 @@ internal static class ReviewRunner
     /// </summary>
     internal sealed class LostInputException(string message) : InvalidOperationException(message);
 
+    /// <summary>
+    ///     The input's run is gone: no host process runs it any more, so nothing will finish it (see
+    ///     <see cref="WaitAsync"/>). <see cref="Status"/> is the input's last status read.
+    /// </summary>
+    internal sealed class OrphanedRunException(S2SStatusResult? status)
+        : InvalidOperationException($"No host process runs this input any more; it still reads {status?.Status}.")
+    {
+        internal S2SStatusResult? Status { get; } = status;
+    }
+
     /// <summary>Exit code of an automatic <c>review run</c> that found no usable slot.</summary>
     internal const int NoSlotExitCode = 3;
 
@@ -1535,7 +1545,12 @@ internal static class ReviewRunner
     /// <remarks>
     ///     Waits until the root run is idle and every descendant has settled (see <see cref="IsSettledNode"/>).
     ///     A descendant never makes the wait throw: only the root input's own status can fail it, including
-    ///     an input that stays NotStarted on an idle, settled conversation for <see cref="NeverStartedGrace"/>.
+    ///     an input that stays NotStarted on an idle, settled conversation for <see cref="NeverStartedGrace"/>. A caller
+    ///     that can recover a run a host restart ended (judge run) passes <paramref name="orphaned"/>: it sees each
+    ///     status and run-state read before the tree (which can stay busy), and true ends the wait with
+    ///     <see cref="OrphanedRunException"/>. Such a caller also takes Interrupted as not final: the first send after a
+    ///     restart can read it for a moment, and the caller's check decides when the run is gone. A busy tree read
+    ///     waits through <paramref name="busyDelay"/> when given, so a caller can tell a busy read from a full poll.
     /// </remarks>
     internal static async Task<S2SStatusResult?> WaitAsync(
         LmStreamingS2SClient client,
@@ -1543,7 +1558,9 @@ internal static class ReviewRunner
         string? input,
         Func<CancellationToken, Task> delay,
         CancellationToken ct,
-        Func<DateTimeOffset>? clock = null
+        Func<DateTimeOffset>? clock = null,
+        Func<S2SStatusResult?, S2SRunState, bool>? orphaned = null,
+        Func<CancellationToken, Task>? busyDelay = null
     )
     {
         clock ??= () => DateTimeOffset.UtcNow;
@@ -1554,6 +1571,8 @@ internal static class ReviewRunner
         {
             var status = input is null ? null : await client.GetStatusByInputIdAsync(thread, input, ct);
             var global = await client.GetRunStateAsync(thread, ct);
+            if (orphaned?.Invoke(status, global) == true)
+                throw new OrphanedRunException(status);
             ReviewSubAgentTreeSnapshot tree;
             try
             {
@@ -1564,13 +1583,14 @@ internal static class ReviewRunner
                 candidate = null;
                 // A busy hierarchy is activity, so the idle stretch before it does not count toward the grace.
                 stalledSince = null;
-                await delay(ct);
+                await (busyDelay ?? delay)(ct);
                 continue;
             }
             busyReads = 0;
             if (
                 status is not null
                 && status.Status.ToLowerInvariant() is not ("completed" or "inprogress" or "notstarted")
+                && !(orphaned is not null && status.Status.Equals("interrupted", StringComparison.OrdinalIgnoreCase))
             )
             {
                 throw new InvalidOperationException($"Review input ended with {status.Status}; not success.");
