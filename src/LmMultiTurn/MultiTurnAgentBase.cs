@@ -723,8 +723,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
     private async Task PersistUsageSnapshotAsync(IConversationStore store, UsageLedger ledger, CancellationToken ct)
     {
-        var records = ledger.SnapshotRecords();
-        var aggregate = ledger.Snapshot(CurrentUsageCompleteness);
+        // One capture: the durable watermark below advances to the aggregate's revision, which is only safe
+        // when the records appended with it cover that revision.
+        var (aggregate, records) = ledger.SnapshotWithRecords(CurrentUsageCompleteness);
         lock (_usageWriterLock)
         {
             if (records.Count == 0 && _aggregateOnlyUsage is { } persisted)

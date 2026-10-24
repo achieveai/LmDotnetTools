@@ -112,7 +112,17 @@ public sealed class UsageLedger : IUsageSink
     ///     Produces the current aggregate snapshot folded over all attempts, stamped with the gap-free
     ///     watermark and the given completeness state.
     /// </summary>
-    public ConversationUsageAggregate Snapshot(UsageCompleteness completeness = UsageCompleteness.InProgress)
+    public ConversationUsageAggregate Snapshot(UsageCompleteness completeness = UsageCompleteness.InProgress) =>
+        SnapshotWithRecords(completeness).Aggregate;
+
+    /// <summary>
+    ///     Captures the deduped canonical records and the aggregate folded from exactly those records in one
+    ///     lock, so a persisted aggregate never claims a revision that the records persisted with it lack.
+    ///     Two separate snapshots let an observation commit between them.
+    /// </summary>
+    public (ConversationUsageAggregate Aggregate, IReadOnlyList<UsageRecord> Records) SnapshotWithRecords(
+        UsageCompleteness completeness = UsageCompleteness.InProgress
+    )
     {
         UsageRecord[] records;
         long prefix;
@@ -124,7 +134,7 @@ public sealed class UsageLedger : IUsageSink
             prefix = _watermark.Prefix;
         }
 
-        return ConversationUsageAggregate.Fold(RootConversationId, records, prefix, completeness);
+        return (ConversationUsageAggregate.Fold(RootConversationId, records, prefix, completeness), records);
     }
 
     /// <summary>
