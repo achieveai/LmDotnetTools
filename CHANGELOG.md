@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **LmMultiTurn: `SqliteConversationStore` schema v7 (#821).** The first call on a v6 database upgrades it, and every call waits until that finishes. The upgrade adds compact listing columns and the `conversation_usage_state` / `conversation_usage_records` tables. It took about 2 minutes for 13.5k conversations and about 23 minutes on a 10x copy. It commits in 100-row batches and resumes after a restart. Older builds refuse a v7 database, so back it up first.
+  - Usage moves out of SQLite `metadata_json`: the `usage.aggregate` / `usage.records` properties are removed there. Read usage through `ConversationUsageProjection.LoadAsync`, `LoadRecordsAsync` or `LoadSnapshotAsync`, not the metadata properties. File and in-memory stores keep usage in metadata.
+  - A thread whose metadata or usage cannot be parsed stops the upgrade with an error that names it, and nothing in its batch is written. There is no quarantine option; restore the backup, or repair that row by hand, then restart.
+  - A usage save takes its records and its aggregate in one snapshot. Before, a sub-agent's final usage that committed between the two could be left out of SQLite for good.
+
 - **LmAgentInfra: `WebhookOptions.RegisterEventWebhook` (default `true`).** When off, `SandboxSessionRegistry` registers neither the unified `webhook` nor the legacy `discovery` block, and `DiscoveryEnabled` reports `false`. A blank `PublicBaseUrl` now also registers neither, instead of sending a relative URL. LmStreaming.Sample's E2E host turns it off. That host is an in-memory `TestServer`, so the gateway could never reach it. It sent the E2E sandboxes' events to whatever else ran on `127.0.0.1:5000`, which answered 404.
 
 - **Sandbox SDK / LmAgentInfra / LmStreaming.Sample synced to gateway `origin/master` `46be47df`**:

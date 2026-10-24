@@ -81,13 +81,36 @@ unscoped `-Priority All` when static impact is insufficient.
 
 ## Case-level migration status
 
-The checked-in manifest classifies **11,247 known .NET method families and atomic script tests**:
-P0 427, P1 8,438, P2 2,224 and P3 158. Each reviewed declaration carries its exact inventory ID and
+The checked-in manifest classifies the current .NET method families and atomic script tests.
+Generate current totals from `./scripts/run-priority-tests.ps1 | ConvertFrom-Json`:
+`declarationSummary` gives the inventory and reviewed counts; group `tests.declarations` by
+`priority` for tier counts. Do not duplicate changing totals in assertions or documentation.
+Each reviewed declaration carries its exact inventory ID and
 path, plus behavioral rationale, evidence, component, uncertainties and prerequisites. .NET method
-families also carry their exact source hash. The 40 atomic script rows explicitly carry a null hash,
+families also carry their exact source hash. Atomic script rows explicitly carry a null hash,
 so script-content drift remains a documented residual. The runner requires a reviewed policy row for every current known declaration, previews per-method
 selections and rejects missing, extra or stale identities. The 40 container/default rows remain for
 surface ownership, whole-suite client policy and conservative handling outside declaration scope.
+
+### Keep independent PR metadata compatible
+
+Insert new declaration rows beside the same test class or nearby test identities instead of
+appending unrelated additions at the end. If that block is changing in pending PRs, use an
+unchanged related row or container owner in the same project as a bounded insertion anchor.
+Preserve existing rows and their order. Avoid a
+whole-manifest reorder while feature PRs are open: it can create conflicts even when each PR
+uses the same final ordering, especially when squash merges do not retain their shared ancestry.
+
+Inventory-to-policy checks reject missing, duplicate, unreviewed and stale declarations. Keep
+these checks and the frozen coverage safeguards; adding a test does not require editing global
+count literals. `sourceHash` still requires review whenever the recorded test method changes.
+
+The frozen measured corpus starts at 9,393 identities. The policy regression names seven reviewed
+old identities retired by #828: six removed host-path helper tests and the replaced cache-timing
+family. Only an identity absent from the actual inventory reduces the expected measured count;
+one still present must retain its measured classification. The replacement cache scenario is
+unmeasured. Any other corpus change still requires explicit review; coverage is never relabeled
+to make a total pass.
 
 **Supported method-subset execution is filtered, and the filter is proven.** For non-overloaded
 families, `FullyQualifiedName=<declaration FQN>` selects every parameter row of exactly one method

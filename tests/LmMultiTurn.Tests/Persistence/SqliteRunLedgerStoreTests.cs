@@ -1,7 +1,6 @@
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using FluentAssertions;
-using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace LmMultiTurn.Tests.Persistence;
@@ -25,7 +24,7 @@ public class SqliteRunLedgerStoreTests : IAsyncLifetime
     {
         await _store.DisposeAsync();
 
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.Clear(_databasePath);
         await Task.Delay(50);
 
         TryDeleteFile(_databasePath);

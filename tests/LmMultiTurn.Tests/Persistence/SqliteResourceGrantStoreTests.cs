@@ -1,7 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using FluentAssertions;
-using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace LmMultiTurn.Tests.Persistence;
@@ -40,7 +39,7 @@ public sealed class SqliteResourceGrantStoreTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
         await _factory.DisposeAsync();
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.Clear(_databasePath);
         await Task.Delay(50);
         foreach (var suffix in new[] { "", "-wal", "-shm" })
         {
