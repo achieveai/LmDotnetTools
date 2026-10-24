@@ -47,6 +47,7 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     private readonly string _conversationDbPath;
     private readonly int? _fixedPort;
     private readonly IMarketplaceCatalogClient? _catalogClient;
+    private readonly ISandboxToolCatalogProbe? _sandboxToolCatalogProbe;
     private readonly HttpMessageHandler? _sandboxGatewayHandler;
     private readonly SandboxGatewayOptions? _sandboxOptions;
     private readonly IReadOnlyList<CopilotModelInfo>? _copilotModels;
@@ -97,6 +98,7 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     /// <param name="httpsCertificate">Dedicated certificate for the opt-in local HTTPS browser scenario.</param>
     /// <param name="localTestSecret">Per-run browser cookie secret; valid only with the HTTPS test host.</param>
     /// <param name="callbackPort">Optional separate loopback HTTP listener for authenticated gateway callbacks in local HTTPS tests.</param>
+    /// <param name="sandboxToolCatalogProbe">Optional per-scenario sandbox discovery stand-in; null keeps the real probe.</param>
     public BrowserWebAppFactory(
         string providerMode,
         ITestAgentBuilder? builder,
@@ -108,7 +110,8 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
         IReadOnlyDictionary<string, string?>? settings = null,
         X509Certificate2? httpsCertificate = null,
         string? localTestSecret = null,
-        int? callbackPort = null
+        int? callbackPort = null,
+        ISandboxToolCatalogProbe? sandboxToolCatalogProbe = null
     )
     {
         if (
@@ -168,6 +171,7 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
         _builder = builder;
         _fixedPort = fixedPort;
         _catalogClient = catalogClient;
+        _sandboxToolCatalogProbe = sandboxToolCatalogProbe;
         _sandboxGatewayHandler = sandboxGatewayHandler;
         _sandboxOptions = sandboxOptions;
         _copilotModels = copilotModels;
@@ -288,6 +292,14 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
                 services.AddSingleton(_catalogClient);
                 services.RemoveAll<WorkspaceCatalogCompatibilityService>();
                 services.AddSingleton<WorkspaceCatalogCompatibilityService>();
+            }
+
+            // Keep ToolCatalog and its controller real; isolate only unrelated external discovery
+            // when a scenario explicitly supplies a typed probe.
+            if (_sandboxToolCatalogProbe is not null)
+            {
+                services.RemoveAll<ISandboxToolCatalogProbe>();
+                services.AddSingleton(_sandboxToolCatalogProbe);
             }
 
             // Swap the discovery-backed ProviderRegistry for one seeded with stub Copilot models and

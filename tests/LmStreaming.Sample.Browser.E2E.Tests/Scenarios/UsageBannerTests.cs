@@ -71,8 +71,10 @@ public sealed class UsageBannerTests
         await session.SaveSuccessScreenshotAsync("UsageBanner.exact_accumulate_reload");
     }
 
-    [Fact]
-    public async Task Sub_agent_usage_folds_into_the_conversation_wide_aggregate()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Sub_agent_usage_folds_into_the_conversation_wide_aggregate(bool deliverInterimSnapshot)
     {
         var responder = ScriptedSseResponder
             .New()
@@ -81,51 +83,114 @@ public sealed class UsageBannerTests
             .Turn(t => t.Text("Parent summary: delegation finished."))
             .Build();
 
+        using var parentHandler = new FinalParentTurnGate(
+            responder.HandlerFor("test-anthropic"),
+            deliverInterimSnapshot
+        );
         await using var session = await _fixture.OpenAsync(
             "test-anthropic",
-            responder.HandlerFor("test-anthropic"),
+            parentHandler,
             subAgentFactory: (loggerFactory, _) => BuildSubAgentOptions(loggerFactory)
         );
         var page = session.Page;
         await page.SelectDeveloperViewAsync();
 
         await page.SendMessageAsync("delegate to the sub-agent");
+        if (deliverInterimSnapshot)
+        {
+            try
+            {
+                // Capture a real durable snapshot after both child calls but before the parent's final call.
+                // Deliver it once after completion to reproduce a read racing the asynchronous usage writer.
+                await parentHandler.FinalTurnEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+                var interimJson = await page.EvaluateAsync<string>(
+                    @"async () => {
+                        const signal = AbortSignal.timeout(30000);
+                        while (!signal.aborted) {
+                            const body = await (await fetch('/api/conversations', { signal })).json();
+                            const list = body.conversations ?? body ?? [];
+                            if (list.length) {
+                                const r = await fetch(`/api/conversations/${list[list.length - 1].threadId}/usage`, { signal });
+                                if (r.ok) {
+                                    const usage = await r.json();
+                                    if (usage.totalTokens === 450) return JSON.stringify(usage);
+                                }
+                            }
+                            await new Promise(requestAnimationFrame);
+                        }
+                        throw new Error('Expected the real interim usage snapshot of 450 tokens');
+                    }"
+                );
+                var interimDelivered = 0;
+                await page.RouteAsync(
+                    "**/api/conversations/*/usage",
+                    async route =>
+                    {
+                        if (
+                            route.Request.Headers.ContainsKey("x-usage-banner-probe")
+                            && Interlocked.Exchange(ref interimDelivered, 1) == 0
+                        )
+                        {
+                            await route.FulfillAsync(
+                                new RouteFulfillOptions
+                                {
+                                    Status = 200,
+                                    ContentType = "application/json",
+                                    Body = interimJson,
+                                }
+                            );
+                        }
+                        else
+                        {
+                            await route.ContinueAsync();
+                        }
+                    }
+                );
+            }
+            finally
+            {
+                parentHandler.ReleaseFinalTurn.TrySetResult();
+            }
+        }
         // The synchronous Agent call blocks until the sub-agent runs its nested chain, so allow extra time.
         await page.WaitForStreamIdleAsync(timeoutMs: 30_000);
 
         // The LIVE banner now reflects the folded conversation-wide total (#196, BUG 1): the sub-agent's
         // relayed usage is broadcast to the parent run's subscribers as a live ConversationUsageMessage
-        // frame, so descendant spend shows live — above the parent's own 300 — not only after a reload.
-        await page.UsageBanner().WaitForTextContainsAsync("Total:");
+        // frame. Two parent calls plus two child calls, each 100 input / 50 output, total exactly 600.
+        await page.UsageBanner().WaitForTextContainsAsync("Total: 600");
         var liveTotal = ParseTotal(await page.UsageBanner().InnerTextAsync());
-        liveTotal.Should().BeGreaterThan(300, "the sub-agent's usage folds into the LIVE banner via the usage frame");
+        liveTotal.Should().Be(600, "all four provider calls fold into the LIVE banner via the usage frame");
 
-        // Server-side ground truth: the persisted aggregate exceeds the parent-only 300 because the
-        // sub-agent's generations were folded into the root conversation's total (#196 "incl. sub-agents").
-        // Read the thread id from the conversations API (robust to sidebar rendering), then its usage.
+        // UI idle is not a durability boundary: the serialized usage writer can still expose the 450
+        // snapshot preceding the parent's final call. Wait for the exact complete fixture, not merely
+        // any descendant contribution (>300), before using the persisted aggregate as reload ground truth.
         var aggregateTotal = await page.EvaluateAsync<long>(
             @"async () => {
-                const lr = await fetch('/api/conversations');
-                const body = await lr.json();
-                const list = body.conversations ?? body ?? [];
-                if (!list.length) return -2;
-                const id = list[list.length - 1].threadId;
-                const r = await fetch(`/api/conversations/${id}/usage`);
-                if (!r.ok) return -1;
-                return (await r.json()).totalTokens;
+                const signal = AbortSignal.timeout(30000);
+                while (!signal.aborted) {
+                    const lr = await fetch('/api/conversations', { signal });
+                    const body = await lr.json();
+                    const list = body.conversations ?? body ?? [];
+                    if (list.length) {
+                        const id = list[list.length - 1].threadId;
+                        const r = await fetch(`/api/conversations/${id}/usage`, { signal, headers: { 'X-Usage-Banner-Probe': 'true' } });
+                        if (r.ok) {
+                            const total = (await r.json()).totalTokens;
+                            if (total === 600) return total;
+                        }
+                    }
+                    await new Promise(requestAnimationFrame);
+                }
+                throw new Error('Expected all four provider calls to persist 600 tokens');
             }"
         );
-        aggregateTotal
-            .Should()
-            .BeGreaterThan(
-                300,
-                "the sub-agent's relayed usage must fold into the conversation-wide aggregate, above the parent's own 300"
-            );
+        aggregateTotal.Should().Be(600, "both parent and both child calls must be durable before reload");
 
         // On reopen the banner is restored from that aggregate, so it now includes the descendant's tokens.
         await page.ReloadAsync();
         await page.Textarea().WaitForAsync();
-        await page.UsageBanner().WaitForTextContainsAsync("Total:");
+        await page.UsageBanner().WaitForTextContainsAsync("Total: 600");
         var reloadedTotal = ParseTotal(await page.UsageBanner().InnerTextAsync());
         reloadedTotal.Should().Be((int)aggregateTotal, "reopen renders the same persisted aggregate total");
 
@@ -137,6 +202,29 @@ public sealed class UsageBannerTests
     {
         var match = Regex.Match(bannerText, @"Total:\s*(\d+)");
         return match.Success ? int.Parse(match.Groups[1].Value) : -1;
+    }
+
+    private sealed class FinalParentTurnGate(HttpMessageHandler inner, bool enabled) : DelegatingHandler(inner)
+    {
+        private int _requests;
+        public TaskCompletionSource FinalTurnEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseFinalTurn { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            if (enabled && Interlocked.Increment(ref _requests) == 2)
+            {
+                FinalTurnEntered.TrySetResult();
+                await ReleaseFinalTurn.Task.WaitAsync(ct);
+            }
+            return await base.SendAsync(request, ct);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            ReleaseFinalTurn.TrySetResult();
+            base.Dispose(disposing);
+        }
     }
 
     private static SubAgentOptions BuildSubAgentOptions(ILoggerFactory loggerFactory)

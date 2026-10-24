@@ -23,13 +23,13 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
-    public Task DisposeAsync()
+    public async Task DisposeAsync()
     {
         SqliteTestPools.Clear(_databasePath);
+        await Task.Delay(50);
         TryDelete(_databasePath);
         TryDelete(_databasePath + "-wal");
         TryDelete(_databasePath + "-shm");
-        return Task.CompletedTask;
     }
 
     private static void TryDelete(string path)
@@ -43,7 +43,7 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         }
         catch (IOException)
         {
-            // A connection a failed test never disposed can hold the file; a leaked temp file is not a failure.
+            // The pool can still hold the handle briefly; a leaked temp file is not a test failure.
         }
     }
 

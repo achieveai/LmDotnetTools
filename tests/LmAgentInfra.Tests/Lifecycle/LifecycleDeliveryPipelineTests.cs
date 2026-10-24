@@ -416,9 +416,7 @@ public sealed class LifecycleDeliveryPipelineTests
         harness.Options.AllowedCallbackHosts = [];
         await harness.Pipeline.PublishAsync(Event(1));
         await harness.Pipeline.PublishAsync(Event(2));
-        // Barrier on both refusals ITSELF. WaitForResolutionsAsync(3) proves only that the pump began
-        // dispatching event 2, and the allow-list is checked after that: widening it in the gap let event 2
-        // through under CI load, and sequences read 1,3,4.
+        // Resolution starts before re-authorization; wait until both refusals are observable.
         await harness.WaitForDropsAsync(2);
 
         // Widened again, to prove the refusal was a refusal and not a quarantine: nothing has to
