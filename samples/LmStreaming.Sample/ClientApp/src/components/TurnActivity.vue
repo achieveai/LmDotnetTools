@@ -4,7 +4,9 @@ import type { DisplayItem, ToolCall } from '@/types';
 import { isToolsCallMessage } from '@/types';
 import { deriveToolPillState } from '@/utils/toolPillState';
 import { describeRunningTool, summarizeToolCall } from '@/utils/toolActivity';
+import { unwrapToolCall } from '@/utils/toolName';
 import { useToolResult } from '@/composables/useToolResult';
+import { contextDiscoveryHeading } from '@/composables/messageDisplay';
 import { isQuestionAwaitingAnswer } from '@/utils/pendingQuestions';
 import MetadataPill from './MetadataPill.vue';
 import NotificationPill from './NotificationPill.vue';
@@ -19,10 +21,15 @@ const expanded = ref(false);
 const detailsId = `turn-activity-${useId()}`;
 const { getResult, isQuestionAnswered } = useToolResult();
 
+// Each call as its pill shows it: an ExecuteTool wrapper reads as the tool it ran (unwrapToolCall).
 const toolCalls = computed<ToolCall[]>(() =>
   props.items.flatMap((item) =>
     item.type === 'pill'
-      ? item.items.flatMap((message) => (isToolsCallMessage(message) ? message.tool_calls : []))
+      ? item.items.flatMap((message) =>
+          isToolsCallMessage(message)
+            ? message.tool_calls.map((call) => unwrapToolCall(call, getResult(call)).call)
+            : []
+        )
       : []
   )
 );
@@ -84,7 +91,7 @@ const summary = computed(() => {
       case 'compaction':
         return 'Context compacted';
       case 'context-discovery':
-        return 'Context loaded';
+        return contextDiscoveryHeading(notification.notification.label);
       case 'todo-digest':
         return 'Work updated';
       case 'todo-nudge':

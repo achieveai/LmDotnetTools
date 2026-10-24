@@ -25,7 +25,7 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.Clear(_databasePath);
         await Task.Delay(50);
         TryDelete(_databasePath);
         TryDelete(_databasePath + "-wal");
@@ -54,6 +54,7 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
             {
                 DataSource = _databasePath,
                 Mode = SqliteOpenMode.ReadWriteCreate,
+                Pooling = false,
             }.ToString()
         );
         await connection.OpenAsync();
@@ -529,7 +530,7 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
+            SqliteTestPools.Clear(uninterruptedPath);
             TryDelete(uninterruptedPath);
             TryDelete(uninterruptedPath + "-wal");
             TryDelete(uninterruptedPath + "-shm");
@@ -861,7 +862,7 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
 
     private static async Task<IReadOnlyList<string>> ReadCanonicalUsageRowsAsync(string databasePath)
     {
-        await using var connection = new SqliteConnection($"Data Source={databasePath}");
+        await using var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False");
         await connection.OpenAsync();
         using var command = connection.CreateCommand();
         command.CommandText = """

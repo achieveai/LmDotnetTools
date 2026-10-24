@@ -6,7 +6,7 @@ using Xunit;
 namespace AchieveAi.LmDotnetTools.Sandbox.Tests;
 
 /// <summary>
-/// Per-app git marketplaces (gateway api/app_marketplaces.rs, ADR 0041): the routes, the row contract, and how
+/// Per-app git marketplaces (gateway api/app_marketplaces.rs, ADR 0045): the routes, the row contract, and how
 /// the gateway's error codes classify. Error bodies mirror the gateway's <c>{error, code, error_code}</c> shape.
 /// </summary>
 public sealed class SandboxClientAppMarketplaceTests

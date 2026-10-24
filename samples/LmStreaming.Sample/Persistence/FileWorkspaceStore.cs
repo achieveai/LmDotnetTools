@@ -182,6 +182,7 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
                         StringComparer.Ordinal
                     )
                     : existing.Env,
+                Tiers = dto.Tiers.IsSet ? dto.Tiers.Value : existing.Tiers,
                 UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             };
 

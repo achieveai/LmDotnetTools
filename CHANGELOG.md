@@ -218,6 +218,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+- **Run end and host logging fixes**:
+  - LmMultiTurn: a run is no longer in progress when `RunCompletedMessage` is published. A subscriber that switches mode or calls `Reconfigure` on completion was refused as busy; the sample's `POST /mode` answered `409 mode_switch_while_streaming`.
+  - LmStreaming.Sample: the entry point disposes only the logger it installed instead of calling `Log.CloseAndFlush()`. A process that runs several hosts in turn (a test `WebApplicationFactory` per class) no longer silences the next host's logs.
+
+- **Deferred tools, plugin MCP servers and validator error text** — public changes a consumer must know about:
+  - LmCore: new `IDeferredToolProvider` and `ToolCallUnwrap` (`AchieveAi.LmDotnetTools.LmCore.Middleware`). `FunctionRegistry.BuildContracts()` leaves out every contract that a registered `IDeferredToolProvider` does not advertise; `Build()` still returns every handler. `MultiTurnAgentLoop` asks `TryUnwrap` about each tool call before handler lookup and approval, so the target, not the wrapper, is approved, run and reported. With no such provider registered, nothing changes.
+  - LmCore: `JsonSchemaValidator.ValidateDetailed` reports one line per error anywhere in the result, `"<instance location>: <message>"` (`/` for the root), instead of each top-level detail's `error` text or `Validation failed at '<location>'`. A valid result has no errors. Code that matches the old text must change.
+  - OpenAIProvider: an object parameter keeps its own `additionalProperties` in the chat-completions tool schema. It was always sent as `false`, so an open object told the model to send `{}`. This applies to every request with an object parameter.
+  - Sandbox SDK: new `SandboxClient.GetMcpServersAsync(sessionId)` lists the MCP servers a session's plugins declare (`GET /api/v1/sandboxes/{id}/mcp-servers`). It needs gateway v0.1.18 or later; an older gateway answers `NotFound`. See the Sandbox README.
+
 ## [1.0.33] - 2026-05-23
 
 ### Added

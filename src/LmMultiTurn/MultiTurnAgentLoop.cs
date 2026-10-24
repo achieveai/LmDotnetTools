@@ -67,6 +67,10 @@ public sealed class MultiTurnAgentLoop
     private IStreamingAgent _agent;
     private IDictionary<string, ToolHandler> _toolHandlers;
 
+    // The registry's deferred-tool providers (usually none). Each is asked about every tool call before
+    // handler lookup and approval (UnwrapToolCall); replaced with the stack, like the handlers.
+    private IReadOnlyList<IDeferredToolProvider> _deferredTools;
+
     // Image evidence is available during its run, including provider retries. History and
     // persistence keep text only. Bound the run-local cache across parallel tool completions.
     private readonly object _toolImagesLock = new();
@@ -252,6 +256,10 @@ public sealed class MultiTurnAgentLoop
     /// <summary>Estimated tokens of the tool definitions every request carries (compaction's fixed prefix).</summary>
     internal long ToolSchemaTokens { get; private set; }
 
+    // The contracts the current registry gives a request (rebuilt per request by the tool middleware), kept so a
+    // checkpoint hook that changed a tool can have ToolSchemaTokens re-estimated. Replaced with the stack.
+    private Func<IEnumerable<FunctionContract>> _toolContracts = () => [];
+
     internal bool HasPendingLoopWork => PendingInputCount > 0 || !_delayed.IsEmpty || _delayed.HasPendingCauses;
 
     // Guards _wakeScheduled so at most one wake sentinel is ever outstanding on the input channel.
@@ -282,6 +290,14 @@ public sealed class MultiTurnAgentLoop
     private readonly List<string> _foldedReceiptIds = [];
 
     private const string SpawnSuppressedRunIdProperty = "spawn_suppressed_run_id";
+
+    // The error code a tool call gets back when a deferred-tool provider threw while unwrapping it.
+    private const string UnwrapFailedCode = "unwrap_failed";
+
+    // A tiered host's tool search (LmAgentInfra's CapabilityTiers.SearchToolToolName, which this project cannot
+    // reference). When the model has it, an unknown-function error says hidden tools can be found with it.
+    private const string SearchToolName = "SearchTool";
+    private const string UnlistedToolsHint = "Not every tool is listed here: find one with SearchTool.";
 
     // Automatic stream recovery is budgeted per LOGICAL INPUT, but a logical input does not always
     // fit inside one run: a turn that parks on a deferred tool call resumes in a CHILD run, and a
@@ -619,6 +635,8 @@ public sealed class MultiTurnAgentLoop
                     PublishLive = PublishToAllAsync,
                     RecordSummaryUsage = RecordCompactionUsage,
                     ToolSchemaTokens = () => ToolSchemaTokens,
+                    RefreshToolSchemaTokens = () =>
+                        ToolSchemaTokens = CompactionTokenEstimate.EstimateToolSchemas(_toolContracts()),
                     Lifecycle = Lifecycle,
                     Logger = Logger,
                 },
@@ -747,6 +765,8 @@ public sealed class MultiTurnAgentLoop
         _toolHandlers = stack.ToolHandlers;
         _functionsRequiringArgs = stack.FunctionsRequiringArgs;
         ToolSchemaTokens = stack.ToolSchemaTokens;
+        _toolContracts = stack.ToolContracts;
+        _deferredTools = stack.DeferredTools;
     }
 
     /// <summary>The provider-dependent parts a loop serves a turn with, built from one registry and one provider.</summary>
@@ -754,7 +774,9 @@ public sealed class MultiTurnAgentLoop
         IStreamingAgent Agent,
         IDictionary<string, ToolHandler> ToolHandlers,
         HashSet<string> FunctionsRequiringArgs,
-        long ToolSchemaTokens
+        long ToolSchemaTokens,
+        Func<IEnumerable<FunctionContract>> ToolContracts,
+        IReadOnlyList<IDeferredToolProvider> DeferredTools
     );
 
     /// <summary>
@@ -804,7 +826,11 @@ public sealed class MultiTurnAgentLoop
             agent,
             finalHandlers,
             functionsRequiringArgs,
-            CompactionTokenEstimate.EstimateToolSchemas(registeredContracts)
+            // The advertised set, which is what a request carries: a contract a deferred-tool provider hides
+            // keeps its handler above but costs the request nothing. With no such provider this is Build()'s set.
+            CompactionTokenEstimate.EstimateToolSchemas(functionRegistry.BuildContracts()),
+            functionRegistry.BuildContracts,
+            [.. functionRegistry.GetProviders().OfType<IDeferredToolProvider>()]
         );
     }
 
@@ -1023,6 +1049,8 @@ public sealed class MultiTurnAgentLoop
         _toolHandlers = stack.ToolHandlers;
         _functionsRequiringArgs = stack.FunctionsRequiringArgs;
         ToolSchemaTokens = stack.ToolSchemaTokens;
+        _toolContracts = stack.ToolContracts;
+        _deferredTools = stack.DeferredTools;
         SubAgentTools = subAgentTools;
 
         // Ownership moves with the commit, and only with it: a refusal or a build failure above never
@@ -3050,6 +3078,8 @@ public sealed class MultiTurnAgentLoop
     /// as each tool completes, rather than waiting for all tools to finish.
     /// For deferred handlers, the placeholder is registered with <see cref="_delayed"/>
     /// before publishing so a racing <see cref="ResolveToolCallAsync"/> always finds it.
+    /// A call a deferred-tool provider unwraps is executed, approved and reported as its target from
+    /// here on (see <see cref="UnwrapToolCall"/>).
     /// </summary>
     private async Task<ToolCallResultMessage> ExecuteAndPublishToolCallAsync(
         ToolCallMessage toolCall,
@@ -3059,7 +3089,8 @@ public sealed class MultiTurnAgentLoop
     )
     {
         var startedAt = Stopwatch.GetTimestamp();
-        var result = await ExecuteToolCallAsync(toolCall, runId, generationId, ct);
+        (toolCall, var answered) = UnwrapToolCall(toolCall, ct);
+        var result = answered ?? await ExecuteToolCallAsync(toolCall, runId, generationId, ct);
         var elapsed = Stopwatch.GetElapsedTime(startedAt);
 
         // Stamp ordering onto the result so the client merge/order logic (keyed partly on
@@ -3154,6 +3185,84 @@ public sealed class MultiTurnAgentLoop
         );
 
         return result;
+    }
+
+    /// <summary>
+    /// Gives each deferred-tool provider the chance to turn <paramref name="toolCall"/> into a call of another
+    /// registered tool, BEFORE handler lookup and approval, so everything downstream (handler, approval,
+    /// argument guard, result, lifecycle, deferred entry) sees the real tool under the same ToolCallId.
+    /// </summary>
+    /// <remarks>
+    /// The model's own call is already in history and stays as it was sent. A refusal, or a provider that
+    /// throws, answers the call with an error result for the wrapper itself: nothing is looked up, approved
+    /// or run, the same as for an unknown function. With no deferred provider this returns the call as is.
+    /// </remarks>
+    /// <returns>The call to execute, and the result to use instead of executing it, if any.</returns>
+    private (ToolCallMessage Call, ToolCallResultMessage? Answered) UnwrapToolCall(
+        ToolCallMessage toolCall,
+        CancellationToken ct
+    )
+    {
+        var wrapperName = toolCall.FunctionName ?? string.Empty;
+        foreach (var deferred in _deferredTools)
+        {
+            ToolCallUnwrap? unwrap;
+            try
+            {
+                unwrap = deferred.TryUnwrap(wrapperName, toolCall.FunctionArgs ?? "{}");
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Same shape as a handler that throws: the model sees why its call did not run, and the run
+                // goes on. Nothing was looked up or approved.
+                Logger.LogWarning(
+                    ex,
+                    "{WrapperName} unwrap failed for {ToolCallId}; returning an error without running anything",
+                    wrapperName,
+                    toolCall.ToolCallId
+                );
+                return (
+                    toolCall,
+                    BuildErrorResultMessage(
+                        toolCall,
+                        JsonSerializer.Serialize(new { error = ex.Message }),
+                        UnwrapFailedCode
+                    )
+                );
+            }
+
+            if (unwrap is null)
+            {
+                continue;
+            }
+
+            if (unwrap.IsRefusal)
+            {
+                Logger.LogWarning(
+                    "{WrapperName} refused {ToolCallId} before approval: {ErrorCode} on thread {ThreadId}",
+                    wrapperName,
+                    toolCall.ToolCallId,
+                    unwrap.ErrorCode,
+                    ThreadId
+                );
+                return (toolCall, BuildErrorResultMessage(toolCall, unwrap.ErrorJson, unwrap.ErrorCode));
+            }
+
+            Logger.LogInformation(
+                "{WrapperName} unwrapped {ToolCallId} {ToolName} on thread {ThreadId}",
+                wrapperName,
+                toolCall.ToolCallId,
+                unwrap.FunctionName,
+                ThreadId
+            );
+            return (toolCall with { FunctionName = unwrap.FunctionName, FunctionArgs = unwrap.ArgumentsJson }, null);
+        }
+
+        return (toolCall, null);
     }
 
     private void RememberToolImages(ToolCallResultMessage result, string runId)
@@ -3362,7 +3471,7 @@ public sealed class MultiTurnAgentLoop
                             {
                                 error = withdrawnText,
                                 code = withdrawnCode,
-                                available_functions = _toolHandlers.Keys.ToArray(),
+                                available_functions = AdvertisedFunctionNames(),
                             }
                         ),
                         withdrawnCode
@@ -3378,15 +3487,25 @@ public sealed class MultiTurnAgentLoop
                     string.Join(", ", _toolHandlers.Keys)
                 );
 
+                var available = AdvertisedFunctionNames();
                 return BuildErrorResultMessage(
                     toolCall,
-                    JsonSerializer.Serialize(
-                        new
-                        {
-                            error = $"Unknown function: {toolCall.FunctionName}",
-                            available_functions = _toolHandlers.Keys.ToArray(),
-                        }
-                    )
+                    available.Contains(SearchToolName, StringComparer.Ordinal)
+                        ? JsonSerializer.Serialize(
+                            new
+                            {
+                                error = $"Unknown function: {toolCall.FunctionName}",
+                                available_functions = available,
+                                hint = UnlistedToolsHint,
+                            }
+                        )
+                        : JsonSerializer.Serialize(
+                            new
+                            {
+                                error = $"Unknown function: {toolCall.FunctionName}",
+                                available_functions = available,
+                            }
+                        )
                 );
             }
 
@@ -3522,6 +3641,12 @@ public sealed class MultiTurnAgentLoop
             generationId: toolCall.GenerationId
         );
     }
+
+    /// <summary>
+    /// The tool names the model is sent, for an error that lists what it may call. Not the handler keys: a tool a
+    /// deferred-tool provider hides still has a handler, and an error must not advertise it.
+    /// </summary>
+    private string[] AdvertisedFunctionNames() => [.. _toolContracts().Select(c => c.Name)];
 
     /// <summary>
     /// Builds the error result the model gets back for a call that never ran (unknown function,

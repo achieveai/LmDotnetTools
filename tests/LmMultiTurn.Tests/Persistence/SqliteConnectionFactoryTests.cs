@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Xunit;
@@ -33,7 +34,7 @@ public class SqliteConnectionFactoryTests : IDisposable
 
     public void Dispose()
     {
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.ClearDirectory(_root);
         try
         {
             Directory.Delete(_root, recursive: true);
@@ -58,11 +59,11 @@ public class SqliteConnectionFactoryTests : IDisposable
         // the operation publish-launch.ps1's atomic swap performs over a deployed notify-waits.db,
         // and it is the operation that actually failed in CI.
         //
-        // The factory sets Pooling = true, so ClearAllPools() below is REQUIRED even when disposal
+        // The factory sets Pooling = true, so clearing this database's pool below is REQUIRED even when disposal
         // is correct -- a pooled connection's native handle deliberately outlives Dispose. That does
         // not make this test vacuous, because the bug bypassed the pool entirely: base.Dispose was
         // never invoked, so the connection was never closed OR returned, and no amount of
-        // pool-clearing reaches a handle the pool does not know it owns. ClearAllPools is therefore
+        // pool-clearing reaches a handle the pool does not know it owns. Clearing its pool is therefore
         // the precise dividing line: it releases a correctly-disposed connection and cannot release
         // a leaked one.
         var dbDirectory = Path.Combine(_root, "data");
@@ -79,7 +80,7 @@ public class SqliteConnectionFactoryTests : IDisposable
             _ = await command.ExecuteNonQueryAsync();
         }
 
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.Clear(databasePath);
 
         var renamed = Path.Combine(_root, "data-renamed");
         var rename = () => MoveDirectoryAllowingTransientScannerHold(dbDirectory, renamed);
@@ -87,7 +88,7 @@ public class SqliteConnectionFactoryTests : IDisposable
         rename
             .Should()
             .NotThrow(
-                "disposing the connection must actually close it and return it to the pool -- only then can ClearAllPools release the file and let its directory be renamed"
+                "disposing the connection must actually close it and return it to the pool -- only then can clearing its pool release the file and let its directory be renamed"
             );
         File.Exists(Path.Combine(renamed, "notify-waits.db")).Should().BeTrue();
 
@@ -215,5 +216,84 @@ public class SqliteConnectionFactoryTests : IDisposable
             .ThrowAsync<OperationCanceledException>(
                 "the cap must still be enforced -- a permit released twice would silently raise the real concurrency limit above maxConnections"
             );
+    }
+
+    [WindowsOnlyFact("only Windows refuses to rename a directory while a file inside it is open")]
+    public async Task ClearPool_ReleasesOnlyItsOwnFile_AndLeavesAnotherDatabasesIdleHandle()
+    {
+        // ClearPool exists so a caller can release ITS file without SqliteConnection.ClearAllPools,
+        // which is process-wide and can dispose another database's connection while it is opening.
+        // So clearing one file must leave another file's idle pooled handle exactly where it was: that
+        // file stays held, and its directory still cannot be renamed.
+        var cleared = await CreateDatabaseWithIdlePooledHandleAsync("cleared");
+        var kept = await CreateDatabaseWithIdlePooledHandleAsync("kept");
+
+        SqliteConnectionFactory.ClearPool(cleared.DatabasePath);
+
+        // Only the rename that must succeed retries past a scanner's transient hold; the kept file's hold is permanent,
+        // so a bare move is the one that must throw.
+        var renameCleared = () =>
+            MoveDirectoryAllowingTransientScannerHold(cleared.Directory, cleared.Directory + "-renamed");
+        var renameKept = () => Directory.Move(kept.Directory, kept.Directory + "-renamed");
+        renameCleared.Should().NotThrow("ClearPool released the idle handle of the file it was given");
+        renameKept
+            .Should()
+            .Throw<IOException>(
+                "another database's pool is not ClearPool's to clear, so its idle handle still holds that file"
+            );
+    }
+
+    [Fact]
+    public async Task OpensAndClears_WaitForThePoolGate()
+    {
+        // Microsoft.Data.Sqlite can hand one pooled native handle to two connections when an open on an empty
+        // pool, or a clear, runs while another open is between taking the handle and recording its owner. The
+        // factory closes that window by taking SqliteConnectionFactory.PoolGate around both, so this pins that an
+        // open and a clear each wait while the gate is held, and finish once it is free.
+        var databasePath = Path.Combine(_root, "gate.db");
+        await using var factory = new SqliteConnectionFactory(databasePath);
+
+        Task<SqliteConnection> open;
+        Task clear;
+        bool openWaited;
+        bool clearWaited;
+        lock (SqliteConnectionFactory.PoolGate)
+        {
+            open = Task.Run(() => factory.GetConnectionAsync());
+            clear = Task.Run(() => SqliteConnectionFactory.ClearPool(databasePath));
+
+            // Long enough for both to finish when nothing holds them back.
+            Thread.Sleep(200);
+            openWaited = !open.IsCompleted;
+            clearWaited = !clear.IsCompleted;
+        }
+
+        // Released before asserting: an open that got through would otherwise keep its permit, and the factory's
+        // disposal would wait for it forever instead of letting the test fail.
+        await using var connection = await open;
+        await clear;
+
+        openWaited.Should().BeTrue("an open has to wait for the pool gate");
+        clearWaited.Should().BeTrue("a pool clear has to wait for the pool gate");
+        connection.State.Should().Be(System.Data.ConnectionState.Open);
+    }
+
+    /// <summary>
+    /// Opens a database in its own directory through a factory and disposes both, which leaves the
+    /// connection's native handle idle in the pool, holding the file.
+    /// </summary>
+    private async Task<(string Directory, string DatabasePath)> CreateDatabaseWithIdlePooledHandleAsync(string name)
+    {
+        var directory = Directory.CreateDirectory(Path.Combine(_root, name)).FullName;
+        var databasePath = Path.Combine(directory, name + ".db");
+        await using (var factory = new SqliteConnectionFactory(databasePath))
+        {
+            await using var connection = await factory.GetConnectionAsync();
+            using var command = connection.CreateCommand();
+            command.CommandText = "CREATE TABLE probe (id INTEGER PRIMARY KEY);";
+            _ = await command.ExecuteNonQueryAsync();
+        }
+
+        return (directory, databasePath);
     }
 }

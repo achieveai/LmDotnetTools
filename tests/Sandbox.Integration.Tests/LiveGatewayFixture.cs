@@ -35,11 +35,18 @@ public sealed class LiveGatewayFixture : IAsyncLifetime
     /// <summary>The authenticated app id in play, echoed back by the gateway on create responses.</summary>
     public string AppId { get; private set; } = string.Empty;
 
+    /// <summary>
+    /// True when <c>SANDBOX_CONTRACT_REQUIRED</c> is set: a test whose precondition the live gateway cannot meet
+    /// must then fail, never skip, exactly like a missing gateway.
+    /// </summary>
+    public bool ContractRequired { get; private set; }
+
     private SandboxClient? _ownedClient;
 
     public async Task InitializeAsync()
     {
         var required = IsTruthy(Environment.GetEnvironmentVariable("SANDBOX_CONTRACT_REQUIRED"));
+        ContractRequired = required;
         var baseUrl = Trimmed(Environment.GetEnvironmentVariable("SANDBOX_BASE_URL"));
         var appId = Trimmed(Environment.GetEnvironmentVariable("SANDBOX_APP_ID"));
         var appKey = Trimmed(Environment.GetEnvironmentVariable("SANDBOX_APP_KEY"));

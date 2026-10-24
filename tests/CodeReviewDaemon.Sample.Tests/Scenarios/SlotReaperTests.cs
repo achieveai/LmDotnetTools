@@ -914,14 +914,23 @@ public sealed class SlotReaperTests
             var reads = 0;
             var checks = 0;
             var killed = false;
+            // Released after each agent read and each stop check, so the step waits on what the renewals did. A
+            // wall-clock poll starved on a loaded run together with the renewals it waited for.
+            using var progressed = new SemaphoreSlim(0);
             Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token) =>
                 phase switch
                 {
                     "step-activity" => Task.FromResult(new JsonObject()),
                     "step-stop" when agents == "hung" => HangAsync(token),
-                    "step-stop" => Task.FromResult(new JsonObject { ["stopped"] = killed = ++checks >= 3 && stale }),
+                    "step-stop" => Task.FromResult(new JsonObject { ["stopped"] = Check() }),
                     _ => StepAsync(),
                 };
+            bool Check()
+            {
+                killed = ++checks >= 3 && stale;
+                _ = progressed.Release();
+                return killed;
+            }
             async Task<JsonObject> HangAsync(CancellationToken token)
             {
                 checks++;
@@ -930,23 +939,26 @@ public sealed class SlotReaperTests
             }
             async Task<JsonObject> StepAsync()
             {
-                for (var deadline = DateTime.UtcNow.AddSeconds(10); DateTime.UtcNow < deadline; await Task.Delay(10))
+                while (true)
                 {
                     if (killed)
                         throw new ReviewRunner.SettledSandboxException("verify", "Sandbox verify failed (exit -9).");
                     if (reads >= 6)
                         return new JsonObject { ["ok"] = true };
+                    // Only a hang backstop: renewals stuck on a step-stop that never gives up make no further read.
+                    if (!await progressed.WaitAsync(TimeSpan.FromSeconds(30)))
+                        throw new TimeoutException("The step never ended.");
                 }
-                throw new TimeoutException("The step never ended.");
             }
             var step = () =>
                 ReviewRunner.RunLeasedStepAsync(
                     connection,
                     ownerKey,
                     owner["claimToken"]!.GetValue<string>(),
-                    _ =>
+                    cancellationToken =>
                     {
                         reads++;
+                        _ = progressed.Release();
                         return agents == "unknown"
                             ? throw new HttpRequestException("host unreachable")
                             : Task.FromResult(agents == "active");
@@ -961,7 +973,7 @@ public sealed class SlotReaperTests
             if (agents == "quiet" && stale)
                 await step.Should().ThrowAsync<ReviewRunner.SettledSandboxException>();
             else
-                (await step.Should().CompleteWithinAsync(TimeSpan.FromSeconds(5))).Subject["ok"]!
+                (await step.Should().CompleteWithinAsync(TimeSpan.FromSeconds(60))).Subject["ok"]!
                     .GetValue<bool>()
                     .Should()
                     .BeTrue();

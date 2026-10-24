@@ -1201,36 +1201,39 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                 latestRun = _latestRunId;
             }
 
-            // Load existing metadata to preserve Properties, SessionMappings and ownership
-            var existing = await Store.LoadMetadataAsync(ThreadId, ct);
+            // Atomic, so Properties, SessionMappings and ownership are carried from the row as it is
+            // at write time. A separate load then save drops whatever another writer (usage, the
+            // capability tier view, the todo board) set in between, and this runs after every run.
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            await Store.UpdateMetadataAsync(
+                ThreadId,
+                existing => new ThreadMetadata
+                {
+                    ThreadId = ThreadId,
+                    CurrentRunId = null, // Only save when run is complete
+                    LatestRunId = latestRun,
+                    LastUpdated = now,
+                    Properties = existing?.Properties,
+                    SessionMappings = existing?.SessionMappings,
 
-            var metadata = new ThreadMetadata
-            {
-                ThreadId = ThreadId,
-                CurrentRunId = null, // Only save when run is complete
-                LatestRunId = latestRun,
-                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                Properties = existing?.Properties,
-                SessionMappings = existing?.SessionMappings,
-
-                // Ownership is CARRIED, never recomputed. This method rebuilds the record from
-                // scratch, and SaveMetadataAsync upserts all four owner columns unconditionally,
-                // so a field omitted here is a field written back as NULL. Because this runs after
-                // every completed run, omitting them un-stamped the conversation on its very first
-                // turn - and under Identity:Enforce a null tenant reads as "no such conversation",
-                // so the owner lost their own conversation the moment they used it.
-                //
-                // Recomputing is not an option at this layer even if it were desirable: an agent
-                // run is a background task that outlives the HTTP request, so there is no principal
-                // here to recompute from. Carrying what creation already established is the only
-                // correct behaviour.
-                TenantId = existing?.TenantId,
-                OwnerUserId = existing?.OwnerUserId,
-                OwnerAppId = existing?.OwnerAppId,
-                Visibility = existing?.Visibility,
-            };
-
-            await Store.SaveMetadataAsync(ThreadId, metadata, ct);
+                    // Ownership is CARRIED, never recomputed. This method rebuilds the record from
+                    // scratch, and the store upserts all four owner columns unconditionally, so a
+                    // field omitted here is a field written back as NULL. Because this runs after
+                    // every completed run, omitting them un-stamped the conversation on its very
+                    // first turn - and under Identity:Enforce a null tenant reads as "no such
+                    // conversation", so the owner lost their own conversation the moment they used it.
+                    //
+                    // Recomputing is not an option at this layer even if it were desirable: an agent
+                    // run is a background task that outlives the HTTP request, so there is no
+                    // principal here to recompute from. Carrying what creation already established
+                    // is the only correct behaviour.
+                    TenantId = existing?.TenantId,
+                    OwnerUserId = existing?.OwnerUserId,
+                    OwnerAppId = existing?.OwnerAppId,
+                    Visibility = existing?.Visibility,
+                },
+                ct
+            );
         }
         catch (Exception ex)
         {
@@ -3450,6 +3453,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             ct: ct
         );
 
+        // The run ends here, before anyone is told it ended: a subscriber that acts on the completion (a
+        // mode switch, a reconfigure) must not find this run still in progress and be refused as busy.
+        lock (_stateLock)
+        {
+            _latestRunId = runId;
+            _currentRunId = null;
+        }
+
         await PublishToAllAsync(
             new RunCompletedMessage
             {
@@ -3466,12 +3477,6 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             },
             ct
         );
-
-        lock (_stateLock)
-        {
-            _latestRunId = runId;
-            _currentRunId = null;
-        }
 
         if (isError)
         {

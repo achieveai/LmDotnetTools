@@ -470,3 +470,89 @@ describe('ToolPill — layout containment guards (re-homed from MetadataPill)', 
     expect(source).toMatch(/\.tool-pill__body\s*\{[^}]*overflow-x:\s*auto/);
   });
 });
+
+describe('ToolPill — ExecuteTool renders as the tool it runs', () => {
+  function wrap(id: string, tool: string, args: string): ToolCall {
+    return {
+      tool_call_id: id,
+      function_name: 'ExecuteTool',
+      function_args: `{"tool":${JSON.stringify(tool)},"arguments":${args}}`,
+    };
+  }
+
+  /** A result as the server reports it: `tool_name` names whatever it actually ran (or refused). */
+  function ranAs(toolName: string, id: string, result: string, isError = false): ToolCallResultMessage {
+    return { ...resultMsg(id, result, isError), tool_name: toolName };
+  }
+
+  it('card: ExecuteTool(Read) shows the Read pill, icon, summary and body, plus a via hint', async () => {
+    const direct = mountPill(
+      { tool_call_id: 'd', function_name: 'Read', function_args: readNumbered.functionArgs },
+      resultMsg('d', readNumbered.result)
+    );
+    const wrapped = mountPill(wrap('x', 'Read', readNumbered.functionArgs), ranAs('Read', 'x', readNumbered.result));
+
+    const root = wrapped.get('[data-testid="tool-call-pill"]');
+    expect(root.classes()).toContain('f-read');
+    // data-tool-name stays the raw wire name (the frozen selector contract).
+    expect(root.attributes('data-tool-name')).toBe('ExecuteTool');
+    expect(wrapped.get('.tool-pill__icon').text()).toBe(direct.get('.tool-pill__icon').text());
+    expect(wrapped.get('.tool-pill__title').text()).toBe('Read');
+    expect(wrapped.get('.tool-pill__summary').text()).toBe(direct.get('.tool-pill__summary').text());
+    expect(wrapped.get('[data-testid="tool-via"]').text()).toBe('via ExecuteTool');
+    expect(direct.find('[data-testid="tool-via"]').exists()).toBe(false);
+
+    await wrapped.get('.tool-pill__header').trigger('click');
+    expect(wrapped.find('.code').exists()).toBe(true);
+    expect(wrapped.get('.kv').text()).toContain('file_path');
+    expect(wrapped.get('.kv').text()).not.toContain('arguments');
+  });
+
+  it('activity row: ExecuteTool(Bash) reads like a direct Bash call and names the wrapper when opened', async () => {
+    const mountRow = (toolCall: ToolCall) =>
+      mount(ToolPill, {
+        props: { toolCall, presentation: 'activity-row' },
+        global: {
+          provide: { [GET_RESULT_FOR_TOOL_CALL]: (id: string) => ranAs('Bash', id, 'sc2\n') },
+        },
+      });
+    const direct = mountRow({ tool_call_id: 'd', function_name: 'Bash', function_args: '{"command":"echo sc2"}' });
+    const wrapped = mountRow(wrap('x', 'Bash', '{"command":"echo sc2"}'));
+
+    const description = direct.get('.tool-pill__activity-description').text();
+    expect(description).toBe('Ran echo sc2');
+    expect(wrapped.get('.tool-pill__activity-description').text()).toContain(description);
+    expect(wrapped.get('[data-testid="tool-via"]').text()).toBe('via ExecuteTool');
+    expect(wrapped.get('svg.tool-pill__activity-icon path').attributes('d')).toBe(
+      direct.get('svg.tool-pill__activity-icon path').attributes('d')
+    );
+
+    await wrapped.get('.tool-pill__header').trigger('click');
+    expect(wrapped.get('[data-testid="tool-technical-name"] code').text()).toBe('Bash');
+    expect(wrapped.get('[data-testid="tool-technical-name"]').text()).toContain('via ExecuteTool');
+    expect(wrapped.find('.term').exists()).toBe(true);
+  });
+
+  it('a refused ExecuteTool (result still named ExecuteTool) keeps the generic card with its error', async () => {
+    const refusal = '{"error":"Write cannot be run through ExecuteTool."}';
+    const w = mountPill(
+      wrap('r', 'Write', '{"file_path":"/workspace/x.txt","content":"x"}'),
+      ranAs('ExecuteTool', 'r', refusal, true)
+    );
+
+    const root = w.get('[data-testid="tool-call-pill"]');
+    expect(root.classes()).toContain('f-generic');
+    expect(root.classes()).not.toContain('f-write');
+    expect(w.get('.tool-pill__title').text()).toBe('ExecuteTool');
+    expect(w.find('[data-testid="tool-via"]').exists()).toBe(false);
+    await w.get('.tool-pill__header').trigger('click');
+    expect(w.get('.tool-pill__error').text()).toBe('Write cannot be run through ExecuteTool.');
+  });
+
+  it('a malformed ExecuteTool keeps the generic ExecuteTool card', () => {
+    const w = mountPill({ tool_call_id: 'm', function_name: 'ExecuteTool', function_args: '{"arguments":{}}' });
+    expect(w.get('[data-testid="tool-call-pill"]').classes()).toContain('f-generic');
+    expect(w.get('.tool-pill__title').text()).toBe('ExecuteTool');
+    expect(w.find('[data-testid="tool-via"]').exists()).toBe(false);
+  });
+});

@@ -20,6 +20,9 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Identity.Client" Version="4.87.0" />
+    <!-- Direct: CapabilityCatalog's in-memory FTS5 index compiles against it. Same version LmMultiTurn
+         brings transitively; referenced here for the reason given on the LmLifecycle reference below. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.5" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />

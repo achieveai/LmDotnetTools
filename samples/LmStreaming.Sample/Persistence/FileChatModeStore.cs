@@ -88,6 +88,7 @@ public sealed class FileChatModeStore : IChatModeStore
                 SubAgentModelIntelligenceByType = mode.SubAgentModelIntelligenceByType,
                 DefaultSubAgentModelIntelligence = mode.DefaultSubAgentModelIntelligence,
                 Env = mode.Env,
+                Tiers = mode.Tiers,
                 IsSystemDefined = false,
                 CreatedAt = now,
                 UpdatedAt = now,
@@ -167,6 +168,7 @@ public sealed class FileChatModeStore : IChatModeStore
                     ? mode.DefaultSubAgentModelIntelligence
                     : existing.DefaultSubAgentModelIntelligence,
                 Env = mode.EnvIsSet ? mode.Env : existing.Env,
+                Tiers = mode.TiersIsSet ? mode.Tiers : existing.Tiers,
                 UpdatedAt = now,
             };
 
@@ -239,6 +241,8 @@ public sealed class FileChatModeStore : IChatModeStore
                 SubAgentModelIntelligenceByType = sourceMode.SubAgentModelIntelligenceByType,
                 DefaultSubAgentModelIntelligence = sourceMode.DefaultSubAgentModelIntelligence,
                 Env = sourceMode.Env,
+                // A copy keeps its source's skill tiers (null stays null: still untiered).
+                Tiers = sourceMode.Tiers,
                 IsSystemDefined = false,
                 CreatedAt = now,
                 UpdatedAt = now,

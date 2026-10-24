@@ -46,6 +46,9 @@ public class CompactionLoopTests
         /// <summary>The tool names offered on each call, in call order.</summary>
         public List<IReadOnlyList<string>> FunctionNames { get; } = [];
 
+        /// <summary>The tools offered on each call as the provider would send them (name and description), in call order.</summary>
+        public List<string> ToolsWire { get; } = [];
+
         public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
@@ -55,6 +58,7 @@ public class CompactionLoopTests
             var request = messages.ToList();
             Requests.Add(request);
             FunctionNames.Add([.. (options?.Functions ?? []).Select(f => f.Name)]);
+            ToolsWire.Add(string.Join('\n', (options?.Functions ?? []).Select(f => $"{f.Name}|{f.Description}")));
             var reply = script(Requests.Count).Select(m => m.WithIds(options)).ToList();
             return Task.FromResult(Stream(reply));
         }
@@ -174,7 +178,9 @@ public class CompactionLoopTests
             ILogger<MultiTurnAgentLoop>? logger = null,
             string? extraTool = null,
             bool realSummarizer = false,
-            Func<string?, long>? textTokens = null
+            Func<string?, long>? textTokens = null,
+            Func<CheckpointActivation, CancellationToken, ValueTask<bool>>? onCheckpointActivated = null,
+            IFunctionProvider? extraProvider = null
         )
         {
             Agent = new ScriptedAgent(script);
@@ -204,6 +210,12 @@ public class CompactionLoopTests
                     Handle
                 );
             }
+
+            if (extraProvider is not null)
+            {
+                registry = registry.AddProvider(extraProvider);
+            }
+
             Setup = new CompactionSetup
             {
                 Options = options,
@@ -217,6 +229,7 @@ public class CompactionLoopTests
                 // Unset by default: the tests exercise the built-in verdict a host such as the sample gets.
                 IsContextOverflow = overflowVerdict,
                 TextTokens = textTokens,
+                OnCheckpointActivated = onCheckpointActivated,
             };
             KillSwitch = killSwitch;
             Loop = new MultiTurnAgentLoop(
@@ -3551,5 +3564,337 @@ public class CompactionLoopTests
         parameters
             .Should()
             .NotContain(typeof(CompactionSetup), "a provider-owned session is never compacted by the harness");
+    }
+
+    // OnCheckpointActivated (the host's rotation hook). Every test here is named CheckpointHook_* so one filter runs them.
+
+    [Fact]
+    public async Task CheckpointHook_FiresOncePerActivation_WithThreadCheckpointSeqAndSeqTaggedCalls()
+    {
+        var activations = new List<CheckpointActivation>();
+        await using var h = new Harness(
+            EchoThenDone(14),
+            Options(CompactionMode.Compact),
+            _ => Window,
+            onCheckpointActivated: (activation, _) =>
+            {
+                activations.Add(activation);
+                return ValueTask.FromResult(false);
+            }
+        );
+
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+
+        var applied = h.Publisher.Payloads<CompactionPayload>(LifecycleEventTypes.CompactionApplied);
+        applied.Should().HaveCountGreaterThanOrEqualTo(2, "fourteen tool turns cross the compact band twice");
+        activations
+            .Select(a => a.CheckpointId)
+            .Should()
+            .Equal(applied.Select(p => p.CheckpointId), "one call per activation, in activation order");
+        var rows = (await h.Store.LoadMessagesAsync(Thread))
+            .Select(p => (Seq: p.Seq!.Value, Message: MessagePersistenceConverter.FromPersistedMessage(p)))
+            .ToList();
+        rows.Count(r => r.Message is CompactionCheckpointMessage).Should().Be(activations.Count);
+        foreach (var activation in activations)
+        {
+            activation.ThreadId.Should().Be(Thread);
+            activation.AgentId.Should().Be("root");
+            var checkpointSeq = rows.Single(r =>
+                r.Message is CompactionCheckpointMessage c && c.CheckpointId == activation.CheckpointId
+            ).Seq;
+            activation.CheckpointSeq.Should().Be(checkpointSeq);
+            var before = rows.Where(r => r.Seq < checkpointSeq && r.Message is not CompactionCheckpointMessage)
+                .ToList();
+            activation.LastMessageSeq.Should().Be(before.Max(r => r.Seq));
+            activation
+                .ToolCalls.Select(c => (c.Seq, c.Call.ToolCallId))
+                .Should()
+                .Equal(
+                    before.SelectMany(r => ToolRows.CallsOf(r.Message).Select(call => (r.Seq, call.ToolCallId))),
+                    "every call in the thread's rows, tagged with its row's seq, in seq order"
+                );
+            activation.ToolCalls.Should().OnlyContain(c => c.Call.FunctionName == "Echo");
+        }
+    }
+
+    [Theory]
+    [InlineData(CompactionMode.Shadow, false)]
+    [InlineData(CompactionMode.Warn, false)]
+    [InlineData(CompactionMode.Compact, true)]
+    public async Task CheckpointHook_NotFiredForShadowSkippedOrFailedAttempts(CompactionMode mode, bool summaryDown)
+    {
+        var calls = 0;
+        await using var h = new Harness(
+            EchoThenDone(9),
+            Options(mode) with
+            {
+                MaxCompactionsPerRun = 20,
+            },
+            _ => Window,
+            onCheckpointActivated: (_, _) =>
+            {
+                calls++;
+                return ValueTask.FromResult(true);
+            }
+        );
+        if (summaryDown)
+        {
+            h.Summarizer.Fail = _ => new InvalidOperationException("summary model down");
+        }
+
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+
+        calls
+            .Should()
+            .Be(
+                h.Publisher.Payloads<CompactionPayload>(LifecycleEventTypes.CompactionApplied).Count,
+                "the hook runs for an activated checkpoint and nothing else"
+            );
+        if (summaryDown)
+        {
+            // Failed attempts, then attempts skipped by the failure backoff: neither may reach the hook.
+            h.Publisher.Payloads<CompactionPayload>(LifecycleEventTypes.CompactionFailed).Should().NotBeEmpty();
+            h.Decisions.Select(d => d.Reason).Should().Contain(CompactionSkipReasons.FailureBackoff);
+        }
+        else
+        {
+            calls.Should().Be(0);
+            h.Decisions.Select(d => d.Decision)
+                .Should()
+                .Contain(mode == CompactionMode.Shadow ? CompactionDecisionKinds.Shadow : CompactionDecisionKinds.Warn);
+        }
+    }
+
+    [Fact]
+    public async Task CheckpointHook_ThatThrows_LeavesTheCheckpointApplied_AndTheRunContinuing()
+    {
+        var logger = new CapturingLogger<MultiTurnAgentLoop>();
+        var calls = 0;
+        await using var h = new Harness(
+            EchoThenDone(7),
+            Options(CompactionMode.Compact),
+            _ => Window,
+            logger: logger,
+            onCheckpointActivated: (_, _) =>
+            {
+                calls++;
+                throw new InvalidOperationException("the host hook broke");
+            }
+        );
+
+        var completed = await h.RunAsync("start");
+
+        completed.IsError.Should().BeFalse(completed.ErrorMessage);
+        calls.Should().Be(1);
+        h.Agent.Requests.Should().HaveCount(8, "every scripted turn still ran");
+        var applied = h.Publisher.Payloads<CompactionPayload>(LifecycleEventTypes.CompactionApplied).Single();
+        h.Publisher.Payloads<CompactionPayload>(LifecycleEventTypes.CompactionFailed).Should().BeEmpty();
+        (await h.StateAsync())!.ActiveCheckpointId.Should().Be(applied.CheckpointId);
+        var first = h.Agent.Requests.FindIndex(HasEnvelope);
+        first.Should().BePositive();
+        h.Agent.Requests.Skip(first).Should().OnlyContain(r => HasEnvelope(r), "the view stays in force");
+        logger
+            .Entries.Should()
+            .ContainSingle(e =>
+                e.Level == LogLevel.Warning && e.Message.StartsWith("Checkpoint hook failed", StringComparison.Ordinal)
+            )
+            .Which.Exception.Should()
+            .BeOfType<InvalidOperationException>();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CheckpointHook_ReEstimatesToolSchemaTokens_OnlyWhenItReturnsTrue(bool hookSaysChanged)
+    {
+        var tools = new MutableToolProvider();
+        Harness h = null!;
+        long? tokensBeforeHook = null;
+        await using var _ = h = new Harness(
+            EchoThenDone(7),
+            Options(CompactionMode.Compact),
+            _ => Window,
+            extraProvider: tools,
+            onCheckpointActivated: (_, _) =>
+            {
+                tokensBeforeHook = h.Loop.ToolSchemaTokens;
+                tools.Description = new string('d', 4_000);
+                return ValueTask.FromResult(hookSaysChanged);
+            }
+        );
+        var startTokens = h.Loop.ToolSchemaTokens;
+
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+
+        tokensBeforeHook.Should().Be(startTokens, "nothing re-estimated before the activation");
+        var growth = h.Loop.ToolSchemaTokens - startTokens;
+        if (hookSaysChanged)
+        {
+            growth.Should().BeInRange(900, 1_100, "4,000 more description chars, read from the registry");
+        }
+        else
+        {
+            growth.Should().Be(0, "only the hook's answer moves the estimate");
+        }
+
+        // tools[] is byte-identical between activations and changes once, at the first request after the hook.
+        var first = h.Agent.Requests.FindIndex(HasEnvelope);
+        first.Should().BePositive();
+        h.Agent.ToolsWire.Take(first).Distinct().Should().ContainSingle();
+        h.Agent.ToolsWire.Skip(first).Distinct().Should().ContainSingle().Which.Should().NotBe(h.Agent.ToolsWire[0]);
+    }
+
+    // MT 1b gap: the activation of an AUTOMATIC compaction lands mid-run, and the request right after it, in the same
+    // run, must already carry the re-listed Skill text and an estimate that counts it.
+    [Fact]
+    public async Task CheckpointHook_MidRunAutomaticActivation_TheNextRequestOfTheSameRunCarriesTheSwappedSkill()
+    {
+        const string Listed = "Skills: alpha:a, alpha:p";
+        var relisted = "Skills: " + string.Join(", ", Enumerable.Range(1, 200).Select(i => $"plugin-{i:000}:skill"));
+        var skill = new MutableToolProvider("Skill") { Description = Listed };
+        var tokensAtRequest = new List<long>();
+        Harness h = null!;
+        await using var _ = h = new Harness(
+            call =>
+            {
+                tokensAtRequest.Add(h.Loop.ToolSchemaTokens);
+                return EchoThenDone(7)(call);
+            },
+            Options(CompactionMode.Compact),
+            _ => Window,
+            extraProvider: skill,
+            onCheckpointActivated: (_, _) =>
+            {
+                skill.Description = relisted; // what a rotation's PATCH + re-list leaves the provider serving
+                return ValueTask.FromResult(true);
+            }
+        );
+        var startTokens = h.Loop.ToolSchemaTokens;
+
+        var completed = await h.RunAsync("start");
+
+        completed.IsError.Should().BeFalse(completed.ErrorMessage);
+        h.Publisher.Payloads<CompactionPayload>(LifecycleEventTypes.CompactionApplied).Should().ContainSingle();
+        (await h.StoredRowsAsync())
+            .OfType<CompactionCheckpointMessage>()
+            .Single()
+            .Trigger.Should()
+            .Be(CompactionTrigger.Preemptive, "an automatic compaction, not a manual one");
+        var next = h.Agent.Requests.FindIndex(HasEnvelope);
+        next.Should().BeInRange(1, h.Agent.Requests.Count - 2, "requests of this one run went out before and after it");
+        h.Agent.ToolsWire.Take(next).Should().OnlyContain(w => w.Contains($"Skill|{Listed}"));
+        h.Agent.ToolsWire.Skip(next).Should().OnlyContain(w => w.Contains($"Skill|{relisted}"));
+        tokensAtRequest.Take(next).Should().OnlyContain(t => t == startTokens);
+        tokensAtRequest
+            .Skip(next)
+            .Should()
+            .OnlyContain(
+                t =>
+                    t
+                    == startTokens
+                        + CompactionTokenEstimate.EstimateText(relisted)
+                        - CompactionTokenEstimate.EstimateText(Listed),
+                "the estimate of the request after the activation already counts the new Skill text"
+            );
+    }
+
+    // A child inherits the root's setup, hook included. Its compaction reports the child's own thread and agent id,
+    // and only the calls in the child's rows, though parent and child share one store (as the sample host does).
+    [Fact]
+    public async Task CheckpointHook_ChildCompaction_ReportsTheChildThread_AndOnlyItsOwnCalls()
+    {
+        var activations = new System.Collections.Concurrent.ConcurrentQueue<CheckpointActivation>();
+        var childDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var child = new ScriptedAgent(call =>
+        {
+            if (call <= 14)
+            {
+                return
+                [
+                    new ToolCallMessage
+                    {
+                        ToolCallId = $"child-tc-{call}",
+                        FunctionName = "Echo",
+                        FunctionArgs = "{}",
+                        Role = Role.Assistant,
+                    },
+                ];
+            }
+
+            childDone.TrySetResult();
+            return [new TextMessage { Text = "child done", Role = Role.Assistant }];
+        });
+        var shared = new InMemoryConversationStore();
+        var subAgents = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal)
+            {
+                ["worker"] = new SubAgentTemplate { SystemPrompt = "You work.", AgentFactory = () => child },
+            },
+            DefaultConversationStoreFactory = _ => shared,
+        };
+        await using var h = new Harness(
+            EchoThenDone(2),
+            Options(CompactionMode.Compact),
+            _ => Window,
+            store: shared,
+            subAgentOptions: subAgents,
+            onCheckpointActivated: (activation, _) =>
+            {
+                activations.Enqueue(activation);
+                return ValueTask.FromResult(false);
+            }
+        );
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+        activations.Should().BeEmpty("guard: two parent tool turns stay under the band");
+
+        var receipt = await h.Loop.SubAgentManager!.SpawnAsync("worker", "go", runInBackground: true);
+        await childDone.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        using var doc = System.Text.Json.JsonDocument.Parse(receipt);
+        var agentId = doc.RootElement.GetProperty("agent_id").GetString()!;
+        var childThread = SubAgentThreadIds.For(Thread, agentId);
+        activations.Should().NotBeEmpty("fourteen child tool turns cross the compact band");
+        activations.Should().OnlyContain(a => a.ThreadId == childThread && a.AgentId == agentId);
+        var rows = (await shared.LoadMessagesAsync(childThread))
+            .Select(p => (Seq: p.Seq!.Value, Message: MessagePersistenceConverter.FromPersistedMessage(p)))
+            .ToList();
+        foreach (var activation in activations)
+        {
+            activation
+                .ToolCalls.Select(c => c.Call.ToolCallId)
+                .Should()
+                .Equal(
+                    rows.Where(r => r.Seq < activation.CheckpointSeq)
+                        .SelectMany(r => ToolRows.CallsOf(r.Message).Select(call => call.ToolCallId)),
+                    "the child's own rows, never the parent's tc-1 and tc-2"
+                )
+                .And.OnlyContain(id => id!.StartsWith("child-tc-", StringComparison.Ordinal));
+        }
+    }
+
+    /// <summary>One tool whose description a hook can change between requests, as a host's rotation does.</summary>
+    private sealed class MutableToolProvider(string name = "Notes") : IFunctionProvider
+    {
+        public string Description { get; set; } = "Keeps notes for the task.";
+
+        public string ProviderName => "MutableTools";
+
+        public int Priority => 100;
+
+        public IEnumerable<FunctionDescriptor> GetFunctions()
+        {
+            yield return new FunctionDescriptor
+            {
+                Contract = new FunctionContract
+                {
+                    Name = name,
+                    Description = Description,
+                    Parameters = [],
+                },
+                Handler = (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("noted")),
+                ProviderName = ProviderName,
+            };
+        }
     }
 }

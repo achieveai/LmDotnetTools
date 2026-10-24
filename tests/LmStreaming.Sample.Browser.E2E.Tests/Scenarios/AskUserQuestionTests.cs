@@ -1,6 +1,7 @@
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using FluentAssertions;
 using LmStreaming.Sample.Browser.E2E.Tests.Infrastructure;
+using LmStreaming.Sample.Services;
 
 namespace LmStreaming.Sample.Browser.E2E.Tests.Scenarios;
 
@@ -175,7 +176,13 @@ public sealed class AskUserQuestionTests
         const string ProviderMode = "test-anthropic";
         var responder = BuildSingleQuestionResponder("Thanks, blue noted.");
 
-        await using var session = await _fixture.OpenAsync(ProviderMode, responder.HandlerFor(ProviderMode));
+        // This question round-trip does not require a live sandbox. Keep the real /api/tools catalog
+        // assembly, but make its unrelated discovery dependency deterministic across the reload.
+        await using var session = await _fixture.OpenAsync(
+            ProviderMode,
+            responder.HandlerFor(ProviderMode),
+            sandboxToolCatalogProbe: new BaselineSandboxToolCatalogProbe()
+        );
         var page = session.Page;
         await page.NewChatButton().ClickAsync();
         await page.SendMessageAsync("what should I pick?");
@@ -220,5 +227,20 @@ public sealed class AskUserQuestionTests
         await session.SaveSuccessScreenshotAsync(
             "AskUserQuestion.Pending_question_survives_reload_and_can_still_be_answered"
         );
+    }
+
+    private sealed class BaselineSandboxToolCatalogProbe : ISandboxToolCatalogProbe
+    {
+        private static readonly SandboxToolCatalog Catalog = new(
+            [.. SandboxToolCatalogProbe.StaticBaseline.Select(name => (Name: name, Description: (string?)null))],
+            IsLive: false,
+            Warning: "Scripted AskUserQuestion fixture: sandbox discovery is not part of this scenario; using the built-in baseline."
+        );
+
+        public Task<SandboxToolCatalog> GetAsync(TimeProvider timeProvider, CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+            return Task.FromResult(Catalog);
+        }
     }
 }

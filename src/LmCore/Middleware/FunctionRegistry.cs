@@ -102,14 +102,29 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     ///     surfaces on the next turn without rebuilding the middleware stack.
     /// </summary>
     /// <remarks>
+    ///     <para>
     ///     This shares the contract-materialization path with <see cref="Build"/>; the
     ///     handler dictionary it produces is discarded. Provider handlers are method
     ///     references, so re-running the path is cheap.
+    ///     </para>
+    ///     <para>
+    ///     A contract is left out when any registered <see cref="IDeferredToolProvider"/> does not
+    ///     advertise its name; its handler stays in <see cref="Build"/>. With no such provider this
+    ///     returns exactly <see cref="Build"/>'s contracts.
+    ///     </para>
     /// </remarks>
     public IEnumerable<FunctionContract> BuildContracts()
     {
         var (contracts, _) = Build();
-        return contracts;
+        var deferredProviders = _providers.OfType<IDeferredToolProvider>().ToList();
+        if (deferredProviders.Count == 0)
+        {
+            return contracts;
+        }
+
+        // Materialized so one request gets one answer per name, even if a provider swaps its view while
+        // a caller is still enumerating.
+        return [.. contracts.Where(c => deferredProviders.All(p => p.IsAdvertised(c.Name)))];
     }
 
     /// <summary>

@@ -40,6 +40,7 @@ public sealed record SandboxTaskCompletion(
 /// gateway sends the event the moment the task ends, so a fast task's event can beat its own tool result to
 /// the tracker. With no record at all (a task started before a restart), the notice goes to the session's only
 /// conversation, and is dropped when there are several rather than telling one about a task it never started.
+/// A primary agent named by its own thread id (a mode with skill tiers) is routed to that conversation directly.
 /// </para>
 /// <para>Best effort: every failure is logged and swallowed, like context discovery.</para>
 /// </remarks>
@@ -69,9 +70,20 @@ public sealed class SandboxTaskCompletionNotifier(
         var message = BuildMessage(completion);
         try
         {
-            return string.IsNullOrEmpty(completion.AgentId)
-                ? await NotifyPrimaryAsync(completion, message, ct).ConfigureAwait(false)
-                : await NotifySubAgentAsync(completion, message, ct).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(completion.AgentId))
+            {
+                return await NotifyPrimaryAsync(completion, message, ct).ConfigureAwait(false);
+            }
+
+            // A mode with skill tiers names its root agent with its thread id (SandboxSubAgentIdentity.ForRoot),
+            // so the id names the conversation itself. The tracker recorded the same task; drop that record.
+            if (registry.GetThreads(completion.SessionId).Contains(completion.AgentId, StringComparer.Ordinal))
+            {
+                _ = registry.TryTakeBackgroundTaskOwner(completion.SessionId, completion.TaskId, out _);
+                return await NotifyConversationAsync(completion, completion.AgentId, message, ct).ConfigureAwait(false);
+            }
+
+            return await NotifySubAgentAsync(completion, message, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -125,6 +137,16 @@ public sealed class SandboxTaskCompletionNotifier(
             threadId = threads[0];
         }
 
+        return await NotifyConversationAsync(completion, threadId, message, ct).ConfigureAwait(false);
+    }
+
+    private async Task<int> NotifyConversationAsync(
+        SandboxTaskCompletion completion,
+        string threadId,
+        NotifyMessage message,
+        CancellationToken ct
+    )
+    {
         if (!pool.TryGet(threadId, out var agent) || agent is null)
         {
             logger.LogInformation(

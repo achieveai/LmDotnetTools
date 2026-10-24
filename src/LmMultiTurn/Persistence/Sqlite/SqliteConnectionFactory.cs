@@ -17,6 +17,16 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
     private readonly SemaphoreSlim _pragmaLock = new(1, 1);
 
     /// <summary>
+    /// Taken around every open and every pool clear in the process, so none of them overlap. Microsoft.Data.Sqlite
+    /// marks an opening connection's pooled handle active a moment before it records the connection that owns it;
+    /// an open on an empty pool, or a clear, that looks in that moment reclaims the handle as leaked and hands it to
+    /// a second connection, and two threads then drive one native handle (seen as "SQLite Error 1: 'not an error'"
+    /// from <c>BeginTransaction</c> under four concurrent callers). Opens from a warm pool already queue on the
+    /// pool's own lock, so this costs next to nothing.
+    /// </summary>
+    internal static readonly object PoolGate = new();
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="SqliteConnectionFactory"/> class.
     /// </summary>
     /// <param name="databasePath">Path to the SQLite database file.</param>
@@ -41,7 +51,10 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
         using var connection = new SqliteConnection(BuildConnectionString(databasePath));
-        SqliteConnection.ClearPool(connection);
+        lock (PoolGate)
+        {
+            SqliteConnection.ClearPool(connection);
+        }
     }
 
     // The pool is keyed by this exact string, so ClearPool must build it the same way the constructor does.
@@ -77,7 +90,13 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
             // second one, so for a moment a handle this call is responsible for is available to another
             // thread.
             connection = new PooledConnection(_connectionString, _semaphore);
-            await connection.OpenAsync(ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            lock (PoolGate)
+            {
+                // Synchronous on purpose: SqliteConnection has no truly asynchronous open, and a lock cannot
+                // span an await.
+                connection.Open();
+            }
 
             // Set pragmas once (they persist for the database file)
             await EnsurePragmasSetAsync(connection, ct).ConfigureAwait(false);

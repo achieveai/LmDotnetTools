@@ -28,8 +28,9 @@ public class SqliteConversationStoreTests : IAsyncLifetime
     {
         await _store.DisposeAsync();
 
-        // Clear the connection pool to release file handles
-        SqliteConnection.ClearAllPools();
+        // Release this database's factory and raw-probe pools before removing its files.
+        // Other test databases keep their own connections.
+        SqliteTestPools.Clear(_databasePath);
 
         // Give time for pool to release
         await Task.Delay(50);
@@ -449,7 +450,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
             "notify_waits",
         ];
 
-        await using (var seed = new SqliteConnection($"Data Source={_databasePath}"))
+        await using (var seed = new SqliteConnection($"Data Source={_databasePath};Pooling=False"))
         {
             await seed.OpenAsync();
             foreach (var threadId in new[] { "thread-1", "thread-keep" })
@@ -490,7 +491,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         await _store.DeleteThreadAsync("thread-1");
 
         // Assert: every thread-scoped table is empty for thread-1, and thread-keep is untouched.
-        await using var verify = new SqliteConnection($"Data Source={_databasePath}");
+        await using var verify = new SqliteConnection($"Data Source={_databasePath};Pooling=False");
         await verify.OpenAsync();
         foreach (var table in threadScopedTables)
         {
@@ -990,7 +991,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         );
         await _store.SaveMetadataAsync("unrelated", CreateTestMetadata("unrelated"));
 
-        await using var connection = new SqliteConnection($"Data Source={_databasePath}");
+        await using var connection = new SqliteConnection($"Data Source={_databasePath};Pooling=False");
         await connection.OpenAsync();
         await using (var poison = connection.CreateCommand())
         {
@@ -1059,7 +1060,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
             await _store.SaveMetadataAsync(threadId, CreateTestMetadata(threadId));
         }
 
-        await using var connection = new SqliteConnection($"Data Source={_databasePath}");
+        await using var connection = new SqliteConnection($"Data Source={_databasePath};Pooling=False");
         await connection.OpenAsync();
         await using (var poison = connection.CreateCommand())
         {
@@ -1116,6 +1117,67 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         // Assert
         var messages = await _store.LoadMessagesAsync("thread-1");
         messages.Should().HaveCount(2);
+    }
+
+    #endregion
+
+    #region Disposal Tests
+
+    // The host disposes the store while the agent pool still drains, so a metadata writer can be
+    // queued on the store's lock at that moment. With a non-owned factory the connection is still live.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task DisposeAsync_WhileAWriterIsQueuedOnTheMetadataLock_FailsThatWriterInsteadOfOrphaningIt(
+        bool ownsFactory
+    )
+    {
+        var factory = new SqliteConnectionFactory(_databasePath);
+        var store = new SqliteConversationStore(factory, ownsFactory);
+        using var release = new ManualResetEventSlim(false);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task? holder = null;
+        try
+        {
+            holder = Task.Run(() =>
+                store.UpdateMetadataAsync(
+                    "thread-a",
+                    _ =>
+                    {
+                        entered.SetResult();
+                        release.Wait();
+                        return CreateTestMetadata("thread-a");
+                    }
+                )
+            );
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var queued = store.UpdateMetadataAsync("thread-b", _ => CreateTestMetadata("thread-b"));
+            queued.IsCompleted.Should().BeFalse("the holder still has the metadata lock");
+
+            await store.DisposeAsync();
+            release.Set();
+
+            var queuedError = await Record.ExceptionAsync(() => queued.WaitAsync(TimeSpan.FromSeconds(5)));
+            (queuedError as TimeoutException).Should().BeNull("disposal must not orphan a writer queued on the lock");
+            queuedError
+                .Should()
+                .BeOfType<ObjectDisposedException>("a disposed store refuses work whether or not it owns its factory");
+        }
+        finally
+        {
+            release.Set();
+            if (holder is not null)
+            {
+                var holderError = await Record.ExceptionAsync(() => holder.WaitAsync(TimeSpan.FromSeconds(5)));
+                // The holder may fail (owned factory, now disposed) or succeed (live factory); it must not hang.
+                (holderError as TimeoutException)
+                    .Should()
+                    .BeNull("the lock holder must finish once released");
+            }
+
+            await factory.DisposeAsync();
+        }
     }
 
     #endregion
@@ -1197,7 +1259,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         string threadId
     )
     {
-        await using var connection = new SqliteConnection($"Data Source={_databasePath}");
+        await using var connection = new SqliteConnection($"Data Source={_databasePath};Pooling=False");
         await connection.OpenAsync();
         using var command = connection.CreateCommand();
         command.CommandText = """

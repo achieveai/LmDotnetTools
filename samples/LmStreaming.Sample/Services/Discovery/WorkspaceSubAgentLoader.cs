@@ -7,8 +7,8 @@ namespace LmStreaming.Sample.Services.Discovery;
 
 /// <summary>
 /// Loads workspace-discovered sub-agent templates for a sandbox session: asks the gateway what
-/// it has discovered, then for each <c>kind == "subagent"</c> item reads the markdown file from
-/// the workspace host directory and maps it to a <see cref="SubAgentTemplate"/>.
+/// it has discovered, then for each <c>kind == "subagent"</c> item reads the markdown file through
+/// the gateway's files API and maps it to a <see cref="SubAgentTemplate"/>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -60,7 +60,7 @@ public sealed class WorkspaceSubAgentLoader
     /// Discovers and loads sub-agent templates for <paramref name="session"/>. Returns an empty
     /// dictionary when nothing is discovered or when the gateway lookup fails.
     /// </summary>
-    /// <param name="session">The sandbox session whose <c>HostPath</c> contains the files.</param>
+    /// <param name="session">The sandbox session whose workspace holds the files.</param>
     /// <param name="agentFactory">Provider-agent factory reused by every discovered template.</param>
     /// <param name="ct">Cancellation token.</param>
     public async Task<IReadOnlyDictionary<string, SubAgentTemplate>> LoadAsync(
@@ -186,7 +186,7 @@ public sealed class WorkspaceSubAgentLoader
 
         // Content-first: marketplace sub-agents arrive with their full markdown body inline (no workspace
         // file exists at a /marketplaces/... path). Parse it directly and skip the file read. The file-read
-        // path below remains the fallback for real workspace .claude/agents/*.md whose path is relative.
+        // path below reads a workspace .claude/agents/*.md, which the gateway names by its path only.
         if (!string.IsNullOrWhiteSpace(item.Content))
         {
             var stemFromName = string.IsNullOrWhiteSpace(item.QualifiedName) ? item.Name : item.QualifiedName;
@@ -200,7 +200,10 @@ public sealed class WorkspaceSubAgentLoader
                 return null;
             }
 
-            return MapParsed(parsedInline, agentFactory, characteristicsAgentFactory);
+            return MapParsed(parsedInline, agentFactory, characteristicsAgentFactory) with
+            {
+                Marketplace = MarketplaceOf(item.Path),
+            };
         }
 
         if (string.IsNullOrWhiteSpace(session.HostPath))
@@ -213,22 +216,13 @@ public sealed class WorkspaceSubAgentLoader
             return null;
         }
 
-        var basePath = NormalizeBasePath(session.HostPath);
-        if (!TryResolveContainedPath(basePath, item.Path, out var fullPath))
-        {
-            _logger.LogWarning(
-                "Skipping discovered sub-agent {Name}: path '{Path}' is outside workspace '{HostPath}'",
-                item.Name,
-                item.Path,
-                session.HostPath
-            );
-            return null;
-        }
-
-        string markdown;
+        // The file is in the sandbox, not on this host: on a Docker-backed gateway HostPath is the container path
+        // "/workspace". So read it through the gateway's files API, as the CLAUDE.md seed does. The SDK refuses a path
+        // that leaves the workspace, and the gateway keeps symlinks inside it.
+        string? markdown;
         try
         {
-            markdown = await File.ReadAllTextAsync(fullPath, ct).ConfigureAwait(false);
+            markdown = await _registry.ReadWorkspaceFileAsync(session.SessionId, item.Path, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -238,21 +232,33 @@ public sealed class WorkspaceSubAgentLoader
         {
             _logger.LogWarning(
                 ex,
-                "Skipping discovered sub-agent {Name}: failed to read '{Path}'",
+                "Skipping discovered sub-agent {Name}: path '{Path}' cannot be read in session {SessionId}",
                 item.Name,
-                fullPath
+                item.Path,
+                session.SessionId
             );
             return null;
         }
 
-        var stem = Path.GetFileNameWithoutExtension(fullPath);
+        if (markdown is null)
+        {
+            _logger.LogWarning(
+                "Skipping discovered sub-agent {Name}: the gateway returned no file at '{Path}' in session {SessionId}",
+                item.Name,
+                item.Path,
+                session.SessionId
+            );
+            return null;
+        }
+
+        var stem = Path.GetFileNameWithoutExtension(item.Path);
         var parsed = SubAgentMarkdownParser.Parse(markdown, stem);
         if (parsed is null)
         {
             _logger.LogWarning(
                 "Skipping discovered sub-agent {Name}: markdown at '{Path}' has no valid frontmatter or empty body",
                 item.Name,
-                fullPath
+                item.Path
             );
             return null;
         }
@@ -332,56 +338,18 @@ public sealed class WorkspaceSubAgentLoader
     }
 
     /// <summary>
-    /// Normalises <paramref name="hostPath"/> to a full path with a trailing directory separator
-    /// so a <see cref="string.StartsWith(string, StringComparison)"/> containment check rejects
-    /// sibling-prefix attacks (e.g. <c>C:\work-evil</c> against base <c>C:\work</c>).
+    /// The marketplace alias in a gateway path <c>/marketplaces/{alias}/...</c>, or null for any other path
+    /// (a workspace file). The alias is taken as it is, whatever characters it holds.
     /// </summary>
-    internal static string NormalizeBasePath(string hostPath)
+    internal static string? MarketplaceOf(string? path)
     {
-        var full = Path.GetFullPath(hostPath);
-        return full.EndsWith(Path.DirectorySeparatorChar) ? full : full + Path.DirectorySeparatorChar;
-    }
-
-    /// <summary>
-    /// Resolves <paramref name="relativeOrAbsolute"/> against <paramref name="basePath"/> and
-    /// asserts the result stays inside <paramref name="basePath"/>. Guards path-injection
-    /// (<c>"../etc/passwd"</c>); does NOT prevent symlink-escape, which would need
-    /// <see cref="File.ResolveLinkTarget(string, bool)"/>/junction resolution and is out of
-    /// scope for this loader. Comparison is case-insensitive on Windows and case-sensitive
-    /// elsewhere, matching the underlying filesystem's behaviour.
-    /// </summary>
-    internal static bool TryResolveContainedPath(string basePath, string relativeOrAbsolute, out string fullPath)
-    {
-        fullPath = string.Empty;
-        if (string.IsNullOrWhiteSpace(relativeOrAbsolute))
+        const string Prefix = "/marketplaces/";
+        if (path is null || !path.StartsWith(Prefix, StringComparison.Ordinal))
         {
-            return false;
+            return null;
         }
 
-        string combined;
-        try
-        {
-            combined = Path.IsPathRooted(relativeOrAbsolute)
-                ? Path.GetFullPath(relativeOrAbsolute)
-                : Path.GetFullPath(Path.Combine(basePath, relativeOrAbsolute));
-        }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            return false;
-        }
-
-        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-
-        // basePath always carries a trailing separator (NormalizeBasePath); combined therefore
-        // must START WITH that separator-terminated prefix to be "inside" basePath. Equality with
-        // the bare basePath (i.e. the workspace root itself) is rejected because a sub-agent
-        // markdown file MUST be a file under that root, not the root directory.
-        if (!combined.StartsWith(basePath, comparison))
-        {
-            return false;
-        }
-
-        fullPath = combined;
-        return true;
+        var end = path.IndexOf('/', Prefix.Length);
+        return end > Prefix.Length ? path[Prefix.Length..end] : null;
     }
 }

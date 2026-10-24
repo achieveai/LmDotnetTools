@@ -84,6 +84,17 @@ export function notifyToDisplayData(msg: NotifyMessage): NotificationDisplayData
 }
 
 /**
+ * The heading of a `context-discovery` notification. The host labels a capability notice with the
+ * item's catalog key (`skill:…`, `agent:…`): that item only became available, nothing was loaded.
+ * Any other label is a context file the agent did load.
+ */
+export function contextDiscoveryHeading(label: string | null | undefined): string {
+  if (label?.startsWith('skill:')) return 'New skill available';
+  if (label?.startsWith('agent:')) return 'New sub-agent available';
+  return 'Context loaded';
+}
+
+/**
  * The {@link NotificationDisplayData.notifyKind} agent-to-agent messages render under. Named once so
  * the producer here and the pill that styles it cannot drift (it is also the `data-notify-kind`
  * attribute value browser tests select on).

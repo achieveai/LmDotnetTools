@@ -26,8 +26,13 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 /// <para>
 /// A sub-agent id that is not already 1–47 characters of the gateway alphabet is replaced by
 /// <c>sa-{first 16 hex of SHA-256(subAgentId)}</c>; such an id cannot be mapped back by
-/// <see cref="TryGetSubAgentId"/>. The primary agent has no gateway id at all: it sends no header and
-/// lands in the gateway's default bucket.
+/// <see cref="TryGetSubAgentId"/>.
+/// </para>
+/// <para>
+/// <b>Root agent:</b> by default it has no gateway id at all: it sends no header and lands in the
+/// gateway's default bucket. A conversation that keeps its own skill tiers names its root agent with
+/// <see cref="ForRoot"/> (the root thread id itself), because the default bucket is shared by every
+/// conversation on the same sandbox session.
 /// </para>
 /// <para>
 /// No cleanup on stop (product decision): a finished sub-agent's gateway state is left in place.
@@ -52,6 +57,19 @@ public static class SandboxSubAgentIdentity
                 ? subAgentId
                 : "sa-" + HexHash(subAgentId);
         return $"{part}.{HexHash(rootThreadId)}";
+    }
+
+    /// <summary>
+    /// The gateway agent id for the ROOT agent of conversation <paramref name="rootThreadId"/> when it needs
+    /// one of its own: the thread id itself, or <c>null</c> when the thread id is not a valid gateway agent
+    /// id (the caller then has no per-conversation root id and must not act on one). The LmStreaming
+    /// sample's thread ids (<c>thread-{ms}-{guid}</c>) contain no <c>.</c>, so they never take the
+    /// <c>{part}.{tag}</c> form of a <see cref="ForSubAgent"/> id.
+    /// </summary>
+    public static string? ForRoot(string rootThreadId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(rootThreadId);
+        return SandboxAgentId.IsValid(rootThreadId) ? rootThreadId : null;
     }
 
     /// <summary>

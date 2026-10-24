@@ -231,7 +231,7 @@ public class OpenRouterModelServiceCacheTests : IDisposable
     }
 
     [Fact]
-    public async Task CacheLoadPerformance_CompletesUnder100Ms()
+    public async Task GetModelConfigsAsync_WithValidCache_ReturnsCachedModelsWithoutWaitingForTheNetwork()
     {
         // Arrange
         var cache = new OpenRouterCache
@@ -263,19 +263,32 @@ public class OpenRouterModelServiceCacheTests : IDisposable
         };
 
         await SaveTestCache(cache);
+
+        // A valid cache is returned at once and refreshed in the background. This network never answers
+        // until the test disposes the client, so a load that waited on it would never return. That replaces
+        // a 100 ms wall-clock budget, which a loaded machine missed with no regression.
+        _mockHttpHandler
+            .Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>()
+            )
+            .Returns<HttpRequestMessage, CancellationToken>(
+                async (_, cancellationToken) =>
+                {
+                    await Task.Delay(Timeout.Infinite, cancellationToken);
+                    throw new OperationCanceledException(cancellationToken);
+                }
+            );
         var service = CreateService();
 
-        // Act
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        var result = await service.GetModelConfigsAsync();
-        stopwatch.Stop();
+        // Act. The bound is only a hang backstop.
+        var result = await service.GetModelConfigsAsync().WaitAsync(TimeSpan.FromSeconds(30));
 
         // Assert
-        Assert.True(
-            stopwatch.ElapsedMilliseconds < 100,
-            $"Cache load took {stopwatch.ElapsedMilliseconds}ms, should be under 100ms"
-        );
-        Assert.NotEmpty(result);
+        string[] cachedIds = ["test-model-1", "test-model-2"];
+        Assert.Equal(cachedIds, result.Select(m => m.Id).Order());
     }
 
     private OpenRouterModelService CreateService()

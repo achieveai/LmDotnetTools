@@ -8,6 +8,7 @@ import {
   deriveToolPillState,
   summarizeToolCall,
   describeToolActivity,
+  unwrapToolCall,
 } from '@/utils';
 import { useToolResult } from '@/composables/useToolResult';
 import {
@@ -38,11 +39,16 @@ function toggle() {
 }
 
 const resultMsg = computed(() => getResult(props.toolCall));
-const renderer = computed(() => resolveRenderer(props.toolCall.function_name));
+// The call as shown: an ExecuteTool wrapper renders as the tool it ran (see unwrapToolCall), or as
+// itself once its result says the server refused it. The result still correlates by the wrapper's
+// own id, and `data-tool-name` keeps the raw wire name.
+const shown = computed(() => unwrapToolCall(props.toolCall, resultMsg.value));
+const shownName = computed(() => shown.value.call.function_name);
+const renderer = computed(() => resolveRenderer(shownName.value));
 
 const view = computed(() =>
   deriveToolPillState({
-    functionArgs: props.toolCall.function_args,
+    functionArgs: shown.value.call.function_args,
     result: resultMsg.value?.result ?? null,
     hasResult: resultMsg.value !== null,
     isErrorFlag: resultMsg.value?.is_error ?? null,
@@ -50,11 +56,11 @@ const view = computed(() =>
   })
 );
 
-const summary = computed(() => summarizeToolCall(props.toolCall.function_name, view.value));
+const summary = computed(() => summarizeToolCall(shownName.value, view.value));
 
 // Shared with the collapsed consumer headline (TurnActivity) — see utils/toolActivity.
 const activityDescription = computed(() =>
-  describeToolActivity(props.toolCall.function_name, view.value, summary.value)
+  describeToolActivity(shownName.value, view.value, summary.value)
 );
 
 const activityIconPath = computed(() => {
@@ -192,11 +198,13 @@ async function copyResult() {
       <span class="sr-only">{{ renderer.iconAlt }}</span>
       <span v-if="presentation === 'activity-row'" class="tool-pill__activity-description">
         {{ activityDescription }}
+        <span v-if="shown.via" class="tool-pill__activity-qualifier" data-testid="tool-via">via {{ shown.via }}</span>
         <span v-if="view.isBackground" class="tool-pill__activity-qualifier">Running in background</span>
         <span v-else-if="view.state === 'awaiting-input'" class="tool-pill__activity-qualifier">Waiting for input</span>
       </span>
       <template v-else>
-        <span class="tool-pill__title">{{ toolCall.function_name || 'tool' }}</span>
+        <span class="tool-pill__title">{{ shownName || 'tool' }}</span>
+        <span v-if="shown.via" class="tool-pill__via" data-testid="tool-via">via {{ shown.via }}</span>
         <span class="tool-pill__summary">{{ summary }}</span>
         <span v-if="view.isBackground" class="tool-pill__chip">background</span>
       </template>
@@ -213,7 +221,8 @@ async function copyResult() {
         class="tool-pill__technical-name"
         data-testid="tool-technical-name"
       >
-        <code>{{ toolCall.function_name || 'tool' }}</code>
+        <code>{{ shownName || 'tool' }}</code>
+        <template v-if="shown.via"> via <code>{{ shown.via }}</code></template>
       </div>
       <section
         v-if="renderer.family === 'agent'"
@@ -258,7 +267,7 @@ async function copyResult() {
         v-if="richComponent"
         class="tool-rich"
         :view="view"
-        :tool-call="toolCall"
+        :tool-call="shown.call"
       />
 
       <p v-if="view.isError && view.errorText" class="tool-pill__error">{{ view.errorText }}</p>
@@ -405,6 +414,12 @@ async function copyResult() {
   font-weight: 600;
   color: #333;
   flex-shrink: 0;
+}
+
+.tool-pill__via {
+  flex-shrink: 0;
+  color: #999;
+  font-size: 12px;
 }
 
 .tool-pill__summary {

@@ -66,11 +66,18 @@ env:
   # 0.1.16 is the floor for SandboxAgentLiveContractTests: per-agent state and the /agents
   # routes (upstream ADR 0040) and the executable_not_runnable operation error_code (#198)
   # first ship there. Below it those tests fail, not skip.
-  IMAGE_TAG: '0.1.16'
+  #
+  # 0.1.17 is the floor for SandboxSkillTiersLiveContractTests: per-agent skill tiers
+  # (upstream ADR 0041: the create `skills` block and GET/PATCH /sandboxes/{id}/skills)
+  # first ship there. Below it that test fails, not skips. Both 0.1.17 manifests were
+  # verified before this bump.
+  IMAGE_TAG: '0.1.17'
   GATEWAY_IMAGE: ghcr.io/achieveai/mcp-gateway
   AGENT_IMAGE: ghcr.io/achieveai/llm-sandbox-agent
   GATEWAY_PORT: '3987'
   GATEWAY_APP_ID: wi187-ci
+  # Alias of the committed fixture marketplace (tests/Sandbox.Integration.Tests/Fixtures/marketplace).
+  FIXTURE_MARKETPLACE: lmtest
 
 jobs:
   sandbox-contract:
@@ -145,11 +152,18 @@ jobs:
           docker_gid="$(stat -c '%g' /var/run/docker.sock)"
           # AUTH_WEBHOOK_HTTP_LOOPBACK_HOSTS: the agent live-contract test registers an http://127.0.0.1
           # discovery webhook; without the allowlist the gateway refuses the create with 400.
+          # PLUGINS_DIRS: the skill-tier live-contract test needs one marketplace plugin with two
+          # skills. The committed fixture is mounted read-only at the SAME path inside the gateway,
+          # because the gateway also hands that path to the host Docker daemon as the sandbox's
+          # /marketplaces/<alias> bind source (same pattern as the workspace base above).
+          fx="${GITHUB_WORKSPACE}/tests/Sandbox.Integration.Tests/Fixtures/marketplace"
           docker run -d --name wi187-gateway \
             -p "127.0.0.1:${GATEWAY_PORT}:3000" \
             --group-add "$docker_gid" \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$ws:$ws" \
+            -v "$fx:$fx:ro" \
+            -e "PLUGINS_DIRS=${FIXTURE_MARKETPLACE}=$fx" \
             -e BIND_ADDRESS=0.0.0.0 \
             -e PORT=3000 \
             -e SANDBOX_BACKEND=docker \
@@ -175,6 +189,31 @@ jobs:
             sleep 1
           done
           echo "Gateway did not become healthy in 60s" >&2
+          docker logs wi187-gateway >&2 || true
+          exit 1
+
+      # /health does not touch the plugin catalog, and a cold gateway's first preview can come
+      # back without the plugins it serves. Poll the authenticated preview until the fixture
+      # plugin lists both skills, so the skill-tier test never starts against a cold catalog.
+      - name: Wait for fixture marketplace in the catalog
+        env:
+          APP_SECRET: ${{ steps.authcreds.outputs.app_secret }}
+        run: |
+          deadline=$((SECONDS + 30))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            skills="$(curl -sf --max-time 10 \
+              -H "X-Sbx-App-Id: ${GATEWAY_APP_ID}" -H "X-Sbx-App-Key: ${APP_SECRET}" \
+              "http://127.0.0.1:${GATEWAY_PORT}/api/v1/marketplaces/preview" \
+              | jq --arg m "$FIXTURE_MARKETPLACE" \
+                '[.marketplaces[] | select(.alias == $m) | .plugins[] | select(.name == "skilltiers") | .skills[]] | length' \
+              || echo 0)"
+            if [ "${skills:-0}" -ge 2 ]; then
+              echo "Fixture plugin listed with ${skills} skills after ${SECONDS}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "The catalog did not list the fixture plugin's two skills within 30s" >&2
           docker logs wi187-gateway >&2 || true
           exit 1
 
