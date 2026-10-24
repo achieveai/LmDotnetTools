@@ -405,9 +405,8 @@ public sealed class NonOwningConversationStoreTests
 
     /// <summary>
     /// The stamp is resolved BEFORE the store lock (the supplier walks the live registry), so a slow
-    /// lock lets a newer run write first. When the older write then runs, the manager's terminal push
-    /// hands back <c>existing</c> untouched; the wrapper must not merge the older run's terminal stamp
-    /// over the newer run's write.
+    /// lock lets a newer run write first. When the older write then runs, its unrelated caller update
+    /// must survive, while the wrapper refuses the older run's terminal stamp over the newer run's write.
     /// </summary>
     [Fact]
     public async Task NonOwningWrapper_DoesNotApplyStaleStamp_OverANewerRunsWrite_WhenTheLockWasSlow()
@@ -464,9 +463,17 @@ public sealed class NonOwningConversationStoreTests
         );
 
         // Epoch E: the terminal push resolves its Completed stamp, then waits on the lock.
+        // Its unrelated caller update must still run even when the stamp is refused.
         var terminalPush = wrapper.UpdateMetadataAsync(
             ThreadId,
-            existing => existing ?? new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 1 }
+            existing =>
+                (existing ?? new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 1 }) with
+                {
+                    Properties = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty).SetItem(
+                        "caller.marker",
+                        "kept"
+                    ),
+                }
         );
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -481,7 +488,7 @@ public sealed class NonOwningConversationStoreTests
                 }
         );
 
-        // The superseded push finally runs; the manager hands back `existing` unchanged.
+        // The superseded push finally runs; its caller update survives without the old stamp.
         gate.SetResult();
         await terminalPush.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -493,5 +500,6 @@ public sealed class NonOwningConversationStoreTests
                 "the older run's terminal instant must not land over the newer run's write"
             );
         SubAgentProvenance.TryProject(saved, "thread-parent")!.Status.Should().Be("running");
+        saved.Properties!["caller.marker"].Should().Be("kept");
     }
 }
