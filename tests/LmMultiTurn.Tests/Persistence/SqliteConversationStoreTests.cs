@@ -29,16 +29,9 @@ public class SqliteConversationStoreTests : IAsyncLifetime
     {
         await _store.DisposeAsync();
 
-        // Clear only this database's pool: ClearAllPools also disposes connections that tests in other classes
-        // are using in parallel (ObjectDisposedException on SQLitePCL.sqlite3).
-        SqliteConnectionFactory.ClearPool(_databasePath);
-
-        // The tests' own "Data Source=<path>" connections pool under a different key. Left open, they hold the
-        // file, and Windows refuses to delete the -shm file (UnauthorizedAccessException).
-        await using (var raw = new SqliteConnection($"Data Source={_databasePath}"))
-        {
-            SqliteConnection.ClearPool(raw);
-        }
+        // Release this database's factory and raw-probe pools before removing its files.
+        // Other test databases keep their own connections.
+        SqliteTestPools.Clear(_databasePath);
 
         // Give time for pool to release
         await Task.Delay(50);
@@ -458,7 +451,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
             "notify_waits",
         ];
 
-        await using (var seed = new SqliteConnection($"Data Source={_databasePath}"))
+        await using (var seed = new SqliteConnection($"Data Source={_databasePath};Pooling=False"))
         {
             await seed.OpenAsync();
             foreach (var threadId in new[] { "thread-1", "thread-keep" })
@@ -499,7 +492,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         await _store.DeleteThreadAsync("thread-1");
 
         // Assert: every thread-scoped table is empty for thread-1, and thread-keep is untouched.
-        await using var verify = new SqliteConnection($"Data Source={_databasePath}");
+        await using var verify = new SqliteConnection($"Data Source={_databasePath};Pooling=False");
         await verify.OpenAsync();
         foreach (var table in threadScopedTables)
         {
@@ -1034,7 +1027,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         );
         await _store.SaveMetadataAsync("unrelated", CreateTestMetadata("unrelated"));
 
-        await using var connection = new SqliteConnection($"Data Source={_databasePath}");
+        await using var connection = new SqliteConnection($"Data Source={_databasePath};Pooling=False");
         await connection.OpenAsync();
         await using (var poison = connection.CreateCommand())
         {
@@ -1103,7 +1096,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
             await _store.SaveMetadataAsync(threadId, CreateTestMetadata(threadId));
         }
 
-        await using var connection = new SqliteConnection($"Data Source={_databasePath}");
+        await using var connection = new SqliteConnection($"Data Source={_databasePath};Pooling=False");
         await connection.OpenAsync();
         await using (var poison = connection.CreateCommand())
         {
