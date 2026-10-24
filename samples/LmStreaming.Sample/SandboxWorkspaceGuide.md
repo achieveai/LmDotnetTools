@@ -447,6 +447,66 @@ the shared parser and logs its diagnostics, but does not install the characteris
 `modelintelligence` never selects a daemon model and `effort` never adds reasoning request metadata.
 Existing explicit `model:` handling remains unchanged.
 
+## HTTP MCP libraries
+
+Gateway v0.1.18 and its matching Docker agent image let scripts call a plugin's HTTP MCP server with
+`sbx-mcp`, `sbx_mcp` or `@sbx/mcp`. The proxy injects credentials; the script reads only a secret-free
+manifest. Native backends need the helpers installed separately.
+
+Create the egress key in the existing **Egress Auth** dialog first. Its provider ID is `predefined-<id>`.
+Bindings also accept existing registered OAuth provider IDs such as `github`, `ado` and `m365`.
+The separate `cfg-*` configured-header provider namespace is not a binding source.
+Then configure an explicit app/server/endpoint binding. This example refers to an existing key; it contains
+no token values:
+
+```jsonc
+"Auth": {
+  "Webhook": { "UseSandboxWebhook": true, "RegisterEventWebhook": true,
+    "PublicBaseUrl": "https://app.example" }
+},
+"SandboxGateway": {
+  "Mcp": {
+    "Egress": "auto",
+    "Servers": {
+      "stub": { "Auth": "injected", "Headers": ["Authorization"],
+        "Url": "https://mcp.example/mcp", "CacheTtlSeconds": 60 }
+    },
+    "CredentialBindings": [
+      { "AppId": "my-app", "Server": "stub", "Url": "https://mcp.example/mcp",
+        "ProviderId": "predefined-my-key", "Headers": ["Authorization"], "CacheTtlSeconds": 60 }
+    ]
+  }
+}
+```
+
+The selected marketplace plugin must declare `stub` in `.mcp.json`. Leave secret placeholders unresolved;
+never put their tokens in sandbox environment variables or marketplace files. The existing key's host and
+port must also permit `mcp.example:443`. Set optional `Plugin` and `Marketplace` on a binding to pin its
+declaration identity. The creating `AppId` and server name match exactly; no fallback uses another app's key.
+
+Bindings permit HTTPS endpoints without userinfo, query or fragment. The callback permits only that exact
+endpoint path with streamable HTTP methods (`POST`, `GET`, `DELETE`). Header names are explicitly allowed.
+`CacheTtlSeconds` is 1–300; actual expiry is also capped by policy and token expiry minus 30 seconds.
+Credential edits therefore take effect after the gateway's current cache expires. A rejected request evicts
+that gateway cache; the next request reads the current key. Shared OAuth accounts are never signed out.
+
+MCP setup and binding metadata are frozen when a session is created. Restart loses in-memory ownership;
+callbacks for those old sessions deny even if their authentication secret remains on disk. Create a new
+session through the normal app path to restore access. Missing/expired credentials return `pending` without
+waiting for browser sign-in. Unknown sessions, bindings or destinations deny.
+
+For opted-in sessions, generated credential routes lose only exact hosts protected by any app's MCP binding;
+their other hosts remain available. An overlapping wildcard cannot safely exclude one endpoint. An overlapping
+credential-free route would bypass MCP authentication. Both conflicts reject creation with the generated rule
+ID. Replace/disable managed OAuth rules through existing `Network:Rules` configuration. For a predefined
+key's wildcard host, narrow or remove that key in the existing Egress Auth dialog; `predefined-*` rule IDs
+remain reserved.
+
+`Egress: "manual"` leaves network rules to the operator. Explicit network rules, including denies, retain
+their precedence. A manual rule can use `"AuthProvider": "mcp:stub"` for an enabled configured MCP server;
+its rule ID can differ from the server name. This feature does not isolate unrelated legacy egress routes. With no `Mcp` configuration,
+the existing request and callback subscriptions remain unchanged.
+
 ## Running
 
 The backend auto-launches the Vite client (via `Vite.AspNetCore`) **and** auto-spawns the gateway

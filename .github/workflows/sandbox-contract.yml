@@ -71,7 +71,10 @@ env:
   # (upstream ADR 0041: the create `skills` block and GET/PATCH /sandboxes/{id}/skills)
   # first ship there. Below it that test fails, not skips. Both 0.1.17 manifests were
   # verified before this bump.
-  IMAGE_TAG: '0.1.17'
+  # 0.1.18 is the floor for SandboxMcpPolicyLiveContractTests: MCP library create policy,
+  # secret-free manifests and Docker-shipped sbx-mcp first ship there (upstream ADR 0046).
+  # Gateway and agent remote tag manifests were verified before this bump.
+  IMAGE_TAG: '0.1.18'
   GATEWAY_IMAGE: ghcr.io/achieveai/mcp-gateway
   AGENT_IMAGE: ghcr.io/achieveai/llm-sandbox-agent
   GATEWAY_PORT: '3987'

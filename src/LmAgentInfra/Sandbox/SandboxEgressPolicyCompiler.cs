@@ -135,7 +135,7 @@ internal static partial class SandboxEgressPolicyCompiler
 
         foreach (var (key, rule) in rules)
         {
-            ValidateRule(key, rule, providers, errors);
+            ValidateRule(key, rule, providers, options, errors);
         }
 
         ValidateShadowing(rules, errors);
@@ -274,6 +274,7 @@ internal static partial class SandboxEgressPolicyCompiler
         string key,
         SandboxNetworkRuleOptions rule,
         IDictionary<string, SandboxEgressAuthProviderOptions> providers,
+        SandboxGatewayOptions options,
         List<string> errors
     )
     {
@@ -374,6 +375,12 @@ internal static partial class SandboxEgressPolicyCompiler
         }
 
         var providerKey = rule.AuthProvider.Trim();
+        if (IsMcpProviderReference(options, providerKey))
+        {
+            // The gateway derives this provider from the plugin declaration, even in manual mode.
+            // Its owner-bound callback enforces the exact credential endpoint independently of rule scope.
+            return;
+        }
         if (!providers.TryGetValue(providerKey, out var provider) || !provider.Enabled)
         {
             errors.Add($"{RuleSection}:{key}:AuthProvider — does not name a configured, enabled auth provider.");
@@ -570,8 +577,8 @@ internal static partial class SandboxEgressPolicyCompiler
                     // unresolved spelling is emitted instead — the gateway denies an auth_provider it
                     // cannot find, and the webhook denies a provider id that does not match the rule.
                     // Only a BLANK reference may compile to null; that rule was never authenticated.
-                    authProvider: string.IsNullOrWhiteSpace(r.Value.AuthProvider)
-                        ? null
+                    authProvider: string.IsNullOrWhiteSpace(r.Value.AuthProvider) ? null
+                        : IsMcpProviderReference(options, r.Value.AuthProvider.Trim()) ? r.Value.AuthProvider.Trim()
                         : ConfiguredProviderIdPrefix
                             + (ResolveProviderKey(options, r.Value.AuthProvider) ?? r.Value.AuthProvider.Trim()),
                     requiredScopes: ParseList(r.Value.RequiredScopes),
@@ -748,7 +755,7 @@ internal static partial class SandboxEgressPolicyCompiler
     /// other's bare host. A wildcard and an exact host overlap under the gateway's apex rule
     /// (<see cref="WildcardCoversExact"/>).
     /// </summary>
-    private static bool HostsOverlap(string a, string b)
+    internal static bool HostsOverlap(string a, string b)
     {
         // The gateway's host_patterns_overlap treats a bare "*" as overlapping every pattern.
         // ValidateHostPattern rejects "*" so configuration cannot reach this, but
@@ -768,11 +775,29 @@ internal static partial class SandboxEgressPolicyCompiler
     }
 
     /// <summary>
-    /// Resolves an operator-written <c>AuthProvider</c> reference to the provider's OWN configuration
-    /// key. Configuration keys are case-insensitive, but the gateway resolves <c>auth_provider</c> by
-    /// exact match, so the emitted rule must carry the key the provider is emitted under — not the
-    /// spelling the rule happened to use.
+    /// Recognizes only exact server names in opt-in MCP configuration. These provider IDs belong to
+    /// gateway-derived MCP providers, not the separate cfg- namespace.
     /// </summary>
+    private static bool IsMcpProviderReference(SandboxGatewayOptions options, string reference)
+    {
+        if (options.Mcp is not { } mcp || !reference.StartsWith("mcp:", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var name = reference[4..];
+        var configured = mcp
+            .Servers.FirstOrDefault(pair => string.Equals(pair.Key, name, StringComparison.Ordinal))
+            .Value;
+        if (configured is not null)
+        {
+            return configured.Enabled != false && !string.Equals(configured.Auth, "none", StringComparison.Ordinal);
+        }
+
+        return mcp.CredentialBindings.Any(binding => string.Equals(binding.Server, name, StringComparison.Ordinal));
+    }
+
+    /// <summary>Resolves a configured provider's own key, preserving its wire spelling.</summary>
     private static string? ResolveProviderKey(SandboxGatewayOptions options, string? reference)
     {
         if (string.IsNullOrWhiteSpace(reference) || options.AuthProviders is null)

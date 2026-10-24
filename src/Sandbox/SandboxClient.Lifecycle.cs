@@ -202,6 +202,24 @@ public sealed partial class SandboxClient
                         : null,
                     skills.UnlistedHint
                 )
+                : null,
+            Mcp: request.Mcp is { } mcp
+                ? new McpPolicyDto(
+                    mcp.Egress?.ToString().ToLowerInvariant(),
+                    mcp.Servers.Count == 0
+                        ? null
+                        : mcp.Servers.ToDictionary(
+                            pair => pair.Key,
+                            pair => new McpServerPolicyDto(
+                                pair.Value.Auth?.ToString().ToLowerInvariant(),
+                                pair.Value.Headers,
+                                pair.Value.CacheTtlSeconds,
+                                pair.Value.Enabled,
+                                pair.Value.Url
+                            ),
+                            StringComparer.Ordinal
+                        )
+                )
                 : null
         );
 

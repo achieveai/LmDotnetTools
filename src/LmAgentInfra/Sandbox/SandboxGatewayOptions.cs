@@ -268,6 +268,9 @@ public sealed class SandboxGatewayOptions
     /// </summary>
     public SandboxNetworkOptions Network { get; set; } = new();
 
+    /// <summary>Opt-in HTTP MCP setup and operator-owned credential bindings, frozen for each new session.</summary>
+    public SandboxMcpOptions? Mcp { get; set; }
+
     /// <summary>
     /// Configured egress auth providers (<c>SandboxGateway:AuthProviders</c>), keyed by id. Emitted on
     /// the wire under the <c>cfg-</c> prefix so a configured identity can never collide with a managed

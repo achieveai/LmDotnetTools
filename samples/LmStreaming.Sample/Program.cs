@@ -643,6 +643,7 @@ try
     // sandbox webhook (Auth:Webhook:UseSandboxWebhook), which also delivers task_completed.
     _ = builder.Services.AddSingleton<ContextDiscoveryBatchHandler>();
     _ = builder.Services.AddSingleton<SandboxTaskCompletionNotifier>();
+    _ = builder.Services.AddSingleton<SandboxMcpAuthService>();
     // Tracks received discovery webhooks per session for GET /api/diagnostics/context-discovery,
     // so an operator can confirm discoveries are actually arriving (vs. silently lost to an
     // unreachable callback host).

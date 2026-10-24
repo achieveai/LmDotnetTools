@@ -152,6 +152,42 @@ read-only). That sync covers:
   gateway at or below v0.1.16 ignores `webhook`, so keep the legacy block for it. LmAgentInfra's
   `SandboxSessionRegistry` picks one through `WebhookOptions.UseSandboxWebhook` (default off).
 
+## HTTP MCP libraries (gateway v0.1.18)
+
+Use the create request's additive `Mcp` property to let sandbox scripts call declared HTTP MCP servers:
+
+```csharp
+var request = new SandboxCreateRequest(
+    "workspace",
+    webhook: new SandboxWebhookSettings(callbackUrl, sessionSecret,
+        [SandboxWebhookEvents.AuthRequest, SandboxWebhookEvents.AuthPostResponseFailure]))
+{
+    Mcp = new SandboxMcpPolicy(SandboxMcpEgress.Auto,
+        new Dictionary<string, SandboxMcpServerPolicy>
+        {
+            ["stub"] = new(auth: SandboxMcpAuthMode.Injected,
+                headers: ["Authorization"], cacheTtlSeconds: 60,
+                url: "https://mcp.example/mcp"),
+        }),
+};
+var session = await client.CreateAsync(request);
+```
+
+The gateway derives egress rules and a secret-free manifest from the selected plugins' `.mcp.json` files.
+Docker images ship `sbx-mcp`, Python `sbx_mcp` and Node `@sbx/mcp`; native backends require those helpers
+to be provisioned separately. The proxy asks the authenticated app callback for the **complete** credential
+header. The SDK registers policy; it does not host a credential callback or install helpers.
+
+Never put tokens in sandbox `Env` or marketplace files: resolved environment headers become visible in the
+manifest. Use `SandboxMcpAuthMode.None` for public servers. Generic SDK policy URLs also support HTTP;
+credential-bearing app bindings require HTTPS. `Manual` leaves rule authoring to the app. Omitting `Mcp`
+keeps existing requests unchanged, including the original constructor signature.
+
+The streaming sample integrates owner-bound callbacks through `SandboxGateway:Mcp`; see
+[its configuration guide](../../samples/LmStreaming.Sample/SandboxWorkspaceGuide.md#http-mcp-libraries).
+Resolved-manifest/catalog wrappers, generated plugin orchestration and forced OAuth rejection refresh
+are outside this integration.
+
 ## File transfer
 
 All three take a workspace-relative POSIX `path`, validated exactly like a command's
