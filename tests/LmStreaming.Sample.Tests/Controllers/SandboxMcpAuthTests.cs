@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Text;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
@@ -228,6 +229,106 @@ public sealed class SandboxMcpAuthTests
         decision.Headers.Should().BeNull();
     }
 
+    [Fact]
+    public async Task AuthRequest_CallerCancelledDuringAcquisition_PropagatesCancellation()
+    {
+        var provider = new GatedProvider();
+        await using var fixture = await Fixture.CreateAsync(provider: provider);
+        var session = await fixture.CreateSessionAsync("app-a");
+        using var cancellation = new CancellationTokenSource();
+        var response = fixture.PostAsync(session, "app-a", ManagedRequest(), cancellationToken: cancellation.Token);
+        await provider.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        cancellation.Cancel();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => response);
+        provider.AcquisitionToken.IsCancellationRequested.Should().BeTrue();
+        provider.SignOutCalls.Should().Be(0);
+    }
+
+    /// <summary>Integration: observes the real ten-second deadline, including a provider that ignores cancellation.</summary>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task AuthRequest_StalledProviderIgnoringCancellation_ReturnsPendingWithinTheDeadline()
+    {
+        var provider = new GatedProvider { IgnoreCancellation = true };
+        await using var fixture = await Fixture.CreateAsync(provider: provider);
+        var session = await fixture.CreateSessionAsync("app-a");
+        var watch = Stopwatch.StartNew();
+        var response = fixture.PostAsync(session, "app-a", ManagedRequest());
+        await provider.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        var result = Decision(await response.WaitAsync(TimeSpan.FromSeconds(15)));
+
+        result.Decision.Should().Be("pending");
+        result.Headers.Should().BeNull();
+        result.RetryAfterSeconds.Should().Be(5);
+        watch.Elapsed.TotalSeconds.Should().BeInRange(9, 15);
+        provider.AcquisitionToken.IsCancellationRequested.Should().BeTrue();
+        provider.Token.Task.IsCompleted.Should().BeFalse();
+        provider.SignOutCalls.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("match", "allow")]
+    [InlineData("plugin-missing", "deny")]
+    [InlineData("plugin-mismatch", "deny")]
+    [InlineData("marketplace-missing", "deny")]
+    [InlineData("marketplace-mismatch", "deny")]
+    public async Task AuthRequest_PinnedPluginAndMarketplace_RequireBothExactIdentities(
+        string identity,
+        string expected
+    )
+    {
+        await using var fixture = await Fixture.CreateAsync(pinIdentities: true);
+        var session = await fixture.CreateSessionAsync("app-a");
+        var request = Request();
+        request = request with
+        {
+            McpServer = request.McpServer! with
+            {
+                Plugin =
+                    identity == "plugin-missing" ? null
+                    : identity == "plugin-mismatch" ? "other"
+                    : "probe-plugin",
+                Marketplace =
+                    identity == "marketplace-missing" ? null
+                    : identity == "marketplace-mismatch" ? "other"
+                    : "probe-market",
+            },
+        };
+
+        var result = Decision(await fixture.PostAsync(session, "app-a", request));
+
+        result.Decision.Should().Be(expected);
+        if (expected == "allow")
+        {
+            result.Headers.Should().ContainSingle().Which.Should().Equal("Authorization", "Bearer app-a-canary");
+        }
+        else
+        {
+            result.Headers.Should().BeNull();
+        }
+    }
+
+    [Fact]
+    public async Task CreateSession_WithoutExplicitServerUrl_EmitsTheCurrentAppsBindingPin()
+    {
+        await using var fixture = await Fixture.CreateAsync(omitServerUrl: true);
+
+        _ = await fixture.CreateSessionAsync("app-a");
+
+        using var create = JsonDocument.Parse(fixture.Creates.Single());
+        create
+            .RootElement.GetProperty("mcp")
+            .GetProperty("servers")
+            .GetProperty("stub")
+            .GetProperty("url")
+            .GetString()
+            .Should()
+            .Be("https://mcp.example/mcp");
+    }
+
     private static AuthWebhookResponse Decision(IActionResult result) =>
         result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<AuthWebhookResponse>().Subject;
 
@@ -258,6 +359,8 @@ public sealed class SandboxMcpAuthTests
         public TaskCompletionSource<OAuthAccessToken> Token { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int SignOutCalls { get; private set; }
+        public bool IgnoreCancellation { get; init; }
+        public CancellationToken AcquisitionToken { get; private set; }
 
         public Task HydrateFromStoreAsync(CancellationToken ct = default) => Task.CompletedTask;
 
@@ -275,8 +378,9 @@ public sealed class SandboxMcpAuthTests
             CancellationToken ct = default
         )
         {
+            AcquisitionToken = ct;
             Started.SetResult(true);
-            return Token.Task.WaitAsync(ct);
+            return IgnoreCancellation ? Token.Task : Token.Task.WaitAsync(ct);
         }
     }
 
@@ -294,7 +398,9 @@ public sealed class SandboxMcpAuthTests
 
         public static async Task<Fixture> CreateAsync(
             string[]? bindingHeaders = null,
-            IOAuthTokenProvider? provider = null
+            IOAuthTokenProvider? provider = null,
+            bool pinIdentities = false,
+            bool omitServerUrl = false
         )
         {
             var fixture = new Fixture();
@@ -330,7 +436,7 @@ public sealed class SandboxMcpAuthTests
                         ["stub"] = new()
                         {
                             Auth = "injected",
-                            Url = endpoint,
+                            Url = omitServerUrl ? null : endpoint,
                             Headers = ["Authorization"],
                         },
                     },
@@ -341,6 +447,14 @@ public sealed class SandboxMcpAuthTests
                     ],
                 },
             };
+            if (pinIdentities)
+            {
+                foreach (var binding in options.Mcp.CredentialBindings)
+                {
+                    binding.Plugin = "probe-plugin";
+                    binding.Marketplace = "probe-market";
+                }
+            }
             fixture._lifetime = new(
                 options,
                 NullLogger<SandboxGatewayLifetime>.Instance,
@@ -375,7 +489,8 @@ public sealed class SandboxMcpAuthTests
             string app,
             AuthWebhookRequest request,
             bool wrongSecret = false,
-            string eventName = "auth_request"
+            string eventName = "auth_request",
+            CancellationToken cancellationToken = default
         )
         {
             var controller = new SandboxWebhookController(
@@ -398,7 +513,7 @@ public sealed class SandboxMcpAuthTests
                     AppId = app,
                     Data = JsonSerializer.SerializeToElement(request),
                 },
-                CancellationToken.None
+                cancellationToken
             );
         }
 

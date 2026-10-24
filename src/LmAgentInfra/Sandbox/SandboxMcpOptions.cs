@@ -78,13 +78,22 @@ internal static class SandboxMcpConfiguration
                 "injected" => SandboxMcpAuthMode.Injected,
                 _ => throw new ArgumentException("MCP auth must be none or injected."),
             };
-            servers.Add(
-                name,
-                new SandboxMcpServerPolicy(auth, value.Headers, value.CacheTtlSeconds, value.Enabled, value.Url)
+            var server = new SandboxMcpServerPolicy(
+                auth,
+                value.Headers,
+                value.CacheTtlSeconds,
+                value.Enabled,
+                value.Url
             );
+            if (server.Enabled != false && server.Auth != SandboxMcpAuthMode.None && server.Headers is { Count: 0 })
+            {
+                throw new ArgumentException(
+                    "Injected MCP server Headers must contain at least one header name when specified."
+                );
+            }
+            servers.Add(name, server);
         }
 
-        var policy = new SandboxMcpPolicy(egress, servers);
         var bindings = new Dictionary<string, SandboxMcpCredentialBinding>(StringComparer.Ordinal);
         var identities = new HashSet<(string AppId, string Server)>();
         var endpoints = new List<Uri>();
@@ -101,7 +110,7 @@ internal static class SandboxMcpConfiguration
             if (!TryCredentialEndpoint(value.Url, out var endpoint))
             {
                 throw new ArgumentException(
-                    "MCP credential endpoints require HTTPS without userinfo, query or fragment."
+                    "MCP credential endpoints require HTTPS with canonical paths and without userinfo, query or fragment."
                 );
             }
 
@@ -163,9 +172,45 @@ internal static class SandboxMcpConfiguration
             );
         }
 
+        // Protect explicitly configured credential-capable servers even when this app has no binding.
+        // Otherwise a generated legacy host route can bypass the MCP callback's missing-binding denial.
+        foreach (var (name, server) in servers.ToArray())
+        {
+            if (server.Enabled == false || server.Auth == SandboxMcpAuthMode.None)
+            {
+                continue;
+            }
+            if (server.Url is { } url)
+            {
+                if (!TryCredentialEndpoint(url, out var endpoint))
+                {
+                    throw new ArgumentException(
+                        "Credential-capable MCP servers require a canonical HTTPS endpoint URL pin."
+                    );
+                }
+                endpoints.Add(endpoint!);
+            }
+            else if (bindings.TryGetValue(name, out var binding))
+            {
+                servers[name] = new SandboxMcpServerPolicy(
+                    server.Auth,
+                    server.Headers,
+                    server.CacheTtlSeconds,
+                    server.Enabled,
+                    binding.Endpoint.OriginalString
+                );
+            }
+            else
+            {
+                throw new ArgumentException(
+                    "Credential-capable MCP servers require an endpoint URL pin or a matching binding endpoint for the creating app."
+                );
+            }
+        }
+
         return new SandboxMcpSessionContext(
             appId,
-            policy,
+            new SandboxMcpPolicy(egress, servers),
             new ReadOnlyDictionary<string, SandboxMcpCredentialBinding>(bindings),
             endpoints.AsReadOnly()
         );
@@ -176,5 +221,17 @@ internal static class SandboxMcpConfiguration
         && endpoint.Scheme == Uri.UriSchemeHttps
         && string.IsNullOrEmpty(endpoint.UserInfo)
         && string.IsNullOrEmpty(endpoint.Query)
-        && string.IsNullOrEmpty(endpoint.Fragment);
+        && string.IsNullOrEmpty(endpoint.Fragment)
+        && HasCanonicalPath(value, endpoint);
+
+    private static bool HasCanonicalPath(string? value, Uri endpoint)
+    {
+        if (value is null || !value.StartsWith("https://", StringComparison.OrdinalIgnoreCase) || value.Contains('\\'))
+        {
+            return false;
+        }
+        var pathStart = value.IndexOf('/', "https://".Length);
+        var rawPath = pathStart < 0 ? "/" : value[pathStart..];
+        return string.Equals(rawPath, endpoint.AbsolutePath, StringComparison.Ordinal);
+    }
 }

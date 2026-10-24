@@ -482,10 +482,16 @@ no token values:
 The selected marketplace plugin must declare `stub` in `.mcp.json`. Leave secret placeholders unresolved;
 never put their tokens in sandbox environment variables or marketplace files. The existing key's host and
 port must also permit `mcp.example:443`. Set optional `Plugin` and `Marketplace` on a binding to pin its
-declaration identity. The creating `AppId` and server name match exactly; no fallback uses another app's key.
+declaration identity. MCP callback binding selection matches the creating `AppId` and server name exactly;
+it does not fall back to another app's key.
 
-Bindings permit HTTPS endpoints without userinfo, query or fragment. The callback permits only that exact
-endpoint path with streamable HTTP methods (`POST`, `GET`, `DELETE`). Header names are explicitly allowed.
+Bindings permit HTTPS endpoints without userinfo, query or fragment. Use a canonical URL path: spell
+unreserved characters literally and remove dot segments. The gateway sends the raw request path;
+the callback compares it exactly, without percent-decoding or stripping a query. The callback permits
+only that endpoint path with streamable HTTP methods (`POST`, `GET`, `DELETE`). Header names are explicitly allowed.
+An explicit server `Headers` list narrows the binding's list. Every selected header must be supplied by
+the credential provider; if the list is omitted, every binding header is required. This prevents silently
+using a partial credential. An injected server's explicit header list must not be empty.
 `CacheTtlSeconds` is 1–300; actual expiry is also capped by policy and token expiry minus 30 seconds.
 Credential edits therefore take effect after the gateway's current cache expires. A rejected request evicts
 that gateway cache; the next request reads the current key. Shared OAuth accounts are never signed out.
@@ -495,8 +501,22 @@ callbacks for those old sessions deny even if their authentication secret remain
 session through the normal app path to restore access. Missing/expired credentials return `pending` without
 waiting for browser sign-in. Unknown sessions, bindings or destinations deny.
 
-For opted-in sessions, generated credential routes lose only exact hosts protected by any app's MCP binding;
-their other hosts remain available. An overlapping wildcard cannot safely exclude one endpoint. An overlapping
+The upstream [MCP callback example](https://github.com/achieveai/SandboxedOstoolsMcpServer/blob/1f5b4ada20ba6c9467c16c679a5b0935c7475b10/Docs/examples/webhooks/auth_request_mcp.json)
+defines the unified envelope and server identity. The [webhook contract](https://github.com/achieveai/SandboxedOstoolsMcpServer/blob/1f5b4ada20ba6c9467c16c679a5b0935c7475b10/Docs/webhooks.md#L207-L257)
+accepts `pending`: the proxy returns HTTP 511 with `Retry-After` and `auth_pending`. This app requests
+a five-second retry delay; the caller decides when to retry. It does not replay a whole command.
+Credential acquisition is bounded to ten seconds, below the derived MCP provider's fifteen-second deadline.
+
+Use gateway v0.1.18 or later and matching images. Adopting a healthy gateway does not check its MCP
+capabilities. The inspected v0.1.17 create deserializer ignores the unknown `mcp` field, so a successful
+create response alone does not prove this policy was applied on an older deployment.
+
+For opted-in sessions, generated credential routes lose only exact hosts protected by any app's MCP binding
+or an enabled credential-bearing configured server's URL pin. Such a configured server needs a URL pin
+or a matching binding for the creating app. When the pin is omitted, that binding's endpoint becomes
+the server URL pin sent to the gateway. An explicit pin may exist without a credential binding, but
+its callback still denies until the creating app has a binding.
+Generated rules retain their other hosts. An overlapping wildcard cannot safely exclude one endpoint. An overlapping
 credential-free route would bypass MCP authentication. Both conflicts reject creation with the generated rule
 ID. Replace/disable managed OAuth rules through existing `Network:Rules` configuration. For a predefined
 key's wildcard host, narrow or remove that key in the existing Egress Auth dialog; `predefined-*` rule IDs
@@ -504,7 +524,11 @@ remain reserved.
 
 `Egress: "manual"` leaves network rules to the operator. Explicit network rules, including denies, retain
 their precedence. A manual rule can use `"AuthProvider": "mcp:stub"` for an enabled configured MCP server;
-its rule ID can differ from the server name. This feature does not isolate unrelated legacy egress routes. With no `Mcp` configuration,
+its rule ID can differ from the server name. A plugin-only server absent from `Servers` and all bindings
+has no known endpoint before creation; existing egress grants, including generated legacy credential rules,
+can still authorize that destination.
+List credential-bearing servers and endpoints explicitly when MCP binding decisions must govern them.
+This feature does not isolate unrelated legacy egress routes. With no `Mcp` configuration,
 the existing request and callback subscriptions remain unchanged.
 
 ## Running

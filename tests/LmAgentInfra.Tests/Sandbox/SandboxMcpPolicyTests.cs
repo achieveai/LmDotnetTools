@@ -53,6 +53,9 @@ public sealed class SandboxMcpPolicyTests
     [InlineData("header")]
     [InlineData("ttl")]
     [InlineData("policy-url")]
+    [InlineData("empty-injected-headers")]
+    [InlineData("escaped-unreserved-path")]
+    [InlineData("dot-segment-path")]
     public void BuildAuthPolicy_UnsafeCredentialBinding_RejectsItWithoutEchoingValues(string invalid)
     {
         var options = OptionsFor("https://mcp.example/mcp");
@@ -74,6 +77,20 @@ public sealed class SandboxMcpPolicyTests
                 break;
             case "policy-url":
                 options.Mcp.Servers["stub"] = new() { Url = "https://other.example/secret-canary" };
+                break;
+            case "empty-injected-headers":
+                options.Mcp.Servers["stub"] = new()
+                {
+                    Auth = "injected",
+                    Url = binding.Url,
+                    Headers = [],
+                };
+                break;
+            case "escaped-unreserved-path":
+                binding.Url = "https://mcp.example/%6dcp";
+                break;
+            case "dot-segment-path":
+                binding.Url = "https://mcp.example/a/../mcp";
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(invalid));
@@ -140,6 +157,98 @@ public sealed class SandboxMcpPolicyTests
 
         options.Network.Rules[ruleId] = new() { Enabled = false };
         action.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildAuthPolicy_ExplicitInjectedServerWithoutBinding_ProtectsItsPinnedDestination()
+    {
+        var options = new SandboxGatewayOptions
+        {
+            Mcp = new()
+            {
+                Egress = "auto",
+                Servers = new()
+                {
+                    ["stub"] = new() { Auth = "injected", Url = "https://api.github.com/mcp" },
+                },
+            },
+        };
+        var auth = new AuthOptions();
+        auth.Github.ClientId = "test-client";
+
+        var (_, rules) = SandboxSessionRegistry.BuildAuthPolicy(auth, options, "test-secret");
+
+        rules
+            .Should()
+            .ContainSingle(rule => rule.Id == "github")
+            .Which.Hosts.Should()
+            .Equal("github.com", "codeload.github.com");
+    }
+
+    [Theory]
+    [InlineData("injected")]
+    [InlineData(null)]
+    public void BuildAuthPolicy_CredentialCapableServerWithoutEndpoint_RejectsTheUnknownDestination(string? auth)
+    {
+        var options = new SandboxGatewayOptions
+        {
+            Mcp = new()
+            {
+                Egress = "auto",
+                Servers = new() { ["stub"] = new() { Auth = auth } },
+            },
+        };
+        var action = () => SandboxSessionRegistry.BuildAuthPolicy(new AuthOptions(), options, "test-secret");
+
+        action.Should().Throw<ArgumentException>().Which.Message.Should().Contain("endpoint");
+    }
+
+    [Theory]
+    [InlineData("none", true)]
+    [InlineData("injected", false)]
+    public void BuildAuthPolicy_DisabledOrPublicServerWithoutBinding_PreservesLegacyRoutes(string auth, bool enabled)
+    {
+        var options = new SandboxGatewayOptions
+        {
+            Mcp = new()
+            {
+                Egress = "auto",
+                Servers = new()
+                {
+                    ["stub"] = new() { Auth = auth, Enabled = enabled },
+                },
+            },
+        };
+        var configuredAuth = new AuthOptions();
+        configuredAuth.Github.ClientId = "test-client";
+
+        var (_, rules) = SandboxSessionRegistry.BuildAuthPolicy(configuredAuth, options, "test-secret");
+
+        rules.Should().ContainSingle(rule => rule.Id == "github").Which.Hosts.Should().Contain("api.github.com");
+    }
+
+    [Theory]
+    [InlineData("https://mcp.example/mcp")]
+    [InlineData("HTTPS://MCP.EXAMPLE/mcp")]
+    [InlineData("https://mcp.example/a%2Fb")]
+    [InlineData("https://mcp.example/a%2fb")]
+    public void BuildAuthPolicy_CanonicalAndReservedEscapedPaths_AreAccepted(string endpoint)
+    {
+        var options = OptionsFor(endpoint);
+        var action = () => SandboxSessionRegistry.BuildAuthPolicy(new AuthOptions(), options, "test-secret");
+
+        action.Should().NotThrow();
+    }
+
+    [Fact]
+    public void BuildAuthPolicy_OnlyAnotherAppsBindingWithoutUrlPin_RejectsTheUnpinnedServer()
+    {
+        var options = OptionsFor("https://api.github.com/mcp");
+        options.AppId = "other-app";
+        options.Mcp!.Servers["stub"] = new() { Auth = "injected" };
+        var action = () => SandboxSessionRegistry.BuildAuthPolicy(new AuthOptions(), options, "test-secret");
+
+        action.Should().Throw<ArgumentException>().Which.Message.Should().Contain("endpoint");
     }
 
     private static SandboxGatewayOptions OptionsFor(string endpoint) =>

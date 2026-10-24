@@ -188,6 +188,14 @@ The streaming sample integrates owner-bound callbacks through `SandboxGateway:Mc
 Resolved-manifest/catalog wrappers, generated plugin orchestration and forced OAuth rejection refresh
 are outside this integration.
 
+The gateway's [v0.1.18 MCP contract](https://github.com/achieveai/SandboxedOstoolsMcpServer/blob/1f5b4ada20ba6c9467c16c679a5b0935c7475b10/Docs/mcp-servers.md#L174-L208)
+derives an endpoint-less webhook provider named `mcp:<server>` for injected authentication, in both
+automatic and manual egress modes. An app-authored manual rule may reference that provider without
+adding its own `auth_providers` descriptor. Supplying a duplicate descriptor conflicts with gateway
+derivation. The provider uses the sandbox's unified `auth_request` subscription and a 15-second timeout.
+Use v0.1.18 or later with matching helper images; this SDK does not negotiate these capabilities when
+adopting a gateway.
+
 ## File transfer
 
 All three take a workspace-relative POSIX `path`, validated exactly like a command's
