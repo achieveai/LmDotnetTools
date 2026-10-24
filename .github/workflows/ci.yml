@@ -12,7 +12,7 @@ on:
   push:
     branches:
       - main
-    # A `v<version>` tag publishes that version as a stable package; see the packages job.
+    # Matching v<version> tags can safely retry a deterministic main release.
     tags:
       - 'v*'
 
@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   # Only PR runs are cancelled by a newer push. A main or tag run may be mid-way through pushing
   # packages, and cancelling it there would ship part of a version.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -54,6 +54,12 @@ jobs:
         shell: pwsh
         run: |
           pwsh -NoProfile -File ./scripts/ci-test-telemetry.Tests.ps1
+          exit $LASTEXITCODE
+
+      - name: Test package versions and publishing
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File ./scripts/package-release.Tests.ps1
           exit $LASTEXITCODE
 
       - name: Test priority policy and runner
@@ -120,16 +126,15 @@ jobs:
           retention-days: 14
 
   packages:
-    # Every merge to main publishes all AchieveAi.LmDotnetTools.* packages as <props version>-ci.<run>,
-    # so consumers can take a package dependency instead of building from source. A `v*` tag publishes
-    # the props version itself as the stable release. PR runs pack the same set and upload it as an
-    # artifact only: that code is not merged, and fork PRs could not authenticate anyway.
+    # Each first-parent main commit after the recorded published baseline adds one stable patch.
+    # PRs validate the next target-main version with a preview suffix and never publish.
+    # Retrying a SHA (including a matching v* tag) reuses the same package version.
     #
     # Publishing uses nuget.org Trusted Publishing: no API key is stored. NuGet/login exchanges this
     # job's GitHub OIDC token for a one-hour key, which only works while a nuget.org policy trusts
     # achieveai/LmDotnetTools + ci.yml. `vars.NUGET_USER` is the nuget.org profile that owns that policy.
     name: Pack and publish NuGet packages
-    needs: build-test
+    needs: [build-test, test-tooling, daemon-tests-linux, clientapp-tests, python-requirements]
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
@@ -139,6 +144,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -151,28 +158,27 @@ jobs:
       - name: Choose the package version label
         id: version
         shell: pwsh
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          $propsVersion = (dotnet msbuild src/LmCore/AchieveAi.LmDotnetTools.LmCore.csproj -getProperty:Version -p:PreReleaseLabel= -nologo).Trim()
-          if ($env:GITHUB_REF -like 'refs/tags/v*') {
-            $tag = $env:GITHUB_REF.Substring('refs/tags/v'.Length)
-            if ($tag -ne $propsVersion) {
-              throw "Tag v$tag does not match Directory.Build.props version $propsVersion; bump the props first."
-            }
-            $label = ''
+          $version = ./scripts/Get-PackageVersion.ps1 -Commit $env:GITHUB_SHA -EventName $env:GITHUB_EVENT_NAME -Ref $env:GITHUB_REF -PullRequestBase $env:PR_BASE_SHA -PullRequestNumber $env:PR_NUMBER -RunNumber $env:GITHUB_RUN_NUMBER | ConvertFrom-Json
+          foreach ($property in @('version', 'major', 'minor', 'patch', 'label', 'publish')) {
+            "$property=$($version.$property)" >> $env:GITHUB_OUTPUT
           }
-          else {
-            $label = "ci.$env:GITHUB_RUN_NUMBER"
-          }
-          "label=$label" >> $env:GITHUB_OUTPUT
-          Write-Host "Packing $propsVersion$(if ($label) { "-$label" })"
+          Write-Host "Packing $($version.version) from $($version.commit), main distance $($version.distance)"
+          "## NuGet version: $($version.version)" >> $env:GITHUB_STEP_SUMMARY
 
       # Directory.Build.targets limits packing to projects with an AchieveAi.LmDotnetTools.* PackageId.
       - name: Pack
         shell: pwsh
         env:
           LABEL: ${{ steps.version.outputs.label }}
+          MAJOR: ${{ steps.version.outputs.major }}
+          MINOR: ${{ steps.version.outputs.minor }}
+          PATCH: ${{ steps.version.outputs.patch }}
         run: |
-          dotnet pack LmDotnetTools.sln -c Release -o out "-p:PreReleaseLabel=$env:LABEL"
+          dotnet pack LmDotnetTools.sln -c Release -o out "-p:MajorVersion=$env:MAJOR" "-p:MinorVersion=$env:MINOR" "-p:PatchVersion=$env:PATCH" "-p:PreReleaseLabel=$env:LABEL"
           if ($LASTEXITCODE -ne 0) { throw "dotnet pack failed (exit $LASTEXITCODE)." }
           Get-ChildItem out -Filter *.nupkg | ForEach-Object { Write-Host $_.Name }
 
@@ -181,26 +187,26 @@ jobs:
         with:
           name: nuget-packages
           path: out/*
+          if-no-files-found: error
           retention-days: 14
 
       # Logged in right before the push: the issued key lasts one hour and is good for one exchange.
       - name: NuGet login (OIDC to temporary API key)
-        if: ${{ github.event_name == 'push' }}
+        if: ${{ github.event_name == 'push' && steps.version.outputs.publish == 'True' }}
         id: login
         uses: NuGet/login@v1
         with:
           user: ${{ vars.NUGET_USER }}
 
-      # --skip-duplicate makes a re-run of the same run number safe. The .snupkg symbol packages
+      # --skip-duplicate makes a re-run of the same SHA safe. The .snupkg symbol packages
       # next to each .nupkg are pushed with it.
       - name: Push to nuget.org
-        if: ${{ github.event_name == 'push' }}
+        if: ${{ github.event_name == 'push' && steps.version.outputs.publish == 'True' }}
         shell: pwsh
         env:
           NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
         run: |
-          dotnet nuget push "out/*.nupkg" --source https://api.nuget.org/v3/index.json --api-key $env:NUGET_API_KEY --skip-duplicate
-          if ($LASTEXITCODE -ne 0) { throw "dotnet nuget push failed (exit $LASTEXITCODE)." }
+          ./scripts/Push-NuGetPackages.ps1 -PackageDirectory out
 
   daemon-tests-linux:
     # The .NET gate above is windows-latest, and until this job existed that was the ONLY place .NET

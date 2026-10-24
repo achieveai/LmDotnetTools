@@ -25,7 +25,7 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.Clear(_databasePath);
         await Task.Delay(50);
         TryDelete(_databasePath);
         TryDelete(_databasePath + "-wal");
@@ -529,7 +529,7 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
+            SqliteTestPools.Clear(uninterruptedPath);
             TryDelete(uninterruptedPath);
             TryDelete(uninterruptedPath + "-wal");
             TryDelete(uninterruptedPath + "-shm");

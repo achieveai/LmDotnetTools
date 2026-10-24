@@ -33,7 +33,7 @@ public class SqliteConnectionFactoryTests : IDisposable
 
     public void Dispose()
     {
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.ClearDirectory(_root);
         try
         {
             Directory.Delete(_root, recursive: true);
@@ -58,11 +58,11 @@ public class SqliteConnectionFactoryTests : IDisposable
         // the operation publish-launch.ps1's atomic swap performs over a deployed notify-waits.db,
         // and it is the operation that actually failed in CI.
         //
-        // The factory sets Pooling = true, so ClearAllPools() below is REQUIRED even when disposal
+        // The factory sets Pooling = true, so clearing this database's pool below is REQUIRED even when disposal
         // is correct -- a pooled connection's native handle deliberately outlives Dispose. That does
         // not make this test vacuous, because the bug bypassed the pool entirely: base.Dispose was
         // never invoked, so the connection was never closed OR returned, and no amount of
-        // pool-clearing reaches a handle the pool does not know it owns. ClearAllPools is therefore
+        // pool-clearing reaches a handle the pool does not know it owns. Clearing its pool is therefore
         // the precise dividing line: it releases a correctly-disposed connection and cannot release
         // a leaked one.
         var dbDirectory = Path.Combine(_root, "data");
@@ -79,7 +79,7 @@ public class SqliteConnectionFactoryTests : IDisposable
             _ = await command.ExecuteNonQueryAsync();
         }
 
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.Clear(databasePath);
 
         var renamed = Path.Combine(_root, "data-renamed");
         var rename = () => MoveDirectoryAllowingTransientScannerHold(dbDirectory, renamed);
@@ -87,7 +87,7 @@ public class SqliteConnectionFactoryTests : IDisposable
         rename
             .Should()
             .NotThrow(
-                "disposing the connection must actually close it and return it to the pool -- only then can ClearAllPools release the file and let its directory be renamed"
+                "disposing the connection must actually close it and return it to the pool -- only then can clearing its pool release the file and let its directory be renamed"
             );
         File.Exists(Path.Combine(renamed, "notify-waits.db")).Should().BeTrue();
 
