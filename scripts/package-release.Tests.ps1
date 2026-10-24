@@ -82,6 +82,10 @@ try {
     }
     $workflowVersion = if ($outputs.ContainsKey("version")) { $outputs.version } else { "1.0.33-$($outputs.label)" }
     Assert-Release ($workflowVersion -eq "1.0.34") "First main change must publish stable 1.0.34; workflow chose $workflowVersion."
+    $expectedOutputs = [ordered]@{ publish = "True"; major = "1"; minor = "0"; patch = "34"; label = "" }
+    foreach ($property in $expectedOutputs.Keys) {
+        Assert-Release ($outputs.ContainsKey($property) -and $outputs[$property] -ceq $expectedOutputs[$property]) "Main workflow must export $property=$($expectedOutputs[$property]); got '$($outputs[$property])'."
+    }
 
     Assert-Release ((Get-ReleaseVersion).version -eq "1.0.34") "First main commit must advance one patch."
     Assert-Release ((Get-ReleaseVersion).version -eq "1.0.34") "Retrying the same commit must retain its allocated version."
@@ -104,9 +108,19 @@ try {
     $tagged = Get-ReleaseVersion @{ Ref = "refs/tags/v1.0.36" }
     Assert-Release ($tagged.version -eq "1.0.36" -and $tagged.publish) "A matching tag must reuse the deterministic release version."
     Assert-ReleaseFailure { Get-ReleaseVersion @{ Ref = "refs/tags/v1.0.37" } } "*does not match*"
+    $null = Invoke-FixtureGit @("switch", "-c", "unmerged-release")
+    $featureOnly = Add-FixtureCommit "unmerged-release"
+    $null = Invoke-FixtureGit @("tag", "v1.0.37", $featureOnly)
+    $null = Invoke-FixtureGit @("switch", "main")
+    Assert-ReleaseFailure { Get-ReleaseVersion @{ Commit = "refs/tags/v1.0.37"; Ref = "refs/tags/v1.0.37" } } "*Release tags must target a commit on main's first-parent history.*"
     Assert-ReleaseFailure { Get-ReleaseVersion @{ EventName = "push"; Ref = "refs/heads/feature" } } "*Only main*"
     $manual = Get-ReleaseVersion @{ EventName = "workflow_dispatch" }
     Assert-Release ($manual.version -eq "1.0.36-ci.7" -and -not $manual.publish) "Manual validation must not publish a stable release."
+    $defaultRun = & (Join-Path $PSScriptRoot "Get-PackageVersion.ps1") -RepositoryRoot $fixture -EventName workflow_dispatch | ConvertFrom-Json
+    Assert-Release ($defaultRun.version -eq "1.0.36-ci.0" -and -not $defaultRun.publish) "The default run number must remain canonical zero."
+    foreach ($invalidRun in @("007", [string][char]0x0667)) {
+        Assert-ReleaseFailure { Get-ReleaseVersion @{ EventName = "workflow_dispatch"; RunNumber = $invalidRun } } "*canonical ASCII*"
+    }
     Assert-ReleaseFailure { Get-ReleaseVersion @{ EventName = "pull_request"; Ref = "refs/pull/9/merge" } } "*base*"
     $propsPath = Join-Path $fixture "Directory.Build.props"
     $props = Get-Content -LiteralPath $propsPath -Raw
