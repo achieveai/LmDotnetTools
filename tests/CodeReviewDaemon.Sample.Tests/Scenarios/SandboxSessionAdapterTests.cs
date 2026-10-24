@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
@@ -6,6 +5,7 @@ using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -25,7 +25,11 @@ public sealed class SandboxSessionAdapterTests
     private const string Gateway = "http://127.0.0.1:8080";
     private const string Session = "sess-1";
 
-    private static SandboxSessionAdapter CreateAdapter(ScriptedSandboxGateway gateway, SandboxLimits? limits = null) =>
+    private static SandboxSessionAdapter CreateAdapter(
+        HttpMessageHandler gateway,
+        SandboxLimits? limits = null,
+        TimeProvider? commandClock = null
+    ) =>
         new(
             Gateway,
             Session,
@@ -33,7 +37,10 @@ public sealed class SandboxSessionAdapterTests
             new SandboxCredential("codereview-daemon", string.Empty),
             limits,
             gateway
-        );
+        )
+        {
+            CommandClock = commandClock ?? TimeProvider.System,
+        };
 
     [Fact]
     public async Task RunAsync_returns_the_real_captured_exit_code_and_streams()
@@ -144,15 +151,21 @@ public sealed class SandboxSessionAdapterTests
     [Fact]
     public async Task RunAsync_cancels_client_side_at_the_per_command_timeout_not_the_configured_one()
     {
-        // The gateway never terminalizes the operation, so only a client-side deadline ends the call. The
-        // configured limit is minutes; the command's own is 100 ms. The SDK's poll deadline (per-command
-        // value + 1 s grace) is the fallback: a call that took that long used the wrong deadline.
-        var gateway = new ScriptedSandboxGateway { HangOperations = true };
+        // Command-submit entry proves the deadline is armed. No operation response is returned, so the
+        // SDK's separate poll deadline cannot satisfy the assertion. Setup consumes no fake time.
+        var clock = new FakeTimeProvider();
+        using var gateway = new CancellationObservingTransport(token =>
+        {
+            clock.Advance(TimeSpan.FromMilliseconds(99));
+            token.IsCancellationRequested.Should().BeFalse("the command still has one millisecond left");
+            clock.Advance(TimeSpan.FromMilliseconds(1));
+            token.IsCancellationRequested.Should().BeTrue("the command's 100 ms deadline must reach the HTTP request");
+        });
         await using var adapter = CreateAdapter(
             gateway,
-            new SandboxLimits { CommandTimeout = TimeSpan.FromMinutes(5) }
+            new SandboxLimits { CommandTimeout = TimeSpan.FromMinutes(5) },
+            clock
         );
-        var clock = Stopwatch.StartNew();
 
         var act = () =>
             adapter.RunAsync(
@@ -161,7 +174,36 @@ public sealed class SandboxSessionAdapterTests
             );
 
         (await act.Should().ThrowAsync<TimeoutException>()).Which.Message.Should().Contain("00:00:00.1000000");
-        clock.Elapsed.Should().BeLessThan(TimeSpan.FromMilliseconds(700));
+        gateway.RequestObserved.Should().BeTrue("the request must reach the transport before cancellation");
+    }
+
+    [Fact]
+    public async Task RunAsync_preserves_caller_cancellation_when_the_command_deadline_also_expires()
+    {
+        var clock = new FakeTimeProvider();
+        using var caller = new CancellationTokenSource();
+        using var gateway = new CancellationObservingTransport(token =>
+        {
+            clock.Advance(TimeSpan.FromMilliseconds(99));
+            token.IsCancellationRequested.Should().BeFalse();
+            caller.Cancel();
+            token.IsCancellationRequested.Should().BeTrue("caller cancellation must reach the active HTTP request");
+            clock.Advance(TimeSpan.FromMilliseconds(1));
+        });
+        await using var adapter = CreateAdapter(
+            gateway,
+            new SandboxLimits { CommandTimeout = TimeSpan.FromMinutes(5) },
+            clock
+        );
+
+        var act = () =>
+            adapter.RunAsync(
+                new SandboxCommand(["sleep", "600"], Timeout: TimeSpan.FromMilliseconds(100)),
+                caller.Token
+            );
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        gateway.RequestObserved.Should().BeTrue();
     }
 
     [Fact]
@@ -356,5 +398,31 @@ public sealed class SandboxSessionAdapterTests
         var act = () => adapter.WriteFileAsync("/workspace/reviewbot/README.md", "content", CancellationToken.None);
 
         (await act.Should().ThrowAsync<IOException>()).Which.Message.Should().Contain("/workspace/reviewbot/README.md");
+    }
+
+    private sealed class CancellationObservingTransport(Action<CancellationToken> observe)
+        : DelegatingHandler(new ScriptedSandboxGateway())
+    {
+        internal bool RequestObserved { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
+        {
+            // Mount discovery is shared by the SDK and deliberately uses its own cancellation budget.
+            if (
+                request.Method != HttpMethod.Post
+                || !request.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal)
+            )
+            {
+                return base.SendAsync(request, cancellationToken);
+            }
+
+            RequestObserved = true;
+            observe(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new InvalidOperationException("The command must cancel before a gateway response is returned.");
+        }
     }
 }
