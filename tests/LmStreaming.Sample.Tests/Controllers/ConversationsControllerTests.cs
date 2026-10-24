@@ -2608,6 +2608,8 @@ public class ConversationsControllerTests
         await store.UpsertRunLedgerAsync(
             new RunLedgerEntry(threadId, "run-ok", RunStatus.InProgress, ["input-ok"], now, now)
         );
+        // A live agent holds the conversation, so the store's in-progress row stands.
+        _ = pool.GetOrCreateAgent(threadId, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
 
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
 
@@ -2618,6 +2620,50 @@ public class ConversationsControllerTests
         response.ThreadId.Should().Be(threadId);
         response.RunId.Should().Be("run-ok");
         response.Status.Should().Be(nameof(ConversationRunStatus.InProgress));
+    }
+
+    [Fact]
+    public async Task GetStatus_ReportsAnInProgressRun_AsInterrupted_WhenNoLiveAgentHoldsTheConversation()
+    {
+        // The host was killed mid-run, so the ledger row still says in progress. A review batch polled it
+        // for 15 hours.
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        const string threadId = "thread-status-killed-host";
+        const string childThreadId = "subagent-status-killed-host-agent-1";
+        var now = DateTimeOffset.UtcNow;
+        foreach (var id in new[] { threadId, childThreadId })
+        {
+            await store.SaveMetadataAsync(
+                id,
+                new ThreadMetadata
+                {
+                    ThreadId = id,
+                    LastUpdated = 1,
+                    Properties = ImmutableDictionary<string, object>.Empty,
+                }
+            );
+            await store.UpsertRunLedgerAsync(
+                new RunLedgerEntry(id, $"run-{id}", RunStatus.InProgress, [$"input-{id}"], now, now)
+            );
+        }
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        async Task<string> StatusAsync(string id, string? runId, string? inputId) =>
+            Assert
+                .IsType<ConversationStatusResponse>(
+                    Assert
+                        .IsType<OkObjectResult>(await controller.GetStatus(id, runId, inputId, CancellationToken.None))
+                        .Value
+                )
+                .Status;
+
+        (await StatusAsync(threadId, $"run-{threadId}", null)).Should().Be(nameof(ConversationRunStatus.Interrupted));
+        (await StatusAsync(threadId, null, $"input-{threadId}")).Should().Be(nameof(ConversationRunStatus.Interrupted));
+        (await StatusAsync(childThreadId, $"run-{childThreadId}", null))
+            .Should()
+            .Be(nameof(ConversationRunStatus.InProgress), "a sub-agent runs in its parent's loop, not the pool");
     }
 
     [Fact]

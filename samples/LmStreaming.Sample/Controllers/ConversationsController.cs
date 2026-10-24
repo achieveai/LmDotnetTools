@@ -2213,11 +2213,31 @@ public class ConversationsController(
             {
                 ThreadId = result.ThreadId,
                 RunId = result.RunId,
-                Status = result.Status.ToString(),
+                Status = ReconcileRunStatusWithLiveState(threadId, result.Status).ToString(),
                 Response = result.Response,
             }
         );
     }
+
+    /// <summary>
+    /// Reports a run the store still calls in progress as <see cref="ConversationRunStatus.Interrupted"/>
+    /// when no live agent holds its conversation. The run died with the process that ran it: a restarted
+    /// host never resumes it, and only re-pooling the conversation rewrites the row
+    /// (<c>MultiTurnAgentBase.ReconcileRunLedgerAsync</c>). Without this a caller waiting for the run to
+    /// finish waited forever (2026-10-23: 22 reviews held their slots for 15 hours after a forced host
+    /// restart).
+    /// </summary>
+    /// <remarks>
+    /// Liveness is decided by presence in the pool alone, never by how old the row looks. An agent-owned
+    /// thread runs inside its parent's loop rather than the pool, so the pool cannot speak for it and its
+    /// persisted status stands.
+    /// </remarks>
+    private ConversationRunStatus ReconcileRunStatusWithLiveState(string threadId, ConversationRunStatus status) =>
+        status == ConversationRunStatus.InProgress
+        && !SubAgentSummary.IsAgentOwnedThreadId(threadId)
+        && (!agentPool.TryGet(threadId, out var agent) || agent is null)
+            ? ConversationRunStatus.Interrupted
+            : status;
 
     /// <summary>
     /// Renames/re-previews a conversation. Closed to machine callers on an agent-owned thread: a
