@@ -95,7 +95,9 @@ surface ownership, whole-suite client policy and conservative handling outside d
 ### Keep independent PR metadata compatible
 
 Insert new declaration rows beside the same test class or nearby test identities instead of
-appending unrelated additions at the end. Preserve existing rows and their order. Avoid a
+appending unrelated additions at the end. If that block is changing in pending PRs, use an
+unchanged related row or container owner in the same project as a bounded insertion anchor.
+Preserve existing rows and their order. Avoid a
 whole-manifest reorder while feature PRs are open: it can create conflicts even when each PR
 uses the same final ordering, especially when squash merges do not retain their shared ancestry.
 
