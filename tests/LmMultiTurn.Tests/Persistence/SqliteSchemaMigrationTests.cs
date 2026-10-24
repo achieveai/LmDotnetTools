@@ -25,9 +25,7 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
 
     public Task DisposeAsync()
     {
-        // The stores here pool their connections, so clear this file's pool. Never ClearAllPools: it can reclaim
-        // another test's connection mid-open. The raw connections are unpooled (see OpenAsync).
-        SqliteConnectionFactory.ClearPool(_databasePath);
+        SqliteTestPools.Clear(_databasePath);
         TryDelete(_databasePath);
         TryDelete(_databasePath + "-wal");
         TryDelete(_databasePath + "-shm");
@@ -532,7 +530,7 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
         }
         finally
         {
-            SqliteConnectionFactory.ClearPool(uninterruptedPath);
+            SqliteTestPools.Clear(uninterruptedPath);
             TryDelete(uninterruptedPath);
             TryDelete(uninterruptedPath + "-wal");
             TryDelete(uninterruptedPath + "-shm");

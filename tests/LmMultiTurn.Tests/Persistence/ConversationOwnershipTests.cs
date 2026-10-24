@@ -42,7 +42,6 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
 
     private string _root = null!;
     private readonly List<IAsyncDisposable> _disposables = [];
-    private readonly List<string> _sqlitePaths = [];
 
     public Task InitializeAsync()
     {
@@ -58,12 +57,7 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
             await disposable.DisposeAsync();
         }
 
-        // Only this test's own files: a process-wide clear can dispose another test's connection mid-open.
-        foreach (var path in _sqlitePaths)
-        {
-            SqliteConnectionFactory.ClearPool(path);
-        }
-
+        SqliteTestPools.ClearDirectory(_root);
         await Task.Delay(50);
 
         // #477: the "file" store kind here is a FileConversationStore with the exclusive-create retry
@@ -193,7 +187,6 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         {
             case "sqlite":
                 var path = Path.Combine(_root, $"conv_{Guid.NewGuid():N}.db");
-                _sqlitePaths.Add(path);
                 var sqlite = new SqliteConversationStore(path);
                 _disposables.Add(sqlite);
                 return sqlite;

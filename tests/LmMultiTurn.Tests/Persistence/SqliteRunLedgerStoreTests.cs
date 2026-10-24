@@ -24,7 +24,7 @@ public class SqliteRunLedgerStoreTests : IAsyncLifetime
     {
         await _store.DisposeAsync();
 
-        SqliteConnectionFactory.ClearPool(_databasePath);
+        SqliteTestPools.Clear(_databasePath);
         await Task.Delay(50);
 
         TryDeleteFile(_databasePath);

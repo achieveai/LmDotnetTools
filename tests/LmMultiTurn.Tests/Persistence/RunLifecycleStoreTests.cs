@@ -677,7 +677,7 @@ public sealed class SqliteRunLifecycleStoreTests : RunLifecycleStoreTestsBase
     {
         await _sqliteStore.DisposeAsync();
 
-        SqliteConnectionFactory.ClearPool(_databasePath);
+        SqliteTestPools.Clear(_databasePath);
         await Task.Delay(50);
 
         TryDelete(_databasePath);

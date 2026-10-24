@@ -568,6 +568,12 @@ public class CapabilityTiersTests
         await AssertViewAsync(store, T, ["alpha:p", "beta:c"], 2, 10);
 
         await stage.CommitAsync(default);
+        SkillDescription(tiers)
+            .Should()
+            .Be(
+                FakeSkillGateway.SkillText(["alpha:b", "alpha:p", "beta:c"]),
+                "the committed contract must describe the rotated view and the new pin immediately"
+            );
         // The thread's rows still hold the call at 6, which the first rotation already counted.
         (await tiers.OnCheckpointActivatedAsync(Activation(T, 20, 19, SkillCall(6, "beta:c")), default))
             .Should()
@@ -579,6 +585,105 @@ public class CapabilityTiersTests
         persisted!.Revision.Should().BeGreaterThan(2, "the persisted revision never goes down, and the view changed");
         persisted.RotatedThroughSeq.Should().Be(20);
         gw.ListedNames(T).Should().Equal(["alpha:b", "alpha:p"], "the stage's new pinned key is listed");
+    }
+
+    [Theory]
+    [InlineData("patch")]
+    [InlineData("relist")]
+    [InlineData("timeout")]
+    public async Task RacedCommit_RefreshFailure_KeepsRotatedContract_AndRetriesAtNextRotation(string failure)
+    {
+        var gw = new FakeSkillGateway();
+        using var tiers = new CapabilityTiers(T, await StoreAsync(T), NullLogger.Instance)
+        {
+            ConfigureBudget = TimeSpan.FromMilliseconds(100),
+        };
+        (await BuildAsync(tiers, Tiers([], [PinP]), gw, T)).Should().BeTrue();
+        var failRelist = false;
+        var gateway = gw.For(T) with
+        {
+            ListSkillContract = async ct =>
+            {
+                if (failRelist)
+                {
+                    failRelist = false;
+                    if (failure == "timeout")
+                    {
+                        await Task.Delay(Timeout.Infinite, ct);
+                    }
+                    else
+                    {
+                        throw new HttpRequestException("injected relist failure");
+                    }
+                }
+
+                return gw.SkillContract(T);
+            },
+        };
+        using var stage = await tiers.StageAsync(Tiers([], [PinP, "skill:alpha:b"]), gateway, default);
+        stage.TryAttachRootSkill(gw.SkillContract(T), SkillHandler).Should().BeTrue();
+        (await tiers.OnCheckpointActivatedAsync(Activation(T, 10, 9, SkillCall(6, "beta:c")), default))
+            .Should()
+            .BeTrue();
+        SkillDescription(tiers).Should().Be(FakeSkillGateway.SkillText(["alpha:p", "beta:c"]));
+
+        gw.FailPatches = failure == "patch" ? 1 : 0;
+        failRelist = failure is "relist" or "timeout";
+        using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await stage.CommitAsync(shutdown.Token);
+        shutdown.IsCancellationRequested.Should().BeFalse("the refresh must use its own shorter setup bound");
+
+        SkillDescription(tiers)
+            .Should()
+            .Be(
+                FakeSkillGateway.SkillText(["alpha:p", "beta:c"]),
+                "a failed refresh must not reinstall the staged text"
+            );
+        var patches = gw.Patches.Count;
+        (await tiers.OnCheckpointActivatedAsync(Activation(T, 20, 19), default)).Should().BeTrue();
+        gw.Patches.Should().HaveCount(patches + 1, "the failed commit refresh must remain retryable");
+        SkillDescription(tiers).Should().Be(FakeSkillGateway.SkillText(["alpha:b", "alpha:p"]));
+    }
+
+    [Fact]
+    public async Task RacedCommit_CallerCancellation_PropagatesAndReleasesTheGateForRetry()
+    {
+        var gw = new FakeSkillGateway();
+        using var tiers = new CapabilityTiers(T, await StoreAsync(T), NullLogger.Instance);
+        (await BuildAsync(tiers, Tiers([], [PinP]), gw, T)).Should().BeTrue();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var holdRefresh = false;
+        var live = gw.For(T);
+        var gateway = live with
+        {
+            PatchTiers = (id, set, ct) =>
+            {
+                if (!holdRefresh)
+                {
+                    return live.PatchTiers(id, set, ct);
+                }
+
+                entered.TrySetResult();
+                return Task.Delay(Timeout.Infinite, ct);
+            },
+        };
+        using var stage = await tiers.StageAsync(Tiers([], [PinP, "skill:alpha:b"]), gateway, default);
+        stage.TryAttachRootSkill(gw.SkillContract(T), SkillHandler).Should().BeTrue();
+        (await tiers.OnCheckpointActivatedAsync(Activation(T, 10, 9, SkillCall(6, "beta:c")), default))
+            .Should()
+            .BeTrue();
+        holdRefresh = true;
+        using var caller = new CancellationTokenSource();
+        var commit = stage.CommitAsync(caller.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        caller.Cancel();
+        var waitForCommit = async () => await commit;
+        await waitForCommit.Should().ThrowAsync<OperationCanceledException>();
+        SkillDescription(tiers).Should().Be(FakeSkillGateway.SkillText(["alpha:p", "beta:c"]));
+
+        holdRefresh = false;
+        (await tiers.OnCheckpointActivatedAsync(Activation(T, 20, 19), default)).Should().BeTrue();
+        SkillDescription(tiers).Should().Be(FakeSkillGateway.SkillText(["alpha:b", "alpha:p"]));
     }
 
     // R8, R8b: a build whose tiers did not fully take carries a plain warning for the switch that asked for it: a

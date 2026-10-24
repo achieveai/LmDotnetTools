@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmMultiTurn.TodoBoard;
 using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using FluentAssertions;
+using LmMultiTurn.Tests.Persistence;
 using Moq;
 using Xunit;
 
@@ -111,7 +112,7 @@ public class ConversationTodoProjectionTests
         finally
         {
             await store.DisposeAsync();
-            SqliteConnectionFactory.ClearPool(dbPath);
+            SqliteTestPools.Clear(dbPath);
             TryDelete(dbPath);
             TryDelete(dbPath + "-wal");
             TryDelete(dbPath + "-shm");

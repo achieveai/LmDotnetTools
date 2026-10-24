@@ -174,9 +174,14 @@ public class CapabilityTiersToolTests
             .Should()
             .Contain(row => row.Contains(" Write ", StringComparison.Ordinal), "guard: the root's search finds Write");
 
-        HitRows(await ChildSearchAsync(child, """{"query":"run a shell command"}"""))[0]
-            .Should()
-            .Be("1. Bash [available]");
+        // An existing child keeps its captured tool set when the root switches to a skill-only mode.
+        await BuildAsync(tiers, new TierSettings([], [], [], [], 10), new FakeSkillGateway().For(T), []);
+        tiers.RootProvider.GetFunctions().Should().NotContain(f => f.Contract.Name == SearchTool);
+
+        var bashHits = HitRows(await ChildSearchAsync(child, """{"query":"run a shell command"}"""));
+        bashHits.Should().NotBeEmpty("the child still owns its captured search catalog");
+        // Confidence is scored on the child's smaller corpus; availability remains its own view's.
+        bashHits[0].Should().StartWith("1. Bash ").And.EndWith("[available]");
         HitRows(await ChildSearchAsync(child, WriteQuery))
             .Should()
             .NotContain(row => row.Contains(" Write ", StringComparison.Ordinal));

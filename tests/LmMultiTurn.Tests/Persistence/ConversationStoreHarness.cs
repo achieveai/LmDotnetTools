@@ -29,7 +29,6 @@ internal sealed class ConversationStoreHarness : IAsyncDisposable
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"seq_{Guid.NewGuid():N}");
     private readonly List<IAsyncDisposable> _disposables = [];
     private readonly Dictionary<string, string> _backing = new(StringComparer.Ordinal);
-    private readonly List<string> _sqlitePaths = [];
     private InMemoryConversationStore? _memory;
 
     public ConversationStoreHarness()
@@ -44,7 +43,6 @@ internal sealed class ConversationStoreHarness : IAsyncDisposable
         {
             case "sqlite":
                 _backing[kind] = Path.Combine(_root, $"conv_{Guid.NewGuid():N}.db");
-                _sqlitePaths.Add(_backing[kind]);
                 return Reopen(kind);
             case "file":
                 _backing[kind] = Path.Combine(_root, $"file_{Guid.NewGuid():N}");
@@ -189,13 +187,7 @@ internal sealed class ConversationStoreHarness : IAsyncDisposable
             await disposable.DisposeAsync();
         }
 
-        // Only this harness's own files: a process-wide clear can dispose another test's connection mid-open.
-        // The raw connections above are unpooled, so the stores' pools are all that can still hold a file.
-        foreach (var path in _sqlitePaths)
-        {
-            SqliteConnectionFactory.ClearPool(path);
-        }
-
+        SqliteTestPools.ClearDirectory(_root);
         await Task.Delay(50);
         DetachedStoreTeardown.Purge(_root);
     }

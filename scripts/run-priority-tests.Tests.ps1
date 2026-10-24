@@ -1,4 +1,6 @@
 #requires -Version 7.0
+[CmdletBinding()]
+param([switch]$MeasuredCorpusOnly)
 
 $ErrorActionPreference = "Stop"
 $runner = Join-Path $PSScriptRoot "run-priority-tests.ps1"
@@ -28,13 +30,76 @@ function Format-PolicyDrift {
     }
     $lines.Add("  Next: ./scripts/run-priority-tests.ps1 -RepositoryRoot . | ConvertFrom-Json | Select-Object -ExpandProperty policyErrors")
     $lines.Add("  lists every id. Add one reviewed row per declaration to scripts/test-priorities.ndjson using the")
-    $lines.Add("  tiers in scripts/TEST-PRIORITIES.md, then bump the pinned counts below in the same commit.")
+    $lines.Add("  tiers and related-test placement in scripts/TEST-PRIORITIES.md. Counts are derived from the inventory.")
     return ($lines -join [Environment]::NewLine)
 }
 function Assert-Count {
     param([int]$Actual, [int]$Expected, [string]$What)
-    Assert-True ($Actual -eq $Expected) "$What -- pinned $Expected, manifest now has $Actual (delta $(if ($Actual -ge $Expected) { "+" })$($Actual - $Expected)). Bump the literal in the same commit that changes the rows."
+    Assert-True ($Actual -eq $Expected) "$What -- expected $Expected, manifest now has $Actual (delta $(if ($Actual -ge $Expected) { "+" })$($Actual - $Expected)). Review declaration changes against the frozen corpus; do not relabel coverage to satisfy a counter."
 }
+
+$reviewedRetiredMeasuredIds = @(
+    # #828 replaces the timing family with an unmeasured causal scenario and removes host-path
+    # helpers when loading through the gateway. These exact old identities alone may retire.
+    "dotnet|tests/LmConfig.Tests/LmConfig.Tests.csproj|AchieveAi.LmDotnetTools.LmConfig.Tests.Services.OpenRouterModelServiceCacheTests.CacheLoadPerformance_CompletesUnder100Ms()",
+    "dotnet|tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj|LmStreaming.Sample.Tests.Services.Discovery.WorkspaceSubAgentLoaderTests.NormalizeBasePath_AlwaysEndsWithSeparator()",
+    "dotnet|tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj|LmStreaming.Sample.Tests.Services.Discovery.WorkspaceSubAgentLoaderTests.TryResolveContainedPath_AbsoluteUnderBase_Accepted()",
+    "dotnet|tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj|LmStreaming.Sample.Tests.Services.Discovery.WorkspaceSubAgentLoaderTests.TryResolveContainedPath_DotDotEscape_Rejected()",
+    "dotnet|tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj|LmStreaming.Sample.Tests.Services.Discovery.WorkspaceSubAgentLoaderTests.TryResolveContainedPath_EmptyInput_Rejected()",
+    "dotnet|tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj|LmStreaming.Sample.Tests.Services.Discovery.WorkspaceSubAgentLoaderTests.TryResolveContainedPath_RelativeUnderBase_Accepted()",
+    "dotnet|tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj|LmStreaming.Sample.Tests.Services.Discovery.WorkspaceSubAgentLoaderTests.TryResolveContainedPath_SiblingPrefixAttack_Rejected()"
+)
+
+function Assert-MeasuredCorpus {
+    param([object[]]$Declarations, [object[]]$ManifestRows, [int]$BaselineCount = 9393, [string[]]$ReviewedRetiredIds = $reviewedRetiredMeasuredIds)
+    $inventoryIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($declaration in $Declarations) { [void]$inventoryIds.Add($declaration.id) }
+    $expectedMeasured = $BaselineCount
+    foreach ($id in $ReviewedRetiredIds) {
+        if (-not $inventoryIds.Contains($id)) { $expectedMeasured--; continue }
+        $retained = @($ManifestRows | Where-Object id -eq $id)
+        Assert-True ($retained.Count -eq 1 -and $retained[0].coverageEvidence -eq "measured") "Still-inventoried retired identity $id must retain its measured classification."
+    }
+    Assert-Count @($ManifestRows | Where-Object coverageEvidence -eq "measured").Count $expectedMeasured "Measured coverage classifications"
+    Assert-True (
+        @($ManifestRows | Where-Object coverageEvidence -in @("no-coverage-capture", "not-in-capture")).Count -eq
+        $Declarations.Count - $expectedMeasured
+    ) "Every declaration outside the frozen measured corpus must retain an explicit unmeasured coverage classification."
+    return $expectedMeasured
+}
+
+function Test-MeasuredCorpusRetirements {
+    $rows = @(
+        @{ id = "active-one"; coverageEvidence = "measured" },
+        @{ id = "active-two"; coverageEvidence = "measured" },
+        @{ id = "replacement"; coverageEvidence = "not-in-capture" }
+    )
+    $declarations = @($rows | ForEach-Object { @{ id = $_.id } })
+    $count = Assert-MeasuredCorpus -Declarations $declarations -ManifestRows $rows -BaselineCount 3 -ReviewedRetiredIds @("reviewed-retired")
+    Assert-True ($count -eq 2) "Only a reviewed identity absent from the inventory may leave the frozen corpus."
+    $presentRows = $rows + @{ id = "reviewed-retired"; coverageEvidence = "measured" }
+    $presentDeclarations = $declarations + @{ id = "reviewed-retired" }
+    $count = Assert-MeasuredCorpus -Declarations $presentDeclarations -ManifestRows $presentRows -BaselineCount 3 -ReviewedRetiredIds @("reviewed-retired")
+    Assert-True ($count -eq 3) "A reviewed retirement must not reduce the corpus while that identity is still inventoried."
+    # A compensating measured row keeps the aggregate count green, so only the identity check catches this downgrade.
+    $downgradedRows = @(
+        @{ id = "active-one"; coverageEvidence = "measured" },
+        @{ id = "active-two"; coverageEvidence = "measured" },
+        @{ id = "replacement"; coverageEvidence = "measured" },
+        @{ id = "reviewed-retired"; coverageEvidence = "not-in-capture" }
+    )
+    $rejected = $false
+    try { Assert-MeasuredCorpus -Declarations $presentDeclarations -ManifestRows $downgradedRows -BaselineCount 3 -ReviewedRetiredIds @("reviewed-retired") | Out-Null }
+    catch { $rejected = $_.Exception.Message -like "*must retain its measured classification*" }
+    Assert-True $rejected "A still-present reviewed identity cannot be downgraded even if another row compensates for its count."
+    $rejected = $false
+    try { Assert-MeasuredCorpus -Declarations @($declarations | Where-Object id -ne "active-one") -ManifestRows @($rows | Where-Object id -ne "active-one") -BaselineCount 3 -ReviewedRetiredIds @("reviewed-retired") | Out-Null }
+    catch { $rejected = $_.Exception.Message -like "Measured coverage classifications*" }
+    Assert-True $rejected "An unreviewed deletion must not silently reduce the frozen corpus."
+}
+
+Test-MeasuredCorpusRetirements
+if ($MeasuredCorpusOnly) { Write-Host "PASS: measured-corpus retirements require reviewed identities absent from inventory."; return }
 $fixture = Join-Path ([System.IO.Path]::GetTempPath()) "priority-tests-$([guid]::NewGuid().ToString('N'))"
 function Set-FixtureFile {
     param([string]$Path, [string]$Content)
@@ -236,12 +301,10 @@ try {
     Assert-True ($repositoryPlan.policyStatus -eq "present") "Checked-in priority manifest must match the actual inventory.$([Environment]::NewLine)$(Format-PolicyDrift $repositoryPlan)"
     Assert-True (@($repositoryPlan.tests | Where-Object priority -eq "unassigned").Count -eq 0) "Every current test surface must have an explicit or kind-default assignment."
     Assert-True (@($repositoryPlan.tests | Where-Object priority -eq "P0").Count -gt 0) "Component baseline assignments must not become empty."
-    # The literal is a tripwire, not the invariant: the invariant is known -eq reviewed, and the count
-    # is pinned so that ADDING test declarations cannot silently pass without someone classifying them.
-    # Bump it in the same commit that adds the rows, or this fails with the message below while the
-    # manifest itself is perfectly in sync.
-    Assert-Count $repositoryPlan.declarationSummary.known 11410 "Known .NET/script declarations"
-    Assert-Count $repositoryPlan.declarationSummary.reviewed 11410 "Reviewed policy rows"
+    # The inventory is authoritative. Shared literal totals lose increments when independent PRs
+    # add tests; the runner must instead reject every missing, duplicate or stale reviewed identity.
+    Assert-True ($repositoryPlan.declarationSummary.known -gt 0) "The repository declaration inventory must not be empty."
+    Assert-True ($repositoryPlan.declarationSummary.reviewed -eq $repositoryPlan.declarationSummary.known) "Every inventoried declaration must have exactly one current reviewed policy row."
     foreach ($repositoryTier in @("P0", "P1")) {
         $tierPlan = & $runner -RepositoryRoot (Join-Path $PSScriptRoot "..") -Priority $repositoryTier | ConvertFrom-Json
         $unsupportedTierSubsets = @(
@@ -257,19 +320,16 @@ try {
         Assert-True ($unsupportedTierSubsets.Count -eq 0) "The current $repositoryTier selection must not contain a dotnet subset that execution preflight rejects."
     }
     $repositoryDeclarations = @($repositoryPlan.tests | ForEach-Object { @($_.declarations) })
-    # Same tripwire contract as the total above: bump these alongside the rows you add.
-    foreach ($tier in @(@("P0", 432), @("P1", 8576), @("P2", 2243), @("P3", 159))) {
-        Assert-Count @($repositoryDeclarations | Where-Object priority -eq $tier[0]).Count $tier[1] "Checked-in $($tier[0]) declaration count"
-    }
+    Assert-True ($repositoryDeclarations.Count -eq $repositoryPlan.declarationSummary.known) "The plan must retain every inventoried declaration."
+    Assert-True (@($repositoryDeclarations | Where-Object priority -notin @("P0", "P1", "P2", "P3")).Count -eq 0) "Every declaration must retain a valid priority."
     Assert-True (@($repositoryDeclarations | Where-Object reviewState -ne "reviewed").Count -eq 0) "The checked-in declaration policy cannot contain unreviewed families."
     $manifestRows = @([System.IO.File]::ReadAllLines((Join-Path $PSScriptRoot "test-priorities.ndjson")) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json })
+    Assert-True (@($manifestRows | Where-Object kind -eq "test-declaration").Count -eq $repositoryPlan.declarationSummary.known) "Manifest declaration rows must exactly cover the current inventory."
     Assert-True (@($manifestRows | Where-Object kind -ne "test-declaration").Count -eq 40) "Manifest integration must preserve all 40 container/default rows."
     Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.p1FloorExemption -eq "vacuous" }).Count -eq 5) "Manifest integration must preserve the five reviewed vacuity exemptions."
     # Measured rows only ever leave this corpus when the declaration itself is deleted upstream;
     # nothing in this tooling may downgrade a measured row to an unmeasured one.
-    Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "measured" }).Count 9386 "Measured coverage classifications"
-    Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "no-coverage-capture" }).Count 247 "Rows in approved projects without coverage capture"
-    Assert-Count @($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.coverageEvidence -eq "not-in-capture" }).Count 1777 "Rows absent from the frozen capture"
+    Assert-MeasuredCorpus -Declarations $repositoryDeclarations -ManifestRows @($manifestRows | Where-Object kind -eq "test-declaration") | Out-Null
     Assert-True (@($manifestRows | Where-Object { $_.kind -eq "test-declaration" -and $_.path -like "samples/LmStreaming.Sample/ClientApp/*" }).Count -eq 0) "Client tests remain whole-suite and must not acquire declaration rows in this phase."
     foreach ($changed in @("samples/LmStreaming.Sample/Program.cs", "src/LmStreaming.AspNetCore/SelectionProbe.cs")) {
         $scopedPlan = & $runner -RepositoryRoot (Join-Path $PSScriptRoot "..") -Fast -ChangedPath $changed | ConvertFrom-Json

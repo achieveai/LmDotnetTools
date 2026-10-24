@@ -1994,7 +1994,8 @@ try
                                     sp.GetKeyedService<HttpMessageHandler>(RemoteMcpTransportHandlerKey),
                                     loggerFactory.CreateLogger(typeof(RemoteMcpConnector).FullName!),
                                     remoteSessionId,
-                                    CancellationToken.None
+                                    CancellationToken.None,
+                                    tierConfiguration.GetSection("RemoteMcp:AllowedOrigins").Get<string[]>() ?? []
                                 )
                                 .GetAwaiter()
                                 .GetResult();

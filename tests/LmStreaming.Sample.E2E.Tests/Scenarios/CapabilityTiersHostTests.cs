@@ -1457,6 +1457,8 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                 ),
                 settings: new Dictionary<string, string?>
                 {
+                    ["RemoteMcp:AllowedOrigins:0"] = "https://acme.test",
+                    ["RemoteMcp:AllowedOrigins:1"] = "https://nokey.test",
                     ["ContextDiscovery:RouteToOpeningSubAgent"] = "true",
                     // A one-turn conversation has a legal cut, so a test can hold an operator's compaction open.
                     ["Compaction:MinTailTokens"] = "1",

@@ -241,6 +241,29 @@ public sealed class RemoteMcpConnectorTests : IDisposable
         handler.AllowAutoRedirect.Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("https://acme.test:8443")]
+    [InlineData("https://evilacme.test")]
+    public async Task Connect_WithoutExactOperatorOriginAdmission_NeverReachesTransport(string? origin)
+    {
+        var server = new FakeRemoteMcpHandler(LookupTool);
+        var connection = await RemoteMcpConnector.ConnectAsync(
+            _ => Task.FromResult<IReadOnlyList<SandboxMcpServer>>([Row("mk")]),
+            Keys(new TokenEndpoint("unused")),
+            false,
+            server,
+            new RecordingLogger(),
+            "sess-1",
+            CancellationToken.None,
+            origin is null ? [] : [origin]
+        );
+
+        connection.Tools.Should().BeEmpty();
+        connection.Resources.Should().BeEmpty();
+        server.Requests.Should().BeEmpty("a plugin cannot choose an application network destination");
+    }
+
     private PredefinedKeyRegistry Keys(TokenEndpoint tokens) =>
         new(_keysDirectory.FullName, new NoTokenStore(), new HttpClient(tokens), NullLoggerFactory.Instance);
 
@@ -274,7 +297,8 @@ public sealed class RemoteMcpConnectorTests : IDisposable
             server,
             logger,
             "sess-1",
-            CancellationToken.None
+            CancellationToken.None,
+            ["https://acme.test"]
         );
 
     /// <summary>Plugin acme's http server "api" at <see cref="Url"/>, as marketplace <paramref name="marketplace"/> lists it.</summary>

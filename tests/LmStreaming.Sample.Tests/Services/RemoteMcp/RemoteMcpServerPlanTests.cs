@@ -200,7 +200,45 @@ public class RemoteMcpServerPlanTests
     {
         var (row, allowLoopbackHttp, expected) = Cases[name];
 
-        Render(RemoteMcpServerPlan.Decide(row, Keys, allowLoopbackHttp)).Should().Be(expected);
+        // These cases isolate URL/credential rules after the operator has trusted the destination.
+        string[] origins = Uri.TryCreate(row.Url, UriKind.Absolute, out var endpoint)
+            ? [endpoint.GetLeftPart(UriPartial.Authority)]
+            : [];
+        Render(RemoteMcpServerPlan.Decide(row, Keys, allowLoopbackHttp, origins)).Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("https://public.example/mcp")]
+    [InlineData("https://127.0.0.1/mcp")]
+    [InlineData("https://10.0.0.1/mcp")]
+    [InlineData("https://169.254.169.254/mcp")]
+    public void PluginDestination_IsDeniedWithoutOperatorAdmission(string url)
+    {
+        RemoteMcpServerPlan
+            .Decide(Http(url), [], false)
+            .SkipReason.Should()
+            .Be("its origin is not allowed by RemoteMcp:AllowedOrigins");
+    }
+
+    [Theory]
+    [InlineData("https://acme.test", "https://acme.test/mcp", true)]
+    [InlineData("https://ACME.test:443", "https://acme.test/mcp", true)]
+    [InlineData("https://10.0.0.1", "https://10.0.0.1/mcp", true)]
+    [InlineData("https://[::1]", "https://[::1]/mcp", true)]
+    [InlineData("http://127.0.0.1:8080", "http://127.0.0.1:8080/mcp", true)]
+    [InlineData("https://acme.test", "https://acme.test:8443/mcp", false)]
+    [InlineData("https://acme.test", "https://evilacme.test/mcp", false)]
+    [InlineData("https://acme.test", "http://acme.test/mcp", false)]
+    [InlineData("https://user:secret@acme.test", "https://acme.test/mcp", false)]
+    [InlineData("https://acme.test/path", "https://acme.test/mcp", false)]
+    [InlineData("https://acme.test?x=1", "https://acme.test/mcp", false)]
+    [InlineData("https://acme.test#fragment", "https://acme.test/mcp", false)]
+    [InlineData("not a URI", "https://acme.test/mcp", false)]
+    public void OperatorOriginAdmission_IsExactAndRejectsMalformedConfiguration(string origin, string url, bool allowed)
+    {
+        var decision = RemoteMcpServerPlan.Decide(Http(url), [], true, [origin]);
+
+        (decision.Endpoint is not null).Should().Be(allowed);
     }
 
     /// <summary>

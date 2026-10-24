@@ -79,7 +79,9 @@ internal sealed class RemoteMcpDecision
 /// the plugin asks for nothing, as the sandbox's egress does.
 /// </para>
 /// <para>
-/// <b>Url:</b> https always; http only to a literal loopback host (<c>localhost</c>, 127.0.0.0/8, ::1, no DNS) when
+/// <b>Url:</b> the operator must admit its exact origin through <c>RemoteMcp:AllowedOrigins</c>. This trusts
+/// that origin's DNS resolution, including private addresses; it is not an IP filtering policy. HTTPS only;
+/// http only to a literal loopback host (<c>localhost</c>, 127.0.0.0/8, ::1, no DNS) when
 /// <c>RemoteMcp:AllowLoopbackHttp</c> is on. A url with user info or a <c>${</c> is not connected. Only <c>http</c>
 /// (streamable HTTP) servers are connected.
 /// </para>
@@ -112,7 +114,8 @@ internal static partial class RemoteMcpServerPlan
     internal static RemoteMcpDecision Decide(
         SandboxMcpServer row,
         IReadOnlyList<PredefinedKeyEntry> keys,
-        bool allowLoopbackHttp
+        bool allowLoopbackHttp,
+        IReadOnlyList<string>? allowedOrigins = null
     )
     {
         ArgumentNullException.ThrowIfNull(row);
@@ -167,6 +170,11 @@ internal static partial class RemoteMcpServerPlan
             return RemoteMcpDecision.Skip("its url is not https");
         }
 
+        if (allowedOrigins is null || !allowedOrigins.Any(origin => OriginAdmits(origin, endpoint)))
+        {
+            return RemoteMcpDecision.Skip("its origin is not allowed by RemoteMcp:AllowedOrigins");
+        }
+
         var key = keys.Where(k => KeyAdmits(k, endpoint)).OrderBy(k => k.Id, StringComparer.Ordinal).FirstOrDefault();
         var needsCredential = row.Headers.Any(IsCredentialHeader) || CredentialExtraKeys.Any(row.Extra.ContainsKey);
         if (needsCredential && key is null)
@@ -211,6 +219,17 @@ internal static partial class RemoteMcpServerPlan
 
         return RemoteMcpDecision.Connect(endpoint, headers, key, dropped, droppedHeaders);
     }
+
+    private static bool OriginAdmits(string origin, Uri endpoint) =>
+        Uri.TryCreate(origin, UriKind.Absolute, out var admitted)
+        && admitted.Scheme is "http" or "https"
+        && admitted.UserInfo.Length == 0
+        && admitted.AbsolutePath == "/"
+        && admitted.Query.Length == 0
+        && admitted.Fragment.Length == 0
+        && string.Equals(admitted.Scheme, endpoint.Scheme, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(admitted.IdnHost, endpoint.IdnHost, StringComparison.OrdinalIgnoreCase)
+        && admitted.Port == endpoint.Port;
 
     /// <summary>
     /// The auth webhook's destination gate for a predefined key (<c>AuthWebhookController.IsDestinationAllowed</c>):

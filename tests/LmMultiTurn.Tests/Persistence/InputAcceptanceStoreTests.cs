@@ -17,7 +17,6 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"InputAcceptanceStoreTests_{Guid.NewGuid():N}");
     private readonly List<IAsyncDisposable> _disposables = [];
-    private readonly HashSet<string> _sqlitePaths = new(StringComparer.Ordinal);
 
     /// <summary>The shipped implementations. Each case is run against every one of them.</summary>
     public enum StoreKind
@@ -49,12 +48,8 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
             await disposable.DisposeAsync();
         }
 
-        // SQLite keeps pooled connections on the file; clearing them is what lets the directory delete. Only
-        // this test's own files: a process-wide clear can dispose another test's connection mid-open.
-        foreach (var path in _sqlitePaths)
-        {
-            SqliteConnectionFactory.ClearPool(path);
-        }
+        // SQLite keeps pooled connections on the file; clearing them is what lets the directory delete.
+        SqliteTestPools.ClearDirectory(_root);
 
         // #477: this suite's file-backed stores are exactly the exclusive-create retry loop the window is
         // about — and AReserveWhoseDirectoryVanishes_KeepsYieldingRatherThanSpinningUncancellably, further
@@ -84,7 +79,6 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
                 return new FileConversationStore(Path.Combine(_root, backingName), clock);
             case StoreKind.Sqlite:
                 var path = Path.Combine(_root, backingName + ".db");
-                _ = _sqlitePaths.Add(path);
                 var store = new SqliteConversationStore(path);
                 _disposables.Add(store);
                 return store;

@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using FluentAssertions;
+using LmMultiTurn.Tests.Persistence;
 using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Tests.UsageAccounting;
@@ -89,7 +90,7 @@ public class ConversationUsageProjectionTests
         finally
         {
             await store.DisposeAsync();
-            SqliteConnectionFactory.ClearPool(dbPath);
+            SqliteTestPools.Clear(dbPath);
             TryDelete(dbPath);
             TryDelete(dbPath + "-wal");
             TryDelete(dbPath + "-shm");
@@ -127,7 +128,7 @@ public class ConversationUsageProjectionTests
             (await ConversationUsageProjection.LoadAsync(store, "conv-1")).Should().BeEquivalentTo(refolded);
         }
 
-        SqliteConnectionFactory.ClearPool(dbPath);
+        SqliteTestPools.Clear(dbPath);
         TryDelete(dbPath);
         TryDelete(dbPath + "-wal");
         TryDelete(dbPath + "-shm");
@@ -146,7 +147,7 @@ public class ConversationUsageProjectionTests
 
         (await ConversationUsageProjection.LoadAsync(store, "conv-1")).Should().BeEquivalentTo(newer);
 
-        SqliteConnectionFactory.ClearPool(dbPath);
+        SqliteTestPools.Clear(dbPath);
         TryDelete(dbPath);
         TryDelete(dbPath + "-wal");
         TryDelete(dbPath + "-shm");

@@ -129,7 +129,8 @@ public sealed class RemoteMcpToolTierTests
             server,
             logger,
             "sess-1",
-            CancellationToken.None
+            CancellationToken.None,
+            ["https://acme.test"]
         );
 
     /// <summary>One host build with <paramref name="tools"/> tiered: stage, attach, commit. Nothing is loaded.</summary>

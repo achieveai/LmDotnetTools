@@ -30,7 +30,7 @@ public sealed class SqliteTenantStoreTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
         await _factory.DisposeAsync();
-        SqliteConnectionFactory.ClearPool(_databasePath);
+        SqliteTestPools.Clear(_databasePath);
         await Task.Delay(50);
         foreach (var suffix in new[] { "", "-wal", "-shm" })
         {

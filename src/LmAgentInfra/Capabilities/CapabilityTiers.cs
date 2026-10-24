@@ -617,6 +617,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
             // A sub-agent set up under the previous build is set up again at its next spawn.
             _ = Interlocked.Increment(ref _build);
             // Every build lists and attaches its own Skill tool; one from an earlier build must not survive it.
+            var liveSkill = root.Skill;
             root.Skill = stage.Skill;
             if (stage.RootId is not { } rootId || stage.View is not { } view || stage.Settings is not { } settings)
             {
@@ -626,8 +627,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
             }
 
             AdoptCatalog(stage);
-            // A rotation that ran between stage and commit left the gateway on its own view: the next rotation
-            // applies this one again.
+            // A rotation that ran between stage and commit left the gateway on its own view.
             var raced = !ReferenceEquals(root.View, stage.LiveViewAtStage);
             if (raced && root.View is { } rotated)
             {
@@ -689,6 +689,33 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
             _skillCap = settings.SkillCap;
             _rootGatewayAgentId = rootId;
             _active = true;
+            if (raced && stage.Skill is { } slot && _catalog is { } mergedCatalog && stage.Gateway is { } gateway)
+            {
+                // Keep the rotated contract on failure, with the handler owned by this new build.
+                root.Skill = liveSkill is null ? slot : slot with { Contract = liveSkill.Contract };
+                // The staged contract predates the rotation. Publish the merged skill set and relist before
+                // returning this committed build; otherwise its first request advertises the staged set.
+                using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                bounded.CancelAfter(ConfigureBudget);
+                try
+                {
+                    if (
+                        await ApplyAsync(root, _rootThreadId, rootId, view, mergedCatalog, gateway, bounded.Token)
+                            .ConfigureAwait(false)
+                    )
+                    {
+                        root.Skill = slot with
+                        {
+                            Contract = await ListSkillAsAsync(root, gateway, bounded.Token).ConfigureAwait(false),
+                        };
+                        root.AppliedRevision = view.Revision;
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+                {
+                    _logger.LogWarning(ex, "Capabilities raced build could not relist {ThreadId}", _rootThreadId);
+                }
+            }
             if (stage.Seeded || seededAgents || seededTools)
             {
                 // The live loop already took this build, so nothing here may undo it: a failed write leaves the seed
@@ -1932,29 +1959,33 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
             Search(SearchPluginToolName, CapabilityCatalog.PluginKind, viewThreadId, argsJson)
         );
 
-    private Task<ToolHandlerResult> SearchToolAsync(
-        string viewThreadId,
-        string argsJson,
-        IReadOnlyDictionary<string, FunctionContract>? subAgentTools = null
-    ) =>
-        Task.FromResult<ToolHandlerResult>(
-            Search(SearchToolToolName, CapabilityCatalog.ToolKind, viewThreadId, argsJson, subAgentTools)
+    private Task<ToolHandlerResult> SearchToolAsync(string viewThreadId, string argsJson, SpawnTools? spawn = null)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        // Child contracts belong to the captured spawn, not the current root build. The synchronous search
+        // owns its temporary index, so retired spawns do not retain native resources.
+        using var captured = spawn is null
+            ? null
+            : CapabilityCatalog.Build(CapabilityCatalog.FromTools(spawn.Managed.Values));
+        return Task.FromResult<ToolHandlerResult>(
+            Search(SearchToolToolName, CapabilityCatalog.ToolKind, viewThreadId, argsJson, spawn?.Managed, captured)
         );
+    }
 
     /// <summary>
     /// One search of <paramref name="kind"/> (the tool <paramref name="toolName"/>), its hits marked loaded or available
     /// from the view of the agent on <paramref name="viewThreadId"/>, and <c>[weak]</c> below <see cref="WeakScore"/>
     /// (tools: below <see cref="WeakToolScore"/> unless the query names the tool). A sub-agent's tool search ranks only
-    /// the tools it inherited (<paramref name="subAgentTools"/>): it ranks the kind's candidates, keeps the inherited
-    /// hits, then takes the limit, so a root-only tool does not take an inherited tool's place. The catalog keeps at
-    /// most its top 200 candidates per search, so past 200 matching tools an inherited one can still fall out.
+    /// the tools it inherited (<paramref name="subAgentTools"/>), using that spawn's captured catalog even after
+    /// the root changes mode.
     /// </summary>
     private ToolHandlerResult.Resolved Search(
         string toolName,
         string kind,
         string viewThreadId,
         string argsJson,
-        IReadOnlyDictionary<string, FunctionContract>? subAgentTools = null
+        IReadOnlyDictionary<string, FunctionContract>? subAgentTools = null,
+        CapabilityCatalog? capturedCatalog = null
     )
     {
         string query;
@@ -1996,17 +2027,20 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
             ?? (_agents.TryGetValue(viewThreadId, out var owner) ? owner.Key : RootAgentKey);
         // Agents and plugins list templates: index the source's current ones first (F6).
         var catalog =
-            (kind == CapabilityCatalog.SkillKind ? _catalog : FreshCatalog(_settings))
+            capturedCatalog
+            ?? (kind == CapabilityCatalog.SkillKind ? _catalog : FreshCatalog(_settings))
             ?? throw new InvalidOperationException($"{toolName} ran before this conversation loaded a skill catalog.");
-        // A sub-agent's search ranks every item before it keeps its own: a cut first could leave none of them.
-        var searchLimit = subAgentTools is null ? limit : int.MaxValue;
         IReadOnlyList<(CapabilityItem Item, double Score)> hits;
         try
         {
-            hits = catalog.SearchScored(query, kind, searchLimit);
+            hits = catalog.SearchScored(query, kind, limit);
         }
         catch (ObjectDisposedException)
         {
+            if (capturedCatalog is not null)
+            {
+                throw; // A child search owns this scoped index; it cannot be replaced by a root build.
+            }
             // A configure swapped the index mid-call: retry once on the replacement. The same instance
             // means this whole object was disposed, which is not retryable.
             var replacement = _catalog;
@@ -2016,7 +2050,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
             }
 
             catalog = replacement;
-            hits = catalog.SearchScored(query, kind, searchLimit);
+            hits = catalog.SearchScored(query, kind, limit);
         }
 
         if (subAgentTools is not null)
@@ -3327,7 +3361,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
                 yield return new FunctionDescriptor
                 {
                     Contract = SearchToolContract,
-                    Handler = (args, _, _) => owner.SearchToolAsync(agent.ThreadId, args, spawn.Managed),
+                    Handler = (args, _, _) => owner.SearchToolAsync(agent.ThreadId, args, spawn),
                     ProviderName = ProviderName,
                 };
             }

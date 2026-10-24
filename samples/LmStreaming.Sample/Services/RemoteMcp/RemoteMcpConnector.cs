@@ -57,6 +57,7 @@ internal static class RemoteMcpConnector
     /// <param name="logger">Names servers only.</param>
     /// <param name="sessionId">For the log lines.</param>
     /// <param name="ct">Cancellation.</param>
+    /// <param name="allowedOrigins">Operator-trusted origins; null/empty connects nothing.</param>
     public static async Task<RemoteMcpConnection> ConnectAsync(
         Func<CancellationToken, Task<IReadOnlyList<SandboxMcpServer>>> fetch,
         PredefinedKeyRegistry keys,
@@ -64,7 +65,8 @@ internal static class RemoteMcpConnector
         HttpMessageHandler? transportHandler,
         ILogger logger,
         string sessionId,
-        CancellationToken ct
+        CancellationToken ct,
+        IReadOnlyList<string>? allowedOrigins = null
     )
     {
         ArgumentNullException.ThrowIfNull(fetch);
@@ -103,7 +105,7 @@ internal static class RemoteMcpConnector
             new List<Task<(SandboxMcpServer Row, IReadOnlyList<RemoteMcpTool> Tools, IAsyncDisposable? Resource)>>();
         foreach (var row in rows)
         {
-            var decision = RemoteMcpServerPlan.Decide(row, entries, allowLoopbackHttp);
+            var decision = RemoteMcpServerPlan.Decide(row, entries, allowLoopbackHttp, allowedOrigins);
             if (decision.SkipReason is { } reason)
             {
                 logger.Log(
