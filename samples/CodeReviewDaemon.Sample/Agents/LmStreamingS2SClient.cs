@@ -754,6 +754,9 @@ internal sealed class LmStreamingS2SClient
     /// <paramref name="threadId"/>'s row as the host lists it now, read past the shared copy, which then takes it.
     /// A binding check must see the current workspace, mode and provider: another caller may have switched the
     /// conversation since the copy was fetched, and the copy would pass a binding the host no longer has.
+    /// ReviewRunner holds its per-PR lease; MergeRunner holds its source-ref lease. Both await binding before
+    /// their own writes to the same conversation. This whole-row refresh relies on that ordering rather than
+    /// merging an overlapping own write.
     /// </summary>
     private async Task<ConversationListingCache.Row?> CurrentConversationAsync(string threadId, CancellationToken ct)
     {

@@ -28,8 +28,9 @@ public class SqliteConversationStoreTests : IAsyncLifetime
     {
         await _store.DisposeAsync();
 
-        // Clear the connection pool to release file handles
-        SqliteConnection.ClearAllPools();
+        // Clear only this database's pool: ClearAllPools also disposes connections that tests in other classes
+        // are using in parallel (ObjectDisposedException on SQLitePCL.sqlite3).
+        SqliteConnectionFactory.ClearPool(_databasePath);
 
         // Give time for pool to release
         await Task.Delay(50);

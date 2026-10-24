@@ -2,7 +2,6 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using FluentAssertions;
-using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace LmMultiTurn.Tests.Persistence;
@@ -678,7 +677,7 @@ public sealed class SqliteRunLifecycleStoreTests : RunLifecycleStoreTestsBase
     {
         await _sqliteStore.DisposeAsync();
 
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.Clear(_databasePath);
         await Task.Delay(50);
 
         TryDelete(_databasePath);
