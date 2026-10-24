@@ -33,6 +33,13 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         // are using in parallel (ObjectDisposedException on SQLitePCL.sqlite3).
         SqliteConnectionFactory.ClearPool(_databasePath);
 
+        // The tests' own "Data Source=<path>" connections pool under a different key. Left open, they hold the
+        // file, and Windows refuses to delete the -shm file (UnauthorizedAccessException).
+        await using (var raw = new SqliteConnection($"Data Source={_databasePath}"))
+        {
+            SqliteConnection.ClearPool(raw);
+        }
+
         // Give time for pool to release
         await Task.Delay(50);
 
