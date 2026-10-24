@@ -17,6 +17,9 @@ internal static class ContextDiscoveryKinds
 {
     public const string SubAgent = "subagent";
     public const string ContextFile = "context_file";
+
+    /// <summary>A workspace skill; a tiered conversation indexes it and tells its owner (SC6).</summary>
+    public const string Skill = "skill";
 }
 
 /// <summary>

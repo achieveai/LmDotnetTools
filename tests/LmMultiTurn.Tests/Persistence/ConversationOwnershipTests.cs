@@ -186,7 +186,8 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
         switch (kind)
         {
             case "sqlite":
-                var sqlite = new SqliteConversationStore(Path.Combine(_root, $"conv_{Guid.NewGuid():N}.db"));
+                var path = Path.Combine(_root, $"conv_{Guid.NewGuid():N}.db");
+                var sqlite = new SqliteConversationStore(path);
                 _disposables.Add(sqlite);
                 return sqlite;
             case "file":

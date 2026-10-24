@@ -18,7 +18,7 @@ public sealed class SandboxCreateRequest
     /// Marketplace aliases to activate for this sandbox, defensively copied at construction. Empty
     /// means "omit the field" so the gateway applies its own default set, matching the gateway's
     /// distinction between "no marketplaces selected" (which would need an explicit empty array)
-    /// and "caller expressed no preference". Since gateway ADR 0041 that default is the operator set PLUS every
+    /// and "caller expressed no preference". Since gateway ADR 0045 that default is the operator set PLUS every
     /// git marketplace the app registered (<see cref="SandboxClient.RegisterAppMarketplaceAsync"/>).
     /// </summary>
     public IReadOnlyList<string> Marketplaces { get; }

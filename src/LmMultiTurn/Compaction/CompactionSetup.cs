@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.LmCore.Messages;
+
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 
 /// <summary>
@@ -56,7 +58,39 @@ public sealed record CompactionSetup
 
     /// <summary>Environment reader for the kill switch variable; null reads the process environment.</summary>
     public Func<string, string?>? ReadEnvironment { get; init; }
+
+    /// <summary>
+    ///     Called once each time a checkpoint ACTIVATES on any loop that shares this setup (the root and every
+    ///     descendant), after the applied status is published and before the next request is built; never for a
+    ///     shadow, skipped or failed attempt. Return true when the hook changed the tools this loop sends: the
+    ///     loop then re-estimates its tool-definition tokens from the registry, so the next request's estimate
+    ///     includes them. Null (the default) changes nothing. An exception is logged and swallowed: the
+    ///     checkpoint stays applied and the run continues; only the caller's cancellation propagates.
+    /// </summary>
+    public Func<CheckpointActivation, CancellationToken, ValueTask<bool>>? OnCheckpointActivated { get; init; }
 }
+
+/// <summary>What <see cref="CompactionSetup.OnCheckpointActivated" /> is told about one activated checkpoint.</summary>
+/// <param name="ThreadId">The compacting loop's own thread; route by this, not by <paramref name="AgentId" />.</param>
+/// <param name="AgentId">The id the checkpoint is stamped with (<c>root</c> or <c>agent-N</c>).</param>
+/// <param name="CheckpointId">The activated checkpoint.</param>
+/// <param name="CheckpointSeq">The store sequence number of the activated checkpoint row.</param>
+/// <param name="LastMessageSeq">
+///     The highest sequence number among the thread's non-checkpoint rows when the checkpoint was cut (0 when none).
+///     A consumer that keeps its own watermark knows no row arrived since then when this is not above it.
+/// </param>
+/// <param name="ToolCalls">
+///     Every tool call in the thread's non-checkpoint rows, each with its row's sequence number, in sequence order.
+///     A consumer counts the calls past its own watermark.
+/// </param>
+public sealed record CheckpointActivation(
+    string ThreadId,
+    string AgentId,
+    string CheckpointId,
+    long CheckpointSeq,
+    long LastMessageSeq,
+    IReadOnlyList<(long Seq, ToolCall Call)> ToolCalls
+);
 
 /// <summary>
 /// Raised when the harness would otherwise send a request it knows exceeds the usable window: after the

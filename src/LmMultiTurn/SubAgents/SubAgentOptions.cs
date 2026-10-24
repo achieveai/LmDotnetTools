@@ -382,6 +382,39 @@ public record SubAgentOptions
     public Func<string, IFunctionProvider?>? ChildToolProviderFactory { get; init; }
 
     /// <summary>
+    /// Host hook that may give a spawning child its OWN version of a tool it is about to inherit. The manager
+    /// awaits it once per parent tool that passed the inheritance filter (template <c>EnabledTools</c>,
+    /// <c>add_tools</c>/<c>remove_tools</c>, never-inherited tools), so it can only replace what the child
+    /// would have inherited, never widen it. A non-null provider is added to the child's registry in place of
+    /// the plain inherited function; null inherits the parent's function exactly as before. An exception is
+    /// logged as a warning and also inherits the parent's function: a host fault never fails a spawn. The host
+    /// bounds its own work. Inherited verbatim through <see cref="ForChildLoop"/>. Null (default) = every
+    /// child inherits as before.
+    /// </summary>
+    public Func<InheritedTool, CancellationToken, ValueTask<IFunctionProvider?>>? InheritedToolOverride { get; init; }
+
+    /// <summary>
+    /// Tools that follow another tool through the inheritance filter: when a child's resolved toolset (template
+    /// <c>EnabledTools</c>, <c>add_tools</c>, <see cref="RequiredToolNames"/>) holds a key, it also holds that
+    /// key's companions, unless the spawn's <c>remove_tools</c> names them. One level only: a companion's own
+    /// companions are not followed. A companion the parent does not expose is skipped like any other name, so
+    /// this never grants a tool the parent lacks. A host sets it when one tool is of little use without another,
+    /// for example a skill loader that lists only some skills and a search tool that finds the rest. Inherited
+    /// verbatim through <see cref="ForChildLoop"/>. Null (default) = no companions.
+    /// </summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<string>>? CompanionToolNames { get; init; }
+
+    /// <summary>
+    /// The templates the <c>Agent</c> tool lists for the agent whose thread id is passed (the manager's parent),
+    /// or null to list every template. A listing narrows only the tool's text: any template still spawns by its
+    /// exact name. Return the SAME instance until that agent's list changes: the tool's descriptor is memoized on
+    /// the reference, so an unchanged reference keeps the request bytes (and the prompt cache) identical. Inherited
+    /// verbatim through <see cref="ForChildLoop"/>; a child's manager passes the child's own thread id. Null
+    /// (default) = every template is listed.
+    /// </summary>
+    public Func<string, TemplateListing?>? ListedTemplates { get; init; }
+
+    /// <summary>
     /// The ordinal sequence behind <c>agent-1</c>, <c>agent-2</c>, … for the ROOT conversation (#705).
     /// Null at the root: the root's manager creates the allocator and hands it down through
     /// <see cref="ForChildLoop"/>, so every descendant numbers from the one sequence.
@@ -440,3 +473,22 @@ public sealed record SubAgentSpawnModelSelection(string? Model, int? ModelIntell
 /// authored label is shortened rather than failing the spawn.
 /// </summary>
 public sealed record SubAgentSpawnMetadata(string Role, string Description);
+
+/// <summary>
+/// One parent tool a spawning child is about to inherit, as <see cref="SubAgentOptions.InheritedToolOverride"/>
+/// sees it.
+/// </summary>
+/// <param name="AgentId">The child's agent id (<c>agent-N</c>).</param>
+/// <param name="Contract">The parent's contract the child would inherit.</param>
+/// <param name="Handler">The parent's handler the child would inherit.</param>
+public sealed record InheritedTool(string AgentId, FunctionContract Contract, ToolHandler Handler);
+
+/// <summary>
+/// The templates one agent's <c>Agent</c> tool lists (<see cref="SubAgentOptions.ListedTemplates"/>), and how to
+/// reach the rest.
+/// </summary>
+/// <param name="Names">Template keys to list, in any order: the tool lists them ordinally. A key the source does not
+/// hold is ignored.</param>
+/// <param name="UnlistedHint">One line for the model about the templates the tool does not list. It follows the
+/// listed templates and ends the <c>subagent_type</c> text.</param>
+public sealed record TemplateListing(IReadOnlySet<string> Names, string UnlistedHint);

@@ -542,6 +542,8 @@ public sealed class SqliteConversationStore
         await _metadataWriteLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            // A writer that was queued when the store was disposed must not write through a factory it may not own.
+            ObjectDisposedException.ThrowIf(_disposed, this);
             var existing = await LoadMetadataAsync(threadId, ct).ConfigureAwait(false);
             var updated = update(existing);
             await SaveMetadataAsync(threadId, updated, ct).ConfigureAwait(false);
@@ -2150,8 +2152,8 @@ public sealed class SqliteConversationStore
         }
 
         _disposed = true;
-        _schemaLock.Dispose();
-        _metadataWriteLock.Dispose();
+
+        // The two locks are not disposed: disposing a SemaphoreSlim orphans its queued waiters.
 
         if (_ownsFactory)
         {

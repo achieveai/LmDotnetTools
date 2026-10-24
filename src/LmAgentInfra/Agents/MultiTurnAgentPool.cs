@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Capabilities;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
@@ -249,6 +250,12 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         public ITodoBoardSource? TodoBoard { get; init; }
 
         /// <summary>
+        /// The conversation's capability tiers, or <c>null</c> when the factory keeps none. The same instance serves
+        /// every configuration of a conversation; handing it back here gives a discovery a reference to it.
+        /// </summary>
+        public CapabilityTiers? Capabilities { get; init; }
+
+        /// <summary>
         /// The resources this configuration wants OFFERED BACK on a later mode/provider switch, under
         /// stable keys of the factory's own choosing — a sandbox MCP client, a workflow manager, a
         /// hosted search session. Null when the factory keeps none.
@@ -354,6 +361,12 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         public ITodoBoardSource? TodoBoard { get; set; }
 
         /// <summary>
+        /// This conversation's capability tiers, or <c>null</c> when it has none. Not owned by the entry: the
+        /// factory's per-conversation scope owns and disposes it.
+        /// </summary>
+        public CapabilityTiers? Capabilities { get; set; }
+
+        /// <summary>
         /// The sandbox credential of the caller that created this thread's agent — <c>null</c> for
         /// the interactive UI default. Set ONCE at creation (via <see cref="CreateAgentEntry"/>) and
         /// never reassigned: a conversation is frozen to its creating caller's <c>AppId</c> for its
@@ -414,6 +427,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             OwnedResources = result.OwnedResources;
             ReusableResources = result.ReusableResources;
             TodoBoard = result.TodoBoard ?? TodoBoard;
+            Capabilities = result.Capabilities ?? Capabilities;
             EstablishedBinding = result.StagedBinding ?? EstablishedBinding;
         }
 
@@ -1380,6 +1394,16 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     public ITodoBoardSource? GetTodoBoard(string threadId)
     {
         return _agents.TryGetValue(threadId, out var entry) ? entry.TodoBoard : null;
+    }
+
+    /// <summary>
+    /// The capability tiers of a thread's live agent, or null when no agent is pooled for it or its factory keeps
+    /// none. One instance per conversation: its sub-agents' tiers live inside it.
+    /// </summary>
+    /// <param name="threadId">The root thread identifier.</param>
+    public CapabilityTiers? GetCapabilityTiers(string threadId)
+    {
+        return _agents.TryGetValue(threadId, out var entry) ? entry.Capabilities : null;
     }
 
     /// <summary>
@@ -2763,6 +2787,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             OwnedResources = result.OwnedResources,
             ReusableResources = result.ReusableResources,
             TodoBoard = result.TodoBoard,
+            Capabilities = result.Capabilities,
             CallerCredential = callerCredential,
             OwnerUserId = ownerUserId,
             EstablishedBinding = result.StagedBinding,

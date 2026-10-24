@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using LmStreaming.Sample.Tests.TestDoubles;
+using Microsoft.Extensions.Logging;
 
 namespace LmStreaming.Sample.Tests.Services;
 
@@ -101,6 +102,30 @@ public class ContextDiscoveryInjectorTests
         peer.RecordedContext.Should().BeEmpty();
     }
 
+    /// <summary>
+    /// PC-TRI1-3: the skill row gives the reason the agent row gives for the same finder
+    /// (ContextDiscoveryControllerTests.NotifyAsync_AgentFoundWithNoOwningConversation_LogsTheFindersOwnReason): an
+    /// untiered root presents no agent id at all. A sub-agent's ordinal id keeps its own reason.
+    /// </summary>
+    [Theory]
+    [InlineData(null, "the finder sent no agent id (a root that does not tier)")]
+    [InlineData("", "the finder sent no agent id (a root that does not tier)")]
+    [InlineData("agent-1", "the finder is not a routable agent")]
+    public async Task AnnounceSkillsAsync_AFinderItCannotRoute_LogsTheFindersOwnReason(string? agentId, string reason)
+    {
+        var logger = new CapturingLogger<ContextDiscoveryInjector>();
+        using var harness = new Harness(logger);
+
+        (await harness.Injector.AnnounceSkillsAsync(SessionId, [agentId], CancellationToken.None)).Should().Be(0);
+
+        logger
+            .Entries.Where(e => e.Message.StartsWith("Capabilities skill notice skipped", StringComparison.Ordinal))
+            .Should()
+            .ContainSingle()
+            .Which.Message.Should()
+            .EndWith(" " + reason);
+    }
+
     private static ContextDiscoveryPayload Payload(string? owner, string path = "CLAUDE.md") =>
         new()
         {
@@ -115,7 +140,7 @@ public class ContextDiscoveryInjectorTests
     {
         private readonly ConcurrentDictionary<string, RecordingMultiTurnAgent> _agents = new();
 
-        public Harness()
+        public Harness(ILogger<ContextDiscoveryInjector>? injectorLogger = null)
         {
             var options = new SandboxGatewayOptions { BaseUrl = "http://unused.invalid" };
             var gateway = new SandboxGatewayLifetime(
@@ -148,7 +173,7 @@ public class ContextDiscoveryInjectorTests
                 new ContextDiscoveryFormatter(),
                 new ContextDiscoveryOptions { RouteToOpeningSubAgent = true },
                 new ContextDiscoveryDiagnostics(),
-                NullLogger<ContextDiscoveryInjector>.Instance
+                injectorLogger ?? NullLogger<ContextDiscoveryInjector>.Instance
             );
         }
 

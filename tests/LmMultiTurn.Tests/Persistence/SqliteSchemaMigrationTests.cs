@@ -54,6 +54,7 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
             {
                 DataSource = _databasePath,
                 Mode = SqliteOpenMode.ReadWriteCreate,
+                Pooling = false,
             }.ToString()
         );
         await connection.OpenAsync();
@@ -861,7 +862,7 @@ public sealed class SqliteSchemaMigrationTests : IAsyncLifetime
 
     private static async Task<IReadOnlyList<string>> ReadCanonicalUsageRowsAsync(string databasePath)
     {
-        await using var connection = new SqliteConnection($"Data Source={databasePath}");
+        await using var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False");
         await connection.OpenAsync();
         using var command = connection.CreateCommand();
         command.CommandText = """

@@ -79,4 +79,50 @@ public class FunctionContract
 
         return builder.Build();
     }
+
+    /// <summary>
+    ///     The parameters as the one JSON Schema object a provider sends for a tool:
+    ///     <c>{ "type": "object", "properties": { … }, "required": [ … ], "additionalProperties": false }</c>.
+    ///     Each property is the parameter's own schema, with the parameter's description on it when the schema has
+    ///     none. A parameter with no name or no schema is left out; <c>required</c> is absent when nothing is.
+    /// </summary>
+    public JsonSchemaObject GetParametersSchema()
+    {
+        var properties = new Dictionary<string, JsonSchemaObject>(StringComparer.Ordinal);
+        var required = new List<string>();
+
+        if (Parameters is not null)
+        {
+            foreach (var parameter in Parameters)
+            {
+                if (string.IsNullOrEmpty(parameter.Name) || parameter.ParameterType is null)
+                {
+                    continue;
+                }
+
+                // Carry the parameter description onto the property schema when it has none of its own.
+                var propertySchema =
+                    parameter.ParameterType.Description is null && parameter.Description is not null
+                        ? parameter.ParameterType with
+                        {
+                            Description = parameter.Description,
+                        }
+                        : parameter.ParameterType;
+
+                properties[parameter.Name] = propertySchema;
+                if (parameter.IsRequired)
+                {
+                    required.Add(parameter.Name);
+                }
+            }
+        }
+
+        return new JsonSchemaObject
+        {
+            Type = JsonSchemaTypeHelper.ToType("object"),
+            Properties = properties,
+            Required = required.Count > 0 ? required : null,
+            AdditionalProperties = false,
+        };
+    }
 }

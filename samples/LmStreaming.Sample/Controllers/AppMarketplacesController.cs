@@ -8,7 +8,7 @@ namespace LmStreaming.Sample.Controllers;
 public sealed record RegisterAppMarketplaceRequest(string Url, string? Ref);
 
 /// <summary>
-/// Lets the SPA manage this app's git marketplaces on the sandbox gateway (gateway ADR 0041): register (or
+/// Lets the SPA manage this app's git marketplaces on the sandbox gateway (gateway ADR 0045): register (or
 /// re-point) an alias, list the registrations with their resolved commit and last sync error, sync now, and
 /// remove. A gateway rejection keeps its status and <c>error_code</c> (<c>{ error, detail }</c>) so the UI can say
 /// why; an unreachable gateway is <c>503 marketplace_gateway_unavailable</c>, like the catalog endpoint.

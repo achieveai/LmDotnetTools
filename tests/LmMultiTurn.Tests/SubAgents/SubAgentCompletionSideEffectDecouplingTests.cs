@@ -607,9 +607,10 @@ public class SubAgentCompletionSideEffectDecouplingTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// In-memory store that parks the FIRST <see cref="IConversationStore.UpdateMetadataAsync"/> it sees
-    /// after <see cref="Arm"/> — the manager's terminal durable push, which the caller arms from the
-    /// monitor's pre-classification hook so an ordinary metadata write cannot be mistaken for it.
+    /// In-memory store that parks the FIRST terminal-status push it sees after <see cref="Arm"/> — the
+    /// manager's durable push, which the caller arms from the monitor's pre-classification hook. The
+    /// child's own end-of-run write goes through the same atomic update and can land after arming, so the
+    /// gate also checks the update's shape (<see cref="TerminalStatusTouch"/>), not just the order.
     /// </summary>
     private sealed class GatedMetadataStore(TaskCompletionSource entered, TaskCompletionSource release)
         : IConversationStore
@@ -648,7 +649,7 @@ public class SubAgentCompletionSideEffectDecouplingTests : IAsyncLifetime
             CancellationToken ct = default
         )
         {
-            if (Interlocked.CompareExchange(ref _armed, 2, 1) == 1)
+            if (TerminalStatusTouch.Is(threadId, update) && Interlocked.CompareExchange(ref _armed, 2, 1) == 1)
             {
                 _ = entered.TrySetResult();
                 await release.Task.WaitAsync(ct);

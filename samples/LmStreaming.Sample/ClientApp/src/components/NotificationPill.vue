@@ -5,6 +5,7 @@ import {
   AGENT_MESSAGE_NOTIFY_KIND,
   COMPACTION_NOTIFY_KIND,
   GET_CHECKPOINT_STATE,
+  contextDiscoveryHeading,
   type CheckpointStateLookup,
 } from '@/composables/messageDisplay';
 import { GET_AGENT_COLOR, type AgentColorLookup } from '@/utils/agentColors';
@@ -36,7 +37,7 @@ const AGENT_MESSAGE_HEADINGS: Record<AgentMessageType, string> = {
 const kindLabel = computed<string>(() => {
   switch (data.value.notifyKind) {
     case 'context-discovery':
-      return 'Context loaded';
+      return contextDiscoveryHeading(data.value.label);
     case 'subagent-completion':
       return 'Sub-agent completed';
     case 'background-task':

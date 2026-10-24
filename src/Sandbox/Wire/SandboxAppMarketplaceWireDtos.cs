@@ -2,7 +2,7 @@ using System.Text.Json.Serialization;
 
 namespace AchieveAi.LmDotnetTools.Sandbox.Wire;
 
-// --- Per-app git marketplaces (gateway api/app_marketplaces.rs, ADR 0041) ---
+// --- Per-app git marketplaces (gateway api/app_marketplaces.rs, ADR 0045) ---
 
 /// <summary>Body of <c>PUT /api/v1/apps/self/marketplaces/{alias}</c>. A null ref is omitted: the gateway defaults it to <c>latest</c>.</summary>
 internal sealed record AppMarketplaceRegisterDto(

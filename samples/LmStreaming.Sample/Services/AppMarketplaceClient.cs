@@ -5,7 +5,7 @@ namespace LmStreaming.Sample.Services;
 
 /// <summary>
 /// Registers, lists, syncs and removes this app's git marketplaces on the sandbox gateway
-/// (<c>/api/v1/apps/self/marketplaces</c>, gateway ADR 0041). A registered alias's plugins then show up in
+/// (<c>/api/v1/apps/self/marketplaces</c>, gateway ADR 0045). A registered alias's plugins then show up in
 /// the marketplace catalog, and so in the workspace plugin selection. The seam controllers and tests depend on.
 /// </summary>
 /// <remarks>Failures surface as the SDK's <see cref="SandboxException"/>; the controller maps them.</remarks>

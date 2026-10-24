@@ -1157,6 +1157,67 @@ public class SqliteConversationStoreTests : IAsyncLifetime
 
     #endregion
 
+    #region Disposal Tests
+
+    // The host disposes the store while the agent pool still drains, so a metadata writer can be
+    // queued on the store's lock at that moment. With a non-owned factory the connection is still live.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task DisposeAsync_WhileAWriterIsQueuedOnTheMetadataLock_FailsThatWriterInsteadOfOrphaningIt(
+        bool ownsFactory
+    )
+    {
+        var factory = new SqliteConnectionFactory(_databasePath);
+        var store = new SqliteConversationStore(factory, ownsFactory);
+        using var release = new ManualResetEventSlim(false);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task? holder = null;
+        try
+        {
+            holder = Task.Run(() =>
+                store.UpdateMetadataAsync(
+                    "thread-a",
+                    _ =>
+                    {
+                        entered.SetResult();
+                        release.Wait();
+                        return CreateTestMetadata("thread-a");
+                    }
+                )
+            );
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var queued = store.UpdateMetadataAsync("thread-b", _ => CreateTestMetadata("thread-b"));
+            queued.IsCompleted.Should().BeFalse("the holder still has the metadata lock");
+
+            await store.DisposeAsync();
+            release.Set();
+
+            var queuedError = await Record.ExceptionAsync(() => queued.WaitAsync(TimeSpan.FromSeconds(5)));
+            (queuedError as TimeoutException).Should().BeNull("disposal must not orphan a writer queued on the lock");
+            queuedError
+                .Should()
+                .BeOfType<ObjectDisposedException>("a disposed store refuses work whether or not it owns its factory");
+        }
+        finally
+        {
+            release.Set();
+            if (holder is not null)
+            {
+                var holderError = await Record.ExceptionAsync(() => holder.WaitAsync(TimeSpan.FromSeconds(5)));
+                // The holder may fail (owned factory, now disposed) or succeed (live factory); it must not hang.
+                (holderError as TimeoutException)
+                    .Should()
+                    .BeNull("the lock holder must finish once released");
+            }
+
+            await factory.DisposeAsync();
+        }
+    }
+
+    #endregion
+
     #region Test Helpers
 
     private static List<PersistedMessage> CreateTestMessages(string threadId, string runId, int count)
@@ -1234,7 +1295,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         string threadId
     )
     {
-        await using var connection = new SqliteConnection($"Data Source={_databasePath}");
+        await using var connection = new SqliteConnection($"Data Source={_databasePath};Pooling=False");
         await connection.OpenAsync();
         using var command = connection.CreateCommand();
         command.CommandText = """

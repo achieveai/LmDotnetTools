@@ -181,7 +181,7 @@ All settings live under the **`Auth`** configuration section (bound to
 - Each event is processed once per `event_id`; a redelivery gets `200` and is skipped. An event whose handling throws (`5xx`) is not remembered, so the gateway's single retry is processed. A `400` (malformed data) is final: the gateway does not retry it.
 - With the switch on, the app reads each new sandbox back once and logs a warning if the gateway did not register the webhook (a gateway at or below v0.1.16).
 - `context_discovery` runs the same handler as `api/discovery/context_discovery`.
-- `task_completed` becomes a `background-task` notice. A sub-agent's task goes to that sub-agent. The primary agent sends no agent id, so the app remembers which conversation's `Bash`/`PowerShell` call returned the task id and tells that one. A fast task's event can arrive before that call returns, so with several conversations the app waits up to 2 s for the record. A task started before the app restarted goes to the workspace's only conversation, or is dropped when there are several.
+- `task_completed` becomes a `background-task` notice. A sub-agent's task goes to that sub-agent. The primary agent sends no agent id, so the app remembers which conversation's `Bash`/`PowerShell` call returned the task id and tells that one. A fast task's event can arrive before that call returns, so with several conversations the app waits up to 2 s for the record. A task started before the app restarted goes to the workspace's only conversation, or is dropped when there are several. In a mode with skill tiers the primary agent sends its thread id instead, so its task goes straight to that conversation.
 - Any other event gets `200` and is ignored.
 
 ### appsettings.json example

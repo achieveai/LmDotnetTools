@@ -538,6 +538,18 @@ describe('MessageList Consumer activity projection', () => {
     wrapper.get('[data-notify-kind="todo-nudge"]');
   });
 
+  // A capability notice only says a skill or sub-agent became available; the headline must not claim a load.
+  it.each([
+    ['skill:acme/review', 'New skill available'],
+    ['agent:acme/reviewer', 'New sub-agent available'],
+    ['/workspace/AGENTS.md', 'Context loaded'],
+  ])('heads a turn that ends on a discovery notice labelled %s as "%s"', (label, headline) => {
+    const discovery = notice('n-1', 'context-discovery');
+    discovery.notification.label = label;
+
+    expect(toggleText(mountList([user('u-1', 'Question'), discovery]))).toContain(headline);
+  });
+
   it('keeps workflow completion standalone because its opaque detail may contain a failure', () => {
     const workflow = notice('workflow', 'workflow-completion');
     workflow.notification.detail = '<workflow id="wf-1" status="failed">Error: stopped</workflow>';
@@ -635,6 +647,20 @@ describe('MessageList Consumer activity projection', () => {
     );
 
     expect(toggleText(wrapper)).toContain('Working: My Custom Tool');
+  });
+
+  it('names the tool an ExecuteTool call runs, not the wrapper', () => {
+    const wrapper = mountList(
+      [
+        user('u-1', 'Question'),
+        toolsPill('p-1', [
+          { name: 'ExecuteTool', args: '{"tool":"Bash","arguments":{"command":"npm test"}}' },
+        ]),
+      ],
+      { isLoading: true }
+    );
+
+    expect(toggleText(wrapper)).toContain('Working: running npm test');
   });
 
   it('keeps the plain Working line while the model writes text and no tool is running', () => {

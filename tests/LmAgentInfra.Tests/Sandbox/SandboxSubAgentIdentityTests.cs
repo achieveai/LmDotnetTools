@@ -53,6 +53,27 @@ public class SandboxSubAgentIdentityTests
         SandboxSubAgentIdentity.TryGetSubAgentId("ctx-probe", RootThread, out _).Should().BeFalse();
     }
 
+    // A tiered root's gateway id is its thread id, unaltered: its view, its tiers and the discovery routing all key
+    // on that one string. A thread id the gateway cannot carry gives no id at all (never "", the default agent).
+    [Fact]
+    public void ForRoot_IsTheThreadIdWhenCarryable_ElseNull()
+    {
+        SandboxSubAgentIdentity.ForRoot(RootThread).Should().Be(RootThread);
+        var longest = new string('t', SandboxAgentId.MaxLength);
+        SandboxSubAgentIdentity.ForRoot(longest).Should().Be(longest);
+        SandboxSubAgentIdentity
+            .ForRoot(RootThread)
+            .Should()
+            .NotBe(SandboxSubAgentIdentity.ForSubAgent(RootThread, "agent-1"));
+
+        foreach (var uncarryable in new[] { "a/b", "has space", "thread-café", longest + "t" })
+        {
+            SandboxSubAgentIdentity.ForRoot(uncarryable).Should().BeNull(uncarryable);
+        }
+
+        FluentActions.Invoking(() => SandboxSubAgentIdentity.ForRoot("")).Should().Throw<ArgumentException>();
+    }
+
     [Fact]
     public void ForCurrentFlow_IsNullForThePrimary_AndTheSubAgentIdUnderItsScope()
     {

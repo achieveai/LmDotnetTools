@@ -9,6 +9,7 @@ using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 
 namespace LmStreaming.Sample.Tests.Controllers;
 
@@ -43,7 +44,8 @@ public class ContextDiscoveryControllerTests
         WorkspaceSubAgentLoader? loader = null,
         ContextDiscoveryInjector? injector = null,
         ContextDiscoveryDiagnostics? diagnostics = null,
-        SessionSecretStore? sessionSecretStore = null
+        SessionSecretStore? sessionSecretStore = null,
+        ILogger<ContextDiscoveryBatchHandler>? handlerLogger = null
     )
     {
         sessionSecretStore ??= CreateSeededSessionSecretStore();
@@ -61,7 +63,7 @@ public class ContextDiscoveryControllerTests
                 injector,
                 diagnostics,
                 new AgentOutputTokenPolicy(new AgentOutputTokenOptions()),
-                NullLogger<ContextDiscoveryBatchHandler>.Instance
+                handlerLogger ?? NullLogger<ContextDiscoveryBatchHandler>.Instance
             ),
             NullLogger<ContextDiscoveryController>.Instance
         );
@@ -564,6 +566,20 @@ public class ContextDiscoveryControllerTests
                 );
             bindingA.Source.Templates["plugin:echo"].CharacteristicsAgentFactory.Should().NotBeNull();
             bindingB.Source.Templates["plugin:echo"].CharacteristicsAgentFactory.Should().NotBeNull();
+            bindingA
+                .Source.Templates["plugin:echo"]
+                .Marketplace.Should()
+                .Be(
+                    "official",
+                    "a discovered marketplace agent carries its marketplace, so SearchPlugin lists it only there"
+                );
+            bindingB
+                .Source.Templates["plugin:echo"]
+                .Marketplace.Should()
+                .Be(
+                    "official",
+                    "a discovered marketplace agent carries its marketplace, so SearchPlugin lists it only there"
+                );
 
             var characteristics = new SubAgentCharacteristics("conversation-b-model", ReasoningEffort.High);
             var reboundProvider = bindingB
@@ -598,6 +614,108 @@ public class ContextDiscoveryControllerTests
                 // best-effort cleanup
             }
         }
+    }
+
+    public static TheoryData<string, string> AgentFindersWithNoNotice =>
+        new()
+        {
+            // A live sub-agent of conv-A presents its own gateway agent id; sub-agents run no agents.
+            {
+                SandboxSubAgentIdentity.ForSubAgent("conv-A", "agent-1"),
+                "the finder is a sub-agent (sub-agents run no agents)"
+            },
+            // An untiered root presents no agent id at all.
+            { "", "the finder sent no agent id (a root that does not tier)" },
+            // An id that is neither conv-A nor one of its sub-agents.
+            { "conv-gone", "the batch's finder is bound to no conversation on the session" },
+        };
+
+    /// <summary>
+    /// SC6-agent A6/G: a sub-agent template found by a finder that owns no agent-tiered conversation is registered
+    /// with no notice, and the Debug row says why. Each finder kind gets its own true reason.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(AgentFindersWithNoNotice))]
+    public async Task NotifyAsync_AgentFoundWithNoOwningConversation_LogsTheFindersOwnReason(
+        string agentId,
+        string reason
+    )
+    {
+        const string gatewaySessionId = "sess-finder";
+
+        static HttpResponseMessage Respond(HttpRequestMessage req) =>
+            req.Method == HttpMethod.Post
+            && req.RequestUri!.AbsolutePath.Contains("/sandboxes", StringComparison.Ordinal)
+                ? new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        "{\"session_id\":\""
+                            + gatewaySessionId
+                            + "\",\"volumes\":{\"workspace\":{\"container_path\":\"/workspace\",\"read_only\":false}}}",
+                        Encoding.UTF8,
+                        "application/json"
+                    ),
+                }
+                : new HttpResponseMessage(HttpStatusCode.OK);
+
+        var options = new SandboxGatewayOptions { BaseUrl = GatewayBaseUrl, AutoSpawn = false };
+        var secrets = new SessionSecretStore(
+            Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+            NullLogger<SessionSecretStore>.Instance
+        );
+        await using var registry = new SandboxSessionRegistry(
+            new SandboxGatewayLifetime(
+                options,
+                NullLogger<SandboxGatewayLifetime>.Instance,
+                new HttpClient(new StubHandler(Respond))
+            ),
+            options,
+            NullLogger<SandboxSessionRegistry>.Instance,
+            new HttpClient(new StubHandler(Respond)),
+            new AuthOptions(),
+            secrets
+        );
+        (await registry.GetOrCreateSessionAsync("default")).SessionId.Should().Be(gatewaySessionId);
+        await secrets.SaveAsync(gatewaySessionId, Secret);
+        var binding = registry.AddOrUpdateSubAgentBinding(
+            gatewaySessionId,
+            "conv-A",
+            new Dictionary<string, SubAgentTemplate>(),
+            () => new Mock<IStreamingAgent>().Object,
+            characteristicsAgentFactory: null
+        );
+        registry.RegisterThread(gatewaySessionId, "conv-A");
+        var logger = new CapturingLogger<ContextDiscoveryBatchHandler>();
+        var controller = CreateController(
+            authorizationHeader: Secret,
+            registry: registry,
+            sessionSecretStore: secrets,
+            handlerLogger: logger
+        );
+
+        var result = await controller.NotifyAsync(
+            Envelope(
+                gatewaySessionId,
+                new ContextDiscoveryItem
+                {
+                    Kind = "subagent",
+                    Name = "t6-agent",
+                    AgentId = agentId,
+                    Path = "/workspace/.claude/agents/t6-agent.md",
+                    Content = "---\nname: t6-agent\ndescription: Finds things.\n---\nYou are t6-agent.",
+                }
+            ),
+            CancellationToken.None
+        );
+
+        result.Should().BeOfType<OkResult>();
+        binding.Source.Templates.Should().ContainKey("t6-agent", "guard: the template still registers");
+        logger
+            .Entries.Where(e => e.Message.StartsWith("Capabilities agent notice skipped", StringComparison.Ordinal))
+            .Should()
+            .ContainSingle()
+            .Which.Message.Should()
+            .EndWith(" " + reason);
     }
 
     private sealed class StubHandler : HttpMessageHandler

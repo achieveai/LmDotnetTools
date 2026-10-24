@@ -964,7 +964,9 @@ public class ConversationsControllerTests
         using var doc = JsonDocument.Parse(spawnJson);
         var agentId = doc.RootElement.GetProperty("agent_id").GetString()!;
 
-        using var ct = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        // Longer than both 30 s waits below together, so a wait that never holds fails with its own
+        // named timeout rather than as an anonymous cancellation of this token.
+        using var ct = new CancellationTokenSource(TimeSpan.FromSeconds(65));
         await WaitUntilChildAwaitingQuestionAsync(loop.SubAgentManager!, agentId, ct.Token);
 
         // The parked background child also relays "[AwaitingAnswer]" to the primary, which starts a
@@ -2748,6 +2750,49 @@ public class ConversationsControllerTests
             .Warning.Should()
             .BeNull("the loop and its trigger runtime were kept, so the wait is still armed");
         (await pool.HasArmedWaitAsync(threadId)).Should().BeTrue("and it really did survive");
+    }
+
+    // A recreate that also failed to stage the mode's skill tiers owes the caller BOTH warnings: one
+    // replacing the other would hide either the lost wait or the inert tiers. Both endpoints build the
+    // same text, so each one is pinned.
+    [Theory]
+    [InlineData("mode")]
+    [InlineData("provider")]
+    public async Task Switch_ReturnsTheArmedWaitThenTheTierSetupWarning_WhenBothApply(string endpoint)
+    {
+        var threadId = $"thread-wait-tiers-{endpoint}";
+        await using var pool = await CreatePoolWithArmedWaitAsync(threadId, servesSwitchInPlace: false);
+        var controller = CreateController(Mock.Of<IConversationStore>(), pool, ModeStoreResolvingSystemModes());
+        // Stands in for the agent factory, which notes on the request that the tiers did not fully take.
+        var httpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+        httpContext.Items[ConversationsController.TierSetupWarningItem] = "The skill tiers did not take.";
+        controller.ControllerContext = new ControllerContext { HttpContext = httpContext };
+
+        var result =
+            endpoint == "mode"
+                ? await controller.SwitchMode(
+                    threadId,
+                    new SwitchModeRequest { ModeId = "math-helper" },
+                    CancellationToken.None
+                )
+                : await controller.SwitchProvider(
+                    threadId,
+                    new SwitchProviderRequest { ProviderId = "test" },
+                    CancellationToken.None
+                );
+
+        var warning = Assert.IsType<OkObjectResult>(result).Value switch
+        {
+            SwitchModeResponse mode => mode.Warning,
+            SwitchProviderResponse provider => provider.Warning,
+            var other => throw new InvalidOperationException($"Unexpected switch response {other}."),
+        };
+        warning
+            .Should()
+            .Be(
+                "A pending Wait was armed on this conversation; it was discarded when the agent was recreated for the switch. The skill tiers did not take.",
+                "both apply, so the caller is told both: the discarded wait first, then the tier warning, one space apart"
+            );
     }
 
     [Fact]

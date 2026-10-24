@@ -258,6 +258,27 @@ public sealed class SandboxWebhookHttpTests
     }
 
     [Fact]
+    public async Task TaskCompleted_RootNamedByItsThreadId_TwoConversations_GoesToThatConversation()
+    {
+        // A mode with skill tiers names its root agent with its thread id (SandboxSubAgentIdentity.ForRoot),
+        // so the gateway reports that id instead of "". It is the conversation's root, not a sub-agent.
+        var other = new RecordingMultiTurnAgent("thread-other");
+        await using var app = await TestApp.BuildAsync(
+            new Dictionary<string, IMultiTurnAgent> { ["thread-other"] = other }
+        );
+        app.Registry.RecordBackgroundTaskOwner(SessionId, "7", "thread-other");
+
+        var response = await app.PostAsync(TaskCompleted("gw-1-7", taskId: "7", agentId: "thread-other"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        other.SentMessages.Should().ContainSingle().Which.Should().BeOfType<NotifyMessage>();
+        app.Primary.SentMessages.Should().BeEmpty();
+        app.Registry.TryTakeBackgroundTaskOwner(SessionId, "7", out _)
+            .Should()
+            .BeFalse("the tracker's record of the same task is consumed, not left behind");
+    }
+
+    [Fact]
     public async Task TaskCompleted_SubAgentId_IsDeliveredToThatConversationsSubAgentOnly()
     {
         var sink = new RecordingSinkAgent("thread-sub", SubAgentContextDeliveryResult.Delivered);

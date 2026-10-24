@@ -43,7 +43,8 @@ public static class ScriptedScenario
         HttpMessageHandler? sandboxGatewayHandler = null,
         SandboxGatewayOptions? sandboxOptions = null,
         IReadOnlyList<CopilotModelInfo>? copilotModels = null,
-        IReadOnlyDictionary<string, string?>? settings = null
+        IReadOnlyDictionary<string, string?>? settings = null,
+        ISandboxToolCatalogProbe? sandboxToolCatalogProbe = null
     )
     {
         return fixture.OpenWithBuilderAsync(
@@ -54,7 +55,8 @@ public static class ScriptedScenario
             sandboxGatewayHandler,
             sandboxOptions,
             copilotModels,
-            settings
+            settings,
+            sandboxToolCatalogProbe
         );
     }
 
@@ -73,7 +75,8 @@ public static class ScriptedScenario
         IMarketplaceCatalogClient? catalogClient = null,
         HttpMessageHandler? sandboxGatewayHandler = null,
         SandboxGatewayOptions? sandboxOptions = null,
-        IReadOnlyList<CopilotModelInfo>? copilotModels = null
+        IReadOnlyList<CopilotModelInfo>? copilotModels = null,
+        ISandboxToolCatalogProbe? sandboxToolCatalogProbe = null
     )
     {
         return fixture.OpenWithBuilderAsync(
@@ -83,7 +86,8 @@ public static class ScriptedScenario
             catalogClient,
             sandboxGatewayHandler,
             sandboxOptions,
-            copilotModels
+            copilotModels,
+            sandboxToolCatalogProbe: sandboxToolCatalogProbe
         );
     }
 
@@ -96,7 +100,8 @@ public static class ScriptedScenario
         HttpMessageHandler? sandboxGatewayHandler,
         SandboxGatewayOptions? sandboxOptions,
         IReadOnlyList<CopilotModelInfo>? copilotModels,
-        IReadOnlyDictionary<string, string?>? settings = null
+        IReadOnlyDictionary<string, string?>? settings = null,
+        ISandboxToolCatalogProbe? sandboxToolCatalogProbe = null
     )
     {
         var factory = new BrowserWebAppFactory(
@@ -107,7 +112,8 @@ public static class ScriptedScenario
             sandboxGatewayHandler,
             sandboxOptions,
             copilotModels,
-            settings
+            settings,
+            sandboxToolCatalogProbe: sandboxToolCatalogProbe
         );
         IBrowserContext? context = null;
         try

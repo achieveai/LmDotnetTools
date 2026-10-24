@@ -8,42 +8,19 @@ namespace LmStreaming.Sample.Tests.Services.Discovery;
 /// <summary>
 /// End-to-end tests for <see cref="WorkspaceSubAgentLoader.LoadAsync"/>, driving the registry's
 /// HTTP path through a stub handler so the loader's full pipeline (gateway → kind-filter →
-/// path-resolve → read → parse → map) is exercised against a real on-disk workspace. These
-/// pin the contract the unit tests on the static helpers don't cover: that a wrong-kind item
+/// read through the gateway's files API → parse → map) is exercised against a workspace the stub
+/// serves. These pin the contract the unit tests on the static helpers don't cover: that a wrong-kind item
 /// is skipped, a gateway failure surfaces as an empty dict (not a throw), a malformed markdown
 /// file is skipped without aborting the batch, and two discovered files with the same parsed
 /// name collide loader-side under first-wins.
 /// </summary>
-public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
+public class WorkspaceSubAgentLoaderLoadAsyncTests
 {
     private const string SessionId = "session-load-test";
     private const string GatewayBaseUrl = "http://localhost:3000";
 
     private static readonly Mock<IStreamingAgent> AgentStub = new();
     private static readonly Func<IStreamingAgent> AgentFactory = () => AgentStub.Object;
-
-    private readonly string _hostPath;
-
-    public WorkspaceSubAgentLoaderLoadAsyncTests()
-    {
-        _hostPath = Path.Combine(Path.GetTempPath(), "wi76-loader-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(Path.Combine(_hostPath, ".claude", "agents"));
-    }
-
-    public void Dispose()
-    {
-        try
-        {
-            if (Directory.Exists(_hostPath))
-            {
-                Directory.Delete(_hostPath, recursive: true);
-            }
-        }
-        catch
-        {
-            // best-effort cleanup
-        }
-    }
 
     private static readonly string WellFormedMarkdown = """
         ---
@@ -53,8 +30,47 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
         You are the echo sub-agent. Respond with the marker the user supplies.
         """;
 
-    private SandboxSession CreateSession() =>
-        new(WorkspaceId: "default", SessionId: SessionId, WorkspaceRelPath: "default", HostPath: _hostPath);
+    private static SandboxSession CreateSession() =>
+        new(WorkspaceId: "default", SessionId: SessionId, WorkspaceRelPath: "default", HostPath: "/workspace");
+
+    /// <summary>
+    /// The gateway: <c>/discovered</c> answers <paramref name="discoveredJson"/>, a files GET answers the named
+    /// workspace-relative file from <paramref name="files"/> or a 404, and the session GET resolves the workspace mount.
+    /// </summary>
+    private static Func<HttpRequestMessage, HttpResponseMessage> Gateway(
+        string discoveredJson,
+        Dictionary<string, string> files
+    ) =>
+        request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/discovered", StringComparison.Ordinal))
+            {
+                return JsonOk(discoveredJson);
+            }
+
+            if (!path.Contains("/files/", StringComparison.Ordinal))
+            {
+                return JsonOk(
+                    """{"session_id":"session-load-test","volumes":{"workspace":{"container_path":"/workspace","read_only":false,"id":7}}}"""
+                );
+            }
+
+            var file = Uri.UnescapeDataString(request.RequestUri.Query.TrimStart('?')["path=".Length..]);
+            return files.TryGetValue(file, out var text)
+                ? new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(Encoding.UTF8.GetBytes(text)),
+                }
+                : new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent(
+                        """{"error":"path_not_found","code":404,"error_code":"path_not_found","retryable":false}""",
+                        Encoding.UTF8,
+                        "application/json"
+                    ),
+                };
+        };
 
     private (SandboxSessionRegistry Registry, WorkspaceSubAgentLoader Loader) CreateLoader(
         Func<HttpRequestMessage, HttpResponseMessage> respond
@@ -91,16 +107,12 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
     [Fact]
     public async Task LoadAsync_WellFormedSubAgent_ReturnsMappedTemplate()
     {
-        var path = Path.Combine(".claude", "agents", "echo.md");
-        await File.WriteAllTextAsync(Path.Combine(_hostPath, path), WellFormedMarkdown);
-        var (_, loader) = CreateLoader(_ =>
-            JsonOk(
-                $$"""
-                { "discovered": [ { "kind": "subagent", "name": "echo", "description": "Echoes a marker.", "path": "{{path.Replace(
-                    "\\",
-                    "\\\\"
-                )}}" } ] }
+        var (_, loader) = CreateLoader(
+            Gateway(
                 """
+                { "discovered": [ { "kind": "subagent", "name": "echo", "description": "Echoes a marker.", "path": "/workspace/.claude/agents/echo.md" } ] }
+                """,
+                new() { [".claude/agents/echo.md"] = WellFormedMarkdown }
             )
         );
 
@@ -151,24 +163,20 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
     [Fact]
     public async Task LoadAsync_FileMissingOnDisk_SkipsButContinuesBatch()
     {
-        // Per-file resilience: a discovered item whose path doesn't exist on disk must be
+        // Per-file resilience: a discovered item whose file the workspace doesn't hold must be
         // logged + skipped without aborting the rest of the batch. Pair an existing file with
         // a missing one and prove only the existing one comes through.
-        var goodPath = Path.Combine(".claude", "agents", "echo.md");
-        await File.WriteAllTextAsync(Path.Combine(_hostPath, goodPath), WellFormedMarkdown);
-        var (_, loader) = CreateLoader(_ =>
-            JsonOk(
-                $$"""
+        var (_, loader) = CreateLoader(
+            Gateway(
+                """
                 {
                   "discovered": [
                     { "kind": "subagent", "name": "missing", "description": "Missing file.", "path": ".claude/agents/missing.md" },
-                    { "kind": "subagent", "name": "echo",    "description": "Echoes.",       "path": "{{goodPath.Replace(
-                    "\\",
-                    "\\\\"
-                )}}" }
+                    { "kind": "subagent", "name": "echo",    "description": "Echoes.",       "path": ".claude/agents/echo.md" }
                   ]
                 }
-                """
+                """,
+                new() { [".claude/agents/echo.md"] = WellFormedMarkdown }
             )
         );
 
@@ -182,26 +190,21 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
     public async Task LoadAsync_MalformedMarkdown_IsSkipped()
     {
         // Parser returns null on malformed input → loader logs + skips that file, keeps others.
-        var goodPath = Path.Combine(".claude", "agents", "echo.md");
-        var badPath = Path.Combine(".claude", "agents", "bad.md");
-        await File.WriteAllTextAsync(Path.Combine(_hostPath, goodPath), WellFormedMarkdown);
-        await File.WriteAllTextAsync(Path.Combine(_hostPath, badPath), "no frontmatter at all\n");
-        var (_, loader) = CreateLoader(_ =>
-            JsonOk(
-                $$"""
+        var (_, loader) = CreateLoader(
+            Gateway(
+                """
                 {
                   "discovered": [
-                    { "kind": "subagent", "name": "bad",  "description": "x", "path": "{{badPath.Replace(
-                    "\\",
-                    "\\\\"
-                )}}" },
-                    { "kind": "subagent", "name": "echo", "description": "x", "path": "{{goodPath.Replace(
-                    "\\",
-                    "\\\\"
-                )}}" }
+                    { "kind": "subagent", "name": "bad",  "description": "x", "path": ".claude/agents/bad.md" },
+                    { "kind": "subagent", "name": "echo", "description": "x", "path": ".claude/agents/echo.md" }
                   ]
                 }
-                """
+                """,
+                new()
+                {
+                    [".claude/agents/echo.md"] = WellFormedMarkdown,
+                    [".claude/agents/bad.md"] = "no frontmatter at all\n",
+                }
             )
         );
 
@@ -214,12 +217,14 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
     [Fact]
     public async Task LoadAsync_PathTraversalAttempt_IsSkipped()
     {
-        // Path-injection guard at the loader boundary: a "../" item must never be read.
-        var (_, loader) = CreateLoader(_ =>
-            JsonOk(
+        // Path-injection guard at the loader boundary: a "../" item must never be read, though the
+        // gateway here would serve it.
+        var (_, loader) = CreateLoader(
+            Gateway(
                 """
                 { "discovered": [ { "kind": "subagent", "name": "escape", "description": "x", "path": "../outside.md" } ] }
-                """
+                """,
+                new() { ["../outside.md"] = WellFormedMarkdown }
             )
         );
 
@@ -234,44 +239,33 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
         // Loader-level collision (distinct from the built-in collision in MergeBuiltInWins):
         // two discovered markdown files whose frontmatter declares the same `name` must
         // collapse to the first occurrence so the dict insert can't throw.
-        var firstPath = Path.Combine(".claude", "agents", "echo-a.md");
-        var secondPath = Path.Combine(".claude", "agents", "echo-b.md");
-        await File.WriteAllTextAsync(
-            Path.Combine(_hostPath, firstPath),
-            """
-            ---
-            name: echo
-            description: First.
-            ---
-            FIRST body.
-            """
-        );
-        await File.WriteAllTextAsync(
-            Path.Combine(_hostPath, secondPath),
-            """
-            ---
-            name: echo
-            description: Second.
-            ---
-            SECOND body.
-            """
-        );
-        var (_, loader) = CreateLoader(_ =>
-            JsonOk(
-                $$"""
+        var (_, loader) = CreateLoader(
+            Gateway(
+                """
                 {
                   "discovered": [
-                    { "kind": "subagent", "name": "echo-a", "description": "x", "path": "{{firstPath.Replace(
-                    "\\",
-                    "\\\\"
-                )}}" },
-                    { "kind": "subagent", "name": "echo-b", "description": "x", "path": "{{secondPath.Replace(
-                    "\\",
-                    "\\\\"
-                )}}" }
+                    { "kind": "subagent", "name": "echo-a", "description": "x", "path": ".claude/agents/echo-a.md" },
+                    { "kind": "subagent", "name": "echo-b", "description": "x", "path": ".claude/agents/echo-b.md" }
                   ]
                 }
-                """
+                """,
+                new()
+                {
+                    [".claude/agents/echo-a.md"] = """
+                    ---
+                    name: echo
+                    description: First.
+                    ---
+                    FIRST body.
+                    """,
+                    [".claude/agents/echo-b.md"] = """
+                    ---
+                    name: echo
+                    description: Second.
+                    ---
+                    SECOND body.
+                    """,
+                }
             )
         );
 

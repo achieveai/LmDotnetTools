@@ -9,6 +9,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.ProcessLauncher;
 using FluentAssertions;
+using LmMultiTurn.Tests.Persistence;
 using Xunit;
 
 namespace LmMultiTurn.Tests;
@@ -56,6 +57,39 @@ public class ClaudeAgentLoopSessionRestoreTests
 
         ResumeIdOf(argv).Should().Be(sessionId, "a rebuilt loop must continue the CLI session it already had");
         argv.Should().NotContain("--session-id");
+    }
+
+    [Fact]
+    public async Task RunCompletionWrite_KeepsAPropertyAnotherWriterSetBetweenItsReadAndItsWrite()
+    {
+        // This override replaces the base end-of-run write, so it needs the same atomic update: a
+        // read-then-save here erases whatever another writer (usage, tier view, todo board) set
+        // between the read and the save.
+        const string threadId = "claude-interleaved-writer";
+        const string sessionId = "sess-interleaved";
+        var store = new InterleavingMetadataWriterStore(new InMemoryConversationStore(), threadId);
+
+        await using (
+            var loop = new ClaudeAgentLoop(
+                claudeOptions: new ClaudeAgentSdkOptions { Mode = ClaudeAgentSdkMode.OneShot, MaxTurnsPerRun = 5 },
+                mcpServers: null,
+                threadId: threadId,
+                store: store,
+                clientFactory: (_, _) => new ScriptedClient(sessionId)
+            )
+        )
+        {
+            await DriveOneScriptedRunAsync(loop);
+        }
+
+        var saved = await store.LoadMetadataAsync(threadId);
+        saved!.SessionMappings.Should().ContainKey($"claude-sdk:{sessionId}", "non-vacuity: the end-of-run write ran");
+        store.Injections.Should().BePositive("non-vacuity: another writer landed right before it");
+        saved
+            .Properties.Should()
+            .ContainKey(InterleavingMetadataWriterStore.OtherWriterKey)
+            .WhoseValue.Should()
+            .Be(store.Injections, "the end-of-run write must keep what the other writer set last");
     }
 
     [Fact]

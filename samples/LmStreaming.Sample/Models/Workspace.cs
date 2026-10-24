@@ -81,6 +81,14 @@ public record Workspace
     public string? WorkingDir { get; init; }
 
     /// <summary>
+    /// Capability tiers this workspace adds to a tiered mode: its <c>loaded</c> and <c>pinned</c> selectors join the
+    /// mode's root lists. <see langword="null"/> (every workspace predating this field) adds nothing and is not
+    /// written. It never switches tiers on: a mode without <see cref="ChatMode.Tiers"/> stays untiered.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public WorkspaceTiers? Tiers { get; init; }
+
+    /// <summary>
     /// Reads the key this field was persisted under before the gateway renamed "home" to "working directory",
     /// so a workspace saved by an older build keeps its setting. Never written back.
     /// </summary>
@@ -179,6 +187,26 @@ public record WorkspaceUpdate
     [JsonConverter(typeof(OptionalJsonConverterFactory))]
     public Optional<IReadOnlyDictionary<string, string>> Env { get; init; } =
         Optional<IReadOnlyDictionary<string, string>>.Unset;
+
+    /// <summary>
+    /// Replacement workspace tiers. Three-state via <see cref="Optional{T}"/>: omitted leaves them unchanged,
+    /// explicit <c>null</c> clears them, and a value replaces them. See <see cref="Workspace.Tiers"/>.
+    /// </summary>
+    [JsonConverter(typeof(OptionalJsonConverterFactory))]
+    public Optional<WorkspaceTiers?> Tiers { get; init; } = Optional<WorkspaceTiers?>.Unset;
+}
+
+/// <summary>
+/// A workspace's capability tiers (<see cref="Workspace.Tiers"/>): selectors in the <see cref="ModeTiers"/> form,
+/// for the root agent only. Sub-agent lists and caps come from the mode.
+/// </summary>
+public sealed record WorkspaceTiers
+{
+    /// <summary>Items the root agent starts with listed, after the mode's. Null = none.</summary>
+    public IReadOnlyList<string>? Loaded { get; init; }
+
+    /// <summary>Items the root agent always has listed, after the mode's. Null = none.</summary>
+    public IReadOnlyList<string>? Pinned { get; init; }
 }
 
 public sealed record WorkspaceView(
@@ -195,7 +223,8 @@ public sealed record WorkspaceView(
     int PluginsRevision,
     IReadOnlyDictionary<string, string> Env,
     string? Image,
-    string? WorkingDir
+    string? WorkingDir,
+    WorkspaceTiers? Tiers
 );
 
 public sealed record WorkspaceGatewayView(string CanonicalBaseUrl, string AppId, bool Available, string? Error);
@@ -222,7 +251,8 @@ public static class WorkspaceViewMapping
             workspace.PluginsRevision,
             workspace.Env,
             workspace.Image,
-            workspace.WorkingDir
+            workspace.WorkingDir,
+            workspace.Tiers
         );
     }
 }

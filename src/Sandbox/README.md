@@ -476,12 +476,11 @@ Relay error codes: `browser_capacity` / `browser_launch_failed` / `browser_unrea
 `Unavailable` (capacity carries `RetryAfter`); `invalid_browser_id` / `invalid_cdp_path` /
 `unknown_browser_mcp` / `body_too_large` → `Protocol`; `cdp_upgrade_rejected` → `NotFound`.
 
-## Per-app git marketplaces (gateway ADR 0041)
+## Per-app git marketplaces (gateway ADR 0045)
 
 An app can register public git repositories as its own plugin marketplaces. The gateway clones each one
-and mounts it at `/marketplaces/<alias>/` next to the operator's marketplaces. Requires a gateway build
-containing commit `bac5a32` (not yet released; absent from v0.1.16, and numbered ADR 0040 on that
-commit's own branch) with `MARKETPLACE_STORE_PATH` set.
+and mounts it at `/marketplaces/<alias>/` next to the operator's marketplaces. Requires gateway v0.1.17
+or later (commit `bac5a32`; absent from v0.1.16) with `MARKETPLACE_STORE_PATH` set.
 
 - `RegisterAppMarketplaceAsync(alias, url, gitRef?)` — register, or re-point an existing alias (a different
   URL or ref replaces it). `gitRef` null means `latest` (follow the default branch); a tag, branch or commit
@@ -532,6 +531,51 @@ to the default agent, whose id is `""`.
 Only the gateway's `/mcp` endpoint reads the agent header. No REST call takes it, so the SDK has
 none to send.
 
+## Skill tiers per agent (gateway ADR 0041, v0.1.17)
+
+The create `skills` block, `GET` and `PATCH /api/v1/sandboxes/{id}/skills`. Below v0.1.17 these
+routes do not exist.
+
+Each agent sees every admitted skill in one of three tiers. `Included` skills are listed in that
+agent's `Skill` tool description. `Available` skills are not listed but load by exact name.
+`Unavailable` skills are refused. Whether the agent has loaded a skill is a separate flag.
+
+- **Create:** `new SandboxCreateRequest(..., skills: new SandboxSkillsPolicy(defaultTier, included,
+  unlistedHint))`. `DefaultTier` is `Included` or `Available`; `null` uses the gateway's default.
+  `Included` takes skill names (`plugin:skill`) or skill paths. `UnlistedHint`: `null` keeps the
+  gateway's trailer, `""` removes it. No policy sends no `skills` field, so old requests are unchanged.
+  `SandboxInfo.SkillsPolicy` is the policy the gateway resolved (its `Included` holds skill paths).
+- **`GetSkillsAsync(sessionId, agentId, tier, loaded)`:** one agent's catalog: marketplaces,
+  then plugins (name, version, description), then skills (name, path, description, tier, tier origin,
+  loaded, loaded at, notified, shadowed), plus workspace skills, the default tier and counts.
+  `tier` and `loaded` filter the rows; `Counts` always covers the whole catalog.
+- **`UpdateSkillTiersAsync(sessionId, set, reset, agentId)`:** sets tiers for one agent only, by skill
+  name or path. All or nothing; loads are untouched. Returns the catalog with `ToolsListChanged`
+  true. The gateway sends no MCP `list_changed`, so re-run `tools/list` for that agent afterwards.
+- **Agent id:** `null` or `""` is the default agent (sent as no `agent_id` query). Any other id must
+  pass `SandboxAgentId.IsValid`.
+- **Errors:** `400 skill_not_found`, `skill_ambiguous`, `invalid_skills` and `invalid_agent_id` are
+  `Protocol`; `ErrorCode` says which.
+- **Default tier tip:** `Available` keeps a newly discovered skill from changing an agent's
+  description: it loads by name at once but is listed only after a `PATCH` includes it.
+
+Live contract: `SandboxSkillTiersLiveContractTests` needs a gateway of v0.1.17 or later that serves at
+least one marketplace plugin with two skills. CI mounts `tests/Sandbox.Integration.Tests/Fixtures/marketplace`
+for this through `PLUGINS_DIRS` (see `.github/workflows/sandbox-contract.yml`).
+
+## Plugin MCP servers (gateway issue #224, v0.1.18)
+
+`GET /api/v1/sandboxes/{id}/mcp-servers`, read by `GetMcpServersAsync(sessionId)`. Below v0.1.18 this
+route does not exist: the call fails as `NotFound`, the same kind as an unknown or foreign session.
+
+- **Rows:** the MCP servers the session's admitted plugins declare, as authored, sorted by marketplace,
+  plugin and name. Each carries `Type`, `Supported` (with `Reason` when not), `Url`, `Headers` and the
+  rest of the entry in `Extra`. `${VAR}` references come back unexpanded.
+- **Not proxied:** the gateway lists the servers but does not proxy them; the caller connects itself.
+- **Errors:** `503 marketplaces_unavailable` is `Unavailable`: retry. The gateway never answers with a
+  shorter list instead.
+- **Secret:** a row's url, header values and `Extra` can carry credentials. `SandboxMcpServer.ToString()`
+  names only the marketplace, plugin, server name and type.
 
 ## Errors
 

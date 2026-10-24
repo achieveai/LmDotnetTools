@@ -690,20 +690,31 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 return;
             }
 
-            var properties = metadata.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
+            // Atomic, so a property another writer set after the base write is kept; a separate
+            // load then save would write the stale copy back over it.
+            var id = _codexThreadId;
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            await Store.UpdateMetadataAsync(
+                ThreadId,
+                existing =>
+                {
+                    var current = existing ?? metadata;
+                    var properties =
+                        current.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
 
-            if (!string.IsNullOrWhiteSpace(_codexThreadId))
-            {
-                properties[CodexThreadIdProperty] = _codexThreadId;
-            }
+                    if (!string.IsNullOrWhiteSpace(id))
+                    {
+                        properties[CodexThreadIdProperty] = id;
+                    }
 
-            var updatedMetadata = metadata with
-            {
-                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                Properties = properties.ToImmutable(),
-            };
-
-            await Store.SaveMetadataAsync(ThreadId, updatedMetadata, ct);
+                    return current with
+                    {
+                        LastUpdated = now,
+                        Properties = properties.ToImmutable(),
+                    };
+                },
+                ct
+            );
 
             Logger.LogInformation(
                 "{event_type} {event_status} {provider} {provider_mode} {thread_id} {codex_thread_id}",

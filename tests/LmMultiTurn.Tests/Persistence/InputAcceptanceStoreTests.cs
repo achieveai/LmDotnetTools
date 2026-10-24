@@ -78,7 +78,8 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
             case StoreKind.File:
                 return new FileConversationStore(Path.Combine(_root, backingName), clock);
             case StoreKind.Sqlite:
-                var store = new SqliteConversationStore(Path.Combine(_root, backingName + ".db"));
+                var path = Path.Combine(_root, backingName + ".db");
+                var store = new SqliteConversationStore(path);
                 _disposables.Add(store);
                 return store;
             default:

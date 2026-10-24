@@ -241,10 +241,12 @@ public class SubAgentToolProvider : IFunctionProvider
     /// inputs are, rather than in the registry, which cannot see a provider's internal state.
     /// </para>
     /// <para>
-    /// Exactly two things can vary under one provider instance, and both are the key:
+    /// Exactly three things can vary under one provider instance, and all three are the key:
     /// <see cref="MutableSubAgentTemplateSource.Templates"/>, whose snapshot REFERENCE is an exact
     /// freshness token because <c>TryRegister</c>/<c>Upsert</c> publish a new immutable dictionary,
-    /// and <see cref="IsSpawningSuppressed"/>. The other inputs to the shape —
+    /// the host's <see cref="SubAgentManager.ListedTemplates"/>, keyed by reference the same way (the
+    /// host hands out a new instance only when the listed set changes), and
+    /// <see cref="IsSpawningSuppressed"/>. The other inputs to the shape —
     /// <see cref="SubAgentManager.Collaboration"/> (hence <c>CanDelegate</c>),
     /// <see cref="SubAgentManager.AvailableModelIds"/>, and <c>_exposedToolNames</c> — are fixed for
     /// the lifetime of the manager and of this provider, so they cannot distinguish two builds by the
@@ -258,19 +260,21 @@ public class SubAgentToolProvider : IFunctionProvider
         // would let a scope that opens and closes mid-build file a spawn-less surface under
         // "not suppressed" — the one way a memo of this shape can under-grant a later turn.
         var templates = _source.Templates;
+        var listing = _manager.ListedTemplates;
         var spawningSuppressed = IsSpawningSuppressed;
 
         var memo = Volatile.Read(ref _descriptorMemo);
         if (
             memo is not null
             && ReferenceEquals(memo.Templates, templates)
+            && ReferenceEquals(memo.Listing, listing)
             && memo.SpawningSuppressed == spawningSuppressed
         )
         {
             return memo.Descriptors;
         }
 
-        var shape = EmitShape(templates, spawningSuppressed);
+        var shape = EmitShape(templates, listing, spawningSuppressed);
         IReadOnlyList<FunctionDescriptor> descriptors =
         [
             .. _exposedToolNames is null ? shape : shape.Where(d => _exposedToolNames.Contains(d.Contract.Name)),
@@ -278,7 +282,7 @@ public class SubAgentToolProvider : IFunctionProvider
 
         // Last writer wins: two threads that miss together each build a surface that is correct for
         // its own key, so whichever publishes second simply replaces an equally valid entry.
-        Volatile.Write(ref _descriptorMemo, new DescriptorMemo(templates, spawningSuppressed, descriptors));
+        Volatile.Write(ref _descriptorMemo, new DescriptorMemo(templates, listing, spawningSuppressed, descriptors));
         return descriptors;
     }
 
@@ -292,6 +296,7 @@ public class SubAgentToolProvider : IFunctionProvider
     /// </remarks>
     private sealed record DescriptorMemo(
         IReadOnlyDictionary<string, SubAgentTemplate> Templates,
+        TemplateListing? Listing,
         bool SpawningSuppressed,
         IReadOnlyList<FunctionDescriptor> Descriptors
     );
@@ -305,9 +310,11 @@ public class SubAgentToolProvider : IFunctionProvider
     /// The template snapshot the spawn descriptor's catalog is built from, passed in rather than
     /// re-read so the emitted shape matches the key <see cref="GetFunctions"/> memoizes it under.
     /// </param>
+    /// <param name="listing">The host's listing, captured for the same reason; null lists every template.</param>
     /// <param name="spawningSuppressed">The suppression state captured for the same reason.</param>
     private IEnumerable<FunctionDescriptor> EmitShape(
         IReadOnlyDictionary<string, SubAgentTemplate> templates,
+        TemplateListing? listing,
         bool spawningSuppressed
     )
     {
@@ -316,7 +323,7 @@ public class SubAgentToolProvider : IFunctionProvider
         {
             if (!spawningSuppressed)
             {
-                yield return CreateAgentDescriptor(templates, collaborationEnabled: false);
+                yield return CreateAgentDescriptor(templates, listing, collaborationEnabled: false);
             }
 
             yield return CreateSendMessageDescriptor(collaborationEnabled: false);
@@ -331,7 +338,7 @@ public class SubAgentToolProvider : IFunctionProvider
         // able to be asked questions it had no tool to answer.
         if (collaboration.CanDelegate && !spawningSuppressed)
         {
-            yield return CreateAgentDescriptor(templates, collaborationEnabled: true);
+            yield return CreateAgentDescriptor(templates, listing, collaborationEnabled: true);
         }
 
         yield return CreateCheckAgentsDescriptor();
@@ -431,19 +438,46 @@ public class SubAgentToolProvider : IFunctionProvider
     /// the <c>subagent_type</c> enum list are consistent within this descriptor — and with the memo key
     /// it is filed under — even when a <c>TryRegister</c> lands concurrently.
     /// </param>
+    /// <param name="listing">
+    /// The host's listing (<see cref="SubAgentOptions.ListedTemplates"/>), or null for every template. It
+    /// narrows the text only, listed ordinally so it is byte-stable across restarts; a spawn still accepts
+    /// any template by its exact name.
+    /// </param>
     /// <param name="collaborationEnabled">Whether the collaboration shape's extra fields apply.</param>
     private FunctionDescriptor CreateAgentDescriptor(
         IReadOnlyDictionary<string, SubAgentTemplate> templates,
+        TemplateListing? listing,
         bool collaborationEnabled
     )
     {
-        var typeList = string.Join(", ", templates.Keys);
+        string templateCatalog;
+        string typeDescription;
+        if (listing is null)
+        {
+            templateCatalog = BuildTemplateCatalog(templates);
+            typeDescription = $"Which sub-agent to spawn. One of: {string.Join(", ", templates.Keys)}.";
+        }
+        else
+        {
+            KeyValuePair<string, SubAgentTemplate>[] listed =
+            [
+                .. templates.Where(t => listing.Names.Contains(t.Key)).OrderBy(t => t.Key, StringComparer.Ordinal),
+            ];
+            var shown =
+                listed.Length == 0 ? "None listed." : $"Listed: {string.Join(", ", listed.Select(t => t.Key))}.";
+            // With nothing listed, a catalog heading over no entries reads as a broken list: say none are listed and
+            // let the host's hint name where to find one.
+            templateCatalog =
+                (listed.Length == 0 ? "No sub-agent types are listed." : BuildTemplateCatalog(listed))
+                + "\n"
+                + listing.UnlistedHint;
+            typeDescription = $"Which sub-agent to spawn. {shown} {listing.UnlistedHint}";
+        }
 
         // Measured where the bytes are actually produced, so the counter tracks real work rather than
         // an assumed cadence: since #675 this runs on a GetFunctions memo MISS, not once per turn, and
         // the counter reads as rebuilds. Recording it here rather than at the call site is what keeps
         // that true without the sink having to know the memo exists.
-        var templateCatalog = BuildTemplateCatalog(templates);
         _manager.Instrumentation?.RecordTemplateCatalog(Encoding.UTF8.GetByteCount(templateCatalog));
 
         var contract = new FunctionContract
@@ -472,7 +506,7 @@ public class SubAgentToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "subagent_type",
-                    Description = $"Which sub-agent to spawn. One of: {typeList}.",
+                    Description = typeDescription,
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = true,
                 },
@@ -1037,7 +1071,7 @@ public class SubAgentToolProvider : IFunctionProvider
     /// Builds the per-template catalog embedded in the Agent tool description so the
     /// parent LLM can pick the right sub-agent type.
     /// </summary>
-    private static string BuildTemplateCatalog(IReadOnlyDictionary<string, SubAgentTemplate> templates)
+    private static string BuildTemplateCatalog(IEnumerable<KeyValuePair<string, SubAgentTemplate>> templates)
     {
         var sb = new StringBuilder();
         _ = sb.Append("Available sub-agent types (subagent_type):");

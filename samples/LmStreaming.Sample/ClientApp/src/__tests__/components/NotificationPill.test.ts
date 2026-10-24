@@ -45,6 +45,26 @@ describe('NotificationPill.vue', () => {
   });
 
   // #244: an agent-to-agent message reuses this pill rather than adding another DisplayItem kind.
+  // PC-SC6-1: a capability notice (labelled with its catalog key) announces an item that is only
+  // available, so it must not read "Context loaded"; a context file the agent read still does.
+  it.each([
+    ['skill:/workspace/s6b/.claude/skills/s6b-demo', 'New skill available'],
+    ['agent:s6b-agent', 'New sub-agent available'],
+    ['/workspace/s6b/sub/AGENTS.md', 'Context loaded'],
+  ])('heads a context-discovery notice labelled %s as "%s"', (label, heading) => {
+    const notification: NotificationDisplayData = {
+      notifyKind: 'context-discovery',
+      label,
+      detail: 'notice text',
+    };
+    const wrapper = mount(NotificationPill, { props: { notification } });
+
+    expect(wrapper.get('[data-testid="notification-pill"]').attributes('data-notify-kind')).toBe(
+      'context-discovery',
+    );
+    expect(wrapper.get('.notification-kind').text()).toBe(heading);
+  });
+
   it('renders an agent-to-agent message with a per-type heading and the sender name', () => {
     const notification: NotificationDisplayData = {
       notifyKind: 'agent-message',

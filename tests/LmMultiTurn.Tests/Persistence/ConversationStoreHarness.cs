@@ -87,7 +87,7 @@ internal sealed class ConversationStoreHarness : IAsyncDisposable
                 // Let the store create the schema, then strip the sequence numbers it assigned.
                 var store = Reopen(kind);
                 await store.AppendMessagesAsync(threadId, rows);
-                await using var connection = new SqliteConnection($"Data Source={_backing[kind]}");
+                await using var connection = new SqliteConnection($"Data Source={_backing[kind]};Pooling=False");
                 await connection.OpenAsync();
                 using var command = connection.CreateCommand();
                 command.CommandText = "UPDATE messages SET seq = NULL WHERE thread_id = $thread_id;";
@@ -128,7 +128,7 @@ internal sealed class ConversationStoreHarness : IAsyncDisposable
         int orderIdx
     )
     {
-        await using var connection = new SqliteConnection($"Data Source={_backing["sqlite"]}");
+        await using var connection = new SqliteConnection($"Data Source={_backing["sqlite"]};Pooling=False");
         await connection.OpenAsync();
         foreach (var id in ids)
         {

@@ -41,6 +41,18 @@ publish directory is retained after the run (success or failure) for inspection.
 ./publish-launch.ps1 -Configuration Release -Port 5060 # a second, explicit Release instance
 ```
 
+## Plugin HTTP MCP destinations
+
+Plugin HTTP MCP servers connect from the application process, outside the sandbox proxy. They are denied by
+default. Operators must list each trusted origin in `RemoteMcp:AllowedOrigins`, for example
+`["https://mcp.example.com", "https://internal.example.com:8443"]`. Origins contain a scheme, host and optional
+port, with no user info, path, query or fragment. Matching is exact; subdomains and other ports are not implied.
+
+Allow-listing an origin explicitly trusts the addresses its DNS resolves to, including private networks.
+This is an operator network trust decision, not DNS/IP filtering. Only list origins controlled by a trusted
+service. TLS certificate validation remains enabled and redirects are never followed. Plain HTTP additionally
+requires `RemoteMcp:AllowLoopbackHttp` and a literal loopback destination; its origin must still be listed.
+
 ## Sandbox Workspace Agent
 
 The **Workspace Agent** chat mode routes every file/shell/search tool call through the Rust

@@ -773,6 +773,13 @@ public sealed class SubAgentManager : IAsyncDisposable
     internal SubAgentInstrumentation? Instrumentation => _options.Instrumentation;
 
     /// <summary>
+    /// The templates this manager's <c>Agent</c> tool lists (<see cref="SubAgentOptions.ListedTemplates"/>, asked for
+    /// this manager's parent thread), or null for every template. <see cref="SubAgentToolProvider"/> reads it once per
+    /// build of its surface; the host returns the same instance until the list changes.
+    /// </summary>
+    internal TemplateListing? ListedTemplates => _options.ListedTemplates?.Invoke(_parentAgent.ThreadId);
+
+    /// <summary>
     /// The usage ledger this manager relays descendant usage into, when the sink it was given is one —
     /// the owning loop's <c>UsageLedger</c>, which for a root loop is the conversation's single ledger.
     /// Exposed read-only so <see cref="SubAgentToolProvider"/> can render a per-agent VIEW of it in a
@@ -3656,7 +3663,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             addTools,
             removeTools,
             _options.RequiredToolNames,
-            _parentToolNames
+            _parentToolNames,
+            _options.CompanionToolNames
         );
 
         IStreamingAgent providerAgent;
@@ -3826,7 +3834,12 @@ public sealed class SubAgentManager : IAsyncDisposable
                     continue;
                 }
 
-                _ = registry.AddFunction(contract, handler, "ParentTools");
+                // The host may hand this child its own version of the tool; only a tool that passed the
+                // filter above is ever offered, so an override can replace an inherited tool, never add one.
+                var own = await OverrideInheritedToolAsync(agentId, contract, handler).ConfigureAwait(false);
+                _ = own is not null
+                    ? registry.AddProvider(own)
+                    : registry.AddFunction(contract, handler, "ParentTools");
                 inheritedToolNames.Add(contract.Name);
             }
 
@@ -4120,13 +4133,20 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// nothing is now reported by <see cref="BuildSpawnCapabilityRecord"/> rather than
     /// passing quietly (#623's lesson).
     /// </para>
+    /// <para>
+    /// <paramref name="companionTools"/> (<see cref="SubAgentOptions.CompanionToolNames"/>) apply after the
+    /// required-tools union, so a required key brings its companions too. A companion the spawn's
+    /// <paramref name="removeTools"/> names stays out: an explicit removal wins over an implied grant. So
+    /// does one missing from <paramref name="inheritableToolNames"/> (when given): the parent cannot grant it.
+    /// </para>
     /// </remarks>
     internal static HashSet<string>? BuildEnabledToolSet(
         IReadOnlyList<string>? templateEnabledTools,
         string[]? addTools,
         string[]? removeTools,
         IReadOnlyCollection<string>? requiredTools = null,
-        IReadOnlyCollection<string>? inheritableToolNames = null
+        IReadOnlyCollection<string>? inheritableToolNames = null,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? companionTools = null
     )
     {
         if (templateEnabledTools == null && addTools == null && removeTools == null)
@@ -4190,6 +4210,32 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
         }
 
+        if (companionTools is { Count: > 0 } && result is not null)
+        {
+            foreach (var (tool, companions) in companionTools)
+            {
+                if (!result.Contains(tool))
+                {
+                    continue;
+                }
+
+                foreach (var companion in companions)
+                {
+                    // A companion the parent lacks would never materialize, yet it would still read as part of the
+                    // base set, so a remove_tools naming it would stop reporting that it withheld nothing.
+                    if (
+                        (
+                            inheritableToolNames is null
+                            || inheritableToolNames.Contains(companion, StringComparer.Ordinal)
+                        ) && (removeTools is null || !removeTools.Contains(companion, StringComparer.Ordinal))
+                    )
+                    {
+                        _ = result.Add(companion);
+                    }
+                }
+            }
+        }
+
         return result;
     }
 
@@ -4209,6 +4255,39 @@ public sealed class SubAgentManager : IAsyncDisposable
     {
         var trimmed = tool?.Trim();
         return trimmed is "*" or "*:*";
+    }
+
+    /// <summary>
+    /// The child's own version of one inherited tool from <see cref="SubAgentOptions.InheritedToolOverride"/>, or
+    /// null to inherit the parent's function. A host exception is logged and also yields null: a host fault
+    /// never fails a spawn. No caller token reaches a spawn, so the host's own timeout is just another failure.
+    /// </summary>
+    private async ValueTask<IFunctionProvider?> OverrideInheritedToolAsync(
+        string agentId,
+        FunctionContract contract,
+        ToolHandler handler
+    )
+    {
+        if (_options.InheritedToolOverride is not { } inheritedToolOverride)
+        {
+            return null;
+        }
+
+        try
+        {
+            return await inheritedToolOverride(new InheritedTool(agentId, contract, handler), CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Inherited tool override failed for sub-agent {AgentId} tool {ToolName}; it inherits the parent's tool",
+                agentId,
+                contract.Name
+            );
+            return null;
+        }
     }
 
     /// <summary>
@@ -4435,7 +4514,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             addTools,
             removeTools,
             _options.RequiredToolNames,
-            _parentToolNames
+            _parentToolNames,
+            _options.CompanionToolNames
         );
 
         string[] projected = [.. _parentToolNames.Where(name => InheritsParentTool(name, enabledSet, out _))];
@@ -4588,7 +4668,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             addTools,
             removeTools: null,
             requiredTools: null,
-            _parentToolNames
+            _parentToolNames,
+            _options.CompanionToolNames
         );
 
         if (beforeRemoval is null)
@@ -5480,10 +5561,10 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <summary>
     /// Actively persists a sub-agent's just-flipped terminal status through its OWN
     /// <see cref="IConversationStore"/>, at the moment of transition. This is the causal push:
-    /// the child's own post-run metadata write (<c>MultiTurnAgentBase.UpdateMetadataAsync</c>) only
-    /// ever calls <see cref="IConversationStore.SaveMetadataAsync"/>, and a background sub-agent that
-    /// never receives another message never calls it again — so without this push, the exact
-    /// terminal status/timestamp would only ever be known in memory. Uses
+    /// the child's own post-run metadata write (<c>MultiTurnAgentBase.UpdateMetadataAsync</c>) runs
+    /// once per run, and a background sub-agent that never receives another message never writes
+    /// again — so without this push, the exact terminal status/timestamp would only ever be known in
+    /// memory. Uses
     /// <see cref="IConversationStore.UpdateMetadataAsync"/> so a concrete host integration (e.g. the
     /// sample's provenance-stamping store decorator) can layer its own metadata projection onto this
     /// touch exactly as it already does for the child's own writes; the manager itself stays
