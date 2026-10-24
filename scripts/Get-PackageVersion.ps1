@@ -52,7 +52,7 @@ if ($Ref.StartsWith("refs/tags/v", [System.StringComparison]::Ordinal)) {
 elseif ($EventName -eq "pull_request") { $label = "pr.$PullRequestNumber.$RunNumber" }
 elseif ($Ref -ne "refs/heads/main" -and $publish) { throw "Only main or a matching main release tag may publish packages." }
 elseif (-not $publish) { $label = "ci.$RunNumber" }
-if ($label -and $RunNumber -notmatch '^\d+$') { throw "Preview package run number must be numeric." }
+if ($label -and $RunNumber -notmatch '\A(?:0|[1-9][0-9]*)\z') { throw "Preview package run number must be canonical ASCII digits without leading zeros." }
 [ordered]@{
     version = "$stableVersion$(if ($label) { "-$label" })"
     major = [int]$major; minor = [int]$minor; patch = $patch; label = $label
