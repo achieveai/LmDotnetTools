@@ -402,4 +402,96 @@ public sealed class NonOwningConversationStoreTests
             );
         SubAgentProvenance.TryProject(afterRestart, "thread-parent")!.Status.Should().Be("running");
     }
+
+    /// <summary>
+    /// The stamp is resolved BEFORE the store lock (the supplier walks the live registry), so a slow
+    /// lock lets a newer run write first. When the older write then runs, the manager's terminal push
+    /// hands back <c>existing</c> untouched; the wrapper must not merge the older run's terminal stamp
+    /// over the newer run's write.
+    /// </summary>
+    [Fact]
+    public async Task NonOwningWrapper_DoesNotApplyStaleStamp_OverANewerRunsWrite_WhenTheLockWasSlow()
+    {
+        var underlying = new InMemoryConversationStore();
+        var status = SubAgentStatus.Completed;
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var holdNextLock = true;
+
+        // Holds the first metadata update before it takes the underlying store's lock.
+        var gated = new Mock<IConversationStore>(MockBehavior.Strict);
+        _ = gated
+            .Setup(store =>
+                store.UpdateMetadataAsync(
+                    ThreadId,
+                    It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(
+                async (string threadId, Func<ThreadMetadata?, ThreadMetadata> update, CancellationToken ct) =>
+                {
+                    if (holdNextLock)
+                    {
+                        holdNextLock = false;
+                        entered.SetResult();
+                        await gate.Task;
+                    }
+
+                    await underlying.UpdateMetadataAsync(threadId, update, ct);
+                }
+            );
+
+        var wrapper = new NonOwningConversationStore(
+            gated.Object,
+            ThreadId,
+            () =>
+                SubAgentProvenance.Build(
+                    "thread-parent",
+                    new SubAgentSnapshot(
+                        AgentId: "child-1",
+                        Name: "alpha",
+                        TemplateName: "code-reviewer:security",
+                        Task: "check auth",
+                        Status: status,
+                        ThreadId: ThreadId,
+                        LastActivityUtc: null,
+                        TerminalAtUtc: status == SubAgentStatus.Completed
+                            ? DateTimeOffset.FromUnixTimeMilliseconds(1_000_000)
+                            : null
+                    )
+                )
+        );
+
+        // Epoch E: the terminal push resolves its Completed stamp, then waits on the lock.
+        var terminalPush = wrapper.UpdateMetadataAsync(
+            ThreadId,
+            existing => existing ?? new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 1 }
+        );
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Epoch E+1: a newer run is admitted and its write reaches the store first.
+        status = SubAgentStatus.Running;
+        await wrapper.UpdateMetadataAsync(
+            ThreadId,
+            existing =>
+                (existing ?? new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 1 }) with
+                {
+                    LastUpdated = 2,
+                }
+        );
+
+        // The superseded push finally runs; the manager hands back `existing` unchanged.
+        gate.SetResult();
+        await terminalPush.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var saved = await underlying.LoadMetadataAsync(ThreadId);
+        saved!
+            .Properties!.Should()
+            .NotContainKey(
+                SubAgentProvenance.TerminalAtKey,
+                "the older run's terminal instant must not land over the newer run's write"
+            );
+        SubAgentProvenance.TryProject(saved, "thread-parent")!.Status.Should().Be("running");
+    }
 }

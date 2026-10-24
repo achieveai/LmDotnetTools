@@ -111,6 +111,13 @@ public static class SubAgentProvenance
     /// </summary>
     public const string ModelSelectionSourceKey = "sample.subAgentModelSource";
 
+    /// <summary>
+    /// UTC ticks at which the stamp's live state was resolved. <see cref="NonOwningConversationStore"/>
+    /// resolves stamps outside the store lock, so a slow lock can let a newer write land first; the
+    /// merge refuses a stamp older than this persisted value rather than restoring a superseded status.
+    /// </summary>
+    public const string StampedAtKey = "sample.subAgentStampedAt";
+
     /// <summary>Normalized effort requested before provider capability shaping.</summary>
     public const string RequestedReasoningEffortKey = "sample.subAgentRequestedReasoningEffort";
 
@@ -371,7 +378,13 @@ public static class SubAgentProvenance
     /// (<c>JsonElement</c>/<see cref="long"/>/<see cref="int"/> all possible depending on how the
     /// value reached the store) the same way <see cref="ReadString"/> tolerates it for strings.
     /// </summary>
-    private static DateTimeOffset? ReadUnixMillis(ThreadMetadata metadata, string key)
+    private static DateTimeOffset? ReadUnixMillis(ThreadMetadata metadata, string key) =>
+        ReadInt64(metadata, key) is { } ms ? DateTimeOffset.FromUnixTimeMilliseconds(ms) : null;
+
+    /// <summary>Reads the persisted <see cref="StampedAtKey"/>, or null when the metadata was never stamped.</summary>
+    internal static long? ReadStampedAt(ThreadMetadata metadata) => ReadInt64(metadata, StampedAtKey);
+
+    private static long? ReadInt64(ThreadMetadata metadata, string key)
     {
         if (metadata.Properties?.TryGetValue(key, out var value) != true || value is null)
         {
@@ -380,11 +393,9 @@ public static class SubAgentProvenance
 
         return value switch
         {
-            long l => DateTimeOffset.FromUnixTimeMilliseconds(l),
-            int i => DateTimeOffset.FromUnixTimeMilliseconds(i),
-            System.Text.Json.JsonElement je when je.TryGetInt64(out var ms) => DateTimeOffset.FromUnixTimeMilliseconds(
-                ms
-            ),
+            long l => l,
+            int i => i,
+            System.Text.Json.JsonElement je when je.TryGetInt64(out var parsed) => parsed,
             _ => null,
         };
     }

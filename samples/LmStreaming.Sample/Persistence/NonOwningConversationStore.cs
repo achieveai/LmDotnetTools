@@ -140,19 +140,63 @@ public sealed class NonOwningConversationStore
     )
     {
         // Resolve BEFORE handing the callback to the store: `update` runs while the store holds its
-        // write lock, and the provenance supplier walks the parent's live sub-agent registry.
+        // write lock, and the provenance supplier walks the parent's live sub-agent registry. A stamp
+        // resolved this early can be outrun by a newer write that takes the lock first, so the merge
+        // inside the lock refuses one older than what that write left.
         var stamp = ResolveStamp(threadId);
-        return _conversation.UpdateMetadataAsync(threadId, existing => Stamp(update(existing), stamp), ct);
+        return _conversation.UpdateMetadataAsync(
+            threadId,
+            existing => IsOlderThan(stamp, existing) ? update(existing) : Stamp(update(existing), stamp),
+            ct
+        );
     }
 
     /// <summary>
     /// Returns the properties to stamp for <paramref name="threadId"/>, or null when this store was
-    /// created without provenance or the write targets some other thread.
+    /// created without provenance or the write targets some other thread. The stamp carries
+    /// <see cref="SubAgentProvenance.StampedAtKey"/>, taken BEFORE the supplier reads the live state:
+    /// a run admitted after this resolution started can only be seen by a later resolution, which
+    /// therefore always carries a larger value.
     /// </summary>
-    private ImmutableDictionary<string, object>? ResolveStamp(string threadId) =>
-        _provenance is not null && string.Equals(threadId, _provenanceThreadId, StringComparison.Ordinal)
-            ? _provenance()
-            : null;
+    private ImmutableDictionary<string, object>? ResolveStamp(string threadId)
+    {
+        if (_provenance is null || !string.Equals(threadId, _provenanceThreadId, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var stampedAt = NextStampedAt();
+        return _provenance().SetItem(SubAgentProvenance.StampedAtKey, stampedAt);
+    }
+
+    /// <summary>
+    /// True when <paramref name="existing"/> already holds a stamp resolved after <paramref name="stamp"/>.
+    /// Metadata without the key (legacy, or never stamped) never wins.
+    /// </summary>
+    private static bool IsOlderThan(ImmutableDictionary<string, object>? stamp, ThreadMetadata? existing) =>
+        stamp is not null
+        && existing is not null
+        && SubAgentProvenance.ReadStampedAt(existing) is { } persisted
+        && persisted > (long)stamp[SubAgentProvenance.StampedAtKey];
+
+    private static long _lastStampedAt;
+
+    /// <summary>
+    /// UTC ticks, strictly increasing within the process so two resolutions in the same tick still
+    /// order. Wall-clock based so the order also holds against values persisted by an earlier process.
+    /// </summary>
+    private static long NextStampedAt()
+    {
+        while (true)
+        {
+            var last = Volatile.Read(ref _lastStampedAt);
+            var next = Math.Max(last + 1, DateTimeOffset.UtcNow.UtcTicks);
+            if (Interlocked.CompareExchange(ref _lastStampedAt, next, last) == last)
+            {
+                return next;
+            }
+        }
+    }
 
     /// <summary>
     /// Merges <paramref name="stamp"/> into the metadata's property bag, overwriting same-named keys
