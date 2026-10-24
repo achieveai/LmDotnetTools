@@ -3,7 +3,6 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using FluentAssertions;
-using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Time.Testing;
 using Xunit;
 
@@ -50,7 +49,7 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
         }
 
         // SQLite keeps pooled connections on the file; clearing them is what lets the directory delete.
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.ClearDirectory(_root);
 
         // #477: this suite's file-backed stores are exactly the exclusive-create retry loop the window is
         // about — and AReserveWhoseDirectoryVanishes_KeepsYieldingRatherThanSpinningUncancellably, further

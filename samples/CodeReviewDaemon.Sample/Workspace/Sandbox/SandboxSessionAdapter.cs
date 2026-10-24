@@ -96,6 +96,12 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
     /// </summary>
     internal string GatewayBaseUrl => _gatewayBaseUrl;
 
+    /// <summary>
+    /// Clock for the command deadline. Tests advance it at command HTTP entry to observe cancellation without
+    /// racing setup or runner scheduling; production keeps the system-clock deadline.
+    /// </summary>
+    internal TimeProvider CommandClock { get; init; } = TimeProvider.System;
+
     public async Task<SandboxCommandResult> RunAsync(SandboxCommand command, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(command);
@@ -125,8 +131,8 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
         // limit is cancelled client-side so untrusted PR code cannot hang the poller. This complements the
         // gateway-side ExecutionTimeout (configured below, overridden per operation above) — either
         // surfaces as the SAME TimeoutException the old orchestrator threw.
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(timeout);
+        using var deadlineCts = new CancellationTokenSource(timeout, CommandClock);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadlineCts.Token);
 
         SdkSandboxCommandResult sdkResult;
         try

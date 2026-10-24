@@ -187,7 +187,7 @@ internal sealed class ConversationStoreHarness : IAsyncDisposable
             await disposable.DisposeAsync();
         }
 
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.ClearDirectory(_root);
         await Task.Delay(50);
         DetachedStoreTeardown.Purge(_root);
     }

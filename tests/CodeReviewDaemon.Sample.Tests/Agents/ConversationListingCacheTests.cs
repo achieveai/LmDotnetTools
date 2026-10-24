@@ -35,9 +35,11 @@ public class ConversationListingCacheTests
         (await launch.FindConversationByTitlePrefixAsync("Nova-17-", "ws", "m", CancellationToken.None))
             .Should()
             .Be(new S2SConversationMatch("t1", "p", true));
-        await launch.EnsureConversationReusableAsync("t1", "ws", "p2", "m", CancellationToken.None);
+        await launch.SwitchProviderAsync("t1", "p2", CancellationToken.None);
         // The provider switch above shows in the copy the other client reads.
-        await another.EnsureConversationBindingAsync("t1", "ws", "p2", "m", CancellationToken.None);
+        (await another.FindConversationByTitlePrefixAsync("Nova-17-", "ws", "m", CancellationToken.None))
+            .Should()
+            .Be(new S2SConversationMatch("t1", "p2", true));
         (await another.FindConversationByTitlePrefixAsync("Nova-99-", "ws", "m", CancellationToken.None))
             .Should()
             .BeNull();

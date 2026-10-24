@@ -3,7 +3,6 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using FluentAssertions;
-using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace LmMultiTurn.Tests.Persistence;
@@ -58,7 +57,7 @@ public sealed class ConversationOwnershipTests : IAsyncLifetime
             await disposable.DisposeAsync();
         }
 
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.ClearDirectory(_root);
         await Task.Delay(50);
 
         // #477: the "file" store kind here is a FileConversationStore with the exclusive-create retry
