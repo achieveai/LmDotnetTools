@@ -41,7 +41,32 @@ public sealed class LmStreamingS2SClientReadOnlyEgressTests
             .Be("/api/conversations/thread-old");
     }
 
-    private static async Task<string> ProvisionReadOnlyAsync(FakeHttpMessageHandler handler)
+    [Fact]
+    public async Task A_host_that_acknowledges_effort_but_not_read_only_egress_gets_the_thread_deleted_and_a_contract_error()
+    {
+        // Mid-rollout: a host new enough to acknowledge reasoning effort, but older than read-only egress.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Post,
+                "api/conversations",
+                """{"threadId":"thread-old","reasoningEffortAccepted":true}"""
+            )
+            .OnJson(HttpMethod.Delete, "api/conversations/thread-old", "{}");
+
+        var provision = () => ProvisionReadOnlyAsync(handler, reasoningEffort: "high");
+
+        _ = await provision.Should().ThrowAsync<ReviewHostContractException>().WithMessage("*read-only egress*");
+        handler
+            .Requests.Should()
+            .ContainSingle(request => request.Method == HttpMethod.Delete)
+            .Which.Uri.AbsolutePath.Should()
+            .Be("/api/conversations/thread-old");
+    }
+
+    private static async Task<string> ProvisionReadOnlyAsync(
+        FakeHttpMessageHandler handler,
+        string? reasoningEffort = null
+    )
     {
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
         return await new LmStreamingS2SClient(http, null, null, null).ProvisionAsync(
@@ -50,7 +75,7 @@ public sealed class LmStreamingS2SClientReadOnlyEgressTests
             "workspace-agent",
             null,
             null,
-            null,
+            reasoningEffort,
             workingDirectory: null,
             disableClientTools: true,
             readOnlyEgress: true,

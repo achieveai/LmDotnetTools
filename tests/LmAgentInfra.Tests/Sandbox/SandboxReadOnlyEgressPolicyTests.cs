@@ -89,15 +89,45 @@ public sealed class SandboxReadOnlyEgressPolicyTests
             Methods = "POST,PATCH",
             Priority = 300,
         };
+        // One org's host: not an ADO host verbatim, but inside *.visualstudio.com.
+        options.Network.Rules["ado-org"] = new()
+        {
+            Hosts = "contoso.visualstudio.com",
+            Ports = "443",
+            Methods = "GET,POST",
+            Priority = 400,
+        };
+        options.Network.Rules["ado-orgs"] = new()
+        {
+            Hosts = "*.visualstudio.com",
+            Ports = "443",
+            Methods = "HEAD,PUT",
+            Priority = 500,
+        };
+        // ADO and a non-ADO host in one rule. A rule that reaches ADO is narrowed as a whole, so example.org loses
+        // its writes too: one rule has one method list, and splitting it is not the gateway's rule model.
+        options.Network.Rules["ado-and-docs"] = new()
+        {
+            Hosts = "vssps.dev.azure.com,example.org",
+            Ports = "443",
+            Methods = "*",
+            Priority = 600,
+        };
 
         var (_, normal) = SandboxSessionRegistry.BuildAuthPolicy(auth, options, "test-secret");
         var (_, readOnly) = SandboxSessionRegistry.BuildAuthPolicy(auth, options, "test-secret", readOnlyEgress: true);
 
         normal!.Single(rule => rule.Id == "ado").Methods.Should().Equal("*");
+        normal!.Single(rule => rule.Id == "ado-and-docs").Methods.Should().Equal("*");
         readOnly!.Single(rule => rule.Id == "ado").Methods.Should().Equal("GET", "HEAD");
         readOnly!.Single(rule => rule.Id == "ado").AuthProvider.Should().BeNull();
         readOnly!.Single(rule => rule.Id == "ado-mixed").Methods.Should().Equal("GET");
         readOnly!.Should().NotContain(rule => rule.Id == "ado-writes", "a rule with no read method left is dropped");
+        readOnly!.Single(rule => rule.Id == "ado-org").Methods.Should().Equal("GET");
+        readOnly!.Single(rule => rule.Id == "ado-orgs").Methods.Should().Equal("HEAD");
+        var mixed = readOnly!.Single(rule => rule.Id == "ado-and-docs");
+        mixed.Methods.Should().Equal("GET", "HEAD");
+        mixed.Hosts.Should().Equal("vssps.dev.azure.com", "example.org");
         SandboxEgressPolicyCompiler.ValidateEffectivePrecedence(readOnly!).Should().BeEmpty();
     }
 

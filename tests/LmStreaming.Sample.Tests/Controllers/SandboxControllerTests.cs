@@ -20,6 +20,7 @@ namespace LmStreaming.Sample.Tests.Controllers;
 public class SandboxControllerTests
 {
     private const string ThreadId = "thread-1";
+    private const string JudgeThreadId = "thread-judge";
     private const string BackupAppId = "app-a";
 
     [Fact]
@@ -237,6 +238,38 @@ public class SandboxControllerTests
         fixture.BackupRequests.Should().Equal(["GET /api/v1/backup/costs"]);
     }
 
+    [Fact]
+    public async Task Get_ReportsTheThreadsOwnSandbox_AJudgeItsReadOnlyOne_NeverTheLanesNormalOne()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var workspaceRef = new WorkspaceRef(
+            fixture.Workspace.Id,
+            fixture.Workspace.DirectoryRelPath,
+            fixture.Workspace.Marketplaces
+        );
+        var lane = await fixture.Harness.Registry.GetOrCreateSessionAsync(workspaceRef);
+
+        (await ReportedSessionIdAsync(fixture, JudgeThreadId))
+            .Should()
+            .BeNull("the judge has no sandbox yet; the lane's normal one is not the judge's");
+
+        var judge = await fixture.Harness.Registry.GetOrCreateSessionAsync(workspaceRef with { ReadOnlyEgress = true });
+
+        judge.SessionId.Should().NotBe(lane.SessionId);
+        (await ReportedSessionIdAsync(fixture, JudgeThreadId)).Should().Be(judge.SessionId);
+        (await ReportedSessionIdAsync(fixture, ThreadId)).Should().Be(lane.SessionId);
+    }
+
+    /// <summary>The <c>session.sessionId</c> the inspector's sandbox panel shows for a thread, null when none.</summary>
+    private static async Task<string?> ReportedSessionIdAsync(Fixture fixture, string threadId)
+    {
+        var result = await fixture.Controller.Get(threadId, CancellationToken.None);
+        var value = result.Should().BeOfType<OkObjectResult>().Subject.Value;
+        using var body = JsonDocument.Parse(JsonSerializer.Serialize(value));
+        var session = body.RootElement.GetProperty("session");
+        return session.ValueKind == JsonValueKind.Null ? null : session.GetProperty("sessionId").GetString();
+    }
+
     private static Task<IHost> StartAsync(Fixture fixture, string? secret) =>
         OperatorGateTestServer.StartAsync(
             secret,
@@ -246,6 +279,7 @@ public class SandboxControllerTests
                 _ = services.AddSingleton(fixture.Harness.Registry);
                 _ = services.AddSingleton(fixture.Backup);
                 _ = services.AddSingleton(fixture.Authorizer);
+                _ = services.AddSingleton(fixture.Conversations);
                 _ = services.AddLogging();
             }
         );
@@ -270,6 +304,7 @@ public class SandboxControllerTests
         public required SandboxWorkspaceBackup Backup { get; init; }
         public required SandboxAppAccess Access { get; init; }
         public required ConversationAuthorizer Authorizer { get; init; }
+        public required IConversationStore Conversations { get; init; }
 
         public static async Task<Fixture> CreateAsync(
             bool restoreConflict = false,
@@ -293,6 +328,19 @@ public class SandboxControllerTests
                         ),
                     }
                 );
+            // A judge on the same workspace: provisioned with read-only egress, so it has a sandbox slot of its own.
+            conversations
+                .Setup(x => x.LoadMetadataAsync(JudgeThreadId, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(
+                    new ThreadMetadata
+                    {
+                        ThreadId = JudgeThreadId,
+                        LastUpdated = 0,
+                        Properties = ImmutableDictionary<string, object>
+                            .Empty.Add(MultiTurnAgentPool.WorkspacePropertyKey, workspace.Id)
+                            .Add(ConversationReadOnlyEgress.PropertyKey, true),
+                    }
+                );
             var requests = new List<string>();
             var backup = new SandboxWorkspaceBackup(
                 new SandboxGatewayOptions { AppId = BackupAppId, BaseUrl = "http://localhost:3000" },
@@ -314,6 +362,7 @@ public class SandboxControllerTests
                 harness.Registry,
                 backup,
                 authorizer,
+                conversations.Object,
                 NullLogger<SandboxController>.Instance
             );
             return new Fixture
@@ -325,6 +374,7 @@ public class SandboxControllerTests
                 Backup = backup,
                 Access = access,
                 Authorizer = authorizer,
+                Conversations = conversations.Object,
             };
         }
 

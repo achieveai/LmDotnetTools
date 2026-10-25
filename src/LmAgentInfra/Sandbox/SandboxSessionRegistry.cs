@@ -970,10 +970,17 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
 
     /// <summary>Returns an already-created default-caller session without starting a sandbox.</summary>
     /// <remarks>Only the normal (not read-only-egress) slot: callers are host-side readers.</remarks>
-    public SandboxSession? TryGetExistingSession(string workspaceId)
+    public SandboxSession? TryGetExistingSession(string workspaceId) => TryGetExistingSession(workspaceId, false);
+
+    /// <summary>
+    /// Returns an already-created default-caller session in the given slot without starting a sandbox. A thread
+    /// provisioned with read-only egress (<see cref="WorkspaceRef.ReadOnlyEgress"/>) runs in the read-only slot,
+    /// so a reader answering for one thread passes that thread's flag.
+    /// </summary>
+    public SandboxSession? TryGetExistingSession(string workspaceId, bool readOnlyEgress)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
-        var key = (workspaceId, _defaultCredential.AppId, false);
+        var key = (workspaceId, _defaultCredential.AppId, readOnlyEgress);
         return _sessions.TryGetValue(key, out var lazy) && lazy.IsValueCreated && lazy.Value.IsCompletedSuccessfully
             ? lazy.Value.Result
             : null;

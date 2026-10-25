@@ -183,6 +183,8 @@ $REVIEWD_HOME/bin/deploy.sh host <publish dir> <commit>    # then step 2
 
 - The host keeps its data and deployed `appsettings.json` in `data/host`; `deploy.sh` links them in.
 - Rollback: `ln -sfn releases/cli/<older commit> $REVIEWD_HOME/cli` (or `host`), then restart.
+  A host older than judge read-only egress ignores it: a new judge stops (no acknowledgement), but one
+  already in flight resumes with full ADO egress. Do not resume judgments on a rolled-back host.
 
 ## Known gaps
 
