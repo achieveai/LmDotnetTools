@@ -407,6 +407,16 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// </summary>
     private readonly ConcurrentDictionary<string, SandboxCredential> _sessionCredentials = new(StringComparer.Ordinal);
 
+    private readonly ConcurrentDictionary<string, SandboxMcpSessionContext> _sessionMcpContexts = new(
+        StringComparer.Ordinal
+    );
+
+    internal bool TryGetMcpContext(string sessionId, out SandboxMcpSessionContext? context) =>
+        _sessionMcpContexts.TryGetValue(sessionId, out context);
+
+    internal bool IsCurrentMcpContext(string sessionId, SandboxMcpSessionContext context) =>
+        !_disposed && _sessionMcpContexts.TryGetValue(sessionId, out var current) && ReferenceEquals(current, context);
+
     /// <summary>
     /// When each live session was last confirmed alive by a gateway probe, as UTC ticks. Read by
     /// <see cref="IsRecentlyVerified"/> to skip the per-acquisition liveness probe inside
@@ -1380,6 +1390,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         _ = _sessionThreads.TryRemove(session.SessionId, out _);
         _ = _discoverySeen.TryRemove(session.SessionId, out _);
         _ = _webhookEventsSeen.TryRemove(session.SessionId, out _);
+        _ = _sessionMcpContexts.TryRemove(session.SessionId, out _);
         _ = _backgroundTaskOwners.TryRemove(session.SessionId, out _);
         // Unreachable rather than wrong once the session is gone - ids are gateway-allocated and never
         // reissued, so nothing can consult this entry again. It is removed because the funnel contract
@@ -1458,8 +1469,18 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         // session's webhook auth (the secret is persisted to disk below once the session id is
         // known) and so two sessions' secrets can never be cross-validated against each other.
         var sessionSecret = RandomNumberGenerator.GetHexString(64);
-        var (authProviders, network) = BuildAuthProviders(sessionSecret);
-        var (discovery, webhook) = BuildEventDelivery(sessionSecret);
+        var effectiveCredential = credential ?? _defaultCredential;
+        var mcpContext = SandboxMcpConfiguration.Snapshot(_options.Mcp, effectiveCredential.AppId);
+        if (
+            mcpContext is not null
+            && (mcpContext.Policy.Egress == SandboxMcpEgress.Auto || mcpContext.Bindings.Count > 0)
+            && (!_authOptions.Webhook.UseSandboxWebhook || !DiscoveryEnabled)
+        )
+        {
+            throw new ArgumentException("MCP automatic setup requires an enabled unified sandbox webhook.");
+        }
+        var (authProviders, network) = BuildAuthProviders(sessionSecret, mcpContext);
+        var (discovery, webhook) = BuildEventDelivery(sessionSecret, mcpContext is not null);
         // Per-workspace marketplace selection wins; fall back to the global config default when the
         // workspace enables none. Either way `null` means "omit the field, gateway picks its default".
         // Shared with the workspace plugin-selection validator so a selection can never be rejected
@@ -1468,7 +1489,6 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         // The effective credential for this creation: caller-supplied (M2 per-caller passthrough) or
         // the process-wide default (M1 behavior, still the only path for the daemon and any other
         // contextless caller).
-        var effectiveCredential = credential ?? _defaultCredential;
         // The SDK owns protocol only: it maps this fully-formed request to the wire
         // `app.id` (from the credential-scoped client) / `workspace` / `auth_providers` / `network` /
         // `discovery` / `marketplaces` shape the gateway expects — identical bytes to the hand-rolled
@@ -1491,7 +1511,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             image: workspaceRef.Image,
             workingDir: workspaceRef.WorkingDir,
             webhook: webhook
-        );
+        )
+        {
+            Mcp = mcpContext?.Policy,
+        };
 
         if (createRequest.Env.Count > 0)
         {
@@ -1654,6 +1677,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 // destroy, discovery) resolve the SAME credential via CredentialFor, not the process
                 // default (relevant once M2 lets callers create under a per-caller credential).
                 _sessionCredentials[session.SessionId] = effectiveCredential;
+                if (mcpContext is not null)
+                {
+                    _sessionMcpContexts[session.SessionId] = mcpContext;
+                }
                 // Seed the env-state cache with exactly what was just sent on create, so the first
                 // EnsureSessionEnvAsync call for this session diffs against reality instead of issuing a
                 // redundant GET.
@@ -1690,6 +1717,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                     new KeyValuePair<string, SandboxCredential>(session.SessionId, effectiveCredential)
                 );
                 ForgetSessionEnvState(session.SessionId);
+                _ = _sessionMcpContexts.TryRemove(session.SessionId, out _);
                 throw;
             }
             // The reservation acquired above IS this session's refcount — commit it (no extra increment),
@@ -1970,6 +1998,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             _webhookEventsSeen.Clear();
             _backgroundTaskOwners.Clear();
             _sessionCredentials.Clear();
+            _sessionMcpContexts.Clear();
             _sessionEnv.Clear();
             _unreportedCreations.Clear();
             _replacedSessions.Clear();
@@ -2860,7 +2889,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// each provider (e.g. m365 needs both ClientId + ClientSecret) without standing up the gateway.
     /// </summary>
     internal IReadOnlyList<string> GetAuthProviderIdsForTest() =>
-        BuildAuthProviders("test-secret").Providers?.Select(p => p.Id).ToArray() ?? [];
+        BuildAuthPolicy(_authOptions, _options, "test-secret", _predefinedKeys).Providers?.Select(p => p.Id).ToArray()
+        ?? [];
 
     /// <summary>
     /// Test seam: the full <c>auth_providers</c> + <c>network</c> pair the registry would attach, so a
@@ -2870,13 +2900,13 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     internal (
         IReadOnlyList<SandboxAuthProvider>? Providers,
         IReadOnlyList<SandboxNetworkRule>? Network
-    ) BuildAuthProvidersForTest() => BuildAuthProviders("test-secret");
+    ) BuildAuthProvidersForTest() => BuildAuthPolicy(_authOptions, _options, "test-secret", _predefinedKeys);
 
     private (
         IReadOnlyList<SandboxAuthProvider>? Providers,
         IReadOnlyList<SandboxNetworkRule>? Network
-    ) BuildAuthProviders(string sessionSecret) =>
-        BuildAuthPolicy(_authOptions, _options, sessionSecret, _predefinedKeys);
+    ) BuildAuthProviders(string sessionSecret, SandboxMcpSessionContext? mcpContext = null) =>
+        BuildAuthPolicyCore(_authOptions, _options, sessionSecret, _predefinedKeys, mcpContext);
 
     /// <summary>
     /// Builds the optional auth-provider and network blocks from managed OAuth providers,
@@ -2895,6 +2925,27 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         SandboxGatewayOptions options,
         string sessionSecret,
         PredefinedKeyRegistry? predefinedKeys = null
+    )
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return BuildAuthPolicyCore(
+            authOptions,
+            options,
+            sessionSecret,
+            predefinedKeys,
+            SandboxMcpConfiguration.Snapshot(options.Mcp, options.AppId)
+        );
+    }
+
+    private static (
+        IReadOnlyList<SandboxAuthProvider>? Providers,
+        IReadOnlyList<SandboxNetworkRule>? Network
+    ) BuildAuthPolicyCore(
+        AuthOptions authOptions,
+        SandboxGatewayOptions options,
+        string sessionSecret,
+        PredefinedKeyRegistry? predefinedKeys,
+        SandboxMcpSessionContext? mcpContext
     )
     {
         ArgumentNullException.ThrowIfNull(authOptions);
@@ -3047,6 +3098,70 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             }
         }
 
+        // MCP rules must reach their owner-bound callback, not a broad legacy credential route.
+        // Consider ALL apps' bindings: otherwise app A could inherit the legacy route for app B's key.
+        // Preserve unrelated hosts. A wildcard cannot safely exclude one endpoint, so require an explicit
+        // operator replacement instead of silently dropping its other destinations. Replacements below
+        // remain authoritative and are excluded from this generated-rule adjustment.
+        if (mcpContext is not null)
+        {
+            var replacedIds = new HashSet<string>(
+                options.Network?.Rules.Keys.AsEnumerable() ?? [],
+                StringComparer.OrdinalIgnoreCase
+            );
+            for (var index = rules.Count - 1; index >= 0; index--)
+            {
+                var rule = rules[index];
+                if (
+                    replacedIds.Contains(rule.Id)
+                    || !string.Equals(rule.Action, "allow", StringComparison.OrdinalIgnoreCase)
+                )
+                {
+                    continue;
+                }
+
+                var overlaps = rule
+                    .Hosts.Where(host =>
+                        mcpContext.ProtectedEndpoints.Any(endpoint =>
+                            SandboxEgressPolicyCompiler.HostsOverlap(host, endpoint.IdnHost)
+                            && (rule.Ports.Count == 0 || rule.Ports.Contains(endpoint.Port))
+                        )
+                    )
+                    .ToArray();
+                if (overlaps.Length == 0)
+                {
+                    continue;
+                }
+
+                if (rule.AuthProvider is null || overlaps.Any(host => host.StartsWith("*", StringComparison.Ordinal)))
+                {
+                    throw new ArgumentException(
+                        $"MCP endpoint conflicts with generated egress rule '{rule.Id}'; narrow the predefined key host, or explicitly replace/disable a managed rule through Network:Rules."
+                    );
+                }
+
+                var remaining = rule.Hosts.Except(overlaps, StringComparer.OrdinalIgnoreCase).ToArray();
+                if (remaining.Length == 0)
+                {
+                    rules.RemoveAt(index);
+                }
+                else
+                {
+                    rules[index] = new SandboxNetworkRule(
+                        rule.Id,
+                        rule.Action,
+                        remaining,
+                        rule.Ports,
+                        rule.Methods,
+                        rule.Paths,
+                        rule.AuthProvider,
+                        rule.RequiredScopes,
+                        rule.Priority
+                    );
+                }
+            }
+        }
+
         // Configured egress policy (appsettings). Validated here as well as at host startup: a
         // programmatic consumer that builds SandboxGatewayOptions in code never runs the startup check,
         // and a bad policy must fail closed rather than reach the gateway.
@@ -3096,7 +3211,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// SECRET — never logged.
     /// </summary>
     private (SandboxDiscoverySettings? Discovery, SandboxWebhookSettings? Webhook) BuildEventDelivery(
-        string sessionSecret
+        string sessionSecret,
+        bool includeMcp = false
     )
     {
         if (!DiscoveryEnabled)
@@ -3119,7 +3235,21 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             _authOptions.Webhook.UseSandboxWebhook
         );
         return _authOptions.Webhook.UseSandboxWebhook
-            ? (null, new SandboxWebhookSettings(url, sessionSecret, SandboxWebhookSubscriptions))
+            ? (
+                null,
+                new SandboxWebhookSettings(
+                    url,
+                    sessionSecret,
+                    includeMcp
+                        ?
+                        [
+                            .. SandboxWebhookSubscriptions,
+                            SandboxWebhookEvents.AuthRequest,
+                            SandboxWebhookEvents.AuthPostResponseFailure,
+                        ]
+                        : SandboxWebhookSubscriptions
+                )
+            )
             : (new SandboxDiscoverySettings(url, sessionSecret), null);
     }
 

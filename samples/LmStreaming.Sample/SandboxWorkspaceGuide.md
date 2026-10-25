@@ -447,6 +447,90 @@ the shared parser and logs its diagnostics, but does not install the characteris
 `modelintelligence` never selects a daemon model and `effort` never adds reasoning request metadata.
 Existing explicit `model:` handling remains unchanged.
 
+## HTTP MCP libraries
+
+Gateway v0.1.18 and its matching Docker agent image let scripts call a plugin's HTTP MCP server with
+`sbx-mcp`, `sbx_mcp` or `@sbx/mcp`. The proxy injects credentials; the script reads only a secret-free
+manifest. Native backends need the helpers installed separately.
+
+Create the egress key in the existing **Egress Auth** dialog first. Its provider ID is `predefined-<id>`.
+Bindings also accept existing registered OAuth provider IDs such as `github`, `ado` and `m365`.
+The separate `cfg-*` configured-header provider namespace is not a binding source.
+Then configure an explicit app/server/endpoint binding. This example refers to an existing key; it contains
+no token values:
+
+```jsonc
+"Auth": {
+  "Webhook": { "UseSandboxWebhook": true, "RegisterEventWebhook": true,
+    "PublicBaseUrl": "https://app.example" }
+},
+"SandboxGateway": {
+  "Mcp": {
+    "Egress": "auto",
+    "Servers": {
+      "stub": { "Auth": "injected", "Headers": ["Authorization"],
+        "Url": "https://mcp.example/mcp", "CacheTtlSeconds": 60 }
+    },
+    "CredentialBindings": [
+      { "AppId": "my-app", "Server": "stub", "Url": "https://mcp.example/mcp",
+        "ProviderId": "predefined-my-key", "Headers": ["Authorization"], "CacheTtlSeconds": 60 }
+    ]
+  }
+}
+```
+
+The selected marketplace plugin must declare `stub` in `.mcp.json`. Leave secret placeholders unresolved;
+never put their tokens in sandbox environment variables or marketplace files. The existing key's host and
+port must also permit `mcp.example:443`. Set optional `Plugin` and `Marketplace` on a binding to pin its
+declaration identity. MCP callback binding selection matches the creating `AppId` and server name exactly;
+it does not fall back to another app's key.
+
+Bindings permit HTTPS endpoints without userinfo, query or fragment. Use a canonical URL path: spell
+unreserved characters literally and remove dot segments. The gateway sends the raw request path;
+the callback compares it exactly, without percent-decoding or stripping a query. The callback permits
+only that endpoint path with streamable HTTP methods (`POST`, `GET`, `DELETE`). Header names are explicitly allowed.
+An explicit server `Headers` list narrows the binding's list. Every selected header must be supplied by
+the credential provider; if the list is omitted, every binding header is required. This prevents silently
+using a partial credential. An injected server's explicit header list must not be empty.
+`CacheTtlSeconds` is 1–300; actual expiry is also capped by policy and token expiry minus 30 seconds.
+Credential edits therefore take effect after the gateway's current cache expires. A rejected request evicts
+that gateway cache; the next request reads the current key. Shared OAuth accounts are never signed out.
+
+MCP setup and binding metadata are frozen when a session is created. Restart loses in-memory ownership;
+callbacks for those old sessions deny even if their authentication secret remains on disk. Create a new
+session through the normal app path to restore access. Missing/expired credentials return `pending` without
+waiting for browser sign-in. Unknown sessions, bindings or destinations deny.
+
+The upstream [MCP callback example](https://github.com/achieveai/SandboxedOstoolsMcpServer/blob/1f5b4ada20ba6c9467c16c679a5b0935c7475b10/Docs/examples/webhooks/auth_request_mcp.json)
+defines the unified envelope and server identity. The [webhook contract](https://github.com/achieveai/SandboxedOstoolsMcpServer/blob/1f5b4ada20ba6c9467c16c679a5b0935c7475b10/Docs/webhooks.md#L207-L257)
+accepts `pending`: the proxy returns HTTP 511 with `Retry-After` and `auth_pending`. This app requests
+a five-second retry delay; the caller decides when to retry. It does not replay a whole command.
+Credential acquisition is bounded to ten seconds, below the derived MCP provider's fifteen-second deadline.
+
+Use gateway v0.1.18 or later and matching images. Adopting a healthy gateway does not check its MCP
+capabilities. The inspected v0.1.17 create deserializer ignores the unknown `mcp` field, so a successful
+create response alone does not prove this policy was applied on an older deployment.
+
+For opted-in sessions, generated credential routes lose only exact hosts protected by any app's MCP binding
+or an enabled credential-bearing configured server's URL pin. Such a configured server needs a URL pin
+or a matching binding for the creating app. When the pin is omitted, that binding's endpoint becomes
+the server URL pin sent to the gateway. An explicit pin may exist without a credential binding, but
+its callback still denies until the creating app has a binding.
+Generated rules retain their other hosts. An overlapping wildcard cannot safely exclude one endpoint. An overlapping
+credential-free route would bypass MCP authentication. Both conflicts reject creation with the generated rule
+ID. Replace/disable managed OAuth rules through existing `Network:Rules` configuration. For a predefined
+key's wildcard host, narrow or remove that key in the existing Egress Auth dialog; `predefined-*` rule IDs
+remain reserved.
+
+`Egress: "manual"` leaves network rules to the operator. Explicit network rules, including denies, retain
+their precedence. A manual rule can use `"AuthProvider": "mcp:stub"` for an enabled configured MCP server;
+its rule ID can differ from the server name. A plugin-only server absent from `Servers` and all bindings
+has no known endpoint before creation; existing egress grants, including generated legacy credential rules,
+can still authorize that destination.
+List credential-bearing servers and endpoints explicitly when MCP binding decisions must govern them.
+This feature does not isolate unrelated legacy egress routes. With no `Mcp` configuration,
+the existing request and callback subscriptions remain unchanged.
+
 ## Running
 
 The backend auto-launches the Vite client (via `Vite.AspNetCore`) **and** auto-spawns the gateway

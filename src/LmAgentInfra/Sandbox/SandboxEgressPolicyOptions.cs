@@ -44,7 +44,7 @@ public sealed class SandboxNetworkRuleOptions
     /// </summary>
     public string? Paths { get; set; }
 
-    /// <summary>Key of an entry in <c>SandboxGateway:AuthProviders</c>, un-prefixed. Optional.</summary>
+    /// <summary>Un-prefixed configured provider key, or exact <c>mcp:server</c> for an enabled configured MCP server. Optional.</summary>
     public string? AuthProvider { get; set; }
 
     /// <summary>Comma-delimited OAuth scopes the rule requires. Optional.</summary>

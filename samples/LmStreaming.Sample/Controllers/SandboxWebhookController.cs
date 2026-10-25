@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.Services.Discovery;
@@ -11,14 +12,14 @@ namespace LmStreaming.Sample.Controllers;
 /// <summary>
 /// Receiver for the gateway's unified sandbox webhook (gateway ADR 0043, <c>Docs/webhooks.md</c>), registered
 /// when <see cref="WebhookOptions.UseSandboxWebhook"/> is on. Every subscribed event for a session arrives
-/// here as one envelope shape; this app acts on <c>context_discovery</c> (same items as the legacy discovery
-/// webhook) and <c>task_completed</c> (a background task ended), and acknowledges any other event unread.
+/// here as one envelope shape. The app handles discoveries and completed tasks, answers synchronous MCP
+/// credential requests, and acknowledges unknown events unread.
 /// </summary>
 /// <remarks>
 /// SECURITY: the gateway presents the per-session secret verbatim as the <c>Authorization</c> header; it is
 /// checked in constant time before anything else is read, and never logged. Deduplication on the event id
 /// (the <c>Idempotency-Key</c> is <c>session_id/event_id</c>) runs only after authentication, so an
-/// unauthenticated caller cannot burn a real event's id.
+/// unauthenticated caller cannot burn a real event's id. Auth decisions bypass notification deduplication.
 /// </remarks>
 [ApiController]
 [Route("api/sandbox/webhook")]
@@ -27,7 +28,8 @@ public sealed class SandboxWebhookController(
     SandboxSessionRegistry sessionRegistry,
     ContextDiscoveryBatchHandler discoveryHandler,
     SandboxTaskCompletionNotifier taskNotifier,
-    ILogger<SandboxWebhookController> logger
+    ILogger<SandboxWebhookController> logger,
+    SandboxMcpAuthService? mcpAuth = null
 ) : ControllerBase
 {
     /// <summary>
@@ -63,6 +65,23 @@ public sealed class SandboxWebhookController(
             // Do not reveal whether the header was missing, malformed, or simply wrong.
             logger.LogWarning("Rejected unauthorized sandbox webhook call.");
             return Unauthorized();
+        }
+
+        // Auth is synchronous and must return a decision on EVERY delivery, before notification dedup.
+        if (envelope.Event is SandboxWebhookEvents.AuthRequest or SandboxWebhookEvents.AuthPostResponseFailure)
+        {
+            var data = ReadData<AuthWebhookRequest>(envelope);
+            if (data is null || mcpAuth is null)
+            {
+                return Ok(new AuthWebhookResponse { Decision = "deny", Reason = "MCP auth unavailable" });
+            }
+
+            var request = data with { SessionId = envelope.SessionId, AppId = envelope.AppId };
+            return Ok(
+                envelope.Event == SandboxWebhookEvents.AuthRequest
+                    ? await mcpAuth.EvaluateAsync(request, cancellationToken).ConfigureAwait(false)
+                    : mcpAuth.EvaluateFailure(request)
+            );
         }
 
         if (envelope.Event is not (SandboxWebhookEvents.ContextDiscovery or SandboxWebhookEvents.TaskCompleted))

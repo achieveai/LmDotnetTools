@@ -23,6 +23,11 @@ on:
     paths:
       - 'src/Sandbox/**'
       - 'src/LmAgentInfra/Sandbox/**'
+      - 'src/LmAgentInfra/Auth/**'
+      - 'src/LmAgentInfra/Controllers/AuthWebhookController.cs'
+      - 'samples/LmStreaming.Sample/**'
+      - 'tests/LmStreaming.Sample.Tests/**'
+      - 'tests/LmStreaming.Sample.E2E.Tests/**'
       - 'samples/CodeReviewDaemon.Sample/Workspace/Sandbox/**'
       - 'tests/Sandbox.Integration.Tests/**'
       - '.github/workflows/sandbox-contract.yml'
@@ -71,9 +76,13 @@ env:
   # (upstream ADR 0041: the create `skills` block and GET/PATCH /sandboxes/{id}/skills)
   # first ship there. Below it that test fails, not skips. Both 0.1.17 manifests were
   # verified before this bump.
-  IMAGE_TAG: '0.1.17'
+  # 0.1.18 is the floor for SandboxMcpPolicyLiveContractTests: MCP library create policy,
+  # secret-free manifests and Docker-shipped sbx-mcp first ship there (upstream ADR 0046).
+  # Gateway and agent remote tag manifests were verified before this bump.
+  IMAGE_TAG: '0.1.18'
   GATEWAY_IMAGE: ghcr.io/achieveai/mcp-gateway
   AGENT_IMAGE: ghcr.io/achieveai/llm-sandbox-agent
+  PROXY_IMAGE: ghcr.io/achieveai/egress-proxy
   GATEWAY_PORT: '3987'
   GATEWAY_APP_ID: wi187-ci
   # Alias of the committed fixture marketplace (tests/Sandbox.Integration.Tests/Fixtures/marketplace).
@@ -108,6 +117,7 @@ jobs:
         run: |
           docker pull "${GATEWAY_IMAGE}:${IMAGE_TAG}"
           docker pull "${AGENT_IMAGE}:${IMAGE_TAG}"
+          docker pull "${PROXY_IMAGE}:${IMAGE_TAG}"
 
       # Warm the agent image once outside the assertion window: the very first
       # sandbox container after a fresh pull can transiently fail its first exec
@@ -124,6 +134,20 @@ jobs:
           echo "::add-mask::$proxy_cred"
           echo "app_secret=$app_secret" >> "$GITHUB_OUTPUT"
           echo "proxy_cred=$proxy_cred" >> "$GITHUB_OUTPUT"
+          # Runtime agents carry this ownership label (not the Compose project label).
+          echo "GATEWAY_INSTANCE_ID=$(cat /proc/sys/kernel/random/uuid)" >> "$GITHUB_ENV"
+
+      - name: Prepare isolated MCP proxy network and CA
+        run: |
+          set -euo pipefail
+          docker network create wi187-contract --subnet 172.30.187.0/24
+          certs="${RUNNER_TEMP}/mcp-canary-certs"
+          mkdir -p "$certs"
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -out "$certs/ca.key"
+          openssl req -new -x509 -key "$certs/ca.key" -out "$certs/ca.crt" -days 1 \
+            -subj '/CN=Ephemeral MCP canary CA' \
+            -addext 'basicConstraints=critical,CA:TRUE' -addext 'keyUsage=critical,keyCertSign,cRLSign'
+          chmod 644 "$certs/ca.key" "$certs/ca.crt"
 
       - name: Start gateway container (Docker backend, AUTH_ENFORCE=true)
         env:
@@ -157,27 +181,68 @@ jobs:
           # because the gateway also hands that path to the host Docker daemon as the sandbox's
           # /marketplaces/<alias> bind source (same pattern as the workspace base above).
           fx="${GITHUB_WORKSPACE}/tests/Sandbox.Integration.Tests/Fixtures/marketplace"
+          injected="${GITHUB_WORKSPACE}/tests/LmStreaming.Sample.E2E.Tests/Fixtures/mcp-injected"
+          certs="${RUNNER_TEMP}/mcp-canary-certs"
           docker run -d --name wi187-gateway \
+            --network wi187-contract --ip 172.30.187.2 \
+            --add-host host.docker.internal:host-gateway \
             -p "127.0.0.1:${GATEWAY_PORT}:3000" \
             --group-add "$docker_gid" \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$ws:$ws" \
             -v "$fx:$fx:ro" \
-            -e "PLUGINS_DIRS=${FIXTURE_MARKETPLACE}=$fx" \
+            -v "$injected:$injected:ro" \
+            -e "PLUGINS_DIRS=${FIXTURE_MARKETPLACE}=$fx,lminjected=$injected" \
+            -e "DEFAULT_MARKETPLACES=${FIXTURE_MARKETPLACE}" \
             -e BIND_ADDRESS=0.0.0.0 \
             -e PORT=3000 \
             -e SANDBOX_BACKEND=docker \
             -e "SANDBOX_IMAGE=${AGENT_IMAGE}:${IMAGE_TAG}" \
-            -e SANDBOX_NETWORK=bridge \
+            -e SANDBOX_NETWORK=wi187-contract \
+            -e GATEWAY_INSTANCE_ID \
             -e "WORKSPACE_BASE_PATH=$ws" \
-            -e EGRESS_PROXY_URL= \
+            -e EGRESS_PROXY_URL=http://172.30.187.3:8080 \
+            -e EGRESS_PROXY_EXTRA_HOST=wi187-proxy:172.30.187.3 \
+            -e "CA_CERT_HOST_PATH=$certs/ca.crt" \
             -e AUTH_ENFORCE=true \
             -e "APP_SECRETS=${GATEWAY_APP_ID}=${APP_SECRET}" \
             -e "PROXY_SERVICE_CRED=${PROXY_CRED}" \
             -e "GATEWAY_PROXY_CRED=${PROXY_CRED}" \
             -e DB_PATH=/tmp/gw.db \
             -e AUTH_WEBHOOK_HTTP_LOOPBACK_HOSTS=127.0.0.1 \
+            -e WEBHOOK_LOOPBACK_REWRITE_HOST=host.docker.internal \
+            -e AUTH_WEBHOOK_TRUSTED_HOSTS=host.docker.internal \
             "${GATEWAY_IMAGE}:${IMAGE_TAG}"
+
+      - name: Start MCP egress proxy
+        env:
+          PROXY_CRED: ${{ steps.authcreds.outputs.proxy_cred }}
+        run: |
+          certs="${RUNNER_TEMP}/mcp-canary-certs"
+          docker run -d --name wi187-proxy --network wi187-contract --ip 172.30.187.3 \
+            --add-host host.docker.internal:host-gateway -v "$certs:/certs:ro" \
+            -e LISTEN_ADDR=172.30.187.3:8080 -e GATEWAY_URL=http://wi187-gateway:3000 \
+            -e CA_CERT_PATH=/certs/ca.crt -e CA_KEY_PATH=/certs/ca.key \
+            -e UPSTREAM_CA_CERT_PATH=/certs/ca.crt \
+            -e DNS_OVERRIDE=mcp.sbx.test:host.docker.internal \
+            -e SSRF_ALLOW_PRIVATE_DNS_OVERRIDE=true \
+            -e "GATEWAY_PROXY_CRED=$PROXY_CRED" "${PROXY_IMAGE}:${IMAGE_TAG}"
+
+      - name: Wait for MCP proxy readiness
+        run: |
+          for i in $(seq 1 30); do
+            if [ "$(docker inspect --format '{{.State.Running}}' wi187-proxy)" != true ]; then
+              echo "MCP proxy exited before readiness; inspect its startup log." >&2
+              exit 1
+            fi
+            if docker exec wi187-proxy bash -c 'echo > /dev/tcp/172.30.187.3/8080' 2>/dev/null; then
+              echo "MCP proxy ready on attempt ${i}"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "MCP proxy not ready after 30 attempts" >&2
+          exit 1
 
       - name: Wait for gateway health
         run: |
@@ -228,10 +293,34 @@ jobs:
           dotnet test tests/Sandbox.Integration.Tests/AchieveAi.LmDotnetTools.Sandbox.Integration.Tests.csproj
           -c Release
 
+      - name: Run actual-app injected MCP canary (net9.0)
+        env:
+          SANDBOX_BASE_URL: http://127.0.0.1:${{ env.GATEWAY_PORT }}
+          SANDBOX_APP_ID: ${{ env.GATEWAY_APP_ID }}
+          SANDBOX_APP_KEY: ${{ steps.authcreds.outputs.app_secret }}
+          SANDBOX_CONTRACT_REQUIRED: 'true'
+          SANDBOX_CANARY_CA_CERT: ${{ runner.temp }}/mcp-canary-certs/ca.crt
+          SANDBOX_CANARY_CA_KEY: ${{ runner.temp }}/mcp-canary-certs/ca.key
+        run: >-
+          dotnet test tests/LmStreaming.Sample.E2E.Tests/LmStreaming.Sample.E2E.Tests.csproj
+          -c Release --filter FullyQualifiedName~SandboxMcpInjectedLiveTests
+
+      - name: Run callback acquisition deadline and cancellation regressions
+        run: >-
+          dotnet test tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj -c Release
+          --filter 'FullyQualifiedName~AuthRequest_StalledProviderIgnoringCancellation_ReturnsPendingWithinTheDeadline|FullyQualifiedName~AuthRequest_CallerCancelledDuringAcquisition_PropagatesCancellation'
+
       - name: Dump gateway log on failure
         if: failure()
-        run: docker logs wi187-gateway || true
+        run: |
+          docker logs wi187-gateway || true
+          docker logs wi187-proxy || true
 
       - name: Stop gateway
         if: always()
-        run: docker rm -f wi187-gateway || true
+        run: |
+          docker rm -f wi187-gateway wi187-proxy || true
+          if [ -n "${GATEWAY_INSTANCE_ID:-}" ]; then
+            docker ps -aq --filter "label=gateway-instance=${GATEWAY_INSTANCE_ID}" | xargs -r docker rm -f
+          fi
+          docker network rm wi187-contract || true
