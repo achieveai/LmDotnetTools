@@ -42,6 +42,10 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent, IAcceptanceReportingAgent
     /// failure tearing down the PREVIOUS agent (the new one is already swapped in).</summary>
     public bool ThrowOnDispose { get; set; }
 
+    /// <summary>When set, <see cref="DisposeAsync"/> waits for it, so a test can act while a teardown
+    /// is still in progress.</summary>
+    public Task? DisposeGate { get; set; }
+
     /// <summary>When true, <see cref="TrySendAsync"/> returns null — simulates the input channel
     /// being full (the controller maps this to a 503).</summary>
     public bool RejectAsQueueFull { get; set; }
@@ -279,7 +283,7 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent, IAcceptanceReportingAgent
             throw new InvalidOperationException("Simulated dispose failure for the previous agent.");
         }
 
-        return ValueTask.CompletedTask;
+        return DisposeGate is { } gate ? new ValueTask(gate) : ValueTask.CompletedTask;
     }
 }
 

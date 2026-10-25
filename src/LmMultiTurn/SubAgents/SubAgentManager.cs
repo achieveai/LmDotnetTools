@@ -163,6 +163,20 @@ public sealed class SubAgentManager : IAsyncDisposable
     internal Func<SubAgentState, RunCompletedMessage, Task>? AfterSettlingRunCompletionForTest;
 
     /// <summary>
+    /// TEST-ONLY seam, fired in an idle release (#830) after the child's loop is disposed and before its
+    /// stand-in is installed. Null in production. A viewer whose stream that dispose ended decides here
+    /// whether to wait for a rebuilt loop, with only the release's restart signal to go on; from outside,
+    /// the stand-in's install almost always lands first.
+    /// </summary>
+    internal Func<SubAgentState, Task>? AfterReleaseDisposeForTest;
+
+    /// <summary>
+    /// TEST-ONLY seam, fired by <see cref="SubscribeToAgentAcrossRestartsAsync"/> with what it decided
+    /// when the instance it followed ended its stream. Null in production.
+    /// </summary>
+    internal Action<ObservationContinuation>? ObservationDecidedForTest;
+
+    /// <summary>
     /// Ceiling for awaiting a background task this manager no longer wants to wait on unboundedly
     /// (#373, widened in the #396 review pass): <see cref="DisposeAsync"/>'s per-agent teardown loop
     /// (RunTask/MonitorTask, and the spawn pump itself), and <see cref="CleanupFailedSpawnAsync"/>'s
@@ -2623,7 +2637,9 @@ public sealed class SubAgentManager : IAsyncDisposable
             // teardown use, with NO elapsed-time heuristic: a restart/teardown (a)/(b)/(d) yields
             // AwaitReplacement (wait for the definitive signal, however long the dispose+cleanup takes); a
             // drop (c) yields EndStream so the socket closes and the client reconnects + replays.
-            if (state.DecideAfterStreamEnd(replaced) == ObservationContinuation.EndStream)
+            var decision = state.DecideAfterStreamEnd(replaced);
+            ObservationDecidedForTest?.Invoke(decision);
+            if (decision == ObservationContinuation.EndStream)
             {
                 yield break;
             }
@@ -5808,6 +5824,11 @@ public sealed class SubAgentManager : IAsyncDisposable
                     "Agent dispose failed during idle release for sub-agent {AgentId}",
                     state.AgentId
                 );
+            }
+
+            if (AfterReleaseDisposeForTest is { } afterDispose)
+            {
+                await afterDispose(state);
             }
 
             // The registration must stop referencing the loop, or nothing is freed: a disposed loop still

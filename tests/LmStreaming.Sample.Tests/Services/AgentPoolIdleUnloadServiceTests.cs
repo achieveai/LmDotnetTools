@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmStreaming.Sample.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -30,6 +31,26 @@ public sealed class AgentPoolIdleUnloadServiceTests
         time.Advance(TimeSpan.FromMinutes(1));
         await service.TrySweepAsync(CancellationToken.None);
         pool.HasAgent("thread-idle").Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task TheRunningService_UnloadsAnIdleConversation_OnItsOwnTimer()
+    {
+        var time = new FakeTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        await using var pool = CreatePool(time);
+        var service = CreateService(pool, ("IdleUnloadAfter", "00:02:00"), ("IdleSweepInterval", "00:00:00.020"));
+        _ = pool.GetOrCreateAgent("thread-idle", Mode);
+        time.Advance(TimeSpan.FromMinutes(2));
+
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            await Wait.UntilAsync(() => !pool.HasAgent("thread-idle"), "a tick of the service's timer unloaded it");
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
     }
 
     [Fact]

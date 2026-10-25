@@ -49,6 +49,9 @@ internal sealed class DelayedResultCoordinator
     // accepted deferrals — see the capacity note above.
     private readonly Queue<DelayedCause> _causes = new();
 
+    // Causes the loop has taken whose child run has no id yet: see EndCauseAdmission.
+    private int _admittingCauses;
+
     private long _ordinal;
 
     /// <summary>True when no tool call is currently deferred.</summary>
@@ -64,8 +67,9 @@ internal sealed class DelayedResultCoordinator
     }
 
     /// <summary>
-    /// True while a committed result is still waiting for its child run. Ordinary queued input
-    /// waits behind this, so a delayed continuation is never overtaken by a fresh turn.
+    /// True while a committed result is still waiting for its child run: queued, or taken by the loop
+    /// but not yet started as a run (<see cref="EndCauseAdmission"/>). Ordinary queued input waits
+    /// behind this, so a delayed continuation is never overtaken by a fresh turn.
     /// </summary>
     public bool HasPendingCauses
     {
@@ -73,7 +77,7 @@ internal sealed class DelayedResultCoordinator
         {
             lock (_lock)
             {
-                return _causes.Count > 0;
+                return _causes.Count > 0 || _admittingCauses > 0;
             }
         }
     }
@@ -406,7 +410,10 @@ internal sealed class DelayedResultCoordinator
         }
     }
 
-    /// <summary>Takes the next committed cause, oldest first.</summary>
+    /// <summary>
+    /// Takes the next committed cause, oldest first. It still counts in <see cref="HasPendingCauses"/>
+    /// until the caller calls <see cref="EndCauseAdmission"/>.
+    /// </summary>
     public bool TryDequeueCause(out DelayedCause? cause)
     {
         lock (_lock)
@@ -418,7 +425,22 @@ internal sealed class DelayedResultCoordinator
             }
 
             cause = _causes.Dequeue();
+            _admittingCauses++;
             return true;
+        }
+    }
+
+    /// <summary>
+    /// Ends the admission of a cause taken by <see cref="TryDequeueCause"/>, once its child run has an id
+    /// (or never will). The pool's idle unload reads the pending causes and then the run id (#830). Without
+    /// the admission, a cause taken between those two reads would show in neither, and the conversation
+    /// would be unloaded with its continuation about to start.
+    /// </summary>
+    public void EndCauseAdmission()
+    {
+        lock (_lock)
+        {
+            _admittingCauses--;
         }
     }
 

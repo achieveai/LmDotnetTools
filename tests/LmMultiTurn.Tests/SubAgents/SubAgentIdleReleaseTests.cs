@@ -54,7 +54,7 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
     public async Task AFinishedSubAgent_IsFreed_AndAFollowUpRebuildsItFromItsTranscript()
     {
         var manager = CreateManager(AnsweringProvider());
-        (await manager.SpawnAsync("worker", "original task", name: "reviewer")).Should().Be("answer 1");
+        (await SpawnSettledAsync(manager, "original task", "reviewer")).Should().Be("answer 1");
         var loop = WeakLoopOf(manager, "reviewer");
 
         (await manager.ReleaseFinishedAgentsAsync(DateTimeOffset.UtcNow)).Should().Be(1);
@@ -88,7 +88,7 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
     public async Task ASubAgentThatFinishedAfterTheCutoff_IsKept()
     {
         var manager = CreateManager(AnsweringProvider());
-        _ = await manager.SpawnAsync("worker", "task", name: "recent");
+        _ = await SpawnSettledAsync(manager, "task", "recent");
 
         (await manager.ReleaseFinishedAgentsAsync(DateTimeOffset.UtcNow.AddMinutes(-5))).Should().Be(0);
 
@@ -112,9 +112,18 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
     public async Task AViewerOfAReleasedSubAgent_FollowsItIntoTheRebuiltLoop()
     {
         // The focused-agent view streams through SubscribeToAgentAcrossRestartsAsync. A release must
-        // leave it waiting for the rebuilt loop, not end it as if the child were gone.
+        // leave it waiting for the rebuilt loop, not end it as if the child were gone. The viewer is on
+        // the original loop before the release starts, and the release is held after its dispose until
+        // the viewer has decided: no stand-in, no rebuilt loop, only the release's restart signal.
         var manager = CreateManager(AnsweringProvider());
-        _ = await manager.SpawnAsync("worker", "task", name: "watched");
+        _ = await SpawnSettledAsync(manager, "task", "watched");
+        var decided = new TaskCompletionSource<ObservationContinuation>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        manager.ObservationDecidedForTest = decision => decided.TrySetResult(decision);
+        manager.AfterReleaseDisposeForTest = _ => decided.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        manager.TryGetAgent("watched", out var agent).Should().BeTrue();
+        var original = agent.Should().BeOfType<MultiTurnAgentLoop>().Subject;
         using var viewing = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var sawFollowUpAnswer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var viewer = Task.Run(
@@ -131,8 +140,13 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
             },
             viewing.Token
         );
+        await Wait.UntilAsync(
+            () => original.SubscriberCountForTests == 1,
+            "the viewer is attached to the original loop"
+        );
 
         (await manager.ReleaseFinishedAgentsAsync(DateTimeOffset.UtcNow)).Should().Be(1);
+        (await decided.Task).Should().Be(ObservationContinuation.AwaitReplacement);
         _ = await manager.SendMessageAsync("watched", "follow-up", runInBackground: true);
 
         await sawFollowUpAnswer.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -144,7 +158,7 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
     {
         // Its history lives only in its loop; a rebuild would start it from nothing.
         var manager = CreateManager(AnsweringProvider(), withStore: false);
-        _ = await manager.SpawnAsync("worker", "task", name: "unsaved");
+        _ = await SpawnSettledAsync(manager, "task", "unsaved");
 
         (await manager.ReleaseFinishedAgentsAsync(DateTimeOffset.UtcNow)).Should().Be(0);
 
@@ -276,7 +290,7 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
         // The pool closes a conversation's sub-agents just before it unloads the conversation. Anything
         // accepted after that would be killed by the disposal that follows, so it is refused instead.
         var manager = CreateManager(AnsweringProvider());
-        _ = await manager.SpawnAsync("worker", "task", name: "closed");
+        _ = await SpawnSettledAsync(manager, "task", "closed");
 
         manager.TryQuiesce().Should().BeTrue();
 
@@ -301,6 +315,25 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
 
     private SubAgentManager CreateManager(IStreamingAgent childProvider, bool withStore = true) =>
         CreateManager(() => childProvider, withStore);
+
+    /// <summary>
+    /// Spawns a sub-agent in the foreground and waits until its run has settled. The spawn returns with the
+    /// answer before the run's completion side effects end, and until they do the sub-agent can be neither
+    /// released nor closed.
+    /// </summary>
+    private static async Task<string> SpawnSettledAsync(SubAgentManager manager, string task, string name)
+    {
+        SubAgentState? finished = null;
+        manager.AfterSettlingRunCompletionForTest = (state, _) =>
+        {
+            finished ??= state;
+            return Task.CompletedTask;
+        };
+        var answer = await manager.SpawnAsync("worker", task, name: name);
+        await Wait.UntilAsync(() => finished is { IsSettled: true }, "the sub-agent's run has settled");
+        manager.AfterSettlingRunCompletionForTest = null;
+        return answer;
+    }
 
     private SubAgentManager CreateManager(
         Func<IStreamingAgent> childFactory,
