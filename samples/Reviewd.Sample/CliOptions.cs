@@ -16,13 +16,39 @@ internal sealed class CliOptions
     public string Required(string name) =>
         Get(name) is { Length: > 0 } value ? value : throw new ArgumentException($"--{name} is required.");
 
+    /// <summary>A dollar option: null when absent, a usage error unless it is a positive number such as 6 or 0.5.</summary>
+    public decimal? GetDollars(string name) =>
+        Get(name) is not { } text ? null
+        : decimal.TryParse(
+            text,
+            System.Globalization.NumberStyles.AllowDecimalPoint,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var dollars
+        )
+        && dollars > 0
+            ? dollars
+        : throw new ArgumentException($"--{name} must be a positive number of dollars, e.g. 6 or 0.5.");
+
+    /// <summary>A count option: null when absent, a usage error unless it is a positive integer.</summary>
+    public int? GetCount(string name) =>
+        Get(name) is not { } text ? null
+        : int.TryParse(
+            text,
+            System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var count
+        )
+        && count > 0
+            ? count
+        : throw new ArgumentException($"--{name} must be a positive integer.");
+
     public static CliOptions Parse(string[] args)
     {
         var separator = Array.IndexOf(args, "--");
         var commandArgs = separator < 0 ? args : args[..separator];
         if (commandArgs.Length == 0 || commandArgs.Any(arg => arg is "--help" or "-h"))
         {
-            return new CliOptions { ShowHelp = true };
+            return new CliOptions { ShowHelp = true, Command = commandArgs is ["judge", ..] ? "judge run" : "" };
         }
 
         if (commandArgs.Length < 2)
@@ -76,6 +102,35 @@ internal sealed class CliOptions
             "merge resolve" => ["request", "db", "session", "workspace", "provider", "execute"],
             "merge push" => ["request", "db", "session", "workspace", "provider", "result", "execute"],
             "pr bind-thread" => ["repo", "pr", "thread", "db"],
+            "judge run" =>
+            [
+                "repo",
+                "pr",
+                "db",
+                "session",
+                "workspace",
+                "provider",
+                "reasoning-effort",
+                "mode",
+                "prompt-file",
+                "max-usd",
+                "rejudge",
+                "execute",
+            ],
+            "judge batch" =>
+            [
+                "targets",
+                "provider",
+                "reasoning-effort",
+                "max-usd",
+                "max-usd-per-day",
+                "avg-usd-target",
+                "max-age-days",
+                "limit",
+                "stop-file",
+                "execute",
+            ],
+            "judge close" => ["repo", "pr", "db", "store", "judgment", "remote", "execute"],
             "workspace list" => [],
             "workspace plugins" => ["workspace"],
             "workspace create" => ["name", "directory", "marketplaces", "enabled-plugins"],
@@ -92,6 +147,7 @@ internal sealed class CliOptions
                 "prompt",
                 "provider",
                 "mode",
+                "reasoning-effort",
                 "wait",
                 "timeout",
                 "repo",
@@ -116,7 +172,7 @@ internal sealed class CliOptions
             }
 
             var value = "true";
-            if (name is not ("wait" or "execute" or "resume" or "cleanup-only"))
+            if (name is not ("wait" or "execute" or "resume" or "cleanup-only" or "rejudge"))
             {
                 if (++i >= commandArgs.Length || commandArgs[i].StartsWith("--", StringComparison.Ordinal))
                 {
@@ -191,13 +247,56 @@ internal sealed class CliOptions
             _ = result.Required("workspace");
             _ = ReviewSlots(result);
         }
-        if (command is "pr bind-thread" or "agent start" or "review run" && result.Has("pr"))
+        if (
+            command is "pr bind-thread" or "agent start" or "review run" or "judge run" or "judge close"
+            && result.Has("pr")
+        )
         {
             if (!int.TryParse(result.Required("pr"), out var prId) || prId <= 0)
             {
                 throw new ArgumentException("--pr must be a positive ADO pull request ID.");
             }
             result._values["pr"] = prId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        if (command == "judge run")
+        {
+            _ = PrCommands.ParseRepo(result.Required("repo"));
+            foreach (var name in new[] { "pr", "db", "session", "workspace" })
+            {
+                _ = result.Required(name);
+            }
+        }
+        if (command == "judge close")
+        {
+            _ = PrCommands.ParseRepo(result.Required("repo"));
+            foreach (var name in new[] { "pr", "db", "store" })
+            {
+                _ = result.Required(name);
+            }
+            _ = result.GetCount("judgment");
+        }
+        if (command.StartsWith("judge ", StringComparison.Ordinal))
+        {
+            foreach (var name in new[] { "max-usd", "max-usd-per-day", "avg-usd-target" })
+            {
+                _ = result.GetDollars(name);
+            }
+        }
+        if (command == "judge batch")
+        {
+            _ = result.Required("targets");
+            _ = result.GetCount("max-age-days");
+            _ = result.GetCount("limit");
+            // One judge's cap above the day cap would make every start wait forever.
+            var cap = result.GetDollars("max-usd") ?? JudgeRunner.DefaultMaxUsd;
+            var day = result.GetDollars("max-usd-per-day") ?? JudgeBatch.DefaultMaxUsdPerDay;
+            if (cap > day)
+            {
+                throw new ArgumentException(
+                    $"--max-usd {cap.ToString(System.Globalization.CultureInfo.InvariantCulture)} (one judge's cap) is above "
+                        + $"--max-usd-per-day {day.ToString(System.Globalization.CultureInfo.InvariantCulture)}; no judge could start."
+                );
+            }
         }
         if (command == "workspace create")
         {
@@ -279,6 +378,88 @@ internal sealed class CliOptions
         return copy;
     }
 
+    /// <summary>The help for <paramref name="command"/>: judge commands have their own page.</summary>
+    public static string HelpFor(string command) => command == "judge run" ? JudgeHelpText : HelpText;
+
+    public const string JudgeHelpText = """
+        Reviewd judge run — judge one merged PR's verified review with a hosted agent
+
+        judge run --repo <org/project/repo> --pr <id> --db <path> --session <sandbox-session-id> --workspace <host-workspace-id>
+                  [--provider <id> (default gpt-6.1-sol)] [--reasoning-effort <low|medium|high|xhigh> (default xhigh)]
+                  [--mode <id> (default: the configured mode)] [--prompt-file <path> (default: built-in prompt)]
+                  [--max-usd <dollars> (default 15)] [--rejudge] [--execute]
+
+        Preview (no --execute): checks provider, mode, effort and prompt size on the host, builds the judge inputs in
+        the sandbox's /tmp (removed afterwards) and prints them with the action an execute would take. It starts no
+        agent and writes no receipt, marker or store file.
+        --execute: one judge at a time on this host (judge.lock). Every step is saved in the receipt
+        reviewd/judge-run/<repo>/<pr>/<n>; rerun the same command to resume where it stopped. A finished judgment is
+        skipped. --rejudge starts a new judgment after a finished, failed or capped one, except while the last one
+        still needs its sub-agent settle and post-check (a capped judgment not yet settled or without its ADO compare,
+        or a failed one whose sub-agents had not settled): then those steps repeat instead (exit 1 until they pass).
+        --max-usd freezes the judge when its cost reaches the cap (sub-agents already running may still spend).
+        --workspace must be the workspace the review ran in; --session must be that workspace's sandbox session.
+
+        Exit codes:
+          0    completed, completed-draft, skip, or preview done
+          1    failed, failed-precondition, failed-no-output, capped, refused, or still running (rerun to resume)
+          2    usage error
+          3    ADO threads changed while the judge ran (inspect the PR by hand)
+          4    PR is not completed yet (nothing to judge; no judgment written)
+          130  Ctrl+C (remote work may continue)
+
+        judge batch --targets <file> [--provider <id>] [--reasoning-effort <level>] [--max-usd <dollars> (default 15)]
+                    [--max-usd-per-day <dollars> (default 30)] [--avg-usd-target <dollars> (default 4)]
+                    [--max-age-days <n> (default 7)] [--limit <n>] [--stop-file <path>] [--execute]
+
+        Judges merged PRs with a verified review across installs, one at a time. Each targets line is
+        name<TAB>db<TAB>session<TAB>workspace (# comments allowed). Receipts are the only state; each pass re-reads
+        every database read-only. Order: resume judges the host already accepted, post-check unsettled capped ones,
+        then new starts (newest merge first, targets taking turns) only while no judge is in flight anywhere.
+        New starts obey the stop file (resume-only while it exists), --limit, the rolling 24 h cap
+        (spent + --max-usd <= --max-usd-per-day; an unknown cost counts its cap; --max-usd above the day cap is a
+        usage error) and the average of the last 10 finished judgments (on at 5).
+        A resume keeps its receipt's provider, effort, mode and cap; one under another prompt is listed, not run.
+        Preview (no --execute): database reads and host GETs only; prints the plan. --execute takes the host-wide
+        lock (busy: exit 0) and writes only reviewd/judge-skip/<repo>/<pr> when a PR is not completed (24 h).
+        Output: markdown, then one JSON line. A broken target is skipped and listed under Needs you; while any
+        target is skipped, readable ones still resume and post-check, but nothing new starts.
+
+        judge batch exit codes:
+          0    done, nothing to do, busy, in flight (resumes next run), cap or limit reached, resume-only
+          1    the targets file cannot be read
+          2    usage error
+          3    a judge ended ado-changed (stops at once)
+          5    guard stop: 2 consecutive failures, or the average is above --avg-usd-target
+
+        judge close --repo <org/project/repo> --pr <id> --db <path> --store <store dir> [--judgment <n>]
+                    [--remote <url or name> (default origin)] [--execute]
+
+        Files one completed final judgment and merges every review round of the PR into the store's remote main as one
+        commit: parents [main, round 1 tip, ...]. Without --judgment it runs
+        only when exactly one completed final judgment exists; with several it lists them and refuses.
+        It adds write-now lessons to the KnowledgeBase (append, with a "Seen in" line), one ledger line per miss under
+        Improvements/, PRs/<dir>/CLOSING.md (cost, what was added, what was not filed) and judgment-<n>/judgment.{json,md}.
+        It fetches main and the rounds into private refs and builds the commit in a temporary index: the store's HEAD,
+        index, local main and working tree never move. Preview (no --execute) builds the commit and prints it;
+        --execute also pushes, never forced. It runs on the host (git through a local python3 in --store); the host's
+        git credential helper does the push. It refuses a judgment whose files or inputs/packet.json changed since the
+        judge. It first removes its own private refs and scratch left by a close that ended over an hour ago, and
+        prints what it removed. When main moves between the fetch and the push, it fetches the new main and composes
+        again, 3 tries in all.
+
+        judge close exit codes:
+          0    preview done, closed, or already closed (main has this judgment's CLOSING.md and every round)
+          1    failed or refused (no final judgment or several, changed files or packet, PR dir changed on main,
+               round tip moved, secret, ...)
+          2    usage error
+          6    main kept moving: it moved on all 3 tries (nothing pushed; run close again; one JSON line on stdout)
+          130  Ctrl+C (before the commit: "Cancelled before the commit; nothing was committed or pushed.";
+               during it: if the push had started it may have landed; run close again)
+
+        All commands accept --config <existing appsettings.json>.
+        """;
+
     public const string HelpText = """
         Reviewd — small ADO / Gateway / S2S command-line client
 
@@ -297,7 +478,7 @@ internal sealed class CliOptions
         workspace edit --workspace <id> [--marketplaces <csv>] [--enabled-plugins <json>]
         workspace exec --workspace <id> [--directory <relative-dir>] [--timeout <seconds>] -- <program> [args...]
         agent start --workspace <id> --provider <id> --prompt <text> [--directory <relative-dir>]
-                    [--mode <id>] [--wait] [--timeout <seconds>] [--repo <org/project/repo> --pr <id> [--db <path>]]
+                    [--mode <id>] [--reasoning-effort <low|medium|high|xhigh>] [--wait] [--timeout <seconds>] [--repo <org/project/repo> --pr <id> [--db <path>]]
 
         review run --repo <org/project/repo> --pr <id> [--slot <0-5> | --slots <csv>] --db <pending.db>
                    --session <sandbox-session-id> --workspace <host-workspace-id> --provider <id> [--mode <id>] [--reasoning-effort <low|medium|high|xhigh>] [--max-age-hours <positive-integer>] [--execute] [--resume] [--cleanup-only]
@@ -312,6 +493,12 @@ internal sealed class CliOptions
         review capacity --repos <comma-separated-org/project/repo> --db <path> --workspace <id> --session <id>
                         --evidence <native-and-thread-quiescence.json>
         Capacity is a local read-only preview, not a slot-release or reset authorization.
+        judge run --repo <org/project/repo> --pr <id> --db <path> --session <sandbox-session-id> --workspace <host-workspace-id>
+                  [--provider <id>] [--reasoning-effort <level>] [--mode <id>] [--prompt-file <path>] [--max-usd <dollars>]
+                  [--rejudge] [--execute]
+        judge batch --targets <file> [--max-usd-per-day <dollars>] [--avg-usd-target <dollars>] [--limit <n>] [--execute] ...
+        judge close --repo <org/project/repo> --pr <id> --db <path> --store <dir> [--judgment <n>] [--remote <url>] [--execute]
+        Judges one merged PR's verified review with a hosted agent; batch picks PRs across installs; close files a judgment and merges the review into main. See judge run --help.
         merge resolve --request <json> --db <path> --session <id> --workspace <id> --provider <id> [--execute]
         merge push --request <same-json> --db <same-path> --session <id> --workspace <id> --provider <id>
                    --result <reviewed-result-digest> [--execute]

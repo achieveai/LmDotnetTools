@@ -225,7 +225,7 @@ internal static class WorkspaceCommands
             mode,
             null,
             null,
-            null,
+            options.Get("reasoning-effort"),
             directory,
             disableClientTools: true,
             ct

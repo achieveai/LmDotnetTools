@@ -14,7 +14,7 @@ catch (ArgumentException ex)
 
 if (options.ShowHelp)
 {
-    Console.WriteLine(CliOptions.HelpText);
+    Console.WriteLine(CliOptions.HelpFor(options.Command));
     return 0;
 }
 
@@ -87,6 +87,18 @@ try
     {
         return await ReviewRunner.RunAsync(options, config, cancellation.Token);
     }
+    if (options.Command == "judge run")
+    {
+        return await JudgeRunner.RunAsync(options, config, cancellation.Token);
+    }
+    if (options.Command == "judge batch")
+    {
+        return await JudgeBatch.RunAsync(options, config, cancellation.Token);
+    }
+    if (options.Command == "judge close")
+    {
+        return await JudgeClose.RunAsync(options, cancellation.Token);
+    }
     if (options.Command.StartsWith("auth ", StringComparison.Ordinal))
     {
         return await AuthCommands.RunAsync(options, config, cancellation.Token);
@@ -99,9 +111,14 @@ try
         ? await PrCommands.RunAsync(options, config, cancellation.Token)
         : await WorkspaceCommands.RunAsync(options, config, cancellation.Token);
 }
-catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+catch (OperationCanceledException cancelled) when (cancellation.IsCancellationRequested)
 {
-    Console.Error.WriteLine("Cancelled locally. Remote commands or agents may still be running.");
+    // judge close says whether its commit had started.
+    Console.Error.WriteLine(
+        options.Command == "judge close"
+            ? cancelled.Message
+            : "Cancelled locally. Remote commands or agents may still be running."
+    );
     return 130;
 }
 catch (Exception ex)

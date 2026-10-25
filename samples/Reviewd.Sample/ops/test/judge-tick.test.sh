@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# Checks ops/judge-tick.sh in a throwaway root with a stand-in batch (dotnet) and a stand-in doctor.notify: unusable
+# installs reach the batch as targets lines, a failure latches STOPPED and alerts once with its cause, alert bodies are
+# cut at a line, the daily summary goes out once, a missing CLI reads in words, and the last unusable install fixed alerts
+# once. Nothing outside the temp dir is read or written. Needs python3.
+#   ops/test/judge-tick.test.sh
+set -uo pipefail
+OPS=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+failures=0
+check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; failures=$((failures + 1)); fi; }
+
+R=$T/root
+# install <name> <credential text>
+install() {
+    mkdir -p "$R/$1/bin" "$R/$1/env"
+    for file in review-host.env review-daemon.env gateway-app-credentials.env; do echo "$2" > "$R/$1/env/$file"; done
+    printf 'DB=%s/%s.db SESSION=s-%s WS=w-%s CFG=%s/cfg.json\n' "$R" "$1" "$1" "$1" "$R" > "$R/$1/bin/env.sh"
+}
+install reviewd same
+install reviewd-other different
+install reviewd-broken same
+echo 'return 1' > "$R/reviewd-broken/bin/env.sh"
+mkdir -p "$R/judge" "$T/bin" "$T/doctor"
+cat > "$R/judge/judge.env" <<EOF
+JUDGE_INSTALLS="reviewd reviewd-other reviewd-broken reviewd-typo"
+JUDGE_CLI=$T/judge.dll JUDGE_PROVIDER=p JUDGE_EFFORT=xhigh JUDGE_MAX_USD=15 JUDGE_MAX_USD_PER_DAY=30
+JUDGE_AVG_USD_TARGET=4 JUDGE_MAX_AGE_DAYS=7 JUDGE_SUMMARY_HOUR=0
+EOF
+touch "$T/judge.dll"
+# The batch stand-in writes its arguments to $ARGS_LOG, one per line, prints a heading and $FAKE_LINES lines of 79 bytes,
+# then its JSON line (status $FAKE_STATUS, cause $FAKE_CAUSE), and exits $FAKE_RC. Like the batch, its JSON line lists
+# each name<TAB>cause line of the targets file under "unusable", except when busy ($FAKE_BUSY: another judge held the
+# lock, nothing was scanned). Like dotnet, a missing DLL prints dotnet's own text and exits 1.
+cat > "$T/bin/dotnet" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$ARGS_LOG"
+if [ ! -f "$1" ]; then
+    echo "Could not execute because the specified command or file was not found."
+    echo "Possible reasons for this include:"
+    exit 1
+fi
+while [ "$1" != --targets ]; do shift; done
+echo "# Judge batch"
+for i in $(seq 1 "${FAKE_LINES:-3}"); do printf -- '- line %03d %067d\n' "$i" 0; done
+python3 -I -c '
+import json, sys
+unusable = [{"name": n, "cause": c} for n, c in (l.rstrip("\n").split("\t") for l in open(sys.argv[1])
+            if l.count("\t") == 1)]
+batch = {"schema": 1, "status": sys.argv[2], "cause": sys.argv[3] or None}
+print(json.dumps(batch if sys.argv[4] else {**batch, "unusable": unusable}))' \
+    "$2" "${FAKE_STATUS:-ok}" "${FAKE_CAUSE:-}" "${FAKE_BUSY:-}"
+exit "${FAKE_RC:-0}"
+SH
+chmod +x "$T/bin/dotnet"
+# The doctor stand-in logs each alert to $NOTIFY_LOG; with $NOTIFY_FAIL set it sends nothing and returns False.
+cat > "$T/doctor/doctor.py" <<'PY'
+import os
+def notify(title, body):
+    if os.environ.get("NOTIFY_FAIL"):
+        return False
+    with open(os.environ["NOTIFY_LOG"], "a") as log:
+        log.write(f"=== {title} | {len(body.encode())}\n{body}\n")
+    return True
+PY
+: > "$T/notify.log"
+# tick [VAR=value ...]: one tick; its stderr goes to tick.err.
+tick() {
+    env -i HOME="$T" PATH="$T/bin:/usr/bin:/bin" REVIEWD_ROOT="$R" JUDGE_DOCTOR_DIR="$T/doctor" \
+        NOTIFY_LOG="$T/notify.log" ARGS_LOG="$T/args" "$@" bash "$OPS/judge-tick.sh" 2> "$T/tick.err"
+}
+alerts() { grep -c "^=== $1" "$T/notify.log"; }
+# arg <flag>: the value the last tick passed the batch after <flag>.
+arg() { grep -A1 -x -- "$1" "$T/args" | sed -n 2p; }
+
+tick FAKE_RC=0
+code=$?
+check "a clean tick exits 0" '[ $code -eq 0 ] && [ ! -e "$R/judge/STOPPED" ]'
+check "the batch gets the stop file and the budget, and only previews unless JUDGE_EXECUTE=1" \
+    '[ "$(arg --stop-file)" = "$R/judge/STOPPED" ] && [ "$(arg --max-usd)" = 15 ] \
+        && [ "$(arg --max-usd-per-day)" = 30 ] && [ "$(arg --avg-usd-target)" = 4 ] && ! grep -qx -- --execute "$T/args"'
+check "a usable install becomes a full targets line" \
+    '[ "$(grep -c "^nova	$R/reviewd.db	s-reviewd	w-reviewd$" "$R/judge/targets.tsv")" -eq 1 ]'
+check "each unusable install becomes a name<TAB>reason line, with its cause" \
+    'grep -q "^other	its settings differ from Nova'"'"'s (other credentials)$" "$R/judge/targets.tsv" \
+        && grep -q "^broken	its setup script (bin/env.sh) failed$" "$R/judge/targets.tsv" \
+        && grep -q "^typo	its folder is missing (check JUDGE_INSTALLS)$" "$R/judge/targets.tsv" \
+        && grep -q "no install at $R/reviewd-typo" "$T/tick.err" && grep -q "targets: 1 of 4 installs" "$T/tick.err"'
+check "the daily summary goes out once, without the JSON line" \
+    '[ "$(alerts "Judge daily")" -eq 1 ] && ! grep -q "schema" "$T/notify.log"'
+check "unusable installs alert once, naming each install and its cause" \
+    '[ "$(alerts "Judge paused: 3 installs unusable")" -eq 1 ] \
+        && grep -q "^- other: its settings differ from Nova'"'"'s (other credentials)$" "$T/notify.log" \
+        && grep -q "^- broken: its setup script (bin/env.sh) failed$" "$T/notify.log" \
+        && grep -q "^- typo: its folder is missing (check JUDGE_INSTALLS)$" "$T/notify.log"'
+tick FAKE_RC=0
+check "a second tick that day sends no second summary" '[ "$(alerts "Judge daily")" -eq 1 ]'
+check "a second tick still unusable does not alert again" '[ "$(alerts "Judge paused")" -eq 1 ]'
+tick FAKE_RC=0 FAKE_BUSY=1 FAKE_STATUS=busy
+check "a busy batch (it scanned nothing) leaves the alerted installs as they were" \
+    '[ "$(grep -c . "$R/judge/PAUSED-ALERTED")" -eq 3 ] && [ "$(alerts "Judge paused")" -eq 1 ]'
+tick FAKE_RC=0
+check "the same unusable installs after a busy tick do not alert again" '[ "$(alerts "Judge paused")" -eq 1 ]'
+
+# The status carries the unusable installs after " · "; the reason for the pause is the part before it.
+tick FAKE_RC=5 FAKE_LINES=100 FAKE_STATUS="paused: 2 judgments in a row failed · new judges paused: 3 installs unusable" \
+    FAKE_CAUSE="2 judgments in a row failed"
+code=$?
+check "a failure exits with its code and latches STOPPED with when and why, not an exit code" \
+    '[ $code -eq 5 ] && grep -qx "20[0-9-]*T[0-9:]*Z: 2 judgments in a row failed" "$R/judge/STOPPED"'
+body=$(awk '/^=== Judge paused: 2 judgments in a row failed \|/ { on = 1; next } /^===/ { on = 0 } on' "$T/notify.log")
+check "it alerts once, naming the cause in the title, saying why and the rm command, cut under 3500 bytes" \
+    '[ "$(alerts "Judge paused: 2 judgments in a row failed |")" -eq 1 ] && ! grep -q "^===.*exit" "$T/notify.log" \
+        && [ "$(head -1 <<< "$body")" = "Why: 2 judgments in a row failed" ] \
+        && [ "$(sed -n 2p <<< "$body")" = "Judges already running still finish. Nothing new starts until you run: rm $R/judge/STOPPED" ] \
+        && [ "$(grep "^=== Judge paused: 2 judgments" "$T/notify.log" | cut -d"|" -f2)" -le 3500 ] \
+        && [ "$(tail -1 <<< "$body")" = "… (cut to fit; the full summary is in summary.md on the host)" ] \
+        && [ -z "$(sed "1,/^# Judge batch$/d;\$d" <<< "$body" | grep -v "^- line [0-9]\{3\} 0\{67\}$")" ]'
+tick FAKE_RC=5 FAKE_CAUSE="2 judgments in a row failed"
+check "a failure while STOPPED does not alert again" '[ "$(alerts "Judge paused: 2 judgments")" -eq 1 ]'
+tick FAKE_RC=3
+check "an ADO change alerts every time" '[ "$(alerts "Judge: a PR changed on ADO")" -eq 1 ]'
+
+sed -i 's/^JUDGE_INSTALLS=.*/JUDGE_INSTALLS="reviewd"/' "$R/judge/judge.env"
+tick FAKE_RC=0
+body=$(awk '/^=== Judge: no install unusable \|/ { on = 1; next } /^===/ { on = 0 } on' "$T/notify.log")
+check "once every install is usable while STOPPED holds, it alerts once, naming them, that STOPPED still holds new judges" \
+    '[ "$(alerts "Judge paused: .*unusable")" -eq 1 ] && [ "$(alerts "Judge: no install unusable |")" -eq 1 ] \
+        && [ "$body" = "Fixed or removed since the last alert: broken, other, typo.
+No install is unusable now. Nothing new starts until you run: rm $R/judge/STOPPED" ] \
+        && [ ! -e "$R/judge/PAUSED-ALERTED" ]'
+sed -i 's/^JUDGE_INSTALLS=.*/JUDGE_INSTALLS="reviewd reviewd-typo"/' "$R/judge/judge.env"
+tick FAKE_RC=0
+check "an install unusable again alerts again" '[ "$(alerts "Judge paused: 1 install unusable")" -eq 1 ]'
+
+# The tick alerts whenever the set of unusable installs changes, not only after all were usable.
+sed -i 's/^JUDGE_INSTALLS=.*/JUDGE_INSTALLS="reviewd reviewd-broken"/' "$R/judge/judge.env"
+tick FAKE_RC=0
+check "a different unusable install alerts (one fixed, another broken in the same hour)" \
+    '[ "$(alerts "Judge paused: 1 install unusable")" -eq 2 ] \
+        && [ "$(cat "$R/judge/PAUSED-ALERTED")" = "- broken: its setup script (bin/env.sh) failed" ]'
+sed -i 's/^JUDGE_INSTALLS=.*/JUDGE_INSTALLS="reviewd reviewd-broken reviewd-typo"/' "$R/judge/judge.env"
+tick FAKE_RC=0
+check "one more unusable install alerts, listing all of them" '[ "$(alerts "Judge paused: 2 installs unusable")" -eq 1 ]'
+sed -i 's/^JUDGE_INSTALLS=.*/JUDGE_INSTALLS="reviewd-typo reviewd reviewd-broken"/' "$R/judge/judge.env"
+tick FAKE_RC=0
+check "the same unusable installs in another order do not alert" '[ "$(alerts "Judge paused: .*unusable")" -eq 4 ]'
+
+# An install still unusable, but for a new reason, alerts with the new reason.
+install reviewd-typo different
+tick FAKE_RC=0
+check "an install unusable for a new reason alerts again, with that reason" \
+    '[ "$(alerts "Judge paused: 2 installs unusable")" -eq 2 ] \
+        && grep -qx -- "- typo: its settings differ from Nova'"'"'s (other credentials)" "$R/judge/PAUSED-ALERTED"'
+body=$(awk '/^=== Judge paused: 2 installs unusable \|/ { body = ""; on = 1; next } /^===/ { on = 0 } on { body = body $0 "\n" }
+    END { printf "%s", body }' "$T/notify.log")
+check "it first names the install whose reason changed" '[ "$(head -1 <<< "$body")" = "New reason for: typo." ]'
+# A shorter list alerts and first says which install is no longer unusable.
+sed -i 's/^JUDGE_INSTALLS=.*/JUDGE_INSTALLS="reviewd reviewd-broken"/' "$R/judge/judge.env"
+tick FAKE_RC=0
+body=$(awk '/^=== Judge paused: 1 install unusable \|/ { body = ""; on = 1; next } /^===/ { on = 0 } on { body = body $0 "\n" }
+    END { printf "%s", body }' "$T/notify.log")
+check "a shorter list alerts, first saying which install was fixed or removed" \
+    '[ "$(alerts "Judge paused: 1 install unusable")" -eq 3 ] \
+        && [ "$(head -1 <<< "$body")" = "Fixed or removed since the last alert: typo." ]'
+
+# A missing CLI pauses with a short reason, not dotnet's own text. STOPPED is this test's own (latched above).
+rm -f "$R/judge/STOPPED"
+sed -i "s|^JUDGE_CLI=[^ ]*|JUDGE_CLI=$T/missing.dll|" "$R/judge/judge.env"
+tick FAKE_RC=0
+code=$?
+body=$(awk '/^=== Judge paused: Reviewd CLI not found \|/ { on = 1; next } /^===/ { on = 0 } on' "$T/notify.log")
+check "a missing CLI pauses, saying in words where the CLI was expected, and to fix it before rm" \
+    '[ $code -eq 1 ] && [ "$(alerts "Judge paused: Reviewd CLI not found |")" -eq 1 ] \
+        && [ "$(head -1 <<< "$body")" = "Why: Reviewd CLI not found at $T/missing.dll" ] \
+        && [ "$(sed -n 2p <<< "$body")" = "Judges already running still finish. Nothing new starts until you fix JUDGE_CLI in $R/judge/judge.env, then run: rm $R/judge/STOPPED" ] \
+        && grep -qx "20[0-9-]*T[0-9:]*Z: Reviewd CLI not found at $T/missing.dll" "$R/judge/STOPPED" \
+        && ! grep -q "Possible reasons" "$T/notify.log"'
+
+# The last unusable install fixed, STOPPED gone: one "Judge resumed" alert. PAUSED-ALERTED (still "broken": the missing
+# CLI tick above scanned nothing) goes only once the alert is sent, so a failed send is tried again on the next tick.
+rm -f "$R/judge/STOPPED"
+sed -i "s|^JUDGE_CLI=[^ ]*|JUDGE_CLI=$T/judge.dll|; s/^JUDGE_INSTALLS=.*/JUDGE_INSTALLS=\"reviewd\"/" "$R/judge/judge.env"
+tick FAKE_RC=0 NOTIFY_FAIL=1
+check "a resumed alert that fails to send keeps PAUSED-ALERTED, so the next tick sends it" \
+    '[ "$(alerts "Judge resumed")" -eq 0 ] && [ -e "$R/judge/PAUSED-ALERTED" ]'
+tick FAKE_RC=0
+body=$(awk '/^=== Judge resumed \|/ { on = 1; next } /^===/ { on = 0 } on' "$T/notify.log")
+check "once every install is fixed or removed, it alerts that judging resumed, naming them" \
+    '[ "$(alerts "Judge resumed |")" -eq 1 ] && [ "$body" = "Fixed or removed since the last alert: broken.
+No install is unusable now. New judges can start again." ] && [ ! -e "$R/judge/PAUSED-ALERTED" ]'
+tick FAKE_RC=0
+check "a second clean tick does not alert resumed again" '[ "$(alerts "Judge resumed")" -eq 1 ]'
+
+echo "$failures failure(s)"
+[ "$failures" -eq 0 ]

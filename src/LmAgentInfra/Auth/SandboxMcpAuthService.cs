@@ -46,11 +46,13 @@ public sealed class SandboxMcpAuthService(
         try
         {
             // MCP callbacks must not wait for attended sign-in. Bound acquisition below the gateway's 15s timeout.
+            // The wait ends only through the acquisition token, so the provider always sees the cancel: a separate
+            // timer or caller registration could end it first and dispose the source before it cancels.
             using var acquisition = CancellationTokenSource.CreateLinkedTokenSource(ct);
             acquisition.CancelAfter(TimeSpan.FromSeconds(10));
             var token = await AuthWebhookCredentials
                 .AcquireAsync(provider, null, acquisition.Token)
-                .WaitAsync(TimeSpan.FromSeconds(10), ct)
+                .WaitAsync(acquisition.Token)
                 .ConfigureAwait(false);
             if (
                 !sessionRegistry.IsCurrentMcpContext(request.SessionId!, context!)
