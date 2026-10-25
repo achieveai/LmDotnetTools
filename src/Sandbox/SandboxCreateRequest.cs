@@ -83,6 +83,9 @@ public sealed class SandboxCreateRequest
     /// <summary>Skill tiers for every agent of the sandbox (gateway ADR 0041), or <c>null</c> to omit the field.</summary>
     public SandboxSkillsPolicy? Skills { get; }
 
+    /// <summary>Optional HTTP MCP library setup (gateway v0.1.18). Contains policy, never credentials.</summary>
+    public SandboxMcpPolicy? Mcp { get; init; }
+
     public SandboxCreateRequest(
         string workspace,
         IReadOnlyList<string>? marketplaces = null,

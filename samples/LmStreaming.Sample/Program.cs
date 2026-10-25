@@ -643,6 +643,7 @@ try
     // sandbox webhook (Auth:Webhook:UseSandboxWebhook), which also delivers task_completed.
     _ = builder.Services.AddSingleton<ContextDiscoveryBatchHandler>();
     _ = builder.Services.AddSingleton<SandboxTaskCompletionNotifier>();
+    _ = builder.Services.AddSingleton<SandboxMcpAuthService>();
     // Tracks received discovery webhooks per session for GET /api/diagnostics/context-discovery,
     // so an operator can confirm discoveries are actually arriving (vs. silently lost to an
     // unreachable callback host).
@@ -3203,6 +3204,10 @@ try
 
         return pool;
     });
+
+    // #830: unload conversations with no work in hand, so the pool holds the active set rather than
+    // every conversation since start. Settings and the idle rule are on the service.
+    _ = builder.Services.AddHostedService<AgentPoolIdleUnloadService>();
 
     // Workspace plugin-selection migration (prepare-then-replace). Two narrow registrations:
     //

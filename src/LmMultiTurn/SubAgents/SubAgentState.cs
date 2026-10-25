@@ -203,7 +203,8 @@ internal class SubAgentState
     // (SwapLiveAgentAndSignalReplaced) or the agent is torn down (SignalAgentReplaced(null)). It lets
     // DecideAfterStreamEnd tell a genuine restart (replacement signal guaranteed to arrive — wait for it,
     // no timeout) apart from a backpressure DROP (no signal coming — end promptly), deterministically and
-    // WITHOUT any elapsed-time heuristic. Only ever true across a single dispose->swap window.
+    // WITHOUT any elapsed-time heuristic. True across a single dispose->swap window, or, for a loop
+    // released while idle (InstallReleasedAgent), until the next continuation rebuilds it.
     private bool _restartInProgress;
 
     /// <summary>
@@ -583,6 +584,71 @@ internal class SubAgentState
 
         _ = toSignal?.TrySetResult(true);
     }
+
+    /// <summary>
+    /// Run completions whose side effects (the terminal store push, the status publish, the parent relay)
+    /// the monitor still owes. They run off the run-transition gate and on the monitor's token, so an idle
+    /// release or unload that cancelled the monitor meanwhile would drop them - a background sub-agent's
+    /// only answer with them (#830). The monitor reserves one BEFORE the completion can settle the run, so
+    /// <see cref="IsSettled"/> never reports a child that still owes them.
+    /// </summary>
+    private int _pendingCompletionEffects;
+
+    /// <summary>Reserves a run completion's side effects; pair with <see cref="EndCompletionEffects"/>.</summary>
+    internal void BeginCompletionEffects() => Interlocked.Increment(ref _pendingCompletionEffects);
+
+    /// <summary>Releases a reservation taken by <see cref="BeginCompletionEffects"/>.</summary>
+    internal void EndCompletionEffects() => Interlocked.Decrement(ref _pendingCompletionEffects);
+
+    /// <summary>
+    /// Claims this FINISHED sub-agent for an idle release (#830): the manager disposes its loop to free
+    /// memory, and the next continuation rebuilds it from its transcript. The claim is the restart slot
+    /// <see cref="BeginContinuation"/> hands out, so a continuation arriving during the release awaits
+    /// it (<see cref="ContinuationMode.AwaitRestart"/>) and then restarts the released agent rather than
+    /// injecting into a loop being disposed. Release the claim with <see cref="EndRestart"/>.
+    /// </summary>
+    /// <returns>
+    /// <see langword="false"/> unless the run is terminal, no restart or terminal settle is under way, no
+    /// send is in flight, the monitor has finished the run's completion side effects, and the loop has not
+    /// already been released.
+    /// </returns>
+    internal bool TryBeginRelease()
+    {
+        lock (_lifecycleLock)
+        {
+            if (!IsSettledLocked() || Volatile.Read(ref _agentLoopDisposed))
+            {
+                return false;
+            }
+
+            _restarting = true;
+            _restartCompleted = NewLifecycleSignal();
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Whether this sub-agent is finished and nothing is under way on it: its run is terminal, and no
+    /// restart, release, terminal settle, send, or completion side effect is in progress. See
+    /// <see cref="SubAgentManager.TryQuiesce"/>.
+    /// </summary>
+    internal bool IsSettled
+    {
+        get
+        {
+            lock (_lifecycleLock)
+            {
+                return IsSettledLocked();
+            }
+        }
+    }
+
+    private bool IsSettledLocked() =>
+        _status is SubAgentStatus.Completed or SubAgentStatus.Error or SubAgentStatus.Stopped
+        && !_restarting
+        && !_terminating
+        && _activeSendLeases == 0
+        && Volatile.Read(ref _pendingCompletionEffects) == 0;
 
     /// <summary>
     /// Settles a run against continuation admission. Blocks new owned-provider inject admissions and
@@ -1112,9 +1178,10 @@ internal class SubAgentState
     /// triggered when the observer's stream ends on the dispose — deterministically sees a restart is in
     /// flight and awaits the replacement signal (which the imminent <see cref="SwapLiveAgentAndSignalReplaced"/>
     /// will complete) rather than treating the end as a backpressure drop. Cleared exactly when the
-    /// replacement is delivered or the agent is torn down. Called ONLY on the owned-provider restart path
-    /// (the borrowed-provider path never swaps/disposes, so it must never set this flag or it would never
-    /// be cleared).
+    /// replacement is delivered or the agent is torn down. Called ONLY on paths that end in a swap: the
+    /// owned-provider restart, and an idle release, whose disposed loop forces the next restart to rebuild
+    /// and swap (the borrowed-provider restart never swaps/disposes, so it must never set this flag or it
+    /// would never be cleared).
     /// </summary>
     public void SignalRestartStarting()
     {
@@ -1178,6 +1245,25 @@ internal class SubAgentState
             // The replacement is live, so whatever disposed the previous loop no longer forces a rebuild.
             Volatile.Write(ref _agentLoopDisposed, false);
             SignalAgentReplacedLocked(replacement);
+        }
+    }
+
+    /// <summary>
+    /// Idle release (#830): installs <paramref name="placeholder"/> in place of the loop the release has
+    /// just disposed, so this registration stops holding that loop's memory, and forces the next
+    /// continuation to rebuild (<see cref="HasDisposedAgentLoop"/>). Observers are NOT signalled: the
+    /// release called <see cref="SignalRestartStarting"/> before the dispose, so a viewer waits for the
+    /// rebuilt loop that <see cref="SwapLiveAgentAndSignalReplaced"/> will deliver, or for teardown.
+    /// </summary>
+    /// <param name="placeholder">A stand-in that reports itself disposed to every caller.</param>
+    internal void InstallReleasedAgent(IMultiTurnAgent placeholder)
+    {
+        ArgumentNullException.ThrowIfNull(placeholder);
+        lock (_observationLock)
+        {
+            _restartInProgress = true;
+            Agent = placeholder;
+            Volatile.Write(ref _agentLoopDisposed, true);
         }
     }
 

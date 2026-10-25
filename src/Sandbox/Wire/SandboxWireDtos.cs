@@ -31,7 +31,21 @@ internal sealed record CreateSandboxRequestDto(
     // Each is omitted when the caller set none, so the gateway applies its own defaults.
     [property: JsonPropertyName("properties")] IReadOnlyDictionary<string, string>? Properties = null,
     [property: JsonPropertyName("webhook")] SandboxWebhookDto? Webhook = null,
-    [property: JsonPropertyName("skills")] SkillsPolicyDto? Skills = null
+    [property: JsonPropertyName("skills")] SkillsPolicyDto? Skills = null,
+    [property: JsonPropertyName("mcp")] McpPolicyDto? Mcp = null
+);
+
+internal sealed record McpPolicyDto(
+    [property: JsonPropertyName("egress")] string? Egress,
+    [property: JsonPropertyName("servers")] IReadOnlyDictionary<string, McpServerPolicyDto>? Servers
+);
+
+internal sealed record McpServerPolicyDto(
+    [property: JsonPropertyName("auth")] string? Auth,
+    [property: JsonPropertyName("headers")] IReadOnlyList<string>? Headers,
+    [property: JsonPropertyName("cache_ttl_seconds")] int? CacheTtlSeconds,
+    [property: JsonPropertyName("enabled")] bool? Enabled,
+    [property: JsonPropertyName("url")] string? Url
 );
 
 /// <summary>

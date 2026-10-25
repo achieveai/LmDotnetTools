@@ -126,9 +126,7 @@ public sealed class AuthWebhookController(
         var defer = false;
         try
         {
-            var token = tokenProvider is AdoOAuthProvider ado
-                ? await ado.GetWebhookAccessTokenAsync(ct)
-                : await tokenProvider.GetAccessTokenAsync(body.RequiredScopes, ct);
+            var token = await AuthWebhookCredentials.AcquireAsync(tokenProvider, body.RequiredScopes, ct);
             if (KeyRevisionChanged(tokenProvider, keyRevision))
             {
                 logger.LogWarning(
@@ -451,8 +449,7 @@ public sealed class AuthWebhookController(
     /// runtime predefined-key provider (<c>predefined-&lt;id&gt;</c>) from the registry.
     /// </summary>
     private IOAuthTokenProvider? Resolve(string provider) =>
-        providers.FirstOrDefault(p => string.Equals(p.ProviderId, provider, StringComparison.OrdinalIgnoreCase))
-        ?? predefinedKeys?.TryResolve(provider);
+        AuthWebhookCredentials.Resolve(providers, predefinedKeys, provider);
 
     /// <summary>
     /// The defense-in-depth destination gate. Predefined keys gate on the snapshotted revision's own
@@ -466,12 +463,7 @@ public sealed class AuthWebhookController(
         PredefinedKeyEntry? keyRevision,
         string? destinationHost,
         int destinationPort
-    ) =>
-        provider is PredefinedKeyProvider
-            ? keyRevision is not null
-                && destinationPort == keyRevision.Port
-                && EgressHostMatcher.IsAllowed([keyRevision.Host], destinationHost)
-            : OAuthProviderHosts.IsAllowed(provider.ProviderId, destinationHost);
+    ) => AuthWebhookCredentials.IsDestinationAllowed(provider, keyRevision, destinationHost, destinationPort);
 
     /// <summary>
     /// True when a predefined key's live entry is no longer the revision the destination was gated
@@ -481,7 +473,7 @@ public sealed class AuthWebhookController(
     /// headers all come from one revision.
     /// </summary>
     private static bool KeyRevisionChanged(IOAuthTokenProvider provider, PredefinedKeyEntry? keyRevision) =>
-        provider is PredefinedKeyProvider pk && !ReferenceEquals(pk.Entry, keyRevision);
+        AuthWebhookCredentials.KeyRevisionChanged(provider, keyRevision);
 
     private static string KeyEditedReason(IOAuthTokenProvider provider) =>
         $"key '{provider.ProviderId}' was edited during evaluation; retry";
@@ -496,13 +488,7 @@ public sealed class AuthWebhookController(
         PredefinedKeyEntry? keyRevision,
         string? destinationHost,
         OAuthAccessToken token
-    ) =>
-        provider is PredefinedKeyProvider && keyRevision is not null
-            ? AuthWebhookResponse.AllowCustom(
-                PredefinedKeyProvider.BuildHeaders(keyRevision, token),
-                PredefinedKeyProvider.IncludesExpiry(keyRevision) ? token.ExpiresAtUtc : null
-            )
-            : AuthWebhookResponse.Allow(provider.ProviderId, destinationHost, token);
+    ) => AuthWebhookCredentials.BuildAllow(provider, keyRevision, destinationHost, token);
 }
 
 /// <summary>
@@ -538,6 +524,26 @@ public sealed record AuthWebhookRequest
 
     [JsonPropertyName("required_scopes")]
     public string[]? RequiredScopes { get; init; }
+
+    /// <summary>Present only on an MCP auth_request. Session/app ownership comes from the outer envelope.</summary>
+    [JsonPropertyName("mcp_server")]
+    public SandboxMcpServerIdentity? McpServer { get; init; }
+}
+
+/// <summary>Gateway-resolved MCP identity. It describes a request; it never selects the credential source.</summary>
+public sealed record SandboxMcpServerIdentity
+{
+    [JsonPropertyName("name")]
+    public string? Name { get; init; }
+
+    [JsonPropertyName("plugin")]
+    public string? Plugin { get; init; }
+
+    [JsonPropertyName("marketplace")]
+    public string? Marketplace { get; init; }
+
+    [JsonPropertyName("url")]
+    public string? Url { get; init; }
 }
 
 /// <summary>
@@ -562,6 +568,14 @@ public sealed record AuthWebhookResponse
     [JsonPropertyName("reason")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Reason { get; init; }
+
+    [JsonPropertyName("retry_after_seconds")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? RetryAfterSeconds { get; init; }
+
+    [JsonPropertyName("message")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Message { get; init; }
 
     /// <summary>
     /// Builds an allow decision injecting a host-appropriate Authorization header and the token's real
@@ -626,4 +640,12 @@ public sealed record AuthWebhookResponse
 
     /// <summary>Builds a deny decision carrying a (token-free) reason.</summary>
     internal static AuthWebhookResponse Deny(string reason) => new() { Decision = "deny", Reason = reason };
+
+    internal static AuthWebhookResponse Pending() =>
+        new()
+        {
+            Decision = "pending",
+            Message = "credential unavailable; sign in or update the configured key",
+            RetryAfterSeconds = 5,
+        };
 }
