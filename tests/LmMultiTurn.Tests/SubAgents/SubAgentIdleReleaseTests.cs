@@ -112,9 +112,18 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
     public async Task AViewerOfAReleasedSubAgent_FollowsItIntoTheRebuiltLoop()
     {
         // The focused-agent view streams through SubscribeToAgentAcrossRestartsAsync. A release must
-        // leave it waiting for the rebuilt loop, not end it as if the child were gone.
+        // leave it waiting for the rebuilt loop, not end it as if the child were gone. The viewer is on
+        // the original loop before the release starts, and the release is held after its dispose until
+        // the viewer has decided: no stand-in, no rebuilt loop, only the release's restart signal.
         var manager = CreateManager(AnsweringProvider());
         _ = await manager.SpawnAsync("worker", "task", name: "watched");
+        var decided = new TaskCompletionSource<ObservationContinuation>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        manager.ObservationDecidedForTest = decision => decided.TrySetResult(decision);
+        manager.AfterReleaseDisposeForTest = _ => decided.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        manager.TryGetAgent("watched", out var agent).Should().BeTrue();
+        var original = agent.Should().BeOfType<MultiTurnAgentLoop>().Subject;
         using var viewing = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var sawFollowUpAnswer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var viewer = Task.Run(
@@ -131,8 +140,13 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
             },
             viewing.Token
         );
+        await Wait.UntilAsync(
+            () => original.SubscriberCountForTests == 1,
+            "the viewer is attached to the original loop"
+        );
 
         (await manager.ReleaseFinishedAgentsAsync(DateTimeOffset.UtcNow)).Should().Be(1);
+        (await decided.Task).Should().Be(ObservationContinuation.AwaitReplacement);
         _ = await manager.SendMessageAsync("watched", "follow-up", runInBackground: true);
 
         await sawFollowUpAnswer.Task.WaitAsync(TimeSpan.FromSeconds(10));
