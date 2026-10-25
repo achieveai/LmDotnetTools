@@ -325,10 +325,12 @@ internal sealed class ReviewSubAgentCompletionBarrier
             // long-poll client configured with Timeout.InfiniteTimeSpan, none — overrunning the deadline
             // by that much or hanging outright. So the barrier bounds the call by its OWN remaining
             // budget instead of inheriting an incidental one: a deadline-linked token so a well-behaved
-            // source tears its request down at the HTTP layer, AND WaitAsync so a source that ignores its
-            // token still cannot hold the barrier past its deadline. Either firing loops back so the
-            // top-of-loop check throws ReviewBarrierDeadlineException with the roster logged; a stage-token
-            // (ct) cancellation still propagates as cancellation.
+            // source tears its request down at the HTTP layer, AND WaitAsync on that same token so a source
+            // that ignores it still cannot hold the barrier past its deadline. The wait ends only through
+            // the budget token, so the source always sees the cancel: a separate timer or stage-token
+            // registration could end the wait first and dispose the budget before it cancels. The deadline
+            // loops back so the top-of-loop check throws ReviewBarrierDeadlineException with the roster
+            // logged; a stage-token (ct) cancellation still propagates as cancellation.
             var remaining = deadlineUtc - now;
             using var deadlineCts = new CancellationTokenSource(remaining, _timeProvider);
             using var budgetCts = CancellationTokenSource.CreateLinkedTokenSource(ct, deadlineCts.Token);
@@ -336,18 +338,19 @@ internal sealed class ReviewSubAgentCompletionBarrier
             ReviewSubAgentTreeSnapshot snapshot;
             try
             {
-                snapshot = await snapshotTask.WaitAsync(remaining, _timeProvider, ct).ConfigureAwait(false);
+                snapshot = await snapshotTask.WaitAsync(budgetCts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (deadlineCts.IsCancellationRequested && !ct.IsCancellationRequested)
             {
-                // The deadline-linked token cancelled the round trip; loop so the top throws with the roster.
+                // The deadline cancelled the round trip, and the wait abandoned it even if the source ignores
+                // its token; loop so the top throws with the roster rather than hanging on it.
                 ObserveAbandonedSnapshot(snapshotTask, run, parentThreadId);
                 continue;
             }
             catch (TimeoutException)
             {
-                // A source that ignored its token could not be cancelled, so WaitAsync abandoned the call at
-                // the budget; loop so the top throws with the roster rather than hanging on it.
+                // The wait has no timer, so this is the source's own timeout; loop so the top-of-loop check
+                // decides: poll again before the deadline, throw with the roster after it.
                 ObserveAbandonedSnapshot(snapshotTask, run, parentThreadId);
                 continue;
             }
