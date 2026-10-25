@@ -482,6 +482,8 @@ internal static class JudgeRunner
                     return await CapAsync(thread!);
                 if (outcome == "orphaned")
                     Orphaned(input, status);
+                if (outcome == "lost")
+                    Lost(input);
                 receipt["judgeResponseTail"] = Tail(status?.ResponseText);
                 receipt["stage"] = "post-check";
                 await SaveAsync();
@@ -504,6 +506,8 @@ internal static class JudgeRunner
                     return await CapAsync(thread!);
                 if (outcome == "orphaned")
                     Orphaned(input, status);
+                if (outcome == "lost")
+                    Lost(input);
                 nudge["responseTail"] = Tail(status?.ResponseText);
                 receipt["stage"] = "post-check";
                 await SaveAsync();
@@ -530,12 +534,29 @@ internal static class JudgeRunner
             );
         }
 
+        // The host accepted the input but never ran it (see ReviewRunner.NeverStartedGrace). Post-check ends it: a lost
+        // judge input means no judge ran; a lost follow-up still leaves what the judge wrote.
+        void Lost(string input)
+        {
+            receipt["lost"] = new JsonObject { ["inputId"] = input, ["at"] = DateTimeOffset.UtcNow };
+            Console.Error.WriteLine(
+                $"{label}: judge input {input} never started: the host accepted it but has run nothing for it for "
+                    + $"{ReviewRunner.NeverStartedGrace.TotalMinutes:0} minutes."
+            );
+        }
+
         async Task<int> PostCheckAsync(string thread)
         {
             var nudge = receipt["nudge"] as JsonObject;
             var input = (nudge?["inputId"] ?? receipt["judgeInputId"])!.GetValue<string>();
             var status = await client.GetStatusByInputIdAsync(thread, input, ct);
-            var state = PostCheckState(status.Status, receipt["orphaned"]?["inputId"]?.GetValue<string>() == input);
+            var lost = receipt["lost"]?["inputId"]?.GetValue<string>() == input;
+            var state = PostCheckState(
+                status.Status,
+                receipt["orphaned"]?["inputId"]?.GetValue<string>() == input,
+                lost,
+                nudge is not null
+            );
             if (state == "running")
             {
                 receipt["stage"] = nudge is null ? "judge-running" : "nudge-running";
@@ -560,7 +581,10 @@ internal static class JudgeRunner
                 return await ContinueAsync();
             }
             if (end == "failed")
-                receipt["error"] = $"Judge input {input} ended {status.Status}; not success.";
+                receipt["error"] =
+                    lost && status.Status.Equals("notstarted", StringComparison.OrdinalIgnoreCase)
+                        ? $"Judge input {input} never started: the host accepted it but never ran it, so no judge ran."
+                        : $"Judge input {input} ended {status.Status}; not success.";
             return await FinishAsync(end, thread, exit);
         }
 
@@ -1528,7 +1552,8 @@ internal static class JudgeRunner
     ///     ("failed", its status) when the input ended badly. A host that does not answer means the judge is
     ///     still running: the wait backs off through <paramref name="delay" />, so the cap still holds, and stops only
     ///     after <paramref name="outage" />.GiveUpAfter with no host answer. ("orphaned", its last status) when a host
-    ///     restart ended the run (see <see cref="OrphanWatch" />); Interrupted alone is not the end.
+    ///     restart ended the run (see <see cref="OrphanWatch" />); Interrupted alone is not the end. ("lost", null) when
+    ///     the host never started the input (see <see cref="ReviewRunner.NeverStartedGrace" />): a rerun would wait on it again.
     /// </summary>
     internal static async Task<(string Outcome, S2SStatusResult? Status)> WaitForInputAsync(
         LmStreamingS2SClient client,
@@ -1539,7 +1564,8 @@ internal static class JudgeRunner
         Func<bool> capReached,
         HostOutage outage,
         string label,
-        CancellationToken ct
+        CancellationToken ct,
+        Func<DateTimeOffset>? clock = null
     )
     {
         var answeredAt = DateTimeOffset.UtcNow;
@@ -1566,6 +1592,7 @@ internal static class JudgeRunner
                         input,
                         AnsweredAsync,
                         capped,
+                        clock,
                         orphaned: dead.Orphaned,
                         busyDelay: delay
                     )
@@ -1578,6 +1605,10 @@ internal static class JudgeRunner
             catch (ReviewRunner.OrphanedRunException orphaned)
             {
                 return ("orphaned", orphaned.Status);
+            }
+            catch (ReviewRunner.LostInputException)
+            {
+                return ("lost", null);
             }
             catch (Exception failure) when (failure is not OperationCanceledException || IsHostOutage(failure, ct))
             {
@@ -1650,13 +1681,15 @@ internal static class JudgeRunner
     ///     How post-check reads the judge input's status: "completed"; "ended" when a host restart ended the run
     ///     (the wait saw no host process behind it, or the host marked it Interrupted, which it writes only
     ///     when a thread wakes in a new process), finished from what the judge wrote like a completed one; "running"
-    ///     (rerun to resume the wait); else "failed".
+    ///     (rerun to resume the wait); else "failed". An input the wait found <paramref name="lost" /> (still NotStarted)
+    ///     never ran: a judge input is "failed", as no judge ran; a <paramref name="nudge" /> is "ended".
     /// </summary>
-    internal static string PostCheckState(string status, bool orphaned) =>
+    internal static string PostCheckState(string status, bool orphaned, bool lost = false, bool nudge = false) =>
         status.ToLowerInvariant() switch
         {
             "completed" => "completed",
             "interrupted" => "ended",
+            "notstarted" when lost => nudge ? "ended" : "failed",
             "inprogress" or "notstarted" => orphaned ? "ended" : "running",
             _ => "failed",
         };

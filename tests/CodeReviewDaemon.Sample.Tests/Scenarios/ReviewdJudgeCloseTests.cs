@@ -766,8 +766,11 @@ public sealed class ReviewdJudgeCloseTests
     {
         Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
-        // Git for Windows' default: close composes against main's bytes, so the scratch tree must not get CRLF.
+        // Git for Windows' defaults, and a store that marks files as text: close composes against main's bytes, so the
+        // scratch tree must not get CRLF.
         universe.Git(universe.Store, "config", "core.autocrlf", "true");
+        universe.Git(universe.Store, "config", "core.eol", "crlf");
+        File.WriteAllText(Path.Combine(universe.Store, ".git", "info", "attributes"), "* text\n");
         var phase = JudgeClose.Local(universe.Store);
 
         var prepared = await phase("close-prepare", universe.PrepareArgs(3), default);

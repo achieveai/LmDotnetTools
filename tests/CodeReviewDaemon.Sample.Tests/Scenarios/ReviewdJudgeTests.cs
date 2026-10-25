@@ -119,6 +119,36 @@ public sealed class ReviewdJudgeTests
         status!.Status.Should().Be("InProgress");
     }
 
+    // The host accepted the judge input, then ran nothing for it on an idle, settled conversation (a restart between
+    // accept and start). Past the never-started grace the wait ends "lost"; it does not tell the operator to rerun
+    // into the same wait.
+    [Fact]
+    public async Task A_judge_input_the_host_never_starts_ends_the_wait_lost()
+    {
+        var host = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/status", """{"status":"NotStarted","runId":null}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?recursive=true", """{"schemaVersion":1,"nodes":[]}""");
+        var now = DateTimeOffset.UtcNow;
+
+        var (outcome, status) = await WaitOnHost(Client(host), FastOutage, clock: () => now += TimeSpan.FromMinutes(6))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        outcome.Should().Be("lost");
+        status.Should().BeNull();
+    }
+
+    // A lost input never ran. No judge ran for a lost judge input, so it fails (no follow-up to a judge that never saw
+    // its prompt); a lost follow-up ends, and post-check files what the judge already wrote. Once the input runs after
+    // all, its own status decides.
+    [Theory]
+    [InlineData("NotStarted", false, "failed")]
+    [InlineData("NotStarted", true, "ended")]
+    [InlineData("InProgress", false, "running")]
+    [InlineData("Completed", false, "completed")]
+    public void A_lost_judge_input_fails_and_a_lost_follow_up_ends(string status, bool nudge, string expected) =>
+        JudgeRunner.PostCheckState(status, orphaned: false, lost: true, nudge).Should().Be(expected);
+
     // The first send to a thread after a host restart can read Interrupted for a moment (the host's restart
     // pass marks the just-accepted input before its run starts; the run's own row then wins). The judge waits on.
     [Fact]
@@ -1053,7 +1083,8 @@ public sealed class ReviewdJudgeTests
         JudgeRunner.HostOutage outage,
         Func<CancellationToken, Task>? delay = null,
         CancellationToken capped = default,
-        Func<bool>? capReached = null
+        Func<bool>? capReached = null,
+        Func<DateTimeOffset>? clock = null
     ) =>
         JudgeRunner.WaitForInputAsync(
             client,
@@ -1064,7 +1095,8 @@ public sealed class ReviewdJudgeTests
             capReached ?? (() => false),
             outage,
             "NovaClient #5790557",
-            CancellationToken.None
+            CancellationToken.None,
+            clock
         );
 
     // A judge whose status reads answer `statuses` in order and whose /usage reads answer `usage` in order.

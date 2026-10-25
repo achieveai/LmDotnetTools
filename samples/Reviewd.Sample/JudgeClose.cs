@@ -96,8 +96,15 @@ internal static class JudgeClose
             using var process = Process.Start(start)!;
             var output = process.StandardOutput.ReadToEndAsync(ct);
             var error = process.StandardError.ReadToEndAsync(ct);
-            await process.StandardInput.WriteAsync(script.AsMemory(), ct);
-            process.StandardInput.Close();
+            try
+            {
+                await process.StandardInput.WriteAsync(script.AsMemory(), ct);
+                process.StandardInput.Close();
+            }
+            catch (IOException)
+            {
+                // python3 exited before it read the script (a Store stub, say): its exit code and stderr below say why.
+            }
             await process.WaitForExitAsync(ct);
             var (stdout, stderr) = (await output, await error);
             if (process.ExitCode != 0)

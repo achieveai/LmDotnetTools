@@ -902,9 +902,10 @@ def close_prepare():
         tree = scratch / "tree"
         tree.mkdir()
         if present := [p for p in ("KnowledgeBase", "Improvements") if tree_id(main, p)]:
-            # Main's bytes, not a checkout's line endings: Git for Windows sets core.autocrlf, and archive applies it.
-            archive = subprocess.run(["git", "-c", "core.autocrlf=false", "archive", "--format=tar", main, "--", *present],
-                                     capture_output=True)
+            # Main's bytes, not a checkout's line endings: Git for Windows sets core.autocrlf, and core.eol is native
+            # (CRLF there) for files .gitattributes marks as text; archive applies both.
+            archive = subprocess.run(["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "archive", "--format=tar", main,
+                                      "--", *present], capture_output=True)
             if archive.returncode:
                 die(f"git archive failed: {archive.stderr.decode(errors='replace')[:400]}")
             with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as t:
