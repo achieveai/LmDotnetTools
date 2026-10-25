@@ -20,7 +20,9 @@ public sealed partial class SandboxSessionRegistry
     /// A single (workspace, caller app) session partition captured before a plugin-selection migration
     /// begins.
     /// </summary>
-    /// <param name="Key">The <c>(WorkspaceId, AppId)</c> cache key this session is published under.</param>
+    /// <param name="Key">
+    /// The <c>(WorkspaceId, AppId, ReadOnlyEgress)</c> cache key this session is published under.
+    /// </param>
     /// <param name="Entry">
     /// The exact cache slot observed at snapshot time. <see cref="SwapPluginSelectionSessions"/> uses it
     /// as the compare-and-swap witness, so a slot that some other code path replaced while the candidate
@@ -35,7 +37,7 @@ public sealed partial class SandboxSessionRegistry
     /// creation falls back to the process default exactly as the original create did.
     /// </param>
     internal sealed record PluginSelectionPartition(
-        (string WorkspaceId, string AppId) Key,
+        (string WorkspaceId, string AppId, bool ReadOnlyEgress) Key,
         Lazy<Task<SandboxSession>> Entry,
         SandboxSession Session,
         SandboxCredential? Credential
@@ -111,7 +113,7 @@ public sealed partial class SandboxSessionRegistry
     /// </param>
     internal sealed record PluginSelectionSnapshot(
         IReadOnlyList<PluginSelectionPartition> Partitions,
-        IReadOnlyList<(string WorkspaceId, string AppId)> Unsettled
+        IReadOnlyList<(string WorkspaceId, string AppId, bool ReadOnlyEgress)> Unsettled
     );
 
     /// <summary>
@@ -195,7 +197,9 @@ public sealed partial class SandboxSessionRegistry
         // every materialized entry for this workspace is in exactly one of the two, whatever its
         // completion state. A materialized entry whose creation FAULTED is included and is harmless —
         // it has no session, so the reconcile pass's own capture simply will not see it.
-        var captured = new HashSet<(string WorkspaceId, string AppId)>(partitions.Select(partition => partition.Key));
+        var captured = new HashSet<(string WorkspaceId, string AppId, bool ReadOnlyEgress)>(
+            partitions.Select(partition => partition.Key)
+        );
 
         var unsettled = _sessions
             .Where(entry =>
@@ -328,6 +332,10 @@ public sealed partial class SandboxSessionRegistry
             // Matches CreateSessionAsync's own "non-empty wins" test, so an empty list here is treated
             // as "not specified" on both sides rather than meaning two different things.
             Marketplaces = newRef.Marketplaces is { Count: > 0 } ? newRef.Marketplaces : partition.Session.Marketplaces,
+            // Pinned from the partition key like the id: newRef comes from the workspace catalog, which does
+            // not carry the read-only bit, so an unpinned candidate for a read-only partition would be a
+            // full-write sandbox swapped into the read-only slot.
+            ReadOnlyEgress = partition.Key.ReadOnlyEgress,
         };
 
         var candidate = await CreateSessionAsync(candidateRef, ct, partition.Credential).ConfigureAwait(false);

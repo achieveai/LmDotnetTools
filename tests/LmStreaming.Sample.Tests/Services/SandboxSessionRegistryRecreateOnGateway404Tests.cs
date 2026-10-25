@@ -172,6 +172,29 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
     }
 
     [Fact]
+    public async Task GetOrCreateLiveSessionAsync_SessionGone_RecreatesAReadOnlySession_ThoughTheReloadedRefLacksTheFlag()
+    {
+        // The reload hook rebuilds the ref from the workspace catalog, which has no read-only bit. Without the
+        // pin, the judge's evicted read-only sandbox would come back as a full-write one.
+        var (registry, calls) = CreateRegistry(
+            reloadWorkspaceRef: (workspaceId, _) =>
+                Task.FromResult<WorkspaceRef?>(new WorkspaceRef(workspaceId, Marketplaces: ["official"]))
+        );
+        var readOnlyRef = new WorkspaceRef("ws-1", ReadOnlyEgress: true);
+
+        var first = await registry.GetOrCreateSessionAsync(readOnlyRef);
+        calls.Evict(first.SessionId);
+        var live = await registry.GetOrCreateLiveSessionAsync(readOnlyRef);
+
+        live.SessionId.Should().Be("sess-2");
+        live.ReadOnlyEgress.Should().BeTrue();
+        (await registry.GetOrCreateSessionAsync(readOnlyRef))
+            .SessionId.Should()
+            .Be("sess-2", "the recreated session must sit in the read-only slot");
+        calls.PostCount.Should().Be(2);
+    }
+
+    [Fact]
     public async Task GetOrCreateLiveSessionAsync_NoReloadCallbackConfigured_FallsBackToOriginalRef()
     {
         // Every existing construction site passes no callback. Those must keep the prior behaviour

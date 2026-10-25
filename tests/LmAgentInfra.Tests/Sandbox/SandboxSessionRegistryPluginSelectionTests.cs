@@ -208,7 +208,7 @@ public class SandboxSessionRegistryPluginSelectionTests
         elapsed.Stop();
 
         snapshot.Partitions.Should().ContainSingle().Which.Key.AppId.Should().Be("app-a");
-        snapshot.Unsettled.Should().ContainSingle().Which.Should().Be(("ws-1", "app-b"));
+        snapshot.Unsettled.Should().ContainSingle().Which.Should().Be(("ws-1", "app-b", false));
         elapsed.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1), "a zero budget must not wait at all");
 
         gateway.ReleaseCreates();
@@ -275,6 +275,25 @@ public class SandboxSessionRegistryPluginSelectionTests
             .TryGetSessionById(partition.Session.SessionId, out _)
             .Should()
             .BeTrue("the live session must survive candidate creation untouched");
+    }
+
+    [Fact]
+    public async Task CreatePluginSelectionCandidateAsync_ReadOnlyPartition_CreatesAReadOnlyCandidate()
+    {
+        // The migration's ref comes from the workspace catalog, which has no read-only bit. Without the pin a
+        // plugin change would swap a full-write sandbox into the judge's read-only slot.
+        await using var registry = CreateRegistryWithFakeGateway(out _);
+        _ = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1", ReadOnlyEgress: true));
+        var partition = registry.SnapshotPluginSelectionPartitions("ws-1").Single();
+        partition.Key.ReadOnlyEgress.Should().BeTrue();
+
+        var candidate = await registry.CreatePluginSelectionCandidateAsync(
+            new WorkspaceRef("ws-1", PluginSelection: [new SandboxPluginRef("official", "code-review")]),
+            partition,
+            CancellationToken.None
+        );
+
+        candidate.ReadOnlyEgress.Should().BeTrue();
     }
 
     [Fact]

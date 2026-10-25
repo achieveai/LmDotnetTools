@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.Identity;
 using LmStreaming.Sample.SandboxApps;
@@ -22,6 +23,7 @@ public sealed class SandboxController(
     SandboxSessionRegistry registry,
     SandboxWorkspaceBackup backup,
     ConversationAuthorizer authorizer,
+    IConversationStore conversations,
     ILogger<SandboxController> logger
 ) : ControllerBase
 {
@@ -38,7 +40,10 @@ public sealed class SandboxController(
 
         // Image fields come from the create acknowledgement of a session this process created. A null image means
         // the gateway did not report one (an older gateway), so the sandbox runs the server default.
-        var session = registry.TryGetExistingSession(target.WorkspaceId!);
+        // The thread's own slot: a read-only-egress thread (a judge) runs in a sandbox of its own, never the
+        // normal one its workspace's other threads share.
+        var readOnlyEgress = await ConversationReadOnlyEgress.ReadAsync(conversations, threadId, ct);
+        var session = registry.TryGetExistingSession(target.WorkspaceId!, readOnlyEgress);
         return Ok(
             new
             {

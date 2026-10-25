@@ -413,6 +413,37 @@ public sealed class ReviewdJudgeTests
         compared[3]!["sample"]![0]!.GetValue<string>().Should().StartWith("comment 7/2 changed");
     }
 
+    [Fact]
+    public async Task The_judge_thread_is_provisioned_headless_with_read_only_egress()
+    {
+        // The judge reads ADO and must never write to it; the lanes on the same workspace keep full egress.
+        var host = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "api/conversations",
+            """{"threadId":"thread-judge","reasoningEffortAccepted":true,"readOnlyEgressAccepted":true}"""
+        );
+        var identity = new JsonObject
+        {
+            ["provider"] = "test",
+            ["mode"] = "workspace-agent",
+            ["effort"] = "xhigh",
+        };
+
+        var thread = await JudgeRunner.ProvisionJudgeThreadAsync(
+            Client(host),
+            "ws-1",
+            identity,
+            CancellationToken.None
+        );
+
+        thread.Should().Be("thread-judge");
+        host.Requests.Should()
+            .ContainSingle()
+            .Which.Body.Should()
+            .Contain("\"readOnlyEgress\":true")
+            .And.Contain("\"disableClientTools\":true");
+    }
+
     // Recorded live: Nova 5778641 at 00:14Z after the host restart. A host too slow to make the
     // judge thread is said plainly; any other refusal keeps the host's own words.
     [Fact]
