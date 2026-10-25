@@ -67,6 +67,7 @@ public class MultiTurnAgentPoolIdleUnloadTests
         );
         var first = (MultiTurnAgentLoop)pool.GetOrCreateAgent("thread-kept", Mode);
         await DrainRunAsync(first, "my name is Ada");
+        await WaitUntilSettledAsync(pool, first, "thread-kept");
 
         time.Advance(IdleAfter);
         (await pool.UnloadIdleAgentsAsync(IdleAfter)).Should().Be(1);
@@ -166,6 +167,7 @@ public class MultiTurnAgentPoolIdleUnloadTests
         );
         var loop = (MultiTurnAgentLoop)pool.GetOrCreateAgent("thread-asking", Mode);
         await DrainRunAsync(loop, "which colour?");
+        await WaitUntilInputRetiredAsync(pool, "thread-asking");
         (await pool.HasPendingAskUserQuestionAsync("thread-asking")).Should().BeTrue();
 
         time.Advance(TimeSpan.FromHours(1));
@@ -235,13 +237,14 @@ public class MultiTurnAgentPoolIdleUnloadTests
                 )
         );
         _ = pool.GetOrCreateAgent("thread-parent", Mode);
-        _ = await parent!.SubAgentManager!.SpawnAsync("worker", "short task", name: "done");
+        var manager = parent!.SubAgentManager!;
+        _ = await SpawnSettledAsync(manager, "short task", "done");
 
         time.Advance(IdleAfter + TimeSpan.FromMinutes(1));
         _ = pool.GetOrCreateAgent("thread-parent", Mode);
 
         (await pool.UnloadIdleAgentsAsync(IdleAfter)).Should().Be(0);
-        parent.SubAgentManager.TryGetAgent("done", out var child).Should().BeTrue();
+        manager.TryGetAgent("done", out var child).Should().BeTrue();
         child.Should().NotBeOfType<MultiTurnAgentLoop>("the finished child's loop was released");
     }
 
@@ -277,7 +280,7 @@ public class MultiTurnAgentPoolIdleUnloadTests
         );
         _ = pool.GetOrCreateAgent("thread-parent", Mode);
         var manager = parent!.SubAgentManager!;
-        _ = await manager.SpawnAsync("worker", "short task", name: "done");
+        _ = await SpawnSettledAsync(manager, "short task", "done");
         time.Advance(IdleAfter + TimeSpan.FromMinutes(1));
         _ = pool.GetOrCreateAgent("thread-parent", Mode);
         (await pool.UnloadIdleAgentsAsync(IdleAfter)).Should().Be(0, "the parent was just handed out");
@@ -572,6 +575,7 @@ public class MultiTurnAgentPoolIdleUnloadTests
         );
         var loop = (MultiTurnAgentLoop)pool.GetOrCreateAgent("thread-owed", Mode);
         await DrainRunAsync(loop, "which colour?");
+        await WaitUntilInputRetiredAsync(pool, "thread-owed");
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         loop.BeforeTakingNextWorkForTest = ct => release.Task.WaitAsync(ct);
         try
@@ -759,6 +763,7 @@ public class MultiTurnAgentPoolIdleUnloadTests
         var loop = (MultiTurnAgentLoop)pool.GetOrCreateAgent("thread-waiting", Mode);
         await DrainRunAsync(loop, "tell me when it happens");
         (await loop.GetDeferredToolCallsAsync()).Should().BeEmpty("a notify wait does not park the run");
+        await WaitUntilInputRetiredAsync(pool, "thread-waiting");
 
         time.Advance(TimeSpan.FromHours(1));
         (await pool.UnloadIdleAgentsAsync(IdleAfter)).Should().Be(0, "the wait is still armed");
@@ -769,6 +774,7 @@ public class MultiTurnAgentPoolIdleUnloadTests
             async () =>
                 Volatile.Read(ref requests.Value) == 3
                 && !pool.IsRunInProgress("thread-waiting")
+                && pool.GetOutstandingInputCountForTest("thread-waiting") == 0
                 && !await loop.HasLiveWorkAsync(),
             "the wait fired once, its turn ran, and the wait is done"
         );
@@ -795,6 +801,7 @@ public class MultiTurnAgentPoolIdleUnloadTests
             async () =>
                 Volatile.Read(ref requests.Value) == 2
                 && !pool.IsRunInProgress("thread-waiting")
+                && pool.GetOutstandingInputCountForTest("thread-waiting") == 0
                 && (await loop.GetDeferredToolCallsAsync()).Count == 0,
             "the message settled the wait early and its turn ran"
         );
@@ -807,10 +814,65 @@ public class MultiTurnAgentPoolIdleUnloadTests
             async () =>
                 Volatile.Read(ref requests.Value) == 3
                 && !pool.IsRunInProgress("thread-waiting")
+                && pool.GetOutstandingInputCountForTest("thread-waiting") == 0
                 && !await loop.HasLiveWorkAsync(),
             "the wait fired, its late result ran as a turn, and the wait is done"
         );
 
+        time.Advance(IdleAfter);
+        (await pool.UnloadIdleAgentsAsync(IdleAfter)).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task KeepsALoop_WhoseFiredWaitHasNotDeliveredItsResultYet()
+    {
+        // A fired wait stops counting as armed before its result reaches the loop: teardown first
+        // disposes its trigger. Unloading in between would drop the result.
+        var time = NewClock();
+        var source = new ManualTriggerSource();
+        var requests = new StrongBox<int>();
+        await using var pool = CreatePool(time, threadId => WaitingLoop(threadId, "block", source, requests));
+        var loop = (MultiTurnAgentLoop)pool.GetOrCreateAgent("thread-waiting", Mode);
+        await DrainRunAsync(loop, "wait for the build");
+        _ = await loop.SendAsync([new TextMessage { Text = "do something else meanwhile", Role = Role.User }]);
+        await Wait.UntilAsync(
+            async () =>
+                Volatile.Read(ref requests.Value) == 2
+                && !pool.IsRunInProgress("thread-waiting")
+                && pool.GetOutstandingInputCountForTest("thread-waiting") == 0
+                && (await loop.GetDeferredToolCallsAsync()).Count == 0,
+            "the message settled the wait early and its turn ran"
+        );
+
+        var disarming = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        source.HoldNextDisarm(async () =>
+        {
+            disarming.TrySetResult();
+            await release.Task;
+        });
+        var fired = Task.Run(() => source.FireAsync("the build finished"));
+        try
+        {
+            await disarming.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            time.Advance(TimeSpan.FromHours(1));
+
+            (await pool.UnloadIdleAgentsAsync(IdleAfter)).Should().Be(0, "the wait's result has not reached the loop");
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        await fired.WaitAsync(TimeSpan.FromSeconds(10));
+        await Wait.UntilAsync(
+            async () =>
+                Volatile.Read(ref requests.Value) == 3
+                && !pool.IsRunInProgress("thread-waiting")
+                && pool.GetOutstandingInputCountForTest("thread-waiting") == 0
+                && !await loop.HasLiveWorkAsync(),
+            "the wait's late result ran as a turn, and the wait is done"
+        );
         time.Advance(IdleAfter);
         (await pool.UnloadIdleAgentsAsync(IdleAfter)).Should().Be(1);
     }
@@ -905,6 +967,36 @@ public class MultiTurnAgentPoolIdleUnloadTests
         manager.TryGetAgent(name, out var child).Should().BeTrue();
         return child.Should().BeOfType<MultiTurnAgentLoop>().Subject.SubAgentManager!;
     }
+
+    /// <summary>
+    /// Spawns a sub-agent in the foreground and waits until its run has settled. The spawn returns with the
+    /// answer before the run's completion side effects end, and until they do the sub-agent cannot be
+    /// released.
+    /// </summary>
+    private static async Task<string> SpawnSettledAsync(SubAgentManager manager, string task, string name)
+    {
+        SubAgentState? finished = null;
+        manager.AfterSettlingRunCompletionForTest = (state, _) =>
+        {
+            finished ??= state;
+            return Task.CompletedTask;
+        };
+        var answer = await manager.SpawnAsync("worker", task, name: name);
+        await Wait.UntilAsync(() => finished is { IsSettled: true }, "the sub-agent's run has settled");
+        manager.AfterSettlingRunCompletionForTest = null;
+        return answer;
+    }
+
+    /// <summary>
+    /// Waits until no run is active and the pool has retired the thread's accepted input. The pool retires
+    /// it on its own subscriber, which <see cref="DrainRunAsync"/> does not wait for. Input still
+    /// outstanding starts a grace at the next sweep, which would keep the loop for the wrong reason.
+    /// </summary>
+    private static Task WaitUntilInputRetiredAsync(MultiTurnAgentPool pool, string threadId) =>
+        Wait.UntilAsync(
+            () => !pool.IsRunInProgress(threadId) && pool.GetOutstandingInputCountForTest(threadId) == 0,
+            "no run is active and the pool retired the accepted input"
+        );
 
     private static Task WaitUntilSettledAsync(MultiTurnAgentPool pool, MultiTurnAgentLoop loop, string threadId) =>
         Wait.UntilAsync(
@@ -1250,6 +1342,7 @@ public class MultiTurnAgentPoolIdleUnloadTests
     private sealed class ManualTriggerSource : ITriggerSource
     {
         private volatile ITriggerEventSink? _sink;
+        private Func<Task>? _nextDisarm;
 
         public ValueTask<IArmedTrigger> ArmAsync(
             TriggerArmRequest request,
@@ -1258,7 +1351,7 @@ public class MultiTurnAgentPoolIdleUnloadTests
         )
         {
             _sink = eventSink;
-            return ValueTask.FromResult<IArmedTrigger>(new Handle(request.WaitId));
+            return ValueTask.FromResult<IArmedTrigger>(new Handle(this, request.WaitId));
         }
 
         public async Task FireAsync(string payload)
@@ -1269,11 +1362,17 @@ public class MultiTurnAgentPoolIdleUnloadTests
             }
         }
 
-        private sealed class Handle(string waitId) : IArmedTrigger
+        /// <summary>The next disposal of an armed trigger runs <paramref name="hold"/> first.</summary>
+        public void HoldNextDisarm(Func<Task> hold) => Volatile.Write(ref _nextDisarm, hold);
+
+        private sealed class Handle(ManualTriggerSource source, string waitId) : IArmedTrigger
         {
             public string WaitId { get; } = waitId;
 
-            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+            public ValueTask DisposeAsync() =>
+                Interlocked.Exchange(ref source._nextDisarm, null) is { } hold
+                    ? new ValueTask(hold())
+                    : ValueTask.CompletedTask;
         }
     }
 }

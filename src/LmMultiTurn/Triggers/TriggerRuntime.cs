@@ -87,6 +87,9 @@ public sealed class TriggerRuntime : IAsyncDisposable
     private readonly CancellationTokenSource _shutdown = new();
     private int _disposed;
 
+    // Terminal transitions between their claim and their delivery: see FinalizeAsync.
+    private int _finalizing;
+
     public TriggerRuntime(
         TriggerOptions options,
         TriggerResolveDelegate resolve,
@@ -440,9 +443,14 @@ public sealed class TriggerRuntime : IAsyncDisposable
 
     /// <summary>
     /// Whether any wait is still armed: what <see cref="ListWaits"/> would list, without building the list.
-    /// A block wait settled early is still armed until its trigger fires or times out.
+    /// A block wait settled early is still armed until its trigger fires or times out. A wait that has
+    /// just ended counts until its result is delivered to the loop.
     /// </summary>
-    internal bool HasPendingWaits => _waits.Any(pair => pair.Value.State == WaitState.Pending);
+    /// <remarks>
+    /// The armed waits are read first: a wait leaves them only after its transition is counted.
+    /// </remarks>
+    internal bool HasPendingWaits =>
+        _waits.Any(pair => pair.Value.State == WaitState.Pending) || Volatile.Read(ref _finalizing) > 0;
 
     /// <summary>
     /// Reconciles block waits recovered from persisted history after a restart. A restorable kind
@@ -816,23 +824,34 @@ public sealed class TriggerRuntime : IAsyncDisposable
     /// </summary>
     private async Task<bool> FinalizeAsync(ArmedWait wait, WaitState state, string payload, bool isError)
     {
-        if (!await TryTeardownAsync(wait, state))
+        // Counted in HasPendingWaits from before the claim until the result is in the loop. In between,
+        // the wait is no longer pending, and teardown awaits the source's dispose and the notify row's
+        // delete, so an idle sweep would otherwise see no work and unload the loop that is owed it (#830).
+        _ = Interlocked.Increment(ref _finalizing);
+        try
         {
-            return false;
-        }
+            if (!await TryTeardownAsync(wait, state))
+            {
+                return false;
+            }
 
-        // Deliver with a fresh, uncancellable token: the terminal result must reach the loop even
-        // though disposing the source above cancels the source's own token, and even if the
-        // operation that triggered this transition (a CancelWait) carried a cancelled token.
-        if (wait.Mode == WaitMode.Notify)
-        {
-            await NotifyAsync(wait, payload, isError);
+            // Deliver with a fresh, uncancellable token: the terminal result must reach the loop even
+            // though disposing the source above cancels the source's own token, and even if the
+            // operation that triggered this transition (a CancelWait) carried a cancelled token.
+            if (wait.Mode == WaitMode.Notify)
+            {
+                await NotifyAsync(wait, payload, isError);
+            }
+            else
+            {
+                await DeliverAsync(wait.WaitId, payload, isError);
+            }
+            return true;
         }
-        else
+        finally
         {
-            await DeliverAsync(wait.WaitId, payload, isError);
+            _ = Interlocked.Decrement(ref _finalizing);
         }
-        return true;
     }
 
     private async Task NotifyAsync(ArmedWait wait, string payload, bool isError)
