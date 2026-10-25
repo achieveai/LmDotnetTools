@@ -155,6 +155,14 @@ public sealed class SubAgentManager : IAsyncDisposable
     internal Func<SubAgentState, RunCompletedMessage, Task>? BeforeClassifyingRunCompletionForTest;
 
     /// <summary>
+    /// TEST-ONLY seam, fired in the run monitor after a <see cref="RunCompletedMessage"/> has settled the
+    /// run and released the run-transition gate, but before its completion side effects run. Null in
+    /// production. A child paused here is already terminal yet still owes its parent its answer, so it
+    /// must not be released or unloaded (#830); from outside, that window is too short to hit.
+    /// </summary>
+    internal Func<SubAgentState, RunCompletedMessage, Task>? AfterSettlingRunCompletionForTest;
+
+    /// <summary>
     /// Ceiling for awaiting a background task this manager no longer wants to wait on unboundedly
     /// (#373, widened in the #396 review pass): <see cref="DisposeAsync"/>'s per-agent teardown loop
     /// (RunTask/MonitorTask, and the spawn pump itself), and <see cref="CleanupFailedSpawnAsync"/>'s
@@ -176,6 +184,14 @@ public sealed class SubAgentManager : IAsyncDisposable
     private readonly ConcurrentDictionary<string, string> _namesToIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _concurrencyGate;
     private int _disposeStarted;
+
+    // Set by TryQuiesce once the pool has decided to unload this conversation (#830): from then on no
+    // message or spawn is accepted, as the disposal that follows would refuse them. _messagesInFlight
+    // and _spawnsStarting (queued spawns the pump has dequeued but not yet registered) count the work
+    // TryQuiesce must wait out. All guarded by _spawnQueue.
+    private bool _quiesced;
+    private int _messagesInFlight;
+    private int _spawnsStarting;
 
     // Defer-queue for spawns that arrive when the concurrency pool is full: rather than REJECTING a
     // spawn with "Max concurrent reached", SpawnAsync enqueues it here and a single background pump
@@ -986,7 +1002,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             lock (_spawnQueue)
             {
-                ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
+                ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0 || _quiesced, this);
                 if (_queuedSpawns.Count >= _options.MaxQueuedSubAgents)
                 {
                     throw new SubAgentQueueFullException(_options.MaxQueuedSubAgents);
@@ -1145,7 +1161,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             // DisposeAsync already enumerated the registry.
             lock (_spawnQueue)
             {
-                ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
+                ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0 || _quiesced, this);
                 _agents[agentId] = state;
                 if (!string.IsNullOrWhiteSpace(effectiveName))
                 {
@@ -1306,7 +1322,12 @@ public sealed class SubAgentManager : IAsyncDisposable
                 continue;
             }
 
-            RemoveQueuedSpawn(queued);
+            lock (_spawnQueue)
+            {
+                RemoveQueuedSpawn(queued);
+                _spawnsStarting++;
+            }
+
             var gateGuard = new GateReleaseGuard();
             try
             {
@@ -1348,6 +1369,13 @@ public sealed class SubAgentManager : IAsyncDisposable
                     queued.TemplateName
                 );
                 _ = queued.StateReady.TrySetException(ex);
+            }
+            finally
+            {
+                lock (_spawnQueue)
+                {
+                    _spawnsStarting--;
+                }
             }
         }
 
@@ -1830,8 +1858,32 @@ public sealed class SubAgentManager : IAsyncDisposable
     )
     {
         ArgumentNullException.ThrowIfNull(message);
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
+        lock (_spawnQueue)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0 || _quiesced, this);
+            _messagesInFlight++;
+        }
 
+        try
+        {
+            return await ContinueAgentAsync(target, message, runInBackground, ct);
+        }
+        finally
+        {
+            lock (_spawnQueue)
+            {
+                _messagesInFlight--;
+            }
+        }
+    }
+
+    private async Task<string> ContinueAgentAsync(
+        string target,
+        IMessage message,
+        bool runInBackground,
+        CancellationToken ct
+    )
+    {
         var messageLength = (message as ICanGetText)?.GetText()?.Length ?? 0;
         var agentId = ResolveAgentId(target);
         if (_queuedSpawns.TryGetValue(agentId, out _))
@@ -4779,6 +4831,11 @@ public sealed class SubAgentManager : IAsyncDisposable
         // Reset per run, alongside the accumulators above.
         var latchedThisRun = false;
 
+        // Whether this monitor holds a SubAgentState.BeginCompletionEffects reservation: taken BEFORE a
+        // transition can settle the run and held until the run's completion side effects are done, so no
+        // instant shows a settled child that still owes them (#830). Released in the finally on any exit.
+        var completionEffectsReserved = false;
+
         try
         {
             await foreach (var msg in state.Agent.SubscribeAsync(ct))
@@ -5009,6 +5066,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                             gateGuard.ReleaseOnce(_concurrencyGate);
                         }
 
+                        state.BeginCompletionEffects();
+                        completionEffectsReserved = true;
                         sideEffects = await HandleRunCompletionAsync(
                             state,
                             rcm,
@@ -5021,6 +5080,11 @@ public sealed class SubAgentManager : IAsyncDisposable
                     finally
                     {
                         _ = state.RunTransition.Release();
+                    }
+
+                    if (AfterSettlingRunCompletionForTest is { } afterSettle)
+                    {
+                        await afterSettle(state, rcm);
                     }
 
                     // Performed OFF the run-transition gate, deliberately. Everything above is the
@@ -5085,6 +5149,9 @@ public sealed class SubAgentManager : IAsyncDisposable
                         }
                     }
 
+                    completionEffectsReserved = false;
+                    state.EndCompletionEffects();
+
                     lastTextContent = null;
                     textGenerationId = null;
                     sawModelOutput = false;
@@ -5107,6 +5174,12 @@ public sealed class SubAgentManager : IAsyncDisposable
             // run's monitor can fault before RestartRunAsync's TryArmRunning(runGeneration) executes, and
             // that publish must observe this generation's terminal record and refuse to overwrite Error
             // with Running (which would advertise a dead run).
+            if (!completionEffectsReserved)
+            {
+                state.BeginCompletionEffects();
+                completionEffectsReserved = true;
+            }
+
             var faulted = state.MarkRunFaulted(runGeneration);
             state.SendToParentError = $"Monitor failed: {ex.Message}";
             _logger.LogError(ex, "Error monitoring sub-agent {AgentId}", state.AgentId);
@@ -5145,6 +5218,10 @@ public sealed class SubAgentManager : IAsyncDisposable
             // needs releasing. ReleaseOnce is idempotent, so this is a no-op when
             // a completion already released it.
             gateGuard.ReleaseOnce(_concurrencyGate);
+            if (completionEffectsReserved)
+            {
+                state.EndCompletionEffects();
+            }
         }
     }
 
@@ -5515,6 +5592,280 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
+    /// Whether any sub-agent in this manager's tree holds work that only this process can finish: one
+    /// that is queued or running, or one whose loop still holds a deferred call or live sub-agents of its
+    /// own (<see cref="MultiTurnAgentLoop.HasLiveWorkAsync"/>). A finished child's loop is read too, rather
+    /// than trusting its status alone. Used by the pool's idle unload and by
+    /// <see cref="ReleaseFinishedAgentsAsync"/> (#830).
+    /// </summary>
+    public async ValueTask<bool> HasLiveWorkAsync(CancellationToken ct = default)
+    {
+        if (!_queuedSpawns.IsEmpty)
+        {
+            return true;
+        }
+
+        foreach (var state in _agents.Values)
+        {
+            if (!IsTerminal(state.Status))
+            {
+                return true;
+            }
+
+            if (state.Agent is MultiTurnAgentLoop loop && await loop.HasLiveWorkAsync(ct))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Frees the loops of sub-agents, anywhere in this manager's tree, whose run ended at or before
+    /// <paramref name="finishedBefore"/> and that hold no live work (#830). A released sub-agent stays
+    /// registered with its status, name and last result; the next message to it rebuilds its loop from
+    /// its transcript, through the same rebuild a restart does after a failed one (see
+    /// <see cref="RestartRunAsync"/>). A viewer following it waits for that rebuild.
+    /// </summary>
+    /// <param name="finishedBefore">Only sub-agents whose run ended at or before this time are released.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>How many sub-agents were released.</returns>
+    public async Task<int> ReleaseFinishedAgentsAsync(DateTimeOffset finishedBefore, CancellationToken ct = default)
+    {
+        var released = 0;
+        foreach (var state in _agents.Values)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (Volatile.Read(ref _disposeStarted) != 0)
+            {
+                break;
+            }
+
+            // Anything else (a released child's stand-in) has no loop to free.
+            if (state.Agent is not MultiTurnAgentLoop loop)
+            {
+                continue;
+            }
+
+            if (state.TerminalAtUtc <= finishedBefore && await TryReleaseAsync(state, loop, ct))
+            {
+                released++;
+            }
+            else if (loop.SubAgentManager is { } nested)
+            {
+                released += await nested.ReleaseFinishedAgentsAsync(finishedBefore, ct);
+            }
+        }
+
+        return released;
+    }
+
+    /// <summary>
+    /// Closes this manager to new work, for the pool's idle unload of its conversation (#830), unless
+    /// something in its tree is still live. The pool reads live work before it takes its lock, so without
+    /// this a message that restarts a finished sub-agent (from its focused view, the to-do board, or
+    /// another agent) could land between that read and the disposal, and be killed by it. Called under
+    /// the pool's lock, this refuses while a sub-agent is queued, starting, or not
+    /// <see cref="SubAgentState.IsSettled"/>, or while a message is in flight. Otherwise it refuses every later message and spawn with an
+    /// <see cref="ObjectDisposedException"/>, as the disposal that follows would.
+    /// </summary>
+    /// <returns><see langword="true"/> when the manager is closed; the caller then disposes it.</returns>
+    public bool TryQuiesce()
+    {
+        lock (_spawnQueue)
+        {
+            if (_quiesced)
+            {
+                return true;
+            }
+
+            if (
+                _messagesInFlight > 0
+                || _spawnsStarting > 0
+                || !_queuedSpawns.IsEmpty
+                || _agents.Values.Any(s => !s.IsSettled)
+            )
+            {
+                return false;
+            }
+
+            List<SubAgentManager> closed = [];
+            foreach (var state in _agents.Values)
+            {
+                if (state.Agent is not MultiTurnAgentLoop { SubAgentManager: { } nested })
+                {
+                    continue;
+                }
+
+                if (!nested.TryQuiesce())
+                {
+                    foreach (var reopened in closed)
+                    {
+                        reopened.Reopen();
+                    }
+
+                    return false;
+                }
+
+                closed.Add(nested);
+            }
+
+            _quiesced = true;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Undoes a <see cref="TryQuiesce"/> that a sibling's refusal made moot, down the whole tree it closed.
+    /// </summary>
+    private void Reopen()
+    {
+        lock (_spawnQueue)
+        {
+            _quiesced = false;
+            foreach (var state in _agents.Values)
+            {
+                if (state.Agent is MultiTurnAgentLoop { SubAgentManager: { } nested })
+                {
+                    nested.Reopen();
+                }
+            }
+        }
+    }
+
+    /// <summary>Whether this manager has no sub-agents at all, registered or queued.</summary>
+    internal bool IsEmpty => _agents.IsEmpty && _queuedSpawns.IsEmpty;
+
+    /// <summary>
+    /// Releases one finished sub-agent for <see cref="ReleaseFinishedAgentsAsync"/>. It holds the restart
+    /// claim throughout (<see cref="SubAgentState.TryBeginRelease"/>), so a message arriving meanwhile
+    /// waits for it and then rebuilds the loop instead of injecting into one being disposed. The teardown
+    /// mirrors <see cref="RestartRunAsync"/>'s, minus the replacement.
+    /// </summary>
+    private async Task<bool> TryReleaseAsync(SubAgentState state, MultiTurnAgentLoop loop, CancellationToken ct)
+    {
+        if (!state.TryBeginRelease())
+        {
+            return false;
+        }
+
+        try
+        {
+            // Read under the claim, so no new run can add work in between. A finished child should hold
+            // no deferred call (the monitor keeps a child with one Running), but freeing one that did would
+            // drop the call without a trace, so this does not rely on that. A loop with sub-agents of its
+            // own keeps them: its rebuilt loop would start without them. So does one without a store: its
+            // history lives only in the loop, and the rebuild would start from nothing.
+            if (
+                state.Store is null
+                || !ReferenceEquals(state.Agent, loop)
+                || await loop.HasLiveWorkAsync(ct)
+                || loop.SubAgentManager is { IsEmpty: false }
+            )
+            {
+                return false;
+            }
+
+            // From here on nothing is cancellable: a half-released agent would be neither usable nor freed.
+            // Set before the dispose ends any viewer's stream, so the viewer waits for the rebuilt loop.
+            state.SignalRestartStarting();
+
+            try
+            {
+                await state.Cts.CancelAsync();
+            }
+            catch (ObjectDisposedException)
+            {
+                // A failed restart left it disposed; it is already cancelled.
+            }
+
+            if (state.RunTask != null)
+            {
+                await AwaitBoundedTaskAsync(state.RunTask, $"RunTask for sub-agent {state.AgentId}", "idle release");
+            }
+
+            if (state.MonitorTask != null)
+            {
+                await AwaitBoundedTaskAsync(
+                    state.MonitorTask,
+                    $"MonitorTask for sub-agent {state.AgentId}",
+                    "idle release"
+                );
+            }
+
+            state.RunTask = null;
+            state.MonitorTask = null;
+
+            try
+            {
+                await loop.DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Agent dispose failed during idle release for sub-agent {AgentId}",
+                    state.AgentId
+                );
+            }
+
+            // The registration must stop referencing the loop, or nothing is freed: a disposed loop still
+            // holds its whole history.
+            state.InstallReleasedAgent(new ReleasedSubAgentLoop(loop.ThreadId));
+
+            var store = state.Store;
+            state.Store = null;
+            if (store is IAsyncDisposable disposableStore)
+            {
+                try
+                {
+                    await disposableStore.DisposeAsync();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Store dispose failed during idle release for sub-agent {AgentId}",
+                        state.AgentId
+                    );
+                }
+            }
+
+            try
+            {
+                await state.DisposeOwnedProviderAgentAsync();
+            }
+            catch (Exception ex)
+            {
+                // Retained for a last attempt at manager disposal, as a failed restart does.
+                if (state.OwnedProviderAgent is { } undisposed)
+                {
+                    _abandonedProviders.Add(undisposed);
+                }
+
+                _logger.LogWarning(
+                    ex,
+                    "Provider dispose failed during idle release for sub-agent {AgentId}; retained for cleanup at manager disposal",
+                    state.AgentId
+                );
+            }
+
+            state.SetOwnedProviderAgent(null);
+
+            _logger.LogInformation(
+                "Released idle sub-agent {AgentId}; the next message to it rebuilds it from its transcript",
+                state.AgentId
+            );
+            return true;
+        }
+        finally
+        {
+            state.EndRestart();
+        }
+    }
+
+    /// <summary>
     /// True when any live descendant in this manager's subtree — a direct child, or a further-nested
     /// descendant reached through a child's own <see cref="SubAgentManager"/> — has an unresolved
     /// <c>AskUserQuestion</c> parked. Used by <c>MultiTurnAgentPool.HasPendingAskUserQuestionAsync</c>
@@ -5536,7 +5887,18 @@ public sealed class SubAgentManager : IAsyncDisposable
                 continue;
             }
 
-            var deferred = await loop.GetDeferredToolCallsAsync(ct);
+            IReadOnlyList<DeferredToolCallInfo> deferred;
+            try
+            {
+                deferred = await loop.GetDeferredToolCallsAsync(ct);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Released while idle (ReleaseFinishedAgentsAsync) after the read above. Only a child with
+                // no deferred call is released, so there is no question here to find.
+                continue;
+            }
+
             if (
                 deferred.Any(d =>
                     string.Equals(d.FunctionName, AskUserQuestionToolProvider.ToolName, StringComparison.Ordinal)

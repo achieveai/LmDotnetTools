@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Capabilities;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
@@ -9,6 +10,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
@@ -74,6 +76,15 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// Entries remove themselves on completion so a long-lived pool does not accumulate them.
     /// </remarks>
     private readonly ConcurrentDictionary<Task, byte> _backgroundWork = new();
+
+    /// <summary>
+    /// Every agent this pool has removed from <see cref="_agents"/>, weakly held so a released agent is
+    /// still collected. Lets <see cref="AddOutstandingInput"/> tell "an agent this pool let go" from "an
+    /// agent this pool never knew" once the thread's slot is empty (#457).
+    /// </summary>
+    private readonly ConditionalWeakTable<IMultiTurnAgent, object> _releasedAgents = [];
+
+    private static readonly object ReleasedMarker = new();
 
     /// <summary>
     /// How long <see cref="DisposeAsync"/> waits for a single agent's run task, and for the discarded
@@ -453,6 +464,18 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         /// continuous idleness rather than time since the accept.
         /// </summary>
         public DateTimeOffset? IdleSinceUtc;
+
+        /// <summary>
+        /// UTC ticks of the last time this entry was handed out or observed with work in hand - the
+        /// clock <see cref="UnloadIdleAgentsAsync"/> measures idleness against (#830).
+        /// </summary>
+        /// <remarks>
+        /// Ticks rather than a <see cref="DateTimeOffset"/> because hand-outs
+        /// (<see cref="GetOrCreateAgent(string, AgentProfile, string?, string?, string?, SandboxCredential?, string?)"/>)
+        /// stamp it WITHOUT the per-thread lock, and a 64-bit field is the widest one
+        /// <see cref="Interlocked"/> can write untorn. <see cref="TryGet"/> is a peek and does not stamp it.
+        /// </remarks>
+        public long LastUsedUtcTicks;
 
         public async ValueTask DisposeAsync()
         {
@@ -854,6 +877,10 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
 
                 entry = existing;
             }
+
+            // Under the lock the idle sweep removes under, so the sweep cannot unload the entry between
+            // this hand-out and its stamp (#830).
+            MarkUsed(entry);
         }
 
         if (created)
@@ -1275,6 +1302,11 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// into an existing conversation but must remain best-effort when the thread has been torn
     /// down between the trigger and the dispatch.
     /// </summary>
+    /// <remarks>
+    /// A peek: it does not restart the idle clock (#830). Most callers only read state (run status,
+    /// transcripts, the agent tree), and a UI polling a finished conversation must not keep it loaded
+    /// forever. A caller that pushes work in makes the entry busy through the accepted-input ledger.
+    /// </remarks>
     public bool TryGet(string threadId, out IMultiTurnAgent? agent)
     {
         if (string.IsNullOrEmpty(threadId) || !_agents.TryGetValue(threadId, out var entry))
@@ -1470,6 +1502,11 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
 
             EnsureCallerMatches(threadId, observed, callerCredential);
             EnsurePrincipalMatches(threadId, observed, ownerUserId);
+
+            // Every return below hands out this entry or a fresher one, and a caller holding an agent is
+            // about to use it, so the idle clock restarts here rather than at each return. Under the
+            // lock, so the idle sweep cannot unload the entry in between (#830).
+            MarkUsed(observed);
         }
 
         if (_liveSessionResolver is null || observed.EstablishedBinding is not { SessionId.Length: > 0 } binding)
@@ -1497,6 +1534,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
 
             if (!ReferenceEquals(current, observed))
             {
+                MarkUsed(current);
                 return new AgentRefreshResult(current.Agent, AgentRefreshStatus.Current);
             }
 
@@ -1538,6 +1576,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             );
             _agents[threadId] = replacement;
             PublishBindingIfStaged(threadId, replacement);
+            MarkReleased(current);
             replacedEntry = current;
             current = replacement;
         }
@@ -1753,17 +1792,25 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// caller learns immediately and a retry reaches the replacement.
     /// </para>
     /// <para>
-    /// <see langword="true"/> for a thread with no pooled entry, and NOT a refusal: the pool has no
-    /// grounds to contradict an agent it does not track, and refusing there would break every sender
-    /// of an unpooled agent that happens to report here. An entry created later starts with a clean
-    /// ledger, which is correct - an input accepted by an agent that has since been replaced is not
-    /// work the replacement holds.
+    /// <see langword="true"/> for a thread with no pooled entry when the reporting agent is one this pool
+    /// never held, and NOT a refusal: the pool has no grounds to contradict an agent it does not track,
+    /// and refusing there would break every sender of an unpooled agent that happens to report here. An
+    /// entry created later starts with a clean ledger, which is correct - an input accepted by an agent
+    /// that has since been replaced is not work the replacement holds.
+    /// </para>
+    /// <para>
+    /// <see langword="false"/> for a thread with no pooled entry when the reporting agent is one this
+    /// pool RELEASED (#457) - deleted, handed off, refreshed, swapped, or unloaded idle (#830). That
+    /// agent is being torn down, so an accept it takes is queued where no run will ever pick it up and
+    /// no ledger records it. Idle unload makes an empty slot the normal state of a quiet conversation
+    /// rather than a narrow window, so the refusal is what keeps a sender that held on to the old agent
+    /// from losing its turn: it fails, and a retry reaches the agent rebuilt for the thread.
     /// </para>
     /// </remarks>
     /// <returns>
-    /// <see langword="false"/> only when this thread's pooled entry names a different agent, which
-    /// means the accept must not proceed. <see langword="true"/> in every other case, including the
-    /// argument guards and a thread with no entry.
+    /// <see langword="false"/> when this thread's pooled entry names a different agent, or when the slot
+    /// is empty and the reporting agent is one this pool released; either means the accept must not
+    /// proceed. <see langword="true"/> in every other case, including the argument guards.
     /// </returns>
     private bool AddOutstandingInput(string threadId, string inputId, IMultiTurnAgent acceptedBy)
     {
@@ -1779,7 +1826,18 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         {
             if (!_agents.TryGetValue(threadId, out var entry))
             {
-                return true;
+                if (!_releasedAgents.TryGetValue(acceptedBy, out _))
+                {
+                    return true;
+                }
+
+                _logger.LogWarning(
+                    "Refusing input {InputId} for thread {ThreadId}: the accepting agent has left the "
+                        + "pool, so the turn would be queued in an agent being torn down",
+                    inputId,
+                    threadId
+                );
+                return false;
             }
 
             if (!ReferenceEquals(entry.Agent, acceptedBy))
@@ -2048,6 +2106,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
                 return AgentReleaseOutcome.Replaced;
             }
 
+            MarkReleased(entry);
             removed = entry;
         }
 
@@ -2056,14 +2115,199 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             threadId
         );
 
+        await DisposeRemovedEntryAsync(threadId, removed).ConfigureAwait(false);
+        return AgentReleaseOutcome.Released;
+    }
+
+    /// <summary>
+    /// Unloads every pooled conversation that has been idle for at least <paramref name="idleAfter"/>,
+    /// so only conversations with work in hand stay in memory (#830). An unloaded conversation is
+    /// rebuilt from the store by the next request for it, exactly as after a host restart.
+    /// </summary>
+    /// <param name="idleAfter">
+    /// How long an entry must go without being handed out or observed busy before it is unloaded. Each
+    /// call observes every entry, so the caller's sweep interval is the resolution of "observed busy".
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>How many entries were unloaded.</returns>
+    /// <remarks>
+    /// <para>
+    /// IDLE means none of: a run in progress, an accepted-but-unstarted input (both read by
+    /// <see cref="IsBusyUnderLock"/>), a deferred tool call such as a parked <c>Wait</c> or an unanswered
+    /// <c>AskUserQuestion</c>, a sub-agent anywhere in the tree that is queued, running, or holding a
+    /// deferred call of its own, or a sandbox background task that has not reported its end. These count
+    /// because their runtime half lives only in this process: recreating the agent discards an armed
+    /// wait's trigger, orphans a child's pending question (see <see cref="HasPendingAskUserQuestionAsync"/>),
+    /// and drops a background task's completion notice, which is delivered only to a loaded conversation.
+    /// </para>
+    /// <para>
+    /// Everything else is rebuilt from the store, or is lost exactly as on a host restart: a finished
+    /// sub-agent can no longer be messaged, and a frozen conversation comes back unfrozen (the slot
+    /// reaper that freezes one is done with it).
+    /// </para>
+    /// <para>
+    /// A conversation that stays loaded still frees each sub-agent that finished at least
+    /// <paramref name="idleAfter"/> ago and holds no live work
+    /// (<see cref="SubAgentManager.ReleaseFinishedAgentsAsync"/>). That one CAN still be messaged: its
+    /// manager remembers it and rebuilds it from its transcript.
+    /// </para>
+    /// <para>
+    /// The work reads run BEFORE the per-thread lock and the final decision is re-taken under it. That is
+    /// safe because none of that work can appear on an idle entry without first passing something the
+    /// lock does see: only a run defers a call, spawns a child or starts a background task, and a child
+    /// that finishes reports to its parent through an accepted input. The lock re-checks entry identity,
+    /// <see cref="IsBusyUnderLock"/>, and the idle clock - which a hand-out during the reads will have
+    /// restarted. The one way in that bypasses the pool, a message straight to a finished sub-agent, is
+    /// closed under the lock by <see cref="SubAgentManager.TryQuiesce"/>.
+    /// </para>
+    /// <para>
+    /// Only <see cref="MultiTurnAgentLoop"/> entries are candidates. Other agent types (the CLI-backed
+    /// loops) expose neither their deferred calls nor their sub-agents, so the pool cannot tell they are
+    /// idle and leaves them loaded, as before.
+    /// </para>
+    /// </remarks>
+    public async Task<int> UnloadIdleAgentsAsync(TimeSpan idleAfter, CancellationToken ct = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(idleAfter, TimeSpan.Zero);
+
+        var unloaded = 0;
+        foreach (var (threadId, entry) in _agents.ToArray())
+        {
+            ct.ThrowIfCancellationRequested();
+            if (entry.Agent is not MultiTurnAgentLoop loop)
+            {
+                continue;
+            }
+
+            await ReleaseFinishedSubAgentsAsync(threadId, loop, idleAfter, ct).ConfigureAwait(false);
+
+            // Observed on every sweep, not only once the clock runs out, so the idle window counts from
+            // when the work ENDED (to within one sweep). Otherwise a run that kept the clock going would
+            // be unloaded the moment it finished, under a client about to send its next turn.
+            if (
+                IsEntryInProgress(entry)
+                || _bindingSink?.HasPendingBackgroundTask(threadId) == true
+                || await loop.HasLiveWorkAsync(ct).ConfigureAwait(false)
+            )
+            {
+                MarkUsed(entry);
+                continue;
+            }
+
+            if (!HasBeenIdleFor(entry, idleAfter))
+            {
+                continue;
+            }
+
+            var lockObj = _creationLocks.GetOrAdd(threadId, static _ => new object());
+            lock (lockObj)
+            {
+                if (
+                    !_agents.TryGetValue(threadId, out var current)
+                    || !ReferenceEquals(current, entry)
+                    || !HasBeenIdleFor(entry, idleAfter)
+                )
+                {
+                    continue;
+                }
+
+                // Quiesced last, as it closes the sub-agents to new messages: one accepted after the reads
+                // above would otherwise be killed by the disposal below.
+                if (IsBusyUnderLock(entry) || (loop.SubAgentManager is { } manager && !manager.TryQuiesce()))
+                {
+                    MarkUsed(entry);
+                    continue;
+                }
+
+                if (!_agents.TryRemove(new KeyValuePair<string, AgentEntry>(threadId, entry)))
+                {
+                    continue;
+                }
+
+                MarkReleased(entry);
+            }
+
+            _logger.LogInformation(
+                "Unloaded idle agent for thread {ThreadId} (idle at least {IdleAfter}); {Remaining} agent(s) still loaded",
+                threadId,
+                idleAfter,
+                _agents.Count
+            );
+
+            await DisposeRemovedEntryAsync(threadId, entry).ConfigureAwait(false);
+            unloaded++;
+        }
+
+        return unloaded;
+    }
+
+    /// <summary>
+    /// Frees the loops of the sub-agents under <paramref name="loop"/> that finished at least
+    /// <paramref name="idleAfter"/> ago (<see cref="SubAgentManager.ReleaseFinishedAgentsAsync"/>), so a
+    /// conversation that stays loaded does not keep every child it has finished with (#830). A failure
+    /// is logged and skipped: it must not stop the sweep from unloading other conversations.
+    /// </summary>
+    private async Task ReleaseFinishedSubAgentsAsync(
+        string threadId,
+        MultiTurnAgentLoop loop,
+        TimeSpan idleAfter,
+        CancellationToken ct
+    )
+    {
+        if (loop.SubAgentManager is not { } manager)
+        {
+            return;
+        }
+
+        try
+        {
+            _ = await manager
+                .ReleaseFinishedAgentsAsync(TimeProvider.GetUtcNow() - idleAfter, ct)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Releasing finished sub-agents failed for thread {ThreadId}", threadId);
+        }
+    }
+
+    private bool HasBeenIdleFor(AgentEntry entry, TimeSpan idleAfter) =>
+        TimeProvider.GetUtcNow().UtcTicks - Interlocked.Read(ref entry.LastUsedUtcTicks) >= idleAfter.Ticks;
+
+    /// <summary>Restarts <paramref name="entry"/>'s idle clock; see <see cref="AgentEntry.LastUsedUtcTicks"/>.</summary>
+    private void MarkUsed(AgentEntry entry) =>
+        Interlocked.Exchange(ref entry.LastUsedUtcTicks, TimeProvider.GetUtcNow().UtcTicks);
+
+    /// <summary>
+    /// Records that <paramref name="entry"/>'s agent has left the pool, so a late accept it reports is
+    /// refused rather than queued into an agent being torn down (#457). Called at every removal from
+    /// <see cref="_agents"/>.
+    /// </summary>
+    private void MarkReleased(AgentEntry entry) => _releasedAgents.AddOrUpdate(entry.Agent, ReleasedMarker);
+
+    /// <summary>
+    /// Disposes an entry the caller has ALREADY removed from <see cref="_agents"/>, clears the thread's
+    /// sandbox binding unless a newer entry took the slot, and raises <see cref="ThreadRemoved"/>.
+    /// </summary>
+    /// <remarks>
+    /// The binding is cleared even if disposal throws: the pooled agent is already removed, so the browse
+    /// binding must not outlive it. It is a compare-and-clear under the SAME per-thread lock the publish
+    /// uses (CreateAgentEntry commit): if a concurrent GetOrCreate/swap re-created the agent for this
+    /// thread while this was disposing, <see cref="_agents"/> holds the new entry and its freshly-published
+    /// binding - left intact rather than clobbered. Clearing never destroys the shared (workspaceId, appId)
+    /// gateway session another conversation may still use. ClearEstablishedBinding is a lock-free
+    /// dictionary remove, safe under the lock.
+    /// </remarks>
+    private async Task DisposeRemovedEntryAsync(string threadId, AgentEntry removed)
+    {
         try
         {
             await removed.DisposeAsync().ConfigureAwait(false);
         }
         finally
         {
-            // Same compare-and-clear RemoveAgentAsync does, and for the same reason: a concurrent
-            // creation that republished a binding while this was disposing must keep it.
+            var lockObj = _creationLocks.GetOrAdd(threadId, static _ => new object());
             lock (lockObj)
             {
                 if (!_agents.ContainsKey(threadId))
@@ -2074,7 +2318,6 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         }
 
         RaiseThreadRemoved(threadId);
-        return AgentReleaseOutcome.Released;
     }
 
     /// <summary>
@@ -2133,31 +2376,9 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     {
         if (_agents.TryRemove(threadId, out var entry))
         {
+            MarkReleased(entry);
             _logger.LogInformation("Removing agent for thread {ThreadId}", threadId);
-            try
-            {
-                await entry.DisposeAsync();
-            }
-            finally
-            {
-                // Clear the conversation's sandbox binding even if agent disposal threw: the pooled agent
-                // is already removed, so the browse binding must not outlive it. Compare-and-clear under the
-                // SAME per-thread lock the publish uses (CreateAgentEntry commit): if a concurrent
-                // GetOrCreate/swap re-created the agent for this thread while we were disposing, _agents holds
-                // the new entry and its freshly-published binding — leave it intact rather than clobbering it.
-                // Clearing never destroys the shared (workspaceId, appId) gateway session another conversation
-                // may still use. ClearEstablishedBinding is a lock-free dictionary remove, safe under the lock.
-                var lockObj = _creationLocks.GetOrAdd(threadId, static _ => new object());
-                lock (lockObj)
-                {
-                    if (!_agents.ContainsKey(threadId))
-                    {
-                        _bindingSink?.ClearEstablishedBinding(threadId);
-                    }
-                }
-            }
-
-            RaiseThreadRemoved(threadId);
+            await DisposeRemovedEntryAsync(threadId, entry).ConfigureAwait(false);
         }
     }
 
@@ -2494,7 +2715,11 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             // hand the "old entry" to the disposal below - which is the live agent.
             if (build.Kind == AgentSwitchKind.Recreated)
             {
-                _ = _agents.TryRemove(threadId, out oldEntry);
+                if (_agents.TryRemove(threadId, out oldEntry))
+                {
+                    MarkReleased(oldEntry);
+                }
+
                 _agents[threadId] = entry;
             }
 
@@ -2791,6 +3016,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             CallerCredential = callerCredential,
             OwnerUserId = ownerUserId,
             EstablishedBinding = result.StagedBinding,
+            LastUsedUtcTicks = TimeProvider.GetUtcNow().UtcTicks,
         };
 
         // Started here rather than lazily on the first accept so the subscription is in place BEFORE
