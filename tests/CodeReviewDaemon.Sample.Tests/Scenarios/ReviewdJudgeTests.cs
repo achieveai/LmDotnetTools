@@ -864,7 +864,9 @@ public sealed class ReviewdJudgeTests
             .Equal("reviews/pr-12/judgment-1", "reviews/pr-2/judgment-1");
     }
 
-    [Fact]
+    [AchieveAi.LmDotnetTools.LmTestUtils.LinuxOnlyFact(
+        "flock(1) is util-linux; the README's pre-deploy check runs it on the Linux host"
+    )]
     public void The_judge_lock_admits_one_holder_and_flock_sees_it()
     {
         var path = Path.Combine(Directory.CreateTempSubdirectory("judge-lock-").FullName, "judge.lock");

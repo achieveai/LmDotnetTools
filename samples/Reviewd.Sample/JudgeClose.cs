@@ -79,26 +79,25 @@ internal static class JudgeClose
     internal static Phase Local(string store) =>
         async (name, args, ct) =>
         {
+            // The script goes in on stdin ("-"), not as a -c argument: it is past Windows' 32,767-character
+            // command line, so -c could not start there. UTF-8 without a BOM, because the script is not all ASCII
+            // and a Windows pipe defaults to the console code page.
             var start = new ProcessStartInfo("python3")
             {
                 WorkingDirectory = store,
+                RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                StandardInputEncoding = new UTF8Encoding(false),
             };
-            foreach (
-                var arg in new[]
-                {
-                    "-B",
-                    "-c",
-                    await JudgeRunner.ReadResourceAsync(JudgeRunner.ScriptResource, ct),
-                    name,
-                    args.ToJsonString(),
-                }
-            )
+            foreach (var arg in new[] { "-B", "-", name, args.ToJsonString() })
                 start.ArgumentList.Add(arg);
+            var script = await JudgeRunner.ReadResourceAsync(JudgeRunner.ScriptResource, ct);
             using var process = Process.Start(start)!;
             var output = process.StandardOutput.ReadToEndAsync(ct);
             var error = process.StandardError.ReadToEndAsync(ct);
+            await process.StandardInput.WriteAsync(script.AsMemory(), ct);
+            process.StandardInput.Close();
             await process.WaitForExitAsync(ct);
             var (stdout, stderr) = (await output, await error);
             if (process.ExitCode != 0)
@@ -332,7 +331,7 @@ internal static class JudgeClose
                     judgment,
                     packet,
                     plan,
-                    prepared["overridden"]!.AsArray().Select(p => p!.GetValue<string>()).ToList()
+                    [.. prepared["overridden"]!.AsArray().Select(p => p!.GetValue<string>())]
                 );
                 await File.WriteAllTextAsync(
                     Path.Combine(store, scratch, "CLOSING.md"),

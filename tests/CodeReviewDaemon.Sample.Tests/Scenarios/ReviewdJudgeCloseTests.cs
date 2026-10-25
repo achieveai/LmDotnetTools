@@ -3,6 +3,7 @@ extern alias Reviewd;
 using System.Diagnostics;
 using System.Text.Json.Nodes;
 using CodeReviewDaemon.Sample.Agents;
+using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Microsoft.Data.Sqlite;
 using Reviewd::Reviewd.Sample;
 
@@ -626,7 +627,7 @@ public sealed class ReviewdJudgeCloseTests
     [SkippableFact]
     public async Task Close_sweep_removes_only_its_own_leftovers_older_than_an_hour_D_C6()
     {
-        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is null, "no python3 on PATH");
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
         var (old, fresh) = (Guid.NewGuid().ToString("N"), Guid.NewGuid().ToString("N"));
         foreach (var nonce in new[] { old, fresh })
@@ -662,7 +663,7 @@ public sealed class ReviewdJudgeCloseTests
     [SkippableFact]
     public async Task A_failed_close_step_names_the_step_and_the_git_error_not_a_sandbox()
     {
-        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is null, "no python3 on PATH");
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         var dir = Directory.CreateTempSubdirectory("rj-close-nogit-").FullName;
         try
         {
@@ -691,7 +692,7 @@ public sealed class ReviewdJudgeCloseTests
         }
         finally
         {
-            Directory.Delete(dir, recursive: true);
+            RealGitFixture.ForceDelete(dir);
         }
     }
 
@@ -754,7 +755,7 @@ public sealed class ReviewdJudgeCloseTests
         finally
         {
             SqliteConnection.ClearAllPools();
-            Directory.Delete(dir, recursive: true);
+            RealGitFixture.ForceDelete(dir);
         }
     }
 
@@ -763,8 +764,10 @@ public sealed class ReviewdJudgeCloseTests
     [SkippableFact]
     public async Task Close_phases_merge_every_round_and_the_later_round_wins_C1()
     {
-        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is null, "no python3 on PATH");
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
+        // Git for Windows' default: close composes against main's bytes, so the scratch tree must not get CRLF.
+        universe.Git(universe.Store, "config", "core.autocrlf", "true");
         var phase = JudgeClose.Local(universe.Store);
 
         var prepared = await phase("close-prepare", universe.PrepareArgs(3), default);
@@ -808,7 +811,7 @@ public sealed class ReviewdJudgeCloseTests
     [SkippableFact]
     public async Task Close_prepare_says_already_closed_for_the_same_judgment_and_refuses_another()
     {
-        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is null, "no python3 on PATH");
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
         var closed = universe.CloseByHand(judgment: 3);
         var phase = JudgeClose.Local(universe.Store);
@@ -825,7 +828,7 @@ public sealed class ReviewdJudgeCloseTests
     [SkippableFact]
     public async Task Close_prepare_refuses_a_moved_round_and_a_PR_dir_changed_on_main()
     {
-        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is null, "no python3 on PATH");
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
         var phase = JudgeClose.Local(universe.Store);
         var moved = universe.PrepareArgs(3);
@@ -843,7 +846,7 @@ public sealed class ReviewdJudgeCloseTests
     [SkippableFact]
     public async Task Close_prepare_does_not_fetch_inside_a_populated_submodule()
     {
-        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is null, "no python3 on PATH");
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
         var (round, submodule) = universe.PopulateSubmoduleAndBumpItsPin();
         var before = universe.Git(submodule, "for-each-ref", "--format=%(refname) %(objectname)");
@@ -869,7 +872,7 @@ public sealed class ReviewdJudgeCloseTests
     [SkippableFact]
     public async Task Close_commit_pushes_nothing_when_main_moves_after_the_fetch_C3()
     {
-        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is null, "no python3 on PATH");
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
         var phase = JudgeClose.Local(universe.Store);
 
@@ -890,7 +893,7 @@ public sealed class ReviewdJudgeCloseTests
     [SkippableFact]
     public async Task Close_commit_says_closed_when_another_writer_built_on_it_before_the_check()
     {
-        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is null, "no python3 on PATH");
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
         var phase = JudgeClose.Local(universe.Store);
         var prepared = await phase("close-prepare", universe.PrepareArgs(3), default);
@@ -909,7 +912,7 @@ public sealed class ReviewdJudgeCloseTests
     [SkippableFact]
     public async Task Close_commit_says_a_push_it_cannot_read_back_was_accepted_but_not_confirmed()
     {
-        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is null, "no python3 on PATH");
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
         var phase = JudgeClose.Local(universe.Store);
         var prepared = await phase("close-prepare", universe.PrepareArgs(3), default);
@@ -936,7 +939,7 @@ public sealed class ReviewdJudgeCloseTests
     [SkippableFact]
     public async Task Close_commit_says_accepted_but_not_confirmed_when_the_confirming_fetch_fails()
     {
-        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is null, "no python3 on PATH");
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
         var phase = JudgeClose.Local(universe.Store);
         var prepared = await phase("close-prepare", universe.PrepareArgs(3), default);
@@ -959,7 +962,7 @@ public sealed class ReviewdJudgeCloseTests
     [SkippableFact]
     public async Task Close_commit_refuses_a_file_that_looks_like_a_secret_C11()
     {
-        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is null, "no python3 on PATH");
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
         var phase = JudgeClose.Local(universe.Store);
 
@@ -982,7 +985,7 @@ public sealed class ReviewdJudgeCloseTests
     [SkippableFact]
     public async Task Close_commit_scans_only_the_text_it_adds_not_old_text_on_main_C11()
     {
-        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is null, "no python3 on PATH");
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
         const string Entry = "KnowledgeBase/security/old.md";
         universe.CommitOnMain(Entry, "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123");
@@ -1002,7 +1005,7 @@ public sealed class ReviewdJudgeCloseTests
     [SkippableFact]
     public async Task Close_commit_refuses_a_secret_in_a_round_file_it_overlays_C11()
     {
-        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is null, "no python3 on PATH");
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
         universe.AddToRound2("PRs/x/leak.md", "sig=abcdefghijklmnopqrstuvwxyz");
         var phase = JudgeClose.Local(universe.Store);
@@ -1022,7 +1025,7 @@ public sealed class ReviewdJudgeCloseTests
     [SkippableFact]
     public async Task Close_commit_refuses_a_judgment_whose_only_secret_is_an_escaped_quoted_password()
     {
-        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is null, "no python3 on PATH");
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
         const string Judgment = "PRs/x/judgment-3/judgment.json";
         Directory.CreateDirectory(Path.Combine(universe.Store, "PRs/x/judgment-3"));
@@ -1051,7 +1054,7 @@ public sealed class ReviewdJudgeCloseTests
     [SkippableFact]
     public async Task Close_commit_refuses_when_its_prepared_index_is_gone()
     {
-        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is null, "no python3 on PATH");
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
         var phase = JudgeClose.Local(universe.Store);
 
@@ -1069,7 +1072,7 @@ public sealed class ReviewdJudgeCloseTests
     [SkippableFact]
     public async Task Close_commit_refuses_a_tree_that_drops_a_path_on_main_outside_the_PR_dir()
     {
-        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is null, "no python3 on PATH");
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
         var phase = JudgeClose.Local(universe.Store);
 
@@ -1220,7 +1223,8 @@ public sealed class ReviewdJudgeCloseTests
             var pinned = CommitInSource("1");
             File.WriteAllText(
                 Path.Combine(Seed, ".gitmodules"),
-                $"[submodule \"repos/src\"]\n\tpath = repos/src\n\turl = {src}\n"
+                // Forward slashes: git config reads a backslash in a Windows path as an escape.
+                $"[submodule \"repos/src\"]\n\tpath = repos/src\n\turl = {src.Replace('\\', '/')}\n"
             );
             Git(Seed, "add", ".gitmodules");
             Git(Seed, "update-index", "--add", "--cacheinfo", $"160000,{pinned},repos/src");
@@ -1354,6 +1358,6 @@ public sealed class ReviewdJudgeCloseTests
             return output.TrimEnd('\n');
         }
 
-        public void Dispose() => Directory.Delete(_root, recursive: true);
+        public void Dispose() => RealGitFixture.ForceDelete(_root);
     }
 }

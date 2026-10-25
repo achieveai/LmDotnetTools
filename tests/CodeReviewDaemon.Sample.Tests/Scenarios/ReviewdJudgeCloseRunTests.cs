@@ -3,6 +3,7 @@ extern alias Reviewd;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
+using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Microsoft.Data.Sqlite;
 using Reviewd::Reviewd.Sample;
 
@@ -34,7 +35,7 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
     public void Dispose()
     {
         SqliteConnection.ClearAllPools();
-        Directory.Delete(_dir, recursive: true);
+        RealGitFixture.ForceDelete(_dir);
     }
 
     [Fact]
@@ -314,7 +315,11 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
 
         var (_, output, _) = await Close(new Phases(Store), "--judgment", "4");
 
-        output.Split('\n')[0].Should().EndWith("0 knowledge, 1 improvement; 1 round of PRs/nova-5776213");
+        output
+            .ReplaceLineEndings("\n")
+            .Split('\n')[0]
+            .Should()
+            .EndWith("0 knowledge, 1 improvement; 1 round of PRs/nova-5776213");
     }
 
     [Fact]
@@ -433,7 +438,7 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
     [InlineData(true)]
     public async Task Preview_and_execute_leave_the_store_untouched(bool execute)
     {
-        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is null, "no python3 on PATH");
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = ReviewdJudgeCloseTests.Universe.Create();
         var rounds = new JsonArray(
             new JsonObject { ["branch"] = "review/x", ["tip"] = universe.Round1 },
@@ -457,7 +462,7 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
             universe.Origin,
             "--judgment",
             "3",
-            .. (execute ? new[] { "--execute" } : []),
+            .. execute ? new[] { "--execute" } : [],
         ];
 
         var (exit, output, err) = await Captured(() => JudgeClose.RunAsync(CliOptions.Parse(args), default, null));

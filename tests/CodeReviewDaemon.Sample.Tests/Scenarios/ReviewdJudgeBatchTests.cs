@@ -316,7 +316,10 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             scan.Receipts.Add(("Nova !7001", receipt));
         }
 
-        var lines = JudgeBatch.Summary(scan, [], [], [], Settings, execute: true, "ok", 0, Now).Split('\n');
+        var lines = JudgeBatch
+            .Summary(scan, [], [], [], Settings, execute: true, "ok", 0, Now)
+            .ReplaceLineEndings("\n")
+            .Split('\n');
 
         lines
             .Should()
@@ -458,6 +461,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
 
         var rows = JudgeBatch
             .Summary(scan, [], [], [], Settings, execute: true, "ok", 0, Now)
+            .ReplaceLineEndings("\n")
             .Split('\n')
             .Where(line =>
                 line.StartsWith("| ", StringComparison.Ordinal) && !line.StartsWith("| PR ", StringComparison.Ordinal)
@@ -939,6 +943,8 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             Judgment("7001", 1, capped),
             ($"reviewd/judge-skip/{RepoKey}/7003", $$"""{"reason":"not-completed","at":"{{Now:O}}"}""")
         );
+        // Windows keeps a pooled connection's file open, and that open refuses a reader.
+        SqliteConnection.ClearAllPools();
         var before = Directory.GetFiles(_dir).ToDictionary(path => path, File.ReadAllBytes);
         var missing = Path.Combine(_dir, "missing.db");
         var host = new FakeHttpMessageHandler()
@@ -951,6 +957,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         scan.Skipped.Should().Equal(("gone", "its database file is missing or cannot be opened"));
         File.Exists(missing).Should().BeFalse("a read-only open never creates a store");
         Directory.GetFiles(_dir).Should().BeEquivalentTo(before.Keys, "no -wal, -shm or journal file appears");
+        SqliteConnection.ClearAllPools();
         foreach (var (path, bytes) in before)
             File.ReadAllBytes(path).Should().Equal(bytes, path);
         host.Requests.Should().OnlyContain(request => request.Method == HttpMethod.Get);
@@ -979,7 +986,10 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
     private async Task<string[]> SummaryLinesAsync(FakeHttpMessageHandler host, string db)
     {
         var (scan, plan) = await PlanAsync(host, [], Target("alpha", db));
-        return JudgeBatch.Summary(scan, plan, [], [], Settings, execute: false, "ok", 0, Now).Split('\n');
+        return JudgeBatch
+            .Summary(scan, plan, [], [], Settings, execute: false, "ok", 0, Now)
+            .ReplaceLineEndings("\n")
+            .Split('\n');
     }
 
     // A failed judgment that read $0.40 so far under a $15 cap, with its sub-agents settled or not; it ran for one hour.
