@@ -221,12 +221,28 @@ jobs:
           certs="${RUNNER_TEMP}/mcp-canary-certs"
           docker run -d --name wi187-proxy --network wi187-contract --ip 172.30.187.3 \
             --add-host host.docker.internal:host-gateway -v "$certs:/certs:ro" \
-            -e LISTEN_ADDR=0.0.0.0:8080 -e GATEWAY_URL=http://wi187-gateway:3000 \
+            -e LISTEN_ADDR=172.30.187.3:8080 -e GATEWAY_URL=http://wi187-gateway:3000 \
             -e CA_CERT_PATH=/certs/ca.crt -e CA_KEY_PATH=/certs/ca.key \
             -e UPSTREAM_CA_CERT_PATH=/certs/ca.crt \
             -e DNS_OVERRIDE=mcp.sbx.test:host.docker.internal \
             -e SSRF_ALLOW_PRIVATE_DNS_OVERRIDE=true \
             -e "GATEWAY_PROXY_CRED=$PROXY_CRED" "${PROXY_IMAGE}:${IMAGE_TAG}"
+
+      - name: Wait for MCP proxy readiness
+        run: |
+          for i in $(seq 1 30); do
+            if [ "$(docker inspect --format '{{.State.Running}}' wi187-proxy)" != true ]; then
+              echo "MCP proxy exited before readiness; inspect its startup log." >&2
+              exit 1
+            fi
+            if docker exec wi187-proxy bash -c 'echo > /dev/tcp/172.30.187.3/8080' 2>/dev/null; then
+              echo "MCP proxy ready on attempt ${i}"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "MCP proxy not ready after 30 attempts" >&2
+          exit 1
 
       - name: Wait for gateway health
         run: |
