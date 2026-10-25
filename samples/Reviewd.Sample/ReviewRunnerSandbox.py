@@ -405,20 +405,31 @@ ARCHIVE_FILE_LIMIT = 1024 * 1024
 ARCHIVE_ALWAYS_KEPT = ('setup-context.json', 'publication_receipts.json')
 
 
+def fitting_name(name, ending, key):
+    # One file name holds at most 255 bytes, and a deep path flattened into one, or a long name with an ending added,
+    # can need more: the move or the note then failed every commit. Keeps name + ending while it leaves room for a
+    # collision suffix; otherwise a short hash of key (the relative path), the end of name, and ending.
+    if len(os.fsencode(name + ending)) <= 240:
+        return name + ending
+    return f'{hashlib.sha256(os.fsencode(key)).hexdigest()[:16]}-{name[-50:]}{ending}'
+
+
 def set_aside(path, folder, quarantine):
     # Moves one path out of the review folder, never over an earlier one, and returns where it went.
-    relative = path.relative_to(folder).as_posix().replace('/', '__')
-    target, suffix = quarantine / relative, 0
+    relative = path.relative_to(folder).as_posix()
+    flat, suffix = fitting_name(relative.replace('/', '__'), '', relative), 0
+    target = quarantine / flat
     while target.exists() or target.is_symlink():
         suffix += 1
-        target = quarantine / f'{relative}.{suffix}'
+        target = quarantine / f'{flat}.{suffix}'
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(path), str(target))
     return target
 
 
 def set_aside_unarchivable(folder, quarantine):
-    # Moves each file the archive does not keep out of the folder, and leaves <name>.omitted.json naming what it was.
+    # Moves each file the archive does not keep out of the folder, and leaves <name>.omitted.json naming what it was
+    # (see fitting_name for a name too long to take that ending).
     notes = []
     for current, dirs, files in os.walk(folder):
         for name in [d for d in dirs if (Path(current) / d).is_symlink()] + files:
@@ -440,10 +451,12 @@ def set_aside_unarchivable(folder, quarantine):
                     for block in iter(lambda: stream.read(1 << 20), b''):
                         digest.update(block)
                 note = {'kind': 'binary' if binary else 'large', 'bytes': size, 'sha256': digest.hexdigest()}
-            note = {'omitted': path.relative_to(folder).as_posix(), **note,
+            relative = path.relative_to(folder).as_posix()
+            note = {'omitted': relative, **note,
                     'reason': 'The review archive keeps what the review wrote; not binary, over 1 MiB, or links.'}
+            # The note goes first, so a commit stopped between the two steps never drops a file without a note.
+            (path.parent / fitting_name(name, '.omitted.json', relative)).write_text(json.dumps(note, indent=2) + '\n')
             set_aside(path, folder, quarantine)
-            (path.parent / (name + '.omitted.json')).write_text(json.dumps(note, indent=2) + '\n')
             notes.append(note)
         dirs[:] = [d for d in dirs if (Path(current) / d).is_dir() and not (Path(current) / d).is_symlink()]
     return notes
