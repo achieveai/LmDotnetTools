@@ -1324,7 +1324,9 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// tables (session→thread routing in the sandbox registry, presence lists, etc.) can drop
     /// the entry. Intentionally NOT raised by <see cref="RecreateAgentWithModeAsync"/>: a mode
     /// switch preserves the same threadId, so any external routing keyed on threadId must remain
-    /// intact across the swap.
+    /// intact across the swap. Nor when a request rebuilt the thread's agent while the old one was
+    /// being torn down. Raised under the thread's creation lock, so a handler must be quick and must
+    /// not wait on other threads.
     /// </summary>
     public event Action<string>? ThreadRemoved;
 
@@ -1670,6 +1672,26 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             ? entry.ReusableResources ?? NoReusableResources
             : NoReusableResources;
 
+    /// <summary>
+    /// How many accepted inputs no run has picked up yet for <paramref name="threadId"/>. Test-only: a test
+    /// that races a send against the idle sweep must wait for the run to retire its input, or the sweep
+    /// refuses for the queued input instead of for the reason under test.
+    /// </summary>
+    internal int GetOutstandingInputCountForTest(string threadId)
+    {
+        var lockObj = _creationLocks.GetOrAdd(threadId, static _ => new object());
+        lock (lockObj)
+        {
+            return _agents.TryGetValue(threadId, out var entry) ? entry.OutstandingInputIds.Count : 0;
+        }
+    }
+
+    /// <summary>
+    /// Test-only: runs in <see cref="UnloadIdleAgentsAsync"/> after its unlocked work reads and before it
+    /// takes the per-thread lock, so a test can land work in exactly that window.
+    /// </summary>
+    internal Func<string, Task>? BeforeUnloadLockForTest { get; set; }
+
     private static bool IsEntryInProgress(AgentEntry entry)
     {
         var hasRunId = !string.IsNullOrWhiteSpace(entry.Agent.CurrentRunId);
@@ -1853,6 +1875,12 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
 
             entry.OutstandingInputIds.Add(inputId);
             entry.IdleSinceUtc = null;
+
+            // An accept is work, wherever the send came from: the idle window counts from it (#830). A
+            // send that bypassed the pool's hand-outs (TryGet, then SendAsync) would otherwise leave the
+            // clock where it was, and a sweep already past its reads could unload the conversation the
+            // moment that run ended.
+            MarkUsed(entry);
             return true;
         }
     }
@@ -2134,16 +2162,18 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// <para>
     /// IDLE means none of: a run in progress, an accepted-but-unstarted input (both read by
     /// <see cref="IsBusyUnderLock"/>), a deferred tool call such as a parked <c>Wait</c> or an unanswered
-    /// <c>AskUserQuestion</c>, a sub-agent anywhere in the tree that is queued, running, or holding a
-    /// deferred call of its own, or a sandbox background task that has not reported its end. These count
-    /// because their runtime half lives only in this process: recreating the agent discards an armed
-    /// wait's trigger, orphans a child's pending question (see <see cref="HasPendingAskUserQuestionAsync"/>),
-    /// and drops a background task's completion notice, which is delivered only to a loaded conversation.
+    /// <c>AskUserQuestion</c>, an owed continuation or an armed <c>Wait</c> on a loop that is still running
+    /// and not frozen (<see cref="MultiTurnAgentLoop.HasOwnLiveWork"/>), a sub-agent anywhere in the tree that is queued,
+    /// running, or holding such work of its own, or a sandbox background task that has not reported its
+    /// end. These count because their runtime half lives only in this process: recreating the agent
+    /// discards an armed wait's trigger, orphans a child's pending question (see
+    /// <see cref="HasPendingAskUserQuestionAsync"/>), and drops a background task's completion notice,
+    /// which is delivered only to a loaded conversation.
     /// </para>
     /// <para>
     /// Everything else is rebuilt from the store, or is lost exactly as on a host restart: a finished
-    /// sub-agent can no longer be messaged, and a frozen conversation comes back unfrozen (the slot
-    /// reaper that freezes one is done with it).
+    /// sub-agent can no longer be messaged, a frozen conversation comes back unfrozen (the slot reaper
+    /// that freezes one is done with it), and one whose run loop failed comes back with a working one.
     /// </para>
     /// <para>
     /// A conversation that stays loaded still frees each sub-agent that finished at least
@@ -2152,13 +2182,13 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// manager remembers it and rebuilds it from its transcript.
     /// </para>
     /// <para>
-    /// The work reads run BEFORE the per-thread lock and the final decision is re-taken under it. That is
-    /// safe because none of that work can appear on an idle entry without first passing something the
-    /// lock does see: only a run defers a call, spawns a child or starts a background task, and a child
-    /// that finishes reports to its parent through an accepted input. The lock re-checks entry identity,
-    /// <see cref="IsBusyUnderLock"/>, and the idle clock - which a hand-out during the reads will have
-    /// restarted. The one way in that bypasses the pool, a message straight to a finished sub-agent, is
-    /// closed under the lock by <see cref="SubAgentManager.TryQuiesce"/>.
+    /// The work reads run BEFORE the per-thread lock and the final decision is re-taken under it. A whole
+    /// run can land in between, from a send that bypassed the hand-outs (TryGet, then SendAsync), so the
+    /// lock re-checks entry identity; the idle clock, which a hand-out or an accepted input during the
+    /// reads will have restarted; <see cref="IsBusyUnderLock"/>; and what such a run could leave behind -
+    /// the loop's own work (<see cref="MultiTurnAgentLoop.HasOwnLiveWork"/>) and its background task. Its
+    /// sub-agents are settled under the lock by <see cref="SubAgentManager.TryQuiesce"/>, which also
+    /// closes the one way in that bypasses the pool entirely: a message straight to a finished sub-agent.
     /// </para>
     /// <para>
     /// Only <see cref="MultiTurnAgentLoop"/> entries are candidates. Other agent types (the CLI-backed
@@ -2200,6 +2230,11 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
                 continue;
             }
 
+            if (BeforeUnloadLockForTest is { } beforeLock)
+            {
+                await beforeLock(threadId).ConfigureAwait(false);
+            }
+
             var lockObj = _creationLocks.GetOrAdd(threadId, static _ => new object());
             lock (lockObj)
             {
@@ -2212,9 +2247,16 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
                     continue;
                 }
 
-                // Quiesced last, as it closes the sub-agents to new messages: one accepted after the reads
-                // above would otherwise be killed by the disposal below.
-                if (IsBusyUnderLock(entry) || (loop.SubAgentManager is { } manager && !manager.TryQuiesce()))
+                // The loop's own work and the background task are read again here, as a run that slipped in
+                // after the reads may have left either behind. Quiesced last, as it closes the sub-agents to
+                // new messages: one accepted after the reads above would otherwise be killed by the disposal
+                // below.
+                if (
+                    IsBusyUnderLock(entry)
+                    || loop.HasOwnLiveWork
+                    || _bindingSink?.HasPendingBackgroundTask(threadId) == true
+                    || (loop.SubAgentManager is { } manager && !manager.TryQuiesce())
+                )
                 {
                     MarkUsed(entry);
                     continue;
@@ -2301,9 +2343,11 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// </remarks>
     private async Task DisposeRemovedEntryAsync(string threadId, AgentEntry removed)
     {
+        var disposed = false;
         try
         {
             await removed.DisposeAsync().ConfigureAwait(false);
+            disposed = true;
         }
         finally
         {
@@ -2313,11 +2357,20 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
                 if (!_agents.ContainsKey(threadId))
                 {
                     _bindingSink?.ClearEstablishedBinding(threadId);
+
+                    // Raised under the same lock and only while the slot is still empty, for the same reason
+                    // as the clear. A request that rebuilt the conversation during the dispose has
+                    // registered it again (sandbox routing, workflow registry, transcript mirror); telling
+                    // the subscribers the thread is gone would take all of that from the live replacement.
+                    // Creation runs under this lock, so a replacement either exists now or is created after
+                    // the subscribers have run.
+                    if (disposed)
+                    {
+                        RaiseThreadRemoved(threadId);
+                    }
                 }
             }
         }
-
-        RaiseThreadRemoved(threadId);
     }
 
     /// <summary>

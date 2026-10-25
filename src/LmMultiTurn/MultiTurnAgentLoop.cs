@@ -102,6 +102,24 @@ public sealed class MultiTurnAgentLoop
     internal Func<string, CancellationToken, Task>? AdmitRunAsync { get; set; }
 
     /// <summary>
+    /// Test-only: awaited at the top of every run-loop pass, after the freeze gate and before the loop
+    /// takes a delayed cause or input, so a test can hold a continuation that is owed but not started.
+    /// </summary>
+    internal Func<CancellationToken, Task>? BeforeTakingNextWorkForTest { get; set; }
+
+    /// <summary>
+    /// Test-only: awaited after the loop has taken a delayed cause and before its child run gets an id, so
+    /// a test can hold a continuation that is neither queued nor running.
+    /// </summary>
+    internal Func<CancellationToken, Task>? BeforeStartingDelayedRunForTest { get; set; }
+
+    /// <summary>
+    /// Test-only: called each time the run loop has found nothing to take and is about to wait for input,
+    /// so a test can tell the loop is idle.
+    /// </summary>
+    internal Action? WaitingForInputForTest { get; set; }
+
+    /// <summary>
     /// Names of the tools that declare at least one required parameter, snapshot at construction from
     /// the same registry the handlers came from. Consulted by the tool-dispatch guard in
     /// <see cref="ExecuteToolCallAsync"/> so an empty argument payload is rejected only for tools that
@@ -1271,6 +1289,11 @@ public sealed class MultiTurnAgentLoop
                 // coordinator; unfreeze stirs the loop so it drains here.
                 await WaitWhileFrozenAsync(ct);
 
+                if (BeforeTakingNextWorkForTest is { } beforeTaking)
+                {
+                    await beforeTaking(ct);
+                }
+
                 // Delayed results outrank queued input. A result that resolved after its run had
                 // already ended is carried by its own child run, and until every one of them has
                 // been carried the conversation is not in a state that can be sent anywhere: the
@@ -1296,6 +1319,8 @@ public sealed class MultiTurnAgentLoop
                 }
                 else
                 {
+                    WaitingForInputForTest?.Invoke();
+
                     // Wait for at least one input
                     if (!await InputReader.WaitToReadAsync(ct))
                     {
@@ -1576,22 +1601,36 @@ public sealed class MultiTurnAgentLoop
     /// </remarks>
     private async Task RunDelayedChildAsync(DelayedCause cause, CancellationToken ct)
     {
-        var causeInput = new QueuedInput(
-            new UserInput([cause.Result], InputId: null, ParentRunId: cause.RequestingRunId),
-            ReceiptId: $"delayed:{cause.ToolCallId}",
-            QueuedAt: DateTimeOffset.UtcNow,
-            Resume: null
-        );
+        RunAssignment assignment;
+        try
+        {
+            var causeInput = new QueuedInput(
+                new UserInput([cause.Result], InputId: null, ParentRunId: cause.RequestingRunId),
+                ReceiptId: $"delayed:{cause.ToolCallId}",
+                QueuedAt: DateTimeOffset.UtcNow,
+                Resume: null
+            );
 
-        var assignment = await StartRunAsync(
-            [causeInput],
-            cause.RequestingRunId,
-            ct,
-            wasForked: false,
-            runId: cause.ChildRunId,
-            causeKind: LifecycleRunCauseKinds.ToolResult,
-            causeToolCallId: cause.ToolCallId
-        );
+            if (BeforeStartingDelayedRunForTest is { } beforeStarting)
+            {
+                await beforeStarting(ct);
+            }
+
+            assignment = await StartRunAsync(
+                [causeInput],
+                cause.RequestingRunId,
+                ct,
+                wasForked: false,
+                runId: cause.ChildRunId,
+                causeKind: LifecycleRunCauseKinds.ToolResult,
+                causeToolCallId: cause.ToolCallId
+            );
+        }
+        finally
+        {
+            // The run id shows the continuation from here on (or the run never started).
+            _delayed.EndCauseAdmission();
+        }
 
         // The run row is the only thing that tells the next process this continuation has begun —
         // recovery re-queues exactly those resolutions whose named child run has no row. Talking to
@@ -4673,27 +4712,62 @@ public sealed class MultiTurnAgentLoop
     }
 
     /// <summary>
-    /// Whether this loop, or any sub-agent under it, holds work that only this process can finish: a
-    /// deferred tool call (a parked <c>Wait</c>, an unanswered <c>AskUserQuestion</c>), or a sub-agent
-    /// that is queued or running (see <see cref="SubAgentManager.HasLiveWorkAsync"/>). Freeing the loop
-    /// would lose that work, because its runtime half is not persisted (#830). A disposed loop holds
-    /// nothing.
+    /// Whether this loop, or any sub-agent under it, holds work that only this process can finish: work
+    /// of its own (<see cref="HasOwnLiveWork"/>), or a sub-agent that is queued or running (see
+    /// <see cref="SubAgentManager.HasLiveWorkAsync"/>). Freeing the loop would lose that work, because its
+    /// runtime half is not persisted (#830). A disposed loop holds nothing.
     /// </summary>
     public async ValueTask<bool> HasLiveWorkAsync(CancellationToken ct = default)
     {
-        try
-        {
-            if ((await GetDeferredToolCallsAsync(ct)).Count > 0)
-            {
-                return true;
-            }
-        }
-        catch (ObjectDisposedException)
+        if (IsDisposed)
         {
             return false;
         }
 
-        return SubAgentManager is { } manager && await manager.HasLiveWorkAsync(ct);
+        return HasOwnLiveWork || (SubAgentManager is { } manager && await manager.HasLiveWorkAsync(ct));
+    }
+
+    /// <summary>
+    /// Whether this loop itself, not counting its sub-agents, holds work that only this process can
+    /// finish (#830): a deferred tool call (a parked <c>Wait</c>, an unanswered <c>AskUserQuestion</c>);
+    /// and, while the run loop is alive and not frozen, an armed <c>Wait</c>, whose trigger would be
+    /// cancelled with the loop, a turn it still owes (a queued input, or a resolved call's continuation),
+    /// or a run in progress. Synchronous, so the pool can read it under its per-thread lock.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A frozen loop runs none of the latter until it is unfrozen, and the host that froze it (the review
+    /// slot reaper) is done with it. A loop whose run loop has ended (it failed) never runs them. Counting
+    /// them would keep either loaded for ever. Unloaded, it comes back running, unfrozen, and without that
+    /// owed turn, as after a host restart.
+    /// </para>
+    /// <para>
+    /// The reads follow the order work moves in: a wait delivers into the input queue or a deferred call,
+    /// a deferred call resolves into a queued continuation, and input or a continuation becomes a run. So
+    /// work that moves on between two reads is caught by the later one.
+    /// </para>
+    /// </remarks>
+    public bool HasOwnLiveWork
+    {
+        get
+        {
+            if (IsDisposed)
+            {
+                return false;
+            }
+
+            if (!_delayed.IsEmpty)
+            {
+                return true;
+            }
+
+            if (!IsRunning || IsFrozen)
+            {
+                return false;
+            }
+
+            return _triggerRuntime?.HasPendingWaits == true || HasPendingLoopWork || CurrentRunId != null;
+        }
     }
 
     /// <inheritdoc />

@@ -175,6 +175,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// </summary>
     internal string? SystemPromptForTests => SystemPrompt;
 
+    /// <summary>How many output subscribers are registered: lets a test wait until a viewer is attached.</summary>
+    internal int SubscriberCountForTests => _outputSubscribers.Count;
+
     /// <summary>
     /// The maximum turns per run.
     /// </summary>
@@ -1669,6 +1672,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     {
         ObjectDisposedException.ThrowIf(_isDisposed, this);
     }
+
+    /// <summary>Whether disposal has started; the non-throwing form of <see cref="ThrowIfDisposed"/>.</summary>
+    protected bool IsDisposed => _isDisposed;
 
     /// <summary>
     /// Convenience method to drain all currently available inputs from the queue.

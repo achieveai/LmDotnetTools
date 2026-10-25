@@ -439,6 +439,12 @@ public sealed class TriggerRuntime : IAsyncDisposable
         ];
 
     /// <summary>
+    /// Whether any wait is still armed: what <see cref="ListWaits"/> would list, without building the list.
+    /// A block wait settled early is still armed until its trigger fires or times out.
+    /// </summary>
+    internal bool HasPendingWaits => _waits.Any(pair => pair.Value.State == WaitState.Pending);
+
+    /// <summary>
     /// Reconciles block waits recovered from persisted history after a restart. A restorable kind
     /// (e.g. timer) is re-armed for its remaining delay — firing immediately if already elapsed. A
     /// non-restorable kind, or one whose original args no longer parse, resolves as
