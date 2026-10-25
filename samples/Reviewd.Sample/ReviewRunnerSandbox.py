@@ -396,6 +396,59 @@ def expected_review_branch():
     return f"{branch}-{args['head'][:8]}"
 
 
+# The archive records what the review did and found, which the reviewer writes as text (Kay9). A binary file, or a
+# text file over ARCHIVE_FILE_LIMIT, is data it pulled in: GitHub refuses any file over 100 MB, so one 174 MB dump
+# failed the push and parked the whole archive (Polymer #5807049). A link or special file fails review_commit outright
+# (ideas-exp #5804611). The prepared context and the publication receipts stay whatever their size: a resumed commit
+# re-runs inspect-prepared and verify, which read them.
+ARCHIVE_FILE_LIMIT = 1024 * 1024
+ARCHIVE_ALWAYS_KEPT = ('setup-context.json', 'publication_receipts.json')
+
+
+def set_aside(path, folder, quarantine):
+    # Moves one path out of the review folder, never over an earlier one, and returns where it went.
+    relative = path.relative_to(folder).as_posix().replace('/', '__')
+    target, suffix = quarantine / relative, 0
+    while target.exists() or target.is_symlink():
+        suffix += 1
+        target = quarantine / f'{relative}.{suffix}'
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(path), str(target))
+    return target
+
+
+def set_aside_unarchivable(folder, quarantine):
+    # Moves each file the archive does not keep out of the folder, and leaves <name>.omitted.json naming what it was.
+    notes = []
+    for current, dirs, files in os.walk(folder):
+        for name in [d for d in dirs if (Path(current) / d).is_symlink()] + files:
+            path = Path(current) / name
+            if Path(current) == folder and name in ARCHIVE_ALWAYS_KEPT and not path.is_symlink():
+                continue
+            if path.is_symlink():
+                note = {'kind': 'symlink', 'target': os.readlink(path)}
+            elif not path.is_file():
+                note = {'kind': 'special'}
+            else:
+                with path.open('rb') as stream:
+                    binary = b'\0' in stream.read(8000)
+                size = path.stat().st_size
+                if not binary and size <= ARCHIVE_FILE_LIMIT:
+                    continue
+                digest = hashlib.sha256()
+                with path.open('rb') as stream:
+                    for block in iter(lambda: stream.read(1 << 20), b''):
+                        digest.update(block)
+                note = {'kind': 'binary' if binary else 'large', 'bytes': size, 'sha256': digest.hexdigest()}
+            note = {'omitted': path.relative_to(folder).as_posix(), **note,
+                    'reason': 'The review archive keeps what the review wrote; not binary, over 1 MiB, or links.'}
+            set_aside(path, folder, quarantine)
+            (path.parent / (name + '.omitted.json')).write_text(json.dumps(note, indent=2) + '\n')
+            notes.append(note)
+        dirs[:] = [d for d in dirs if (Path(current) / d).is_dir() and not (Path(current) / d).is_symlink()]
+    return notes
+
+
 if phase == 'eligibility':
     current = eligibility()
     print(json.dumps({key: current[key] for key in ('prId', 'status', 'isDraft', 'createdAt', 'headSha', 'mergeSha')}))
@@ -645,16 +698,11 @@ elif phase == 'commit':
         if '.git' not in dirs + files:
             continue
         nested = Path(current) if Path(current) != folder else Path(current) / '.git'
-        relative = nested.relative_to(folder).as_posix()
-        target = quarantine / relative.replace('/', '__')
-        suffix = 0
-        while target.exists() or target.is_symlink():
-            suffix += 1
-            target = quarantine / f"{relative.replace('/', '__')}.{suffix}"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(nested), str(target))
-        print(f'Quarantined {directory}/{relative} to {target}', file=sys.stderr)
+        target = set_aside(nested, folder, quarantine)
+        print(f'Quarantined {directory}/{nested.relative_to(folder).as_posix()} to {target}', file=sys.stderr)
         dirs[:] = [] if nested == Path(current) else [d for d in dirs if d != '.git']
+    for note in set_aside_unarchivable(folder, quarantine):
+        print(f"Set aside {directory}/{note['omitted']} ({note['kind']}); kept a note", file=sys.stderr)
     print(json.dumps(commit_review(root, repo, pr, slot, source_sha=args['head'],
                                    expected_branch=expected_review_branch())))
 else:
