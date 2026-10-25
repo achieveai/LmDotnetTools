@@ -1013,4 +1013,185 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
             return Task.FromResult(next);
         }
     }
+
+    [Fact]
+    public async Task WaitAsync_CallerCancelsDuringTheSnapshotCall_TheSourceTokenIsCancelled()
+    {
+        // A snapshot wait with its own registration on the stage token runs that registration before the budget
+        // source's, so the barrier rethrows and disposes the budget before it cancels: the round trip to the review
+        // host is abandoned but never told to stop. Cancelling off the test's synchronization context runs the
+        // barrier's continuation inline, the order that loses the cancel.
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var source = new TokenRecordingCompletionSource();
+        var barrier = CreateBarrier(
+            source,
+            clock,
+            TimeSpan.Zero,
+            new CapturingLogger<ReviewSubAgentCompletionBarrier>()
+        );
+        using var cts = new CancellationTokenSource();
+
+        // The barrier runs synchronously up to the snapshot wait, so the wait is in place when this returns.
+        var task = barrier.WaitAsync(
+            TestRun(),
+            "root",
+            clock.GetUtcNow() + TimeSpan.FromMinutes(30),
+            NoopValidator,
+            cts.Token
+        );
+        await Task.Run(() => cts.Cancel());
+
+        await FluentActions.Awaiting(() => task).Should().ThrowAsync<OperationCanceledException>();
+        source
+            .Token.IsCancellationRequested.Should()
+            .BeTrue("the stage cancel must reach the in-flight snapshot call, not only end the wait on it");
+    }
+
+    [Fact]
+    public async Task WaitAsync_DeadlineEndsTheSnapshotWait_TheSourceTokenIsCancelledWhicheverTimerFiresFirst()
+    {
+        // A snapshot wait with its own timer is due at the same instant as the budget's deadline timer, and nothing
+        // orders two timers due together. When the wait's fires first, the barrier loops to its deadline throw and
+        // disposes the budget before its timer cancels it: the round trip is abandoned but never told to stop. This
+        // clock fires same-instant timers newest-first, the order that loses the cancel, and advancing it off the
+        // test's synchronization context runs the barrier's continuation inline, as a timer thread does.
+        var clock = new NewestFirstClock(DateTimeOffset.UtcNow);
+        var source = new TokenRecordingCompletionSource();
+        var barrier = new ReviewSubAgentCompletionBarrier(
+            source,
+            QuietPeriod,
+            new CapturingLogger<ReviewSubAgentCompletionBarrier>(),
+            clock
+        );
+
+        var task = barrier.WaitAsync(
+            TestRun(),
+            "root",
+            clock.GetUtcNow() + TimeSpan.FromMinutes(30),
+            NoopValidator,
+            CancellationToken.None
+        );
+        await Task.Run(() => clock.Advance(TimeSpan.FromMinutes(31)));
+
+        await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        source
+            .Token.IsCancellationRequested.Should()
+            .BeTrue("the deadline must reach the in-flight snapshot call, not only end the wait on it");
+    }
+
+    /// <summary>A completion source whose call never answers and ignores its token, so only the barrier can end
+    /// it. It records the token so a test can ask whether the barrier cancelled the call or only abandoned it.</summary>
+    private sealed class TokenRecordingCompletionSource : IReviewSubAgentCompletionSource
+    {
+        public CancellationToken Token { get; private set; }
+
+        public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
+            ReviewRun run,
+            string parentThreadId,
+            CancellationToken ct
+        )
+        {
+            Token = ct;
+            return new TaskCompletionSource<ReviewSubAgentTreeSnapshot>().Task;
+        }
+    }
+
+    /// <summary>
+    /// A manual clock that fires due timers earliest first and, among timers due at the same instant, newest
+    /// first. Nothing orders two timers due together (the system timer queue can run either first), so this is a
+    /// legal order, and the one in which a waiter's own timer beats an older budget timer. One-shot timers only.
+    /// </summary>
+    private sealed class NewestFirstClock(DateTimeOffset start) : TimeProvider
+    {
+        private readonly List<OneShotTimer> _timers = [];
+        private DateTimeOffset _now = start;
+        private long _created;
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            lock (_timers)
+            {
+                return _now;
+            }
+        }
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            if (period != Timeout.InfiniteTimeSpan)
+            {
+                throw new NotSupportedException("NewestFirstClock runs one-shot timers only.");
+            }
+
+            lock (_timers)
+            {
+                var timer = new OneShotTimer(this, callback, state, _now + dueTime, ++_created);
+                _timers.Add(timer);
+                return timer;
+            }
+        }
+
+        /// <summary>Moves the clock, then fires every timer now due, one at a time, on the calling thread.</summary>
+        public void Advance(TimeSpan by)
+        {
+            lock (_timers)
+            {
+                _now += by;
+            }
+
+            while (true)
+            {
+                OneShotTimer? next;
+                lock (_timers)
+                {
+                    next = _timers
+                        .Where(t => t.Due <= _now)
+                        .OrderBy(t => t.Due)
+                        .ThenByDescending(t => t.Created)
+                        .FirstOrDefault();
+                    if (next is null)
+                    {
+                        return;
+                    }
+
+                    _ = _timers.Remove(next);
+                }
+
+                next.Fire();
+            }
+        }
+
+        private void Remove(OneShotTimer timer)
+        {
+            lock (_timers)
+            {
+                _ = _timers.Remove(timer);
+            }
+        }
+
+        private sealed class OneShotTimer(
+            NewestFirstClock clock,
+            TimerCallback callback,
+            object? state,
+            DateTimeOffset due,
+            long created
+        ) : ITimer
+        {
+            public DateTimeOffset Due { get; } = due;
+
+            public long Created { get; } = created;
+
+            public void Fire() => callback(state);
+
+            public bool Change(TimeSpan dueTime, TimeSpan period) =>
+                throw new NotSupportedException("NewestFirstClock timers cannot be rescheduled.");
+
+            public void Dispose() => clock.Remove(this);
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
+        }
+    }
 }

@@ -647,9 +647,11 @@ internal sealed class CheckpointPipeline(
             try
             {
                 var call = summarizer.SummarizeAsync(summaryRequest, linked.Token);
-                // WaitAsync bounds a summarizer that ignores its token, too.
+                // WaitAsync bounds a summarizer that ignores its token, too. The wait ends only through the linked
+                // token, so the summarizer always sees the cancel: a separate timer or caller registration could end
+                // it first and dispose the source before it cancels.
                 var response = await (
-                    _options.SummaryTimeout is { } limit ? call.WaitAsync(limit, ct) : call
+                    _options.SummaryTimeout is not null ? call.WaitAsync(linked.Token) : call
                 ).ConfigureAwait(false);
                 if (response?.Summary is not null)
                 {

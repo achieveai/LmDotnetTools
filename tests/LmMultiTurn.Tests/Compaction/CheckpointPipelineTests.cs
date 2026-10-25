@@ -1533,4 +1533,87 @@ public sealed class CheckpointPipelineTests : IAsyncLifetime
         build.IsValid.Should().BeTrue();
         build.Checkpoint!.Manifest.OpenExchanges.Should().ContainSingle().Which.MessageId.Should().Be("msg-2");
     }
+
+    [Fact]
+    public async Task Build_CallerCancelsWhileATimedSummaryIsPending_TheSummarizerTokenIsCancelled()
+    {
+        // A wait with its own registration on the caller's token runs that registration before the linked source's,
+        // so the build rethrows and disposes the source before it cancels: the summarizer is never told to stop.
+        // Cancelling off the test's synchronization context runs the build's continuation inline, the order that
+        // loses the cancel.
+        var store = _harness.Open("memory");
+        await SeedAsync(store);
+        var rows = await RowsAsync(store);
+        var summarizer = new TokenRecordingSummarizer();
+        var pipeline = new CheckpointPipeline(
+            summarizer,
+            new CheckpointPipelineOptions
+            {
+                Estimator = ThreadFixture.RowTokens,
+                SummaryTimeout = TimeSpan.FromSeconds(30),
+            },
+            new FixedClock(T0)
+        );
+        using var cts = new CancellationTokenSource();
+
+        // BuildAsync runs synchronously up to the summary wait, so the wait is in place when it returns.
+        var build = pipeline.BuildAsync(Request(rows, CutAt(rows, ThreadFixture.TurnEnd(3))), cts.Token);
+        await Task.Run(() => cts.Cancel());
+
+        await FluentActions.Awaiting(() => build).Should().ThrowAsync<OperationCanceledException>();
+        summarizer
+            .Tokens.Should()
+            .ContainSingle()
+            .Which.IsCancellationRequested.Should()
+            .BeTrue("the caller's cancel must reach the summary call, not only end the wait on it");
+    }
+
+    [Fact]
+    public async Task Build_TimedSummaryThatNeverAnswers_TheSummarizerTokenIsCancelledOnEveryAttempt()
+    {
+        // A wait with its own timer, due with the CancelAfter one, can fire first: the attempt then ends and disposes
+        // the linked source before its timer cancels it, so the summarizer keeps running into the retry. Two system
+        // timers race and no test can choose the winner, so this catches a regression only some of the time; five
+        // attempts raise the odds. The caller-cancel test above is the deterministic guard on the same wait.
+        var store = _harness.Open("memory");
+        await SeedAsync(store);
+        var rows = await RowsAsync(store);
+        var summarizer = new TokenRecordingSummarizer();
+        var pipeline = new CheckpointPipeline(
+            summarizer,
+            new CheckpointPipelineOptions
+            {
+                Estimator = ThreadFixture.RowTokens,
+                SummaryAttempts = 5,
+                SummaryTimeout = TimeSpan.FromMilliseconds(20),
+            },
+            new FixedClock(T0)
+        );
+
+        var build = await pipeline.BuildAsync(Request(rows, CutAt(rows, ThreadFixture.TurnEnd(3))));
+
+        build.Reason.Should().Be(CompactionReasons.SummaryCallFailed);
+        summarizer
+            .Tokens.Should()
+            .HaveCount(5)
+            .And.OnlyContain(
+                t => t.IsCancellationRequested,
+                "every timed-out summary call must be told to stop, not only abandoned"
+            );
+    }
+
+    /// <summary>Never answers and ignores its token, so only the pipeline can end a call; records every token.</summary>
+    private sealed class TokenRecordingSummarizer : ICheckpointSummarizer
+    {
+        public List<CancellationToken> Tokens { get; } = [];
+
+        public Task<CheckpointSummaryResponse> SummarizeAsync(
+            CheckpointSummaryRequest request,
+            CancellationToken ct = default
+        )
+        {
+            Tokens.Add(ct);
+            return new TaskCompletionSource<CheckpointSummaryResponse>().Task;
+        }
+    }
 }
