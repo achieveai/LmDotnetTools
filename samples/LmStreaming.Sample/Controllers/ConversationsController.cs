@@ -404,6 +404,25 @@ public class ConversationsController(
             }
         }
 
+        // Fail loudly rather than store a bit nothing would enforce: only a sandbox-backed mode on a host
+        // with a sandbox registry gives the thread a sandbox whose egress the flag narrows.
+        if (
+            request.ReadOnlyEgress
+            && (sandboxSessionRegistry is null || !ModeCapabilities.Resolve(mode.EnabledCapabilityTools).NeedsSandbox)
+        )
+        {
+            return BadRequest(
+                new
+                {
+                    error = "read_only_egress_unsupported",
+                    code = "read_only_egress_unsupported",
+                    detail = sandboxSessionRegistry is null
+                        ? "ReadOnlyEgress needs a sandbox, and this host has no sandbox registry."
+                        : $"ReadOnlyEgress needs a sandbox-backed mode; mode '{mode.Id}' runs without a sandbox.",
+                }
+            );
+        }
+
         var now = DateTimeOffset.UtcNow;
 
         // The epoch-millisecond segment is load-bearing, not decoration: it is the ONLY record of
@@ -443,6 +462,11 @@ public class ConversationsController(
                 if (request.DisableClientTools)
                 {
                     propertiesBuilder[ConversationClientTools.PropertyKey] = true;
+                }
+
+                if (request.ReadOnlyEgress)
+                {
+                    propertiesBuilder[ConversationReadOnlyEgress.PropertyKey] = true;
                 }
 
                 if (request.Env is { Count: > 0 })
@@ -494,6 +518,7 @@ public class ConversationsController(
             {
                 ThreadId = threadId,
                 ReasoningEffortAccepted = request.ReasoningEffort is not null,
+                ReadOnlyEgressAccepted = request.ReadOnlyEgress,
             }
         );
     }

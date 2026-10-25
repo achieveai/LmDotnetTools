@@ -139,7 +139,78 @@ public class SandboxSessionRegistryPartitionTests
         registry.TryGetSessionById(kept.SessionId, out _).Should().BeTrue();
     }
 
-    private static (SandboxSessionRegistry Registry, CallLog Calls) CreateRegistry()
+    [Fact]
+    public async Task Read_only_and_normal_refs_for_one_workspace_and_app_get_two_sessions_with_their_own_rules()
+    {
+        // The judge and the review lanes share the workspace AND the app id, so only the read-only part of
+        // the key keeps the judge out of the lane's full-write sandbox (and the lane out of the judge's).
+        var auth = new AuthOptions();
+        auth.Ado.ClientId = "ado-client";
+        var (registry, calls) = CreateRegistry(auth);
+
+        var normal = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1"));
+        var readOnly = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1", ReadOnlyEgress: true));
+
+        readOnly.SessionId.Should().NotBe(normal.SessionId);
+        normal.ReadOnlyEgress.Should().BeFalse();
+        readOnly.ReadOnlyEgress.Should().BeTrue();
+        calls.PostAppIds.Should().Equal(DefaultAppId, DefaultAppId);
+        AdoMethods(calls.PostBodies[0]).Should().BeEmpty("the lane's ado rule must keep allowing every method");
+        AdoMethods(calls.PostBodies[1]).Should().Equal("GET", "HEAD");
+    }
+
+    [Fact]
+    public async Task The_same_read_only_ref_twice_reuses_one_session()
+    {
+        var (registry, calls) = CreateRegistry();
+        var readOnlyRef = new WorkspaceRef("ws-1", ReadOnlyEgress: true);
+
+        var first = await registry.GetOrCreateSessionAsync(readOnlyRef);
+        var second = await registry.GetOrCreateSessionAsync(readOnlyRef);
+
+        second.SessionId.Should().Be(first.SessionId);
+        calls.PostCount.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Destroy_and_release_of_a_workspace_stop_its_read_only_session_too(bool release)
+    {
+        var (registry, calls) = CreateRegistry();
+        var normal = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1"));
+        var readOnly = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1", ReadOnlyEgress: true));
+
+        if (release)
+        {
+            await registry.ReleaseWorkspaceSessionsAsync("ws-1", DefaultAppId);
+        }
+        else
+        {
+            await registry.DestroyWorkspaceSessionAsync("ws-1");
+        }
+
+        calls.DeletedSessionIds.Should().BeEquivalentTo([normal.SessionId, readOnly.SessionId]);
+        registry.TryGetSessionById(readOnly.SessionId, out _).Should().BeFalse();
+    }
+
+    private static IReadOnlyList<string> AdoMethods(string createBody)
+    {
+        using var document = JsonDocument.Parse(createBody);
+        return
+        [
+            .. document
+                .RootElement.GetProperty("network")
+                .GetProperty("rules")
+                .EnumerateArray()
+                .Single(rule => rule.GetProperty("id").GetString() == "ado")
+                .GetProperty("methods")
+                .EnumerateArray()
+                .Select(method => method.GetString()!),
+        ];
+    }
+
+    private static (SandboxSessionRegistry Registry, CallLog Calls) CreateRegistry(AuthOptions? auth = null)
     {
         var calls = new CallLog();
 
@@ -152,7 +223,7 @@ public class SandboxSessionRegistryPartitionTests
             if (req.Method == HttpMethod.Post && path.EndsWith("/sandboxes", StringComparison.Ordinal))
             {
                 var appId = req.Headers.GetValues("X-Sbx-App-Id").Single();
-                var ordinal = calls.RecordPost(appId);
+                var ordinal = calls.RecordPost(appId, req.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
                 var sessionId = $"sess-{ordinal}";
                 calls.MarkCreated(sessionId);
                 var responseBody = $$"""
@@ -208,13 +279,12 @@ public class SandboxSessionRegistryPartitionTests
             new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)))
         );
 
-        var auth = new AuthOptions();
         var registry = new SandboxSessionRegistry(
             gateway,
             options,
             NullLogger<SandboxSessionRegistry>.Instance,
             new HttpClient(registryHandler),
-            auth,
+            auth ?? new AuthOptions(),
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
                 NullLogger<SessionSecretStore>.Instance
@@ -229,6 +299,7 @@ public class SandboxSessionRegistryPartitionTests
     {
         private readonly object _gate = new();
         private readonly List<string> _postAppIds = [];
+        private readonly List<string> _postBodies = [];
         private readonly List<string> _deletedSessionIds = [];
         private readonly HashSet<string> _created = new(StringComparer.Ordinal);
         private readonly HashSet<string> _evicted = new(StringComparer.Ordinal);
@@ -266,12 +337,24 @@ public class SandboxSessionRegistryPartitionTests
             }
         }
 
-        /// <summary>Records a create POST's app id header and returns its 1-based ordinal.</summary>
-        public int RecordPost(string appId)
+        public IReadOnlyList<string> PostBodies
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return [.. _postBodies];
+                }
+            }
+        }
+
+        /// <summary>Records a create POST's app id header and body, and returns its 1-based ordinal.</summary>
+        public int RecordPost(string appId, string body)
         {
             lock (_gate)
             {
                 _postAppIds.Add(appId);
+                _postBodies.Add(body);
                 return _postAppIds.Count;
             }
         }

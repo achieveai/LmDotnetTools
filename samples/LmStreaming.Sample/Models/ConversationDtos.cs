@@ -274,6 +274,14 @@ public record ProvisionConversationRequest
     /// decide. Default false keeps both tools, as before. Not changeable after provision.
     /// </summary>
     public bool DisableClientTools { get; init; }
+
+    /// <summary>
+    /// True for a thread whose sandbox may only read ADO: every allow rule that reaches an ADO host keeps only
+    /// GET and HEAD. The thread gets its own sandbox, apart from the normal one on the same workspace and app
+    /// id. Needs a sandbox-backed mode on a host with a sandbox registry (else 400
+    /// <c>read_only_egress_unsupported</c>). Default false keeps today's egress. Not changeable after provision.
+    /// </summary>
+    public bool ReadOnlyEgress { get; init; }
 }
 
 /// <summary>
@@ -289,6 +297,13 @@ public record ProvisionConversationResponse
     /// non-null effort can use this acknowledgement to reject a pre-contract host that silently ignored it.
     /// </summary>
     public bool ReasoningEffortAccepted { get; init; }
+
+    /// <summary>
+    /// True when this host stored <see cref="ProvisionConversationRequest.ReadOnlyEgress"/> for the thread. A
+    /// caller that asked for read-only egress must refuse a reply without it: a host that predates the field
+    /// ignores it and would give the thread full egress.
+    /// </summary>
+    public bool ReadOnlyEgressAccepted { get; init; }
 }
 
 /// <summary>

@@ -1799,6 +1799,65 @@ public class ConversationsControllerTests
         (await ConversationClientTools.ReadDisabledAsync(store, threadId, CancellationToken.None)).Should().BeTrue();
     }
 
+    [Theory]
+    [InlineData(true, true, true)]
+    [InlineData(false, true, true)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, false)]
+    public async Task Provision_ReadOnlyEgress_IsStoredAndAcknowledged_OnlyForASandboxedThread(
+        bool readOnlyEgress,
+        bool sandboxMode,
+        bool hostHasRegistry
+    )
+    {
+        // The ack is the caller's only proof the host will enforce the flag, so a host that cannot give the
+        // thread a sandbox must refuse it rather than store a bit nothing enforces.
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        using var baseDir = new SandboxEnvTestSupport.TempWorkspaceBase();
+        await using var sandbox = SandboxEnvTestSupport.CreateRegistry(baseDir.Path, out _);
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore
+            .Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object,
+            providerRegistry: new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal(),
+            sandboxSessionRegistry: hostHasRegistry ? sandbox : null
+        );
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = sandboxMode ? SystemChatModes.WorkspaceAgentModeId : SystemChatModes.DefaultModeId,
+                ReadOnlyEgress = readOnlyEgress,
+            },
+            CancellationToken.None
+        );
+
+        if (readOnlyEgress && !(sandboxMode && hostHasRegistry))
+        {
+            Assert
+                .IsType<BadRequestObjectResult>(result)
+                .Value.Should()
+                .BeEquivalentTo(new { code = "read_only_egress_unsupported" });
+            return;
+        }
+
+        var response = Assert.IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value);
+        response.ReadOnlyEgressAccepted.Should().Be(readOnlyEgress);
+        (await ConversationReadOnlyEgress.ReadAsync(store, response.ThreadId)).Should().Be(readOnlyEgress);
+        (await store.LoadMetadataAsync(response.ThreadId))!
+            .Properties!.ContainsKey(ConversationReadOnlyEgress.PropertyKey)
+            .Should()
+            .Be(readOnlyEgress, "the flag is written only when true");
+    }
+
     [Fact]
     public async Task List_ReportsWhetherEachConversationWasProvisionedHeadless()
     {

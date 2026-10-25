@@ -288,8 +288,8 @@ public sealed class WorkspacePluginSelectionService : IWorkspacePluginSelectionS
         IReadOnlyList<SandboxSession> Uncommitted,
         IReadOnlyList<SandboxSession> Superseded,
         WorkspaceRef NewRef,
-        IReadOnlyList<(string WorkspaceId, string AppId)> NeverSettled,
-        IReadOnlyList<(string WorkspaceId, string AppId)> CasLost,
+        IReadOnlyList<(string WorkspaceId, string AppId, bool ReadOnlyEgress)> NeverSettled,
+        IReadOnlyList<(string WorkspaceId, string AppId, bool ReadOnlyEgress)> CasLost,
         int CommittedRevision
     );
 
@@ -648,7 +648,10 @@ public sealed class WorkspacePluginSelectionService : IWorkspacePluginSelectionS
                 return;
             }
 
-            var owed = new HashSet<(string WorkspaceId, string AppId)>([.. work.NeverSettled, .. work.CasLost]);
+            var owed = new HashSet<(string WorkspaceId, string AppId, bool ReadOnlyEgress)>([
+                .. work.NeverSettled,
+                .. work.CasLost,
+            ]);
 
             // Re-snapshot rather than reuse the original, bounded exactly like MigrateAsync's own
             // pre-commit snapshot (:322-ish above) — NOT the zero-budget synchronous capture this used

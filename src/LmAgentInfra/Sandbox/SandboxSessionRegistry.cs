@@ -56,6 +56,8 @@ public sealed record SubAgentSessionBinding(MutableSubAgentTemplateSource Source
 /// <param name="ImageReport">The gateway's conformance report for the image, including its warnings.</param>
 /// <param name="WorkspaceWorkingDir">The workspace-relative working directory the gateway acknowledged (the
 /// only place agents can write; ADR 0044), or <see langword="null"/> when none is set.</param>
+/// <param name="ReadOnlyEgress">True when this session was created with read-only ADO egress (see
+/// <see cref="WorkspaceRef.ReadOnlyEgress"/>): set from the same value that built its network rules.</param>
 public sealed record SandboxSession(
     string WorkspaceId,
     string SessionId,
@@ -66,7 +68,8 @@ public sealed record SandboxSession(
     string? Image = null,
     string? ImageDigest = null,
     SandboxImageReport? ImageReport = null,
-    string? WorkspaceWorkingDir = null
+    string? WorkspaceWorkingDir = null,
+    bool ReadOnlyEgress = false
 );
 
 /// <summary>
@@ -99,6 +102,10 @@ public sealed record SandboxSession(
 /// for the gateway default. See <see cref="SandboxCreateRequest.Image"/>.</param>
 /// <param name="WorkingDir">Workspace-relative working directory for the sandbox, or <see langword="null"/> for
 /// none. When set, the rest of the workspace is read-only for agents. See <see cref="SandboxCreateRequest.WorkingDir"/>.</param>
+/// <param name="ReadOnlyEgress">True for a sandbox whose ADO egress may only read: every allow rule that reaches
+/// an ADO host keeps only GET and HEAD. Part of the session-cache key, so a read-only thread and a normal thread
+/// on the same workspace and app id never share a sandbox. A conversation property, not workspace
+/// configuration: a ref rebuilt from the workspace catalog does not carry it, so every rebuild path pins it.</param>
 public sealed record WorkspaceRef(
     string Id,
     string? DirectoryRelPath = null,
@@ -106,7 +113,8 @@ public sealed record WorkspaceRef(
     IReadOnlyList<SandboxPluginRef>? PluginSelection = null,
     IReadOnlyDictionary<string, string>? Env = null,
     string? Image = null,
-    string? WorkingDir = null
+    string? WorkingDir = null,
+    bool ReadOnlyEgress = false
 );
 
 /// <summary>
@@ -284,12 +292,16 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// <summary>
     /// Sandbox sessions, partitioned by the (workspace id, caller app id) pair — see the class
     /// remarks — so two different callers requesting the SAME logical workspace never collide on
-    /// one shared session. Keyed by the <c>AppId</c> only, NEVER the secret <c>AppKey</c>. The
-    /// default equality comparer for a <c>(string, string)</c> value tuple already compares each
-    /// element with ordinal string equality, so no explicit comparer is needed.
+    /// one shared session. Keyed by the <c>AppId</c> only, NEVER the secret <c>AppKey</c>. The third
+    /// part, <see cref="WorkspaceRef.ReadOnlyEgress"/>, keeps a read-only-egress sandbox apart from the
+    /// normal one on the same workspace and app id: the two have different network rules. The
+    /// default equality comparer for the value tuple already compares each string element with
+    /// ordinal equality, so no explicit comparer is needed.
     /// </summary>
-    private readonly ConcurrentDictionary<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>> _sessions =
-        new();
+    private readonly ConcurrentDictionary<
+        (string WorkspaceId, string AppId, bool ReadOnlyEgress),
+        Lazy<Task<SandboxSession>>
+    > _sessions = new();
 
     /// <summary>
     /// Sub-agent binding (template source + agent factory) the loop uses to populate the Agent
@@ -489,7 +501,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// an invalidated slot claims the marker, so the linkage follows the replacement rather than the
     /// caller that noticed the eviction.
     /// </remarks>
-    private readonly ConcurrentDictionary<(string WorkspaceId, string AppId), string> _replacedSessions = new();
+    private readonly ConcurrentDictionary<
+        (string WorkspaceId, string AppId, bool ReadOnlyEgress),
+        string
+    > _replacedSessions = new();
 
     /// <summary>
     /// Initialises the registry.
@@ -954,10 +969,11 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     }
 
     /// <summary>Returns an already-created default-caller session without starting a sandbox.</summary>
+    /// <remarks>Only the normal (not read-only-egress) slot: callers are host-side readers.</remarks>
     public SandboxSession? TryGetExistingSession(string workspaceId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
-        var key = (workspaceId, _defaultCredential.AppId);
+        var key = (workspaceId, _defaultCredential.AppId, false);
         return _sessions.TryGetValue(key, out var lazy) && lazy.IsValueCreated && lazy.Value.IsCompletedSuccessfully
             ? lazy.Value.Result
             : null;
@@ -991,7 +1007,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         var workspaceId = string.IsNullOrWhiteSpace(workspaceRef.Id) ? DefaultWorkspaceId : workspaceRef.Id;
         var effectiveRef = workspaceRef with { Id = workspaceId };
         var effectiveCredential = credential ?? _defaultCredential;
-        var key = (workspaceId, effectiveCredential.AppId);
+        var key = (workspaceId, effectiveCredential.AppId, effectiveRef.ReadOnlyEgress);
 
         // Use CancellationToken.None inside the single-flight Lazy factory: the shared creation task
         // must not be poisoned by the first caller's request-scoped token being cancelled (e.g. that
@@ -1015,7 +1031,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// creation itself.
     /// </summary>
     private async Task<SandboxSession> AwaitAndEvictOnFailureAsync(
-        (string WorkspaceId, string AppId) key,
+        (string WorkspaceId, string AppId, bool ReadOnlyEgress) key,
         Lazy<Task<SandboxSession>> lazy
     )
     {
@@ -1028,8 +1044,16 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         {
             // Only evict the entry we own, in case another creation has since replaced it.
             _ = (
-                (ICollection<KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>>)_sessions
-            ).Remove(new KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>(key, lazy));
+                (ICollection<
+                    KeyValuePair<(string WorkspaceId, string AppId, bool ReadOnlyEgress), Lazy<Task<SandboxSession>>>
+                >)
+                    _sessions
+            ).Remove(
+                new KeyValuePair<(string WorkspaceId, string AppId, bool ReadOnlyEgress), Lazy<Task<SandboxSession>>>(
+                    key,
+                    lazy
+                )
+            );
             throw;
         }
 
@@ -1223,11 +1247,20 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             }
         }
 
-        await InvalidateSessionAsync((workspaceId, effectiveCredential.AppId), session).ConfigureAwait(false);
+        await InvalidateSessionAsync((workspaceId, effectiveCredential.AppId, effectiveRef.ReadOnlyEgress), session)
+            .ConfigureAwait(false);
 
         // Pin the id: the recreate must land on the SAME (workspaceId, appId) partition that was just
-        // invalidated, whatever id the store happens to echo back.
-        var refreshedRef = reloaded is null ? effectiveRef : reloaded with { Id = workspaceId };
+        // invalidated, whatever id the store happens to echo back. Pin the read-only bit too: the reload
+        // hook rebuilds the ref from the workspace catalog, which does not carry it, so an unpinned
+        // recreate of a read-only session would ask for a full-write sandbox.
+        var refreshedRef = reloaded is null
+            ? effectiveRef
+            : reloaded with
+            {
+                Id = workspaceId,
+                ReadOnlyEgress = effectiveRef.ReadOnlyEgress,
+            };
 
         return await GetOrCreateSessionAsync(refreshedRef, ct, effectiveCredential).ConfigureAwait(false);
     }
@@ -1326,7 +1359,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// main maps. The gateway already dropped this session (a 404 liveness probe is what brought us
     /// here), so no DELETE is issued.
     /// </summary>
-    private async Task InvalidateSessionAsync((string WorkspaceId, string AppId) key, SandboxSession session)
+    private async Task InvalidateSessionAsync(
+        (string WorkspaceId, string AppId, bool ReadOnlyEgress) key,
+        SandboxSession session
+    )
     {
         // Remove the cached creation ONLY when it still holds the exact dead session — mirroring
         // AwaitAndEvictOnFailureAsync's "only evict the entry we own" discipline. A plain key-removal
@@ -1340,8 +1376,16 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         )
         {
             _ = (
-                (ICollection<KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>>)_sessions
-            ).Remove(new KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>(key, lazy));
+                (ICollection<
+                    KeyValuePair<(string WorkspaceId, string AppId, bool ReadOnlyEgress), Lazy<Task<SandboxSession>>>
+                >)
+                    _sessions
+            ).Remove(
+                new KeyValuePair<(string WorkspaceId, string AppId, bool ReadOnlyEgress), Lazy<Task<SandboxSession>>>(
+                    key,
+                    lazy
+                )
+            );
 
             // Only when this call actually freed the slot: the next create for it is this session's
             // successor, and its event says so. Recording it when a concurrent caller had already
@@ -1479,7 +1523,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         {
             throw new ArgumentException("MCP automatic setup requires an enabled unified sandbox webhook.");
         }
-        var (authProviders, network) = BuildAuthProviders(sessionSecret, mcpContext);
+        var (authProviders, network) = BuildAuthProviders(sessionSecret, mcpContext, workspaceRef.ReadOnlyEgress);
         var (discovery, webhook) = BuildEventDelivery(sessionSecret, mcpContext is not null);
         // Per-workspace marketplace selection wins; fall back to the global config default when the
         // workspace enables none. Either way `null` means "omit the field, gateway picks its default".
@@ -1544,6 +1588,22 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             _logger.LogInformation(
                 "Sandbox session created with auth providers: {Providers}",
                 string.Join(", ", authProviders.Select(p => p.Id))
+            );
+        }
+
+        if (workspaceRef.ReadOnlyEgress)
+        {
+            // Rule ids and methods only: the evidence that this create asked for read-only ADO egress.
+            _logger.LogInformation(
+                "Creating read-only-egress sandbox session for workspace {WorkspaceId} (app {AppId}); rules: {Rules}",
+                workspaceId,
+                effectiveCredential.AppId,
+                string.Join(
+                    ", ",
+                    (network ?? []).Select(rule =>
+                        $"{rule.Id}[{(rule.Methods.Count == 0 ? "*" : string.Join("/", rule.Methods))}]"
+                    )
+                )
             );
         }
 
@@ -1658,7 +1718,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 info.Image,
                 info.ImageDigest,
                 info.ImageReport,
-                info.WorkspaceWorkingDir
+                info.WorkspaceWorkingDir,
+                // The same value that built this create's network rules above, so the factory's
+                // session/thread check compares against what the gateway was actually sent.
+                workspaceRef.ReadOnlyEgress
             );
 
             // The gateway session now exists remotely. Publish its maps and persist its secret as one
@@ -1730,7 +1793,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             // subscriber's latency never lands inside this shared creation — see _unreportedCreations.
             if (_lifecycle.PublishesEvents)
             {
-                _ = _replacedSessions.TryRemove((workspaceId, effectiveCredential.AppId), out var replacedSessionId);
+                _ = _replacedSessions.TryRemove(
+                    (workspaceId, effectiveCredential.AppId, workspaceRef.ReadOnlyEgress),
+                    out var replacedSessionId
+                );
                 _unreportedCreations[session.SessionId] = new SandboxCreatedPayload
                 {
                     SessionId = session.SessionId,
@@ -2905,8 +2971,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     private (
         IReadOnlyList<SandboxAuthProvider>? Providers,
         IReadOnlyList<SandboxNetworkRule>? Network
-    ) BuildAuthProviders(string sessionSecret, SandboxMcpSessionContext? mcpContext = null) =>
-        BuildAuthPolicyCore(_authOptions, _options, sessionSecret, _predefinedKeys, mcpContext);
+    ) BuildAuthProviders(string sessionSecret, SandboxMcpSessionContext? mcpContext, bool readOnlyEgress) =>
+        BuildAuthPolicyCore(_authOptions, _options, sessionSecret, _predefinedKeys, mcpContext, readOnlyEgress);
 
     /// <summary>
     /// Builds the optional auth-provider and network blocks from managed OAuth providers,
@@ -2916,6 +2982,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// <param name="options">The sandbox gateway configuration, including the egress policy.</param>
     /// <param name="sessionSecret">The shared secret authenticating gateway webhook requests.</param>
     /// <param name="predefinedKeys">Optional runtime predefined egress keys.</param>
+    /// <param name="readOnlyEgress">True to build read-only ADO egress: every allow rule that reaches an ADO
+    /// host keeps only GET and HEAD. False (the default) builds exactly the rules every sandbox had before.</param>
     /// <returns>The auth providers and network rules, with null for each empty block.</returns>
     public static (
         IReadOnlyList<SandboxAuthProvider>? Providers,
@@ -2924,7 +2992,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         AuthOptions authOptions,
         SandboxGatewayOptions options,
         string sessionSecret,
-        PredefinedKeyRegistry? predefinedKeys = null
+        PredefinedKeyRegistry? predefinedKeys = null,
+        bool readOnlyEgress = false
     )
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -2933,7 +3002,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             options,
             sessionSecret,
             predefinedKeys,
-            SandboxMcpConfiguration.Snapshot(options.Mcp, options.AppId)
+            SandboxMcpConfiguration.Snapshot(options.Mcp, options.AppId),
+            readOnlyEgress
         );
     }
 
@@ -2945,7 +3015,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         SandboxGatewayOptions options,
         string sessionSecret,
         PredefinedKeyRegistry? predefinedKeys,
-        SandboxMcpSessionContext? mcpContext
+        SandboxMcpSessionContext? mcpContext,
+        bool readOnlyEgress
     )
     {
         ArgumentNullException.ThrowIfNull(authOptions);
@@ -3185,6 +3256,13 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
 
         providers.AddRange(SandboxEgressPolicyCompiler.CompileProviders(options, baseUrl, sessionSecret));
 
+        // Read-only ADO egress narrows the EFFECTIVE (merged) rule set, so a configured rule that replaced
+        // the managed `ado` rule, or any other allow rule that can reach an ADO host, is narrowed too.
+        if (readOnlyEgress)
+        {
+            NarrowAdoToReadOnly(rules);
+        }
+
         // Precedence over the EFFECTIVE (merged) rule set. The config-only check above cannot see the
         // managed OAuth gates or the runtime predefined-key gates, and a config rule that REPLACES a
         // managed rule leaves no gate behind — so shadowing is only decidable once everything is merged.
@@ -3199,6 +3277,60 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         }
 
         return (providers.Count > 0 ? providers : null, rules.Count > 0 ? rules : null);
+    }
+
+    /// <summary>The only methods an allow rule that reaches ADO keeps in a read-only-egress sandbox.</summary>
+    private static readonly string[] ReadOnlyMethods = ["GET", "HEAD"];
+
+    /// <summary>
+    /// Narrows every allow rule that can reach an ADO host (its hosts are empty, meaning any host, or overlap
+    /// <c>OAuthProviderHosts.For("ado")</c>) to the GET and HEAD it already allowed; empty or <c>*</c> methods
+    /// count as all. A rule left with no method is removed. Id, hosts, ports, paths, auth provider, scopes and
+    /// priority are kept, so credential injection and precedence are unchanged. Deny rules are untouched. An
+    /// allow-list rather than a deny rule: the gateway denies anything no rule allows, so a verb nobody listed
+    /// (or a rule added later) cannot slip through.
+    /// </summary>
+    private static void NarrowAdoToReadOnly(List<SandboxNetworkRule> rules)
+    {
+        var adoHosts = OAuthProviderHosts.For("ado");
+        for (var index = rules.Count - 1; index >= 0; index--)
+        {
+            var rule = rules[index];
+            var reachesAdo =
+                rule.Hosts.Count == 0
+                || rule.Hosts.Any(host =>
+                    adoHosts.Any(adoHost => SandboxEgressPolicyCompiler.HostsOverlap(host, adoHost))
+                );
+            if (!string.Equals(rule.Action, "allow", StringComparison.OrdinalIgnoreCase) || !reachesAdo)
+            {
+                continue;
+            }
+
+            var anyMethod = rule.Methods.Count == 0 || rule.Methods.Contains("*", StringComparer.Ordinal);
+            string[] methods =
+            [
+                .. ReadOnlyMethods.Where(method =>
+                    anyMethod || rule.Methods.Contains(method, StringComparer.OrdinalIgnoreCase)
+                ),
+            ];
+            if (methods.Length == 0)
+            {
+                rules.RemoveAt(index);
+                continue;
+            }
+
+            rules[index] = new SandboxNetworkRule(
+                rule.Id,
+                rule.Action,
+                rule.Hosts,
+                rule.Ports,
+                methods,
+                rule.Paths,
+                rule.AuthProvider,
+                rule.RequiredScopes,
+                rule.Priority
+            );
+        }
     }
 
     /// <summary>

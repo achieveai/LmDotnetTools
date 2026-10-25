@@ -225,6 +225,36 @@ internal sealed class LmStreamingS2SClient
     /// <c>AskUserQuestion</c> or see <c>NotifyClient</c>, so the host leaves both out of the whole agent tree.
     /// Additive like <c>subAgentModelId</c>: a host that predates the field ignores it and keeps both tools.
     /// </summary>
+    public Task<string> ProvisionAsync(
+        string workspaceId,
+        string providerId,
+        string modeId,
+        string? systemPromptAppendix,
+        string? subAgentModelId,
+        string? reasoningEffort,
+        string? workingDirectory,
+        bool disableClientTools,
+        CancellationToken ct
+    ) =>
+        ProvisionAsync(
+            workspaceId,
+            providerId,
+            modeId,
+            systemPromptAppendix,
+            subAgentModelId,
+            reasoningEffort,
+            workingDirectory,
+            disableClientTools,
+            readOnlyEgress: false,
+            ct
+        );
+
+    /// <summary>
+    /// <paramref name="readOnlyEgress"/> asks the host for a thread whose sandbox may only read ADO (GET and
+    /// HEAD). Unlike <c>disableClientTools</c> this is a contract, not a hint: a host that predates the field
+    /// ignores it and would give the thread full egress, so a reply without <c>readOnlyEgressAccepted: true</c>
+    /// deletes the thread (best effort) and throws <see cref="ReviewHostContractException"/>.
+    /// </summary>
     public async Task<string> ProvisionAsync(
         string workspaceId,
         string providerId,
@@ -234,6 +264,7 @@ internal sealed class LmStreamingS2SClient
         string? reasoningEffort,
         string? workingDirectory,
         bool disableClientTools,
+        bool readOnlyEgress,
         CancellationToken ct
     )
     {
@@ -258,6 +289,7 @@ internal sealed class LmStreamingS2SClient
                 ReasoningEffort = reasoningEffort,
                 WorkingDirectoryRelPath = workingDirectory,
                 DisableClientTools = disableClientTools,
+                ReadOnlyEgress = readOnlyEgress,
             },
             ct
         );
@@ -292,7 +324,16 @@ internal sealed class LmStreamingS2SClient
         _ = response.EnsureSuccessStatusCode();
         var body = await response.Content.ReadAsStringAsync(ct);
         var threadId = ReadStringProperty(body, "threadId");
-        if (reasoningEffort is not null && !ReadBoolProperty(body, "reasoningEffortAccepted"))
+        // A contract the host did not acknowledge: it predates the field and ignored it.
+        var unacknowledged =
+            reasoningEffort is not null && !ReadBoolProperty(body, "reasoningEffortAccepted")
+                ? $"The LmStreaming review host at {_baseUrl} did not acknowledge requested root reasoning effort "
+                    + $"'{reasoningEffort}'. Upgrade the review host before running this review."
+            : readOnlyEgress && !ReadBoolProperty(body, "readOnlyEgressAccepted")
+                ? $"The LmStreaming review host at {_baseUrl} did not acknowledge requested read-only egress; "
+                    + $"thread '{threadId}' was not used and its delete was attempted. Upgrade the review host first."
+            : null;
+        if (unacknowledged is not null)
         {
             try
             {
@@ -305,10 +346,7 @@ internal sealed class LmStreamingS2SClient
                 // returned it to the caller.
             }
 
-            throw new ReviewHostContractException(
-                $"The LmStreaming review host at {_baseUrl} did not acknowledge requested root reasoning effort "
-                    + $"'{reasoningEffort}'. Upgrade the review host before running this review."
-            );
+            throw new ReviewHostContractException(unacknowledged);
         }
 
         _listing?.Apply(

@@ -420,17 +420,7 @@ internal static class JudgeRunner
                 await QuietGateAsync(LatestJudgeThread());
                 try
                 {
-                    thread = await client.ProvisionAsync(
-                        hostWorkspace.Id,
-                        stored["provider"]!.GetValue<string>(),
-                        stored["mode"]!.GetValue<string>(),
-                        null,
-                        null,
-                        stored["effort"]!.GetValue<string>(),
-                        workingDirectory: null,
-                        disableClientTools: true,
-                        ct
-                    );
+                    thread = await ProvisionJudgeThreadAsync(client, hostWorkspace.Id, stored, ct);
                 }
                 catch (Exception failure) when (!ct.IsCancellationRequested)
                 {
@@ -1703,6 +1693,31 @@ internal static class JudgeRunner
         IsHostOutage(failure, ct)
             ? $"the host was too slow: {failure.Message} No judge ran and nothing was spent; rerun later"
             : failure.Message;
+
+    /// <summary>
+    ///     Provisions the judge thread from the judgment's stored <paramref name="identity" />: headless, and with
+    ///     read-only egress, so its sandbox may only GET and HEAD ADO while the review lanes on the same workspace keep
+    ///     full egress. A host that does not acknowledge read-only egress gets the thread deleted and a
+    ///     <see cref="ReviewHostContractException" />, which ends the judgment failed-precondition before any send.
+    /// </summary>
+    internal static Task<string> ProvisionJudgeThreadAsync(
+        LmStreamingS2SClient client,
+        string workspaceId,
+        JsonNode identity,
+        CancellationToken ct
+    ) =>
+        client.ProvisionAsync(
+            workspaceId,
+            identity["provider"]!.GetValue<string>(),
+            identity["mode"]!.GetValue<string>(),
+            null,
+            null,
+            identity["effort"]!.GetValue<string>(),
+            workingDirectory: null,
+            disableClientTools: true,
+            readOnlyEgress: true,
+            ct
+        );
 
     /// <summary>
     ///     Null when the judge on <paramref name="thread" /> is quiet, else what still runs (see StillRunning); judge

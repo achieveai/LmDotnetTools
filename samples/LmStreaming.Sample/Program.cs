@@ -1175,11 +1175,18 @@ try
                         .ComputeEffectiveAsync(threadId, effectiveWorkspaceId, mode.Id, CancellationToken.None)
                         .GetAwaiter()
                         .GetResult();
+                    // Read on every build (restart, mode or provider switch, pool refresh), like the working
+                    // directory. Fail-closed: an unreadable stored value throws rather than reading as false.
+                    var readOnlyEgress = ConversationReadOnlyEgress
+                        .ReadAsync(sp.GetRequiredService<IConversationStore>(), threadId)
+                        .GetAwaiter()
+                        .GetResult();
                     // First create carries the full merged map; a gateway-404 recreate only knows the
                     // workspace layer, which the Ensure call after the session resolves tops up.
                     workspaceRef = workspaceRef with
                     {
                         Env = effectiveEnv,
+                        ReadOnlyEgress = readOnlyEgress,
                     };
                     if (workspace is not null)
                     {
@@ -1218,6 +1225,28 @@ try
                         .GetOrCreateLiveSessionAsync(workspaceRef, credential: callerCredential)
                         .GetAwaiter()
                         .GetResult();
+                    // The one place a thread is handed a sandbox (the pool refresh rebuilds through here when
+                    // the session changes). A read-only thread must never run in a full-write sandbox, nor a
+                    // normal thread in a read-only one.
+                    if (sandboxSession.ReadOnlyEgress != workspaceRef.ReadOnlyEgress)
+                    {
+                        throw new InvalidOperationException(
+                            $"Thread '{threadId}' asked for a sandbox with read-only egress = "
+                                + $"{workspaceRef.ReadOnlyEgress} but got session '{sandboxSession.SessionId}' "
+                                + $"with read-only egress = {sandboxSession.ReadOnlyEgress}."
+                        );
+                    }
+                    loggerFactory
+                        .CreateLogger("LmStreaming.Sample.SandboxBinding")
+                        .LogInformation(
+                            "Thread {ThreadId} bound to sandbox session {SessionId} (workspace {WorkspaceId}, "
+                                + "app {AppId}, read-only egress {ReadOnlyEgress})",
+                            threadId,
+                            sandboxSession.SessionId,
+                            effectiveWorkspaceId,
+                            (callerCredential ?? sandboxRegistry.DefaultCredential).AppId,
+                            sandboxSession.ReadOnlyEgress
+                        );
                     // The effective credential is the caller's or the process default (never null) — used for
                     // gateway calls. The THIRD arg preserves the original caller's provenance (null for the
                     // interactive UI) so the file-browser resolver can distinguish an interactive owner from

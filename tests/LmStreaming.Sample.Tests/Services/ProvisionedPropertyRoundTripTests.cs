@@ -224,6 +224,47 @@ public sealed class ProvisionedPropertyRoundTripTests : IDisposable
     }
 
     [Fact]
+    public async Task ReadOnlyEgress_survives_the_production_stores_json_round_trip_and_junk_fails_closed()
+    {
+        var readOnly = $"thread-{Guid.NewGuid():N}";
+        var junk = $"thread-{Guid.NewGuid():N}";
+        var plain = $"thread-{Guid.NewGuid():N}";
+        var store = new FileConversationStore(_root);
+        foreach (var (threadId, value) in new (string, object?)[] { (readOnly, true), (junk, "yes"), (plain, null) })
+        {
+            await store.UpdateMetadataAsync(
+                threadId,
+                existing =>
+                {
+                    var builder =
+                        existing?.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
+                    if (value is not null)
+                    {
+                        builder[ConversationReadOnlyEgress.PropertyKey] = value;
+                    }
+
+                    return new ThreadMetadata
+                    {
+                        ThreadId = threadId,
+                        LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        Properties = builder.ToImmutable(),
+                    };
+                }
+            );
+        }
+
+        (await ConversationReadOnlyEgress.ReadAsync(store, readOnly))
+            .Should()
+            .BeTrue(
+                "the flag is written as a bool at provision and read back as a JsonElement; a reader that "
+                    + "misses that gives the judge a full-write sandbox"
+            );
+        (await ConversationReadOnlyEgress.ReadAsync(store, plain)).Should().BeFalse();
+        var readJunk = () => ConversationReadOnlyEgress.ReadAsync(store, junk);
+        _ = await readJunk.Should().ThrowAsync<InvalidOperationException>().WithMessage("*sample.readOnlyEgress*");
+    }
+
+    [Fact]
     public async Task Absent_properties_still_read_as_null_after_a_round_trip()
     {
         var threadId = $"thread-{Guid.NewGuid():N}";
