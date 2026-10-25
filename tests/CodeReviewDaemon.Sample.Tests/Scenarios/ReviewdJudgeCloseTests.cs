@@ -808,7 +808,7 @@ public sealed class ReviewdJudgeCloseTests
             .Git(universe.Origin, "log", "-1", "--format=%an <%ae>|%s", commit)
             .Should()
             .Be("Store Owner <owner@example.com>|close: X !1 (judgment 3)");
-        universe.AssertClean();
+        universe.AssertClean(pushed: commit);
     }
 
     [SkippableFact]
@@ -906,7 +906,7 @@ public sealed class ReviewdJudgeCloseTests
 
         closed["status"]!.GetValue<string>().Should().Be("closed");
         universe.Git(universe.Origin, "rev-parse", "main^").Should().Be(closed["commit"]!.GetValue<string>());
-        universe.AssertClean();
+        universe.AssertClean(pushed: closed["commit"]!.GetValue<string>());
     }
 
     // git accepted the push, so a failed read of main after it is not a plain git failure: the close landed, and the
@@ -1109,6 +1109,7 @@ public sealed class ReviewdJudgeCloseTests
         private readonly string _root = Path.Combine(Path.GetTempPath(), "rj-close-" + Guid.NewGuid().ToString("N"));
         private string _nonce = "";
         private string _baseline = "";
+        private string _tracking = "";
 
         public string Origin => Path.Combine(_root, "origin.git");
         public string Store => Path.Combine(_root, "store");
@@ -1136,8 +1137,13 @@ public sealed class ReviewdJudgeCloseTests
             return u;
         }
 
-        /// <summary>Records the store's HEAD, local main, index, status and refs; AssertClean compares against it.</summary>
-        public void Rebaseline() => _baseline = Fingerprint();
+        /// <summary>
+        /// Records the store's HEAD, local main, index, status and refs; AssertClean compares against it. origin/main
+        /// (and origin/HEAD, which points at it) is recorded apart, because a push may move it.
+        /// </summary>
+        public void Rebaseline() => (_baseline, _tracking) = (Fingerprint(), Tracking());
+
+        private string Tracking() => Git(Store, "rev-parse", "refs/remotes/origin/main");
 
         private string Fingerprint() =>
             string.Join(
@@ -1151,7 +1157,16 @@ public sealed class ReviewdJudgeCloseTests
                         )
                     ),
                 "status " + Git(Store, "--no-optional-locks", "status", "--porcelain=v1", "-uall"),
-                "refs " + Git(Store, "for-each-ref", "--format=%(refname) %(objectname)")
+                "refs "
+                    + string.Join(
+                        '\n',
+                        Git(Store, "for-each-ref", "--format=%(refname) %(objectname)")
+                            .Split('\n')
+                            .Where(r =>
+                                !r.StartsWith("refs/remotes/origin/HEAD ", StringComparison.Ordinal)
+                                && !r.StartsWith("refs/remotes/origin/main ", StringComparison.Ordinal)
+                            )
+                    )
             );
 
         public JsonObject PrepareArgs(int judgment)
@@ -1313,12 +1328,22 @@ public sealed class ReviewdJudgeCloseTests
             return commit;
         }
 
-        public void AssertClean()
+        /// <param name="pushed">
+        /// The commit close pushed to origin main, if it pushed one. git moves origin/main to it after a push to origin,
+        /// and from Git 2.56 also after a push to origin's URL, which is how these tests name the remote.
+        /// </param>
+        public void AssertClean(string? pushed = null)
         {
             Git(Store, "for-each-ref", "refs/reviewd").Should().BeEmpty("close deletes its private refs");
             Fingerprint()
                 .Should()
                 .Be(_baseline, "close never moves the store's HEAD, local main, index, status or refs");
+            Tracking()
+                .Should()
+                .BeOneOf(
+                    pushed is null ? [_tracking] : [_tracking, pushed],
+                    "only git's own update after a push moves origin/main; close's fetches use --refmap="
+                );
             var scratch = Path.Combine(Store, ".scratch", "reviewd-close");
             (Directory.Exists(scratch) ? Directory.GetFileSystemEntries(scratch) : [])
                 .Should()

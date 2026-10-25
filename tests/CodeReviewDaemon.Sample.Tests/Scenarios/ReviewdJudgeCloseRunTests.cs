@@ -469,7 +469,7 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
 
         exit.Should().Be(0, err);
         output.Should().Contain(execute ? "\"status\":\"closed\"" : "\"status\":\"planned\"");
-        universe.AssertClean();
+        universe.AssertClean(pushed: execute ? universe.Git(universe.Origin, "rev-parse", "main") : null);
         if (!execute)
             universe.Git(universe.Origin, "rev-parse", "main").Should().Be(universe.Main, "a preview pushes nothing");
         else
