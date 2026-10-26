@@ -311,7 +311,7 @@ class GitHubProvider:
 
     def collect_context(self, resolved: ResolvedPullRequest, worktree: Path) -> dict:
         """Read-only context bound to the prepared merge. Raises PullRequestMoved on any drift."""
-        from review_ado import _collect_file_changes  # provider-neutral Git diff/blame provenance
+        from review_ado import _collect_file_changes, _history  # provider-neutral Git diff/blame provenance
 
         pre = fetch_pr(self.client, resolved.pr)
         pre_live = live_state(pre)
@@ -328,10 +328,6 @@ class GitHubProvider:
         base_sha = validate_sha(run_git(worktree, ["merge-base", parents[1], snapshot["head_sha"]]).stdout.strip())
         changes = _collect_file_changes(worktree, base_sha, snapshot["head_sha"], current_pr=resolved.pr)
         provenance = _origin_prs(self.client, changes["historical_commits"])
-        for entry in changes["files"]:
-            entry["commits"] = sorted({line["commit"] for line in entry["blame"] if not line["shallow_boundary"]})
-            entry["origin_pr_ids"] = sorted({number for commit in entry["commits"]
-                                            for number in provenance["commits"].get(commit, {}).get("pr_ids", [])})
         issues = _linked_issues(self.client, snapshot)
         discussion = _discussion(self.client, resolved.pr)
         post = live_state(fetch_pr(self.client, resolved.pr))
@@ -340,7 +336,7 @@ class GitHubProvider:
         warnings = changes["warnings"] + provenance["warnings"] + issues["warnings"]
         return {"snapshot": snapshot, "base_sha": base_sha, "collected_at": datetime.now(timezone.utc).isoformat(),
                 "linked_issues": issues, "discussion": discussion, "files": changes["files"],
-                "provenance": provenance, "warnings": warnings,
+                "history": _history(changes, provenance), "warnings": warnings,
                 "complete": changes["complete"] and provenance["complete"] and issues["complete"]}
 
 

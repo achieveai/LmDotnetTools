@@ -4297,7 +4297,8 @@ public sealed class ReviewdRunnerTests
                 .Requests.First(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
                 .Body.Should()
                 .Contain("setup-context.json")
-                .And.Contain("Do not reset or rerun setup");
+                .And.Contain("Do not reset or rerun setup")
+                .And.Contain("give it only to a history specialist, who writes anything useful into history-notes.md");
             await SnapshotAsync('d');
             var beforeReReview = handler.Requests.Count;
             first["reviewCompletedAt"] = DateTimeOffset.UtcNow.AddHours(-1);

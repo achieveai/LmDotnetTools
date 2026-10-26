@@ -57,6 +57,15 @@ _API = "api-version=7.1"
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _BLAME_HEADER = re.compile(r"^([0-9a-f]{40}) (\d+) (\d+)(?: (\d+))?$")
+# The prepared context stays small (Kay9: no archived file over 1 MiB, and files a model reads easily). Blame was one
+# record per line and once made a 347 MB context (viva-skills #5797647). It is now one row per commit, and a file with
+# more changed base lines than this is noted as too big to blame. Other PRs keep their first _PR_TEXT characters. Work
+# items outside the PR's links and their parents keep only a title, and at most _OTHER_WORK_ITEMS of them are listed.
+_MAX_BLAME_LINES = 20000
+_BLAME_COMMITS_PER_FILE = 50
+_BLAME_RANGES_TEXT = 1000
+_PR_TEXT = 300
+_OTHER_WORK_ITEMS = 100
 
 # Well-known Azure AD resource ID for Azure DevOps (used by both `az rest`
 # and `az account get-access-token`); not a secret.
@@ -508,9 +517,53 @@ def _collect_work_items(client, snapshot, *, max_work_items=2000, max_depth=64):
             stack.append((number, True))
             stack.extend((child, False) for child in graph.get(number, []))
     _event("work_item_family_collected", nodes=len(nodes), roots=len(roots), missing=len(missing))
-    return {"linked_ids": linked, "roots": sorted(roots), "nodes": [nodes[key] for key in sorted(nodes)],
-            "edges": [{"source": a, "target": b, "kind": kind} for a, b, kind in sorted(edges)] + extra_relations,
-            "missing_ids": sorted(missing), "warnings": warnings, "complete": not warnings}
+    # The PR's own items and their parents are what the review reads (80% of the family's bytes were the rest), so
+    # only those keep their text; the rest of the family is listed by title.
+    parents = {}
+    for parent, child, kind in edges:
+        if kind == "child":
+            parents.setdefault(child, set()).add(parent)
+    full, pending = set(linked) & set(nodes), [number for number in linked if number in nodes]
+    while pending:
+        for parent in parents.get(pending.pop(), ()):
+            if parent in nodes and parent not in full:
+                full.add(parent)
+                pending.append(parent)
+    others = [number for number in sorted(nodes) if number not in full]
+    listed = full | set(others[:_OTHER_WORK_ITEMS])
+    shown = [{**nodes[number], "description": _plain(nodes[number]["description"]),
+              "acceptance_criteria": _plain(nodes[number]["acceptance_criteria"]),
+              "assigned_to": _name(nodes[number]["assigned_to"])} if number in full
+             else {key: nodes[number][key] for key in ("id", "type", "title", "state")}
+             for number in sorted(listed)]
+    family = {"linked_ids": linked, "roots": sorted(roots), "nodes": shown,
+              "edges": [{"source": a, "target": b, "kind": kind} for a, b, kind in sorted(edges)
+                        if a in full or b in full or (a in listed and b in listed)]
+                       + [relation for relation in extra_relations if relation["source"] in full],
+              "missing_ids": sorted(missing), "warnings": warnings, "complete": not warnings}
+    if len(others) > _OTHER_WORK_ITEMS:
+        family["not_listed"] = f"{len(others) - _OTHER_WORK_ITEMS} more work items in the same family"
+    return family
+
+
+def _plain(value):
+    """Work-item HTML as plain text: tags (and any inline images) dropped, entities decoded, blank runs folded."""
+    if not isinstance(value, str):
+        return value
+    text = re.sub(r"(?i)<br\s*/?>|</(?:p|div|li|tr|h[1-6])>", "\n", value)
+    text = html.unescape(re.sub(r"<[^>]*>", "", text))
+    return re.sub(r"\n\s*\n+", "\n", re.sub(r"[ \t\u00a0]+", " ", text)).strip()
+
+
+def _name(identity):
+    """A person as their display name; the identity record's ids and avatar links add nothing to a review."""
+    return identity.get("displayName") or identity.get("uniqueName") if isinstance(identity, dict) else identity
+
+
+def _clip(text, limit):
+    if not isinstance(text, str) or len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + f" ... [{len(text) - limit} more characters]"
 
 
 def _merge_ranges(ranges):
@@ -596,6 +649,43 @@ def _parse_blame(text, shallow):
     return records
 
 
+def _line_ranges(lines):
+    """Line numbers as ranges ("3-7,12"), cut at _BLAME_RANGES_TEXT characters with a count of the ranges left out."""
+    ranges = []
+    for line in sorted(set(lines)):
+        if ranges and line == ranges[-1][1] + 1:
+            ranges[-1][1] = line
+        else:
+            ranges.append([line, line])
+    parts = [f"{start}-{end}" if end > start else str(start) for start, end in ranges]
+    text = ""
+    for shown, part in enumerate(parts):
+        if len(text) + len(part) + 1 > _BLAME_RANGES_TEXT:
+            return f"{text} (+{len(parts) - shown} more ranges)"
+        text = f"{text},{part}" if text else part
+    return text
+
+
+def _blame_rows(records, old_path, details):
+    """One row per commit (and per source file, for lines copied from another path): how many of the base lines it
+    last changed, and which. The commit's author, date and title go into ``details`` once, not into every row."""
+    groups = {}
+    for record in records:
+        commit = record["commit"]
+        if commit not in details:
+            when = record.get("author_time", "")
+            details[commit] = {key: value for key, value in (
+                ("author", record.get("author")), ("summary", record.get("summary")),
+                ("date", datetime.fromtimestamp(int(when), timezone.utc).date().isoformat() if when.isdigit() else None),
+                ("shallow_boundary", record["shallow_boundary"] or None)) if value}
+        source = record.get("original_path")
+        groups.setdefault((commit, None if source == old_path else source), []).append(record["base_line"])
+    ordered = sorted(groups.items(), key=lambda item: (-len(item[1]), item[0][0]))
+    rows = [{"commit": commit, "lines": len(lines), "base_lines": _line_ranges(lines), **({"from_path": source} if source else {})}
+            for (commit, source), lines in ordered[:_BLAME_COMMITS_PER_FILE]]
+    return rows, ordered[_BLAME_COMMITS_PER_FILE:]
+
+
 def _collect_file_changes(source_root, base_sha, head_sha, *, current_pr, context_lines=3):
     """Collect per-file changed ranges and historical blame without altering Git state."""
     source_root = Path(source_root)
@@ -611,7 +701,7 @@ def _collect_file_changes(source_root, base_sha, head_sha, *, current_pr, contex
     if not shallow_file.is_absolute():
         shallow_file = source_root / shallow_file
     shallow = set(shallow_file.read_text().splitlines()) if shallow_file.is_file() else set()
-    files, warnings, historical = [], [], set()
+    files, blame, details, warnings, historical = [], [], {}, [], set()
     index = 0
     while index < len(tokens) and tokens[index]:
         status = tokens[index]
@@ -631,7 +721,7 @@ def _collect_file_changes(source_root, base_sha, head_sha, *, current_pr, contex
         entry = {"file_id": hashlib.sha256((status + "\0" + old_path + "\0" + path).encode("utf-8", "surrogateescape")).hexdigest()[:16],
                  "status": status, "path": path, "old_path": old_path,
                  "base_ranges": [], "added_ranges": [], "added_lines_pr": current_pr,
-                 "blame": [], "provenance_status": "complete"}
+                 "provenance_status": "complete"}
         paths = [old_path] if old_path == path else [old_path, path]
         modes = []
         for commit, filename in ((base_sha, old_path), (head_sha, path)):
@@ -645,26 +735,38 @@ def _collect_file_changes(source_root, base_sha, head_sha, *, current_pr, contex
                 entry["provenance_status"] = "not-applicable-binary"
             else:
                 entry["base_ranges"], entry["added_ranges"] = _parse_diff_ranges(patch)
-                for start, end in entry["base_ranges"]:
+                ranges = entry["base_ranges"]
+                if sum(end - start + 1 for start, end in ranges) > _MAX_BLAME_LINES:
+                    # A note, not a warning: the review goes on, without this one file's history.
+                    entry["provenance_status"] = "skipped-too-many-lines"
+                    ranges = []
+                records = []
+                for start, end in ranges:
                     result = run_git(source_root, ["blame", "--no-textconv", "--line-porcelain", "-M", "-C", "-L", f"{start},{end}", base_sha, "--", old_path], check=False)
                     if result.returncode:
                         entry["provenance_status"] = "partial-blame-failed"
                         warnings.append(f"Blame failed for file {entry['file_id']} range {start}-{end}.")
                         continue
-                    records = _parse_blame(result.stdout, shallow)
-                    if len(records) != end - start + 1:
+                    found = _parse_blame(result.stdout, shallow)
+                    if len(found) != end - start + 1:
                         entry["provenance_status"] = "partial-blame-output"
                         warnings.append(f"Blame returned incomplete line records for file {entry['file_id']}.")
-                    entry["blame"].extend(records)
-                    if any(record["shallow_boundary"] for record in records):
+                    records.extend(found)
+                    if any(record["shallow_boundary"] for record in found):
                         entry["provenance_status"] = "partial-shallow-history"
                         warnings.append(f"Shallow history limits provenance for file {entry['file_id']}; deepen history to complete it.")
-                    historical.update(record["commit"] for record in records if not record["shallow_boundary"] and record["commit"] != "0" * 40)
+                    historical.update(record["commit"] for record in found if not record["shallow_boundary"] and record["commit"] != "0" * 40)
+                if records:
+                    rows, rest = _blame_rows(records, old_path, details)
+                    blame.append({"path": path, "lines": len(records), "by_commit": rows})
+                    if rest:
+                        blame[-1]["more"] = f"{len(rest)} more commits ({sum(len(lines) for _, lines in rest)} lines) not listed"
                 if not entry["base_ranges"]:
                     entry["provenance_status"] = "current-pr-only" if entry["added_ranges"] else "not-applicable-no-changed-lines"
         files.append(entry)
     _event("changed_regions_collected", files=len(files), commits=len(historical), warnings=len(warnings))
-    return {"files": files, "historical_commits": sorted(historical), "warnings": warnings, "complete": not warnings}
+    return {"files": files, "blame": blame, "commit_details": details, "historical_commits": sorted(historical),
+            "warnings": warnings, "complete": not warnings}
 
 
 def _resolve_origin_prs(client, snapshot, commits, *, max_commits=500):
@@ -718,16 +820,31 @@ def _resolve_origin_prs(client, snapshot, commits, *, max_commits=500):
     return {"commits": mappings, "pull_requests": pull_requests, "warnings": warnings, "complete": not warnings}
 
 
+def _history(changes, provenance):
+    """Who last changed the PR's base lines, and in which earlier PRs. Only the review's history specialist reads this
+    part, and the review archive does not keep it, so the context the whole review reads stays small."""
+    associations = provenance["commits"]
+    for entry in changes["blame"]:
+        entry["origin_pr_ids"] = sorted({number for row in entry["by_commit"]
+                                         for number in associations.get(row["commit"], {}).get("pr_ids", [])})
+    pull_requests = {}
+    for number, pr in provenance["pull_requests"].items():
+        pull_requests[number] = dict(pr)
+        if "author" in pr:
+            pull_requests[number]["author"] = _name(pr["author"])
+        if "description" in pr:
+            pull_requests[number]["description"] = _clip(pr["description"], _PR_TEXT)
+    return {"files": changes["blame"],
+            "commits": {commit: {**detail, **associations.get(commit, {})} for commit, detail in sorted(changes["commit_details"].items())},
+            "pull_requests": pull_requests, "complete": provenance["complete"]}
+
+
 def _build_context_report(client, snapshot, source_root, base_sha, *, context_lines=3, max_work_items=2000, max_depth=64, max_commits=500):
     work_items = _collect_work_items(client, snapshot, max_work_items=max_work_items, max_depth=max_depth)
     changes = _collect_file_changes(source_root, base_sha, snapshot["head_sha"], current_pr=snapshot["pr_number"], context_lines=context_lines)
     provenance = _resolve_origin_prs(client, snapshot, changes["historical_commits"], max_commits=max_commits)
-    for entry in changes["files"]:
-        entry["commits"] = sorted({line["commit"] for line in entry["blame"] if not line["shallow_boundary"]})
-        entry["origin_pr_ids"] = sorted({number for commit in entry["commits"]
-                                        for number in provenance["commits"].get(commit, {}).get("pr_ids", [])})
     return {"snapshot": snapshot, "base_sha": base_sha, "collected_at": datetime.now(timezone.utc).isoformat(),
-            "work_items": work_items, "files": changes["files"], "provenance": provenance,
+            "work_items": work_items, "files": changes["files"], "history": _history(changes, provenance),
             "warnings": work_items["warnings"] + changes["warnings"] + provenance["warnings"],
             "complete": work_items["complete"] and changes["complete"] and provenance["complete"]}
 
@@ -741,7 +858,7 @@ def _text(value):
 
 
 def render_context_markdown(report: dict) -> str:
-    """Ported verbatim from review_context.py's render_markdown()."""
+    """Ported from review_context.py's render_markdown(); line history now comes from the report's history part."""
     snapshot = report.get("snapshot") or report.get("pr") or {}
     repo = snapshot.get("repository", {})
     lines = [f"# Review setup: {_text(repo.get('name'))} #{snapshot.get('pr_number', '')}", "",
@@ -781,20 +898,22 @@ def render_context_markdown(report: dict) -> str:
                       f"Revision: {_text(node.get('revision'))}; project: {_text(node.get('project'))}", "",
                       _text(node.get("description")), "", "Acceptance criteria: " + _text(node.get("acceptance_criteria")), ""])
     lines.extend(["## Changed-file provenance", ""])
-    associations = report.get("provenance", {}).get("commits", {})
+    history = report.get("history") or {}
+    associations = history.get("commits", {})
+    blamed = {entry["path"]: entry for entry in history.get("files", [])}
     for entry in report.get("files", []):
         lines.extend([f"### {_text(entry['path'])}", "",
                       f"Change: {_text(entry['status'])}; provenance: {_text(entry['provenance_status'])}",
                       f"Base ranges: {_text(entry.get('base_ranges'))}; added ranges: {_text(entry.get('added_ranges'))}",
                       f"Added lines belong to current PR #{entry.get('added_lines_pr', '')}."])
-        for commit in sorted({record["commit"] for record in entry.get("blame", [])}):
+        for commit in sorted({row["commit"] for row in blamed.get(entry["path"], {}).get("by_commit", [])}):
             association = associations.get(commit, {})
             numbers = association.get("pr_ids", [])
             detail = ", ".join(f"PR #{number}" for number in numbers) if numbers else association.get("status", "incomplete-history")
             lines.append(f"- {commit}: {_text(detail)}")
         lines.append("")
     lines.extend(["## Historical PR descriptions", ""])
-    for number, pr in sorted(report.get("provenance", {}).get("pull_requests", {}).items(), key=lambda row: int(row[0])):
+    for number, pr in sorted(history.get("pull_requests", {}).items(), key=lambda row: int(row[0])):
         lines.extend([f"### PR #{number}: {_text(pr.get('title'))}", "", _text(pr.get("description") or pr.get("status")), ""])
     if report.get("warnings"):
         lines.extend(["## Warnings / missing evidence", ""])

@@ -399,10 +399,97 @@ def expected_review_branch():
 # The archive records what the review did and found, which the reviewer writes as text (Kay9). A binary file, or a
 # text file over ARCHIVE_FILE_LIMIT, is data it pulled in: GitHub refuses any file over 100 MB, so one 174 MB dump
 # failed the push and parked the whole archive (Polymer #5807049). A link or special file fails review_commit outright
-# (ideas-exp #5804611). The prepared context and the publication receipts stay whatever their size: a resumed commit
-# re-runs inspect-prepared and verify, which read them.
+# (ideas-exp #5804611). No file is kept over the limit: the prepared context is written in small pieces
+# (context_files), and the receipts are text the reviewer writes (the largest seen is 74 KB).
 ARCHIVE_FILE_LIMIT = 1024 * 1024
-ARCHIVE_ALWAYS_KEPT = ('setup-context.json', 'publication_receipts.json')
+# Each prepared-context file stays small enough for a model to read whole. One context of 347 MB (viva-skills
+# #5797647) was kept as a single file and blocked its archive push.
+CONTEXT_PIECE_LIMIT = 64 * 1024
+# A text too big for one piece is cut into parts this long. Escaped as JSON a character takes at most 12 bytes, so a
+# part always fits a piece.
+CONTEXT_TEXT_PART = 4000
+
+
+def render_json(value, indent=''):
+    # Pretty JSON that keeps short lists and objects on one line: easy to read, and no line per number.
+    flat = json.dumps(value, sort_keys=True)
+    if len(flat) <= 120 or not isinstance(value, (dict, list)) or not value:
+        return flat
+    inner = indent + ' '
+    rows = ([f'{inner}{json.dumps(key)}: {render_json(item, inner)}' for key, item in sorted(value.items())]
+            if isinstance(value, dict) else [inner + render_json(item, inner) for item in value])
+    opening, closing = ('{', '}') if isinstance(value, dict) else ('[', ']')
+    return opening + '\n' + ',\n'.join(rows) + '\n' + indent + closing
+
+
+def split_part(stem, name, value, files):
+    # Moves a list, object or text into <stem>.<name>-<n>.json pieces within CONTEXT_PIECE_LIMIT and returns what
+    # stays in its place. An item too big for one piece is split the same way, so nothing is left out.
+    text = isinstance(value, str)
+    if text:
+        value = [value[start:start + CONTEXT_TEXT_PART] for start in range(0, len(value), CONTEXT_TEXT_PART)]
+    items = list(value.items()) if isinstance(value, dict) else list(enumerate(value))
+    chunks, current, used = [], [], 0
+    for key, item in items:
+        row = (f'  {json.dumps(key)}: ' if isinstance(value, dict) else '  ') + render_json(item, '  ')
+        if len(row) > CONTEXT_PIECE_LIMIT - 1024:
+            item = split_part(stem, f'{name}.{key}', item, files)
+            row = (f'  {json.dumps(key)}: ' if isinstance(value, dict) else '  ') + render_json(item, '  ')
+        if current and used + len(row) + 2 > CONTEXT_PIECE_LIMIT - 1024:
+            chunks.append(current)
+            current, used = [], 0
+        current.append((key, item))
+        used += len(row) + 2
+    chunks.append(current)
+    # Two keys can read the same once made safe for a file name; the later one takes a suffix.
+    label = re.sub(r'[^A-Za-z0-9_.]', '_', name)[:80]
+    while f'{stem}.{label}-1.json' in files:
+        label += '_'
+    names = [f'{stem}.{label}-{number}.json' for number in range(1, len(chunks) + 1)]
+    for number, (piece, chunk) in enumerate(zip(names, chunks), 1):
+        body = dict(chunk) if isinstance(value, dict) else [item for _, item in chunk]
+        header = {'part_of': f'{stem}.json', 'piece': f'{number} of {len(chunks)}'}
+        files[piece] = render_json({**header, name: body}) + '\n'
+    if text:
+        return {'split_into': names, 'count': len(items),
+                'note': "Text too large for one file; join the pieces' parts in order."}
+    return {'split_into': names, 'count': len(items), 'note': 'Too large for one file; read the pieces.'}
+
+
+def context_files(report, stem):
+    # The prepared report as <stem>.json, with its largest parts moved into pieces until every file is within
+    # CONTEXT_PIECE_LIMIT. Returns {file name: text}.
+    report, files = dict(report), {}
+    while len(render_json(report)) > CONTEXT_PIECE_LIMIT:
+        parts = [key for key, value in report.items()
+                 if (isinstance(value, (dict, list)) and value
+                     or isinstance(value, str) and len(value) > CONTEXT_TEXT_PART)
+                 and not (isinstance(value, dict) and 'split_into' in value)]
+        if not parts:
+            break
+        largest = max(parts, key=lambda key: len(render_json(report[key])))
+        report[largest] = split_part(stem, largest, report[largest], files)
+    files[f'{stem}.json'] = render_json(report) + '\n'
+    if any(len(text.encode()) > ARCHIVE_FILE_LIMIT for text in files.values()):
+        raise ReviewError('Prepared context could not be written in files under 1 MiB.')
+    return files
+
+
+def write_prepared_context(folder, report):
+    # Line history and earlier PRs go apart, for the review's history specialist only; the commit leaves them out.
+    report = dict(report)
+    history = report.pop('history', None)
+    pieces = context_files(history, 'setup-history') if history else {}
+    if history:
+        report['history'] = {'file': 'setup-history.json',
+                             'note': 'Who last changed the lines this PR changes, and in which earlier PRs. '
+                                     'For the history specialist only; not archived.'}
+    pieces.update(context_files(report, 'setup-context'))
+    # setup-context.json goes last: inspect-prepared finds it only once every file it names is written.
+    for name in sorted(pieces, key=lambda name: name == 'setup-context.json'):
+        with (folder / name).open('x') as stream:
+            stream.write(pieces[name])
+    return folder / 'setup-context.json'
 
 
 def fitting_name(name, ending, key):
@@ -434,8 +521,6 @@ def set_aside_unarchivable(folder, quarantine):
     for current, dirs, files in os.walk(folder):
         for name in [d for d in dirs if (Path(current) / d).is_symlink()] + files:
             path = Path(current) / name
-            if Path(current) == folder and name in ARCHIVE_ALWAYS_KEPT and not path.is_symlink():
-                continue
             if path.is_symlink():
                 note = {'kind': 'symlink', 'target': os.readlink(path)}
             elif not path.is_file():
@@ -470,7 +555,10 @@ elif phase == 'inspect':
     print(json.dumps({'headSha': args['head'], 'mergeSha': merge}))
 elif phase == 'inspect-prepared':
     merge = inspect_prepared()
-    if not safe_path(outer, directory + '/setup-context.json').is_file():
+    # A context prepared before it was written in pieces may have been set aside by an earlier commit try; its note
+    # shows it was there.
+    if not any(safe_path(outer, f'{directory}/{name}').is_file()
+               for name in ('setup-context.json', 'setup-context.json.omitted.json')):
         raise ReviewError('Retained prepared context is unavailable.')
     print(json.dumps({'headSha': args['head'], 'mergeSha': merge}))
 elif phase == 'prepare':
@@ -523,9 +611,7 @@ raise SystemExit(review_setup.route(provider=provider, pr=int(sys.argv[3]), repo
     merge = inspect_prepared()
     folder = safe_path(outer, directory)
     folder.mkdir(parents=True, exist_ok=True)
-    context = safe_path(folder, 'setup-context.json')
-    with context.open('x') as stream:
-        stream.write(setup.stdout)
+    context = write_prepared_context(folder, report)
     payload, _ = live()
     if github:
         baseline = [[kind, item['id']] for kind, (listing, _) in GITHUB_COMMENTS.items()
@@ -714,6 +800,10 @@ elif phase == 'commit':
         target = set_aside(nested, folder, quarantine)
         print(f'Quarantined {directory}/{nested.relative_to(folder).as_posix()} to {target}', file=sys.stderr)
         dirs[:] = [] if nested == Path(current) else [d for d in dirs if d != '.git']
+    for path in sorted(folder.glob('setup-history*.json')):
+        target = set_aside(path, folder, quarantine)
+        print(f'Left out {directory}/{path.name}, prepared history the archive does not keep; moved to {target}',
+              file=sys.stderr)
     for note in set_aside_unarchivable(folder, quarantine):
         print(f"Set aside {directory}/{note['omitted']} ({note['kind']}); kept a note", file=sys.stderr)
     print(json.dumps(commit_review(root, repo, pr, slot, source_sha=args['head'],
