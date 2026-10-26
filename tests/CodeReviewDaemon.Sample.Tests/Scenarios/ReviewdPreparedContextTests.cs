@@ -390,6 +390,7 @@ public sealed class ReviewdPreparedContextTests
         params string[] arguments
     )
     {
+        Skip.IfNot(OperatingSystem.IsLinux(), "the kit imports fcntl, so it runs only on Linux, as on the review host");
         var python = await ReviewdSummaryReplyTests.FindPythonAsync();
         Skip.If(python is null, "no Python interpreter on PATH, so the kit cannot be run");
         var scripts = Path.Combine(

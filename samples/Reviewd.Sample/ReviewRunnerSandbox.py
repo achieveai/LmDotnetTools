@@ -485,9 +485,10 @@ def write_prepared_context(folder, report):
                              'note': 'Who last changed the lines this PR changes, and in which earlier PRs. '
                                      'For the history specialist only; not archived.'}
     pieces.update(context_files(report, 'setup-context'))
-    # setup-context.json goes last: inspect-prepared finds it only once every file it names is written.
+    # setup-context.json goes last: inspect-prepared finds it only once every file it names is written. Plain \n line
+    # ends keep each file the size it was measured at.
     for name in sorted(pieces, key=lambda name: name == 'setup-context.json'):
-        with (folder / name).open('x') as stream:
+        with (folder / name).open('x', encoding='utf-8', newline='\n') as stream:
             stream.write(pieces[name])
     return folder / 'setup-context.json'
 
