@@ -325,7 +325,9 @@ internal static class ReviewRunner
 
     // Other work in the sandbox, not this review, stops these commits, so they can be retried:
     // - an index lock: the phase clears a stale one itself, and a live Git command holds one only briefly;
-    // - a moved source fingerprint: another slot's prepare fetched into the shared source store.
+    // - a moved source fingerprint: another slot's prepare fetched into the shared source store;
+    // - a failed push of the committed archive: the egress proxy timed pushes out on a busy host. Held instead, the
+    //   reaper discarded the slot and four archives stayed local only (Kay9: resume at the commit).
     // A rerun is safe. A commit that already landed finds nothing staged and only pushes.
     internal static bool CommitRetryable(Exception failure) =>
         failure is SettledSandboxException { Phase: "commit" }
@@ -338,6 +340,7 @@ internal static class ReviewRunner
                 "Source changed during artifact capture or commit hook",
                 StringComparison.Ordinal
             )
+            || failure.Message.Contains("Git push failed (exit ", StringComparison.Ordinal)
         );
 
     // The gateway refused to admit the operation at its record or concurrency limit, so it never ran.

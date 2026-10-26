@@ -929,7 +929,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
     }
 
     // A temporary workspace holding the sandbox script and the native stubs below, with an empty state directory.
-    private static async Task<string> NativeRootAsync()
+    internal static async Task<string> NativeRootAsync()
     {
         var root = Directory.CreateTempSubdirectory("reviewd-sandbox-").FullName;
         var scripts = Directory.CreateDirectory(Path.Combine(root, ".claude/skills/review-setup/scripts"));
@@ -946,7 +946,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         return root;
     }
 
-    private static async Task<(int ExitCode, string Stdout, string Stderr)> NativePhaseAsync(
+    internal static async Task<(int ExitCode, string Stdout, string Stderr)> NativePhaseAsync(
         string python,
         string root,
         string phase,
@@ -1157,7 +1157,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
     ];
 
     // Runs a harness that loads rules from the embedded sandbox script (passed as its first argument).
-    private static async Task<(int ExitCode, string Stdout, string Stderr)> RunSandboxRuleAsync(
+    internal static async Task<(int ExitCode, string Stdout, string Stderr)> RunSandboxRuleAsync(
         string harness,
         params string[] arguments
     )

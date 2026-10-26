@@ -4395,6 +4395,7 @@ public sealed class ReviewdRunnerTests
                 {
                     "An existing Git operation or index lock must be resolved first.",
                     "Source changed during artifact capture or commit hook; side effects preserved for inspection.",
+                    "Git push failed (exit 1); no state was forcibly cleared.",
                 }
             )
             {
@@ -4407,7 +4408,7 @@ public sealed class ReviewdRunnerTests
                 (await store.GetAsync<JsonObject>(attemptKey))!["stage"]!
                     .GetValue<string>()
                     .Should()
-                    .Be("verify-pending", "other sandbox work stopped the commit, and a rerun is safe");
+                    .Be("verify-pending", "the commit stopped short of a verified archive, and a rerun is safe");
             }
             // The first verification found the confirmation lost (the host never ran it); a retry must not
             // wait on it again, or every retry stalls the lane for the whole lost-input bound.
