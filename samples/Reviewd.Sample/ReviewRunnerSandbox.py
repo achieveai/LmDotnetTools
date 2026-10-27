@@ -400,7 +400,7 @@ def expected_review_branch():
 # text file over ARCHIVE_FILE_LIMIT, is data it pulled in: GitHub refuses any file over 100 MB, so one 174 MB dump
 # failed the push and parked the whole archive (Polymer #5807049). A link or special file fails review_commit outright
 # (ideas-exp #5804611). No file is kept over the limit: the prepared context is written in small pieces
-# (context_files), and the receipts are text the reviewer writes (the largest seen is 74 KB).
+# (context_files), and a receipt over it is kept as several receipts (receipt_files; the largest seen is 74 KB).
 ARCHIVE_FILE_LIMIT = 1024 * 1024
 # Each prepared-context file stays small enough for a model to read whole. One context of 347 MB (viva-skills
 # #5797647) was kept as a single file and blocked its archive push.
@@ -460,7 +460,8 @@ def context_files(report, stem):
     # The prepared report as <stem>.json, with its largest parts moved into pieces until every file is within
     # CONTEXT_PIECE_LIMIT. Returns {file name: text}.
     report, files = dict(report), {}
-    while len(render_json(report)) > CONTEXT_PIECE_LIMIT:
+    # + 1: the file ends with a newline.
+    while len(render_json(report)) + 1 > CONTEXT_PIECE_LIMIT:
         parts = [key for key, value in report.items()
                  if (isinstance(value, (dict, list)) and value
                      or isinstance(value, str) and len(value) > CONTEXT_TEXT_PART)
@@ -478,12 +479,14 @@ def context_files(report, stem):
 def write_prepared_context(folder, report):
     # Line history and earlier PRs go apart, for the review's history specialist only; the commit leaves them out.
     report = dict(report)
-    history = report.pop('history', None)
-    pieces = context_files(history, 'setup-history') if history else {}
-    if history:
-        report['history'] = {'file': 'setup-history.json',
-                             'note': 'Who last changed the lines this PR changes, and in which earlier PRs. '
-                                     'For the history specialist only; not archived.'}
+    if 'history' not in report:
+        # An older kit keeps line history inline, and the archive would keep it with the context.
+        raise ReviewError('The review-setup kit is older than this runner: its report has no history part. '
+                          'Install the kit that ships with this runner.')
+    pieces = context_files(report.pop('history'), 'setup-history')
+    report['history'] = {'file': 'setup-history.json',
+                         'note': 'Who last changed the lines this PR changes, and in which earlier PRs. '
+                                 'For the history specialist only; not archived.'}
     pieces.update(context_files(report, 'setup-context'))
     # setup-context.json goes last: inspect-prepared finds it only once every file it names is written. Plain \n line
     # ends keep each file the size it was measured at.
@@ -491,6 +494,40 @@ def write_prepared_context(folder, report):
         with (folder / name).open('x', encoding='utf-8', newline='\n') as stream:
             stream.write(pieces[name])
     return folder / 'setup-context.json'
+
+
+def receipt_files(receipt):
+    # A receipt over ARCHIVE_FILE_LIMIT as receipts within CONTEXT_PIECE_LIMIT, each naming the PR revision and
+    # holding some of the comments; publication_receipts.json lists the others under continued_in. Returns
+    # {file name: text}. The judge reads every publication_receipts*.json, and verify reads them back (read_receipt).
+    head = {key: value for key, value in receipt.items() if key != 'comments'}
+    budget = CONTEXT_PIECE_LIMIT - 1024 - len(render_json(head))
+    chunks, used = [[]], 0
+    for comment in receipt['comments']:
+        size = len(render_json(comment, '  ')) + 2
+        if chunks[-1] and used + size > budget:
+            chunks.append([])
+            used = 0
+        chunks[-1].append(comment)
+        used += size
+    names = ['publication_receipts.json'] + [f'publication_receipts-{n}.json' for n in range(2, len(chunks) + 1)]
+    files = {name: {**head, 'comments': chunk} for name, chunk in zip(names, chunks)}
+    files[names[0]]['continued_in'] = names[1:]
+    return {name: render_json(value) + '\n' for name, value in files.items()}
+
+
+def read_receipt(read):
+    # The receipt that read(name) returns the text of, with the comments of any receipts it continues in after its own.
+    receipt = json.loads(read('publication_receipts.json'))
+    for name in receipt.pop('continued_in', None) or []:
+        if not re.fullmatch(r'publication_receipts-\d+\.json', str(name)):
+            raise ReviewError('Publication receipt continues in an unexpected file.')
+        more = json.loads(read(name))
+        if ({key: value for key, value in more.items() if key != 'comments'}
+                != {key: value for key, value in receipt.items() if key != 'comments'}):
+            raise ReviewError('Publication receipt continues in a receipt for another revision.')
+        receipt['comments'] = receipt['comments'] + more['comments']
+    return receipt
 
 
 def fitting_name(name, ending, key):
@@ -732,7 +769,7 @@ elif phase == 'cleanup':
                               'forced': overrides}))
 elif phase == 'verify':
     inspect_prepared()
-    receipt = json.loads(safe_path(outer, directory + '/publication_receipts.json').read_text())
+    receipt = read_receipt(lambda name: safe_path(outer, f'{directory}/{name}').read_text())
     if (str(receipt.get('prId')) != str(pr) or receipt.get('headSha') != args['head']
             or receipt.get('mergeSha') != args['merge']):
         raise ReviewError('Publication receipt does not identify the prepared PR revision.')
@@ -805,6 +842,16 @@ elif phase == 'commit':
         target = set_aside(path, folder, quarantine)
         print(f'Left out {directory}/{path.name}, prepared history the archive does not keep; moved to {target}',
               file=sys.stderr)
+    # A receipt over the limit is kept as several, before set_aside_unarchivable would move it out: when the push
+    # fails, the attempt resumes by verifying it again. Each file is replaced whole, the first one last.
+    receipt = folder / 'publication_receipts.json'
+    if receipt.is_file() and not receipt.is_symlink() and receipt.stat().st_size > ARCHIVE_FILE_LIMIT:
+        parts = receipt_files(json.loads(receipt.read_text()))
+        for name in sorted(parts, key=lambda name: name == receipt.name):
+            with (folder / f'{name}.part').open('w', encoding='utf-8', newline='\n') as stream:
+                stream.write(parts[name])
+            os.replace(folder / f'{name}.part', folder / name)
+        print(f'Kept {directory}/{receipt.name} as {len(parts)} receipts under the archive limit', file=sys.stderr)
     for note in set_aside_unarchivable(folder, quarantine):
         print(f"Set aside {directory}/{note['omitted']} ({note['kind']}); kept a note", file=sys.stderr)
     print(json.dumps(commit_review(root, repo, pr, slot, source_sha=args['head'],

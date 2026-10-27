@@ -4298,7 +4298,8 @@ public sealed class ReviewdRunnerTests
                 .Body.Should()
                 .Contain("setup-context.json")
                 .And.Contain("Do not reset or rerun setup")
-                .And.Contain("give it only to a history specialist, who writes anything useful into history-notes.md");
+                .And.Contain("give it only to a history specialist, who writes anything useful into history-notes.md")
+                .And.Contain("The rest of the review reads history-notes.md and ignores setup-history files");
             await SnapshotAsync('d');
             var beforeReReview = handler.Requests.Count;
             first["reviewCompletedAt"] = DateTimeOffset.UtcNow.AddHours(-1);

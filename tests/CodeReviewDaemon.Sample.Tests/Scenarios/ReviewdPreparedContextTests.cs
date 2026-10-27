@@ -16,8 +16,8 @@ public sealed class ReviewdPreparedContextTests
     private const string RunnerRules = """
         import ast, json, re, sys
         from pathlib import Path
-        names = {'render_json', 'split_part', 'context_files', 'write_prepared_context', 'CONTEXT_PIECE_LIMIT',
-                 'CONTEXT_TEXT_PART', 'ARCHIVE_FILE_LIMIT'}
+        names = {'render_json', 'split_part', 'context_files', 'write_prepared_context', 'receipt_files', 'read_receipt',
+                 'CONTEXT_PIECE_LIMIT', 'CONTEXT_TEXT_PART', 'ARCHIVE_FILE_LIMIT'}
         body = [n for n in ast.parse(Path(sys.argv[1]).read_text(encoding='utf-8')).body
                 if (isinstance(n, ast.FunctionDef) and n.name in names)
                 or (isinstance(n, ast.Assign) and any(getattr(t, 'id', None) in names for t in n.targets))]
@@ -118,19 +118,27 @@ public sealed class ReviewdPreparedContextTests
                            'pull_requests': {'5': {'id': 5, 'title': 'Add the files'}}, 'complete': True}
                 report = {'snapshot': {'pr_number': 7, 'head_sha': 'h' * 40}, 'files': [{'path': 'src/f0000.cs'}],
                           'history': history, 'complete': True}
-                result = {}
-                for case, prepared in (('with', report), ('without', {k: v for k, v in report.items() if k != 'history'})):
-                    folder = work / case
-                    folder.mkdir()
-                    context = scope['write_prepared_context'](folder, prepared)
-                    main = json.loads(context.read_text())
-                    result[case] = sorted(p.name for p in folder.iterdir())
-                    result[case + 'Largest'] = max(p.stat().st_size for p in folder.iterdir())
-                    result[case + 'Pointer'] = main.get('history')
-                    result[case + 'Rest'] = {k: v for k, v in main.items() if k != 'history'} == {
-                        k: v for k, v in report.items() if k != 'history'}
-                result['shaInContext'] = sha in (work / 'with' / 'setup-context.json').read_text()
-                result['historyMain'] = json.loads((work / 'with' / 'setup-history.json').read_text())
+                folder = work / 'with'
+                folder.mkdir()
+                main = json.loads(scope['write_prepared_context'](folder, report).read_text())
+                result = {'with': sorted(p.name for p in folder.iterdir()),
+                          'withLargest': max(p.stat().st_size for p in folder.iterdir()),
+                          'withPointer': main.get('history'),
+                          'withRest': {k: v for k, v in main.items() if k != 'history'} == {
+                              k: v for k, v in report.items() if k != 'history'},
+                          'shaInContext': sha in (folder / 'setup-context.json').read_text(),
+                          'historyMain': json.loads((folder / 'setup-history.json').read_text())}
+                # An older kit's report: blame inline in each file, earlier PRs under provenance, no history part.
+                old = {k: v for k, v in report.items() if k != 'history'}
+                old['files'] = [{'path': 'src/f0000.cs', 'blame': [{'commit': sha, 'line': 1}]}]
+                old['provenance'] = {'pull_requests': history['pull_requests']}
+                folder = work / 'old'
+                folder.mkdir()
+                try:
+                    scope['write_prepared_context'](folder, old)
+                except ReviewError as error:
+                    result['old'] = str(error)
+                result['oldFiles'] = sorted(p.name for p in folder.iterdir())
                 print(json.dumps(result))
                 """;
         var work = Directory.CreateTempSubdirectory("reviewd-prepared-").FullName;
@@ -163,17 +171,221 @@ public sealed class ReviewdPreparedContextTests
             history["commits"]![new string('c', 40)]!["pr_ids"]!.AsArray().Should().ContainSingle();
             history["files"]!["count"]!.GetValue<int>().Should().Be(1500);
             history["files"]!["split_into"]!.AsArray().Should().HaveCount(4);
-            result["without"]!
-                .AsArray()
-                .Select(node => node!.GetValue<string>())
-                .Should()
-                .Equal(["setup-context.json"], "an old kit's report, with no history part, is one file");
-            result["withoutPointer"].Should().BeNull();
-            result["withoutRest"]!.GetValue<bool>().Should().BeTrue();
+            // Its pieces would be archived as context: the kit and the runner ship together.
+            result["old"]!.GetValue<string>().Should().Contain("review-setup kit is older than this runner");
+            result["oldFiles"]!.AsArray().Should().BeEmpty("nothing of an older kit's report is written");
         }
         finally
         {
             RealGitFixture.ForceDelete(work);
+        }
+    }
+
+    [SkippableFact]
+    public async Task No_context_file_is_over_64_KiB_even_by_its_final_newline()
+    {
+        // Reports whose single file would be 65,535, 65,536 or 65,537 bytes, the final newline included.
+        const string harness =
+            RunnerRules
+            + """
+                frame = len(scope['render_json']({'snapshot': {'description': 'x' * 70000}})) - 70000
+                result = {}
+                for size in (65535, 65536, 65537):
+                    report = {'snapshot': {'description': 'x' * (size - 1 - frame)}}
+                    written = scope['context_files'](report, 'setup-context')
+                    result[size] = {'files': len(written),
+                                    'largest': max(len(text.encode()) for text in written.values())}
+                print(json.dumps(result))
+                """;
+
+        var (exitCode, stdout, stderr) = await ReviewdAutoSlotTests.RunSandboxRuleAsync(harness);
+
+        exitCode.Should().Be(0, stderr);
+        var result = JsonNode.Parse(stdout)!;
+        result["65535"]!["files"]!.GetValue<int>().Should().Be(1);
+        result["65536"]!["files"]!.GetValue<int>().Should().Be(1, "a file of exactly 64 KiB is within the limit");
+        result["65537"]!["files"]!.GetValue<int>().Should().BeGreaterThan(1, "one byte more, its newline, splits it");
+        foreach (var size in new[] { "65535", "65536", "65537" })
+            result[size]!["largest"]!.GetValue<int>().Should().BeLessThanOrEqualTo(64 * 1024);
+    }
+
+    [SkippableFact]
+    public async Task A_receipt_kept_as_several_reads_back_whole_and_only_from_its_own_continuations()
+    {
+        // The commit keeps a receipt over 1 MiB as several (receipt_files), and verify reads them back. A receipt
+        // that names any other file, or a continuation for another revision, is refused.
+        const string harness =
+            RunnerRules
+            + """
+                receipt = {'prId': '7', 'headSha': 'h' * 40, 'mergeSha': 'm' * 40,
+                           'comments': [{'commentId': i, 'content': f'{i} ' + 'x' * 9000} for i in range(150)]}
+                files = scope['receipt_files'](receipt)
+                first = json.loads(files['publication_receipts.json'])
+                second = json.loads(files['publication_receipts-2.json'])
+                def refused(**changed):
+                    try:
+                        scope['read_receipt']({**files, **changed}.__getitem__)
+                    except ReviewError as error:
+                        return str(error)
+                print(json.dumps({
+                    'continuedIn': first['continued_in'],
+                    'files': sorted(files),
+                    'largest': max(len(text.encode()) for text in files.values()),
+                    'same': scope['read_receipt'](files.__getitem__) == receipt,
+                    'elsewhere': refused(**{'publication_receipts.json': json.dumps(
+                        {**first, 'continued_in': ['../findings.json']})}),
+                    'revision': refused(**{'publication_receipts-2.json': json.dumps({**second, 'headSha': 'g' * 40})}),
+                }))
+                """;
+
+        var (exitCode, stdout, stderr) = await ReviewdAutoSlotTests.RunSandboxRuleAsync(harness);
+
+        exitCode.Should().Be(0, stderr);
+        var result = JsonNode.Parse(stdout)!;
+        var continuedIn = result["continuedIn"]!.AsArray().Select(node => node!.GetValue<string>()).ToList();
+        continuedIn
+            .Should()
+            .NotBeEmpty()
+            .And.AllSatisfy(name => name.Should().MatchRegex(@"^publication_receipts-\d+\.json$"));
+        result["files"]!
+            .AsArray()
+            .Select(node => node!.GetValue<string>())
+            .Should()
+            .BeEquivalentTo(continuedIn.Prepend("publication_receipts.json"));
+        result["largest"]!.GetValue<int>().Should().BeLessThanOrEqualTo(64 * 1024);
+        result["same"]!.GetValue<bool>().Should().BeTrue("read back, the receipt is the one the review wrote");
+        result["elsewhere"]!.GetValue<string>().Should().Contain("unexpected file");
+        result["revision"]!.GetValue<string>().Should().Contain("another revision");
+    }
+
+    [SkippableTheory]
+    // The real prepare phase runs on the native stubs, and the kit's setup returns a complete report for the PR's
+    // head. An older kit's report, with no history part, stops the prepare: its history would be archived.
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Prepare_writes_the_kits_report_in_small_files_with_the_history_apart(bool fromThisKit)
+    {
+        Skip.IfNot(OperatingSystem.IsLinux(), "the sandbox script scans /proc, so it runs only on Linux");
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox script cannot be run");
+        var root = await ReviewdAutoSlotTests.NativeRootAsync();
+        try
+        {
+            var scripts = Path.Combine(root, ".claude/skills/review-setup/scripts");
+            await File.AppendAllTextAsync(
+                Path.Combine(scripts, "review_common.py"),
+                """
+
+
+                def run_git_read(path, args, check=True):
+                    return SimpleNamespace(stdout='m' * 40 + '\n', returncode=0)
+                """
+            );
+            await File.AppendAllTextAsync(
+                Path.Combine(scripts, "review_github.py"),
+                """
+
+
+                class GitHubClient:
+                    # The PR has no comments yet.
+                    def __init__(self, owner, repository):
+                        pass
+
+                    def get_pages(self, path):
+                        return []
+                """
+            );
+            // Native prepare records the prepared slot, and setup prints its report.
+            await File.WriteAllTextAsync(
+                Path.Combine(scripts, "review_setup.py"),
+                """
+                import json
+                import sys
+
+                prepare = None
+
+
+                def route(provider, pr, repo, slot, root):
+                    (root / f'state/prepared-nova-{slot}.json').write_text(json.dumps(
+                        {'schema': 1, 'repo': repo, 'slot': slot, 'pr': pr, 'merge_sha': 'm' * 40}))
+                    sys.stdout.write((root / 'setup-report.json').read_text())
+                    return 0
+                """
+            );
+            var sha = new string('c', 40);
+            var files = new JsonArray();
+            var blamed = new JsonArray();
+            for (var i = 0; i < 2000; i++)
+            {
+                files.Add(
+                    new JsonObject
+                    {
+                        ["path"] = $"src/f{i:0000}.cs",
+                        ["status"] = "M",
+                        ["base_ranges"] = new JsonArray(i, i + 3),
+                    }
+                );
+                blamed.Add(
+                    new JsonObject
+                    {
+                        ["path"] = $"src/f{i:0000}.cs",
+                        ["by_commit"] = new JsonArray(
+                            new JsonObject { ["commit"] = sha, ["base_lines"] = $"{i}-{i + 3}" }
+                        ),
+                    }
+                );
+            }
+            var report = new JsonObject
+            {
+                ["snapshot"] = new JsonObject { ["pr_number"] = 9, ["head_sha"] = new string('h', 40) },
+                ["files"] = files,
+                ["complete"] = true,
+                [fromThisKit ? "history" : "provenance"] = new JsonObject
+                {
+                    ["files"] = blamed,
+                    ["commits"] = new JsonObject { [sha] = new JsonObject { ["author"] = "Ann" } },
+                },
+            };
+            await File.WriteAllTextAsync(Path.Combine(root, "setup-report.json"), report.ToJsonString());
+
+            var (exitCode, stdout, stderr) = await ReviewdAutoSlotTests.NativePhaseAsync(
+                python!,
+                root,
+                "prepare",
+                9,
+                "A"
+            );
+
+            var folder = Path.Combine(root, "slots", "2", "PRs", "nova-9");
+            if (!fromThisKit)
+            {
+                exitCode.Should().NotBe(0);
+                stderr.Should().Contain("review-setup kit is older than this runner");
+                Directory.GetFiles(folder).Should().BeEmpty();
+                return;
+            }
+            exitCode.Should().Be(0, stderr);
+            JsonNode.Parse(stdout)!["contextPath"]!
+                .GetValue<string>()
+                .Should()
+                .Be("slots/2/PRs/nova-9/setup-context.json");
+            var written = Directory.GetFiles(folder).Select(file => Path.GetFileName(file)).ToList();
+            written.Should().Contain(["setup-context.json", "setup-history.json"]);
+            written
+                .Should()
+                .Contain(name => name.StartsWith("setup-context.files-"), "2,000 changed files need pieces");
+            written.Should().Contain(name => name.StartsWith("setup-history.files-"));
+            Directory.GetFiles(folder).Should().OnlyContain(file => new FileInfo(file).Length <= 64 * 1024);
+            var context = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(folder, "setup-context.json")))!;
+            context["history"]!["file"]!.GetValue<string>().Should().Be("setup-history.json");
+            Directory
+                .GetFiles(folder, "setup-context*")
+                .Should()
+                .OnlyContain(file => !File.ReadAllText(file).Contains(sha), "the context holds none of the history");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
         }
     }
 

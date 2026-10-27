@@ -249,6 +249,134 @@ public sealed class ReviewdArchiveSetAsideTests
         }
     }
 
+    [SkippableFact]
+    public async Task A_receipt_over_the_limit_is_kept_as_several_and_verifies_again_after_a_failed_push()
+    {
+        // A failed push resumes the attempt at verify. The commit used to set a receipt over 1 MiB aside first, so that
+        // verify found no receipt. 150 posted comments of 9,000 characters make about 1.4 MB.
+        Skip.IfNot(OperatingSystem.IsLinux(), "the sandbox script scans /proc, so it runs only on Linux");
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox script cannot be run");
+        var pr = Random.Shared.Next(1_000_000, int.MaxValue);
+        var (root, folder) = await PreparedSlotAsync(pr);
+        var quarantine = $"/tmp/review-quarantine/nova-{pr}-hhhhhhhh";
+        try
+        {
+            var scripts = Path.Combine(root, ".claude/skills/review-setup/scripts");
+            await File.WriteAllTextAsync(
+                Path.Combine(scripts, "review_commit.py"),
+                """
+                from pathlib import Path
+
+
+                def commit_review(root, repo, pr, slot, source_sha, expected_branch):
+                    # The first push fails; the next reports what it committed.
+                    failed = Path(root) / 'push-failed'
+                    if not failed.exists():
+                        failed.touch()
+                        raise RuntimeError('push failed')
+                    folder = Path(root) / f'slots/{slot}/PRs/{repo.lower()}-{pr}'
+                    return sorted(p.relative_to(folder).as_posix() for p in folder.rglob('*') if p.is_file())
+                """
+            );
+            await File.AppendAllTextAsync(
+                Path.Combine(scripts, "review_github.py"),
+                """
+
+
+                import json
+                from pathlib import Path
+
+
+                class GitHubClient:
+                    # Reads back what the review posted.
+                    def __init__(self, owner, repository):
+                        pass
+
+                    def request(self, path):
+                        return json.loads(Path('posted.json').read_text()).get(path)
+                """
+            );
+            var comments = new JsonArray();
+            var posted = new JsonObject();
+            for (var id = 1; id <= 150; id++)
+            {
+                var content = $"Finding {id}: " + new string('x', 9000);
+                comments.Add(
+                    new JsonObject
+                    {
+                        ["commentType"] = "issue_comment",
+                        ["commentId"] = id,
+                        ["kind"] = id == 1 ? "summary" : "finding",
+                        ["content"] = content,
+                    }
+                );
+                posted[$"issues/comments/{id}"] = new JsonObject
+                {
+                    ["id"] = id,
+                    ["body"] = content,
+                    ["issue_url"] = $"https://api.github.com/repos/org/Nova/issues/{pr}",
+                };
+            }
+            var receipt = new JsonObject
+            {
+                ["prId"] = pr.ToString(),
+                ["headSha"] = new string('h', 40),
+                ["mergeSha"] = new string('m', 40),
+                ["comments"] = comments,
+            };
+            await File.WriteAllTextAsync(Path.Combine(folder, "publication_receipts.json"), receipt.ToJsonString());
+            await File.WriteAllTextAsync(Path.Combine(root, "posted.json"), posted.ToJsonString());
+            new FileInfo(Path.Combine(folder, "publication_receipts.json")).Length.Should().BeGreaterThan(1024 * 1024);
+            var verifyArgs = new JsonObject { ["merge"] = new string('m', 40), ["baselineComments"] = new JsonArray() };
+
+            var failedPush = await ReviewdAutoSlotTests.NativePhaseAsync(python!, root, "commit", pr, "A");
+            var verify = await ReviewdAutoSlotTests.NativePhaseAsync(
+                python!,
+                root,
+                "verify",
+                pr,
+                "A",
+                extra: verifyArgs
+            );
+            var commit = await ReviewdAutoSlotTests.NativePhaseAsync(python!, root, "commit", pr, "A");
+
+            failedPush.Stderr.Should().Contain("push failed");
+            failedPush.ExitCode.Should().NotBe(0);
+            verify.ExitCode.Should().Be(0, verify.Stderr);
+            JsonNode.Parse(verify.Stdout)!["comments"]!
+                .AsArray()
+                .Select(node => node!["commentId"]!.GetValue<int>())
+                .Should()
+                .Equal(Enumerable.Range(1, 150), "every posted comment is verified again, in order");
+            commit.ExitCode.Should().Be(0, commit.Stderr);
+            var receipts = Directory.GetFiles(folder, "publication_receipts*");
+            receipts.Length.Should().BeGreaterThan(1);
+            receipts
+                .Select(Path.GetFileName)
+                .Should()
+                .BeSubsetOf(
+                    JsonNode.Parse(commit.Stdout)!.AsArray().Select(node => node!.GetValue<string>()),
+                    "the archive keeps every receipt and no note in place of one"
+                );
+            foreach (var file in receipts)
+            {
+                new FileInfo(file).Length.Should().BeLessThanOrEqualTo(64 * 1024);
+                // The judge reads each publication_receipts*.json as a receipt of its own.
+                var part = JsonNode.Parse(await File.ReadAllTextAsync(file))!;
+                part["headSha"]!.GetValue<string>().Should().Be(new string('h', 40));
+                part["comments"]!.AsArray().Should().NotBeEmpty();
+            }
+            Directory.Exists(quarantine).Should().BeFalse("nothing is set aside");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+            if (Directory.Exists(quarantine))
+                Directory.Delete(quarantine, recursive: true);
+        }
+    }
+
     [SkippableTheory]
     // A context prepared before contexts were written in pieces may be over 1 MiB. A commit try that then failed has
     // set it aside and left its note, and the resumed attempt runs inspect-prepared again: the note shows the context
