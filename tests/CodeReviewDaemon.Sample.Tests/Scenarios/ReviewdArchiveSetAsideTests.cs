@@ -32,14 +32,14 @@ public sealed class ReviewdArchiveSetAsideTests
             await resource.CopyToAsync(file);
         try
         {
-            // The folder holds a review's own text, the two files a resumed commit reads again (oversized here), and
-            // what the archive does not keep. The rule runs twice, as a retried commit runs it again.
+            // The folder holds a review's own text and what the archive does not keep. No name is kept over 1 MiB:
+            // the prepared context is written in small pieces, so an oversized one here is old or wrong. The rule
+            // runs twice, as a retried commit runs it again.
             const string harness = """
                 import ast, json, os, sys
                 from pathlib import Path
                 script, work = sys.argv[1], Path(sys.argv[2])
-                names = {'set_aside', 'set_aside_unarchivable', 'fitting_name', 'ARCHIVE_FILE_LIMIT',
-                         'ARCHIVE_ALWAYS_KEPT'}
+                names = {'set_aside', 'set_aside_unarchivable', 'fitting_name', 'ARCHIVE_FILE_LIMIT'}
                 body = [n for n in ast.parse(Path(script).read_text(encoding='utf-8')).body
                         if (isinstance(n, ast.FunctionDef) and n.name in names)
                         or (isinstance(n, ast.Assign) and any(getattr(t, 'id', None) in names for t in n.targets))]
@@ -96,6 +96,8 @@ public sealed class ReviewdArchiveSetAsideTests
                     "dump.json:large",
                     "link:symlink",
                     "pipe:special",
+                    "publication_receipts.json:large",
+                    "setup-context.json:large",
                     "sub/chart.png:binary",
                     "sub/setup-context.json:large",
                     "tree:symlink"
@@ -105,11 +107,11 @@ public sealed class ReviewdArchiveSetAsideTests
                 .Select(node => node!.GetValue<string>())
                 .Should()
                 .Equal(
-                    ["findings.md", "publication_receipts.json", "setup-context.json", "sub/at-limit.txt"],
-                    "the review's text and the files a resumed commit reads again stay"
+                    ["findings.md", "sub/at-limit.txt"],
+                    "only the review's text stays; no file over 1 MiB is kept, whatever its name"
                 );
             result["again"]!.GetValue<int>().Should().Be(0, "a retried commit finds nothing more to set aside");
-            result["quarantined"]!.AsArray().Should().HaveCount(8, "nothing is deleted, only moved out");
+            result["quarantined"]!.AsArray().Should().HaveCount(10, "nothing is deleted, only moved out");
             var note = result["dumpNote"]!;
             note["bytes"]!.GetValue<long>().Should().Be((1024 * 1024) + 1);
             note["sha256"]!.GetValue<string>().Should().MatchRegex("^[0-9a-f]{64}$");
@@ -136,8 +138,7 @@ public sealed class ReviewdArchiveSetAsideTests
                 import ast, json, sys
                 from pathlib import Path
                 script, work, shape = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
-                names = {'set_aside', 'set_aside_unarchivable', 'fitting_name', 'ARCHIVE_FILE_LIMIT',
-                         'ARCHIVE_ALWAYS_KEPT'}
+                names = {'set_aside', 'set_aside_unarchivable', 'fitting_name', 'ARCHIVE_FILE_LIMIT'}
                 body = [n for n in ast.parse(Path(script).read_text(encoding='utf-8')).body
                         if (isinstance(n, ast.FunctionDef) and n.name in names)
                         or (isinstance(n, ast.Assign) and any(getattr(t, 'id', None) in names for t in n.targets))]
@@ -195,55 +196,22 @@ public sealed class ReviewdArchiveSetAsideTests
         Skip.IfNot(OperatingSystem.IsLinux(), "the sandbox script scans /proc, so it runs only on Linux");
         var python = await ReviewdSummaryReplyTests.FindPythonAsync();
         Skip.If(python is null, "no Python interpreter on PATH, so the sandbox script cannot be run");
-        var root = await ReviewdAutoSlotTests.NativeRootAsync();
         // The phase quarantines under /tmp/review-quarantine/<repo>-<pr>-<head8>; a PR number of this run's own keeps
         // concurrent runs apart.
         var pr = Random.Shared.Next(1_000_000, int.MaxValue);
+        var (root, folder) = await PreparedSlotAsync(pr);
         var quarantine = $"/tmp/review-quarantine/nova-{pr}-hhhhhhhh";
         try
         {
-            var scripts = Path.Combine(root, ".claude/skills/review-setup/scripts");
-            // The commit phase also checks the source checkout is at the prepared merge and looks up the review branch.
-            await File.AppendAllTextAsync(
-                Path.Combine(scripts, "review_common.py"),
-                """
-
-
-                def run_git_read(path, args, check=True):
-                    return SimpleNamespace(stdout='m' * 40 + '\n', returncode=0)
-
-
-                read_parent_remote_ref = None
-                """
-            );
-            await File.WriteAllTextAsync(
-                Path.Combine(scripts, "review_commit.py"),
-                """
-                from pathlib import Path
-
-
-                def commit_review(root, repo, pr, slot, source_sha, expected_branch):
-                    folder = Path(root) / f'slots/{slot}/PRs/{repo.lower()}-{pr}'
-                    return sorted(p.relative_to(folder).as_posix() for p in folder.rglob('*') if p.is_file())
-                """
-            );
-            await File.WriteAllTextAsync(
-                Path.Combine(root, "state", "prepared-nova-2.json"),
-                new JsonObject
-                {
-                    ["schema"] = 1,
-                    ["repo"] = "Nova",
-                    ["slot"] = 2,
-                    ["pr"] = pr,
-                    ["merge_sha"] = new string('m', 40),
-                }.ToJsonString()
-            );
-            var folder = Directory.CreateDirectory(Path.Combine(root, "slots", "2", "PRs", $"nova-{pr}")).FullName;
             await File.WriteAllTextAsync(Path.Combine(folder, "findings.md"), "# findings\n");
             await File.WriteAllBytesAsync(Path.Combine(folder, "chart.png"), [0x89, 0x50, 0x4E, 0x47, 0x00]);
             var clone = Directory.CreateDirectory(Path.Combine(folder, "evidence", "clone", ".git")).Parent!.FullName;
             await File.WriteAllTextAsync(Path.Combine(clone, ".git", "HEAD"), "ref: refs/heads/main\n");
             await File.WriteAllTextAsync(Path.Combine(clone, "README.md"), "# a clone of the source\n");
+            // The prepared history and its pieces are for the review's history specialist only.
+            await File.WriteAllTextAsync(Path.Combine(folder, "setup-context.json"), "{\"history\": {}}\n");
+            await File.WriteAllTextAsync(Path.Combine(folder, "setup-history.json"), "{}\n");
+            await File.WriteAllTextAsync(Path.Combine(folder, "setup-history.files-1.json"), "{}\n");
 
             var (exitCode, stdout, stderr) = await ReviewdAutoSlotTests.NativePhaseAsync(
                 python!,
@@ -260,9 +228,13 @@ public sealed class ReviewdArchiveSetAsideTests
                 .Select(node => node!.GetValue<string>())
                 .Should()
                 .Equal(
-                    ["chart.png.omitted.json", "findings.md"],
-                    "the commit sees the review's text and the note, never the data or the nested repository"
+                    ["chart.png.omitted.json", "findings.md", "setup-context.json"],
+                    "the commit sees the review's text, the context and the note, never the data, the prepared "
+                        + "history or the nested repository"
                 );
+            File.Exists(Path.Combine(quarantine, "setup-history.files-1.json"))
+                .Should()
+                .BeTrue("the prepared history is moved out, not deleted, and leaves no note");
             File.Exists(Path.Combine(quarantine, "chart.png")).Should().BeTrue("the data is moved out, not deleted");
             Directory
                 .Exists(Path.Combine(quarantine, "evidence__clone"))
@@ -275,5 +247,222 @@ public sealed class ReviewdArchiveSetAsideTests
             if (Directory.Exists(quarantine))
                 Directory.Delete(quarantine, recursive: true);
         }
+    }
+
+    [SkippableFact]
+    public async Task A_receipt_over_the_limit_is_kept_as_several_and_verifies_again_after_a_failed_push()
+    {
+        // A failed push resumes the attempt at verify. The commit used to set a receipt over 1 MiB aside first, so that
+        // verify found no receipt. 150 posted comments of 9,000 characters make about 1.4 MB.
+        Skip.IfNot(OperatingSystem.IsLinux(), "the sandbox script scans /proc, so it runs only on Linux");
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox script cannot be run");
+        var pr = Random.Shared.Next(1_000_000, int.MaxValue);
+        var (root, folder) = await PreparedSlotAsync(pr);
+        var quarantine = $"/tmp/review-quarantine/nova-{pr}-hhhhhhhh";
+        try
+        {
+            var scripts = Path.Combine(root, ".claude/skills/review-setup/scripts");
+            await File.WriteAllTextAsync(
+                Path.Combine(scripts, "review_commit.py"),
+                """
+                from pathlib import Path
+
+
+                def commit_review(root, repo, pr, slot, source_sha, expected_branch):
+                    # The first push fails; the next reports what it committed.
+                    failed = Path(root) / 'push-failed'
+                    if not failed.exists():
+                        failed.touch()
+                        raise RuntimeError('push failed')
+                    folder = Path(root) / f'slots/{slot}/PRs/{repo.lower()}-{pr}'
+                    return sorted(p.relative_to(folder).as_posix() for p in folder.rglob('*') if p.is_file())
+                """
+            );
+            await File.AppendAllTextAsync(
+                Path.Combine(scripts, "review_github.py"),
+                """
+
+
+                import json
+                from pathlib import Path
+
+
+                class GitHubClient:
+                    # Reads back what the review posted.
+                    def __init__(self, owner, repository):
+                        pass
+
+                    def request(self, path):
+                        return json.loads(Path('posted.json').read_text()).get(path)
+                """
+            );
+            var comments = new JsonArray();
+            var posted = new JsonObject();
+            for (var id = 1; id <= 150; id++)
+            {
+                var content = $"Finding {id}: " + new string('x', 9000);
+                comments.Add(
+                    new JsonObject
+                    {
+                        ["commentType"] = "issue_comment",
+                        ["commentId"] = id,
+                        ["kind"] = id == 1 ? "summary" : "finding",
+                        ["content"] = content,
+                    }
+                );
+                posted[$"issues/comments/{id}"] = new JsonObject
+                {
+                    ["id"] = id,
+                    ["body"] = content,
+                    ["issue_url"] = $"https://api.github.com/repos/org/Nova/issues/{pr}",
+                };
+            }
+            var receipt = new JsonObject
+            {
+                ["prId"] = pr.ToString(),
+                ["headSha"] = new string('h', 40),
+                ["mergeSha"] = new string('m', 40),
+                ["comments"] = comments,
+            };
+            await File.WriteAllTextAsync(Path.Combine(folder, "publication_receipts.json"), receipt.ToJsonString());
+            await File.WriteAllTextAsync(Path.Combine(root, "posted.json"), posted.ToJsonString());
+            new FileInfo(Path.Combine(folder, "publication_receipts.json")).Length.Should().BeGreaterThan(1024 * 1024);
+            var verifyArgs = new JsonObject { ["merge"] = new string('m', 40), ["baselineComments"] = new JsonArray() };
+
+            var failedPush = await ReviewdAutoSlotTests.NativePhaseAsync(python!, root, "commit", pr, "A");
+            var verify = await ReviewdAutoSlotTests.NativePhaseAsync(
+                python!,
+                root,
+                "verify",
+                pr,
+                "A",
+                extra: verifyArgs
+            );
+            var commit = await ReviewdAutoSlotTests.NativePhaseAsync(python!, root, "commit", pr, "A");
+
+            failedPush.Stderr.Should().Contain("push failed");
+            failedPush.ExitCode.Should().NotBe(0);
+            verify.ExitCode.Should().Be(0, verify.Stderr);
+            JsonNode.Parse(verify.Stdout)!["comments"]!
+                .AsArray()
+                .Select(node => node!["commentId"]!.GetValue<int>())
+                .Should()
+                .Equal(Enumerable.Range(1, 150), "every posted comment is verified again, in order");
+            commit.ExitCode.Should().Be(0, commit.Stderr);
+            var receipts = Directory.GetFiles(folder, "publication_receipts*");
+            receipts.Length.Should().BeGreaterThan(1);
+            receipts
+                .Select(Path.GetFileName)
+                .Should()
+                .BeSubsetOf(
+                    JsonNode.Parse(commit.Stdout)!.AsArray().Select(node => node!.GetValue<string>()),
+                    "the archive keeps every receipt and no note in place of one"
+                );
+            foreach (var file in receipts)
+            {
+                new FileInfo(file).Length.Should().BeLessThanOrEqualTo(64 * 1024);
+                // The judge reads each publication_receipts*.json as a receipt of its own.
+                var part = JsonNode.Parse(await File.ReadAllTextAsync(file))!;
+                part["headSha"]!.GetValue<string>().Should().Be(new string('h', 40));
+                part["comments"]!.AsArray().Should().NotBeEmpty();
+            }
+            Directory.Exists(quarantine).Should().BeFalse("nothing is set aside");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+            if (Directory.Exists(quarantine))
+                Directory.Delete(quarantine, recursive: true);
+        }
+    }
+
+    [SkippableTheory]
+    // A context prepared before contexts were written in pieces may be over 1 MiB. A commit try that then failed has
+    // set it aside and left its note, and the resumed attempt runs inspect-prepared again: the note shows the context
+    // was there. With neither, the slot holds no prepared review.
+    [InlineData("setup-context.json", true)]
+    [InlineData("setup-context.json.omitted.json", true)]
+    [InlineData(null, false)]
+    public async Task A_resumed_attempt_finds_its_prepared_context_or_the_note_left_for_it(string? file, bool found)
+    {
+        Skip.IfNot(OperatingSystem.IsLinux(), "the sandbox script scans /proc, so it runs only on Linux");
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox script cannot be run");
+        var pr = Random.Shared.Next(1_000_000, int.MaxValue);
+        var (root, folder) = await PreparedSlotAsync(pr);
+        try
+        {
+            if (file is not null)
+                await File.WriteAllTextAsync(Path.Combine(folder, file), "{}\n");
+
+            var (exitCode, stdout, stderr) = await ReviewdAutoSlotTests.NativePhaseAsync(
+                python!,
+                root,
+                "inspect-prepared",
+                pr,
+                "A"
+            );
+
+            if (found)
+            {
+                exitCode.Should().Be(0, stderr);
+                JsonNode.Parse(stdout)!["mergeSha"]!.GetValue<string>().Should().Be(new string('m', 40));
+            }
+            else
+            {
+                exitCode.Should().NotBe(0);
+                stderr.Should().Contain("Retained prepared context is unavailable.");
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    // A native slot prepared for Nova PR <pr> in slot 2, with an empty review folder. The source checkout reads as
+    // the prepared merge, and commit_review reports what it would commit instead of committing.
+    private static async Task<(string Root, string Folder)> PreparedSlotAsync(int pr)
+    {
+        var root = await ReviewdAutoSlotTests.NativeRootAsync();
+        var scripts = Path.Combine(root, ".claude/skills/review-setup/scripts");
+        // The commit phase also checks the source checkout is at the prepared merge and looks up the review branch.
+        await File.AppendAllTextAsync(
+            Path.Combine(scripts, "review_common.py"),
+            """
+
+
+            def run_git_read(path, args, check=True):
+                return SimpleNamespace(stdout='m' * 40 + '\n', returncode=0)
+
+
+            read_parent_remote_ref = None
+            """
+        );
+        await File.WriteAllTextAsync(
+            Path.Combine(scripts, "review_commit.py"),
+            """
+            from pathlib import Path
+
+
+            def commit_review(root, repo, pr, slot, source_sha, expected_branch):
+                folder = Path(root) / f'slots/{slot}/PRs/{repo.lower()}-{pr}'
+                return sorted(p.relative_to(folder).as_posix() for p in folder.rglob('*') if p.is_file())
+            """
+        );
+        await File.WriteAllTextAsync(
+            Path.Combine(root, "state", "prepared-nova-2.json"),
+            new JsonObject
+            {
+                ["schema"] = 1,
+                ["repo"] = "Nova",
+                ["slot"] = 2,
+                ["pr"] = pr,
+                ["merge_sha"] = new string('m', 40),
+            }.ToJsonString()
+        );
+        var folder = Directory.CreateDirectory(Path.Combine(root, "slots", "2", "PRs", $"nova-{pr}")).FullName;
+        return (root, folder);
     }
 }

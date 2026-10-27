@@ -953,7 +953,8 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         int pr,
         string claim,
         bool force = false,
-        bool discard = true
+        bool discard = true,
+        JsonObject? extra = null
     )
     {
         var args = new JsonObject
@@ -970,6 +971,8 @@ public sealed class ReviewdAutoSlotTests : IDisposable
             args["discard"] = discard;
             args["force"] = force;
         }
+        foreach (var (key, value) in extra ?? [])
+            args[key] = value?.DeepClone();
         var start = new System.Diagnostics.ProcessStartInfo(python)
         {
             WorkingDirectory = root,
