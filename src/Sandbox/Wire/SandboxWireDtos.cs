@@ -143,7 +143,8 @@ internal sealed record CreateSandboxResponseDto(
     [property: JsonPropertyName("properties")] Dictionary<string, string>? Properties = null,
     [property: JsonPropertyName("partition")] IReadOnlyList<string?>? Partition = null,
     [property: JsonPropertyName("webhook")] WebhookSummaryDto? Webhook = null,
-    [property: JsonPropertyName("skills")] SkillsPolicyDto? Skills = null
+    [property: JsonPropertyName("skills")] SkillsPolicyDto? Skills = null,
+    [property: JsonPropertyName("mcp")] System.Text.Json.JsonElement? Mcp = null
 );
 
 /// <summary>
@@ -385,4 +386,59 @@ internal sealed record SandboxEnvResponseDto([property: JsonPropertyName("env")]
 internal sealed record SandboxPropertiesResponseDto(
     [property: JsonPropertyName("properties")] Dictionary<string, string>? Properties,
     [property: JsonPropertyName("partition")] IReadOnlyList<string?>? Partition
+);
+
+internal sealed record McpResolvedPolicyDto(
+    [property: JsonPropertyName("egress")] string? Egress,
+    [property: JsonPropertyName("servers")] IReadOnlyList<McpResolvedServerDto?>? Servers
+);
+
+internal sealed record McpResolvedServerDto(
+    [property: JsonPropertyName("name")] string? Name,
+    [property: JsonPropertyName("plugin")] string? Plugin,
+    [property: JsonPropertyName("marketplace")] string? Marketplace,
+    [property: JsonPropertyName("transport")] string? Transport,
+    [property: JsonPropertyName("url")] string? Url,
+    [property: JsonPropertyName("auth")] string? Auth,
+    [property: JsonPropertyName("headers")] IReadOnlyList<string?>? Headers,
+    [property: JsonPropertyName("provider_id")] string? ProviderId,
+    [property: JsonPropertyName("rule_id")] string? RuleId,
+    [property: JsonPropertyName("unresolved_vars")] IReadOnlyList<string?>? UnresolvedVars
+);
+
+internal sealed record McpManifestDto(
+    [property: JsonPropertyName("schema")] string? Schema,
+    [property: JsonPropertyName("session_id")] string? SessionId,
+    [property: JsonPropertyName("servers")] IReadOnlyList<McpManifestServerDto?>? Servers
+);
+
+internal sealed record McpManifestServerDto(
+    [property: JsonPropertyName("name")] string? Name,
+    [property: JsonPropertyName("plugin")] string? Plugin,
+    [property: JsonPropertyName("marketplace")] string? Marketplace,
+    [property: JsonPropertyName("transport")] string? Transport,
+    [property: JsonPropertyName("supported")] bool? Supported,
+    [property: JsonPropertyName("unsupported_reason")] string? UnsupportedReason,
+    [property: JsonPropertyName("url")] string? Url,
+    [property: JsonPropertyName("url_template")] string? UrlTemplate,
+    [property: JsonPropertyName("headers")] Dictionary<string, string?>? Headers,
+    [property: JsonPropertyName("auth")] McpManifestAuthDto? Auth,
+    [property: JsonPropertyName("egress")] string? Egress,
+    [property: JsonPropertyName("note")] string? Note,
+    [property: JsonPropertyName("unresolved_vars")] IReadOnlyList<string?>? UnresolvedVars,
+    [property: JsonPropertyName("generated")] McpManifestGeneratedDto? Generated
+);
+
+internal sealed record McpManifestAuthDto(
+    [property: JsonPropertyName("mode")] string? Mode,
+    [property: JsonPropertyName("provider")] string? Provider,
+    [property: JsonPropertyName("headers")] IReadOnlyList<string?>? Headers
+);
+
+internal sealed record McpManifestGeneratedDto(
+    [property: JsonPropertyName("plugin")] string? Plugin,
+    [property: JsonPropertyName("marketplace")] string? Marketplace,
+    [property: JsonPropertyName("skill")] string? Skill,
+    [property: JsonPropertyName("tools_hash")] string? ToolsHash,
+    [property: JsonPropertyName("lib_path")] string? LibPath
 );

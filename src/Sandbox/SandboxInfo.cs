@@ -106,6 +106,11 @@ public sealed class SandboxInfo
     /// </summary>
     public SandboxSkillsPolicy? SkillsPolicy { get; }
 
+    /// <summary>Resolved MCP state for this response; null means no readable acknowledgment is available
+    /// (omitted, null or uninterpretable echo). A present empty server list is readable acknowledgment.
+    /// Current gateways may report it even when the request omitted MCP. Values may contain sensitive configuration.</summary>
+    public SandboxMcpResolvedPolicy? Mcp { get; init; }
+
     public SandboxInfo(
         string sessionId,
         string? containerId = null,
