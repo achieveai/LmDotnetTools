@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -717,12 +716,49 @@ public sealed class OperationExecuteTests
     {
         const string sessionId = "sess-stuck-cmd";
         const string operationId = "op-stuck-cmd";
-        // A client-wide ceiling well above the per-command value: only the latter can make the poll deadline
-        // (value + 1 s grace) fire before the elapsed bound below.
-        var (client, handler) = TestSupport.CreateBorrowedClient(executionTimeout: TimeSpan.FromSeconds(4));
+        // The first running poll crosses the command's 1.15 s deadline, but not the client's 5 s deadline.
+        // A second-poll success is the causal counterexample if the wrong clock or timeout is used.
+        var clock = new PollTimeProvider();
+        var handler = new FakeGatewayHandler();
+        using var http = new HttpClient(handler);
+        using var client = new SandboxClient(
+            new SandboxClientOptions(
+                TestSupport.NewLoopbackAddress(),
+                "app-1",
+                TestSupport.ValidSecret,
+                TimeSpan.FromSeconds(4),
+                TimeSpan.FromSeconds(30)
+            ),
+            http
+        )
+        {
+            TransportClock = clock,
+        };
         RegisterWorkspaceMount(handler, sessionId, mountId: 1);
         RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
-        RegisterPoll(handler, operationId, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
+        var polls = 0;
+        handler.On(
+            request =>
+                request.Method == HttpMethod.Get
+                && request.RequestUri!.AbsolutePath.EndsWith("/operations/" + operationId, StringComparison.Ordinal),
+            _ =>
+            {
+                polls++;
+                if (polls == 1)
+                {
+                    clock.Advance(TimeSpan.FromSeconds(2));
+                }
+                var body =
+                    polls == 1
+                        ? "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}"
+                        : "{\"operation_id\":\""
+                            + operationId
+                            + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":1,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}";
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) };
+            }
+        );
+        RegisterDownload(handler, "path=out", "second-poll fallback");
+        RegisterDownload(handler, "path=err", "");
 
         var act = () =>
             client.ExecuteAsync(
@@ -732,10 +768,29 @@ public sealed class OperationExecuteTests
                     ExecutionTimeout = TimeSpan.FromMilliseconds(150),
                 }
             );
+        var error = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        error.Kind.Should().Be(SandboxErrorKind.ExecutionTimeout);
+        error.OperationId.Should().Be(operationId);
+        polls.Should().Be(1);
+        handler.Requests.Count(r => r.Method == HttpMethod.Post).Should().Be(1);
+        handler
+            .Requests.Should()
+            .NotContain(r =>
+                r.Method == HttpMethod.Delete || r.Uri.AbsolutePath.Contains("/files/", StringComparison.Ordinal)
+            );
+    }
 
-        var clock = Stopwatch.StartNew();
-        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.ExecutionTimeout);
-        clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(3));
+    private sealed class PollTimeProvider : TimeProvider
+    {
+        private DateTimeOffset _utcNow = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+        public override DateTimeOffset GetUtcNow() => _utcNow;
+
+        public void Advance(TimeSpan amount) => _utcNow += amount;
+
+        // UTC moves only at the scripted gateway event; transport budgets retain real, valid timers.
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) =>
+            System.CreateTimer(callback, state, dueTime, period);
     }
 
     [Fact]

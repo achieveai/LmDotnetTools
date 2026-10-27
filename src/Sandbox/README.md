@@ -632,16 +632,18 @@ configuration. Keeping the create object does not turn it into current state.
 var created = await client.CreateAsync(request, ct);
 if (request.Mcp is not null && created.Mcp is null)
 {
-    // No acknowledgment was reported. Keep created.SessionId and decide how to recover.
+    // No readable acknowledgment is available. Keep created.SessionId and decide how to recover.
     // Inspect with GetAsync, retain it, or explicitly DeleteAsync if appropriate.
 }
 var manifest = await client.GetMcpManifestAsync(created.SessionId, ct);
 ```
 
-An omitted/null response block means acknowledgment is unknown. A present block with an
-empty server list is valid acknowledgment. List results remain shallow and have `Mcp == null`.
+An omitted, null or uninterpretable optional response block means no readable MCP acknowledgment
+is available to this SDK. It does not prove the gateway omitted the field or ignored the request.
+A readable block with an empty server list is valid acknowledgment. Current gateways can return
+MCP state even when the create request omitted MCP. List results remain shallow and have `Mcp == null`.
 This optional presence check never deletes, recreates, retries or mutates a session. It proves
-block presence only, not exact override equality, working credentials or proxy enforcement.
+a readable block was returned, not exact override equality, working credentials or proxy enforcement.
 
 `GetMcpManifestAsync` reads the library view through the existing authenticated transport.
 It returns schema/session identity, per-server transport support, resolved URL and URL template,
@@ -653,13 +655,19 @@ Manifest `Stale` is producer-reported egress state after a host/port change. It 
 generated tools are stale. A successful REST read does not prove the in-sandbox manifest file
 was synchronized. URL templates and literal values may contain sensitive configuration despite
 producer redaction. Access them deliberately; do not log whole objects or serialize them to logs.
-Response collections are immutable snapshots, and default object formatting does not print values.
+The SDK preserves explicit configuration values; it does not apply a second redaction engine.
+The pinned producer strips URL userinfo and credential-looking literal headers, but environment-resolved
+headers and URL path/query values can still contain sensitive data. Resolved policy Headers are names
+only; manifest Headers are values. Response collections are immutable snapshots, and default object
+formatting does not print values.
 
 Absent pre-feature manifests and unsupported routes return `NotFound`; the producer's
 `mcp_manifest_unavailable` code distinguishes that specific response when supplied. A valid empty
 manifest returns an empty list. Marketplace resolution failures remain `Unavailable`; authorization
-and ownership use existing errors. Unknown schemas, malformed data and unsupported response
-charsets produce `Protocol` with fixed diagnostics and no raw payload exception attached.
+and ownership use existing errors. The explicit manifest API rejects unknown schemas, malformed
+data and unsupported response charsets as `Protocol`, with fixed diagnostics and no raw payload
+exception attached. Optional unreadable create/get MCP echoes instead return `Mcp == null` while
+preserving valid base session data. Whole-document JSON and required base fields remain strict.
 
 ## Errors
 
@@ -672,8 +680,15 @@ for a read/write conflict or UTF-8 failure). A direct-API failure also carries t
 machine-readable `SandboxException.ErrorCode` (e.g. `path_not_found`, `session_not_found`), so a
 caller can distinguish a genuinely missing path from an evicted session even though both classify as
 `NotFound`. Caller cancellation always surfaces as a plain `OperationCanceledException`. `Protocol`
-covers every malformed-response case, and the SDK never lets one surface as a raw
+covers malformed required response data; unreadable optional MCP echoes follow the tolerant behavior
+above. Malformed response data does not surface as a raw
 `ArgumentException`/`NullReferenceException`/`InvalidOperationException`:
+
+For malformed create/get responses, `SandboxException.InnerException` no longer carries the original
+`JsonException`. This deliberate diagnostic change applies to all callers: parser messages may echo
+sensitive payload values. Kind/status and fixed diagnostics remain available. A valid base response
+with an unreadable optional MCP echo succeeds with `Mcp == null`; this does not relax required base
+fields or the explicit manifest read.
 
 - A 2xx REST body that is well-formed JSON but semantically invalid — a missing/`null` required field
   (e.g. a marketplace alias or discovered-item kind/path — a discovered item's `name` is genuinely

@@ -366,7 +366,7 @@ public sealed partial class SandboxClient
         CancellationToken ct
     )
     {
-        var deadline = DateTimeOffset.UtcNow + executionTimeout + S_commandPollGrace;
+        var deadline = TransportClock.GetUtcNow() + executionTimeout + S_commandPollGrace;
         var delay = S_commandPollInitialDelay;
         while (true)
         {
@@ -376,7 +376,7 @@ public sealed partial class SandboxClient
                 return status;
             }
 
-            var remaining = deadline - DateTimeOffset.UtcNow;
+            var remaining = deadline - TransportClock.GetUtcNow();
             if (remaining <= TimeSpan.Zero)
             {
                 throw new SandboxException(

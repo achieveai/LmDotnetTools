@@ -42,6 +42,11 @@ public sealed partial class SandboxClient
             // HttpContent rejects unsupported charset declarations before JSON parsing.
             throw McpResponseError(status);
         }
+        catch (NotSupportedException)
+        {
+            // Some disabled encodings (including UTF-7) fail before JSON parsing on supported runtimes.
+            throw McpResponseError(status);
+        }
         if (dto is null || dto.Schema != "sbx.mcp-servers/1" || dto.SessionId != sessionId)
         {
             throw McpResponseError(status);

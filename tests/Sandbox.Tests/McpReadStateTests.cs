@@ -278,25 +278,127 @@ public sealed class McpReadStateTests
         generated.ToString().Should().NotContain("lib/client.py");
     }
 
-    [Theory]
-    [InlineData("{\"egress\":\"unknown\",\"servers\":[]}")]
-    [InlineData("{\"egress\":\"auto\"}")]
-    [InlineData("{\"egress\":\"auto\",\"servers\":[null]}")]
-    [InlineData("{\"egress\":42,\"servers\":[]}")]
-    public async Task Lifecycle_MalformedResolvedState_IsProtocolWithoutRawJsonException(string state)
+    [Fact]
+    public async Task Lifecycle_ManualInjectedMetadata_IsMappedToIndependentExpectedValues()
     {
+        const string state = """
+            {"egress":"manual","servers":[{"name":"private","plugin":"fixture","marketplace":"local",
+            "transport":"http","url":"https://example.invalid/mcp","auth":"injected","headers":["Authorization"],
+            "provider_id":"mcp:private","rule_id":null,"unresolved_vars":["HOST"]}]}
+            """;
         var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", "{\"session_id\":\"s\",\"mcp\":" + state + "}");
         handler.OnJson(HttpMethod.Get, "/api/v1/sandboxes/s", "{\"session_id\":\"s\",\"mcp\":" + state + "}");
-        var error = (await Record.ExceptionAsync(() => client.GetAsync("s")))
-            .Should()
-            .BeOfType<SandboxException>()
-            .Subject;
-        error.Kind.Should().Be(SandboxErrorKind.Protocol);
-        error.InnerException.Should().BeNull();
+        var created = await client.CreateAsync(new SandboxCreateRequest("ws"));
+        var current = await client.GetAsync("s");
+        foreach (var info in new[] { created, current })
+        {
+            info.Mcp.Should().NotBeNull();
+            info.Mcp!.Egress.Should().Be(SandboxMcpEgress.Manual);
+            var server = info.Mcp.Servers.Should().ContainSingle().Subject;
+            server.Auth.Should().Be(SandboxMcpAuthMode.Injected);
+            server.ProviderId.Should().Be("mcp:private");
+            server.Headers.Should().Equal("Authorization");
+            server.UnresolvedVars.Should().Equal("HOST");
+            server.RuleId.Should().BeNull();
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Lifecycle_InvalidBaseResponse_RemainsStrictProtocol(bool create)
+    {
+        foreach (
+            var body in new[]
+            {
+                "{",
+                "{}",
+                "{\"session_id\":\" \"}",
+                "{\"session_id\":42}",
+                "{\"session_id\":\"s\",\"volumes\":42}",
+            }
+        )
+        {
+            var (client, handler) = TestSupport.CreateBorrowedClient();
+            handler.OnJson(
+                create ? HttpMethod.Post : HttpMethod.Get,
+                create ? "/api/v1/sandboxes" : "/api/v1/sandboxes/s",
+                body
+            );
+            var error = (
+                await Record.ExceptionAsync(() =>
+                    create ? client.CreateAsync(new SandboxCreateRequest("ws")) : client.GetAsync("s")
+                )
+            )
+                .Should()
+                .BeOfType<SandboxException>()
+                .Subject;
+            error.Kind.Should().Be(SandboxErrorKind.Protocol);
+            error.InnerException.Should().BeNull();
+            handler.Requests.Should().ContainSingle();
+        }
     }
 
     [Fact]
-    public async Task Manifest_UnsupportedCharset_IsProtocolWithoutPayloadDiagnostics()
+    public async Task Manifest_ExplicitConfigurationValues_ArePreservedWithoutImplicitSdkRedaction()
+    {
+        var node = System.Text.Json.Nodes.JsonNode.Parse(Manifest)!;
+        var row = node["servers"]![0]!;
+        row["url"] = "https://example.invalid/synthetic-marker?fixture=marker";
+        row["headers"]!["X-Fixture-Value"] = "synthetic-env-marker";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Get, "/api/v1/sandboxes/s/mcp-servers/manifest", node.ToJsonString());
+        var manifest = await client.GetMcpManifestAsync("s");
+        manifest.Servers[0].Url.Should().Be("https://example.invalid/synthetic-marker?fixture=marker");
+        manifest.Servers[0].Headers["X-Fixture-Value"].Should().Be("synthetic-env-marker");
+        manifest.Servers[0].ToString().Should().NotContain("marker");
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    public async Task Lifecycle_UnreadableOptionalEcho_PreservesSessionWithoutImplicitMutation(bool create, bool optIn)
+    {
+        string[] states =
+        [
+            "{\"egress\":\"unknown\",\"servers\":[]}",
+            "{\"egress\":\"auto\"}",
+            "{\"egress\":\"auto\",\"servers\":[null]}",
+            "{\"egress\":42,\"servers\":[]}",
+            "42",
+            "null",
+            Resolved.Replace("\"none\"", "\"future-auth\""),
+            Resolved.Replace("\"headers\":[]", "\"headers\":42"),
+            Resolved.Replace("\"name\":\"sdk-contract-public\",", ""),
+        ];
+        foreach (var state in states)
+        {
+            var (client, handler) = TestSupport.CreateBorrowedClient();
+            handler.OnJson(
+                create ? HttpMethod.Post : HttpMethod.Get,
+                create ? "/api/v1/sandboxes" : "/api/v1/sandboxes/s",
+                "{\"session_id\":\"s\",\"mcp\":" + state + "}"
+            );
+            var request = new SandboxCreateRequest("ws") { Mcp = optIn ? new() : null };
+            var info = create ? await client.CreateAsync(request) : await client.GetAsync("s");
+            info.SessionId.Should().Be("s");
+            info.Mcp.Should().BeNull("the entire optional echo is unreadable");
+            (request.Mcp is not null && info.Mcp is null).Should().Be(optIn);
+            handler
+                .Requests.Should()
+                .ContainSingle()
+                .Which.Method.Should()
+                .Be(create ? HttpMethod.Post : HttpMethod.Get);
+        }
+    }
+
+    [Theory]
+    [InlineData("unsupported-test-charset")]
+    [InlineData("utf-7")]
+    public async Task Manifest_UnsupportedCharset_IsProtocolWithoutPayloadDiagnostics(string charset)
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
         handler.On(
@@ -304,7 +406,7 @@ public sealed class McpReadStateTests
             _ =>
             {
                 var content = new StringContent("""{"schema":"sbx.mcp-servers/1","session_id":"s","servers":[]}""");
-                content.Headers.ContentType = new("application/json") { CharSet = "unsupported-test-charset" };
+                content.Headers.ContentType = new("application/json") { CharSet = charset };
                 return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
             }
         );
@@ -312,7 +414,8 @@ public sealed class McpReadStateTests
         var error = thrown.Should().BeOfType<SandboxException>().Subject;
         error.Kind.Should().Be(SandboxErrorKind.Protocol);
         error.StatusCode.Should().Be(200);
+        error.Message.Should().Be("Sandbox gateway returned malformed MCP response data.");
         error.InnerException.Should().BeNull();
-        error.ToString().Should().NotContain("unsupported-test-charset");
+        error.ToString().Should().NotContain(charset);
     }
 }

@@ -144,7 +144,7 @@ internal sealed record CreateSandboxResponseDto(
     [property: JsonPropertyName("partition")] IReadOnlyList<string?>? Partition = null,
     [property: JsonPropertyName("webhook")] WebhookSummaryDto? Webhook = null,
     [property: JsonPropertyName("skills")] SkillsPolicyDto? Skills = null,
-    [property: JsonPropertyName("mcp")] McpResolvedPolicyDto? Mcp = null
+    [property: JsonPropertyName("mcp")] System.Text.Json.JsonElement? Mcp = null
 );
 
 /// <summary>
