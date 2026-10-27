@@ -127,14 +127,13 @@ try
                 // Add caller info (file path, line number, method name, namespace) to Warning and above
                 // only. The enricher captures and demystifies a full stack trace per event; on the
                 // per-chunk Debug/Information stream that was ~69% of the host's busy thread time.
-                .Enrich.AtLevel(
-                    LogEventLevel.Warning,
-                    enrich =>
-                        enrich.WithCallerInfo(
-                            includeFileInfo: true,
-                            assemblyPrefix: "AchieveAi.", // Match our assemblies
-                            filePathDepth: 3
-                        ) // Include last 3 path segments
+                // Request completion lines are left out too: see HostLogging.
+                .Enrich.OnWarningsExceptRequestLines(enrich =>
+                    enrich.WithCallerInfo(
+                        includeFileInfo: true,
+                        assemblyPrefix: "AchieveAi.", // Match our assemblies
+                        filePathDepth: 3
+                    ) // Include last 3 path segments
                 )
                 // File sink with structured JSON (includes all enriched properties)
                 .WriteTo.File(
@@ -3316,6 +3315,7 @@ try
     {
         options.MessageTemplate =
             "HTTP {RequestMethod} {SafeRequestPath} responded {StatusCode} in {Elapsed:0.0000} ms";
+        options.GetLevel = HostLogging.RequestLevel;
         options.EnrichDiagnosticContext = (diagnosticContext, httpContext) =>
         {
             diagnosticContext.Set("SafeRequestPath", RedactWorkspaceGrant(httpContext.Request.Path.Value));

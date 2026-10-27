@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Models;
@@ -106,13 +107,8 @@ public static class CompactionHostSetup
         var encoding = new Tiktoken.Encodings.O200KBase();
         var encoder = new Tiktoken.Encoder(encoding);
         var pieces = new Regex(encoding.Pattern, RegexOptions.Compiled);
-        return text =>
+        return CountOncePerString(text =>
         {
-            if (string.IsNullOrEmpty(text))
-            {
-                return 0;
-            }
-
             // UTF-8 needs at most three bytes per UTF-16 code unit. Keep both
             // GetByteCount and the native tokenizer's int count from overflowing.
             if (text.Length > int.MaxValue / 3)
@@ -135,7 +131,22 @@ public static class CompactionHostSetup
             }
 
             return encoder.CountTokens(text);
-        };
+        });
+    }
+
+    /// <summary>
+    ///     <paramref name="count"/>, run once per string instance. Compaction sizes the whole request several
+    ///     times a turn (the observation, the policy pass, the measured usage), and the history's strings are the
+    ///     same instances each time, so without this every turn re-tokenized every earlier message: ~0.7 cores
+    ///     on the review host (2026-10-27 profile). Keyed by reference, so a string is never answered with another
+    ///     string's count, and an entry lives only as long as its string.
+    /// </summary>
+    internal static Func<string?, long> CountOncePerString(Func<string, long> count)
+    {
+        ArgumentNullException.ThrowIfNull(count);
+        var counts = new ConditionalWeakTable<string, StrongBox<long>>();
+        ConditionalWeakTable<string, StrongBox<long>>.CreateValueCallback measure = text => new(count(text));
+        return text => string.IsNullOrEmpty(text) ? 0 : counts.GetValue(text, measure).Value;
     }
 
     /// <summary>The text after a leading <c>---</c>…<c>---</c> block, trimmed; the whole text when there is none.</summary>

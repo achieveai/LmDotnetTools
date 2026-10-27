@@ -158,6 +158,30 @@ public class CompactionHostSetupTests
     }
 
     [Fact]
+    public void CountOncePerString_CountsAStringOnce_AndAnEqualCopyAgain()
+    {
+        var calls = 0;
+        var count = CompactionHostSetup.CountOncePerString(text =>
+        {
+            calls++;
+            return text.Length;
+        });
+        var history = new string('x', 1_000);
+
+        // Compaction sizes the same request several times a turn; only the first sizing should tokenize.
+        count(history).Should().Be(1_000);
+        count(history).Should().Be(1_000);
+        calls.Should().Be(1);
+
+        // Keyed by reference, never by content: an equal copy is measured on its own.
+        count(new string(history.AsSpan())).Should().Be(1_000);
+        calls.Should().Be(2);
+        count(null).Should().Be(0);
+        count("").Should().Be(0);
+        calls.Should().Be(2);
+    }
+
+    [Fact]
     public void UnknownTextTokenizer_IsRefusedAtStartup()
     {
         var act = () =>
