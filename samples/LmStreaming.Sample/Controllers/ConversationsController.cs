@@ -18,6 +18,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.TodoBoard;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
+using LmStreaming.Sample.Configuration;
 using LmStreaming.Sample.Identity;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
@@ -1146,6 +1147,8 @@ public class ConversationsController(
             ex.SnapshotEpoch,
             ex.CurrentEpoch
         );
+        // The caller is told to retry, and the line above already records why: not an Error request line.
+        HostLogging.MarkExpectedRetry(HttpContext);
         return StatusCode(StatusCodes.Status503ServiceUnavailable, new { code = "hierarchy_busy" });
     }
 

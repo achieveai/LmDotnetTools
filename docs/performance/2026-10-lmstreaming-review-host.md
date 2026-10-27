@@ -16,6 +16,8 @@ was measured but left for later.
 | Per-chunk Anthropic Debug logs | 66% of all log lines | Logged at Trace | `AnthropicAgent.GenerateStreamingMessages` |
 | Recursive config file watching | 7.3% of host CPU; ~117,000 inotify watches | `DOTNET_hostBuilder__reloadConfigOnChange=false` | `samples/Reviewd.Sample/RUNBOOK.md` step 2 |
 | Usage records rewritten with thread metadata | ≤1% CPU; 1.9 MB largest row | Deferred: needs a schema migration | `ConversationUsageProjection` |
+| Busy `503` request lines logged at Error, each walked by caller info | ~1.5 of ~3.4 cores (27 Oct, under load) | Request lines skip caller info; a busy `503` logs at Information | `HostLogging`, `ConversationsController.HierarchyBusy` |
+| o200k re-counts the whole history several times a turn | ~0.7 cores (27 Oct, under load) | Count each text once per string instance | `CompactionHostSetup.CountOncePerString` |
 
 ## How it was measured
 
@@ -61,7 +63,8 @@ was measured but left for later.
   The API answered 200 in all three.
 - **Logs.** The 16 October file (1,290,390 lines) hit the 1 GB cap at 02:34. By template:
   - `Streaming event processed` and `Message transformed`: 66.3% together (both per chunk, `AnthropicAgent`).
-  - HTTP request log lines 19.0%, including 4.6% `503` responses logged as errors.
+  - HTTP request log lines 19.0%, including 4.6% `503` responses logged as errors (Information since
+    Profile 3).
   - `Hierarchy discovery busy` 4.6%.
   - All other Debug templates together 8.5%.
 - **SQLite `conversations.db` 1.22 GB.** `messages` 270,000 rows (869 MB). `thread_metadata` 1,009 rows (145 MB);
@@ -91,6 +94,33 @@ was measured but left for later.
 6. **Runbook start command sets `DOTNET_hostBuilder__reloadConfigOnChange=false`.** Trade-off: edits to the
    deployed `appsettings.json` take effect only on the next start. Local development keeps live reload.
 
+## Profile 3: under load, 27 October
+
+The host ran at ~3.4 cores (user 2.1, system 1.26) with reviews in flight. A 30 s `dotnet-trace` showed 5.55
+threads busy; `dotnet-counters` ran for 60 s.
+
+- **Caller info on busy `503` lines: 1.52 threads (27%).** `IndexedConversationStore.ReadChildrenAsync` answers
+  `503 hierarchy_busy` while any metadata write is pending anywhere on the host, so 47–74% of recursive
+  sub-agent polls failed (~9 per second). Request logging wrote each one at Error, and the Warning-and-above
+  caller-info enricher demystified a full stack for each: ~165 ms of CPU per line. The caller it found was
+  misleading: 45% of those lines named the closing brace of `SqliteConversationStore.LoadMetadataAsync`, the
+  read whose completion resumed the request; the rest named nothing.
+  - Fix: `HostLogging` keeps caller info off request lines, and the controller marks a busy `503` so its
+    request line is Information. The controller's own `Hierarchy discovery busy` line (Information) keeps the
+    reason. A caller-facing retry is not an application retry, so it is not a Warning: alert on that line or on
+    `StatusCode` 503, not on the request line's level.
+- **o200k token counting: 0.67 threads (12%).** Compaction sizes the whole request several times a turn
+  (`EvaluateAsync`, `ObserveContextAsync`, escalation). `CountOncePerString` caches each string's count by
+  reference, so repeat passes reuse it. `AgentMessage.Text` is built on every read, so its envelope is always
+  counted again; it is 0.8% of the text compaction sizes in active threads (5.1% in the most affected one).
+- **SQLite: ~1.1 threads, CPU plus kernel time.** 57 MB/s of page-cache reads and 12.5 MB/s of writes.
+  `thread_metadata.metadata_json` is 35 KB at p50; 66% of it is `context.observations`, rewritten every turn.
+  Deferred until a steady-state trace: this one included a browser burst of 1,022 transcript fetches in 2 min.
+- **Smaller:** thread-pool spin 0.34 threads; `AnthropicStreamParser` re-parses tool input on every delta
+  (~340 caught `JsonException`s per second, ~0.1 threads); every log line is written twice (file and console).
+- **Deferred:** a busy check per tree instead of per host. Today's behaviour is pinned by
+  `GetContext_ReturnsHierarchyBusy503DuringUnrelatedPublication_ThenRecovers`, so changing it is a design change.
+
 ## Measured and deferred
 
 - **Usage records inside thread metadata.** `ConversationUsageProjection.SaveAsync` merges and rewrites the
@@ -98,9 +128,9 @@ was measured but left for later.
   attempts and makes `thread_metadata` rows large. But the measured CPU was ≤1% on the old host, even with the
   file store. Moving records to an append-only table needs a schema change and migration for every store, so it
   is left as a separate change.
-- **Request logging noise.** HTTP request lines are 19% of the log, and expected `503 HierarchyBusy` responses
-  are logged as errors (~10 per second at peak). Candidates: log successful polling GETs at Debug, and stop
-  polling the sub-agent endpoint while the hierarchy is busy.
+- **Request logging noise.** HTTP request lines are 19% of the log. Busy `503` responses now log at Information
+  (Profile 3). Still open: log successful polling GETs at Debug, and stop polling the sub-agent endpoint while
+  the hierarchy is busy.
 - **118 `MultiTurnAgentLoop` instances alive on an idle host**, 19 with transcript-mirror subscriptions.
   Not yet traced to an owner.
 - **Other options built per instance** (`CopilotDynamicToolBridge`, `CodexDynamicToolBridge`,
@@ -109,8 +139,8 @@ was measured but left for later.
 
 ## Next measurement
 
-The 16 October CPU trace was taken while the host was idle, so these fixes still need a CPU profile under load.
-With a batch running:
+The 16 October CPU trace was taken while the host was idle; Profile 3 (27 October) was under load. Repeat it
+after each deploy, with a batch running:
 
 ```bash
 dotnet-trace collect -p <pid> --profile dotnet-sampled-thread-time --duration 00:00:00:30 -o cpu.nettrace

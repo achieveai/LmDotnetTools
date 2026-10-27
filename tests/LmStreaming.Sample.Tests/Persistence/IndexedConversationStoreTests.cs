@@ -4,10 +4,12 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
+using LmStreaming.Sample.Configuration;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.Controllers;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.Data.Sqlite;
+using Serilog.Events;
 
 namespace LmStreaming.Sample.Tests.Persistence;
 
@@ -424,11 +426,18 @@ public sealed class IndexedConversationStoreTests : IDisposable
                 pool,
                 ConversationsControllerTests.ModeStoreResolvingSystemModes()
             );
+            controller.ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext
+            {
+                HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext(),
+            };
             var response = Assert.IsType<Microsoft.AspNetCore.Mvc.ObjectResult>(
                 await controller.ListSubAgents("root", recursive: true)
             );
             response.StatusCode.Should().Be(503);
             JsonSerializer.Serialize(response.Value).Should().Be("{\"code\":\"hierarchy_busy\"}");
+            // The poller is told to retry, so its request line is not an Error (which also ran caller info).
+            controller.HttpContext.Response.StatusCode = response.StatusCode!.Value;
+            HostLogging.RequestLevel(controller.HttpContext, 1, null).Should().Be(LogEventLevel.Information);
         }
         finally
         {
