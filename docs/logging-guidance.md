@@ -88,6 +88,10 @@ _logger.LogInformation("Usage data enriched: {{completionId: {CompletionId}, mod
 - Fallback mechanism usage
 - Partial operation failures
 
+**Not a Warning:** a response that tells the *caller* to retry, such as the review host's `503 hierarchy_busy`.
+It is expected under load. Log its reason at Information and keep its request line at Information
+(`HostLogging.MarkExpectedRetry`). Alert on the reason line or on the status code, not on the level.
+
 ```csharp
 _logger.LogWarning("Usage data unavailable: CompletionId={CompletionId}, Provider={Provider}, Attempt={Attempt}",
     completionId, providerName, attemptNumber);

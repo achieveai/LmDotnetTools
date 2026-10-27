@@ -93,6 +93,7 @@ public class HostLoggingTests
     [InlineData(499, false, false, LogEventLevel.Information)]
     [InlineData(500, false, false, LogEventLevel.Error)]
     [InlineData(503, true, false, LogEventLevel.Information)]
+    [InlineData(500, true, false, LogEventLevel.Error)]
     [InlineData(503, true, true, LogEventLevel.Error)]
     [InlineData(200, false, true, LogEventLevel.Error)]
     public void RequestLevel_KeepsSerilogsDefault_ExceptForAMarkedRetry(

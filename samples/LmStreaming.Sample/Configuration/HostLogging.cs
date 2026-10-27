@@ -22,10 +22,11 @@ public static class HostLogging
     /// completion lines. The host puts caller info here.
     /// </summary>
     /// <remarks>
-    /// Caller info captures and demystifies a full stack trace per event. A request line's stack is the
-    /// middleware's continuation, which names no caller worth reporting (the host's request lines never carried
-    /// one), and on the review host each walk cost ~165 ms of CPU: polls answered 503 at ~9/s kept 1.5 cores
-    /// busy (2026-10-27 profile).
+    /// Caller info captures and demystifies a full stack trace per event. A request line is written from the
+    /// middleware's continuation, so the first matching frame is whichever awaited call last resumed the
+    /// request, not the code that logged: on the review host 45% of Error request lines named the closing brace
+    /// of <c>SqliteConversationStore.LoadMetadataAsync</c> and the rest named nothing. Each walk cost ~165 ms of
+    /// CPU, and polls answered 503 at ~9/s kept 1.5 cores busy (2026-10-27 profile).
     /// </remarks>
     public static LoggerConfiguration OnWarningsExceptRequestLines(
         this LoggerEnrichmentConfiguration enrich,
@@ -41,7 +42,7 @@ public static class HostLogging
     }
 
     /// <summary>
-    /// Marks this request's 5xx as a retry the caller is told to make, not a server fault, so its
+    /// Marks this request's 503 as a retry the caller is told to make, not a server fault, so its
     /// completion line is not an Error. A controller called outside a request has no context to mark.
     /// </summary>
     public static void MarkExpectedRetry(HttpContext? context)
@@ -54,13 +55,14 @@ public static class HostLogging
 
     /// <summary>
     /// Serilog's default request level (Error for an exception or a 5xx, else Information), except that a
-    /// 5xx marked by <see cref="MarkExpectedRetry"/> is Information.
+    /// 503 marked by <see cref="MarkExpectedRetry"/> is Information. Any other marked status keeps the default.
     /// </summary>
     public static LogEventLevel RequestLevel(HttpContext context, double elapsedMs, Exception? exception)
     {
         ArgumentNullException.ThrowIfNull(context);
-        return exception is null && (context.Response.StatusCode <= 499 || context.Items.ContainsKey(ExpectedRetryKey))
-            ? LogEventLevel.Information
-            : LogEventLevel.Error;
+        var status = context.Response.StatusCode;
+        var expectedRetry =
+            status == StatusCodes.Status503ServiceUnavailable && context.Items.ContainsKey(ExpectedRetryKey);
+        return exception is null && (status <= 499 || expectedRetry) ? LogEventLevel.Information : LogEventLevel.Error;
     }
 }
