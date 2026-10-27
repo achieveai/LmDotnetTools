@@ -621,6 +621,46 @@ route does not exist: the call fails as `NotFound`, the same kind as an unknown 
 - **Secret:** a row's url, header values and `Extra` can carry credentials. `SandboxMcpServer.ToString()`
   names only the marketplace, plugin, server name and type.
 
+## Resolved MCP state and library manifest (gateway v0.1.18)
+
+`CreateAsync` and `GetAsync` expose `SandboxInfo.Mcp`, a typed resolved policy with a
+server **list**. This differs from the create request's named override map. Create returns
+its snapshot; GET re-resolves URLs and unresolved variable names against current session
+configuration. Keeping the create object does not turn it into current state.
+
+```csharp
+var created = await client.CreateAsync(request, ct);
+if (request.Mcp is not null && created.Mcp is null)
+{
+    // No acknowledgment was reported. Keep created.SessionId and decide how to recover.
+    // Inspect with GetAsync, retain it, or explicitly DeleteAsync if appropriate.
+}
+var manifest = await client.GetMcpManifestAsync(created.SessionId, ct);
+```
+
+An omitted/null response block means acknowledgment is unknown. A present block with an
+empty server list is valid acknowledgment. List results remain shallow and have `Mcp == null`.
+This optional presence check never deletes, recreates, retries or mutates a session. It proves
+block presence only, not exact override equality, working credentials or proxy enforcement.
+
+`GetMcpManifestAsync` reads the library view through the existing authenticated transport.
+It returns schema/session identity, per-server transport support, resolved URL and URL template,
+literal headers, auth mode/provider/header names, egress state/note, unresolved names and generated
+library metadata. HTTP's omitted `supported` flag means true. The authored `GetMcpServersAsync`
+view remains separate; its transport support can differ from in-sandbox library support.
+
+Manifest `Stale` is producer-reported egress state after a host/port change. It does not mean
+generated tools are stale. A successful REST read does not prove the in-sandbox manifest file
+was synchronized. URL templates and literal values may contain sensitive configuration despite
+producer redaction. Access them deliberately; do not log whole objects or serialize them to logs.
+Response collections are immutable snapshots, and default object formatting does not print values.
+
+Absent pre-feature manifests and unsupported routes return `NotFound`; the producer's
+`mcp_manifest_unavailable` code distinguishes that specific response when supplied. A valid empty
+manifest returns an empty list. Marketplace resolution failures remain `Unavailable`; authorization
+and ownership use existing errors. Unknown schemas, malformed data and unsupported response
+charsets produce `Protocol` with fixed diagnostics and no raw payload exception attached.
+
 ## Errors
 
 Every gateway/transport failure other than caller cancellation raises `SandboxException`, which

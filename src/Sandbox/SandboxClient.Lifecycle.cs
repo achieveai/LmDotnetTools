@@ -269,7 +269,10 @@ public sealed partial class SandboxClient
                 : SelectNonNullOrThrow(dto.Partition, static key => key, $"the partition of {operation}", statusCode),
             ToWebhookInfo(dto.Webhook, operation, statusCode),
             ToSkillsPolicy(dto.Skills, operation, statusCode)
-        );
+        )
+        {
+            Mcp = dto.Mcp is null ? null : ToMcpResolvedPolicy(dto.Mcp, statusCode),
+        };
 
     /// <summary>Maps the GET <c>webhook</c> summary, rejecting one without a URL or flag as <see cref="SandboxErrorKind.Protocol"/>.</summary>
     private static SandboxWebhookInfo? ToWebhookInfo(WebhookSummaryDto? dto, string operation, int statusCode)
@@ -482,13 +485,12 @@ public sealed partial class SandboxClient
                 .Content.ReadFromJsonAsync<CreateSandboxResponseDto>(SandboxJson.RestOptions, ct)
                 .ConfigureAwait(false);
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
             throw new SandboxException(
                 SandboxErrorKind.Protocol,
                 $"Sandbox gateway returned a malformed response for {operation}.",
-                (int)response.StatusCode,
-                ex
+                (int)response.StatusCode
             );
         }
 

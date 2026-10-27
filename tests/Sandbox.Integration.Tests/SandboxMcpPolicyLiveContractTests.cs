@@ -46,6 +46,28 @@ public sealed class SandboxMcpPolicyLiveContractTests(LiveGatewayFixture fixture
         );
         try
         {
+            // Integration: typed reads must agree with the committed declaration and installed file.
+            session.Mcp.Should().NotBeNull();
+            session.Mcp!.Egress.Should().Be(SandboxMcpEgress.Auto);
+            var createdBinding = session.Mcp.Servers.Single(row => row.Name == Server);
+            var current = await client.GetAsync(session.SessionId);
+            var currentBinding = current.Mcp!.Servers.Single(row => row.Name == Server);
+            currentBinding.RuleId.Should().Be(createdBinding.RuleId).And.NotBeNullOrEmpty();
+            currentBinding.Url.Should().Be("https://mcp.example.invalid/mcp");
+            var typedManifest = await client.GetMcpManifestAsync(session.SessionId);
+            typedManifest.Schema.Should().Be("sbx.mcp-servers/1");
+            typedManifest.SessionId.Should().Be(session.SessionId);
+            var typedServer = typedManifest.Servers.Single(row => row.Name == Server);
+            (typedServer.Plugin, typedServer.Marketplace, typedServer.Transport)
+                .Should()
+                .Be(("skilltiers", marketplace.Alias, "http"));
+            typedServer.Supported.Should().BeTrue();
+            typedServer.Auth.Mode.Should().Be(SandboxMcpAuthMode.None);
+            typedServer.Auth.Provider.Should().BeNull();
+            typedServer.Egress.Should().Be(SandboxMcpManifestEgress.Auto);
+            typedServer.Headers.Should().BeEmpty();
+            typedServer.UnresolvedVars.Should().BeEmpty();
+
             var result = await client.ExecuteAsync(
                 session.SessionId,
                 new SandboxCommand(["sh", "-c", "cat \"$SBX_MCP_MANIFEST\""])
