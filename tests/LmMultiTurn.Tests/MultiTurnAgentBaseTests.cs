@@ -216,23 +216,27 @@ public class MultiTurnAgentBaseTests
         var testMessage = new TextMessage { Text = "Test response", Role = Role.Assistant };
         var agent = new TestMultiTurnAgent("test-thread", messagesToReturn: [testMessage]);
 
-        var receivedMessages = new List<IMessage>();
+        var receivedMessages = new System.Collections.Concurrent.ConcurrentQueue<IMessage>();
+        var runCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         // Start the loop
         using var cts = new CancellationTokenSource();
         var runTask = agent.RunAsync(cts.Token);
 
-        // Subscribe
-        var subscribeTask = Task.Run(async () =>
-        {
-            await foreach (var msg in agent.SubscribeAsync(cts.Token))
+        // Subscribe. Registered before the send, so the run cannot publish and complete before the
+        // subscriber joins (a fixed delay here raced under CI load).
+        var drain = LoopSubscription.StartDraining(
+            agent,
+            msg =>
             {
-                receivedMessages.Add(msg);
-            }
-        });
-
-        // Give time for subscription to be registered
-        await Task.Delay(100);
+                receivedMessages.Enqueue(msg);
+                if (msg is RunCompletedMessage)
+                {
+                    runCompleted.TrySetResult();
+                }
+            },
+            cts.Token
+        );
 
         // Act - send a message to trigger processing
         var messages = new List<IMessage>
@@ -241,8 +245,7 @@ public class MultiTurnAgentBaseTests
         };
         await agent.SendAsync(messages);
 
-        // Give time for processing
-        await Task.Delay(500);
+        await drain.WaitAsync(runCompleted.Task, TimeSpan.FromSeconds(5));
 
         // Assert
         receivedMessages.OfType<RunAssignmentMessage>().Should().NotBeEmpty();
