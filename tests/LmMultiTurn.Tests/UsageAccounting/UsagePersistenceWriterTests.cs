@@ -106,12 +106,13 @@ public class UsagePersistenceWriterTests(ITestOutputHelper output) : LoggingTest
     [Fact]
     public async Task WaitForScheduledAsync_ReportsTheFailureBeforeReleasingItsWaiter()
     {
+        var fail = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var reporting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var finishReporting = new ManualResetEventSlim();
         var writer = new UsagePersistenceWriter(
             async ct =>
             {
-                await Task.Yield();
+                await fail.Task;
                 throw new InvalidOperationException("injected storage failure");
             },
             onError: error =>
@@ -122,7 +123,9 @@ public class UsagePersistenceWriterTests(ITestOutputHelper output) : LoggingTest
         );
 
         writer.Schedule();
+        // Register the boundary before the write fails, so exactly one failure is reported.
         var boundary = writer.WaitForScheduledAsync();
+        fail.SetResult();
         await reporting.Task.WaitAsync(TimeSpan.FromSeconds(10));
         try
         {

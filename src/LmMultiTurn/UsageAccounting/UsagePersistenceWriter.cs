@@ -16,7 +16,10 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 ///     write is kept pending (so a later <see cref="Schedule" />, <see cref="FlushAsync" /> or
 ///     <see cref="WaitForScheduledAsync" /> retries it) and the boundary waits return <c>false</c>, so a
 ///     failed authoritative write is never silently reported as a clean durability boundary. The failure
-///     is reported once via <c>onError</c>, before the waiters of that write are released.
+///     is reported once via <c>onError</c>, before the waiters of that write are released, so
+///     <c>onError</c> must return promptly: it holds those waits. An observation scheduled while a write
+///     is in flight and then fails is not retried automatically; it waits for the next trigger, so a
+///     store that keeps failing cannot cause a retry loop.
 /// </remarks>
 internal sealed class UsagePersistenceWriter
 {
