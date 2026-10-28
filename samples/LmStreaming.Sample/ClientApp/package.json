@@ -15,14 +15,14 @@
   "dependencies": {
     "@azure/msal-browser": "^5.19.0",
     "@plantuml/core": "^1.2026.8",
-    "dompurify": "^3.4.13",
+    "dompurify": "^3.4.17",
     "highlight.js": "^11.11.1",
     "katex": "^0.18.7",
     "marked": "^17.0.1",
     "marked-highlight": "^2.2.4",
-    "mermaid": "^11.12.1",
+    "mermaid": "^11.16.1",
     "smiles-drawer": "^2.4.1",
-    "vue": "^3.5.13"
+    "vue": "^3.5.42"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.3",
