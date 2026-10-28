@@ -67,11 +67,40 @@ public class UsagePersistenceWriterTests(ITestOutputHelper output) : LoggingTest
         {
             releaseFirst.TrySetResult();
             releaseSecond.TrySetResult();
-            await capturedBoundary;
-            await laterBoundary;
-            await shutdownBoundary;
+            (await capturedBoundary).Should().BeTrue();
+            (await laterBoundary).Should().BeTrue();
+            (await shutdownBoundary).Should().BeTrue();
         }
         writes.Should().Be(2, "the fifty later observations coalesce into one serialized trailing write");
+    }
+
+    [Fact]
+    public async Task Schedule_WhileAFailureIsBeingReported_IsRetried()
+    {
+        var retried = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
+        UsagePersistenceWriter? writer = null;
+        writer = new UsagePersistenceWriter(
+            async ct =>
+            {
+                await Task.Yield();
+                if (Interlocked.Increment(ref attempts) == 1)
+                {
+                    throw new InvalidOperationException("injected storage failure");
+                }
+
+                retried.TrySetResult();
+            },
+            // An observation that lands while the failure is still being logged.
+            onError: _ => writer!.Schedule()
+        );
+
+        writer.Schedule();
+
+        await retried.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        (await writer.FlushAsync()).Should().BeTrue();
+        attempts.Should().Be(2);
+        Logger.LogInformation("Schedule during failure reporting retried: Attempts={Attempts}", attempts);
     }
 
     [Fact]

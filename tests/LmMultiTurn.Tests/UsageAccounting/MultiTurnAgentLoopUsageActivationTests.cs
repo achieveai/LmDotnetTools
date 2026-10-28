@@ -122,6 +122,12 @@ public class MultiTurnAgentLoopUsageActivationTests(ITestOutputHelper output) : 
             releaseFirst.TrySetResult();
             releaseSecond.TrySetResult();
         }
+
+        // Not waited for is not dropped: the next boundary captures the later observation and saves it.
+        await agent.CompleteAsync(await agent.StartAsync());
+        var aggregate = await ConversationUsageProjection.LoadAsync(store, "usage-thread");
+        aggregate!.TotalTokens.Should().Be(165);
+        aggregate.Completeness.Should().Be(UsageCompleteness.InProgress, "the reusable conversation remains live");
     }
 
     [Fact]

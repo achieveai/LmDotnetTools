@@ -12,8 +12,9 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 ///     The persist delegate is invoked with the <b>latest</b> ledger state at write time, so a burst of
 ///     <see cref="Schedule" /> calls collapses into a single in-flight write plus at most one trailing write
 ///     — reporting cost does not scale with the number of observations. When the delegate <b>throws</b>, the
-///     write is kept pending (so a later <see cref="Schedule" /> / <see cref="FlushAsync" /> retries it) and
-///     <see cref="FlushAsync" /> returns <c>false</c>, so a failed authoritative write is never silently
+///     write is kept pending (so a later <see cref="Schedule" />, <see cref="FlushAsync" /> or
+///     <see cref="WaitForScheduledAsync" /> retries it) and the boundary waits return <c>false</c>, so a
+///     failed authoritative write is never silently
 ///     reported as a clean durability boundary. The failure is reported once via <c>onError</c>.
 /// </remarks>
 internal sealed class UsagePersistenceWriter
@@ -126,25 +127,20 @@ internal sealed class UsagePersistenceWriter
             }
             catch (Exception ex)
             {
-                // Persist failed: retain the pending write so a later Schedule()/FlushAsync() retries it and
-                // so FlushAsync reports a non-durable boundary. Stop draining so Flush cannot spin.
-                try
+                // Persist failed: retain the pending write so a later trigger retries it and report a
+                // non-durable boundary. Stop draining so Flush cannot spin. Ownership is released BEFORE
+                // reporting, so a Schedule() that lands while the failure is logged starts its own retry.
+                lock (_gate)
                 {
-                    _onError?.Invoke(ex);
-                }
-                finally
-                {
-                    lock (_gate)
+                    _draining = false;
+                    foreach (var (_, completion) in _waiters)
                     {
-                        _draining = false;
-                        foreach (var (_, completion) in _waiters)
-                        {
-                            completion.SetResult(false);
-                        }
-                        _waiters.Clear();
+                        completion.SetResult(false);
                     }
+                    _waiters.Clear();
                 }
 
+                _onError?.Invoke(ex);
                 return;
             }
 
