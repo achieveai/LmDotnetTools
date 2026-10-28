@@ -4,9 +4,10 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 ///     Serializes and coalesces conversation-usage persistence for one root conversation. Every observation
 ///     — the primary loop's own usage and each descendant (sub-agent / workflow) relay — is routed through
 ///     the same writer, so durable writes never interleave. Run completion awaits
-///     <see cref="WaitForScheduledAsync" />, so a run is never reported complete while usage it already
-///     observed is still unsaved (#855); disposal awaits <see cref="FlushAsync" /> so the latest ledger
-///     snapshot is durable rather than left in memory when the process shuts down (#196).
+///     <see cref="WaitForScheduledAsync" />, so a run is not reported complete until the write of usage it
+///     already observed has finished (#855). Persistence is best-effort: if that write fails, the failure
+///     is reported and the run still completes without the usage. Disposal awaits <see cref="FlushAsync" />
+///     so the latest ledger snapshot is written rather than left in memory at shutdown (#196).
 /// </summary>
 /// <remarks>
 ///     The persist delegate is invoked with the <b>latest</b> ledger state at write time, so a burst of
@@ -14,8 +15,8 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 ///     — reporting cost does not scale with the number of observations. When the delegate <b>throws</b>, the
 ///     write is kept pending (so a later <see cref="Schedule" />, <see cref="FlushAsync" /> or
 ///     <see cref="WaitForScheduledAsync" /> retries it) and the boundary waits return <c>false</c>, so a
-///     failed authoritative write is never silently
-///     reported as a clean durability boundary. The failure is reported once via <c>onError</c>.
+///     failed authoritative write is never silently reported as a clean durability boundary. The failure
+///     is reported once via <c>onError</c>, before the waiters of that write are released.
 /// </remarks>
 internal sealed class UsagePersistenceWriter
 {
