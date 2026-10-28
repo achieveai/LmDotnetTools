@@ -877,8 +877,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// <summary>
     /// Awaits any pending/in-flight usage write so the latest snapshot is durable before run completion or
     /// disposal proceeds. Best-effort: a persistence fault must not fault the caller's lifecycle (#196).
+    /// <paramref name="forceWrite"/> = true (shutdown) writes a fresh snapshot and drains everything, including
+    /// observations scheduled meanwhile; false (run completion) waits only for what was already scheduled
+    /// (#855). Only cancellation of <paramref name="ct"/> propagates.
     /// </summary>
-    private async Task FlushUsageAsync()
+    private async Task FlushUsageAsync(bool forceWrite = true, CancellationToken ct = default)
     {
         var writer = _usageWriter;
         if (writer is null)
@@ -891,8 +894,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             // Force a fresh write of the latest snapshot — including the terminal completeness just set —
             // rather than only draining an already-pending observation. A terminal flush with nothing
             // pending would otherwise never persist the Complete/Partial state (#196, BUG 2).
-            writer.Schedule();
-            var durable = await writer.FlushAsync();
+            if (forceWrite)
+            {
+                writer.Schedule();
+            }
+            var durable = await (forceWrite ? writer.FlushAsync() : writer.WaitForScheduledAsync()).WaitAsync(ct);
             if (!durable)
             {
                 Logger.LogError(
@@ -900,6 +906,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                     ThreadId
                 );
             }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -3391,6 +3401,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// after completion was broadcast). Propagating also means a persistence failure here is
     /// caught by the caller's per-run try/catch as a run failure, so at most one terminal outcome
     /// is ever published for a given run — not a Completed publish followed by a later Errored one.
+    /// Before any of that, it waits for the usage writes already scheduled for this run, so a consumer
+    /// that sees the run complete also sees its usage saved (#855). A failed usage write is logged and
+    /// does not fail the run.
     /// </summary>
     /// <param name="runId">The run ID that completed</param>
     /// <param name="generationId">The generation ID</param>
@@ -3423,6 +3436,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         CancellationToken ct = default
     )
     {
+        // Persist this run's observed usage before any terminal ledger/lifecycle/completion becomes
+        // visible. Capture only already-scheduled observations; the reusable conversation and later
+        // descendants remain live, so this boundary must not force terminal completeness or join them.
+        await FlushUsageAsync(forceWrite: false, ct: ct);
+
         if (RunLedgerStore != null)
         {
             var existing = await RunLedgerStore.LoadRunLedgerAsync(runId, ct);

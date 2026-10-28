@@ -3,9 +3,10 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 /// <summary>
 ///     Serializes and coalesces conversation-usage persistence for one root conversation. Every observation
 ///     — the primary loop's own usage and each descendant (sub-agent / workflow) relay — is routed through
-///     the same writer, so durable writes never interleave, and the owner can <see cref="FlushAsync" /> at
-///     run completion / disposal to guarantee the latest ledger snapshot is durable rather than left in
-///     memory when the process shuts down (#196).
+///     the same writer, so durable writes never interleave. Run completion awaits
+///     <see cref="WaitForScheduledAsync" />, so a run is never reported complete while usage it already
+///     observed is still unsaved (#855); disposal awaits <see cref="FlushAsync" /> so the latest ledger
+///     snapshot is durable rather than left in memory when the process shuts down (#196).
 /// </summary>
 /// <remarks>
 ///     The persist delegate is invoked with the <b>latest</b> ledger state at write time, so a burst of
@@ -20,8 +21,11 @@ internal sealed class UsagePersistenceWriter
     private readonly Func<CancellationToken, Task> _persist;
     private readonly Action<Exception>? _onError;
     private readonly object _gate = new();
-    private bool _pending;
+    private long _scheduled;
+    private long _durable;
+    private bool _draining;
     private Task _drain = Task.CompletedTask;
+    private readonly List<(long Target, TaskCompletionSource<bool> Completion)> _waiters = [];
 
     public UsagePersistenceWriter(Func<CancellationToken, Task> persist, Action<Exception>? onError = null)
     {
@@ -38,39 +42,62 @@ internal sealed class UsagePersistenceWriter
     {
         lock (_gate)
         {
-            _pending = true;
-            if (_drain.IsCompleted)
-            {
-                _drain = DrainAsync();
-            }
+            _scheduled++;
+            StartDrain();
         }
     }
 
     /// <summary>
-    ///     Awaits any pending or in-flight write so the latest scheduled snapshot is durable before the
-    ///     caller (run completion / disposal) proceeds. Returns <c>true</c> when no write remains pending
-    ///     (durable), or <c>false</c> when a write failed and is still outstanding — so the caller can log a
-    ///     genuine error rather than treat the boundary as clean. A no-op returning <c>true</c> when nothing
-    ///     was scheduled.
+    ///     Awaits the full drain, including observations scheduled while it is running. Used at shutdown,
+    ///     after the owner has stopped its producers. Returns false when storage failed and work remains.
     /// </summary>
     public async Task<bool> FlushAsync()
     {
         Task drain;
         lock (_gate)
         {
-            if (_pending && _drain.IsCompleted)
+            if (_durable < _scheduled)
             {
-                _drain = DrainAsync();
+                StartDrain();
             }
-
             drain = _drain;
         }
 
         await drain;
-
         lock (_gate)
         {
-            return !_pending;
+            return _durable >= _scheduled;
+        }
+    }
+
+    /// <summary>
+    ///     Awaits observations scheduled before this call. Later observations do not extend the captured
+    ///     boundary. Returns <c>true</c> once that boundary is durable, or <c>false</c> when its write failed
+    ///     and remains outstanding for a later retry. A no-op returning <c>true</c> when already durable.
+    /// </summary>
+    public Task<bool> WaitForScheduledAsync()
+    {
+        lock (_gate)
+        {
+            if (_durable >= _scheduled)
+            {
+                return Task.FromResult(true);
+            }
+
+            var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _waiters.Add((_scheduled, completion));
+            StartDrain();
+            return completion.Task;
+        }
+    }
+
+    // Called under _gate; publishing drain ownership here also closes the schedule/exit race.
+    private void StartDrain()
+    {
+        if (!_draining)
+        {
+            _draining = true;
+            _drain = DrainAsync();
         }
     }
 
@@ -81,14 +108,16 @@ internal sealed class UsagePersistenceWriter
 
         while (true)
         {
+            long target;
             lock (_gate)
             {
-                if (!_pending)
+                if (_durable >= _scheduled)
                 {
+                    _draining = false;
                     return;
                 }
 
-                _pending = false;
+                target = _scheduled;
             }
 
             try
@@ -99,13 +128,37 @@ internal sealed class UsagePersistenceWriter
             {
                 // Persist failed: retain the pending write so a later Schedule()/FlushAsync() retries it and
                 // so FlushAsync reports a non-durable boundary. Stop draining so Flush cannot spin.
-                lock (_gate)
+                try
                 {
-                    _pending = true;
+                    _onError?.Invoke(ex);
+                }
+                finally
+                {
+                    lock (_gate)
+                    {
+                        _draining = false;
+                        foreach (var (_, completion) in _waiters)
+                        {
+                            completion.SetResult(false);
+                        }
+                        _waiters.Clear();
+                    }
                 }
 
-                _onError?.Invoke(ex);
                 return;
+            }
+
+            lock (_gate)
+            {
+                _durable = target;
+                for (var i = _waiters.Count - 1; i >= 0; i--)
+                {
+                    if (_waiters[i].Target <= _durable)
+                    {
+                        _waiters[i].Completion.SetResult(true);
+                        _waiters.RemoveAt(i);
+                    }
+                }
             }
         }
     }
