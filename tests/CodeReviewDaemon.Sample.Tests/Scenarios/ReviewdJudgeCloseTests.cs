@@ -208,6 +208,45 @@ public sealed class ReviewdJudgeCloseTests
             );
     }
 
+    // A lesson body can quote front matter. Only the entry's own sourcePrs line changes style, and an entry with no
+    // source PRs yet takes its store's style.
+    [Fact]
+    public void Close_compose_restyles_only_the_entry_sourcePrs_line()
+    {
+        const string Example = "```yaml\nsourcePrs: [\"123\"]\n```";
+        static string Entry(string sourcePrs) =>
+            $"---\ntitle: E\ntags: [a]\nscope: system\nsourcePrs: {sourcePrs}\nupdated: 2026-01-01\n---\n\nOld.\n";
+        var onMain = new Dictionary<string, string>
+        {
+            ["KnowledgeBase/system/refs.md"] = Entry("[\"ado/x/1\"]"),
+            ["KnowledgeBase/system/numbers.md"] = Entry("[5433880]"),
+            ["KnowledgeBase/system/none.md"] = Entry("[]"),
+            ["KnowledgeBase/_index.jsonl"] = "{\"file\":\"system/none.md\",\"title\":\"E\"}\n",
+        };
+        var judgment = Judgment(
+            [
+                Lesson("nova-5776213-r", "write-now", "KnowledgeBase/system/refs.md", body: Example),
+                Lesson("nova-5776213-n", "write-now", "KnowledgeBase/system/numbers.md", body: Example),
+                Lesson("nova-5776213-e", "write-now", "KnowledgeBase/system/none.md", body: Example),
+            ],
+            []
+        );
+
+        var plan = JudgeClose.Compose(judgment, "Nova", "5776213", "2026-10-28", onMain.GetValueOrDefault);
+
+        plan.Writes["KnowledgeBase/system/refs.md"]
+            .Should()
+            .Contain($"\nsourcePrs: [\"ado/x/1\", \"{SourcePr}\"]\n")
+            .And.Contain(Example, "a body example keeps its quotes");
+        plan.Writes["KnowledgeBase/system/numbers.md"]
+            .Should()
+            .Contain("\nsourcePrs: [5433880, 5776213]\n")
+            .And.Contain(Example, "a body example keeps its quotes");
+        plan.Writes["KnowledgeBase/system/none.md"]
+            .Should()
+            .Contain($"\nsourcePrs: [\"{SourcePr}\"]\n", "an entry with no source PRs takes its store's style");
+    }
+
     [Fact]
     public void Close_compose_changes_only_the_listing_lines_of_the_entries_it_wrote()
     {
