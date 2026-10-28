@@ -30,6 +30,16 @@ internal static class JudgeClose
 
     private static readonly Regex Slug = new("^[a-z0-9][a-z0-9-]*$");
     private static readonly Regex Tag = new("^[A-Za-z0-9][A-Za-z0-9._-]*$");
+
+    // BuildEntry quotes every source PR; a list of plain numbers goes back unquoted.
+    private static readonly Regex QuotedNumbers = new(
+        @"^sourcePrs: \[""\d+""(?:, ""\d+"")*\]$",
+        RegexOptions.Multiline
+    );
+
+    private static string PlainNumbers(string entry) =>
+        QuotedNumbers.Replace(entry, m => m.Value.Replace("\"", "", StringComparison.Ordinal), 1);
+
     private static readonly string[] BadBodyText = ["<!-- judge-lesson", "<!-- reviewd-close"];
 
     /// <summary>
@@ -502,21 +512,34 @@ internal static class JudgeClose
             // The judge's op is a hint: it read this host's local KB, which can lag main.
             var section =
                 $"{marker}\n### {OneLine(title, 200)}\n\n{DemoteHeadings(body.Trim())}\n\nSeen in: {repo} !{pr}";
+            var meta = existing is null
+                ? null
+                : KnowledgeIndex.ParseFrontmatter(target["KnowledgeBase/".Length..], existing);
+            // The curated stores list plain PR numbers; Nova, the one store with an index, lists provider refs. An
+            // entry keeps its own style, and a new entry takes its store's.
+            var plain = meta is null
+                ? Read("KnowledgeBase/_index.jsonl") is null
+                : meta.SourcePrs.All(p => p.All(char.IsAsciiDigit));
+            var source = plain ? pr : sourcePr;
             if (existing is null)
                 Write(
                     target,
-                    KnowledgeAgent.BuildEntry(OneLine(title, 200), tags, parts[1], [sourcePr], date, section)
+                    PlainNumbers(
+                        KnowledgeAgent.BuildEntry(OneLine(title, 200), tags, parts[1], [source], date, section)
+                    )
                 );
-            else if (KnowledgeIndex.ParseFrontmatter(target["KnowledgeBase/".Length..], existing) is { } meta)
+            else if (meta is not null)
                 Write(
                     target,
-                    KnowledgeAgent.BuildEntry(
-                        meta.Title,
-                        meta.Tags,
-                        meta.Scope,
-                        KnowledgeAgent.MergeSourcePrs(meta.SourcePrs, sourcePr),
-                        date,
-                        ReviewFeedbackAgent.StripFrontmatter(existing) + "\n\n" + section
+                    PlainNumbers(
+                        KnowledgeAgent.BuildEntry(
+                            meta.Title,
+                            meta.Tags,
+                            meta.Scope,
+                            KnowledgeAgent.MergeSourcePrs(meta.SourcePrs, source),
+                            date,
+                            ReviewFeedbackAgent.StripFrontmatter(existing) + "\n\n" + section
+                        )
                     )
                 );
             else

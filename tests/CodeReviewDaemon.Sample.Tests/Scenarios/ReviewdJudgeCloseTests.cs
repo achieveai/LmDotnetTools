@@ -143,12 +143,16 @@ public sealed class ReviewdJudgeCloseTests
             .Should()
             .BeLessThan(appended.IndexOf("nova-5776213-b", StringComparison.Ordinal));
         appended.Split("Seen in: Nova !5776213").Should().HaveCount(3);
+        KnowledgeIndex
+            .ParseFrontmatter("system/existing.md", appended)!
+            .SourcePrs.Should()
+            .Equal(["ado/x/1", SourcePr], "an entry of provider refs keeps them");
         var created = KnowledgeIndex.ParseFrontmatter(
             "system/new-entry.md",
             plan.Writes["KnowledgeBase/system/new-entry.md"]
         )!;
         created.Scope.Should().Be("system");
-        created.SourcePrs.Should().Equal(SourcePr);
+        created.SourcePrs.Should().Equal(["5776213"], "a new entry in a store without an index lists the PR number");
         plan.Writes["KnowledgeBase/system/new-entry.md"].Should().Contain("<!-- judge-lesson nova-5776213-c -->");
         plan.NotFiled.Should()
             .HaveCount(2)
@@ -189,6 +193,10 @@ public sealed class ReviewdJudgeCloseTests
         var appended = plan.Writes["KnowledgeBase/architecture/cmm-contracts.md"];
         appended.Should().Contain("Curated text.").And.Contain("<!-- judge-lesson ideascmm-5819746-a -->");
         KnowledgeIndex.ParseFrontmatter("architecture/cmm-contracts.md", appended)!.Scope.Should().Be("IDEASCMM");
+        appended.Should().Contain("\nsourcePrs: [5433880, 5461963, 5819746]\n", "the entry keeps its plain PR numbers");
+        plan.Writes["KnowledgeBase/architecture/new-entry.md"]
+            .Should()
+            .Contain("\nsourcePrs: [5819746]\n", "a store without an index lists plain PR numbers");
         plan.Writes["KnowledgeBase/_toc.md"]
             .Should()
             .Be(
@@ -228,6 +236,7 @@ public sealed class ReviewdJudgeCloseTests
             .Should()
             .Equal("system/zeta.md", "system/existing.md", "system/new-entry.md", "testing/new-scope.md");
         index[1].SourcePrs.Should().Equal("ado/x/1", SourcePr);
+        index[2].SourcePrs.Should().Equal([SourcePr], "a new entry in a store with an index lists the provider ref");
         plan.Writes["KnowledgeBase/_index.jsonl"]
             .Split('\n')[0]
             .Should()
