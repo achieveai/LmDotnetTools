@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using CodeReviewDaemon.Sample.Agents;
+using CodeReviewDaemon.Sample.Agents.DeveloperLearnings;
 using Microsoft.Data.Sqlite;
 
 namespace Reviewd.Sample;
@@ -15,7 +16,8 @@ namespace Reviewd.Sample;
 ///     temporary index from freshly fetched main (JudgeSandbox.py close-prepare / close-commit, run by a local python3
 ///     on the host), so the store's HEAD, index, local main and working tree never move. The host's git credential
 ///     helper does the push, which is never forced: a moved main is fetched and composed again, up to 3 tries, then
-///     exit 6. Idempotence lives on main: its CLOSING.md marker plus every round merged.
+///     exit 6. Idempotence lives on main: its CLOSING.md marker plus every round merged. Once main holds the rounds,
+///     close deletes their review branches on the remote (close-prune); exit 7 when one is left.
 /// </summary>
 internal static class JudgeClose
 {
@@ -23,6 +25,12 @@ internal static class JudgeClose
 
     /// <summary>Main moved on every try: nothing was pushed; a later run starts over.</summary>
     internal const int MainKeptMovingExitCode = 6;
+
+    /// <summary>
+    ///     Closed, but a review branch is left (its delete failed, it moved, or main does not hold it): a later run
+    ///     (already closed) tries again.
+    /// </summary>
+    internal const int BranchesLeftExitCode = 7;
 
     /// <summary>A Ctrl+C that also stopped the commit's python: its push is unknown. Program prints it.</summary>
     private const string CancelledDuringTheCommit =
@@ -35,7 +43,15 @@ internal static class JudgeClose
         RegexOptions.Multiline
     );
 
-    private static readonly string[] BadBodyText = ["<!-- judge-lesson", "<!-- reviewd-close"];
+    private static readonly string[] BadBodyText = ["<!-- judge-lesson", "<!-- reviewd-close", "<!-- judge-habit"];
+
+    // The PR author's habits the judge records (Prompts/merged-judge.md, developerBehaviors), as section titles.
+    private static readonly Dictionary<string, string> HabitTitles = new(StringComparer.Ordinal)
+    {
+        ["closed-without-reply"] = "Closed a review comment with no reply or fix",
+        ["question-unanswered"] = "Left a review question unanswered",
+        ["merged-before-confirmed"] = "Merged before the review confirmed the fixes",
+    };
 
     /// <summary>
     ///     The files one close writes (one entry per path, full new content) and what it did not file. Added holds
@@ -260,6 +276,7 @@ internal static class JudgeClose
         var roundsJson = new JsonArray([
             .. rounds.Select(r => (JsonNode)new JsonObject { ["branch"] = r.Branch, ["tip"] = r.Tip }),
         ]);
+        var branches = new JsonArray();
         var (lastMain, detail) = ("", "");
         for (var attempt = 1; attempt <= Tries; attempt++)
         {
@@ -316,7 +333,7 @@ internal static class JudgeClose
                     Console.WriteLine(
                         $"already closed: main {Text(prepared, "main")[..9]} has judgment {n}'s CLOSING.md and every round."
                     );
-                    return (0, "", "");
+                    return (await PruneAsync(Text(prepared, "main")) ? 0 : BranchesLeftExitCode, "", "");
                 }
                 if (Text(prepared, "status") != "ready")
                     throw new InvalidOperationException($"close-prepare returned {prepared["status"]}.");
@@ -330,7 +347,8 @@ internal static class JudgeClose
                     repo.RepoName,
                     pr,
                     DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-                    path => File.Exists(Path.Combine(tree, path)) ? File.ReadAllText(Path.Combine(tree, path)) : null
+                    path => File.Exists(Path.Combine(tree, path)) ? File.ReadAllText(Path.Combine(tree, path)) : null,
+                    Text(packet["identity"]!, "authorUniqueName")
                 );
                 foreach (var (path, content) in plan.Writes)
                 {
@@ -412,6 +430,7 @@ internal static class JudgeClose
                 foreach (var file in result["files"]?.AsArray() ?? [])
                     Console.WriteLine($"  +{Text(file!, "added")} -{Text(file!, "removed")}  {Text(file!, "path")}");
                 Console.WriteLine(closing);
+                var pruned = await PruneAsync(Text(result, "commit"));
                 Console.WriteLine(
                     Merge(
                             new JsonObject
@@ -419,12 +438,13 @@ internal static class JudgeClose
                                 ["judgment"] = n,
                                 ["main"] = main,
                                 ["notFiled"] = new JsonArray([.. plan.NotFiled.Select(s => (JsonNode)s)]),
+                                ["branches"] = branches.DeepClone(),
                             },
                             result
                         )
                         .ToJsonString()
                 );
-                return (0, main, "");
+                return (pruned ? 0 : BranchesLeftExitCode, main, "");
             }
             finally
             {
@@ -438,14 +458,68 @@ internal static class JudgeClose
                 );
             }
         }
+
+        // Deletes the rounds' review branches once main (here: the close commit, or main when already closed) holds
+        // them; a preview only says what it would delete. The close has landed by then, so a branch left (its delete
+        // failed, it moved, or main does not hold it) is a warning and exit 7, and a later run (already closed) tries
+        // again. False: a branch is left.
+        async Task<bool> PruneAsync(string holder)
+        {
+            JsonObject result;
+            try
+            {
+                result = await phase(
+                    "close-prune",
+                    new JsonObject
+                    {
+                        ["remote"] = options.Get("remote") ?? "origin",
+                        ["rounds"] = roundsJson.DeepClone(),
+                        ["main"] = holder,
+                        ["push"] = execute,
+                    },
+                    CancellationToken.None
+                );
+            }
+            catch (InvalidOperationException failure)
+            {
+                Console.Error.WriteLine($"the review branches were not deleted: {failure.Message} Run close again.");
+                return false;
+            }
+            branches = result["branches"]?.AsArray() ?? [];
+            var left = false;
+            foreach (var branch in branches.OfType<JsonObject>())
+            {
+                var (name, status) = (Text(branch, "branch"), Text(branch, "status"));
+                if (status is "deleted" or "would-delete")
+                    Console.WriteLine($"{(status == "deleted" ? "deleted" : "would delete")} {name}");
+                else if (status != "gone")
+                {
+                    left = true;
+                    Console.Error.WriteLine($"{name} {status}: {Text(branch, "reason")}");
+                }
+            }
+            if (left)
+                Console.Error.WriteLine(
+                    "The close landed, but a review branch is left (above). Run close again to retry the delete."
+                );
+            return !left;
+        }
     }
 
     /// <summary>
-    ///     The KB entries and ledger lines for one judgment, composed against main's current files
+    ///     The KB entries, ledger lines and developer habits for one judgment, composed against main's current files
     ///     (<paramref name="onMain" />: path → content, or null when absent). Every write to one path is folded into
-    ///     one result, in judgment order.
+    ///     one result, in judgment order. <paramref name="developer" /> is the PR author's provider-reported unique
+    ///     name (the packet's, never the judge's): it names the author's DeveloperLearnings folder.
     /// </summary>
-    internal static Plan Compose(JsonObject judgment, string repo, string pr, string date, Func<string, string?> onMain)
+    internal static Plan Compose(
+        JsonObject judgment,
+        string repo,
+        string pr,
+        string date,
+        Func<string, string?> onMain,
+        string? developer = null
+    )
     {
         var plan = new Plan(new SortedDictionary<string, string>(StringComparer.Ordinal), [], [], []);
         var current = new Dictionary<string, string?>(StringComparer.Ordinal);
@@ -577,6 +651,48 @@ internal static class JudgeClose
                     key,
                     policy
                 );
+        }
+        // The PR author's habits are feedback for the developer, never a grade: one marked section per PR and habit in
+        // the author's DeveloperLearnings file, which a rerun never repeats.
+        var habits = DeveloperIdentity.SlugifyAuthor(developer) is { } slug
+            ? $"DeveloperLearnings/{slug}/review-behaviors.md"
+            : null;
+        foreach (var item in (judgment["developerBehaviors"]?.AsArray() ?? []).OfType<JsonObject>())
+        {
+            var (kind, plain, avoid) = (Text(item, "kind"), Text(item, "plain"), Text(item, "howToAvoid"));
+            var threads = string.Join(", ", (item["threadIds"]?.AsArray() ?? []).Select(t => t?.ToString()));
+            var evidence = Text(item, "evidence") + (threads.Length > 0 ? $" (threads {threads})" : "");
+            var reason =
+                habits is null ? "no developer identity (a bot or a missing author)"
+                : !HabitTitles.ContainsKey(kind) ? $"unknown kind {OneLine(kind, 40)}"
+                : plain.Trim().Length == 0 ? "no plain sentence"
+                : BadBodyText.Any(m => (plain + avoid + evidence).Contains(m, StringComparison.Ordinal))
+                    ? "carries a lesson or close marker"
+                : null;
+            if (reason is not null)
+            {
+                plan.NotFiled.Add($"developer habit {OneLine(kind, 40)}: {reason}");
+                continue;
+            }
+            var marker = $"<!-- judge-habit {repo.ToLowerInvariant()}-{pr}-{kind} -->";
+            var text = Read(habits!);
+            if (text?.Contains(marker, StringComparison.Ordinal) == true)
+            {
+                plan.NotFiled.Add($"developer habit {kind}: already in {habits}");
+                continue;
+            }
+            text ??=
+                $"# Review habits: {OneLine(developer!, 120)}\n\n"
+                + "One section per habit seen in a merged PR, from its review judgment (judge close). Feedback for the "
+                + "developer, never a grade.\n";
+            Write(
+                habits!,
+                text.TrimEnd('\n')
+                    + $"\n\n{marker}\n### {HabitTitles[kind]} ({repo} !{pr}, {date})\n\n{OneLine(plain, 300)}\n\n"
+                    + $"- Evidence: {OneLine(evidence.Trim().Length > 0 ? evidence : "none given", 400)}\n"
+                    + $"- Avoid it: {OneLine(avoid.Trim().Length > 0 ? avoid : "none given", 200)}\n"
+            );
+            plan.Added.Add(($"Developer habit: {HabitTitles[kind]} · {habits}", false));
         }
         return plan;
 
@@ -762,11 +878,17 @@ internal static class JudgeClose
             text.Append('\n')
                 .Append(string.Concat(unknown.Select(u => $"- {u.Label}: cost unknown, capped at {Usd(u.Cap)}\n")));
         text.Append("\n## Review rounds merged\n\n");
+        // A round's commit, by its branch: the branch is deleted after the close, the commit stays in main's history.
+        string At(string branch) =>
+            rounds.Select((r, i) => (r, i)).FirstOrDefault(x => Text(x.r, "branch") == branch) is { r: not null } hit
+                ? $"round {hit.i + 1} at {Text(hit.r, "tip")[..Math.Min(9, Text(hit.r, "tip").Length)]}"
+                : branch;
         foreach (var (round, i) in rounds.Select((r, i) => (r, i)))
             text.Append(
                 CultureInfo.InvariantCulture,
                 $"- round {i + 1}: {Text(round, "branch")} at {Text(round, "tip")[..Math.Min(9, Text(round, "tip").Length)]}\n"
             );
+        text.Append("- The review branches are deleted once main holds them; each round stays in main's history.\n");
         var under = Text(identity, "reviewDirectory") + "/";
         if (overridden.Count > 0)
         {
@@ -790,7 +912,7 @@ internal static class JudgeClose
         {
             text.Append(
                     CultureInfo.InvariantCulture,
-                    $"- Kept on the review branch, not on main (main keeps text files up to 1 MiB): {Plural(keptOnBranch.Count, "file")}\n"
+                    $"- Kept off main (it keeps text files up to 1 MiB), in their round's commit: {Plural(keptOnBranch.Count, "file")}\n"
                 )
                 .Append(
                     string.Concat(
@@ -808,7 +930,7 @@ internal static class JudgeClose
                                     "link" => "a link",
                                     var kind => kind,
                                 };
-                                return $"  - {(path.StartsWith(under, StringComparison.Ordinal) ? path[under.Length..] : path)} ({what}, {Text(f, "branch")})\n";
+                                return $"  - {(path.StartsWith(under, StringComparison.Ordinal) ? path[under.Length..] : path)} ({what}, {At(Text(f, "branch"))})\n";
                             })
                     )
                 );

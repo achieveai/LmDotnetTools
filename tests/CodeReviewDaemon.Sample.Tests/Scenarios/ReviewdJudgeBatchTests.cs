@@ -301,7 +301,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             .Should()
             .Be(
                 "NeedsYou 2 judgments could not start because the host could not create the judge conversation "
-                    + "(details: journalctl --user -u reviewd-judge); fix that, then judge run by hand"
+                    + "(details: journalctl --user -u 'reviewd-judge*'); fix that, then judge run by hand"
             );
     }
 
@@ -684,7 +684,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         var judged = Receipt("completed", thread: "thread-1", finishedAt: Now.AddHours(-1));
         judged["n"] = 1;
         judged["judgment"] = JsonNode.Parse(
-            """{"gapSummary":{"knowledge":5,"pipeline-filter":5,"process-generic":1,"process-repo":4,"no-lesson":0,"proposed":[]}}"""
+            """{"gapSummary":{"knowledge":5,"pipeline-filter":5,"hallucination":2,"process-generic":1,"process-repo":4,"no-lesson":0,"proposed":[]}}"""
         );
         scan.Receipts.Add(("Nova !7001", judged));
         List<JsonObject> actions =
@@ -701,10 +701,10 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
 
         const string Misses =
             "missing system knowledge 5, review method (any repo) 1, review method (this repo) 4, "
-            + "found but dropped by our pipeline 5";
+            + "found but dropped by our pipeline 5, posted something with no basis 2";
         summary.Should().Contain($"Missed issues: {Misses}.").And.Contain($"- Missed issues in 7 days: {Misses}.");
-        summary.Should().NotContain("pipeline-filter").And.NotContain("process-repo");
-        summary.Should().Contain("- Nova !7002: start, failed (details: journalctl --user -u reviewd-judge)");
+        summary.Should().NotContain("pipeline-filter").And.NotContain("process-repo").And.NotContain("hallucination");
+        summary.Should().Contain("- Nova !7002: start, failed (details: journalctl --user -u 'reviewd-judge*')");
     }
 
     [Fact]
@@ -727,12 +727,12 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         var (scan, _) = await PlanAsync(new FakeHttpMessageHandler(), [], Target("alpha", alpha), Target("beta", beta));
 
         const string Next =
-            "and is not retried; see why in journalctl --user -u reviewd-judge, then judge run --rejudge to judge it again";
+            "and is not retried; see why in journalctl --user -u 'reviewd-judge*', then judge run --rejudge to judge it again";
         JudgeBatch
             .NeedsYouLines(scan.NeedsYou)
             .Should()
             .BeEquivalentTo(
-                "install beta: unusable because it could not be read (details: journalctl --user -u reviewd-judge)",
+                "install beta: unusable because it could not be read (details: journalctl --user -u 'reviewd-judge*')",
                 $"2 × last judgment failed {Next}: Nova !7001, Nova !7002",
                 $"Nova !7003: last judgment failed with no output {Next}"
             );
@@ -761,7 +761,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         (await SummaryLinesAsync(new FakeHttpMessageHandler(), FailedJudgmentDb("settled", settled: true)))
             .Should()
             .Contain(
-                "- Nova !7001: last judgment failed and is not retried; see why in journalctl --user -u reviewd-judge, "
+                "- Nova !7001: last judgment failed and is not retried; see why in journalctl --user -u 'reviewd-judge*', "
                     + "then judge run --rejudge to judge it again"
             )
             .And.NotContain(line => line.Contains("re-check"));
@@ -777,7 +777,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         (await SummaryLinesAsync(new FakeHttpMessageHandler(), stale))
             .Should()
             .Contain(
-                "- Nova !7001: last judgment failed and is not retried; see why in journalctl --user -u reviewd-judge, "
+                "- Nova !7001: last judgment failed and is not retried; see why in journalctl --user -u 'reviewd-judge*', "
                     + "then judge run until its sub-agents settle, then judge run --rejudge to judge it again"
             )
             .And.NotContain(line => line.Contains("re-check pending"));

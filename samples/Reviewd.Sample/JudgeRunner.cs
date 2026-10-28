@@ -123,7 +123,7 @@ internal static class JudgeRunner
         Refuse,
     }
 
-    // leaseHeld: the caller (judge batch) already holds the host-wide judge lock.
+    // leaseHeld: the caller (judge batch) already holds the judge lock.
     public static async Task<int> RunAsync(
         CliOptions options,
         ReviewdConfig config,
@@ -1241,22 +1241,26 @@ internal static class JudgeRunner
         return usd - cap;
     }
 
-    // One judge at a time on this host, across every install's database.
-    internal static readonly string JudgeLockPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".local",
-        "share",
-        "lmdotnettools-review-daemon",
-        "judge.lock"
-    );
+    // One judge at a time per judge lock: by default one host-wide lock, across every install's database. A judge lane
+    // (its own hourly tick over its own installs) sets REVIEWD_JUDGE_LOCK to its own lock, so lanes judge side by side.
+    internal static readonly string JudgeLockPath = Environment.GetEnvironmentVariable("REVIEWD_JUDGE_LOCK")
+        is { Length: > 0 } lane
+        ? Path.GetFullPath(lane)
+        : Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".local",
+            "share",
+            "lmdotnettools-review-daemon",
+            "judge.lock"
+        );
 
     private static FileStream AcquireJudgeLease() =>
         TryAcquireJudgeLock(JudgeLockPath, out var held)
         ?? throw new InvalidOperationException(
-            $"Another judge holds the host-wide judge lock {JudgeLockPath} ({held}); one judge at a time. Nothing was started."
+            $"Another judge holds the judge lock {JudgeLockPath} ({held}); one judge at a time per lock. Nothing was started."
         );
 
-    /// <summary>The host-wide judge lock, or null with the reason when another process holds it.</summary>
+    /// <summary>The judge lock at <paramref name="path" />, or null with the reason when another process holds it.</summary>
     internal static FileStream? TryAcquireJudgeLock(string path, out string? held)
     {
         held = null;

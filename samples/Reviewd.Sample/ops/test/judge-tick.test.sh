@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Checks ops/judge-tick.sh in a throwaway root with a stand-in batch (dotnet) and a stand-in doctor.notify: unusable
 # installs reach the batch as targets lines, a failure latches STOPPED and alerts once with its cause, alert bodies are
-# cut at a line, the daily summary goes out once, a missing CLI reads in words, and the last unusable install fixed alerts
-# once. Nothing outside the temp dir is read or written. Needs python3.
+# cut at a line, the daily summary goes out once, a missing CLI reads in words, the last unusable install fixed alerts
+# once, a lane passes its own judge lock and names itself, and closes run once per newly judged PR. Nothing outside the
+# temp dir is read or written. Needs python3.
 #   ops/test/judge-tick.test.sh
 set -uo pipefail
 OPS=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
@@ -32,10 +33,19 @@ touch "$T/judge.dll"
 # The batch stand-in writes its arguments to $ARGS_LOG, one per line, prints a heading and $FAKE_LINES lines of 79 bytes,
 # then its JSON line (status $FAKE_STATUS, cause $FAKE_CAUSE), and exits $FAKE_RC. Like the batch, its JSON line lists
 # each name<TAB>cause line of the targets file under "unusable", except when busy ($FAKE_BUSY: another judge held the
-# lock, nothing was scanned). Like dotnet, a missing DLL prints dotnet's own text and exits 1.
+# lock, nothing was scanned). Like dotnet, a missing DLL prints dotnet's own text and exits 1. A `judge close` appends
+# its arguments to $CLOSE_LOG as one line and exits 1 for a PR in $FAKE_CLOSE_REFUSE, 6 for one in $FAKE_CLOSE_MOVED,
+# else 0.
 cat > "$T/bin/dotnet" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' "$@" > "$ARGS_LOG"
+if [ "$2 $3" = "judge close" ]; then
+    printf '%s\n' "$*" >> "$CLOSE_LOG"
+    pr=$(printf '%s\n' "$@" | grep -A1 -x -- --pr | sed -n 2p)
+    case " ${FAKE_CLOSE_REFUSE:-} " in *" $pr "*) echo "the packet changed since the judge" >&2; exit 1 ;; esac
+    case " ${FAKE_CLOSE_MOVED:-} " in *" $pr "*) exit 6 ;; esac
+    exit 0
+fi
+printf '%s\n' "$@" "lock=${REVIEWD_JUDGE_LOCK:-}" > "$ARGS_LOG"
 if [ ! -f "$1" ]; then
     echo "Could not execute because the specified command or file was not found."
     echo "Possible reasons for this include:"
@@ -68,7 +78,7 @@ PY
 # tick [VAR=value ...]: one tick; its stderr goes to tick.err.
 tick() {
     env -i HOME="$T" PATH="$T/bin:/usr/bin:/bin" REVIEWD_ROOT="$R" JUDGE_DOCTOR_DIR="$T/doctor" \
-        NOTIFY_LOG="$T/notify.log" ARGS_LOG="$T/args" "$@" bash "$OPS/judge-tick.sh" 2> "$T/tick.err"
+        NOTIFY_LOG="$T/notify.log" ARGS_LOG="$T/args" CLOSE_LOG="$T/closes" "$@" bash "$OPS/judge-tick.sh" 2> "$T/tick.err"
 }
 alerts() { grep -c "^=== $1" "$T/notify.log"; }
 # arg <flag>: the value the last tick passed the batch after <flag>.
@@ -80,6 +90,8 @@ check "a clean tick exits 0" '[ $code -eq 0 ] && [ ! -e "$R/judge/STOPPED" ]'
 check "the batch gets the stop file and the budget, and only previews unless JUDGE_EXECUTE=1" \
     '[ "$(arg --stop-file)" = "$R/judge/STOPPED" ] && [ "$(arg --max-usd)" = 15 ] \
         && [ "$(arg --max-usd-per-day)" = 30 ] && [ "$(arg --avg-usd-target)" = 4 ] && ! grep -qx -- --execute "$T/args"'
+check "without JUDGE_LOCK the batch takes the host-wide lock, and nothing closes without JUDGE_CLOSE=1" \
+    'grep -qx "lock=" "$T/args" && [ ! -e "$T/closes" ]'
 check "a usable install becomes a full targets line" \
     '[ "$(grep -c "^nova	$R/reviewd.db	s-reviewd	w-reviewd$" "$R/judge/targets.tsv")" -eq 1 ]'
 check "each unusable install becomes a name<TAB>reason line, with its cause" \
@@ -192,6 +204,68 @@ check "once every install is fixed or removed, it alerts that judging resumed, n
 No install is unusable now. New judges can start again." ] && [ ! -e "$R/judge/PAUSED-ALERTED" ]'
 tick FAKE_RC=0
 check "a second clean tick does not alert resumed again" '[ "$(alerts "Judge resumed")" -eq 1 ]'
+
+# Closes. A judge receipt is a row of the install's database: "reviewd/judge-run/<repo key>/<PR>/<n>".
+python3 -I - "$R/reviewd.db" <<'PY'
+import json, sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.execute("CREATE TABLE cache (key TEXT PRIMARY KEY, value TEXT)")
+def receipt(pr, n, stage, output=None):
+    db.execute("INSERT INTO cache VALUES (?, ?)", (f"reviewd/judge-run/org/p/repo/{pr}/{n}", json.dumps(
+        {"repository": "Org/P Q/Repo", "prId": str(pr), "n": n, "stage": stage, "outputStage": output})))
+receipt(101, 1, "completed", "final")
+receipt(102, 1, "completed", "final"); receipt(102, 2, "sent")
+receipt(103, 1, "capped", "draft")
+receipt(104, 1, "completed", "final"); receipt(104, 2, "completed", "final")
+receipt(105, 1, "completed", "final")
+receipt(106, 1, "completed", "final")
+# Newest by number, not by row or key order: judgment 10 is stored first and sorts before 2.
+receipt(108, 10, "sent"); receipt(108, 2, "completed", "final")
+db.execute("INSERT INTO cache VALUES ('reviewd/pr-snapshot/org/p/repo/107', '{}')")
+db.commit()
+PY
+cat >> "$R/judge/judge.env" <<EOF
+JUDGE_CLOSE=1 JUDGE_STORES=$T/stores JUDGE_LANE=b JUDGE_LOCK=$T/lane-b.lock
+EOF
+rm -f "$R"/judge/summary-*.md
+tick FAKE_RC=0 FAKE_CLOSE_REFUSE=104 FAKE_CLOSE_MOVED=105
+closes=$(sed "s/ --config [^ ]* / /; s/ --db [^ ]* --store [^ ]* / /" "$T/closes")
+check "a lane passes its own judge lock to the batch and names itself in its alerts" \
+    'grep -qx "lock=$T/lane-b.lock" "$T/args" && [ "$(alerts "Judge b daily")" -eq 1 ]'
+check "each PR whose newest judgment is completed and final closes once, with that judgment, on its store" \
+    '[ "$closes" = "$T/judge.dll judge close --repo Org/P Q/Repo --pr 101 --judgment 1 --execute
+$T/judge.dll judge close --repo Org/P Q/Repo --pr 104 --judgment 2 --execute
+$T/judge.dll judge close --repo Org/P Q/Repo --pr 105 --judgment 1 --execute
+$T/judge.dll judge close --repo Org/P Q/Repo --pr 106 --judgment 1 --execute" ] \
+        && [ "$(grep -c -- " --db $R/reviewd.db --store $T/stores/nova-reviews " "$T/closes")" -eq 4 ]'
+check "a close that lands is listed in closed.tsv; one that fails goes to close-failed.tsv with its reason" \
+    '[ "$(cut -f1-4 "$R/judge/closed.tsv")" = "nova	Org/P Q/Repo	101	1
+nova	Org/P Q/Repo	106	1" ] && [ "$(cat "$R/judge/close-failed.tsv")" = "nova	Org/P Q/Repo	104	2	exit 1: the packet changed since the judge" ]'
+body=$(awk '/^=== Judge b: 1 close\(s\) failed \|/ { on = 1; next } /^===/ { on = 0 } on' "$T/notify.log")
+check "a failed close alerts once, naming the PR, its reason and how to try it again" \
+    '[ "$(alerts "Judge b: 1 close")" -eq 1 ] && [ "$body" = "Each is skipped until you look at it. To try one again, remove its line from $R/judge/close-failed.tsv.
+- Org/P Q/Repo !104 (judgment 2): the packet changed since the judge" ]'
+check "the daily summary counts the closes" \
+    'grep -q "^Closed in the last 24 h: 2 PRs (2 in all). This tick: 2 closed, 1 to retry (main kept moving), 0 waiting for the next tick. Close failures waiting for you: 1 (close-failed.tsv).$" "$T/notify.log"'
+: > "$T/closes"
+tick FAKE_RC=0 FAKE_CLOSE_REFUSE=104
+check "the next tick tries again only the close whose main kept moving, and alerts nothing new" \
+    '[ "$(grep -c . "$T/closes")" -eq 1 ] && grep -q -- "--pr 105 " "$T/closes" && [ "$(alerts "Judge b: 1 close")" -eq 1 ] \
+        && [ "$(grep -c . "$R/judge/closed.tsv")" -eq 3 ]'
+sed -i '/	104	/d' "$R/judge/close-failed.tsv"
+: > "$T/closes"
+touch "$R/judge/STOPPED"
+tick FAKE_RC=0
+check "nothing closes while STOPPED exists" '[ ! -s "$T/closes" ]'
+rm -f "$R/judge/STOPPED"
+tick FAKE_RC=0 FAKE_CLOSE_MOVED=104
+check "a failed close whose line was removed is tried again" \
+    '[ "$(grep -c . "$T/closes")" -eq 1 ] && grep -q -- "--pr 104 " "$T/closes"'
+echo JUDGE_CLOSE_LIMIT=0 >> "$R/judge/judge.env"
+: > "$T/closes"
+tick FAKE_RC=0
+check "JUDGE_CLOSE_LIMIT caps closes per tick; the rest wait for the next tick" \
+    '[ ! -s "$T/closes" ] && grep -q "0 closed, 0 to retry (main kept moving), 1 waiting for the next tick" "$T/tick.err"'
 
 echo "$failures failure(s)"
 [ "$failures" -eq 0 ]

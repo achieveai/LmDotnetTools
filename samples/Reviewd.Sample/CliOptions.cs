@@ -392,7 +392,7 @@ internal sealed class CliOptions
         Preview (no --execute): checks provider, mode, effort and prompt size on the host, builds the judge inputs in
         the sandbox's /tmp (removed afterwards) and prints them with the action an execute would take. It starts no
         agent and writes no receipt, marker or store file.
-        --execute: one judge at a time on this host (judge.lock). Every step is saved in the receipt
+        --execute: one judge at a time per judge lock (judge.lock; REVIEWD_JUDGE_LOCK names a lane's). Every step is saved in the receipt
         reviewd/judge-run/<repo>/<pr>/<n>; rerun the same command to resume where it stopped. A finished judgment is
         skipped. --rejudge starts a new judgment after a finished, failed or capped one, except while the last one
         still needs its sub-agent settle and post-check (a capped judgment not yet settled or without its ADO compare,
@@ -420,8 +420,8 @@ internal sealed class CliOptions
         (spent + --max-usd <= --max-usd-per-day; an unknown cost counts its cap; --max-usd above the day cap is a
         usage error) and the average of the last 10 finished judgments (on at 5).
         A resume keeps its receipt's provider, effort, mode and cap; one under another prompt is listed, not run.
-        Preview (no --execute): database reads and host GETs only; prints the plan. --execute takes the host-wide
-        lock (busy: exit 0) and writes only reviewd/judge-skip/<repo>/<pr> when a PR is not completed (24 h).
+        Preview (no --execute): database reads and host GETs only; prints the plan. --execute takes the judge
+        lock (REVIEWD_JUDGE_LOCK, else judge.lock; busy: exit 0) and writes only reviewd/judge-skip/<repo>/<pr> when a PR is not completed (24 h).
         Output: markdown, then one JSON line. A broken target is skipped and listed under Needs you; while any
         target is skipped, readable ones still resume and post-check, but nothing new starts.
 
@@ -439,21 +439,28 @@ internal sealed class CliOptions
         commit: parents [main, round 1 tip, ...]. Without --judgment it runs
         only when exactly one completed final judgment exists; with several it lists them and refuses.
         It adds write-now lessons to the KnowledgeBase (append, with a "Seen in" line), one ledger line per miss under
-        Improvements/, PRs/<dir>/CLOSING.md (cost, what was added, what was not filed) and judgment-<n>/judgment.{json,md}.
+        Improvements/, the PR author's review habits under DeveloperLearnings/<author>/review-behaviors.md (one marked
+        section per habit; a bot or unknown author is not filed), PRs/<dir>/CLOSING.md (cost, what was added, what was
+        not filed) and judgment-<n>/judgment.{json,md}.
         It fetches main and the rounds into private refs and builds the commit in a temporary index: the store's HEAD,
         index, local main and working tree never move. Preview (no --execute) builds the commit and prints it;
         --execute also pushes, never forced. It runs on the host (git through a local python3 in --store); the host's
         git credential helper does the push. It refuses a judgment whose files or inputs/packet.json changed since the
         judge. It first removes its own private refs and scratch left by a close that ended over an hour ago, and
         prints what it removed. When main moves between the fetch and the push, it fetches the new main and composes
-        again, 3 tries in all.
+        again, 3 tries in all. Once main holds every round (closed now or before), it deletes each round's review branch
+        on the remote, with a lease on the round's tip: a branch that moved keeps its new work. A preview only lists
+        the branches it would delete.
 
         judge close exit codes:
-          0    preview done, closed, or already closed (main has this judgment's CLOSING.md and every round)
+          0    preview done, closed, or already closed (main has this judgment's CLOSING.md and every round), and no
+               review branch is left
           1    failed or refused (no final judgment or several, changed files or packet, PR dir changed on main,
                round tip moved, secret, ...)
           2    usage error
           6    main kept moving: it moved on all 3 tries (nothing pushed; run close again; one JSON line on stdout)
+          7    closed, but a review branch is left: its delete failed, it moved, or main does not hold it (stderr says
+               which and why; run close again to retry)
           130  Ctrl+C (before the commit: "Cancelled before the commit; nothing was committed or pushed.";
                during it: if the push had started it may have landed; run close again)
 

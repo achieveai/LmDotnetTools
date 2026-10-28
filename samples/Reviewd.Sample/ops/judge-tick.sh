@@ -1,19 +1,31 @@
 #!/usr/bin/env bash
 # Hourly judge tick: rebuilds the targets from each install's env.sh, runs `judge batch` once over all of them, keeps
-# the STOPPED latch, saves the summary and sends alerts and the daily summary through doctor.py's notify().
+# the STOPPED latch, closes each newly judged PR (JUDGE_CLOSE=1), saves the summary and sends alerts and the daily
+# summary through doctor.py's notify().
 # Never installed by deploy.sh (that relinks `cli`, and doctor then restarts every review batch). See the README
 # "judge batch" section. Enable the timer only with a JUDGE_CLI copy built from this source, which takes the host-wide
 # judge lock: a build that holds only a per-database judge lease must not run a judge on this host while it is on.
 #
 # $JUDGE_HOME/judge.env: JUDGE_INSTALLS (install dirs, e.g. "reviewd reviewd-viva-pulse"), JUDGE_CLI (pinned
 # Reviewd.Sample.dll), JUDGE_EXECUTE (1 = execute, else preview), JUDGE_PROVIDER, JUDGE_EFFORT, JUDGE_MAX_USD,
-# JUDGE_MAX_USD_PER_DAY, JUDGE_AVG_USD_TARGET, JUDGE_MAX_AGE_DAYS, JUDGE_LIMIT (optional), JUDGE_SUMMARY_HOUR.
-# Stop gracefully: touch $JUDGE_HOME/STOPPED (resume-only: running judges finish, none start). Recover: rm it.
+# JUDGE_MAX_USD_PER_DAY, JUDGE_AVG_USD_TARGET, JUDGE_MAX_AGE_DAYS, JUDGE_LIMIT (optional), JUDGE_SUMMARY_HOUR;
+# for a judge lane (one of several ticks judging side by side, each over its own installs):
+# JUDGE_LANE (a name for its alerts) and JUDGE_LOCK (its own judge lock file; unset: the host-wide judge.lock); to
+# close: JUDGE_CLOSE (1 = close), JUDGE_STORES (the folder holding each install's store, <label>-reviews) and
+# JUDGE_CLOSE_LIMIT (closes per tick, default 30).
+# Stop gracefully: touch $JUDGE_HOME/STOPPED (resume-only: running judges finish, none start, nothing closes).
+# Recover: rm it.
 #
 # Units in ~/.config/systemd/user/ (systemd never starts a second tick while one runs):
 #   reviewd-judge.timer:   [Timer] OnCalendar=hourly RandomizedDelaySec=5min   [Install] WantedBy=timers.target
 #   reviewd-judge.service: [Service] Type=oneshot TimeoutStartSec=infinity
 #                          ExecStart=%h/.local/share/lmdotnettools-review-daemon/judge/judge-tick.sh
+# Judge lanes use template units instead, one instance per lane (JUDGE_HOME judge-<lane>, whose judge.env sets JUDGE_LOCK
+# and installs no other lane has):
+#   reviewd-judge@.timer:   [Timer] OnActiveSec=1min OnUnitInactiveSec=5min   [Install] WantedBy=timers.target
+#   reviewd-judge@.service: [Service] Type=oneshot TimeoutStartSec=infinity
+#                           Environment=JUDGE_HOME=%h/.local/share/lmdotnettools-review-daemon/judge-%i
+#                           ExecStart=%h/.local/share/lmdotnettools-review-daemon/judge/judge-tick.sh
 set -uo pipefail
 ROOT=${REVIEWD_ROOT:-$HOME/.local/share/lmdotnettools-review-daemon}
 JUDGE_HOME=${JUDGE_HOME:-$ROOT/judge}
@@ -72,6 +84,9 @@ skip() {
 source "$NOVA/bin/env.sh" >/dev/null || exit 1
 source "$JUDGE_HOME/judge.env" || exit 1
 : "${JUDGE_CLI:?set JUDGE_CLI in judge.env}" "${JUDGE_INSTALLS:?set JUDGE_INSTALLS in judge.env}"
+[ "${JUDGE_CLOSE:-0}" = 1 ] && : "${JUDGE_STORES:?set JUDGE_STORES in judge.env when JUDGE_CLOSE=1}"
+[ -n "${JUDGE_LOCK:-}" ] && export REVIEWD_JUDGE_LOCK=$JUDGE_LOCK
+J="Judge${JUDGE_LANE:+ $JUDGE_LANE}"
 : > targets.tsv.new
 targets=0
 for name in $JUDGE_INSTALLS; do
@@ -104,7 +119,7 @@ if [ -f "$JUDGE_CLI" ]; then
     rc=$?
     mv summary.md.new summary.md
     body=$(sed '$d' summary.md)
-    [ -n "$body" ] || body="The judge batch printed no summary. On the host: journalctl --user -u reviewd-judge"
+    [ -n "$body" ] || body="The judge batch printed no summary. On the host: journalctl --user -u 'reviewd-judge*'"
 else
     # A missing CLI reads in words, not as dotnet's own text.
     cause="Reviewd CLI not found" why="Reviewd CLI not found at $JUDGE_CLI"
@@ -126,12 +141,12 @@ if [ "$rc" != 0 ]; then
     why=${why%% · *}
     if [ ! -e "$STOP" ]; then
         printf '%s: %s\n' "$(date -u +%FT%RZ)" "$why" > "$STOP"
-        notify "Judge paused: $cause" "$(fit "Why: $why
+        notify "$J paused: $cause" "$(fit "Why: $why
 Judges already running still finish. Nothing new starts until you ${fix:+$fix, then }run: rm $STOP
 
 $body")"
     elif [ "$rc" = 3 ]; then
-        notify "Judge: a PR changed on ADO while it was judged" "$(fit "$body")"
+        notify "$J: a PR changed on ADO while it was judged" "$(fit "$body")"
     fi
 fi
 
@@ -147,8 +162,8 @@ if unusable=$(batch_json '("\n".join("- " + item["name"] + ": " + item["cause"] 
     if [ -z "$unusable" ]; then
         if [ -s "$PAUSED" ]; then
             # While STOPPED exists nothing new starts anyway, so the alert says that instead of "resumed".
-            title="Judge resumed" next="New judges can start again."
-            [ -e "$STOP" ] && title="Judge: no install unusable" next="Nothing new starts until you run: rm $STOP"
+            title="$J resumed" next="New judges can start again."
+            [ -e "$STOP" ] && title="$J: no install unusable" next="Nothing new starts until you run: rm $STOP"
             notify "$title" "$(fit "Fixed or removed since the last alert: $fixed.
 No install is unusable now. $next")" && rm -f "$PAUSED"
         fi
@@ -158,16 +173,88 @@ No install is unusable now. $next")" && rm -f "$PAUSED"
         # An install alerted before whose line changed is unusable for a new reason.
         changed=$(comm -12 <(comm -23 <(sort <<< "$unusable") <(sort 2>/dev/null < "$PAUSED") | names) \
             <(names 2>/dev/null < "$PAUSED") | paste -sd , - | sed 's/,/, /g')
-        notify "Judge paused: $installs unusable" "$(fit "${fixed:+Fixed or removed since the last alert: $fixed.
+        notify "$J paused: $installs unusable" "$(fit "${fixed:+Fixed or removed since the last alert: $fixed.
 }${changed:+New reason for: $changed.
 }No new judges start until each install below is fixed or removed from JUDGE_INSTALLS. Judges already running still finish.
 $unusable")" && printf '%s\n' "$unusable" > "$PAUSED"
     fi
 fi
 
+# Close: for each PR whose newest judgment is a completed final one, judge close --execute files it on the store's main
+# and deletes its review branches. closed.tsv (label, repository, PR, judgment, when) lists what closed. A close that
+# fails, except "main kept moving" (exit 6, tried again next tick), goes to close-failed.tsv with its reason and alerts
+# once; it is not tried again until its line is removed. Nothing closes while STOPPED exists.
+# pending: one "label<TAB>db<TAB>repository<TAB>PR<TAB>judgment" line per PR to close, read-only from each database.
+pending() {
+    python3 -I - targets.tsv closed.tsv close-failed.tsv <<'PY'
+import json, sqlite3, sys, urllib.request
+done = {tuple(line.rstrip("\n").split("\t")[:4]) for name in sys.argv[2:] for line in open(name) if line.strip()}
+for line in open(sys.argv[1]):
+    target = line.rstrip("\n").split("\t")
+    if len(target) != 4:
+        continue
+    label, db = target[:2]
+    try:
+        rows = sqlite3.connect(f"file:{urllib.request.pathname2url(db)}?mode=ro", uri=True).execute(
+            "SELECT key, value FROM cache WHERE substr(key, 1, 18) = 'reviewd/judge-run/'").fetchall()
+    except sqlite3.Error as failure:
+        print(f"close: cannot read the {label} database: {failure}", file=sys.stderr)
+        continue
+    newest = {}
+    for key, value in rows:
+        pr, _, n = key.rpartition("/")
+        if n.isdigit() and int(n) > newest.get(pr, (0, ""))[0]:
+            newest[pr] = (int(n), value)
+    for n, value in (newest[pr] for pr in sorted(newest)):
+        try:
+            receipt = json.loads(value)
+        except ValueError:
+            continue
+        if receipt.get("stage") == "completed" and receipt.get("outputStage") == "final":
+            item = (label, str(receipt.get("repository")), str(receipt.get("prId")), str(n))
+            if item not in done:
+                print("\t".join((label, db) + item[1:]))
+PY
+}
+closes=''
+if [ "${JUDGE_CLOSE:-0}" = 1 ] && [ ! -e "$STOP" ] && [ -f "$JUDGE_CLI" ]; then
+    touch closed.tsv close-failed.tsv
+    closed=0 retry=0 failures=0 failed='' left=0
+    while IFS=$'\t' read -r label db repo pr n; do
+        if [ $((closed + retry + failures)) -ge "${JUDGE_CLOSE_LIMIT:-30}" ]; then
+            left=$((left + 1))
+            continue
+        fi
+        (cd "$NOVA" && timeout 1800 dotnet "$JUDGE_CLI" judge close --config "$CFG" --repo "$repo" --pr "$pr" --db "$db" \
+            --store "$JUDGE_STORES/$label-reviews" --judgment "$n" --execute) > close.out 2> close.err < /dev/null
+        crc=$?
+        cat close.err >&2
+        if [ "$crc" = 0 ]; then
+            printf '%s\t%s\t%s\t%s\t%s\n' "$label" "$repo" "$pr" "$n" "$(date -u +%FT%RZ)" >> closed.tsv
+            closed=$((closed + 1))
+        elif [ "$crc" = 6 ]; then
+            retry=$((retry + 1))
+        else
+            # The reason: close's last stderr line (its refusal or failure), never a commit body.
+            why=$(grep . close.err | tail -n 1 | cut -c1-200)
+            printf '%s\t%s\t%s\t%s\t%s\n' "$label" "$repo" "$pr" "$n" "exit $crc: ${why:-no error output}" >> close-failed.tsv
+            failures=$((failures + 1))
+            failed+="- $repo !$pr (judgment $n): ${why:-exit $crc}"$'\n'
+        fi
+    done < <(pending)
+    rm -f close.out close.err
+    [ "$failures" = 0 ] || notify "$J: $failures close(s) failed" "$(fit "Each is skipped until you look at it. To try one again, remove its line from $JUDGE_HOME/close-failed.tsv.
+${failed%$'\n'}")"
+    since=$(date -u -d '24 hours ago' +%FT%RZ)
+    closes="Closed in the last 24 h: $(awk -F'\t' -v since="$since" '$5 >= since' closed.tsv | grep -c .) PRs ($(grep -c . closed.tsv) in all). This tick: $closed closed, $retry to retry (main kept moving), $left waiting for the next tick. Close failures waiting for you: $(grep -c . close-failed.tsv) (close-failed.tsv)."
+    echo "$closes" >&2
+fi
+
 today=$(date +%F)
 if [ "$(date +%H)" -ge "${JUDGE_SUMMARY_HOUR:-8}" ] && [ ! -e "summary-$today.md" ]; then
     cp summary.md "summary-$today.md"
-    notify "Judge daily $today" "$(fit "$body")" || rm -f "summary-$today.md"
+    notify "$J daily $today" "$(fit "$body${closes:+
+
+$closes}")" || rm -f "summary-$today.md"
 fi
 exit "$rc"

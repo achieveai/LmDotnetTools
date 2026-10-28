@@ -34,7 +34,7 @@ internal static class JudgeBatch
     private const int NamesShown = 3;
 
     // Error text goes to the batch's stderr, which the hourly tick leaves in this journal.
-    private const string Journal = "journalctl --user -u reviewd-judge";
+    private const string Journal = "journalctl --user -u 'reviewd-judge*'";
     private const string Details = $"(details: {Journal})";
     private const string NotRetried =
         $"and is not retried; see why in {Journal}, then judge run --rejudge to judge it again";
@@ -1425,6 +1425,7 @@ internal static class JudgeBatch
         ("onboarding", "unknown repo convention"),
         ("access", "tool or source unavailable"),
         ("pipeline-filter", "found but dropped by our pipeline"),
+        ("hallucination", "posted something with no basis"),
         ("human-decision", "needed a human decision"),
         ("no-lesson", "no lesson to draw"),
     ];
