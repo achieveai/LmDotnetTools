@@ -104,6 +104,40 @@ public class UsagePersistenceWriterTests(ITestOutputHelper output) : LoggingTest
     }
 
     [Fact]
+    public async Task WaitForScheduledAsync_ReportsTheFailureBeforeReleasingItsWaiter()
+    {
+        var reporting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var finishReporting = new ManualResetEventSlim();
+        var writer = new UsagePersistenceWriter(
+            async ct =>
+            {
+                await Task.Yield();
+                throw new InvalidOperationException("injected storage failure");
+            },
+            onError: error =>
+            {
+                reporting.SetResult();
+                _ = finishReporting.Wait(TimeSpan.FromSeconds(10));
+            }
+        );
+
+        writer.Schedule();
+        var boundary = writer.WaitForScheduledAsync();
+        await reporting.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        try
+        {
+            // A caller that sees the failed boundary must find the failure already reported.
+            boundary.IsCompleted.Should().BeFalse("the failure is still being reported");
+        }
+        finally
+        {
+            finishReporting.Set();
+        }
+
+        (await boundary.WaitAsync(TimeSpan.FromSeconds(10))).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task WaitForScheduledAsync_FailedWriteReleasesCapturedAndLaterWaiters_ThenRecovers()
     {
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

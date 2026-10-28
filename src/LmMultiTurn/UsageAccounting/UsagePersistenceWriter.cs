@@ -129,18 +129,28 @@ internal sealed class UsagePersistenceWriter
             {
                 // Persist failed: retain the pending write so a later trigger retries it and report a
                 // non-durable boundary. Stop draining so Flush cannot spin. Ownership is released BEFORE
-                // reporting, so a Schedule() that lands while the failure is logged starts its own retry.
+                // reporting, so a Schedule() that lands while the failure is logged starts its own retry;
+                // the waiters are released AFTER it, so a caller told "not durable" finds it reported.
+                TaskCompletionSource<bool>[] failed;
                 lock (_gate)
                 {
                     _draining = false;
-                    foreach (var (_, completion) in _waiters)
-                    {
-                        completion.SetResult(false);
-                    }
+                    failed = [.. _waiters.Select(waiter => waiter.Completion)];
                     _waiters.Clear();
                 }
 
-                _onError?.Invoke(ex);
+                try
+                {
+                    _onError?.Invoke(ex);
+                }
+                finally
+                {
+                    foreach (var completion in failed)
+                    {
+                        completion.SetResult(false);
+                    }
+                }
+
                 return;
             }
 
