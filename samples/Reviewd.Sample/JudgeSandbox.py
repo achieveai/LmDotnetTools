@@ -953,6 +953,10 @@ def close_commit():
             path, source = f["path"], (root / f["source"]).resolve()
             if path.startswith(("/", ".git")) or ".." in path.split("/") or not source.is_relative_to(root):
                 die(f"bad close path {path}")
+            # Main keeps what a review archive keeps (close_prepare); the judge can write any file into its judgment.
+            if why := ("large" if source.stat().st_size > ARCHIVE_FILE_LIMIT else "binary" if b"\0" in source.read_bytes()[:8000] else None):
+                return print(json.dumps({"status": "refused", "reason": f"{path} is {why}: main keeps only text files up to 1 MiB; "
+                                         "nothing was committed"}))
             writes.append((path, source))
         # Scan only the text this close adds (overlaid round files, written files) against main's version of each
         # path: main's existing text is not this close's to refuse. The reason names the path, never the match.

@@ -1205,6 +1205,37 @@ public sealed class ReviewdJudgeCloseTests
         universe.AssertClean();
     }
 
+    // Close copies every file the judge wrote besides its inputs. Main keeps only what a review archive keeps.
+    [SkippableTheory]
+    [InlineData("notes.bin", "large")]
+    [InlineData("shot.png", "binary")]
+    public async Task Close_commit_refuses_a_judge_written_file_main_does_not_keep(string name, string kind)
+    {
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        using var universe = Universe.Create();
+        var written = $"PRs/x/judgment-3/{name}";
+        Directory.CreateDirectory(Path.Combine(universe.Store, "PRs/x/judgment-3"));
+        File.WriteAllText(
+            Path.Combine(universe.Store, written),
+            kind == "large" ? new string('a', (1024 * 1024) + 1) : "PNG\0pixels"
+        );
+        universe.Rebaseline();
+        var phase = JudgeClose.Local(universe.Store);
+
+        var prepared = await phase("close-prepare", universe.PrepareArgs(3), default);
+        var args = universe.CommitArgs(prepared, push: true);
+        args["files"]!.AsArray().Add(new JsonObject { ["path"] = written, ["source"] = written });
+        var refused = await phase("close-commit", args, default);
+
+        refused["status"]!.GetValue<string>().Should().Be("refused");
+        refused["reason"]!
+            .GetValue<string>()
+            .Should()
+            .Be($"{written} is {kind}: main keeps only text files up to 1 MiB; nothing was committed");
+        universe.Git(universe.Origin, "rev-parse", "main").Should().Be(universe.Main);
+        universe.AssertClean();
+    }
+
     // A missing prepared index reads as an empty one: the tree would hold only this close's files, and a plain push
     // of it still descends from main.
     [SkippableFact]
