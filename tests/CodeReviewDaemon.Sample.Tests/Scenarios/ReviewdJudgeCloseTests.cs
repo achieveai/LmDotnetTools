@@ -939,6 +939,32 @@ public sealed class ReviewdJudgeCloseTests
     }
 
     [SkippableFact]
+    public async Task Close_excluded_winning_round_file_removes_an_older_main_version()
+    {
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        using var universe = Universe.Create(existingReview: "old main review");
+        universe.AddToRound2("PRs/x/review.md", new string('a', (1024 * 1024) + 1));
+        var phase = JudgeClose.Local(universe.Store);
+
+        var prepared = await phase("close-prepare", universe.PrepareArgs(3), default);
+
+        prepared["status"]!.GetValue<string>().Should().Be("ready");
+        prepared["keptOnBranch"]!
+            .AsArray()
+            .Select(f => $"{f!["path"]} {f["kind"]} {f["bytes"]} {f["branch"]}")
+            .Should()
+            .Equal("PRs/x/review.md large 1048577 review/x-2e69ca4b");
+        var closed = await phase("close-commit", universe.CommitArgs(prepared, push: true), default);
+
+        closed["status"]!.GetValue<string>().Should().Be("closed");
+        var commit = closed["commit"]!.GetValue<string>();
+        universe.Git(universe.Origin, "ls-tree", "--name-only", commit, "PRs/x/review.md").Should().BeEmpty();
+        universe.Git(universe.Origin, "show", $"{commit}:PRs/x/r1.md").Should().Be("1");
+        universe.Git(universe.Origin, "show", $"{commit}:KnowledgeBase/system/b.md").Should().Be("main moved");
+        universe.AssertClean(pushed: commit);
+    }
+
+    [SkippableFact]
     public async Task Close_prepare_says_already_closed_for_the_same_judgment_and_refuses_another()
     {
         Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
@@ -1245,13 +1271,15 @@ public sealed class ReviewdJudgeCloseTests
         public string Round1 { get; private set; } = "";
         public string Round2 { get; private set; } = "";
 
-        public static Universe Create()
+        public static Universe Create(string? existingReview = null)
         {
             var u = new Universe();
             Directory.CreateDirectory(u._root);
             u.Git(u._root, "init", "-q", "--bare", "--initial-branch=main", "origin.git");
             u.Git(u._root, "init", "-q", "--initial-branch=main", "seed");
             var basis = u.Commit("KnowledgeBase/system/a.md", "main entry\n", "base");
+            if (existingReview is not null)
+                basis = u.Commit("PRs/x/review.md", existingReview, "existing review on main");
             u.Round1 = u.Branch("review/x", basis, ("PRs/x/review.md", "round 1"), ("PRs/x/r1.md", "1"));
             u.Round2 = u.Branch("review/x-2e69ca4b", basis, ("PRs/x/review.md", "round 2"), ("PRs/x/r2.md", "2"));
             u.Git(u.Seed, "checkout", "-q", "main");

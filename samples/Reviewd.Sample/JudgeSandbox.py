@@ -911,6 +911,7 @@ def close_prepare():
             why = ("link" if mode == "120000" else "not a file" if mode not in ("100644", "100755")
                    else "large" if int(size) > ARCHIVE_FILE_LIMIT else "binary" if b"\0" in blob_head(blob) else None)
             if why:
+                git([], "update-index", "--force-remove", "--", path, env=index)
                 kept_on_branch.append({"path": path, "branch": branch, "kind": why, "bytes": int(size) if size.isdigit() else None})
             else:
                 kept.append(f"{mode} {kind} {blob}\t{path}\0")
