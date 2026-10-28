@@ -13,8 +13,8 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
     private readonly SemaphoreSlim _semaphore;
     private readonly int _maxConnections;
     private bool _disposed;
-    private bool _pragmasSet;
-    private readonly SemaphoreSlim _pragmaLock = new(1, 1);
+    private bool _walModeSet;
+    private readonly SemaphoreSlim _walModeLock = new(1, 1);
 
     /// <summary>
     /// Taken around every open and every pool clear in the process, so none of them overlap. Microsoft.Data.Sqlite
@@ -98,8 +98,8 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
                 connection.Open();
             }
 
-            // Set pragmas once (they persist for the database file)
-            await EnsurePragmasSetAsync(connection, ct).ConfigureAwait(false);
+            await EnsureWalModeAsync(connection, ct).ConfigureAwait(false);
+            await ApplyConnectionPragmasAsync(connection, ct).ConfigureAwait(false);
 
             return connection;
         }
@@ -120,47 +120,42 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
         }
     }
 
-    private async Task EnsurePragmasSetAsync(SqliteConnection connection, CancellationToken ct)
+    // WAL mode is stored in the database file, so it is set once per factory.
+    private async Task EnsureWalModeAsync(SqliteConnection connection, CancellationToken ct)
     {
-        if (_pragmasSet)
+        if (_walModeSet)
         {
             return;
         }
 
-        await _pragmaLock.WaitAsync(ct).ConfigureAwait(false);
+        await _walModeLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (_pragmasSet)
+            if (_walModeSet)
             {
                 return;
             }
 
-            // Use WAL mode for better concurrency
             using var walCommand = connection.CreateCommand();
             walCommand.CommandText = "PRAGMA journal_mode=WAL;";
             _ = await walCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
-            // Set synchronous to NORMAL for balance of safety and speed
-            using var syncCommand = connection.CreateCommand();
-            syncCommand.CommandText = "PRAGMA synchronous=NORMAL;";
-            _ = await syncCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-
-            // Enable foreign keys
-            using var fkCommand = connection.CreateCommand();
-            fkCommand.CommandText = "PRAGMA foreign_keys=ON;";
-            _ = await fkCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-
-            // Set cache size (negative means KB, positive means pages)
-            using var cacheCommand = connection.CreateCommand();
-            cacheCommand.CommandText = "PRAGMA cache_size=-10000;";
-            _ = await cacheCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-
-            _pragmasSet = true;
+            _walModeSet = true;
         }
         finally
         {
-            _ = _pragmaLock.Release();
+            _ = _walModeLock.Release();
         }
+    }
+
+    // These belong to the connection, not the file, so every open sets them; a pooled handle keeps them anyway, and
+    // none of them touches the database. Set once, they reached only the first handle: the rest ran synchronous=FULL,
+    // a disk sync on every commit (WAL needs one only at checkpoints), with a 2 MB cache (negative means KB).
+    private static async Task ApplyConnectionPragmasAsync(SqliteConnection connection, CancellationToken ct)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA cache_size=-10000;";
+        _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -180,7 +175,7 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
         }
 
         _semaphore.Dispose();
-        _pragmaLock.Dispose();
+        _walModeLock.Dispose();
     }
 
     /// <summary>

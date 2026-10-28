@@ -281,10 +281,15 @@ internal static class ReviewRunner
         }
     }
 
+    // How often a review's waits read the host. Each read is three requests (status, run-state and the sub-agent
+    // tree) and a full batch has about 20 reviews waiting at once: at 1 s that was ~60 requests a second, most of
+    // the host's request load (2026-10-28 profile). A review runs for many minutes, so 5 s delays little.
+    internal static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
+
     // A send the host refuses with 503 is retried every SendRetryPolls delay polls (30 s at the default
-    // 1 s poll) up to SendAttempts sends: about 5 minutes, longer than the slowest cold catalog build seen.
+    // PollInterval) up to SendAttempts sends: about 5 minutes, longer than the slowest cold catalog build seen.
     internal const int SendAttempts = 11;
-    internal const int SendRetryPolls = 30;
+    internal static readonly int SendRetryPolls = (int)(TimeSpan.FromSeconds(30) / PollInterval);
 
     internal static async Task<JsonObject> ExecuteSandboxAsync(
         SandboxClient sandbox,
@@ -439,7 +444,7 @@ internal static class ReviewRunner
         now ??= () => DateTimeOffset.UtcNow;
         var key = $"reviewd/review-run/{repo.NormalizedKey}/{pr}";
         var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/{pr}";
-        delay ??= token => Task.Delay(TimeSpan.FromSeconds(1), token);
+        delay ??= token => Task.Delay(PollInterval, token);
         using var prLease =
             options.Has("execute") && !prLeaseHeld ? AcquireLease(database, PrLeaseIdentity(repo, pr)) : null;
         using var slotLease =
@@ -892,7 +897,8 @@ internal static class ReviewRunner
                         await delay(token);
                         _ = await SlotRelease.HeartbeatAsync(connection, retainedOwner, retainedToken, token);
                     },
-                ct
+                ct,
+                maxBusyReads: ReviewBusyReads
             );
             // A reclaim leaves its conversation frozen. A fresh review on that thread thaws it once it is
             // idle; otherwise the host accepts the review message and the run parks behind the freeze for
@@ -907,12 +913,12 @@ internal static class ReviewRunner
                         and not "not_freezable"
                 )
                     throw new InvalidOperationException($"Host refused to unfreeze {thread}: {refusal}.");
-                await WaitAsync(client, thread, null, delay, ct);
+                await WaitAsync(client, thread, null, delay, ct, maxBusyReads: ReviewBusyReads);
             }
         }
         foreach (var ownerThread in ownerThreads)
         {
-            await WaitAsync(client, ownerThread, null, delay, ct);
+            await WaitAsync(client, ownerThread, null, delay, ct, maxBusyReads: ReviewBusyReads);
         }
         // Only validated admitted resumes and outgoing-owner cleanup bypass fresh-admission age checks.
         if (!resume && !cleanupOnly)
@@ -1131,7 +1137,7 @@ internal static class ReviewRunner
                 );
             args["summaryThreads"] = await PriorSummaryThreadsAsync(connection, repo, pr, ct);
             receipt["verifiedPublication"] = await StepAsync("verify");
-            await WaitAsync(client, thread!, null, LeasedDelayAsync, ct);
+            await WaitAsync(client, thread!, null, LeasedDelayAsync, ct, maxBusyReads: ReviewBusyReads);
             receipt["artifactCommit"] = await StepAsync("commit");
             var commit = receipt["artifactCommit"]!;
             if (
@@ -1244,7 +1250,7 @@ internal static class ReviewRunner
                 );
             // This is outgoing-owner cleanup. Review success stays committed even if drain/reset fails.
             if (thread is not null)
-                await WaitAsync(client, thread, null, LeasedDelayAsync, ct);
+                await WaitAsync(client, thread, null, LeasedDelayAsync, ct, maxBusyReads: ReviewBusyReads);
             await SlotRelease.AssertCurrentAsync(connection, ownerKey, claimToken, ct);
             receipt["cleanupState"] = "pending";
             var operation = Guid.NewGuid().ToString("N");
@@ -1381,7 +1387,15 @@ internal static class ReviewRunner
                 return null;
             try
             {
-                return await WaitAsync(client, thread!, input, LeasedDelayAsync, ct, now);
+                return await WaitAsync(
+                    client,
+                    thread!,
+                    input,
+                    LeasedDelayAsync,
+                    ct,
+                    now,
+                    maxBusyReads: ReviewBusyReads
+                );
             }
             catch (LostInputException ex)
             {
@@ -1502,6 +1516,9 @@ internal static class ReviewRunner
     // before giving up. Twelve, the old bound, aborted dozens of live reviews mid-run.
     internal const int MaxConsecutiveBusyReads = 600;
 
+    // The same ten minutes at a review's PollInterval.
+    internal static readonly int ReviewBusyReads = (int)(TimeSpan.FromMinutes(10) / PollInterval);
+
     // A queued input starts within seconds of the conversation going idle. One still NotStarted while the
     // root is idle and every descendant has settled has nothing left that will run it: PR 221's confirmation
     // was folded into a parked run without its receipt, and the batch waited on it for four hours; a review
@@ -1555,6 +1572,8 @@ internal static class ReviewRunner
     ///     <see cref="OrphanedRunException"/>. Such a caller also takes Interrupted as not final: the first send after a
     ///     restart can read it for a moment, and the caller's check decides when the run is gone. A busy tree read
     ///     waits through <paramref name="busyDelay"/> when given, so a caller can tell a busy read from a full poll.
+    ///     The wait gives up after <paramref name="maxBusyReads"/> busy tree reads in a row; a caller polling slower
+    ///     than once a second passes fewer, so the budget stays about ten minutes.
     /// </remarks>
     internal static async Task<S2SStatusResult?> WaitAsync(
         LmStreamingS2SClient client,
@@ -1564,7 +1583,8 @@ internal static class ReviewRunner
         CancellationToken ct,
         Func<DateTimeOffset>? clock = null,
         Func<S2SStatusResult?, S2SRunState, bool>? orphaned = null,
-        Func<CancellationToken, Task>? busyDelay = null
+        Func<CancellationToken, Task>? busyDelay = null,
+        int maxBusyReads = MaxConsecutiveBusyReads
     )
     {
         clock ??= () => DateTimeOffset.UtcNow;
@@ -1582,7 +1602,7 @@ internal static class ReviewRunner
             {
                 tree = await client.GetSubAgentTreeAsync(thread, ct);
             }
-            catch (LmStreamingS2SClient.HierarchyBusyException) when (++busyReads <= MaxConsecutiveBusyReads)
+            catch (LmStreamingS2SClient.HierarchyBusyException) when (++busyReads <= maxBusyReads)
             {
                 candidate = null;
                 // A busy hierarchy is activity, so the idle stretch before it does not count toward the grace.
