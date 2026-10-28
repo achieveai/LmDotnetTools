@@ -338,7 +338,8 @@ internal static class JudgeClose
                     judgment,
                     packet,
                     plan,
-                    [.. prepared["overridden"]!.AsArray().Select(p => p!.GetValue<string>())]
+                    [.. prepared["overridden"]!.AsArray().Select(p => p!.GetValue<string>())],
+                    [.. prepared["keptOnBranch"]!.AsArray().OfType<JsonObject>()]
                 );
                 await File.WriteAllTextAsync(
                     Path.Combine(store, scratch, "CLOSING.md"),
@@ -553,14 +554,19 @@ internal static class JudgeClose
             const string IndexPath = "KnowledgeBase/_index.jsonl",
                 TocPath = "KnowledgeBase/_toc.md";
             var meta = KnowledgeIndex.ParseFrontmatter(target["KnowledgeBase/".Length..], content)!;
-            var line = KnowledgeIndex.RenderIndex([meta]).TrimEnd('\n');
-            List<string> index = [.. (Read(IndexPath) ?? "").Split('\n').Where(l => l.Length > 0)];
-            var at = index.FindIndex(l => KnowledgeIndex.ParseIndex(l).FirstOrDefault()?.File == meta.File);
-            if (at >= 0)
-                index[at] = line;
-            else
-                index.Add(line);
-            Write(IndexPath, string.Join('\n', index) + "\n");
+            // A KnowledgeBase with no index lists its entries in _toc.md alone. Close never starts an index: one that
+            // lists only close's entries would hide the rest from a reader that prefers the index.
+            if (Read(IndexPath) is { } onMainIndex)
+            {
+                var line = KnowledgeIndex.RenderIndex([meta]).TrimEnd('\n');
+                List<string> index = [.. onMainIndex.Split('\n').Where(l => l.Length > 0)];
+                var at = index.FindIndex(l => KnowledgeIndex.ParseIndex(l).FirstOrDefault()?.File == meta.File);
+                if (at >= 0)
+                    index[at] = line;
+                else
+                    index.Add(line);
+                Write(IndexPath, string.Join('\n', index) + "\n");
+            }
             if (!created)
                 return;
             List<string> toc = [.. (Read(TocPath) ?? KnowledgeTableOfContents.Header).TrimEnd('\n').Split('\n')];
@@ -640,7 +646,8 @@ internal static class JudgeClose
         JsonObject judgment,
         JsonObject packet,
         Plan plan,
-        List<string> overridden
+        List<string> overridden,
+        List<JsonObject> keptOnBranch
     )
     {
         var receipt = judgments[n];
@@ -727,9 +734,9 @@ internal static class JudgeClose
                 CultureInfo.InvariantCulture,
                 $"- round {i + 1}: {Text(round, "branch")} at {Text(round, "tip")[..Math.Min(9, Text(round, "tip").Length)]}\n"
             );
+        var under = Text(identity, "reviewDirectory") + "/";
         if (overridden.Count > 0)
         {
-            var under = Text(identity, "reviewDirectory") + "/";
             text.Append(
                     CultureInfo.InvariantCulture,
                     $"- Replaced by a later round (the older file stays in its round's history): {Plural(overridden.Count, "file")}\n"
@@ -745,6 +752,35 @@ internal static class JudgeClose
                 );
             if (overridden.Count > 10)
                 text.Append(CultureInfo.InvariantCulture, $"  - … and {overridden.Count - 10} more\n");
+        }
+        if (keptOnBranch.Count > 0)
+        {
+            text.Append(
+                    CultureInfo.InvariantCulture,
+                    $"- Kept on the review branch, not on main (main keeps text files up to 1 MiB): {Plural(keptOnBranch.Count, "file")}\n"
+                )
+                .Append(
+                    string.Concat(
+                        keptOnBranch
+                            .Take(10)
+                            .Select(f =>
+                            {
+                                var path = Text(f, "path");
+                                var what = Text(f, "kind") switch
+                                {
+                                    "large" => ((f["bytes"]?.GetValue<long>() ?? 0) / 1048576.0).ToString(
+                                        "0.0 MiB",
+                                        CultureInfo.InvariantCulture
+                                    ),
+                                    "link" => "a link",
+                                    var kind => kind,
+                                };
+                                return $"  - {(path.StartsWith(under, StringComparison.Ordinal) ? path[under.Length..] : path)} ({what}, {Text(f, "branch")})\n";
+                            })
+                    )
+                );
+            if (keptOnBranch.Count > 10)
+                text.Append(CultureInfo.InvariantCulture, $"  - … and {keptOnBranch.Count - 10} more\n");
         }
         text.Append("\n## Added\n\n")
             .Append(

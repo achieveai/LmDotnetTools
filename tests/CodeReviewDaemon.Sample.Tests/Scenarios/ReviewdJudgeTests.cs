@@ -1051,6 +1051,118 @@ public sealed class ReviewdJudgeTests
         return (digests["threads"]!.GetValue<string>(), digests["summary"]!.GetValue<string>());
     }
 
+    // A review retried many times carries a long attempt history. Its judge-inputs arguments outgrew Linux's 128 KiB
+    // limit for one argv string (IdeasWatchTower !5817047, 146,812 bytes), so that PR could never be judged.
+    [SkippableFact]
+    public async Task Judge_arguments_over_one_argv_string_go_in_pieces_the_script_joins()
+    {
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no python3 on PATH");
+        Skip.If(OperatingSystem.IsWindows(), "the 128 KiB limit for one argument is Linux's, where the sandbox runs");
+        var history = new JsonArray([
+            .. Enumerable
+                .Range(1, 30)
+                .Select(i =>
+                    (JsonNode)
+                        new JsonObject
+                        {
+                            ["key"] = $"attempt-{i}",
+                            ["reviewResponse"] = $"Revue {i}: é ✓ \U0001F600 " + new string('x', 10_000),
+                        }
+                ),
+        ]);
+        // Raw UTF-8 with a surrogate pair. Production JSON escapes non-ASCII, so rune-safe pieces are a backstop.
+        var json = new JsonObject { ["host"] = new JsonObject { ["attemptHistory"] = history } }
+            .ToJsonString(
+                new System.Text.Json.JsonSerializerOptions
+                {
+                    Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+                }
+            )
+            .Replace("\\uD83D\\uDE00", "\U0001F600", StringComparison.Ordinal);
+
+        var argv = JudgeRunner.ScriptArgv("pass", "judge-inputs", json, "the template");
+
+        json.Should().Contain("\U0001F600");
+        Encoding.UTF8.GetByteCount(json).Should().BeGreaterThan(2 * JudgeRunner.ArgvLimitBytes);
+        argv.Take(5).Should().Equal("python3", "-B", "-c", "pass", "judge-inputs");
+        argv[5].Should().Be($"--args-parts={argv.Count - 7}");
+        argv.Should().OnlyContain(a => Encoding.UTF8.GetByteCount(a) <= JudgeRunner.ArgvLimitBytes);
+        var read = await ReadArgvAsync(python!, argv.Skip(4));
+        read["phase"]!.GetValue<string>().Should().Be("judge-inputs");
+        read["template"]!.GetValue<string>().Should().Be("the template");
+        JsonNode.DeepEquals(read["args"], JsonNode.Parse(json)).Should().BeTrue("the pieces join back exactly");
+        // A 4-byte character that would cross the limit starts the next piece whole (3 bytes short: a loop that counts
+        // each half of a surrogate pair as 3 bytes would split it here).
+        var straddle = $"{{\"s\":\"{new string('x', JudgeRunner.ArgvLimitBytes - 9)}\U0001F600\"}}";
+        var cut = JudgeRunner.ScriptArgv("pass", "judge-inputs", straddle, null);
+        cut.Should().HaveCount(8);
+        Encoding.UTF8.GetByteCount(cut[6]).Should().Be(JudgeRunner.ArgvLimitBytes - 3);
+        cut[7].Should().Be("\U0001F600\"}");
+        (await ReadArgvAsync(python!, cut.Skip(4)))["args"]!["s"]!.GetValue<string>().Should().EndWith("x\U0001F600");
+        JudgeRunner
+            .ScriptArgv("pass", "judge-snapshot", "{}", null)
+            .Should()
+            .Equal(["python3", "-B", "-c", "pass", "judge-snapshot", "{}"], "small arguments stay one argument");
+    }
+
+    [Fact]
+    public void Judge_arguments_too_long_even_in_pieces_fail_before_anything_runs()
+    {
+        var total = () => JudgeRunner.ScriptArgv("pass", "judge-inputs", new string('x', 1024 * 1024), null);
+        var one = () =>
+            JudgeRunner.ScriptArgv("pass", "close-commit", "{}", new string('t', JudgeRunner.ArgvLimitBytes + 1));
+
+        total
+            .Should()
+            .Throw<InvalidOperationException>()
+            .WithMessage(
+                "Sandbox judge-inputs: the arguments are * bytes, over the 1048576-byte limit; nothing was run."
+            );
+        one.Should()
+            .Throw<InvalidOperationException>()
+            .WithMessage(
+                "Sandbox close-commit: an argument is 122881 bytes, over the 122880-byte limit; nothing was run."
+            );
+    }
+
+    // Runs the embedded JudgeSandbox.py's read_argv over real process arguments (the OS limits apply).
+    private static async Task<JsonNode> ReadArgvAsync(string python, IEnumerable<string> arguments)
+    {
+        var script = Path.Combine(Path.GetTempPath(), $"judge-sandbox-{Guid.NewGuid():N}.py");
+        using (var resource = typeof(JudgeRunner).Assembly.GetManifestResourceStream("Reviewd.Sample.JudgeSandbox.py")!)
+        using (var file = File.Create(script))
+            await resource.CopyToAsync(file);
+        try
+        {
+            const string harness = """
+                import importlib.util, json, sys
+                spec = importlib.util.spec_from_file_location("judge_sandbox", sys.argv[1])
+                sandbox = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(sandbox)
+                phase, args, template = sandbox.read_argv(sys.argv[2:])
+                print(json.dumps({"phase": phase, "args": args, "template": template}))
+                """;
+            var start = new System.Diagnostics.ProcessStartInfo(python)
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            foreach (var argument in new[] { "-I", "-c", harness, script }.Concat(arguments))
+                start.ArgumentList.Add(argument);
+            using var process = System.Diagnostics.Process.Start(start)!;
+            var output = process.StandardOutput.ReadToEndAsync();
+            var error = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            process.ExitCode.Should().Be(0, error);
+            return JsonNode.Parse(await output)!;
+        }
+        finally
+        {
+            File.Delete(script);
+        }
+    }
+
     // Imports the embedded JudgeSandbox.py as a module (its phase dispatch runs only as __main__) and returns the JSON
     // of a Python expression over it (`sandbox`) and the input (`data`).
     internal static async Task<JsonNode> SandboxAsync(string python, string expression, JsonNode data)

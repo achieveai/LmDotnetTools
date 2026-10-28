@@ -36,7 +36,10 @@ internal static class JudgeRunner
     internal const string ScriptResource = "Reviewd.Sample.JudgeSandbox.py";
 
     // Linux limits each argv string to 128 KiB; the gateway passes argv through unchanged.
-    private const int ArgvLimitBytes = 120 * 1024;
+    internal const int ArgvLimitBytes = 120 * 1024;
+
+    // Linux's ARG_MAX (all of argv plus the environment) is 2 MiB with the default 8 MiB stack.
+    private const int ArgvTotalLimitBytes = 1024 * 1024;
     private const int PromptLimitBytes = 100 * 1024;
     private const int TailChars = 4096;
     private const int CapacityAttempts = 10;
@@ -900,17 +903,7 @@ internal static class JudgeRunner
         async Task<JsonObject> JudgeSandboxAsync(string phase, JsonObject args, string? promptTemplate)
         {
             var script = await ReadResourceAsync(ScriptResource, ct);
-            List<string> argv = ["python3", "-B", "-c", script, phase, args.ToJsonString()];
-            if (promptTemplate is not null)
-                argv.Add(promptTemplate);
-            foreach (var value in argv)
-            {
-                if (Encoding.UTF8.GetByteCount(value) > ArgvLimitBytes)
-                    throw new InvalidOperationException(
-                        $"Sandbox {phase}: an argument is {Encoding.UTF8.GetByteCount(value)} bytes, over the "
-                            + $"{ArgvLimitBytes}-byte limit; nothing was run."
-                    );
-            }
+            var argv = ScriptArgv(script, phase, args.ToJsonString(), promptTemplate);
             for (var attempt = 1; ; attempt++)
             {
                 var operation = Guid.NewGuid().ToString("N");
@@ -1156,6 +1149,53 @@ internal static class JudgeRunner
                 $"The judge prompt is {Encoding.UTF8.GetByteCount(prompt)} bytes (limit {PromptLimitBytes}); move text into the inputs files."
             );
         return prompt;
+    }
+
+    /// <summary>
+    ///     The sandbox argv for one JudgeSandbox.py phase. Arguments JSON over <see cref="ArgvLimitBytes"/> (a review
+    ///     retried many times carries a long attempt history) goes as <c>--args-parts=&lt;k&gt;</c> and k pieces, each
+    ///     within the limit, which the script joins. Throws, before anything runs, when the argv is still too long.
+    /// </summary>
+    internal static List<string> ScriptArgv(string script, string phase, string json, string? promptTemplate)
+    {
+        List<string> argv = ["python3", "-B", "-c", script, phase];
+        if (Encoding.UTF8.GetByteCount(json) <= ArgvLimitBytes)
+            argv.Add(json);
+        else
+        {
+            List<string> pieces = [];
+            var piece = new StringBuilder();
+            var bytes = 0;
+            foreach (var rune in json.EnumerateRunes())
+            {
+                if (bytes + rune.Utf8SequenceLength > ArgvLimitBytes)
+                {
+                    pieces.Add(piece.ToString());
+                    (piece, bytes) = (new StringBuilder(), 0);
+                }
+                piece.Append(rune.ToString());
+                bytes += rune.Utf8SequenceLength;
+            }
+            pieces.Add(piece.ToString());
+            argv.Add($"--args-parts={pieces.Count}");
+            argv.AddRange(pieces);
+        }
+        if (promptTemplate is not null)
+            argv.Add(promptTemplate);
+        foreach (var value in argv)
+        {
+            if (Encoding.UTF8.GetByteCount(value) > ArgvLimitBytes)
+                throw new InvalidOperationException(
+                    $"Sandbox {phase}: an argument is {Encoding.UTF8.GetByteCount(value)} bytes, over the "
+                        + $"{ArgvLimitBytes}-byte limit; nothing was run."
+                );
+        }
+        if (argv.Sum(value => Encoding.UTF8.GetByteCount(value)) is var total and > ArgvTotalLimitBytes)
+            throw new InvalidOperationException(
+                $"Sandbox {phase}: the arguments are {total} bytes, over the {ArgvTotalLimitBytes}-byte limit; "
+                    + "nothing was run."
+            );
+        return argv;
     }
 
     /// <summary>

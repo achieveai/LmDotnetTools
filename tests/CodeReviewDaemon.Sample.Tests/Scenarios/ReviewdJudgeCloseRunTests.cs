@@ -100,6 +100,30 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
     }
 
     [Fact]
+    public async Task The_files_prepare_kept_on_the_review_branch_are_listed_in_the_CLOSING_md_close_commits()
+    {
+        Save((4, Judged(Store, ReviewDir, 4)));
+        var phases = new Phases(Store)
+        {
+            KeptOnBranch =
+            [
+                new JsonObject
+                {
+                    ["path"] = $"{ReviewDir}/shot.png",
+                    ["branch"] = "review/nova-5776213",
+                    ["kind"] = "binary",
+                    ["bytes"] = 10,
+                },
+            ],
+        };
+
+        var (exit, _, _) = await Close(phases);
+
+        exit.Should().Be(0);
+        phases.Closing.Should().Contain("  - shot.png (binary, review/nova-5776213)\n");
+    }
+
+    [Fact]
     public async Task The_default_judgment_is_the_only_completed_final_one_Q_C1()
     {
         var capped = Judged(Store, ReviewDir, 6);
@@ -603,6 +627,12 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
         public List<string> PreparedNonces { get; } = [];
         public List<string> AbandonedNonces { get; } = [];
 
+        /// <summary>What prepare says main did not keep.</summary>
+        public JsonArray KeptOnBranch { get; init; } = [];
+
+        /// <summary>The CLOSING.md close handed to the last close-commit.</summary>
+        public string? Closing { get; private set; }
+
         /// <summary>The user's Ctrl+C: "ready-then-cancelled" and the cancel commits fire it.</summary>
         public CancellationTokenSource? Cancel { get; init; }
 
@@ -610,6 +640,15 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
         {
             Calls.Add(name);
             var main = new string('m', 40);
+            if (name == "close-commit" && args["files"] is JsonArray files)
+                Closing = File.ReadAllText(
+                    Path.Combine(
+                        store,
+                        files.Single(f =>
+                            f!["path"]!.GetValue<string>().EndsWith("/CLOSING.md", StringComparison.Ordinal)
+                        )!["source"]!.GetValue<string>()
+                    )
+                );
             return Task.FromResult(
                 name switch
                 {
@@ -692,6 +731,7 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
                 ["main"] = main,
                 ["scratch"] = scratch,
                 ["overridden"] = new JsonArray(),
+                ["keptOnBranch"] = KeptOnBranch.DeepClone(),
             };
             // A malformed answer makes close fail after prepare, before it commits.
             if (Prepare == "ready-without-overridden")

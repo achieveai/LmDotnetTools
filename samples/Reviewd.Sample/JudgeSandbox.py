@@ -783,6 +783,8 @@ def judge_outputs():
 
 SHA = re.compile(r"[0-9a-f]{40}")
 NO_PROMPT = {"GIT_TERMINAL_PROMPT": "0"}
+# Main keeps what a review archive keeps (ReviewRunnerSandbox.py set_aside_unarchivable): text files of at most 1 MiB.
+ARCHIVE_FILE_LIMIT = 1024 * 1024
 
 
 def close_paths():
@@ -839,6 +841,11 @@ def blob_text(name, env=None):
     return p.stdout.decode("utf-8", "replace") if p.returncode == 0 else ""
 
 
+def blob_head(blob):
+    """The first 8000 bytes of a blob (at most 1 MiB): a NUL among them marks it binary, as the review archive reads it."""
+    return subprocess.run(["git", "cat-file", "blob", blob], capture_output=True, check=True).stdout[:8000]
+
+
 def added_text(new, old):
     """The lines of new that old lacks (a multiset difference): the text a close adds to one path."""
     left, out = collections.Counter(old.splitlines()), []
@@ -883,7 +890,7 @@ def close_prepare():
         scratch.mkdir(parents=True)
         index = {"GIT_INDEX_FILE": str(scratch / "index")}
         git([], "read-tree", main, env=index)
-        seen, overridden = {}, []
+        overridden, final = [], {}
         for i, r in enumerate(rounds):
             base = git([], "merge-base", main, r["tip"]).stdout.strip()
             outside = [p for p in git([], "diff", "--name-only", "-z", base, r["tip"]).stdout.split("\0") if p and not p.startswith(review_dir + "/")]
@@ -892,13 +899,22 @@ def close_prepare():
                 return print(json.dumps({"status": "refused", "reason": f"{r['branch']} changes paths outside {review_dir}/: {', '.join(stray[:5])}"}))
             if tree_id(main, review_dir) != tree_id(base, review_dir):
                 return print(json.dumps({"status": "refused", "reason": f"{review_dir} changed on main since {r['branch']} branched; merge it by hand"}))
-            listing = git([], "ls-tree", "-r", "-z", r["tip"], "--", review_dir + "/").stdout
+            listing = git([], "ls-tree", "-r", "-l", "-z", r["tip"], "--", review_dir + "/").stdout
             for entry in filter(None, listing.split("\0")):
-                path, blob = entry.split("\t", 1)[1], entry.split()[2]
-                if seen.get(path, blob) != blob and path not in overridden:
+                (mode, kind, blob, size), path = entry.split("\t", 1)[0].split(), entry.split("\t", 1)[1]
+                if path in final and final[path][2] != blob and path not in overridden:
                     overridden.append(path)
-                seen[path] = blob
-            git([], "update-index", "-z", "--index-info", env=index, stdin=listing)
+                final[path] = (mode, kind, blob, size, r["branch"])
+        # The later round's file wins. A file main does not keep stays on its round branch; CLOSING.md lists it.
+        kept, kept_on_branch = [], []
+        for path, (mode, kind, blob, size, branch) in final.items():
+            why = ("link" if mode == "120000" else "not a file" if mode not in ("100644", "100755")
+                   else "large" if int(size) > ARCHIVE_FILE_LIMIT else "binary" if b"\0" in blob_head(blob) else None)
+            if why:
+                kept_on_branch.append({"path": path, "branch": branch, "kind": why, "bytes": int(size) if size.isdigit() else None})
+            else:
+                kept.append(f"{mode} {kind} {blob}\t{path}\0")
+        git([], "update-index", "-z", "--index-info", env=index, stdin="".join(kept))
         tree = scratch / "tree"
         tree.mkdir()
         if present := [p for p in ("KnowledgeBase", "Improvements") if tree_id(main, p)]:
@@ -910,7 +926,8 @@ def close_prepare():
                 die(f"git archive failed: {archive.stderr.decode(errors='replace')[:400]}")
             with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as t:
                 t.extractall(tree, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
-        print(json.dumps({"status": "ready", "main": main, "scratch": str(scratch.relative_to(root)), "overridden": overridden}))
+        print(json.dumps({"status": "ready", "main": main, "scratch": str(scratch.relative_to(root)), "overridden": overridden,
+                          "keptOnBranch": kept_on_branch}))
         ok = True
     finally:
         if not ok:
@@ -992,10 +1009,20 @@ def close_commit():
         close_cleanup()
 
 
+def read_argv(argv):
+    """(phase, args, template) from the arguments after the script. The args JSON is one argument, or k pieces after
+    --args-parts=<k> when it is over Linux's 128 KiB limit for one argument; the prompt template, if any, comes last."""
+    phase, rest = argv[0], argv[1:]
+    if rest and (parts := re.fullmatch(r"--args-parts=(\d+)", rest[0])):
+        count = int(parts.group(1))
+        encoded, rest = "".join(rest[1:1 + count]), rest[1 + count:]
+    else:
+        encoded, rest = rest[0], rest[1:]
+    return phase, json.loads(encoded), rest[0] if rest else None
+
+
 if __name__ == "__main__":  # imported (tests), only the functions load
-    phase, encoded = sys.argv[1], sys.argv[2]
-    template = sys.argv[3] if len(sys.argv) > 3 else None
-    args = json.loads(encoded)
+    phase, args, template = read_argv(sys.argv[1:])
     root = Path.cwd().resolve()
     {"judge-inputs": judge_inputs, "judge-snapshot": judge_snapshot, "judge-outputs": judge_outputs,
      "close-sweep": close_sweep, "close-prepare": close_prepare, "close-commit": close_commit}.get(phase, lambda: die(f"unknown phase {phase}"))()
