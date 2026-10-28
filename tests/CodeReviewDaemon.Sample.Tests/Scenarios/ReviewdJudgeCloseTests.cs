@@ -125,10 +125,8 @@ public sealed class ReviewdJudgeCloseTests
 
         plan.Writes.Keys.Should()
             .Equal(
-                "KnowledgeBase/_index.jsonl",
-                "KnowledgeBase/_toc.md",
-                "KnowledgeBase/system/existing.md",
-                "KnowledgeBase/system/new-entry.md"
+                ["KnowledgeBase/_toc.md", "KnowledgeBase/system/existing.md", "KnowledgeBase/system/new-entry.md"],
+                "main has no index, and close never starts one"
             );
         var appended = plan.Writes["KnowledgeBase/system/existing.md"];
         var meta = KnowledgeIndex.ParseFrontmatter("system/existing.md", appended)!;
@@ -156,6 +154,47 @@ public sealed class ReviewdJudgeCloseTests
             .HaveCount(2)
             .And.OnlyContain(reason => reason.Contains("already", StringComparison.Ordinal));
         plan.FirstLines.Should().Contain("nova-5776213-c: The fact.");
+    }
+
+    // 21 of the 22 stores list their curated entries in _toc.md alone (no _index.jsonl). Close files lessons there as
+    // entries and toc links; an index of close's entries only would hide the curated ones from an index reader.
+    [Fact]
+    public void Close_compose_files_lessons_into_a_knowledge_base_without_an_index_and_starts_none()
+    {
+        var onMain = new Dictionary<string, string>
+        {
+            ["KnowledgeBase/architecture/cmm-contracts.md"] =
+                "---\ntitle: CMM Contracts\ntags: [ideascmm, contracts]\nscope: IDEASCMM\nsourcePrs: [5433880, 5461963]\n"
+                + "updated: 2026-10-16\n---\n\n# CMM Contracts\n\nCurated text.\n",
+            ["KnowledgeBase/_toc.md"] =
+                "# Knowledge Base\n\nCurated observations.\n\n## architecture\n\n- [CMM Contracts](architecture/cmm-contracts.md)\n",
+        };
+        var judgment = Judgment(
+            [
+                Lesson("ideascmm-5819746-a", "write-now", "KnowledgeBase/architecture/cmm-contracts.md"),
+                Lesson("ideascmm-5819746-b", "write-now", "KnowledgeBase/architecture/new-entry.md", op: "create"),
+            ],
+            []
+        );
+
+        var plan = JudgeClose.Compose(judgment, "IDEASCMM", "5819746", "2026-10-28", onMain.GetValueOrDefault);
+
+        plan.Writes.Keys.Should()
+            .Equal(
+                "KnowledgeBase/_toc.md",
+                "KnowledgeBase/architecture/cmm-contracts.md",
+                "KnowledgeBase/architecture/new-entry.md"
+            );
+        plan.NotFiled.Should().BeEmpty();
+        var appended = plan.Writes["KnowledgeBase/architecture/cmm-contracts.md"];
+        appended.Should().Contain("Curated text.").And.Contain("<!-- judge-lesson ideascmm-5819746-a -->");
+        KnowledgeIndex.ParseFrontmatter("architecture/cmm-contracts.md", appended)!.Scope.Should().Be("IDEASCMM");
+        plan.Writes["KnowledgeBase/_toc.md"]
+            .Should()
+            .Be(
+                onMain["KnowledgeBase/_toc.md"] + "- [Title ideascmm-5819746-b](architecture/new-entry.md)\n",
+                "a new entry gets its link; the curated lines stay"
+            );
     }
 
     [Fact]
@@ -355,8 +394,16 @@ public sealed class ReviewdJudgeCloseTests
             [7] = Run(null, thread: null),
         };
 
-        var text = JudgeClose.Closing(4, judgments, new JsonObject { ["verdict"] = "v" }, Packet(), Plan(), []);
-        var ownUnknown = JudgeClose.Closing(6, judgments, new JsonObject { ["verdict"] = "v" }, Packet(), Plan(), []);
+        var text = JudgeClose.Closing(4, judgments, new JsonObject { ["verdict"] = "v" }, Packet(), Plan(), [], []);
+        var ownUnknown = JudgeClose.Closing(
+            6,
+            judgments,
+            new JsonObject { ["verdict"] = "v" },
+            Packet(),
+            Plan(),
+            [],
+            []
+        );
 
         var lines = text.Split('\n');
         lines.Should().Contain("| Judge, judgment 4 | $5.67 | 100 |");
@@ -393,7 +440,8 @@ public sealed class ReviewdJudgeCloseTests
             judgment,
             Packet(rounds: 2),
             plan,
-            ["PRs/nova-5776213/review.md", "PRs/nova-5776213/setup-context.json"]
+            ["PRs/nova-5776213/review.md", "PRs/nova-5776213/setup-context.json"],
+            []
         );
 
         var lines = text.Split('\n');
@@ -415,12 +463,46 @@ public sealed class ReviewdJudgeCloseTests
     }
 
     [Fact]
+    public void Close_closing_lists_the_files_kept_on_the_review_branch()
+    {
+        List<JsonObject> kept =
+        [
+            new()
+            {
+                ["path"] = "PRs/nova-5776213/setup-context.json",
+                ["branch"] = "review/nova-5776213",
+                ["kind"] = "large",
+                ["bytes"] = 2_202_009L,
+            },
+            new()
+            {
+                ["path"] = "PRs/nova-5776213/shot.png",
+                ["branch"] = "review/nova-5776213-2e69ca4b",
+                ["kind"] = "binary",
+                ["bytes"] = 2048L,
+            },
+        ];
+
+        var lines = JudgeClose
+            .Closing(4, new() { [4] = Run(1m) }, new JsonObject { ["verdict"] = "v" }, Packet(2), Plan(), [], kept)
+            .Split('\n');
+
+        lines
+            .Should()
+            .Contain([
+                "- Kept on the review branch, not on main (main keeps text files up to 1 MiB): 2 files",
+                "  - setup-context.json (2.1 MiB, review/nova-5776213)",
+                "  - shot.png (binary, review/nova-5776213-2e69ca4b)",
+            ]);
+    }
+
+    [Fact]
     public void Close_lists_at_most_ten_replaced_files()
     {
         var replaced = Enumerable.Range(1, 12).Select(i => $"PRs/nova-5776213/f{i:00}.md").ToList();
 
         var lines = JudgeClose
-            .Closing(4, new() { [4] = Run(1m) }, new JsonObject { ["verdict"] = "v" }, Packet(2), Plan(), replaced)
+            .Closing(4, new() { [4] = Run(1m) }, new JsonObject { ["verdict"] = "v" }, Packet(2), Plan(), replaced, [])
             .Split('\n');
 
         lines.Should().Contain("- Replaced by a later round (the older file stays in its round's history): 12 files");
@@ -811,6 +893,77 @@ public sealed class ReviewdJudgeCloseTests
         universe.AssertClean(pushed: commit);
     }
 
+    // Close copied every round file onto main: over the 1,246 merged, unjudged PRs that was 2.1 GB, 263 files over
+    // 1 MiB. Main keeps what a review archive keeps; the rest stays on its round branch.
+    [SkippableFact]
+    public async Task Close_leaves_large_and_binary_round_files_and_their_older_versions_off_main()
+    {
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        using var universe = Universe.Create();
+        universe.AddToRound2("PRs/x/setup-context.json", new string('a', (1024 * 1024) + 1));
+        universe.AddToRound2("PRs/x/at-limit.json", new string('b', 1024 * 1024));
+        universe.AddToRound2("PRs/x/shot.png", "PNG\0pixels");
+        // Round 1's small r1.md is replaced by round 2's large one: neither reaches main.
+        universe.AddToRound2("PRs/x/r1.md", new string('c', 2 * 1024 * 1024));
+        universe.AddToRound2("PRs/x/run.sh", "echo ok\n", mode: "100755");
+        universe.AddToRound2("PRs/x/latest", "review.md", mode: "120000");
+        var phase = JudgeClose.Local(universe.Store);
+
+        var prepared = await phase("close-prepare", universe.PrepareArgs(3), default);
+
+        prepared["status"]!.GetValue<string>().Should().Be("ready");
+        prepared["keptOnBranch"]!
+            .AsArray()
+            .Select(f => $"{f!["path"]} {f["kind"]} {f["bytes"]} {f["branch"]}")
+            .Should()
+            .BeEquivalentTo(
+                "PRs/x/latest link 9 review/x-2e69ca4b",
+                "PRs/x/r1.md large 2097152 review/x-2e69ca4b",
+                "PRs/x/setup-context.json large 1048577 review/x-2e69ca4b",
+                "PRs/x/shot.png binary 10 review/x-2e69ca4b"
+            );
+        var closed = await phase("close-commit", universe.CommitArgs(prepared, push: true), default);
+
+        closed["status"]!.GetValue<string>().Should().Be("closed");
+        var commit = closed["commit"]!.GetValue<string>();
+        universe
+            .Git(universe.Origin, "ls-tree", "--name-only", $"{commit}:PRs/x")
+            .Split('\n')
+            .Should()
+            .Equal("CLOSING.md", "at-limit.json", "r2.md", "review.md", "run.sh");
+        universe
+            .Git(universe.Origin, "ls-tree", commit, "PRs/x/run.sh")
+            .Should()
+            .StartWith("100755 ", "main keeps an executable as the archive does");
+        universe.AssertClean(pushed: commit);
+    }
+
+    [SkippableFact]
+    public async Task Close_excluded_winning_round_file_removes_an_older_main_version()
+    {
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        using var universe = Universe.Create(existingReview: "old main review");
+        universe.AddToRound2("PRs/x/review.md", new string('a', (1024 * 1024) + 1));
+        var phase = JudgeClose.Local(universe.Store);
+
+        var prepared = await phase("close-prepare", universe.PrepareArgs(3), default);
+
+        prepared["status"]!.GetValue<string>().Should().Be("ready");
+        prepared["keptOnBranch"]!
+            .AsArray()
+            .Select(f => $"{f!["path"]} {f["kind"]} {f["bytes"]} {f["branch"]}")
+            .Should()
+            .Equal("PRs/x/review.md large 1048577 review/x-2e69ca4b");
+        var closed = await phase("close-commit", universe.CommitArgs(prepared, push: true), default);
+
+        closed["status"]!.GetValue<string>().Should().Be("closed");
+        var commit = closed["commit"]!.GetValue<string>();
+        universe.Git(universe.Origin, "ls-tree", "--name-only", commit, "PRs/x/review.md").Should().BeEmpty();
+        universe.Git(universe.Origin, "show", $"{commit}:PRs/x/r1.md").Should().Be("1");
+        universe.Git(universe.Origin, "show", $"{commit}:KnowledgeBase/system/b.md").Should().Be("main moved");
+        universe.AssertClean(pushed: commit);
+    }
+
     [SkippableFact]
     public async Task Close_prepare_says_already_closed_for_the_same_judgment_and_refuses_another()
     {
@@ -1118,13 +1271,15 @@ public sealed class ReviewdJudgeCloseTests
         public string Round1 { get; private set; } = "";
         public string Round2 { get; private set; } = "";
 
-        public static Universe Create()
+        public static Universe Create(string? existingReview = null)
         {
             var u = new Universe();
             Directory.CreateDirectory(u._root);
             u.Git(u._root, "init", "-q", "--bare", "--initial-branch=main", "origin.git");
             u.Git(u._root, "init", "-q", "--initial-branch=main", "seed");
             var basis = u.Commit("KnowledgeBase/system/a.md", "main entry\n", "base");
+            if (existingReview is not null)
+                basis = u.Commit("PRs/x/review.md", existingReview, "existing review on main");
             u.Round1 = u.Branch("review/x", basis, ("PRs/x/review.md", "round 1"), ("PRs/x/r1.md", "1"));
             u.Round2 = u.Branch("review/x-2e69ca4b", basis, ("PRs/x/review.md", "round 2"), ("PRs/x/r2.md", "2"));
             u.Git(u.Seed, "checkout", "-q", "main");
@@ -1215,10 +1370,29 @@ public sealed class ReviewdJudgeCloseTests
             Git(Seed, "push", "-q", Origin, "main");
         }
 
-        public void AddToRound2(string path, string content)
+        /// <summary>
+        /// Adds a file to round 2 and pushes it. A <paramref name="mode"/> (100755, or 120000 with the link target as
+        /// <paramref name="content"/>) goes into the index as is, with no file on disk, so no filesystem symlink is needed.
+        /// </summary>
+        public void AddToRound2(string path, string content, string? mode = null)
         {
             Git(Seed, "checkout", "-q", "review/x-2e69ca4b");
-            Round2 = Commit(path, content, "round 2 again");
+            if (mode is null)
+                Round2 = Commit(path, content, "round 2 again");
+            else
+            {
+                var file = Path.Combine(_root, "blob");
+                File.WriteAllText(file, content);
+                Git(
+                    Seed,
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    $"{mode},{Git(Seed, "hash-object", "-w", file)},{path}"
+                );
+                Git(Seed, "commit", "-q", "-m", "round 2 again");
+                Round2 = Git(Seed, "rev-parse", "HEAD");
+            }
             Git(Seed, "push", "-q", Origin, "review/x-2e69ca4b");
             Git(Seed, "checkout", "-q", "main");
         }

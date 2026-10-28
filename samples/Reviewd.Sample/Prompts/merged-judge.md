@@ -1,6 +1,6 @@
 # Merged-PR review judge
 
-Prompt version: `slice1-v8.0`. Grades: Reviewd review grades v1 (8 dimensions, 1–5). The evidence contract follows
+Prompt version: `slice1-v8.1`. Grades: Reviewd review grades v1 (8 dimensions, 1–5). The evidence contract follows
 code-reviewer 1.30.0 `review-retrospective`; its essentials are copied below. You do not need to open the plugin files.
 
 ## 1. Your job
@@ -112,8 +112,8 @@ whole. Quote or validate a comment only from its full text in `ado-threads.json`
   - `identity`: repository, org, project, projectId, repositoryId, PR id, title, author, status, closedDate,
     lastMergeSourceCommit (final PR head), lastMergeCommit, workspace, leaf, reviewDirectory.
   - `paths`: judgment dir, inputs dir, store git, this PR's source store (`sourceStoreGitDir`), every local source
-    store with its repo name (`sourceStores`), KnowledgeBase index, prior judgment files (finished judgments of
-    other PRs only), ADO GET helper.
+    store with its repo name (`sourceStores`), KnowledgeBase index and table of contents (`knowledgeToc`), prior
+    judgment files (finished judgments of other PRs only), ADO GET helper.
   - `review`: latest receipt subset, `baselineComments` (thread/comment IDs that existed when the latest round
     started), attempt history, `rounds[]` (branch, artifact commit, headSha, mergeSha, iteration, receipt files,
     full file list, and `layout` hints for candidate records), `firstReviewAt`, reviewed iterations, last iteration,
@@ -441,7 +441,9 @@ Give the **strongest contrary evidence** against your overall verdict and how yo
 ## 8. Knowledge and process proposals
 
 **Read first.** Search `KnowledgeBase/_index.jsonl` (one JSON line per entry: file, title, tags, scope, sourcePrs)
-with `grep -i` for the components and mechanisms of your misses; read at most 5 matching entries. Read the
+with `grep -i` for the components and mechanisms of your misses. Most stores have no index: then search
+`KnowledgeBase/_toc.md` (one link per entry, grouped by topic) and the entries themselves (`grep -ril` under
+`KnowledgeBase/`). Read at most 5 matching entries. Read the
 `knowledge[]` of every file in `packet.paths.priorJudgments`: those are pending proposals not yet in the KB, and
 that list is their only source. Prefer `update` of an existing entry or pending proposal over a new near-duplicate.
 
@@ -505,7 +507,7 @@ Write exactly two files in your judgment dir (plus anything under `inputs/staged
 ```json
 {
   "schema": "reviewd-merged-judgment/1",
-  "promptVersion": "slice1-v8.0",
+  "promptVersion": "slice1-v8.1",
   "stage": "draft|final",
   "pr": {
     "repository": "", "prId": "", "title": "", "author": "", "status": "", "closedDate": "",
