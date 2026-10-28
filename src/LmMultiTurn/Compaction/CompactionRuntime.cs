@@ -134,6 +134,7 @@ internal sealed class CompactionRuntime
     private IReadOnlySet<string> _sizeRefusedRunIds = new HashSet<string>(StringComparer.Ordinal);
     private volatile bool _manualPending;
     private int _manualRunning;
+    private int _idleManualPasses;
     private string? _lastRecutGenerationId;
     private int _fitRecutsThisRun;
     private (string GenerationId, long Ordinal)? _evaluatedGeneration;
@@ -195,10 +196,16 @@ internal sealed class CompactionRuntime
     public bool HasPendingManual => _manualPending;
 
     /// <summary>
-    ///     True while an operator's compaction is queued or running. It runs outside any turn, so a run id
-    ///     does not show it, yet its summary call may be in flight on the loop's provider.
+    ///     True while an operator's compaction is queued or running, until an idle loop's pass has saved its result. It
+    ///     runs outside any turn, so a run id does not show it, yet its summary call may be in flight on the loop's
+    ///     provider (#869).
     /// </summary>
-    internal bool IsManualActive => _manualPending || Volatile.Read(ref _manualRunning) != 0;
+    /// <remarks>
+    ///     Read in the order the work moves: a pass marks itself running before it clears the queued flag, so a request
+    ///     that moves on between two reads is caught by the later one.
+    /// </remarks>
+    internal bool IsManualActive =>
+        _manualPending || Volatile.Read(ref _manualRunning) != 0 || Volatile.Read(ref _idleManualPasses) != 0;
 
     /// <summary>True when this loop would accept a manual compaction request at all.</summary>
     public bool AcceptsManual =>
@@ -317,9 +324,23 @@ internal sealed class CompactionRuntime
 
     /// <summary>
     ///     Runs a pending manual compaction on an idle loop: no provider call. The checkpoint row is stamped with
-    ///     <paramref name="runId"/>, the thread's latest run.
+    ///     <paramref name="runId"/>, the thread's latest run. <see cref="IsManualActive"/> stays true for the whole pass,
+    ///     from before the queued flag is cleared until its result is saved.
     /// </summary>
     public async Task RunPendingManualAsync(string runId, CancellationToken ct)
+    {
+        _ = Interlocked.Increment(ref _idleManualPasses);
+        try
+        {
+            await RunPendingManualPassAsync(runId, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _ = Interlocked.Decrement(ref _idleManualPasses);
+        }
+    }
+
+    private async Task RunPendingManualPassAsync(string runId, CancellationToken ct)
     {
         _manualPending = false;
         if (!IsEnabled || _host.Store is not { } store)

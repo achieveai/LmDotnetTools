@@ -4732,7 +4732,8 @@ public sealed class MultiTurnAgentLoop
     /// finish (#830): a deferred tool call (a parked <c>Wait</c>, an unanswered <c>AskUserQuestion</c>);
     /// and, while the run loop is alive and not frozen, an armed <c>Wait</c>, whose trigger would be
     /// cancelled with the loop, a turn it still owes (a queued input, or a resolved call's continuation),
-    /// or a run in progress. Synchronous, so the pool can read it under its per-thread lock.
+    /// an operator's manual compaction that is queued or running until its result is saved (no run id
+    /// marks it, #869), or a run in progress. Synchronous, so the pool can read it under its per-thread lock.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -4744,7 +4745,9 @@ public sealed class MultiTurnAgentLoop
     /// <para>
     /// The reads follow the order work moves in: a wait delivers into the input queue or a deferred call,
     /// a deferred call resolves into a queued continuation, and input or a continuation becomes a run. So
-    /// work that moves on between two reads is caught by the later one.
+    /// work that moves on between two reads is caught by the later one. A manual compaction needs no place
+    /// in that order: it reads as live from its request until its result is saved, and a run that claims
+    /// it keeps its run id throughout.
     /// </para>
     /// </remarks>
     public bool HasOwnLiveWork
@@ -4766,7 +4769,10 @@ public sealed class MultiTurnAgentLoop
                 return false;
             }
 
-            return _triggerRuntime?.HasPendingWaits == true || HasPendingLoopWork || CurrentRunId != null;
+            return _triggerRuntime?.HasPendingWaits == true
+                || HasPendingLoopWork
+                || _compaction is { IsManualActive: true }
+                || CurrentRunId != null;
         }
     }
 

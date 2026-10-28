@@ -2431,6 +2431,167 @@ public class CompactionLoopTests
         );
     }
 
+    public enum ManualPassHold
+    {
+        ReadingTheRequest,
+        SummaryCall,
+        SavingTheResult,
+    }
+
+    /// <summary>
+    /// #869: an idle loop's manual compaction runs with no run id, yet only this process can finish it. The live-work
+    /// predicates the pool's idle unload reads count it from the request until its result is saved, wherever the pass is
+    /// held: reading the claimed request, the summary call, or saving its result.
+    /// </summary>
+    [Theory]
+    [InlineData(ManualPassHold.ReadingTheRequest)]
+    [InlineData(ManualPassHold.SummaryCall)]
+    [InlineData(ManualPassHold.SavingTheResult)]
+    public async Task ManualCompaction_OnAnIdleLoop_IsLiveWork_UntilItsResultIsSaved(ManualPassHold hold)
+    {
+        var store = new HoldingManualPassStore(new InMemoryConversationStore(), hold);
+        await using var h = new Harness(EchoThenDone(3), Options(CompactionMode.Compact), _ => Window, store: store);
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+        (await h.RunAsync("again")).IsError.Should().BeFalse();
+        await WaitUntilAsync(() => Task.FromResult(!h.Loop.HasOwnLiveWork), "the loop to go idle");
+        h.Summarizer.Hold = async ct =>
+        {
+            store.SummaryCalled = true;
+            if (hold == ManualPassHold.SummaryCall)
+            {
+                store.Reached.TrySetResult();
+                await store.Release.Task.WaitAsync(ct);
+            }
+        };
+
+        (await h.Loop.RequestCompactionAsync()).Accepted.Should().BeTrue();
+        await store.Reached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        h.Loop.HasOwnLiveWork.Should().BeTrue("the manual compaction is held at {0}", hold);
+        (await h.Loop.HasLiveWorkAsync()).Should().BeTrue("the manual compaction is held at {0}", hold);
+
+        store.Release.SetResult();
+        await WaitUntilAsync(() => Task.FromResult(!h.Loop.HasOwnLiveWork), "the manual compaction to end");
+        store.ResultSaved.Should().BeTrue("the loop reads idle only after the compaction's result is saved");
+        (await h.Loop.HasLiveWorkAsync()).Should().BeFalse();
+        (await h.StoredRowsAsync()).OfType<CompactionCheckpointMessage>().Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// Holds one step of an idle loop's manual compaction pass: the pass's read of the claimed request (the first metadata
+    /// read that still shows it pending), or the save of its result (the first context observation written after the
+    /// summary call). Records when that result has been saved.
+    /// </summary>
+    private sealed class HoldingManualPassStore(IConversationStore inner, ManualPassHold hold) : IConversationStore
+    {
+        private int _held;
+
+        public TaskCompletionSource Reached { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public volatile bool SummaryCalled;
+
+        public volatile bool ResultSaved;
+
+        public async Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default)
+        {
+            var metadata = await inner.LoadMetadataAsync(threadId, ct);
+            if (
+                hold == ManualPassHold.ReadingTheRequest
+                && CompactionStateProjection.FromMetadata(metadata)?.PendingManual is not null
+                && Interlocked.CompareExchange(ref _held, 1, 0) == 0
+            )
+            {
+                Reached.TrySetResult();
+                await Release.Task.WaitAsync(ct);
+            }
+
+            return metadata;
+        }
+
+        public async Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default
+        )
+        {
+            var observation = false;
+            await inner.UpdateMetadataAsync(
+                threadId,
+                existing =>
+                {
+                    var next = update(existing);
+                    observation =
+                        SummaryCalled
+                        && next.Properties?.TryGetValue(ContextObservationProjection.LatestPropertyKey, out var latest)
+                            == true
+                        && (
+                            existing?.Properties?.TryGetValue(
+                                ContextObservationProjection.LatestPropertyKey,
+                                out var was
+                            ) != true
+                            || !Equals(latest, was)
+                        );
+                    return next;
+                },
+                ct
+            );
+            if (!observation)
+            {
+                return;
+            }
+
+            ResultSaved = true;
+            if (hold == ManualPassHold.SavingTheResult && Interlocked.CompareExchange(ref _held, 1, 0) == 0)
+            {
+                Reached.TrySetResult();
+                await Release.Task.WaitAsync(ct);
+            }
+        }
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => inner.LoadMessagesAsync(threadId, ct);
+
+        public Task<long> GetMessageWatermarkAsync(string threadId, CancellationToken ct = default) =>
+            inner.GetMessageWatermarkAsync(threadId, ct);
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessageRangeAsync(
+            string threadId,
+            long fromSeq,
+            long toSeq,
+            int limit,
+            CancellationToken ct = default
+        ) => inner.LoadMessageRangeAsync(threadId, fromSeq, toSeq, limit, ct);
+
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default
+        ) => inner.AppendMessagesAsync(threadId, messages, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            ConversationListOptions? options = null,
+            CancellationToken ct = default
+        ) => inner.ListThreadsAsync(limit, offset, options, ct);
+    }
+
     [Fact]
     public async Task ManualCompaction_OnAnIdleLoop_CompactsWithoutAModelTurn_AndCarriesTheFocus()
     {
