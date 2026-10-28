@@ -151,7 +151,7 @@ public sealed class ReviewdJudgeCloseTests
             "system/new-entry.md",
             plan.Writes["KnowledgeBase/system/new-entry.md"]
         )!;
-        created.Scope.Should().Be("system");
+        created.Scope.Should().Be("Nova", "a new entry in a store without an index is scoped to its repo");
         created.SourcePrs.Should().Equal(["5776213"], "a new entry in a store without an index lists the PR number");
         plan.Writes["KnowledgeBase/system/new-entry.md"].Should().Contain("<!-- judge-lesson nova-5776213-c -->");
         plan.NotFiled.Should()
@@ -196,7 +196,10 @@ public sealed class ReviewdJudgeCloseTests
         appended.Should().Contain("\nsourcePrs: [5433880, 5461963, 5819746]\n", "the entry keeps its plain PR numbers");
         plan.Writes["KnowledgeBase/architecture/new-entry.md"]
             .Should()
-            .Contain("\nsourcePrs: [5819746]\n", "a store without an index lists plain PR numbers");
+            .Contain(
+                "\nscope: IDEASCMM\nsourcePrs: [5819746]\n",
+                "a curated entry is scoped to its repo and lists PR numbers"
+            );
         plan.Writes["KnowledgeBase/_toc.md"]
             .Should()
             .Be(
@@ -237,6 +240,10 @@ public sealed class ReviewdJudgeCloseTests
             .Equal("system/zeta.md", "system/existing.md", "system/new-entry.md", "testing/new-scope.md");
         index[1].SourcePrs.Should().Equal("ado/x/1", SourcePr);
         index[2].SourcePrs.Should().Equal([SourcePr], "a new entry in a store with an index lists the provider ref");
+        KnowledgeIndex
+            .ParseFrontmatter("system/new-entry.md", plan.Writes["KnowledgeBase/system/new-entry.md"])!
+            .Scope.Should()
+            .Be("system", "a store with an index scopes an entry by its directory");
         plan.Writes["KnowledgeBase/_index.jsonl"]
             .Split('\n')[0]
             .Should()

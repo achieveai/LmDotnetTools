@@ -515,17 +515,24 @@ internal static class JudgeClose
             var meta = existing is null
                 ? null
                 : KnowledgeIndex.ParseFrontmatter(target["KnowledgeBase/".Length..], existing);
-            // The curated stores list plain PR numbers; Nova, the one store with an index, lists provider refs. An
-            // entry keeps its own style, and a new entry takes its store's.
-            var plain = meta is null
-                ? Read("KnowledgeBase/_index.jsonl") is null
-                : meta.SourcePrs.All(p => p.All(char.IsAsciiDigit));
+            // The curated stores scope an entry to its repo and list plain PR numbers; Nova, the one store with an
+            // index, scopes by directory and lists provider refs. An entry keeps its own style, and a new entry takes
+            // its store's.
+            var curated = Read("KnowledgeBase/_index.jsonl") is null;
+            var plain = meta is null ? curated : meta.SourcePrs.All(p => p.All(char.IsAsciiDigit));
             var source = plain ? pr : sourcePr;
             if (existing is null)
                 Write(
                     target,
                     PlainNumbers(
-                        KnowledgeAgent.BuildEntry(OneLine(title, 200), tags, parts[1], [source], date, section)
+                        KnowledgeAgent.BuildEntry(
+                            OneLine(title, 200),
+                            tags,
+                            curated ? repo : parts[1],
+                            [source],
+                            date,
+                            section
+                        )
                     )
                 );
             else if (meta is not null)
