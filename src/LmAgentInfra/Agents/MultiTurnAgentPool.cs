@@ -2162,8 +2162,9 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// <para>
     /// IDLE means none of: a run in progress, an accepted-but-unstarted input (both read by
     /// <see cref="IsBusyUnderLock"/>), a deferred tool call such as a parked <c>Wait</c> or an unanswered
-    /// <c>AskUserQuestion</c>, an owed continuation or an armed <c>Wait</c> on a loop that is still running
-    /// and not frozen (<see cref="MultiTurnAgentLoop.HasOwnLiveWork"/>), a sub-agent anywhere in the tree that is queued,
+    /// <c>AskUserQuestion</c>, an owed continuation, an armed <c>Wait</c> or an operator's manual compaction
+    /// (queued, or running until its result is saved) on a loop that is still running and not frozen
+    /// (<see cref="MultiTurnAgentLoop.HasOwnLiveWork"/>), a sub-agent anywhere in the tree that is queued,
     /// running, or holding such work of its own, or a sandbox background task that has not reported its
     /// end. These count because their runtime half lives only in this process: recreating the agent
     /// discards an armed wait's trigger, orphans a child's pending question (see

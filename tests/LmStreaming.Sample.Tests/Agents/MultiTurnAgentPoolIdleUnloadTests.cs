@@ -4,6 +4,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using AchieveAi.LmDotnetTools.LmTestUtils;
@@ -151,6 +152,49 @@ public class MultiTurnAgentPoolIdleUnloadTests
         time.Advance(TimeSpan.FromHours(1));
 
         (await pool.UnloadIdleAgentsAsync(IdleAfter)).Should().Be(0, "a turn is owed to the sender");
+    }
+
+    [Fact]
+    public async Task KeepsALoop_WhileItsManualCompactionIsSummarizing()
+    {
+        var time = NewClock();
+        var summarizer = new HeldSummarizer();
+        await using var pool = CreatePool(
+            time,
+            threadId => new MultiTurnAgentLoop(
+                AnsweringProvider(),
+                new FunctionRegistry(),
+                threadId,
+                includeAskUserQuestionTool: false,
+                includeNotifyClientTool: false,
+                store: new InMemoryConversationStore(),
+                compaction: new CompactionSetup
+                {
+                    Options = new CompactionOptions
+                    {
+                        Mode = CompactionMode.Compact,
+                        MinTailTokens = 0,
+                        CooldownGenerations = 0,
+                        CooldownNewTokens = 0,
+                        CacheTtl = TimeSpan.Zero,
+                    },
+                    Summarizer = summarizer,
+                }
+            )
+        );
+        var loop = (MultiTurnAgentLoop)pool.GetOrCreateAgent("thread-compacting", Mode);
+        await DrainRunAsync(loop, "one");
+        await DrainRunAsync(loop, "two");
+        await WaitUntilSettledAsync(pool, loop, "thread-compacting");
+
+        (await loop.RequestCompactionAsync()).Accepted.Should().BeTrue();
+        await summarizer.Called.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        time.Advance(TimeSpan.FromHours(1));
+
+        (await pool.UnloadIdleAgentsAsync(IdleAfter))
+            .Should()
+            .Be(0, "the operator's compaction is still summarizing, with no run id to show it");
+        pool.HasAgent("thread-compacting").Should().BeTrue();
     }
 
     [Fact]
@@ -1217,6 +1261,22 @@ public class MultiTurnAgentPoolIdleUnloadTests
                 Task.FromResult(ToAsyncEnumerable(new TextMessage { Text = "Done.", Role = Role.Assistant }))
             );
         return provider.Object;
+    }
+
+    /// <summary>A summary model that never answers: it only unwinds on cancellation.</summary>
+    private sealed class HeldSummarizer : ICheckpointSummarizer
+    {
+        public TaskCompletionSource Called { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<CheckpointSummaryResponse> SummarizeAsync(
+            CheckpointSummaryRequest request,
+            CancellationToken ct = default
+        )
+        {
+            Called.TrySetResult();
+            await Task.Delay(Timeout.Infinite, ct);
+            throw new OperationCanceledException(ct);
+        }
     }
 
     /// <summary>A provider whose stream never yields and only unwinds on cancellation.</summary>
