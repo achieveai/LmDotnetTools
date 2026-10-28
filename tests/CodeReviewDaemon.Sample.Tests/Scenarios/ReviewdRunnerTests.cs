@@ -431,8 +431,10 @@ public sealed class ReviewdRunnerTests
     public async Task A_review_wait_gives_up_after_its_own_busy_budget()
     {
         // A review polls every PollInterval, not every second, so it passes a smaller count to keep the busy budget
-        // at about ten minutes; with the 1 s count it would ride out a stuck host for fifty.
+        // at about ten minutes; with the 1 s count it would ride out a stuck host for fifty. The budget is time only
+        // because each busy read waits one poll, so the delays are counted too.
         var reads = 0;
+        var delays = 0;
         var handler = new FakeHttpMessageHandler()
             .OnJson(HttpMethod.Get, "/run-state", """{"threadId":"thread","isInProgress":false,"currentRunId":null}""")
             .On(
@@ -454,13 +456,18 @@ public sealed class ReviewdRunnerTests
                 client,
                 "thread",
                 null,
-                _ => Task.CompletedTask,
+                _ =>
+                {
+                    delays++;
+                    return Task.CompletedTask;
+                },
                 CancellationToken.None,
                 maxBusyReads: ReviewRunner.ReviewBusyReads
             );
 
         await run.Should().ThrowAsync<HttpRequestException>();
         reads.Should().Be(ReviewRunner.ReviewBusyReads + 1);
+        delays.Should().Be(ReviewRunner.ReviewBusyReads);
         (ReviewRunner.PollInterval * ReviewRunner.ReviewBusyReads).Should().Be(TimeSpan.FromMinutes(10));
     }
 

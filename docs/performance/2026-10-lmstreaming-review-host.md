@@ -145,8 +145,12 @@ include lock waits and GC suspension.
 
   0.43 threads waited in `jbd2_log_wait_commit`. Fixed: the three are set on every open.
 - **Review polling: ~64 requests a second.** Each review's wait read status, run-state and the sub-agent tree
-  every second, and 80% of the tree reads were busy `503`s.
-  - Reviews now poll every 5 s (`ReviewRunner.PollInterval`).
+  every second, and 80% of the tree reads were busy `503`s. The count is from the host's request log over 2
+  minutes (19:29–19:31, no browser open): run-state 22, status 19.5 and sub-agent tree 22 a second, across 32
+  polled threads.
+  - Reviews now poll every 5 s (`ReviewRunner.PollInterval`). A wait returns after two identical idle reads, so
+    a review is seen as finished 5–10 s after it ends instead of 1–2 s, or later while the hierarchy is busy or
+    still changing.
   - Budgets counted in polls derive from it, so they keep their wall-clock length: a refused send is retried
     every 30 s, and a wait gives up after ten minutes of busy tree reads.
   - Merge and judge waits keep their 1 s poll.
