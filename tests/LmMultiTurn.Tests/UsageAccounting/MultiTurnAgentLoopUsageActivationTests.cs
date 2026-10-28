@@ -4,12 +4,16 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Tests.UsageAccounting;
 
@@ -17,9 +21,251 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Tests.UsageAccounting;
 /// End-to-end activation of conversation usage accounting in the live loop (#196): a run whose provider
 /// reports a UsageMessage results in a persisted usage aggregate on the conversation.
 /// </summary>
-public class MultiTurnAgentLoopUsageActivationTests
+public class MultiTurnAgentLoopUsageActivationTests(ITestOutputHelper output) : LoggingTestBase(output)
 {
     private readonly Mock<IStreamingAgent> _mockAgent = new();
+
+    [Fact]
+    public async Task CompleteRun_WaitsForUsageBeforeTerminalLedgerAndLifecycle()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new RecordingUsageStore(null, failuresRemaining: 0)
+        {
+            BeforeAppend = () =>
+            {
+                started.TrySetResult();
+                return release.Task;
+            },
+        };
+        await using var agent = new UsageCompletionProbe(store, Logger);
+        var assignment = await agent.StartAsync();
+        agent.ObserveUsage("gen-1", 100, 40);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var completion = agent.CompleteAsync(assignment);
+        try
+        {
+            Logger.LogInformation("Usage append held: CompletionFinished={CompletionFinished}", completion.IsCompleted);
+            completion.IsCompleted.Should().BeFalse("known usage is still held in storage");
+            (await store.LoadRunLedgerAsync(assignment.RunId))!.Status.Should().Be(RunStatus.InProgress);
+            (await store.Inner.LoadRunLifecycleAsync(assignment.RunId))!.Phase.Should().Be(RunLifecyclePhase.Running);
+            store.Snapshot.Should().BeNull();
+        }
+        finally
+        {
+            release.TrySetResult();
+            await completion;
+        }
+
+        (await store.LoadRunLedgerAsync(assignment.RunId))!.Status.Should().Be(RunStatus.Completed);
+        (await store.Inner.LoadRunLifecycleAsync(assignment.RunId))!.Phase.Should().Be(RunLifecyclePhase.Terminal);
+        var aggregate = await ConversationUsageProjection.LoadAsync(store, "usage-thread");
+        aggregate!.TotalTokens.Should().Be(140);
+        aggregate.Completeness.Should().Be(UsageCompleteness.InProgress, "the reusable conversation remains live");
+        Logger.LogInformation(
+            "Usage durable before completion: TotalTokens={TotalTokens}, Completeness={Completeness}",
+            aggregate.TotalTokens,
+            aggregate.Completeness
+        );
+
+        var nextAssignment = await agent.StartAsync();
+        agent.ObserveUsage("gen-2", 20, 5);
+        await agent.CompleteAsync(nextAssignment);
+        var nextAggregate = await ConversationUsageProjection.LoadAsync(store, "usage-thread");
+        nextAggregate!.TotalTokens.Should().Be(165);
+        nextAggregate.Completeness.Should().Be(UsageCompleteness.InProgress);
+    }
+
+    [Fact]
+    public async Task CompleteRun_DoesNotWaitForUsageObservedAfterCompletionStarted()
+    {
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSecond = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
+        var store = new RecordingUsageStore(null, failuresRemaining: 0)
+        {
+            BeforeAppend = () =>
+            {
+                if (Interlocked.Increment(ref attempts) == 1)
+                {
+                    firstStarted.SetResult();
+                    return releaseFirst.Task;
+                }
+
+                secondStarted.TrySetResult();
+                return releaseSecond.Task;
+            },
+        };
+        await using var agent = new UsageCompletionProbe(store, Logger);
+        var assignment = await agent.StartAsync();
+        agent.ObserveUsage("gen-1", 100, 40);
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // A descendant keeps reporting after completion began: it must not extend the captured boundary.
+        var completion = agent.CompleteAsync(assignment);
+        agent.ObserveUsage("later-gen", 20, 5);
+        try
+        {
+            releaseFirst.SetResult();
+            await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await completion.WaitAsync(TimeSpan.FromSeconds(5));
+            (await store.LoadRunLedgerAsync(assignment.RunId))!
+                .Status.Should()
+                .Be(RunStatus.Completed, "the later write is still held but was not part of the boundary");
+            Logger.LogInformation("Completion finished with a later usage write held: Attempts={Attempts}", attempts);
+        }
+        finally
+        {
+            releaseFirst.TrySetResult();
+            releaseSecond.TrySetResult();
+        }
+
+        // Not waited for is not dropped: the next boundary captures the later observation and saves it.
+        await agent.CompleteAsync(await agent.StartAsync());
+        var aggregate = await ConversationUsageProjection.LoadAsync(store, "usage-thread");
+        aggregate!.TotalTokens.Should().Be(165);
+        aggregate.Completeness.Should().Be(UsageCompleteness.InProgress, "the reusable conversation remains live");
+    }
+
+    [Fact]
+    public async Task Dispose_WaitsForAllOwnedUsageAndTerminalCompleteness()
+    {
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSecond = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
+        var store = new RecordingUsageStore(null, failuresRemaining: 0)
+        {
+            BeforeAppend = () =>
+            {
+                if (Interlocked.Increment(ref attempts) == 1)
+                {
+                    firstStarted.SetResult();
+                    return releaseFirst.Task;
+                }
+                secondStarted.TrySetResult();
+                return releaseSecond.Task;
+            },
+        };
+        var agent = new UsageCompletionProbe(store, Logger);
+        agent.ObserveUsage("gen-1", 100, 40);
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        agent.ObserveUsage("gen-2", 20, 5);
+        var disposal = agent.DisposeAsync().AsTask();
+        try
+        {
+            disposal.IsCompleted.Should().BeFalse();
+            releaseFirst.SetResult();
+            await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            disposal.IsCompleted.Should().BeFalse("the trailing usage and terminal completeness remain held");
+        }
+        finally
+        {
+            releaseFirst.TrySetResult();
+            releaseSecond.TrySetResult();
+            await disposal;
+        }
+        var aggregate = await ConversationUsageProjection.LoadAsync(store, "usage-thread");
+        aggregate!.TotalTokens.Should().Be(165);
+        aggregate.Completeness.Should().Be(UsageCompleteness.Complete);
+        Logger.LogInformation(
+            "Disposal usage durable: TotalTokens={TotalTokens}, Completeness={Completeness}",
+            aggregate.TotalTokens,
+            aggregate.Completeness
+        );
+    }
+
+    [Fact]
+    public async Task CompleteRun_StorageFailureStillCompletesRun_WithoutInventingUsage_ThenRetries()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
+        var store = new RecordingUsageStore(null, failuresRemaining: 1)
+        {
+            BeforeAppend = () =>
+            {
+                if (Interlocked.Increment(ref attempts) > 1)
+                {
+                    return Task.CompletedTask;
+                }
+
+                started.SetResult();
+                return release.Task;
+            },
+        };
+        await using var agent = new UsageCompletionProbe(store, Logger);
+        var assignment = await agent.StartAsync();
+        agent.ObserveUsage("gen-1", 100, 40);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var completion = agent.CompleteAsync(assignment);
+        completion.IsCompleted.Should().BeFalse("the failing write is still held");
+        release.SetResult();
+        await completion.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // Usage persistence is best-effort (#196): the run still completes, but nothing is saved for it.
+        (await store.LoadRunLedgerAsync(assignment.RunId))!
+            .Status.Should()
+            .Be(RunStatus.Completed);
+        store.Snapshot.Should().BeNull("a failed write must not advance or invent durable usage");
+        store.Calls.Should().ContainSingle().Which.Succeeded.Should().BeFalse();
+
+        var nextAssignment = await agent.StartAsync();
+        agent.ObserveUsage("gen-2", 20, 5);
+        await agent.CompleteAsync(nextAssignment);
+        var aggregate = await ConversationUsageProjection.LoadAsync(store, "usage-thread");
+        aggregate!.TotalTokens.Should().Be(165, "the retained first observation is retried with the next write");
+        Logger.LogInformation(
+            "Usage recovered after failed completion write: TotalTokens={TotalTokens}, Attempts={Attempts}",
+            aggregate.TotalTokens,
+            attempts
+        );
+    }
+
+    [Fact]
+    public async Task CompleteRun_CancellationLeavesUsagePending_ForARecoveredBoundary()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new RecordingUsageStore(null, failuresRemaining: 0)
+        {
+            BeforeAppend = () =>
+            {
+                started.TrySetResult();
+                return release.Task;
+            },
+        };
+        await using var agent = new UsageCompletionProbe(store, Logger);
+        var assignment = await agent.StartAsync();
+        agent.ObserveUsage("gen-1", 100, 40);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        using var cts = new CancellationTokenSource();
+        var completion = agent.CompleteAsync(assignment, cts.Token);
+        try
+        {
+            await cts.CancelAsync();
+            var waitForCompletion = async () => await completion;
+            await waitForCompletion.Should().ThrowAsync<OperationCanceledException>();
+            (await store.LoadRunLedgerAsync(assignment.RunId))!.Status.Should().Be(RunStatus.InProgress);
+            store.Snapshot.Should().BeNull();
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        // No production loop retries completion after a cancelled wait: the stopped run is reported
+        // Cancelled and reconciled as Interrupted on restart. This second call only proves the retained
+        // observation is not lost and a later boundary can still persist it.
+        await agent.CompleteAsync(assignment);
+        (await ConversationUsageProjection.LoadAsync(store, "usage-thread"))!.TotalTokens.Should().Be(140);
+        (await store.LoadRunLedgerAsync(assignment.RunId))!.Status.Should().Be(RunStatus.Completed);
+    }
 
     [Fact]
     public async Task Run_PersistsUsageAggregate_FromPrimaryUsageMessage()
@@ -376,7 +622,38 @@ public class MultiTurnAgentLoopUsageActivationTests
 
     private sealed record AppendCall(IReadOnlyList<string> RecordIds, bool Succeeded);
 
-    private sealed class RecordingUsageStore : IConversationStore, IConversationUsageStore
+    private sealed class UsageCompletionProbe : MultiTurnAgentBase
+    {
+        public UsageCompletionProbe(RecordingUsageStore store, ILogger logger)
+            : base(
+                "usage-thread",
+                store: store,
+                logger: logger,
+                persistRunLedger: true,
+                lifecycleServices: new MultiTurnLifecycleServices { LifecycleStore = store.Inner }
+            )
+        {
+            UsageLedger = new UsageLedger(ThreadId);
+        }
+
+        public Task<RunAssignment> StartAsync() => StartRunAsync([]);
+
+        public Task CompleteAsync(RunAssignment assignment, CancellationToken ct = default) =>
+            CompleteRunAsync(assignment.RunId, assignment.GenerationId, ct: ct);
+
+        public void ObserveUsage(string generationId, int inputTokens, int outputTokens) =>
+            AddToHistory(
+                new UsageMessage
+                {
+                    GenerationId = generationId,
+                    Usage = new Usage { PromptTokens = inputTokens, CompletionTokens = outputTokens },
+                }
+            );
+
+        protected override Task RunLoopAsync(CancellationToken ct) => Task.CompletedTask;
+    }
+
+    private sealed class RecordingUsageStore : IConversationStore, IConversationUsageStore, IRunLedgerStore
     {
         private readonly InMemoryConversationStore _inner = new();
         private readonly object _gate = new();
@@ -384,11 +661,15 @@ public class MultiTurnAgentLoopUsageActivationTests
         private int _failuresRemaining;
         private ConversationUsageSnapshot? _snapshot;
 
-        public RecordingUsageStore(ConversationUsageSnapshot snapshot, int failuresRemaining)
+        public RecordingUsageStore(ConversationUsageSnapshot? snapshot, int failuresRemaining)
         {
             _snapshot = snapshot;
             _failuresRemaining = failuresRemaining;
         }
+
+        public InMemoryConversationStore Inner => _inner;
+
+        public Func<Task>? BeforeAppend { get; init; }
 
         public IReadOnlyList<AppendCall> Calls
         {
@@ -412,12 +693,17 @@ public class MultiTurnAgentLoopUsageActivationTests
             }
         }
 
-        public Task AppendUsageAsync(
+        public async Task AppendUsageAsync(
             ConversationUsageAggregate aggregate,
             IReadOnlyList<UsageRecord> changedRecords,
             CancellationToken ct = default
         )
         {
+            if (BeforeAppend is { } beforeAppend)
+            {
+                await beforeAppend();
+            }
+
             lock (_gate)
             {
                 var ids = changedRecords.Select(record => record.ProviderAttemptId).ToArray();
@@ -449,9 +735,31 @@ public class MultiTurnAgentLoopUsageActivationTests
                 };
                 _calls.Add(new AppendCall(ids, Succeeded: true));
             }
-
-            return Task.CompletedTask;
         }
+
+        public Task UpsertRunLedgerAsync(RunLedgerEntry entry, CancellationToken ct = default) =>
+            _inner.UpsertRunLedgerAsync(entry, ct);
+
+        public Task<RunLedgerEntry?> LoadRunLedgerAsync(string runId, CancellationToken ct = default) =>
+            _inner.LoadRunLedgerAsync(runId, ct);
+
+        public Task<IReadOnlyList<RunLedgerEntry>> ListRunLedgerAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => _inner.ListRunLedgerAsync(threadId, ct);
+
+        public Task RecordAcceptedInputAsync(
+            string threadId,
+            string inputId,
+            DateTimeOffset acceptedAt,
+            CancellationToken ct = default
+        ) => _inner.RecordAcceptedInputAsync(threadId, inputId, acceptedAt, ct);
+
+        public Task RemoveAcceptedInputAsync(string threadId, string inputId, CancellationToken ct = default) =>
+            _inner.RemoveAcceptedInputAsync(threadId, inputId, ct);
+
+        public Task<IReadOnlySet<string>> ListAcceptedInputIdsAsync(string threadId, CancellationToken ct = default) =>
+            _inner.ListAcceptedInputIdsAsync(threadId, ct);
 
         public Task<ConversationUsageSnapshot?> LoadUsageAsync(string threadId, CancellationToken ct = default) =>
             Task.FromResult(Snapshot);
