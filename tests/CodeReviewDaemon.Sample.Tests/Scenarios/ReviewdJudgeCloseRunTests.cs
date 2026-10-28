@@ -264,6 +264,7 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
         exit.Should().Be(0);
         phases.Calls.Should().Equal("close-sweep", "close-prepare", "close-commit", "close-prune", "close-commit");
         phases.PrunedMain.Should().Be(new string('c', 40), "the close commit holds every round");
+        output = output.ReplaceLineEndings("\n");
         output.Should().Contain("deleted review/nova-5776213\n");
         var json = JsonNode.Parse(output.Split('\n', StringSplitOptions.RemoveEmptyEntries)[^1])!;
         json["branches"]![0]!["status"]!.GetValue<string>().Should().Be("deleted");
