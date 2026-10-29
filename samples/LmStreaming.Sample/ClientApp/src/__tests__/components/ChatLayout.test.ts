@@ -136,6 +136,9 @@ const sharedMocks = vi.hoisted(() => ({
   // it, so pushing a frame here is how a test conjures a board (and with it the TodoBoardPanel).
   conversationTodoRef: null as Ref<unknown> | null,
   subAgentChildren: [] as SubAgentSummary[],
+  // What the panel's refreshChildren() reads from the server; null = refresh leaves the list as it is.
+  refreshedSubAgentChildren: null as SubAgentSummary[] | null,
+  subAgentRefreshError: null as string | null,
   focusedAgentIdRef: null as Ref<string | null> | null,
   focusChild: vi.fn(async (_agentId: string) => {}),
   subAgentQuestionResult: null as ToolCallResultMessage | null,
@@ -414,15 +417,20 @@ vi.mock('@/composables/useSubAgentPanel', async () => {
       }
       const focusedAgentId = ref<string | null>(null);
       sharedMocks.focusedAgentIdRef = focusedAgentId;
+      const children = ref(sharedMocks.subAgentChildren);
+      const error = ref<string | null>(null);
       return {
-        children: ref(sharedMocks.subAgentChildren),
+        children,
         focusedAgentId,
         focusedDisplayItems: ref([]),
         isFocusedStreaming: ref(false),
-        error: ref<string | null>(null),
+        error,
         startPolling: vi.fn(),
         stopPolling: vi.fn(),
-        refreshChildren: vi.fn(async () => {}),
+        refreshChildren: vi.fn(async () => {
+          if (sharedMocks.refreshedSubAgentChildren) children.value = sharedMocks.refreshedSubAgentChildren;
+          error.value = sharedMocks.subAgentRefreshError;
+        }),
         focusChild: sharedMocks.focusChild,
         unfocusChild: vi.fn(async () => {}),
         sendToFocusedChild: vi.fn(),
@@ -1577,6 +1585,8 @@ describe('ChatLayout warns before a provider switch stops sub-agents (#792)', ()
 
   afterEach(() => {
     sharedMocks.subAgentChildren = [];
+    sharedMocks.refreshedSubAgentChildren = null;
+    sharedMocks.subAgentRefreshError = null;
     vi.restoreAllMocks();
   });
 
@@ -1599,6 +1609,41 @@ describe('ChatLayout warns before a provider switch stops sub-agents (#792)', ()
 
     expect(confirm).toHaveBeenCalledWith('1 sub-agent is running and will be stopped. Switch anyway?');
     expect(sharedMocks.switchProvider).toHaveBeenCalledWith('thread-1', 'claude-mock');
+  });
+
+  it('reads a fresh roster first, so a child spawned since the last poll still gets the warning', async () => {
+    sharedMocks.subAgentChildren = [];
+    sharedMocks.refreshedSubAgentChildren = [child('running')];
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    await switchTo('claude');
+
+    expect(confirm).toHaveBeenCalledWith('1 sub-agent is running and will be stopped. Switch anyway?');
+    expect(sharedMocks.switchProvider).not.toHaveBeenCalled();
+  });
+
+  it('asks when the roster cannot be read, instead of treating it as empty', async () => {
+    sharedMocks.subAgentRefreshError = 'Failed to list sub-agents: 500';
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    await switchTo('claude');
+
+    expect(confirm).toHaveBeenCalledWith(
+      'Could not check for running sub-agents. Any that are running will be stopped. Switch anyway?'
+    );
+    expect(sharedMocks.switchProvider).not.toHaveBeenCalled();
+  });
+
+  // A CLI agent owns no sub-agent manager, so leaving it stops nothing, whichever way the switch goes.
+  it.each(['openai', 'codex'])('does not ask when leaving a CLI provider for %s', async (provider) => {
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1', provider: 'claude' })];
+    sharedMocks.subAgentChildren = [child('running')];
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    await switchTo(provider);
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(sharedMocks.switchProvider).toHaveBeenCalledWith('thread-1', provider);
   });
 
   it.each([

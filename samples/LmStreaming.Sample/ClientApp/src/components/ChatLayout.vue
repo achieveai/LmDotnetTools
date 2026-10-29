@@ -906,22 +906,27 @@ async function handleSelectProvider(providerId: string): Promise<void> {
     conversations.value.some((c) => c.threadId === currentThreadId.value);
 
   if (started) {
-    // #792: moving onto a CLI provider rebuilds the parent agent, which stops every sub-agent it is
-    // running. Any other switch is served in place and keeps them, so only this one asks first.
-    const fromProvider =
-      conversations.value.find((c) => c.threadId === currentThreadId.value)?.provider ?? selectedProviderId.value;
-    const live = subAgentChildren.value.filter((c) => c.status === 'running' || c.status === 'queued').length;
-    if (
-      live > 0 &&
-      isCliBackedProvider(providerId) &&
-      !isCliBackedProvider(fromProvider) &&
-      !window.confirm(`${live} sub-agent${live === 1 ? ' is' : 's are'} running and will be stopped. Switch anyway?`)
-    ) {
-      return;
-    }
-
     isSwitchingProvider.value = true;
     try {
+      // #792: moving from an API model onto a CLI provider rebuilds the parent agent, which stops every
+      // sub-agent it is running. Other switches keep them, so only this one asks first. The roster is
+      // re-read rather than taken from the last 3-second poll, which can miss a child spawned since, and
+      // a roster that cannot be read is not taken to mean "none".
+      const fromProvider =
+        conversations.value.find((c) => c.threadId === currentThreadId.value)?.provider ?? selectedProviderId.value;
+      if (isCliBackedProvider(providerId) && !isCliBackedProvider(fromProvider)) {
+        await refreshSubAgentChildren();
+        const live = subAgentChildren.value.filter((c) => c.status === 'running' || c.status === 'queued').length;
+        const question = subAgentError.value
+          ? 'Could not check for running sub-agents. Any that are running will be stopped. Switch anyway?'
+          : live > 0
+            ? `${live} sub-agent${live === 1 ? ' is' : 's are'} running and will be stopped. Switch anyway?`
+            : null;
+        if (question && !window.confirm(question)) {
+          return;
+        }
+      }
+
       await disconnectWebSocket();
       await switchProvider(currentThreadId.value!, providerId);
       // Reflect the switched-to provider in the sidebar summary so the Bug-3 restore path
