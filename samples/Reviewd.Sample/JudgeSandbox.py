@@ -42,7 +42,7 @@ COMPLETENESS = {0: "InProgress", 1: "Partial", 2: "Complete"}
 SECRET_PATTERN = re.compile(r"(?i)(bearer\s+[a-z0-9._~+/=-]{20,}|eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{10,}"
                             r"|authorization\\*[\"']?\s*[:=]\s*\\*[\"']?\s*(?:basic|bearer|token)\s+(?=[^\s\"'<>\\]*[0-9+/=])"
                             r"[a-z0-9+/=._~-]{16,}"
-                            r"|AccountKey=|SharedAccessSignature|sig=[A-Za-z0-9%]{20,}|ghp_[A-Za-z0-9]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY"
+                            r"|AccountKey=|SharedAccessSignature|sig=[A-Za-z0-9%+/]{20,}|ghp_[A-Za-z0-9]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY"
                             r"|(?<![A-Za-z0-9_~.-])[A-Za-z0-9_~.]{3}\dQ~[A-Za-z0-9_~.-]{31,34}(?![A-Za-z0-9_~.-])"
                             r"|(?:(?:client_?secret|password|authorization)\\*[\"']?\s*[:=]|\bpwd\s*=(?![\s\"'\\]*[/~])|--client-secret(?:\s+|=))"
                             r"\s*\\*[\"']?(?![<*$%{\[]|changeme|redacted|placeholder|your)"
@@ -870,8 +870,15 @@ OPEN = r"(?:\\*[\"'])?"
 SECRET_KEEP = re.compile(rf"(?i)bearer\s+|authorization{OPEN}\s*[:=]\s*{OPEN}\s*(?:(?:basic|bearer|token)\s+)?"
                          rf"|(?:client_?secret|password){OPEN}\s*[:=]\s*{OPEN}|pwd\s*=\s*{OPEN}"
                          rf"|--client-secret(?:\s+|=)\s*{OPEN}|sig=")
-SECRET_TAIL = {"accountkey=": re.compile(r"\s*(?:(\\*[\"'])(?=[A-Za-z0-9+/%]))?[^\s\"'<>;,\\]*"),
-               "sharedaccesssignature": re.compile(r"\s*[=:]?\s*(?:(\\*[\"'])(?=[A-Za-z0-9+/%]))?[^\s\"'<>;,\\]*"),
+# What may stand between AccountKey= or SharedAccessSignature and its value: spaces, JSON-escaped whitespace and quotes,
+# doubled or escaped. The last quote opens the value.
+GAP = r"(?:\s|\\+[nrt]|\\*[\"'])"
+MARKER_TAIL = rf"(?:(?:{GAP}*(\\*[\"']))?(?:\s|\\+[nrt])*(?=[A-Za-z0-9+/%]))?[^\s\"'<>;,\\]*"
+# A marker with nothing but a gap after it ends its line; a value-like token (16+ characters, a digit in them) after it
+# on a later line may be its value.
+MARKER_THEN_VALUE = re.compile(rf"(?i)(?:AccountKey=|SharedAccessSignature\s*[=:]?){GAP}*?\n{GAP}*"
+                               r"((?=[^\s\"'<>;,\\]*\d)[A-Za-z0-9+/%][^\s\"'<>;,\\]{15,})")
+SECRET_TAIL = {"accountkey=": re.compile(MARKER_TAIL), "sharedaccesssignature": re.compile(rf"\s*[=:]?{MARKER_TAIL}"),
                "sig=": re.compile(r"()[^\s\"'<>;,&\\]*"), "eyj": re.compile(r"()(?:\.[A-Za-z0-9_-]*)?")}
 OPENING_QUOTE = re.compile(r"\\*[\"']$")
 
@@ -936,6 +943,8 @@ def redact_file(path, new, old):
     # A match that spans lines is one redact_secrets cannot see.
     if SECRET_PATTERN.search(added_text(text, old)):
         return None, 0, f"{path} matches a credential pattern across lines"
+    if any(m.group(1) not in old for m in MARKER_THEN_VALUE.finditer(new)):
+        return None, 0, f"{path} ends a line with AccountKey= or SharedAccessSignature and a later line looks like its value"
     if path.endswith(".json") and parses(new) and not parses(text):
         return None, 0, f"{path} would not stay valid JSON once redacted"
     return text, count, None
