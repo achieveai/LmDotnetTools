@@ -183,7 +183,9 @@ fi
 # Close: for each PR whose newest judgment is a completed final one, judge close --execute files it on the store's main
 # and deletes its review branches. closed.tsv (label, repository, PR, judgment, when) lists what closed. A close that
 # fails, except "main kept moving" (exit 6, tried again next tick), goes to close-failed.tsv with its reason and alerts
-# once; it is not tried again until its line is removed. Nothing closes while STOPPED exists.
+# once; it is not tried again until its line is removed. close-alerted.tsv holds the failures already alerted, so a
+# failed send is tried again next tick without running the close again. Nothing closes while STOPPED exists, including a
+# STOPPED made while a close runs: the rest wait.
 # pending: one "label<TAB>db<TAB>repository<TAB>PR<TAB>judgment" line per PR to close, read-only from each database.
 pending() {
     python3 -I - targets.tsv closed.tsv close-failed.tsv <<'PY'
@@ -217,11 +219,17 @@ for line in open(sys.argv[1]):
 PY
 }
 closes=''
+if [ "${JUDGE_CLOSE:-0}" = 1 ]; then
+    touch closed.tsv close-failed.tsv close-alerted.tsv
+    # A line removed from close-failed.tsv (to try that close again) leaves close-alerted.tsv before the closes run, so
+    # a new failure of that close alerts again.
+    grep -x -F -f close-failed.tsv close-alerted.tsv > close-alerted.tsv.new
+    mv close-alerted.tsv.new close-alerted.tsv
+fi
 if [ "${JUDGE_CLOSE:-0}" = 1 ] && [ ! -e "$STOP" ] && [ -f "$JUDGE_CLI" ]; then
-    touch closed.tsv close-failed.tsv
-    closed=0 retry=0 failures=0 failed='' left=0
+    closed=0 retry=0 failures=0 left=0
     while IFS=$'\t' read -r label db repo pr n; do
-        if [ $((closed + retry + failures)) -ge "${JUDGE_CLOSE_LIMIT:-30}" ]; then
+        if [ -e "$STOP" ] || [ $((closed + retry + failures)) -ge "${JUDGE_CLOSE_LIMIT:-30}" ]; then
             left=$((left + 1))
             continue
         fi
@@ -239,15 +247,19 @@ if [ "${JUDGE_CLOSE:-0}" = 1 ] && [ ! -e "$STOP" ] && [ -f "$JUDGE_CLI" ]; then
             why=$(grep . close.err | tail -n 1 | cut -c1-200)
             printf '%s\t%s\t%s\t%s\t%s\n' "$label" "$repo" "$pr" "$n" "exit $crc: ${why:-no error output}" >> close-failed.tsv
             failures=$((failures + 1))
-            failed+="- $repo !$pr (judgment $n): ${why:-exit $crc}"$'\n'
         fi
     done < <(pending)
     rm -f close.out close.err
-    [ "$failures" = 0 ] || notify "$J: $failures close(s) failed" "$(fit "Each is skipped until you look at it. To try one again, remove its line from $JUDGE_HOME/close-failed.tsv.
-${failed%$'\n'}")"
     since=$(date -u -d '24 hours ago' +%FT%RZ)
     closes="Closed in the last 24 h: $(awk -F'\t' -v since="$since" '$5 >= since' closed.tsv | grep -c .) PRs ($(grep -c . closed.tsv) in all). This tick: $closed closed, $retry to retry (main kept moving), $left waiting for the next tick. Close failures waiting for you: $(grep -c . close-failed.tsv) (close-failed.tsv)."
     echo "$closes" >&2
+fi
+if [ "${JUDGE_CLOSE:-0}" = 1 ]; then
+    unalerted=$(grep -v -x -F -f close-alerted.tsv close-failed.tsv)
+    if [ -n "$unalerted" ]; then
+        notify "$J: $(grep -c . <<< "$unalerted") close(s) failed" "$(fit "Each is skipped until you look at it. To try one again, remove its line from $JUDGE_HOME/close-failed.tsv.
+$(awk -F'\t' '{ print "- " $2 " !" $3 " (judgment " $4 "): " $5 }' <<< "$unalerted")")" && cp close-failed.tsv close-alerted.tsv
+    fi
 fi
 
 today=$(date +%F)

@@ -924,7 +924,8 @@ def close_prepare():
         git([], "update-index", "-z", "--index-info", env=index, stdin="".join(kept))
         tree = scratch / "tree"
         tree.mkdir()
-        if present := [p for p in ("KnowledgeBase", "Improvements") if tree_id(main, p)]:
+        # Compose reads main's files it appends to from here: a lesson's entry, a ledger, an author's habits file.
+        if present := [p for p in ("KnowledgeBase", "Improvements", "DeveloperLearnings") if tree_id(main, p)]:
             # Main's bytes, not a checkout's line endings: Git for Windows sets core.autocrlf, and core.eol is native
             # (CRLF there) for files .gitattributes marks as text; archive applies both.
             archive = subprocess.run(["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "archive", "--format=tar", main,

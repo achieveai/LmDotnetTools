@@ -2,8 +2,9 @@
 # Checks ops/judge-tick.sh in a throwaway root with a stand-in batch (dotnet) and a stand-in doctor.notify: unusable
 # installs reach the batch as targets lines, a failure latches STOPPED and alerts once with its cause, alert bodies are
 # cut at a line, the daily summary goes out once, a missing CLI reads in words, the last unusable install fixed alerts
-# once, a lane passes its own judge lock and names itself, and closes run once per newly judged PR. Nothing outside the
-# temp dir is read or written. Needs python3.
+# once, a lane passes its own judge lock and names itself, closes run once per newly judged PR, a STOPPED made during a
+# close stops the rest, and a close alert that was not sent is sent next tick. Nothing outside the temp dir is read or
+# written. Needs python3.
 #   ops/test/judge-tick.test.sh
 set -uo pipefail
 OPS=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
@@ -35,7 +36,7 @@ touch "$T/judge.dll"
 # each name<TAB>cause line of the targets file under "unusable", except when busy ($FAKE_BUSY: another judge held the
 # lock, nothing was scanned). Like dotnet, a missing DLL prints dotnet's own text and exits 1. A `judge close` appends
 # its arguments to $CLOSE_LOG as one line and exits 1 for a PR in $FAKE_CLOSE_REFUSE, 6 for one in $FAKE_CLOSE_MOVED,
-# else 0.
+# else 0; for a PR in $FAKE_CLOSE_STOPS it first makes the STOPPED latch, as a batch or a person can while it runs.
 cat > "$T/bin/dotnet" <<'SH'
 #!/usr/bin/env bash
 if [ "$2 $3" = "judge close" ]; then
@@ -43,6 +44,7 @@ if [ "$2 $3" = "judge close" ]; then
     pr=$(printf '%s\n' "$@" | grep -A1 -x -- --pr | sed -n 2p)
     case " ${FAKE_CLOSE_REFUSE:-} " in *" $pr "*) echo "the packet changed since the judge" >&2; exit 1 ;; esac
     case " ${FAKE_CLOSE_MOVED:-} " in *" $pr "*) exit 6 ;; esac
+    case " ${FAKE_CLOSE_STOPS:-} " in *" $pr "*) touch "$REVIEWD_ROOT/judge/STOPPED" ;; esac
     exit 0
 fi
 printf '%s\n' "$@" "lock=${REVIEWD_JUDGE_LOCK:-}" > "$ARGS_LOG"
@@ -244,7 +246,7 @@ nova	Org/P Q/Repo	106	1" ] && [ "$(cat "$R/judge/close-failed.tsv")" = "nova	Org
 body=$(awk '/^=== Judge b: 1 close\(s\) failed \|/ { on = 1; next } /^===/ { on = 0 } on' "$T/notify.log")
 check "a failed close alerts once, naming the PR, its reason and how to try it again" \
     '[ "$(alerts "Judge b: 1 close")" -eq 1 ] && [ "$body" = "Each is skipped until you look at it. To try one again, remove its line from $R/judge/close-failed.tsv.
-- Org/P Q/Repo !104 (judgment 2): the packet changed since the judge" ]'
+- Org/P Q/Repo !104 (judgment 2): exit 1: the packet changed since the judge" ]'
 check "the daily summary counts the closes" \
     'grep -q "^Closed in the last 24 h: 2 PRs (2 in all). This tick: 2 closed, 1 to retry (main kept moving), 0 waiting for the next tick. Close failures waiting for you: 1 (close-failed.tsv).$" "$T/notify.log"'
 : > "$T/closes"
@@ -266,6 +268,38 @@ echo JUDGE_CLOSE_LIMIT=0 >> "$R/judge/judge.env"
 tick FAKE_RC=0
 check "JUDGE_CLOSE_LIMIT caps closes per tick; the rest wait for the next tick" \
     '[ ! -s "$T/closes" ] && grep -q "0 closed, 0 to retry (main kept moving), 1 waiting for the next tick" "$T/tick.err"'
+python3 -I - "$R/reviewd.db" <<'PY2'
+import json, sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+for pr in (109, 110):
+    db.execute("INSERT INTO cache VALUES (?, ?)", (f"reviewd/judge-run/org/p/repo/{pr}/1", json.dumps(
+        {"repository": "Org/P Q/Repo", "prId": str(pr), "n": 1, "stage": "completed", "outputStage": "final"})))
+db.commit()
+PY2
+echo JUDGE_CLOSE_LIMIT=30 >> "$R/judge/judge.env"
+tick FAKE_RC=0 FAKE_CLOSE_STOPS=104
+check "a STOPPED latch made while a close runs stops the rest of that tick's closes" \
+    '[ "$(grep -c . "$T/closes")" -eq 1 ] && grep -q -- "--pr 104 " "$T/closes" \
+        && grep -q "1 closed, 0 to retry (main kept moving), 2 waiting for the next tick" "$T/tick.err"'
+rm -f "$R/judge/STOPPED"
+: > "$T/closes"
+tick FAKE_RC=0 FAKE_CLOSE_REFUSE=109 NOTIFY_FAIL=1
+check "a close failure whose alert was not sent is not alerted as sent" \
+    '[ "$(grep -c . "$T/closes")" -eq 2 ] && grep -q "	109	1	exit 1: " "$R/judge/close-failed.tsv" \
+        && [ "$(alerts "Judge b: 1 close")" -eq 1 ]'
+: > "$T/closes"
+tick FAKE_RC=0
+body=$(awk '/^=== Judge b: 1 close\(s\) failed \|/ { n++ } n == 2 && !/^===/' "$T/notify.log")
+check "the next tick sends that alert without running the failed close again" \
+    '[ ! -s "$T/closes" ] && [ "$(alerts "Judge b: 1 close")" -eq 2 ] \
+        && [ "$body" = "Each is skipped until you look at it. To try one again, remove its line from $R/judge/close-failed.tsv.
+- Org/P Q/Repo !109 (judgment 1): exit 1: the packet changed since the judge" ]'
+tick FAKE_RC=0
+check "an alert that was sent is not sent again" '[ "$(alerts "Judge b: 1 close")" -eq 2 ]'
+sed -i '/	109	/d' "$R/judge/close-failed.tsv"
+tick FAKE_RC=0 FAKE_CLOSE_REFUSE=109
+check "a close tried again after its line was removed alerts again when it fails the same way" \
+    '[ "$(alerts "Judge b: 1 close")" -eq 3 ]'
 
 echo "$failures failure(s)"
 [ "$failures" -eq 0 ]

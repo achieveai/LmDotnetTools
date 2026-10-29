@@ -444,7 +444,8 @@ internal static class JudgeClose
                         )
                         .ToJsonString()
                 );
-                return (pruned ? 0 : BranchesLeftExitCode, main, "");
+                // Exit 7 says a close landed with a branch left; a preview closed nothing, so it only prints them.
+                return (pruned || !execute ? 0 : BranchesLeftExitCode, main, "");
             }
             finally
             {

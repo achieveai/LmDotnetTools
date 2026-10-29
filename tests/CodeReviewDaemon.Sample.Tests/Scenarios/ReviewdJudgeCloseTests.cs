@@ -1222,6 +1222,59 @@ public sealed class ReviewdJudgeCloseTests
             .Equal("refs/heads/review/x", "refs/heads/review/x-2e69ca4b");
     }
 
+    // The delete's lease on the round's tip: a branch that moves after the prune's check (here, as the push connects)
+    // is kept with its new work, not deleted.
+    [SkippableFact]
+    public async Task Close_prune_keeps_a_branch_that_moves_between_its_check_and_the_delete()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "a shell script stands in for the remote's receive-pack");
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        using var universe = Universe.Create();
+        var closed = universe.CloseByHand(judgment: 3);
+        var receivePack = Path.Combine(universe.Store, ".git", "move-then-receive-pack");
+        File.WriteAllText(
+            receivePack,
+            $"#!/bin/sh\ngit --git-dir='{universe.Origin}' update-ref refs/heads/review/x {universe.Round2}\n"
+                + "exec git receive-pack \"$@\"\n"
+        );
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(
+                receivePack,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+            );
+        universe.Git(universe.Store, "config", "remote.origin.receivepack", receivePack);
+        var phase = JudgeClose.Local(universe.Store);
+        var args = PruneArgs(universe, closed, true, ("review/x", universe.Round1));
+        args["remote"] = "origin";
+
+        var pruned = await phase("close-prune", args, default);
+
+        Statuses(pruned).Should().StartWith("review/x failed");
+        universe
+            .Git(universe.Origin, "rev-parse", "refs/heads/review/x")
+            .Should()
+            .Be(universe.Round2, "the lease keeps a branch that moved");
+    }
+
+    // Compose appends an author's habits to main's file; without it in the scratch tree, the write would replace the
+    // file and drop the sections of the author's earlier PRs.
+    [SkippableFact]
+    public async Task Close_prepare_puts_mains_developer_learnings_in_the_scratch_tree()
+    {
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        using var universe = Universe.Create();
+        universe.CommitOnMain("DeveloperLearnings/alice/review-behaviors.md", "an earlier PR's habit");
+        var phase = JudgeClose.Local(universe.Store);
+
+        var prepared = await phase("close-prepare", universe.PrepareArgs(3), default);
+
+        prepared["status"]!.GetValue<string>().Should().Be("ready");
+        var scratch = Path.Combine(universe.Store, prepared["scratch"]!.GetValue<string>());
+        File.ReadAllText(Path.Combine(scratch, "tree/DeveloperLearnings/alice/review-behaviors.md"))
+            .Should()
+            .Be("an earlier PR's habit");
+    }
+
     // A rerun after a close deleted the PR's round branches: prepare reads main's CLOSING.md before it fetches any
     // round, so it says already closed instead of failing to fetch a branch that is gone.
     [SkippableFact]
