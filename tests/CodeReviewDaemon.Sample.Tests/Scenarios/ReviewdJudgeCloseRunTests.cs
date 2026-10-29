@@ -100,7 +100,7 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
     }
 
     [Fact]
-    public async Task The_files_prepare_kept_on_the_review_branch_are_listed_in_the_CLOSING_md_close_commits()
+    public async Task The_files_prepare_kept_off_main_are_listed_by_round_in_the_CLOSING_md_close_commits()
     {
         Save((4, Judged(Store, ReviewDir, 4)));
         var phases = new Phases(Store)
@@ -120,7 +120,7 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
         var (exit, _, _) = await Close(phases);
 
         exit.Should().Be(0);
-        phases.Closing.Should().Contain("  - shot.png (binary, review/nova-5776213)\n");
+        phases.Closing.Should().Contain("  - shot.png (binary, round 1 at bbbbbbbbb)\n");
     }
 
     [Fact]
@@ -250,6 +250,81 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
 
         exit.Should().Be(expected);
         (output + err).Should().Contain(says);
+    }
+
+    [Fact]
+    public async Task A_close_deletes_the_round_branches_its_commit_holds_and_lists_them_in_its_JSON_line()
+    {
+        Save((4, Judged(Store, ReviewDir, 4)));
+        var phases = new Phases(Store);
+        phases.Commits.Enqueue("closed");
+
+        var (exit, output, _) = await Close(phases, "--judgment", "4", "--execute");
+
+        exit.Should().Be(0);
+        phases.Calls.Should().Equal("close-sweep", "close-prepare", "close-commit", "close-prune", "close-commit");
+        phases.PrunedMain.Should().Be(new string('c', 40), "the close commit holds every round");
+        output = output.ReplaceLineEndings("\n");
+        output.Should().Contain("deleted review/nova-5776213\n");
+        var json = JsonNode.Parse(output.Split('\n', StringSplitOptions.RemoveEmptyEntries)[^1])!;
+        json["branches"]![0]!["status"]!.GetValue<string>().Should().Be("deleted");
+    }
+
+    [Theory]
+    [InlineData(false, "would delete review/nova-5776213")]
+    [InlineData(true, "deleted review/nova-5776213")]
+    public async Task An_already_closed_PR_deletes_the_round_branches_left_behind(bool execute, string says)
+    {
+        Save((4, Judged(Store, ReviewDir, 4)));
+        var phases = new Phases(Store) { Prepare = "already-closed" };
+
+        var (exit, output, _) = await Close(phases, ["--judgment", "4", .. execute ? new[] { "--execute" } : []]);
+
+        exit.Should().Be(0);
+        phases.PrunedMain.Should().Be(new string('m', 40), "main already holds every round");
+        output.Should().Contain(says);
+    }
+
+    [Theory]
+    [InlineData("failed", "review/nova-5776213 failed: the fake left it")]
+    [InlineData("kept", "review/nova-5776213 kept: the fake left it")]
+    [InlineData("throws", "the review branches were not deleted: close step close-prune failed (exit 1)")]
+    public async Task A_review_branch_left_after_the_close_exits_7(string prune, string says)
+    {
+        Save((4, Judged(Store, ReviewDir, 4)));
+        var phases = new Phases(Store) { Prune = prune };
+        phases.Commits.Enqueue("closed");
+
+        var (exit, output, err) = await Close(phases, "--judgment", "4", "--execute");
+
+        exit.Should().Be(JudgeClose.BranchesLeftExitCode, "the close landed, but GitHub still has a review branch");
+        output.Should().Contain("\"status\":\"closed\"");
+        err.Should().Contain(says);
+    }
+
+    // Exit 7 says a close landed with a branch left. A preview closed nothing: a branch it would keep is only printed,
+    // and a prune check that could not run is an ordinary failure.
+    [Theory]
+    [InlineData(
+        "kept",
+        0,
+        "review/nova-5776213 kept: the fake left it\nThe close would leave a review branch (above)."
+    )]
+    [InlineData("throws", 1, "could not check the review branches: close step close-prune failed (exit 1)")]
+    public async Task A_preview_prints_a_branch_it_would_keep_and_fails_when_it_cannot_check(
+        string prune,
+        int expected,
+        string says
+    )
+    {
+        Save((4, Judged(Store, ReviewDir, 4)));
+        var phases = new Phases(Store) { Prune = prune };
+
+        var (exit, output, err) = await Close(phases, "--judgment", "4");
+
+        exit.Should().Be(expected);
+        output.Should().Contain("\"status\":\"planned\"");
+        err.ReplaceLineEndings("\n").Should().Contain(says).And.NotContain("landed");
     }
 
     [Fact]
@@ -493,7 +568,14 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
 
         exit.Should().Be(0, err);
         output.Should().Contain(execute ? "\"status\":\"closed\"" : "\"status\":\"planned\"");
-        universe.AssertClean(pushed: execute ? universe.Git(universe.Origin, "rev-parse", "main") : null);
+        universe.AssertClean(
+            pushed: execute ? universe.Git(universe.Origin, "rev-parse", "main") : null,
+            pruned: execute
+        );
+        universe
+            .Git(universe.Origin, "for-each-ref", "--format=%(refname)", "refs/heads/review")
+            .Should()
+            .Be(execute ? "" : "refs/heads/review/x\nrefs/heads/review/x-2e69ca4b", "only an execute deletes them");
         if (!execute)
             universe.Git(universe.Origin, "rev-parse", "main").Should().Be(universe.Main, "a preview pushes nothing");
         else
@@ -630,6 +712,12 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
         /// <summary>What prepare says main did not keep.</summary>
         public JsonArray KeptOnBranch { get; init; } = [];
 
+        /// <summary>What close-prune says of every round: deleted (would-delete without push), failed, kept, or throws.</summary>
+        public string Prune { get; init; } = "deleted";
+
+        /// <summary>The commit close-prune was told holds the rounds.</summary>
+        public string? PrunedMain { get; private set; }
+
         /// <summary>The CLOSING.md close handed to the last close-commit.</summary>
         public string? Closing { get; private set; }
 
@@ -654,6 +742,7 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
                 {
                     "close-sweep" => new JsonObject { ["status"] = "swept", ["removed"] = Removed.DeepClone() },
                     "close-prepare" => PrepareFor(args, main, ct),
+                    "close-prune" => PruneFor(args),
                     "close-commit" when args["abandon"] is not null => Abandon(args),
                     "close-commit" => (Commits.Count > 0 ? Commits.Dequeue() : "planned") switch
                     {
@@ -699,6 +788,31 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
                     _ => throw new InvalidOperationException($"unexpected phase {name}"),
                 }
             );
+        }
+
+        private JsonObject PruneFor(JsonObject args)
+        {
+            PrunedMain = args["main"]!.GetValue<string>();
+            if (Prune == "throws")
+                throw new InvalidOperationException("close step close-prune failed (exit 1): ls-remote failed");
+            var status = Prune == "deleted" && !args["push"]!.GetValue<bool>() ? "would-delete" : Prune;
+            return new JsonObject
+            {
+                ["status"] = "pruned",
+                ["branches"] = new JsonArray([
+                    .. args["rounds"]!
+                        .AsArray()
+                        .Select(r =>
+                            (JsonNode)
+                                new JsonObject
+                                {
+                                    ["branch"] = r!["branch"]!.DeepClone(),
+                                    ["status"] = status,
+                                    ["reason"] = Prune == "deleted" ? null : "the fake left it",
+                                }
+                        ),
+                ]),
+            };
         }
 
         private JsonObject Abandon(JsonObject args)

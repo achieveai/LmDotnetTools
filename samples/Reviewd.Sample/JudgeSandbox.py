@@ -8,9 +8,10 @@ argv: <phase> <argsJson> [<prompt template>]. Prints one JSON object; a nonzero 
   close-sweep     remove close's own private refs and scratch left by a close that ended over an hour ago
   close-prepare   fetch main and every review round into private refs, check them, extract main's KB for compose
   close-commit    build the close commit in a temporary index; with push, push it (never forced) and verify it
+  close-prune     delete each round's review branch on the remote once main holds it (a lease on its tip)
 ADO access is GET only, through the installed kit's Gateway transport. Git commands are read-only, except that the close
 phases write objects, refs/reviewd/close/<nonce>/* and .scratch/reviewd-close/<nonce> (both removed at the end, or by a
-later close-sweep) and close-commit pushes main. Host facts (review receipts, conversation usage) arrive in argsJson; this script never opens a
+later close-sweep), close-commit pushes main and close-prune deletes merged review branches. Host facts (review receipts, conversation usage) arrive in argsJson; this script never opens a
 host database.
 """
 import collections
@@ -618,7 +619,8 @@ def judge_inputs():
         "identity": {
             "receiptKey": host["receiptKey"], "repository": receipt["repository"], "org": org, "project": project, "repo": repo,
             "projectId": project_id, "repositoryId": repo_id, "prId": pr, "title": pr_detail.get("title"),
-            "author": (pr_detail.get("createdBy") or {}).get("displayName"), "status": pr_detail.get("status"),
+            "author": (pr_detail.get("createdBy") or {}).get("displayName"),
+            "authorUniqueName": (pr_detail.get("createdBy") or {}).get("uniqueName"), "status": pr_detail.get("status"),
             "creationDate": pr_detail.get("creationDate"), "closedDate": pr_detail.get("closedDate"),
             "targetRef": pr_detail.get("targetRefName"), "sourceRef": pr_detail.get("sourceRefName"),
             "lastMergeSourceCommit": (pr_detail.get("lastMergeSourceCommit") or {}).get("commitId"),
@@ -868,16 +870,16 @@ def close_prepare():
     if url.rstrip("/").removesuffix(".git").lower() in {s.rstrip("/").removesuffix(".git").lower() for s in sources}:
         die("the remote is a source repository; refusing")
     ok = False
-    try:
-        specs = [f"+refs/heads/main:{refs}main"] + [f"+refs/heads/{r['branch']}:{refs}r{i}" for i, r in enumerate(rounds)]
+
+    def fetch(*specs):
         # A round that moves a submodule pin would make git fetch inside a populated submodule, on its own remote.
         git(["-c", "gc.auto=0"], "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--refmap=", "--recurse-submodules=no",
             remote, *specs, env=NO_PROMPT)
+    try:
+        fetch(f"+refs/heads/main:{refs}main")
         main = git([], "rev-parse", f"{refs}main^{{commit}}").stdout.strip()
-        for i, r in enumerate(rounds):
-            if (got := git([], "rev-parse", f"{refs}r{i}^{{commit}}").stdout.strip()) != r["tip"]:
-                return print(json.dumps({"status": "refused", "reason": f"{r['branch']} on the remote is {got[:9]}; the judged round {i + 1} is {r['tip'][:9]}"}))
-        # Idempotence lives on main: this judgment's CLOSING.md marker, and every round already merged.
+        # Idempotence lives on main: this judgment's CLOSING.md marker, and every round already merged. It is read before
+        # any round is fetched: close-prune deletes a closed PR's round branches.
         closing = git([], "show", f"{main}:{review_dir}/CLOSING.md", check=False)
         if closing.returncode == 0:
             marker = re.match(r"<!-- reviewd-close judgment=(\d+) ", closing.stdout)
@@ -886,6 +888,10 @@ def close_prepare():
                 return print(json.dumps({"status": "already-closed", "main": main}))
             return print(json.dumps({"status": "refused", "reason": f"main already has {review_dir}/CLOSING.md for judgment "
                                      f"{marker.group(1) if marker else 'unknown'}; re-closing is not supported"}))
+        fetch(*[f"+refs/heads/{r['branch']}:{refs}r{i}" for i, r in enumerate(rounds)])
+        for i, r in enumerate(rounds):
+            if (got := git([], "rev-parse", f"{refs}r{i}^{{commit}}").stdout.strip()) != r["tip"]:
+                return print(json.dumps({"status": "refused", "reason": f"{r['branch']} on the remote is {got[:9]}; the judged round {i + 1} is {r['tip'][:9]}"}))
         # Main's tree, then each round's PR dir in order (a later round wins on the same path).
         scratch.mkdir(parents=True)
         index = {"GIT_INDEX_FILE": str(scratch / "index")}
@@ -918,7 +924,8 @@ def close_prepare():
         git([], "update-index", "-z", "--index-info", env=index, stdin="".join(kept))
         tree = scratch / "tree"
         tree.mkdir()
-        if present := [p for p in ("KnowledgeBase", "Improvements") if tree_id(main, p)]:
+        # Compose reads main's files it appends to from here: a lesson's entry, a ledger, an author's habits file.
+        if present := [p for p in ("KnowledgeBase", "Improvements", "DeveloperLearnings") if tree_id(main, p)]:
             # Main's bytes, not a checkout's line endings: Git for Windows sets core.autocrlf, and core.eol is native
             # (CRLF there) for files .gitattributes marks as text; archive applies both.
             archive = subprocess.run(["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "archive", "--format=tar", main,
@@ -1014,6 +1021,46 @@ def close_commit():
         close_cleanup()
 
 
+def close_prune():
+    """Deletes each round's review branch on the remote once main holds the round. The delete carries a lease on the
+    round's tip, so a branch that moved keeps its new work; the round itself stays in main's history as a parent of
+    the close commit. Without push it only says what it would delete. A failed delete is reported, never fatal: the
+    close has landed, and a later close (already closed) tries again."""
+    remote, rounds, main = args["remote"], args["rounds"], args["main"]
+    if not SHA.fullmatch(main) or not rounds or any(
+            not re.fullmatch(r"review/[A-Za-z0-9][A-Za-z0-9._/-]*", r["branch"]) or not SHA.fullmatch(r["tip"]) for r in rounds):
+        die("bad main or rounds")
+    def redacted(stderr):
+        return re.sub(r"://[^/@\s]+@", "://***@", stderr.strip())[-300:]
+    # main is the close commit or the fetched main; a later run may find its objects gone, so it fetches main again
+    # (objects only: no ref moves).
+    if git([], "cat-file", "-e", f"{main}^{{commit}}", check=False).returncode:
+        git(["-c", "gc.auto=0"], "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--refmap=", "--recurse-submodules=no",
+            remote, "refs/heads/main", env=NO_PROMPT)
+    listed = git([], "ls-remote", remote, *[f"refs/heads/{r['branch']}" for r in rounds], check=False, env=NO_PROMPT)
+    if listed.returncode:
+        die(f"ls-remote failed ({listed.returncode}): {redacted(listed.stderr)}")
+    heads = dict(reversed(line.split("\t", 1)) for line in listed.stdout.splitlines() if "\t" in line)
+    branches = []
+    for r in rounds:
+        branch, tip, ref = r["branch"], r["tip"], f"refs/heads/{r['branch']}"
+        now = heads.get(ref)
+        if now is None:
+            branches.append({"branch": branch, "status": "gone"})
+        elif now != tip:
+            branches.append({"branch": branch, "status": "kept", "reason": f"it moved to {now[:9]}"})
+        elif git([], "merge-base", "--is-ancestor", tip, main, check=False).returncode:
+            branches.append({"branch": branch, "status": "kept", "reason": f"main {main[:9]} does not hold it"})
+        elif not args["push"]:
+            branches.append({"branch": branch, "status": "would-delete"})
+        else:
+            pushed = git([], "push", "--quiet", "--recurse-submodules=no", f"--force-with-lease={ref}:{tip}", remote, f":{ref}",
+                         check=False, env=NO_PROMPT)
+            branches.append({"branch": branch, "status": "deleted"} if pushed.returncode == 0 else
+                            {"branch": branch, "status": "failed", "reason": redacted(pushed.stderr)})
+    print(json.dumps({"status": "pruned", "branches": branches}))
+
+
 def read_argv(argv):
     """(phase, args, template) from the arguments after the script. The args JSON is one argument, or k pieces after
     --args-parts=<k> when it is over Linux's 128 KiB limit for one argument; the prompt template, if any, comes last."""
@@ -1030,4 +1077,5 @@ if __name__ == "__main__":  # imported (tests), only the functions load
     phase, args, template = read_argv(sys.argv[1:])
     root = Path.cwd().resolve()
     {"judge-inputs": judge_inputs, "judge-snapshot": judge_snapshot, "judge-outputs": judge_outputs,
-     "close-sweep": close_sweep, "close-prepare": close_prepare, "close-commit": close_commit}.get(phase, lambda: die(f"unknown phase {phase}"))()
+     "close-sweep": close_sweep, "close-prepare": close_prepare, "close-commit": close_commit,
+     "close-prune": close_prune}.get(phase, lambda: die(f"unknown phase {phase}"))()

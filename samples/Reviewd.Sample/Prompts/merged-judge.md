@@ -1,6 +1,6 @@
 # Merged-PR review judge
 
-Prompt version: `slice1-v8.1`. Grades: Reviewd review grades v1 (8 dimensions, 1–5). The evidence contract follows
+Prompt version: `slice1-v9`. Grades: Reviewd review grades v1 (8 dimensions, 1–5). The evidence contract follows
 code-reviewer 1.30.0 `review-retrospective`; its essentials are copied below. You do not need to open the plugin files.
 
 ## 1. Your job
@@ -19,7 +19,8 @@ Answer five questions with evidence:
 4. **Knowledge:** which verified, reusable facts should the KnowledgeBase gain or update?
 5. **Process:** which prompt, skill or step should change, and how?
 
-Judge the review, not the developer. Do not decide whether the PR should have merged.
+Judge the review, not the developer. Do not decide whether the PR should have merged. The one exception is
+`developerBehaviors` (section 7): three author habits the owner tracks, recorded from thread evidence and never graded.
 
 ## 2. This is NOT a review
 
@@ -244,6 +245,11 @@ Work through these steps in order. Keep notes as you go; they become `judgment.j
      old. A posted warning about it counts as true for accuracy; posting it as a blocker is a `rightSeverity` error
      (rule **Old risks**). If the PR makes the old risk more likely or wider, it is not inherited.
    - For an absence claim ("no null check", "no test"), run the search yourself and state pattern and scope.
+   - For each ours-posted issue, also check what the comment shows: every code example, symbol, file and line it
+     cites must exist at the reviewed head, and its fix must not reach beyond what was verified. A posted example or
+     reference with no basis in the code (an invented API or snippet, the wrong file, a remedy wider than the
+     verified claim) is `refuted` with `gapCategory: hallucination`, even when the underlying concern is real; then
+     record the real concern as its own issue.
    - `discoverableAtReviewedHead`: true / false / UNKNOWN, with the round where it first existed. False when the
      defect arrived in a later iteration.
    - `inScope`: true / false / UNKNOWN, with the changed line that makes it in scope.
@@ -257,7 +263,8 @@ Work through these steps in order. Keep notes as you go; they become `judgment.j
      consequence, or a much lower severity that hid the risk), `none`. Quote both sides briefly. One-to-many is fine.
    - Match against ours-posted (and ours-unreceipted) first; then against ours-candidates for the found-capture grade.
 
-6. **Classify each miss** (an issue in U with no posted match).
+6. **Classify each miss** (an issue in U with no posted match), and each refuted ours-posted issue (a false alarm):
+   a false alarm gets a `gapCategory` too, and `hallucination` when its text had no basis (step 4).
    - `missStage`: `found-not-posted` (an ours-candidate matches; give its disposition), `not-found` (the round's
      candidate record exists and has no match), or `UNKNOWN` (no candidate record). Posted issues get `posted`;
      issues outside U get `n/a`.
@@ -274,7 +281,8 @@ Work through these steps in order. Keep notes as you go; they become `judgment.j
      | `process-repo` | How the review was done missed it, in a way specific to this repository (for example "Nova auth handlers must be traced on the MCP path too"). | `processKind`, `processChange`, `repoScope` (paths or components it applies to). | repo review guide or store skill |
      | `onboarding` | The review did not know a convention of this repository: coding style, framework use, patterns the team follows, generated code, test layout. | `convention`: the convention, with one example path. `onboardingTarget`: the onboarding doc section it belongs in. | repo onboarding docs |
      | `access` | A source or tool the review needed was unavailable (search blocked, repo not local). Say whether a fallback existed then. | `accessGap`, `fallbackExisted` (true/false/UNKNOWN). | tooling or setup |
-     | `pipeline-filter` | Our pipeline found it, then dropped or weakened it (filtered, capped, merged into a summary, downgraded). | `candidateDisposition`, `filterStep`. | review pipeline |
+     | `pipeline-filter` | Our pipeline found a valid issue, then dropped or weakened it (filtered, capped, merged into a summary, downgraded). Never use it for posted text that went beyond its evidence: that is `hallucination`. | `candidateDisposition`, `filterStep`. | review pipeline |
+     | `hallucination` | We posted something with no basis in the code or in our own verified evidence: an invented example, API or snippet, a claim about the wrong file, or a fix wider than the verified claim. Set it on the ours-posted issue (`missStage: posted`, `validation: refuted`). | `filterStep`: the step that let it through (for example "publisher rewrote the remedy"). | review prompt or pipeline |
      | `human-decision` | Only a human could decide (product choice, policy). Not a review failure. | — | — |
      | `no-lesson` | Disagreement or uncertainty with no rule to draw. Do not manufacture one. | — | — |
 
@@ -367,6 +375,12 @@ dyslexia: they act only on what they see at a glance. Cite a rule by its name in
 | **Silence** | Saying nothing useful on a PR with confirmed issues is a failure, not neutrality. |
 | **Rounds stand alone** | Each posted round is complete on its own: no "round 2" when no round 1 was posted, no summary missing for a round. |
 | **Old risks** | A true warning about a risk that existed before this PR, which the PR keeps but does not make worse, is a fair note, not a false alarm. Calling it a blocker is the wrong size: it counts against `rightSeverity`, not `accuracy`. |
+| **Build on others** | When a human or another bot already made a point, we agree in their thread (a short "agreed, because…") or add what they missed. Posting the same point again as our own is noise. |
+| **Good questions** | A question that asks for a fact our sources lack, and that drew an answer or changed the code, is the best thread help. An unanswered question is followed up once, not repeated every round. |
+| **No churn** | A comment that made the author do work they later undid, with no bug behind it, is our review's fault. |
+| **No invention** | Every example, snippet, file and line we post exists at the reviewed head, and a fix stays within what was verified. An invented one is a `hallucination` (section 6). |
+| **Never drop a found bug** | A serious issue our own pipeline found, then dropped or weakened before posting, is the worst kind of miss. |
+| **Keep artifacts** | A round that deleted or discarded earlier rounds' artifacts (context, history notes, findings), so a later round paid to rebuild them, wasted money. |
 
 Quote the worst offending line (a few words) in `evidence` when you mark a writing grade down.
 
@@ -379,15 +393,16 @@ decides. Cite a rule only where it fits that grade:
 | Grade | Rules that can apply |
 |---|---|
 | `clearVerdict` | Verdict first, Rounds stand alone, Short, Plain refs, No filler |
-| `rightAmount`, `threadHelp` | Short, Plain refs, No filler, Professional, Silence |
-| `rightSeverity` | Ask cheap fixes, Old risks |
-| `worthTheCost` | Value, Silence |
-| `accuracy` | Silence, Old risks; otherwise empty |
-| `completeness`, `testFailureHelp` | usually empty |
+| `rightAmount`, `threadHelp` | Short, Plain refs, No filler, Professional, Silence, Build on others, Good questions, No churn |
+| `rightSeverity` | Ask cheap fixes, Old risks, No churn |
+| `worthTheCost` | Value, Silence, Keep artifacts |
+| `accuracy` | Silence, Old risks, No invention; otherwise empty |
+| `completeness` | Never drop a found bug; otherwise empty |
+| `testFailureHelp` | usually empty |
 
 **New for the owner.** The owner wants to learn things about our reviews that they have not discussed yet. Already
 discussed (do not repeat): the owner rules above; misses caused by missing knowledge or review steps; false alarms;
-review cost in general. Anything else this PR shows about how we review, good or bad, is a candidate. Places to look:
+review cost in general; the developer habits below. Anything else this PR shows about how we review, good or bad, is a candidate. Places to look:
 - how we worked with human reviewers and bots (agreed, repeated, contradicted, came late, or caught what they missed);
 - the same ask repeated across rounds, or a round that ignored the author's reply;
 - the kind of PR (docs, config, dependency bump, bot or agent author, part of a series) and whether we reviewed it in
@@ -398,6 +413,18 @@ review cost in general. Anything else this PR shows about how we review, good or
 Put up to 3 in `newTopics`, the ones that would most change how we review. Use only evidence from this PR. Give one
 when this PR clearly shows something from the list above; leave it empty only when nothing stands out. Each needs a short title, one plain sentence,
 whether it is good or bad, and a short quote or reference as the example.
+
+**Developer habits** (`developerBehaviors`, never graded). The owner gives each developer feedback on three habits.
+Record each one this PR shows, at most one item per kind, with the thread ids, statuses and dates that prove it:
+- `closed-without-reply`: the PR author resolved or closed a reviewer's comment (ours, a human's or a bot's) that
+  asked for a change or a fact, with no reply and no code change for it.
+- `question-unanswered`: a question to the author (ours or another reviewer's) got no answer before the merge, or
+  was closed without one.
+- `merged-before-confirmed`: the author pushed fixes for our findings and completed the PR before our next round
+  could confirm them. Say when that round ran, or that none ran on the fixed iteration.
+Evidence comes only from `ado-threads.json` (status, comments, dates), iterations and changes. A habit belongs to
+the PR author (`packet.identity.author`); never record a reviewer's habit. A habit never changes a grade. Leave the
+list empty when none is clear.
 
 | Key | Question | 1 | 3 | 5 |
 |---|---|---|---|---|
@@ -419,17 +446,29 @@ whether it is good or bad, and a short quote or reference as the example.
   summary, or numbered as a later round when no earlier round was posted, is a 1 for that round; grade the review as
   a whole and say which round failed.
 - `rightAmount` and `threadHelp`: if most of our posted text breaks the Short, Plain refs or No filler rules, score at most 2, even when
-  every claim is correct.
+  every claim is correct. A question that drew a new fact or changed the code (Good questions) lifts `threadHelp`
+  one step, to at most 3 under this cap. Re-posting a point a human or bot already made (Build on others), or a
+  comment that caused work the author later undid (No churn), keeps `threadHelp` at most 2.
 - `rightSeverity`: a cheap, worthwhile fix (code quality, hygiene, a missing test that is easy to write) should be
   asked for, not left as optional or informational. Leaving such fixes optional is a severity miss; asking for them is
   not "blocking on trivia".
 - `accuracy`: when we posted no valid issue but U holds confirmed issues, score at most 2. Silence is not accuracy.
+  When any ours-posted issue is a `hallucination`, score at most 2 (No invention). And `accuracy` is at most
+  `completeness` + 1: a review that missed the important issues is not accurate about the PR, however true its few
+  claims are.
+- `completeness`: when our own pipeline found a valid `high` or `medium` issue in U, then dropped or weakened it
+  (`missStage: found-not-posted`, or posted only as a much weaker `partial`), score at most 2 (Never drop a found
+  bug). The already-raised drop (section 6, step 3) is not this.
+- `worthTheCost`: when a round deleted or discarded artifacts that a later round then paid to rebuild (Keep
+  artifacts), score at most 2. Cite the round file lists or notes that show it.
 - `worthTheCost`: when the review did not finish its job (no valid issue posted, no fix caused, and no clear verdict
   or proof that the change works), score 1, whatever it cost. This holds even when the review cost is UNKNOWN: any
   cost paid for unfinished work is wasted. A clean PR with a clear verdict and a stated check is finished work.
 - `completeness` is `UNKNOWN` only when no issue in U could be validated. Otherwise grade the known part and give
   the range in `why` (for example "4 if I7 is not real, 3 if it is").
-- `overall` is the mean of the numeric scores, rounded to one decimal. `N/A` and `UNKNOWN` are left out.
+- `overall` is the mean of the numeric scores, rounded to one decimal. `N/A` and `UNKNOWN` are left out. Then a
+  cap: `overall` is at most 2.0 when a found bug was dropped (the `completeness` rule above), when any posted issue
+  is a `hallucination`, or when `completeness` is 1. Name the cap in `overallCap` (`none` when no cap lowered it).
 - Score from evidence only. Silence never proves good performance. A future commit is never an earlier miss. Do not
   reward agreement, harshness, author compliance or comment count. Courtesy is not leniency.
 - Source-supported observations are not automatically useful findings: weigh reachable consequences, redundant
@@ -507,7 +546,7 @@ Write exactly two files in your judgment dir (plus anything under `inputs/staged
 ```json
 {
   "schema": "reviewd-merged-judgment/1",
-  "promptVersion": "slice1-v8.1",
+  "promptVersion": "slice1-v9",
   "stage": "draft|final",
   "pr": {
     "repository": "", "prId": "", "title": "", "author": "", "status": "", "closedDate": "",
@@ -527,7 +566,7 @@ Write exactly two files in your judgment dir (plus anything under `inputs/staged
     "inScope": "true|false|UNKNOWN", "inU": true,
     "oursMatch": "exact|partial|none", "oursMatchRef": "", "matchEvidence": "",
     "missStage": "posted|found-not-posted|not-found|UNKNOWN|n/a", "candidateDisposition": "",
-    "gapCategory": "knowledge|process-generic|process-repo|onboarding|access|pipeline-filter|human-decision|no-lesson",
+    "gapCategory": "knowledge|process-generic|process-repo|onboarding|access|pipeline-filter|hallucination|human-decision|no-lesson",
     "secondaryCategories": [], "proposedCategory": null,
     "categoryDetail": {"knowledgeNeeded": "", "howToCollect": "", "kbProposal": "", "processKind": "", "processChange": "",
                        "repoScope": "", "convention": "", "onboardingTarget": "", "accessGap": "", "fallbackExisted": "",
@@ -544,17 +583,19 @@ Write exactly two files in your judgment dir (plus anything under `inputs/staged
     "cost": {"usd": 0, "tokens": 0, "label": "lower bound|complete", "completeness": [], "rounds": 0,
              "perModel": [], "sizeTier": "", "warranted": "under|appropriate|over|UNKNOWN", "rationale": ""},
     "dimensions": {"completeness": {"score": "1-5|N/A|UNKNOWN", "rule": "", "why": "", "evidence": ""}},
-    "overall": "0.0 or UNKNOWN"
+    "overall": "0.0 or UNKNOWN",
+    "overallCap": "none|dropped-found-bug|hallucination|completeness-1"
   },
   "superset": "yes|no|UNKNOWN",
   "supersetRationale": "",
   "verdict": "one plain sentence",
   "newTopics": [{"title": "6 words or fewer", "plain": "one sentence, 25 words or fewer", "goodOrBad": "good|bad", "example": "short quote or thread reference", "dimension": "closest dimension key or none"}],
+  "developerBehaviors": [{"kind": "closed-without-reply|question-unanswered|merged-before-confirmed", "plain": "one sentence, 25 words or fewer", "threadIds": [], "evidence": "statuses, dates and iterations that prove it", "howToAvoid": "one sentence, 20 words or fewer"}],
   "strongestContraryEvidence": "",
   "independence": "",
   "workLog": {"artifactsRead": [], "sourceReads": 0, "adoGets": 0, "subAgents": [], "skipped": []},
   "gapSummary": {"knowledge": 0, "process-generic": 0, "process-repo": 0, "onboarding": 0, "access": 0,
-                 "pipeline-filter": 0, "human-decision": 0, "no-lesson": 0, "proposed": []},
+                 "pipeline-filter": 0, "hallucination": 0, "human-decision": 0, "no-lesson": 0, "proposed": []},
   "knowledge": [],
   "improvements": []
 }
@@ -563,7 +604,8 @@ Write exactly two files in your judgment dir (plus anything under `inputs/staged
 `dimensions` must hold all 8 keys from the table. Scores are integers 1–5, or the strings `"N/A"` / `"UNKNOWN"`;
 never invent a number.
 **Plain words for the reader.** `verdict`, each dimension's `why`, and each issue's `plain` (what went wrong) and
-`plainWhy` (why our review missed it; empty when posted), and each new topic's `title` and `plain`, are read by a
+`plainWhy` (why our review missed it; empty when posted), each new topic's `title` and `plain`, and each developer
+habit's `plain` and `howToAvoid`, are read by a
 non-expert who is dyslexic and has ADHD. One short sentence
 each, about 20 words or fewer, in everyday words: no ids, file or code names, and no review jargon (lane,
 reconciliation, candidate, U). Example `plain`: "Local testing lost the AI cost page." Example `plainWhy`: "Our
@@ -602,12 +644,17 @@ Then one bullet per miss with the category detail in plain words:
 
 **Gaps by category:** knowledge <n>, process (generic) <n>, process (repo) <n>, onboarding <n>, other <list>.
 
+## Developer habits
+- **<kind>**: <plain sentence>. Avoid it: <howToAvoid>.
+(or: "None seen.")
+
 ## Grades
 - Capture (posted): <num>/<den> (<value>). Found: <num>/<den>. Unverified: <counts>.
 - Accuracy: <tp> true, <fp> false, <unproven> unproven. Fix rate <num>/<den>.
 - Cost: $<usd> (<label>), <tokens> tokens, <rounds> round(s), <tier> PR. Warranted: <call>. <why>
 - Grades (1–5, 3 = typical): one line, e.g. "Completeness 3 · Accuracy 4 · Thread help 3 · Test help N/A · Amount 3 ·
-  Verdict 4 · Severity 3 · Cost 2 · Overall 3.1". Then one short bullet per score: **<rule>**: why.
+  Verdict 4 · Severity 3 · Cost 2 · Overall 3.1"; add "(capped: <overallCap>)" when a cap lowered it. Then one short
+  bullet per score: **<rule>**: why.
 
 ## Lessons proposed
 - KB <create|update> <target>: <one line>

@@ -348,6 +348,115 @@ public sealed class ReviewdJudgeCloseTests
             );
     }
 
+    private static JsonObject Habit(string kind, string plain = "Closed the null-check thread with no reply.") =>
+        new()
+        {
+            ["kind"] = kind,
+            ["plain"] = plain,
+            ["threadIds"] = new JsonArray(11, 12),
+            ["evidence"] = "Thread 11 closed on day 2, no reply, no change.",
+            ["howToAvoid"] = "Reply or fix before closing a thread.",
+        };
+
+    [Fact]
+    public void Close_compose_files_each_developer_habit_once_in_the_authors_learnings()
+    {
+        var judgment = Judgment([], []);
+        judgment["developerBehaviors"] = new JsonArray(
+            Habit("closed-without-reply"),
+            Habit("merged-before-confirmed", "Merged before the bot checked the fix."),
+            Habit("graded-badly"),
+            Habit("question-unanswered", " ")
+        );
+        var path =
+            $"DeveloperLearnings/{CodeReviewDaemon.Sample.Agents.DeveloperLearnings.DeveloperIdentity.SlugifyAuthor("jane.doe@contoso.com")}/review-behaviors.md";
+
+        var plan = JudgeClose.Compose(judgment, "Nova", "5776213", "2026-10-28", _ => null, "jane.doe@contoso.com");
+
+        plan.Writes.Keys.Should().Equal(path);
+        var text = plan.Writes[path];
+        text.Should().StartWith("# Review habits: jane.doe@contoso.com\n");
+        text.Split('\n')
+            .Should()
+            .ContainInOrder(
+                "<!-- judge-habit nova-5776213-closed-without-reply -->",
+                "### Closed a review comment with no reply or fix (Nova !5776213, 2026-10-28)",
+                "Closed the null-check thread with no reply.",
+                "- Evidence: Thread 11 closed on day 2, no reply, no change. (threads 11, 12)",
+                "- Avoid it: Reply or fix before closing a thread.",
+                "<!-- judge-habit nova-5776213-merged-before-confirmed -->",
+                "### Merged before the review confirmed the fixes (Nova !5776213, 2026-10-28)"
+            );
+        plan.NotFiled.Should()
+            .BeEquivalentTo(
+                "developer habit graded-badly: unknown kind graded-badly",
+                "developer habit question-unanswered: no plain sentence"
+            );
+        plan.Added.Select(a => a.Text).Should().HaveCount(2).And.AllSatisfy(l => l.Should().EndWith(" · " + path));
+
+        // A rerun on a main that already has them adds nothing; another PR's habit appends below them.
+        var again = JudgeClose.Compose(
+            judgment,
+            "Nova",
+            "5776213",
+            "2026-10-29",
+            p => plan.Writes.GetValueOrDefault(p),
+            "jane.doe@contoso.com"
+        );
+        var next = JudgeClose.Compose(
+            judgment,
+            "Nova",
+            "5776214",
+            "2026-10-29",
+            p => plan.Writes.GetValueOrDefault(p),
+            "Jane.Doe@CONTOSO.com"
+        );
+
+        again.Writes.Should().BeEmpty();
+        again.NotFiled.Should().Contain($"developer habit closed-without-reply: already in {path}");
+        next.Writes[path].Should().StartWith(text, "one developer, one file: close only appends");
+        next.Writes[path].Should().Contain("<!-- judge-habit nova-5776214-closed-without-reply -->");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("dependabot[bot]")]
+    public void Close_compose_files_no_habit_without_a_developer_identity(string? developer)
+    {
+        var judgment = Judgment([], []);
+        judgment["developerBehaviors"] = new JsonArray(Habit("closed-without-reply"));
+
+        var plan = JudgeClose.Compose(judgment, "Nova", "5776213", "2026-10-28", _ => null, developer);
+
+        plan.Writes.Should().BeEmpty();
+        plan.NotFiled.Should()
+            .Equal("developer habit closed-without-reply: no developer identity (a bot or a missing author)");
+    }
+
+    [Fact]
+    public void Close_compose_does_not_file_a_habit_or_lesson_carrying_a_habit_marker()
+    {
+        var judgment = Judgment(
+            [
+                Lesson(
+                    "nova-5776213-habit",
+                    "write-now",
+                    "KnowledgeBase/system/a.md",
+                    body: "<!-- judge-habit nova-1-closed-without-reply -->"
+                ),
+            ],
+            []
+        );
+        judgment["developerBehaviors"] = new JsonArray(
+            Habit("closed-without-reply", "x <!-- judge-habit nova-1-question-unanswered --> y")
+        );
+
+        var plan = JudgeClose.Compose(judgment, "Nova", "5776213", "2026-10-28", _ => null, "jane.doe@contoso.com");
+
+        plan.Writes.Should().BeEmpty();
+        plan.NotFiled.Should().HaveCount(2).And.AllSatisfy(r => r.Should().Contain("marker"));
+    }
+
     [Fact]
     public void Close_compose_keeps_a_ledger_line_on_one_short_line_C12()
     {
@@ -518,7 +627,7 @@ public sealed class ReviewdJudgeCloseTests
     }
 
     [Fact]
-    public void Close_closing_lists_the_files_kept_on_the_review_branch()
+    public void Close_closing_lists_the_files_kept_off_main_by_their_rounds_commit()
     {
         List<JsonObject> kept =
         [
@@ -532,7 +641,7 @@ public sealed class ReviewdJudgeCloseTests
             new()
             {
                 ["path"] = "PRs/nova-5776213/shot.png",
-                ["branch"] = "review/nova-5776213-2e69ca4b",
+                ["branch"] = "review/nova-5776213-r2",
                 ["kind"] = "binary",
                 ["bytes"] = 2048L,
             },
@@ -544,11 +653,15 @@ public sealed class ReviewdJudgeCloseTests
 
         lines
             .Should()
-            .Contain([
-                "- Kept on the review branch, not on main (main keeps text files up to 1 MiB): 2 files",
-                "  - setup-context.json (2.1 MiB, review/nova-5776213)",
-                "  - shot.png (binary, review/nova-5776213-2e69ca4b)",
-            ]);
+            .Contain(
+                [
+                    "- The review branches are deleted once main holds them; each round stays in main's history.",
+                    "- Kept off main (it keeps text files up to 1 MiB), in their round's commit: 2 files",
+                    "  - setup-context.json (2.1 MiB, round 1 at bbbbbbbbb)",
+                    "  - shot.png (binary, round 2 at ccccccccc)",
+                ],
+                "the branch is deleted after the close, so a kept file is found by its round's commit"
+            );
     }
 
     [Fact]
@@ -1034,6 +1147,171 @@ public sealed class ReviewdJudgeCloseTests
         other["reason"]!.GetValue<string>().Should().Contain("re-closing is not supported");
         universe.Git(universe.Origin, "rev-parse", "main").Should().Be(closed);
         universe.AssertClean();
+    }
+
+    private static JsonObject PruneArgs(
+        Universe universe,
+        string main,
+        bool push,
+        params (string Branch, string Tip)[] rounds
+    ) =>
+        new()
+        {
+            ["remote"] = universe.Origin,
+            ["main"] = main,
+            ["push"] = push,
+            ["rounds"] = new JsonArray([
+                .. rounds.Select(r => (JsonNode)new JsonObject { ["branch"] = r.Branch, ["tip"] = r.Tip }),
+            ]),
+        };
+
+    private static string Statuses(JsonObject pruned) =>
+        string.Join(
+            "; ",
+            pruned["branches"]!
+                .AsArray()
+                .Select(b => $"{b!["branch"]} {b["status"]}{(b["reason"] is { } why ? $" ({why})" : "")}")
+        );
+
+    [SkippableFact]
+    public async Task Close_prune_deletes_each_round_main_holds_and_keeps_a_branch_that_moved()
+    {
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        using var universe = Universe.Create();
+        var closed = universe.CloseByHand(judgment: 3);
+        var (round1, round2) = (universe.Round1, universe.Round2);
+        universe.AddToRound2("PRs/x/late.md", "work after the judge");
+        var phase = JudgeClose.Local(universe.Store);
+        var args = PruneArgs(universe, closed, true, ("review/x", round1), ("review/x-2e69ca4b", round2));
+
+        var pruned = await phase("close-prune", args, default);
+        var again = await phase("close-prune", args, default);
+
+        Statuses(pruned).Should().Be($"review/x deleted; review/x-2e69ca4b kept (it moved to {universe.Round2[..9]})");
+        universe
+            .Git(universe.Origin, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/review")
+            .Should()
+            .Be($"refs/heads/review/x-2e69ca4b {universe.Round2}", "a moved branch keeps its new work");
+        Statuses(again).Should().StartWith("review/x gone; ");
+        universe.Git(universe.Origin, "rev-parse", "main").Should().Be(closed);
+    }
+
+    [SkippableFact]
+    public async Task Close_prune_keeps_a_round_main_does_not_hold_and_a_preview_deletes_nothing()
+    {
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        using var universe = Universe.Create();
+        var phase = JudgeClose.Local(universe.Store);
+        (string, string)[] rounds = [("review/x", universe.Round1), ("review/x-2e69ca4b", universe.Round2)];
+
+        var unmerged = await phase("close-prune", PruneArgs(universe, universe.Main, true, rounds), default);
+        var closed = universe.CloseByHand(judgment: 3);
+        var preview = await phase("close-prune", PruneArgs(universe, closed, false, rounds), default);
+
+        Statuses(unmerged)
+            .Should()
+            .Be(
+                $"review/x kept (main {universe.Main[..9]} does not hold it); "
+                    + $"review/x-2e69ca4b kept (main {universe.Main[..9]} does not hold it)"
+            );
+        Statuses(preview).Should().Be("review/x would-delete; review/x-2e69ca4b would-delete");
+        universe
+            .Git(universe.Origin, "for-each-ref", "--format=%(refname)", "refs/heads/review")
+            .Split('\n')
+            .Should()
+            .Equal("refs/heads/review/x", "refs/heads/review/x-2e69ca4b");
+    }
+
+    // The delete's lease on the round's tip: a branch that moves after the prune's check (here, as the push connects)
+    // is kept with its new work, not deleted.
+    [SkippableFact]
+    public async Task Close_prune_keeps_a_branch_that_moves_between_its_check_and_the_delete()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "a shell script stands in for the remote's receive-pack");
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        using var universe = Universe.Create();
+        var closed = universe.CloseByHand(judgment: 3);
+        var receivePack = Path.Combine(universe.Store, ".git", "move-then-receive-pack");
+        File.WriteAllText(
+            receivePack,
+            $"#!/bin/sh\ngit --git-dir='{universe.Origin}' update-ref refs/heads/review/x {universe.Round2}\n"
+                + "exec git receive-pack \"$@\"\n"
+        );
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(
+                receivePack,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+            );
+        universe.Git(universe.Store, "config", "remote.origin.receivepack", receivePack);
+        var phase = JudgeClose.Local(universe.Store);
+        var args = PruneArgs(universe, closed, true, ("review/x", universe.Round1));
+        args["remote"] = "origin";
+
+        var pruned = await phase("close-prune", args, default);
+
+        Statuses(pruned).Should().StartWith("review/x failed");
+        universe
+            .Git(universe.Origin, "rev-parse", "refs/heads/review/x")
+            .Should()
+            .Be(universe.Round2, "the lease keeps a branch that moved");
+    }
+
+    // A second close of one author's PR appends to the habits file an earlier close left on main: prepare puts main's
+    // DeveloperLearnings in the scratch tree compose reads, or the write would replace the file and drop the earlier
+    // PR's sections.
+    [SkippableFact]
+    public async Task Close_prepare_lets_a_second_close_append_to_the_authors_habits_on_main()
+    {
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        using var universe = Universe.Create();
+        var judgment = Judgment([], []);
+        judgment["developerBehaviors"] = new JsonArray(Habit("closed-without-reply"));
+        var path =
+            $"DeveloperLearnings/{CodeReviewDaemon.Sample.Agents.DeveloperLearnings.DeveloperIdentity.SlugifyAuthor("jane.doe@contoso.com")}/review-behaviors.md";
+        var earlier = JudgeClose
+            .Compose(judgment, "Nova", "5776212", "2026-10-27", _ => null, "jane.doe@contoso.com")
+            .Writes[path];
+        universe.CommitOnMain(path, earlier);
+        var phase = JudgeClose.Local(universe.Store);
+
+        var prepared = await phase("close-prepare", universe.PrepareArgs(3), default);
+        var tree = Path.Combine(universe.Store, prepared["scratch"]!.GetValue<string>(), "tree");
+        var plan = JudgeClose.Compose(
+            judgment,
+            "Nova",
+            "5776213",
+            "2026-10-28",
+            p => File.Exists(Path.Combine(tree, p)) ? File.ReadAllText(Path.Combine(tree, p)) : null,
+            "jane.doe@contoso.com"
+        );
+
+        prepared["status"]!.GetValue<string>().Should().Be("ready");
+        plan.Writes[path].Should().StartWith(earlier, "the earlier PR's section stays");
+        plan.Writes[path].Should().Contain("<!-- judge-habit nova-5776213-closed-without-reply -->");
+    }
+
+    // A rerun after a close deleted the PR's round branches: prepare reads main's CLOSING.md before it fetches any
+    // round, so it says already closed instead of failing to fetch a branch that is gone.
+    [SkippableFact]
+    public async Task Close_prepare_says_already_closed_after_the_round_branches_are_deleted()
+    {
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        using var universe = Universe.Create();
+        universe.CloseByHand(judgment: 3);
+        universe.Git(
+            universe.Store,
+            "push",
+            "-q",
+            universe.Origin,
+            ":refs/heads/review/x",
+            ":refs/heads/review/x-2e69ca4b"
+        );
+        var phase = JudgeClose.Local(universe.Store);
+
+        var again = await phase("close-prepare", universe.PrepareArgs(3), default);
+
+        again["status"]!.GetValue<string>().Should().Be("already-closed");
+        universe.Git(universe.Store, "for-each-ref", "refs/reviewd").Should().BeEmpty("close deletes its private refs");
     }
 
     [SkippableFact]
@@ -1592,12 +1870,25 @@ public sealed class ReviewdJudgeCloseTests
         /// The commit close pushed to origin main, if it pushed one. git moves origin/main to it after a push to origin,
         /// and from Git 2.56 also after a push to origin's URL, which is how these tests name the remote.
         /// </param>
-        public void AssertClean(string? pushed = null)
+        /// <param name="pruned">
+        /// Close deleted the round branches on origin; like origin/main after a push, git may drop their
+        /// refs/remotes/origin/review/* refs.
+        /// </param>
+        public void AssertClean(string? pushed = null, bool pruned = false)
         {
             Git(Store, "for-each-ref", "refs/reviewd").Should().BeEmpty("close deletes its private refs");
-            Fingerprint()
+            string Kept(string fingerprint) =>
+                pruned
+                    ? string.Join(
+                        '\n',
+                        fingerprint
+                            .Split('\n')
+                            .Where(l => !l.StartsWith("refs/remotes/origin/review/", StringComparison.Ordinal))
+                    )
+                    : fingerprint;
+            Kept(Fingerprint())
                 .Should()
-                .Be(_baseline, "close never moves the store's HEAD, local main, index, status or refs");
+                .Be(Kept(_baseline), "close never moves the store's HEAD, local main, index, status or refs");
             Tracking()
                 .Should()
                 .BeOneOf(
