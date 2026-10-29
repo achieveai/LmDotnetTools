@@ -302,20 +302,29 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
         err.Should().Contain(says);
     }
 
-    // Exit 7 says a close landed with a branch left; a preview closed nothing, so its prune trouble is only printed.
+    // Exit 7 says a close landed with a branch left. A preview closed nothing: a branch it would keep is only printed,
+    // and a prune check that could not run is an ordinary failure.
     [Theory]
-    [InlineData("kept", "review/nova-5776213 kept: the fake left it")]
-    [InlineData("throws", "the review branches were not deleted: close step close-prune failed (exit 1)")]
-    public async Task A_preview_whose_prune_would_leave_a_branch_exits_0(string prune, string says)
+    [InlineData(
+        "kept",
+        0,
+        "review/nova-5776213 kept: the fake left it\nThe close would leave a review branch (above)."
+    )]
+    [InlineData("throws", 1, "could not check the review branches: close step close-prune failed (exit 1)")]
+    public async Task A_preview_prints_a_branch_it_would_keep_and_fails_when_it_cannot_check(
+        string prune,
+        int expected,
+        string says
+    )
     {
         Save((4, Judged(Store, ReviewDir, 4)));
         var phases = new Phases(Store) { Prune = prune };
 
         var (exit, output, err) = await Close(phases, "--judgment", "4");
 
-        exit.Should().Be(0, "a preview closed nothing");
+        exit.Should().Be(expected);
         output.Should().Contain("\"status\":\"planned\"");
-        err.Should().Contain(says);
+        err.ReplaceLineEndings("\n").Should().Contain(says).And.NotContain("landed");
     }
 
     [Fact]

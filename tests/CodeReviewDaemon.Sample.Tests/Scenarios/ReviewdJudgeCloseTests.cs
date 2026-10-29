@@ -1256,23 +1256,38 @@ public sealed class ReviewdJudgeCloseTests
             .Be(universe.Round2, "the lease keeps a branch that moved");
     }
 
-    // Compose appends an author's habits to main's file; without it in the scratch tree, the write would replace the
-    // file and drop the sections of the author's earlier PRs.
+    // A second close of one author's PR appends to the habits file an earlier close left on main: prepare puts main's
+    // DeveloperLearnings in the scratch tree compose reads, or the write would replace the file and drop the earlier
+    // PR's sections.
     [SkippableFact]
-    public async Task Close_prepare_puts_mains_developer_learnings_in_the_scratch_tree()
+    public async Task Close_prepare_lets_a_second_close_append_to_the_authors_habits_on_main()
     {
         Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
-        universe.CommitOnMain("DeveloperLearnings/alice/review-behaviors.md", "an earlier PR's habit");
+        var judgment = Judgment([], []);
+        judgment["developerBehaviors"] = new JsonArray(Habit("closed-without-reply"));
+        var path =
+            $"DeveloperLearnings/{CodeReviewDaemon.Sample.Agents.DeveloperLearnings.DeveloperIdentity.SlugifyAuthor("jane.doe@contoso.com")}/review-behaviors.md";
+        var earlier = JudgeClose
+            .Compose(judgment, "Nova", "5776212", "2026-10-27", _ => null, "jane.doe@contoso.com")
+            .Writes[path];
+        universe.CommitOnMain(path, earlier);
         var phase = JudgeClose.Local(universe.Store);
 
         var prepared = await phase("close-prepare", universe.PrepareArgs(3), default);
+        var tree = Path.Combine(universe.Store, prepared["scratch"]!.GetValue<string>(), "tree");
+        var plan = JudgeClose.Compose(
+            judgment,
+            "Nova",
+            "5776213",
+            "2026-10-28",
+            p => File.Exists(Path.Combine(tree, p)) ? File.ReadAllText(Path.Combine(tree, p)) : null,
+            "jane.doe@contoso.com"
+        );
 
         prepared["status"]!.GetValue<string>().Should().Be("ready");
-        var scratch = Path.Combine(universe.Store, prepared["scratch"]!.GetValue<string>());
-        File.ReadAllText(Path.Combine(scratch, "tree/DeveloperLearnings/alice/review-behaviors.md"))
-            .Should()
-            .Be("an earlier PR's habit");
+        plan.Writes[path].Should().StartWith(earlier, "the earlier PR's section stays");
+        plan.Writes[path].Should().Contain("<!-- judge-habit nova-5776213-closed-without-reply -->");
     }
 
     // A rerun after a close deleted the PR's round branches: prepare reads main's CLOSING.md before it fetches any

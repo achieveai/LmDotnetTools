@@ -333,7 +333,7 @@ internal static class JudgeClose
                     Console.WriteLine(
                         $"already closed: main {Text(prepared, "main")[..9]} has judgment {n}'s CLOSING.md and every round."
                     );
-                    return (await PruneAsync(Text(prepared, "main")) ? 0 : BranchesLeftExitCode, "", "");
+                    return (PrunedExit(await PruneAsync(Text(prepared, "main")), closed: true), "", "");
                 }
                 if (Text(prepared, "status") != "ready")
                     throw new InvalidOperationException($"close-prepare returned {prepared["status"]}.");
@@ -444,8 +444,7 @@ internal static class JudgeClose
                         )
                         .ToJsonString()
                 );
-                // Exit 7 says a close landed with a branch left; a preview closed nothing, so it only prints them.
-                return (pruned || !execute ? 0 : BranchesLeftExitCode, main, "");
+                return (PrunedExit(pruned, closed: execute), main, "");
             }
             finally
             {
@@ -460,11 +459,22 @@ internal static class JudgeClose
             }
         }
 
+        // Exit 7: the close landed (or had landed) with a review branch left. A preview deletes nothing, so it exits 1
+        // only when it could not check the branches.
+        int PrunedExit(bool? pruned, bool closed) =>
+            pruned switch
+            {
+                true => 0,
+                null when !execute => 1,
+                _ when closed => BranchesLeftExitCode,
+                _ => 0,
+            };
+
         // Deletes the rounds' review branches once main (here: the close commit, or main when already closed) holds
         // them; a preview only says what it would delete. The close has landed by then, so a branch left (its delete
         // failed, it moved, or main does not hold it) is a warning and exit 7, and a later run (already closed) tries
-        // again. False: a branch is left.
-        async Task<bool> PruneAsync(string holder)
+        // again. True: none is left; false: a branch is left; null: the branches could not be checked.
+        async Task<bool?> PruneAsync(string holder)
         {
             JsonObject result;
             try
@@ -483,8 +493,12 @@ internal static class JudgeClose
             }
             catch (InvalidOperationException failure)
             {
-                Console.Error.WriteLine($"the review branches were not deleted: {failure.Message} Run close again.");
-                return false;
+                Console.Error.WriteLine(
+                    execute
+                        ? $"the review branches were not deleted: {failure.Message} Run close again."
+                        : $"could not check the review branches: {failure.Message}"
+                );
+                return null;
             }
             branches = result["branches"]?.AsArray() ?? [];
             var left = false;
@@ -501,7 +515,9 @@ internal static class JudgeClose
             }
             if (left)
                 Console.Error.WriteLine(
-                    "The close landed, but a review branch is left (above). Run close again to retry the delete."
+                    execute
+                        ? "The close landed, but a review branch is left (above). Run close again to retry the delete."
+                        : "The close would leave a review branch (above)."
                 );
             return !left;
         }
