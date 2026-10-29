@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.Extensions.Logging;
@@ -291,13 +292,14 @@ public sealed class AgentHierarchyServiceTests
     }
 
     [Fact]
-    public async Task BuildAsync_ForALiveNonMultiTurnAgentLoop_NeverCallsListThreadsAsync()
+    public async Task BuildAsync_ForALiveNonMultiTurnAgentLoop_ScansOncePerHydration_AndListsTheSavedChild()
     {
-        // PRRT_kwDOOPysWM6V1mjj: `loop is null` used to stand in for "no live coverage", but a live
-        // Codex/Copilot CLI pool entry (or any other non-MultiTurnAgentLoop IMultiTurnAgent) also makes
-        // `loop` null — so it paid for the same bounded-but-expensive multi-page store scan on every
-        // 3-second hot poll, even though it can never own an Agent-tool SubAgentManager roster to begin
-        // with. A persisted provenance child is seeded to prove the scan is skipped, not merely empty.
+        // PRRT_kwDOOPysWM6V1mjj: a live Codex/Copilot/Claude CLI pool entry (or any other
+        // non-MultiTurnAgentLoop IMultiTurnAgent) used to pay for the bounded-but-expensive multi-page
+        // store scan on every 3-second hot poll. It then skipped the scan outright, which hid the
+        // children an API loop left behind when a provider switch replaced it with a CLI agent (#792).
+        // The scan now runs once per hydrated agent (the cache owner is the agent itself) and its answer
+        // is reused by every later poll.
         const string childId = "cli-sibling-child";
         var store = new InMemoryConversationStore();
         await store.SaveMetadataAsync(
@@ -338,15 +340,16 @@ public sealed class AgentHierarchyServiceTests
             new SubAgentScanCoverageCache()
         );
 
+        var (rows, _, _) = await service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+        var scansAfterHydration = countingStore.ListThreadsCallCount;
+        _ = await service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
         _ = await service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
 
+        rows.Should().ContainSingle(r => r.AgentId == childId, "the saved child is the only record of it");
+        scansAfterHydration.Should().BeGreaterThan(0, "guard: the first poll after hydration reads the saved roster");
         countingStore
             .ListThreadsCallCount.Should()
-            .Be(
-                0,
-                "a live CLI/non-owning agent can never have an Agent-tool SubAgentManager roster, so the "
-                    + "persisted-provenance scan must be skipped for it just like a live MultiTurnAgentLoop"
-            );
+            .Be(scansAfterHydration, "later polls of the same live agent reuse that answer instead of rescanning");
     }
 
     [Fact]
@@ -641,6 +644,123 @@ public sealed class AgentHierarchyServiceTests
                     "a root transcript read for the grandchild must succeed after restart, not fail closed "
                         + "with unknown_target"
                 );
+        }
+        finally
+        {
+            if (Directory.Exists(indexDirectory))
+            {
+                Directory.Delete(indexDirectory, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// #792: a provider switch onto a CLI agent recreates the parent and stops the sub-agent its old loop
+    /// was running, saving the reason <c>parent_recreated</c>. The roster must still show that child, and
+    /// why it stopped, once the live agent is a CLI one that owns no sub-agents of its own: with
+    /// collaboration off it used to drop out of the listing, and with it on the saved tab still said
+    /// <c>running</c> and read back as <c>interrupted</c>.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BuildAsync_AfterARecreateOntoACliAgent_ListsTheStoppedChild_AsParentRecreated(bool collaboration)
+    {
+        var indexDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "AgentHierarchyServiceTests-" + Guid.NewGuid().ToString("N")
+        );
+        var store = new InMemoryConversationStore();
+        var childEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var subAgentOptions = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "You are a worker.",
+                    Description = "Does work.",
+                    AgentFactory = () => BlockingProvider(childEntered),
+                },
+            },
+            MaxConcurrentSubAgents = 5,
+            // The same wiring as Program.cs: the manager also asks for the ROOT's store, with no parent.
+            ProvenanceAwareConversationStoreFactory = (childThreadId, parentThreadId, describeChild) =>
+                parentThreadId is null
+                    ? new NonOwningConversationStore(store)
+                    : new NonOwningConversationStore(
+                        store,
+                        provenanceThreadId: childThreadId,
+                        provenance: () => SubAgentProvenance.Build(parentThreadId, describeChild(childThreadId))
+                    ),
+        };
+        MultiTurnAgentLoop? apiLoop = null;
+        await using var pool = new MultiTurnAgentPool(
+            context => new MultiTurnAgentPool.AgentCreationResult(
+                apiLoop is null
+                    ? apiLoop = new MultiTurnAgentLoop(
+                        BlockingProvider(),
+                        new FunctionRegistry(),
+                        threadId: RootThread,
+                        subAgentOptions: subAgentOptions,
+                        collaboration: collaboration
+                            ? AgentCollaborationSetup.CreateRoot(
+                                new AgentCollaborationOptions { MaxDelegationDepth = 2 },
+                                collaborationId: "collab-1",
+                                agentId: "root-agent"
+                            )
+                            : null
+                    )
+                    : new FakeMultiTurnAgent(context.ThreadId)
+            ),
+            new Agents.FakeProviderRegistry(defaultProviderId: "test", available: ["test", "claude"]).ToReal(),
+            store,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+        var registry = new WorkflowRunRegistry(indexDirectory);
+        var cache = new SubAgentScanCoverageCache();
+        AgentHierarchyService Service() =>
+            new(pool, registry, store, NullLogger<AgentHierarchyService>.Instance, cache);
+
+        try
+        {
+            // The panel polls a reopened conversation before its first message loads an agent, so the
+            // childless answer is already cached by then. The CLI agent the switch hydrates must read
+            // the saved roster afresh rather than reuse that answer.
+            _ = await Service().BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+            var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+            _ = pool.GetOrCreateAgent(RootThread, mode, requestedProviderId: "test", requestResponseDumpFileName: null);
+            using var spawned = JsonDocument.Parse(
+                await apiLoop!.SubAgentManager!.SpawnAsync(
+                    "worker",
+                    "long task",
+                    name: "alpha",
+                    runInBackground: true,
+                    role: "worker",
+                    description: "Works on the long task."
+                )
+            );
+            var childId = spawned.RootElement.GetProperty("agent_id").GetString()!;
+            await childEntered.Task.WaitAsync(Wait.DefaultTimeout);
+            var (before, _, _) = await Service().BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+            before.Should().ContainSingle(r => r.AgentId == childId).Which.Status.Should().Be("running", "guard");
+
+            var switched = await pool.SwitchProviderAsync(RootThread, "claude", mode);
+            switched.Kind.Should().Be(MultiTurnAgentPool.AgentSwitchKind.Recreated, "guard: the CLI arm recreates");
+
+            SubAgentSummary? child = null;
+            await Wait.UntilAsync(
+                async () =>
+                {
+                    var (rows, _, _) = await Service()
+                        .BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+                    child = rows.SingleOrDefault(r => r.AgentId == childId);
+                    return child?.Status == "stopped";
+                },
+                "the roster lists the stopped child after the recreate",
+                observed: () => $"child row: {child?.Status ?? "<missing>"} / {child?.FailureCode ?? "<no code>"}"
+            );
+            child!.FailureCode.Should().Be(SubAgentFailureCodes.ParentRecreated);
         }
         finally
         {
@@ -1580,6 +1700,28 @@ public sealed class AgentHierarchyServiceTests
             .Returns(
                 (IEnumerable<IMessage> _, GenerateReplyOptions? _, CancellationToken ct) =>
                     Task.FromResult(BlockingStream(ct))
+            );
+        return provider.Object;
+    }
+
+    /// <summary>As <see cref="BlockingProvider()"/>, and signals <paramref name="entered"/> once a turn starts.</summary>
+    private static IStreamingAgent BlockingProvider(TaskCompletionSource entered)
+    {
+        var provider = new Mock<IStreamingAgent>();
+        _ = provider
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(
+                (IEnumerable<IMessage> _, GenerateReplyOptions? _, CancellationToken ct) =>
+                {
+                    _ = entered.TrySetResult();
+                    return Task.FromResult(BlockingStream(ct));
+                }
             );
         return provider.Object;
     }
