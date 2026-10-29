@@ -278,7 +278,14 @@ public sealed class MultiTurnAgentLoop
     // checkpoint hook that changed a tool can have ToolSchemaTokens re-estimated. Replaced with the stack.
     private Func<IEnumerable<FunctionContract>> _toolContracts = () => [];
 
-    internal bool HasPendingLoopWork => PendingInputCount > 0 || !_delayed.IsEmpty || _delayed.HasPendingCauses;
+    // Keep drained input across Stop/Run until the synchronous append sequence finishes. The
+    // single loop task owns the batch; observers only read the atomically published reference.
+    private QueuedInput[] _retainedInputs = [];
+
+    private int RetainedInputCount => Volatile.Read(ref _retainedInputs).Length;
+    private int PendingWorkInputCount => PendingInputCount + RetainedInputCount;
+
+    internal bool HasPendingLoopWork => PendingWorkInputCount > 0 || !_delayed.IsEmpty || _delayed.HasPendingCauses;
 
     // Guards _wakeScheduled so at most one wake sentinel is ever outstanding on the input channel.
     // The sentinel carries nothing — it exists only to break RunLoopAsync out of its wait so it can
@@ -1276,10 +1283,6 @@ public sealed class MultiTurnAgentLoop
     {
         Logger.LogDebug("MultiTurnAgentLoop run loop started");
 
-        // Ordinary input that arrived while a delayed result was still waiting for its child run.
-        // Loop-local, because only this thread ever touches it.
-        List<QueuedInput> heldInputs = [];
-
         try
         {
             while (!ct.IsCancellationRequested)
@@ -1312,10 +1315,9 @@ public sealed class MultiTurnAgentLoop
                 }
 
                 List<QueuedInput> realInputs;
-                if (heldInputs.Count > 0)
+                if (RetainedInputCount > 0)
                 {
-                    realInputs = heldInputs;
-                    heldInputs = [];
+                    realInputs = [.. Volatile.Read(ref _retainedInputs)];
                 }
                 else
                 {
@@ -1347,6 +1349,8 @@ public sealed class MultiTurnAgentLoop
                     {
                         continue;
                     }
+
+                    RetainInputs(realInputs);
                 }
 
                 // A cause committed in the window between the drain above and here. Hold this input
@@ -1354,7 +1358,6 @@ public sealed class MultiTurnAgentLoop
                 // child and the one after picks these back up.
                 if (_delayed.HasPendingCauses)
                 {
-                    heldInputs = realInputs;
                     continue;
                 }
 
@@ -1396,12 +1399,8 @@ public sealed class MultiTurnAgentLoop
                         // tool_result to the provider in ONE turn. Starting a run here instead would
                         // race that child, and holding the input would show the model the placeholder
                         // on its own first — which is precisely what makes a model re-ask.
-                        if (!await TryAppendParkedInputsAsync(realInputs, ct))
-                        {
-                            // The fold declined (it only does so for a spawn-suppressing input with no
-                            // parked run to pin the guarantee to). Hold rather than drop.
-                            heldInputs = realInputs;
-                        }
+                        // A declined fold stays retained for the next pass.
+                        _ = await TryAppendParkedInputsAsync(realInputs, ct);
 
                         continue;
                     }
@@ -1423,14 +1422,7 @@ public sealed class MultiTurnAgentLoop
                     Logger.LogInformation("Run {RunId} starts with sub-agent spawning suppressed", assignment.RunId);
                 }
 
-                foreach (var input in realInputs)
-                {
-                    foreach (var msg in input.Input.Messages)
-                    {
-                        AddToHistory(msg);
-                        await PublishIfNotifyAsync(msg, ct);
-                    }
-                }
+                await AppendRetainedInputsAsync(runId: null, folded: false, ct);
 
                 await ExecuteAssignedRunAsync(assignment, isExplicitFork, spawnSuppression, ct);
             }
@@ -1496,7 +1488,7 @@ public sealed class MultiTurnAgentLoop
                 assignment.GenerationId,
                 wasForked: isExplicitFork,
                 forkedToRunId: isExplicitFork ? assignment.RunId : null,
-                pendingMessageCount: PendingInputCount,
+                pendingMessageCount: PendingWorkInputCount,
                 ct: ct
             );
         }
@@ -1562,7 +1554,7 @@ public sealed class MultiTurnAgentLoop
                 assignment.GenerationId,
                 wasForked: isExplicitFork,
                 forkedToRunId: isExplicitFork ? assignment.RunId : null,
-                pendingMessageCount: PendingInputCount,
+                pendingMessageCount: PendingWorkInputCount,
                 isError: true,
                 errorMessage: errorMessage,
                 // A size refusal (the fit check's or the reactive path's) names its reason for machines too.
@@ -1855,8 +1847,9 @@ public sealed class MultiTurnAgentLoop
             await WaitWhileFrozenAsync(ct);
 
             // POLL: Check for new inputs before each turn (skip resume sentinels — they're
-            // not real injected messages, they only exist to wake the channel).
-            if (TryDrainInputs(out var newInputs) && newInputs.Count > 0)
+            // not real injected messages, they only exist to wake the channel). Input held for a
+            // delayed child must be consumed before a newer batch can be injected into that child.
+            if (RetainedInputCount == 0 && TryDrainInputs(out var newInputs) && newInputs.Count > 0)
             {
                 var realNewInputs = newInputs.Where(b => b.Resume == null).ToList();
                 if (realNewInputs.Count < newInputs.Count)
@@ -1875,6 +1868,7 @@ public sealed class MultiTurnAgentLoop
 
                 if (realNewInputs.Count > 0)
                 {
+                    RetainInputs(realNewInputs);
                     if (spawnSuppression.LatchIfRequested(realNewInputs))
                     {
                         Logger.LogInformation(
@@ -1899,14 +1893,7 @@ public sealed class MultiTurnAgentLoop
 
                     await RecordInjectedInputsAsync(runId, injectionAssignment.InputIds!, ct);
 
-                    foreach (var input in realNewInputs)
-                    {
-                        foreach (var msg in input.Input.Messages)
-                        {
-                            AddToHistory(msg);
-                            await PublishIfNotifyAsync(msg, ct);
-                        }
-                    }
+                    await AppendRetainedInputsAsync(runId: null, folded: false, ct);
 
                     Logger.LogInformation(
                         "Injected {Count} new inputs into run {RunId}, sent RunAssignment",
@@ -2330,6 +2317,43 @@ public sealed class MultiTurnAgentLoop
         }
     }
 
+    private void RetainInputs(List<QueuedInput> inputs)
+    {
+        // Overwriting a held batch would drop it, which is the loss this field exists to prevent.
+        if (RetainedInputCount > 0)
+        {
+            throw new InvalidOperationException("A taken input batch is still waiting to reach history");
+        }
+
+        Volatile.Write(ref _retainedInputs, [.. inputs]);
+    }
+
+    private async Task AppendRetainedInputsAsync(string? runId, bool folded, CancellationToken ct)
+    {
+        // AddToHistory and Notify publication both complete synchronously: there is no
+        // cancellation checkpoint inside this sequence. Clear ownership only after it finishes.
+        foreach (var input in Volatile.Read(ref _retainedInputs))
+        {
+            foreach (var message in input.Input.Messages)
+            {
+                AddToHistory(message, runId);
+                var publish = PublishIfNotifyAsync(message, ct);
+                // A real await here would let a stop land mid-batch, and the retained batch would
+                // then append its first messages twice on restart.
+                Debug.Assert(publish.IsCompleted, "Notify publication must complete synchronously");
+                await publish;
+            }
+            if (folded)
+            {
+                lock (_foldedReceiptLock)
+                {
+                    _foldedReceiptIds.Add(input.ReceiptId);
+                }
+            }
+        }
+        Volatile.Write(ref _retainedInputs, []);
+    }
+
     /// <summary>
     /// Folds inputs that arrived while the conversation is parked on an unresolved deferral into history
     /// (persisted under the deferring run so they survive a restart) and publishes any notification pills
@@ -2355,21 +2379,8 @@ public sealed class MultiTurnAgentLoop
             await PersistSuppressedRunMarkerAsync(parkRunId, ct);
         }
 
-        var count = 0;
-        foreach (var input in realInputs)
-        {
-            foreach (var msg in input.Input.Messages)
-            {
-                AddToHistory(msg, parkRunId);
-                await PublishIfNotifyAsync(msg, ct);
-                count++;
-            }
-
-            lock (_foldedReceiptLock)
-            {
-                _foldedReceiptIds.Add(input.ReceiptId);
-            }
-        }
+        var count = realInputs.Sum(input => input.Input.Messages.Count);
+        await AppendRetainedInputsAsync(parkRunId, folded: true, ct);
 
         Logger.LogInformation(
             "Parked on unresolved deferral(s); folded {Count} input message(s) into history for delivery on resume.",
