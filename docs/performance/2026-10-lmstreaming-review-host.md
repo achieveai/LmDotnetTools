@@ -18,6 +18,9 @@ was measured but left for later.
 | Usage records rewritten with thread metadata | ≤1% CPU; 1.9 MB largest row | Deferred: needs a schema migration | `ConversationUsageProjection` |
 | Busy `503` request lines logged at Error, each walked by caller info | ~1.5 of ~3.4 cores (27 Oct, under load) | Request lines skip caller info; a busy `503` logs at Information | `HostLogging`, `ConversationsController.HierarchyBusy` |
 | o200k re-counts the whole history several times a turn | ~0.7 cores (27 Oct, under load) | Count each text once per string instance | `CompactionHostSetup.CountOncePerString` |
+| SQLite per-connection settings applied once per factory | `synchronous=FULL` on 5 of 6 handles; 0.43 threads waiting on commit syncs (28 Oct) | Set on every open | `SqliteConnectionFactory` |
+| Reviews poll the host every second | ~64 requests a second at 20 reviews (28 Oct) | Poll every 5 s | `ReviewRunner.PollInterval` |
+| Question inbox reads every transcript | 0.75–0.9 cores with a tab open; 54 MB/s of disk reads (28 Oct) | Deferred: list open questions on the server | `useQuestionInbox.ts` |
 
 ## How it was measured
 
@@ -121,6 +124,44 @@ threads busy; `dotnet-counters` ran for 60 s.
 - **Deferred:** a busy check per tree instead of per host. Today's behaviour is pinned by
   `GetContext_ReturnsHierarchyBusy503DuringUnrelatedPublication_ThenRecovers`, so changing it is a design change.
 
+## Profile 4: 28 October, after the Profile 3 fixes
+
+The host ran at 1.68 cores with 13 reviews in flight and a browser tab open, and at 0.94 cores with 20 reviews
+and no tab. CPU and disk come from `/proc` over 60 s; thread states and `wchan` were sampled every 10 ms; a 60 s
+trace was taken in each case. Managed leaf frames over-count CPU by ~40% here, because the trace's busy threads
+include lock waits and GC suspension.
+
+- **The browser's question inbox reads every transcript: 0.75–0.9 cores while a tab is open.**
+  `useQuestionInbox` reads every root's messages, its sub-agent list and every direct child's messages: about
+  35,000 requests for 3,170 roots. It sweeps changed roots every 30 s and everything every 5 minutes.
+  `GetMessages` loads the whole transcript and re-serializes each message. The database (29.9 GB) no longer
+  fits in the page cache, so the host read 54 MB/s from disk (1.4 MB/s with the tab closed).
+  - Deferred to its own change: list open questions on the server, from `run_deferred_calls`.
+- **SQLite settings reached one connection of six.** `SqliteConnectionFactory` set `synchronous=NORMAL`,
+  `foreign_keys` and `cache_size` once per factory, but only `journal_mode` is stored in the file. Every other
+  pooled handle ran the bundled SQLite's defaults:
+  - `synchronous=FULL`, a disk sync on every commit in WAL mode;
+  - a 2 MB cache.
+
+  0.43 threads waited in `jbd2_log_wait_commit`. Fixed: the three are set on every open.
+- **Review polling: ~64 requests a second.** Each review's wait read status, run-state and the sub-agent tree
+  every second, and 80% of the tree reads were busy `503`s. The count is from the host's request log over 2
+  minutes (19:29–19:31, no browser open): run-state 22, status 19.5 and sub-agent tree 22 a second, across 32
+  polled threads.
+  - Reviews now poll every 5 s (`ReviewRunner.PollInterval`). A wait returns after two identical idle reads, so
+    a review is seen as finished 5–10 s after it ends instead of 1–2 s, or later while the hierarchy is busy or
+    still changing.
+  - Budgets counted in polls derive from it, so they keep their wall-clock length: a refused send is retried
+    every 30 s, and a wait gives up after ten minutes of busy tree reads.
+  - Merge and judge waits keep their 1 s poll.
+- **Deferred:**
+  - **Metadata parsed on every request.** Every request authorizes through `LoadMetadataAsync`. Root metadata is
+    ~84 KB at p50: 41% `context.observations`, 25% `todo.board`. It costs 0.29 threads, 0.16 of them in parsing.
+  - **Thread-pool spin, up to 0.33 threads.** The knob is `System.Threading.ThreadPool.UnfairSemaphoreSpinLimit`.
+  - **Smaller items:**
+    - the Anthropic parser re-parsing tool input on every delta (0.09);
+    - compaction rebuilding history (0.09) and estimating tokens (0.08).
+
 ## Measured and deferred
 
 - **Usage records inside thread metadata.** `ConversationUsageProjection.SaveAsync` merges and rewrites the
@@ -149,3 +190,5 @@ dotnet-counters collect -p <pid> --format json -o counters.json --duration 00:00
 
 Expect no `CallerInfo`, `Tiktoken.Encoder` construction, or `ReflectionEmitMemberAccessor` frames among the
 top stacks, and a heap with one o200k encoder.
+After the Profile 4 fixes, also expect few threads waiting in `jbd2_log_wait_commit`, and each review's
+status, run-state and sub-agent requests at about a fifth of the earlier rate.

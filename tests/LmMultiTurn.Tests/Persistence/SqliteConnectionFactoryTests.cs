@@ -278,6 +278,36 @@ public class SqliteConnectionFactoryTests : IDisposable
         connection.State.Should().Be(System.Data.ConnectionState.Open);
     }
 
+    [Fact]
+    public async Task EveryConnection_GetsTheFactorysSettings_NotOnlyTheFirst()
+    {
+        // Only journal_mode is stored in the database file. synchronous, foreign_keys and cache_size belong to the
+        // connection, and they used to be set on the first one only, so every later pooled handle ran on SQLite's
+        // defaults: synchronous=FULL (a disk sync on every commit) and a 2 MB cache. On the review host that was
+        // five handles of six (2026-10-28 profile). Two connections held at once are two native handles.
+        var databasePath = Path.Combine(_root, "settings.db");
+        await using var factory = new SqliteConnectionFactory(databasePath);
+        await using var first = await factory.GetConnectionAsync();
+        await using var second = await factory.GetConnectionAsync();
+
+        foreach (var connection in new[] { first, second })
+        {
+            (await PragmaAsync(connection, "journal_mode")).Should().Be("wal");
+            (await PragmaAsync(connection, "synchronous"))
+                .Should()
+                .Be("1", "NORMAL: in WAL mode a commit needs no sync");
+            (await PragmaAsync(connection, "foreign_keys")).Should().Be("1");
+            (await PragmaAsync(connection, "cache_size")).Should().Be("-10000");
+        }
+    }
+
+    private static async Task<string?> PragmaAsync(SqliteConnection connection, string name)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA {name};";
+        return Convert.ToString(await command.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
     /// <summary>
     /// Opens a database in its own directory through a factory and disposes both, which leaves the
     /// connection's native handle idle in the pool, holding the file.
