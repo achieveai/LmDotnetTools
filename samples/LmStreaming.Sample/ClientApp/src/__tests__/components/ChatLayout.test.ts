@@ -1528,6 +1528,93 @@ describe('ChatLayout handleSelectProvider start-gating', () => {
   });
 });
 
+// #792: a switch onto a CLI provider rebuilds the parent agent, which stops its running sub-agents. The
+// picker asks first, but only for that switch: every other one is served in place and keeps them.
+describe('ChatLayout warns before a provider switch stops sub-agents (#792)', () => {
+  let target = 'claude';
+  const child = (status: SubAgentSummary['status']): SubAgentSummary => ({
+    agentId: `agent-${status}`,
+    name: 'Child agent',
+    template: 'default',
+    task: 'Work for the parent',
+    status,
+    threadId: `subagent-${status}`,
+    lastActivityUtc: null,
+  });
+  const switchTo = async (provider: string) => {
+    target = provider;
+    const wrapper = mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: {
+            template: '<div><slot name="mode-control" /><slot name="context-control" /></div>',
+          },
+          ProviderSelector: {
+            props: ['disabled'],
+            setup: () => ({ pick: () => target }),
+            template:
+              '<button data-test="provider-select" :disabled="disabled" @click="$emit(\'select-provider\', pick())">Provider</button>',
+          },
+        },
+      },
+    });
+    await flushPromises();
+    await wrapper.get('[data-test="provider-select"]').trigger('click');
+    await flushPromises();
+  };
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.switchProvider.mockReset();
+    sharedMocks.disconnectWebSocket.mockReset();
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1', provider: 'test' })];
+  });
+
+  afterEach(() => {
+    sharedMocks.subAgentChildren = [];
+    vi.restoreAllMocks();
+  });
+
+  it('asks before an API-to-CLI switch with live sub-agents, and a cancel keeps the provider', async () => {
+    sharedMocks.subAgentChildren = [child('running'), child('queued'), child('completed')];
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    await switchTo('claude');
+
+    expect(confirm).toHaveBeenCalledWith('2 sub-agents are running and will be stopped. Switch anyway?');
+    expect(sharedMocks.disconnectWebSocket).not.toHaveBeenCalled();
+    expect(sharedMocks.switchProvider).not.toHaveBeenCalled();
+  });
+
+  it('switches once the user accepts the warning', async () => {
+    sharedMocks.subAgentChildren = [child('running')];
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    await switchTo('claude-mock');
+
+    expect(confirm).toHaveBeenCalledWith('1 sub-agent is running and will be stopped. Switch anyway?');
+    expect(sharedMocks.switchProvider).toHaveBeenCalledWith('thread-1', 'claude-mock');
+  });
+
+  it.each([
+    ['an API-to-API switch, which keeps the sub-agents', 'openai', [child('running')]],
+    ['a switch with no live sub-agent', 'claude', [child('completed'), child('stopped')]],
+  ])('does not ask for %s', async (_case, provider, children) => {
+    sharedMocks.subAgentChildren = children;
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    await switchTo(provider);
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(sharedMocks.switchProvider).toHaveBeenCalledWith('thread-1', provider);
+  });
+});
+
 // BUG 3: opening (or refreshing into) a conversation must restore its bound provider/mode/workspace
 // into the header selectors, instead of leaving the process defaults (Anthropic / General Assistant).
 // The selectors are process-local, so on a refresh they reset to defaults; handleSelectConversation

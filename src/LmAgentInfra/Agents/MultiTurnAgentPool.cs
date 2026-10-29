@@ -2787,6 +2787,14 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
         if (oldEntry != null)
         {
             _logger.LogInformation("Removing agent for thread {ThreadId}", threadId);
+
+            // #792: the process is not shutting down, the conversation's agent was replaced. Children the
+            // old loop was running are stopped by its disposal; this is the reason they will show.
+            if (oldEntry.Agent is MultiTurnAgentLoop { SubAgentManager: { } subAgentManager })
+            {
+                subAgentManager.ShutdownFailureCode = SubAgentFailureCodes.ParentRecreated;
+            }
+
             try
             {
                 await oldEntry.DisposeAsync();

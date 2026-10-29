@@ -1,3 +1,8 @@
+using System.Runtime.CompilerServices;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmStreaming.Sample.Tests.TestDoubles;
 
@@ -144,6 +149,76 @@ public class MultiTurnAgentPoolInPlaceSwitchTests
 
         // The context for the recreate still OFFERED the live agent — the factory simply declined it.
         contexts[1].Existing!.Agent.Should().BeSameAs(original);
+    }
+
+    /// <summary>
+    /// #792: a recreate disposes the old loop, and with it every sub-agent that loop was running. The
+    /// child must say WHY it stopped: its parent was replaced, not the host shut down. Read back from
+    /// the child's persisted metadata, through the sample's own provenance store, because that is what
+    /// the panel shows once the old loop and its live roster are gone.
+    /// </summary>
+    [Fact]
+    public async Task ARecreate_StopsTheOldLoopsRunningSubAgent_AsParentRecreated()
+    {
+        const string threadId = "thread-recreate-child";
+        var childEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        MultiTurnAgentLoop? parent = null;
+        var store = new InMemoryConversationStore();
+        var contexts = new List<MultiTurnAgentPool.AgentCreationContext>();
+        await using var pool = CreatePool(
+            store,
+            contexts,
+            ctx =>
+                parent is null
+                    ? parent = new MultiTurnAgentLoop(
+                        BlockingProvider(),
+                        new FunctionRegistry(),
+                        ctx.ThreadId,
+                        subAgentOptions: WorkerTemplate(store, childEntered)
+                    )
+                    : new FakeMultiTurnAgent(ctx.ThreadId)
+        );
+        _ = pool.GetOrCreateAgent(
+            threadId,
+            DefaultMode,
+            requestedProviderId: "test",
+            requestResponseDumpFileName: null
+        );
+        _ = await parent!.SubAgentManager!.SpawnAsync("worker", "long task", name: "alpha", runInBackground: true);
+        await childEntered.Task.WaitAsync(Wait.DefaultTimeout);
+
+        var result = await pool.SwitchProviderAsync(threadId, "openai", DefaultMode);
+
+        result.Kind.Should().Be(MultiTurnAgentPool.AgentSwitchKind.Recreated, "guard: only a recreate drops children");
+        SubAgentSummary? child = null;
+        await Wait.UntilAsync(
+            async () =>
+            {
+                child = await ReadChildAsync(store, threadId);
+                return child?.Status == "stopped";
+            },
+            "the old loop's disposal persists its running child as stopped",
+            observed: () => $"child status: {child?.Status ?? "<none>"}"
+        );
+        child!
+            .FailureCode.Should()
+            .Be(
+                SubAgentFailureCodes.ParentRecreated,
+                "the child stopped because its parent was replaced, not because the host shut down"
+            );
+    }
+
+    private static async Task<SubAgentSummary?> ReadChildAsync(IConversationStore store, string parentThreadId)
+    {
+        foreach (var metadata in await store.ListThreadsAsync(limit: 100))
+        {
+            if (SubAgentProvenance.TryProject(metadata, parentThreadId) is { } summary)
+            {
+                return summary;
+            }
+        }
+
+        return null;
     }
 
     [Fact]
@@ -303,6 +378,61 @@ public class MultiTurnAgentPoolInPlaceSwitchTests
             store,
             NullLogger<MultiTurnAgentPool>.Instance
         );
+
+    /// <summary>
+    /// A <c>worker</c> template whose child signals <paramref name="entered"/> and never answers. Child
+    /// transcripts go to <paramref name="store"/> with the sample's provenance stamp, as in the host.
+    /// </summary>
+    private static SubAgentOptions WorkerTemplate(IConversationStore store, TaskCompletionSource entered) =>
+        new()
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new SubAgentTemplate
+                {
+                    Name = "worker",
+                    SystemPrompt = "You are a worker.",
+                    AgentFactory = () => BlockingProvider(entered),
+                },
+            },
+            MaxConcurrentSubAgents = 2,
+            ProvenanceAwareConversationStoreFactory = (childThreadId, parentThreadId, describeChild) =>
+                // The same wiring as Program.cs: the manager also asks for the ROOT's store, with no parent.
+                parentThreadId is null
+                    ? new NonOwningConversationStore(store)
+                    : new NonOwningConversationStore(
+                        store,
+                        provenanceThreadId: childThreadId,
+                        provenance: () => SubAgentProvenance.Build(parentThreadId, describeChild(childThreadId))
+                    ),
+        };
+
+    private static IStreamingAgent BlockingProvider(TaskCompletionSource? entered = null)
+    {
+        var provider = new Mock<IStreamingAgent>();
+        _ = provider
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(
+                (IEnumerable<IMessage> _, GenerateReplyOptions? _, CancellationToken ct) =>
+                {
+                    _ = entered?.TrySetResult();
+                    return Task.FromResult(BlockingStream(ct));
+                }
+            );
+        return provider.Object;
+    }
+
+    private static async IAsyncEnumerable<IMessage> BlockingStream([EnumeratorCancellation] CancellationToken ct)
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+        yield break;
+    }
 
     /// <summary>An owned/reusable resource that counts how many times it was disposed.</summary>
     private sealed class TrackedResource : IAsyncDisposable

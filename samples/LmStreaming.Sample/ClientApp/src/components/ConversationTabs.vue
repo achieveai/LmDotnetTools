@@ -21,6 +21,8 @@ const needsAttention = (tab: ConversationTab) => pendingIds.value.has(tab.id) ||
 function statusLabel(tab: ConversationTab): string {
   if (pendingIds.value.has(tab.id)) return 'Awaiting answer';
   if (tab.status === 'error' && tab.failureCode) return `Error · ${tab.failureCode}`;
+  // #792: a provider switch that rebuilt the parent stopped this child; say so, not just "Stopped".
+  if (tab.status === 'stopped' && tab.failureCode === 'parent_recreated') return 'Stopped: parent provider changed';
   if (!tab.status) return tab.kind === 'workflow' ? 'Workflow' : 'Agent';
   return tab.status.charAt(0).toUpperCase() + tab.status.slice(1);
 }

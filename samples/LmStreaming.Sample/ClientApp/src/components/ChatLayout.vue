@@ -906,6 +906,20 @@ async function handleSelectProvider(providerId: string): Promise<void> {
     conversations.value.some((c) => c.threadId === currentThreadId.value);
 
   if (started) {
+    // #792: moving onto a CLI provider rebuilds the parent agent, which stops every sub-agent it is
+    // running. Any other switch is served in place and keeps them, so only this one asks first.
+    const fromProvider =
+      conversations.value.find((c) => c.threadId === currentThreadId.value)?.provider ?? selectedProviderId.value;
+    const live = subAgentChildren.value.filter((c) => c.status === 'running' || c.status === 'queued').length;
+    if (
+      live > 0 &&
+      isCliBackedProvider(providerId) &&
+      !isCliBackedProvider(fromProvider) &&
+      !window.confirm(`${live} sub-agent${live === 1 ? ' is' : 's are'} running and will be stopped. Switch anyway?`)
+    ) {
+      return;
+    }
+
     isSwitchingProvider.value = true;
     try {
       await disconnectWebSocket();
