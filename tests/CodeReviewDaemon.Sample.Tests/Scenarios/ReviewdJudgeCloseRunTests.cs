@@ -349,13 +349,17 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
     [InlineData("redacted", false)]
     public async Task A_close_that_redacted_prints_the_paths_and_counts_not_its_text(string commit, bool printsText)
     {
-        Save((4, Judged(Store, ReviewDir, 4)));
+        const string Body = "Rotate password=FakeLessonPass99 often.";
+        var lesson = ReviewdJudgeCloseTests.Lesson("nova-5776213-k", "write-now", "KnowledgeBase/system/k.md", Body);
+        Save((4, Judged(Store, ReviewDir, 4, knowledge: new JsonArray(lesson))));
         var phases = new Phases(Store);
         phases.Commits.Enqueue(commit);
 
         var (exit, output, _) = await Close(phases, "--judgment", "4");
 
         exit.Should().Be(0);
+        output.Contains($"body: nova-5776213-k: {Body}", StringComparison.Ordinal).Should().Be(printsText);
+        output.Contains("FakeLessonPass99", StringComparison.Ordinal).Should().Be(printsText);
         var heading = phases.Closing!.Split('\n').First(l => l.StartsWith('#'));
         output.Contains(heading, StringComparison.Ordinal).Should().Be(printsText);
         output
@@ -640,7 +644,8 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
         int n,
         JsonArray? rounds = null,
         string pr = Pr,
-        Action<JsonObject>? forge = null
+        Action<JsonObject>? forge = null,
+        JsonArray? knowledge = null
     )
     {
         var dir = $"{reviewDir}/judgment-{n}";
@@ -656,7 +661,7 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
             ["stage"] = "final",
             ["verdict"] = "v",
             ["inputs"] = new JsonObject { ["packetSha256"] = Sha(packetText) },
-            ["knowledge"] = new JsonArray(),
+            ["knowledge"] = knowledge ?? [],
             ["improvements"] = new JsonArray(
                 new JsonObject
                 {

@@ -860,15 +860,20 @@ def added_text(new, old):
     return "\n".join(out)
 
 
-# A credential close files is replaced by **REDACTED**. It keeps the key, scheme or "sig=" before the secret
-# (SECRET_KEEP), and the backslashes that end a JSON-escaped value. A bare marker (AccountKey=, SharedAccessSignature)
-# goes with the value after it up to a delimiter, and a JWT with its signature (SECRET_TAIL).
+# A credential close files is replaced by **REDACTED**. It keeps the key, scheme or "sig=" before the secret, with the
+# quote that opens a quoted value (SECRET_KEEP). A bare marker (AccountKey=, SharedAccessSignature) goes with the value
+# after it, spaced or quoted, a JWT with its signature, and a sig= value runs to the next & (SECRET_TAIL; group 1: the
+# quote that opens the value). A quoted value is redacted up to its closing quote, escaped as it opened; with none on
+# the line, up to a delimiter, keeping the backslashes that end it.
 REDACTED = "**REDACTED**"
-SECRET_KEEP = re.compile(r"(?i)bearer\s+|authorization\\*[\"']?\s*[:=]\s*\\*[\"']?\s*(?:(?:basic|bearer|token)\s+)?"
-                         r"|(?:client_?secret|password)\\*[\"']?\s*[:=]\s*\\*[\"']?|pwd\s*=\s*\\*[\"']?"
-                         r"|--client-secret(?:\s+|=)\s*\\*[\"']?|sig=")
-SECRET_TAIL = {"accountkey=": re.compile(r"[^\s\"'<>;,\\]*"), "sharedaccesssignature": re.compile(r"[=:\s]?[^\s\"'<>;,\\]*"),
-               "eyj": re.compile(r"(?:\.[A-Za-z0-9_-]*)?")}
+OPEN = r"(?:\\*[\"'])?"
+SECRET_KEEP = re.compile(rf"(?i)bearer\s+|authorization{OPEN}\s*[:=]\s*{OPEN}\s*(?:(?:basic|bearer|token)\s+)?"
+                         rf"|(?:client_?secret|password){OPEN}\s*[:=]\s*{OPEN}|pwd\s*=\s*{OPEN}"
+                         rf"|--client-secret(?:\s+|=)\s*{OPEN}|sig=")
+SECRET_TAIL = {"accountkey=": re.compile(r"\s*(?:(\\*[\"'])(?=[A-Za-z0-9+/%]))?[^\s\"'<>;,\\]*"),
+               "sharedaccesssignature": re.compile(r"\s*[=:]?\s*(?:(\\*[\"'])(?=[A-Za-z0-9+/%]))?[^\s\"'<>;,\\]*"),
+               "sig=": re.compile(r"()[^\s\"'<>;,&\\]*"), "eyj": re.compile(r"()(?:\.[A-Za-z0-9_-]*)?")}
+OPENING_QUOTE = re.compile(r"\\*[\"']$")
 
 
 def redact_secrets(new, old):
@@ -887,14 +892,53 @@ def redact_secrets(new, old):
                 continue
             if "private key" in m.group(0).lower():
                 return None, 0
-            tail = next((t for k, t in SECRET_TAIL.items() if m.group(0).lower().startswith(k)), None)
-            end = tail.match(line, m.end()).end() if tail else m.end()
-            keep = "" if tail or not (k := SECRET_KEEP.match(m.group(0))) else k.group(0)
+            keep = k.group(0) if (k := SECRET_KEEP.match(m.group(0))) else ""
+            opening, inside, end = OPENING_QUOTE.search(keep), m.start() + len(keep), m.end()
+            opening = opening and opening.group(0)
+            if tail := next((t for key, t in SECRET_TAIL.items() if m.group(0).lower().startswith(key)), None):
+                t = tail.match(line, m.end())
+                if t.group(1):
+                    opening, inside = t.group(1), t.end(1)
+                end = t.end()
+            # The closing quote is the next one escaped exactly as the opening one. A quote escaped more is inside the
+            # value; one escaped less ends the string that holds this one, so the value has no closing quote here.
+            value, i = line[inside:end], inside - 1
+            while opening and (i := line.find(opening[-1], i + 1)) >= 0:
+                j = i
+                while j > inside and line[j - 1] == "\\":
+                    j -= 1
+                if i - j < len(opening) - 1:
+                    break
+                if i - j == len(opening) - 1:
+                    end = max(j, end - (len(value) - len(value.rstrip("\\"))))
+                    break
             value = line[m.start() + len(keep):end]
             parts += [line[at:m.start()], keep, REDACTED, value[len(value.rstrip("\\")):]]
             at, count = end, count + 1
         out.append("".join(parts) + segment[at:])
     return "".join(out), count
+
+
+def parses(text):
+    try:
+        json.loads(text)
+        return True
+    except ValueError:
+        return False
+
+
+def redact_file(path, new, old):
+    """(text, count, None): the text close files at path, each credential it adds replaced by REDACTED; or (None, 0,
+    reason) when close must refuse it."""
+    text, count = redact_secrets(new, old)
+    if text is None:
+        return None, 0, f"{path} holds a private key"
+    # A match that spans lines is one redact_secrets cannot see.
+    if SECRET_PATTERN.search(added_text(text, old)):
+        return None, 0, f"{path} matches a credential pattern across lines"
+    if path.endswith(".json") and parses(new) and not parses(text):
+        return None, 0, f"{path} would not stay valid JSON once redacted"
+    return text, count, None
 
 
 def close_prepare():
@@ -1007,20 +1051,17 @@ def close_commit():
         # path: main's existing text is not this close's to change. A credential in it is filed as REDACTED
         # (redact_secrets) in the commit only; the source files stay as they are (a preview changes nothing). The JSON
         # names the path and a count, never the match.
+        # Each path once, from the source it is committed from: a written file replaces a round file at its path.
         overlaid = [p for p in git([], "diff-index", "--cached", "-z", "--name-only", main, env=index).stdout.split("\0") if p]
         redacted, cleaned = [], {}
-        for path, source in [(p, None) for p in overlaid] + writes:
+        for path, source in {**{p: None for p in overlaid}, **dict(writes)}.items():
             new = source.read_bytes().decode("utf-8", "surrogateescape") if source else blob_text(f":{path}", index)
             old = blob_text(f"{main}:{path}")
             if not SECRET_PATTERN.search(added_text(new, old)):
                 continue
-            text, count = redact_secrets(new, old)
-            if text is None:
-                return print(json.dumps({"status": "refused", "reason": f"{path} holds a private key; nothing was committed"}))
-            # A match that spans lines is one redact_secrets cannot see: the close is refused as before.
-            if SECRET_PATTERN.search(added_text(text, old)):
-                return print(json.dumps({"status": "refused",
-                                         "reason": f"{path} matches a credential pattern across lines; nothing was committed"}))
+            text, count, refusal = redact_file(path, new, old)
+            if refusal:
+                return print(json.dumps({"status": "refused", "reason": f"{refusal}; nothing was committed"}))
             cleaned[path] = subprocess.run(["git", "hash-object", "-w", "--no-filters", "--stdin"], capture_output=True, check=True,
                                            input=text.encode("utf-8", "surrogateescape")).stdout.decode().strip()
             if not source:
