@@ -333,7 +333,7 @@ internal static class JudgeClose
                     Console.WriteLine(
                         $"already closed: main {Text(prepared, "main")[..9]} has judgment {n}'s CLOSING.md and every round."
                     );
-                    return (PrunedExit(await PruneAsync(Text(prepared, "main")), closed: true), "", "");
+                    return (PrunedExit(await PruneAsync(Text(prepared, "main"))), "", "");
                 }
                 if (Text(prepared, "status") != "ready")
                     throw new InvalidOperationException($"close-prepare returned {prepared["status"]}.");
@@ -425,11 +425,19 @@ internal static class JudgeClose
                     return (null, main, Text(result, "detail"));
                 if (Text(result, "status") is not ("planned" or "closed"))
                     return (Fail($"close-commit returned {result["status"]}."), main, "");
-                foreach (var line in plan.FirstLines)
-                    Console.WriteLine($"body: {line}");
+                // A close that filed a credential as REDACTED prints none of the text it composed: that text holds it.
+                var redacted = result["redacted"]?.AsArray().OfType<JsonObject>().ToList() ?? [];
+                foreach (var file in redacted)
+                    Console.WriteLine(
+                        $"redacted {Text(file, "count")} credential-like value(s) in {Text(file, "path")}"
+                    );
+                if (redacted.Count == 0)
+                    foreach (var line in plan.FirstLines)
+                        Console.WriteLine($"body: {line}");
                 foreach (var file in result["files"]?.AsArray() ?? [])
                     Console.WriteLine($"  +{Text(file!, "added")} -{Text(file!, "removed")}  {Text(file!, "path")}");
-                Console.WriteLine(closing);
+                if (redacted.Count == 0)
+                    Console.WriteLine(closing);
                 var pruned = await PruneAsync(Text(result, "commit"));
                 Console.WriteLine(
                     Merge(
@@ -437,14 +445,17 @@ internal static class JudgeClose
                             {
                                 ["judgment"] = n,
                                 ["main"] = main,
-                                ["notFiled"] = new JsonArray([.. plan.NotFiled.Select(s => (JsonNode)s)]),
+                                ["notFiled"] =
+                                    redacted.Count == 0
+                                        ? new JsonArray([.. plan.NotFiled.Select(s => (JsonNode)s)])
+                                        : plan.NotFiled.Count,
                                 ["branches"] = branches.DeepClone(),
                             },
                             result
                         )
                         .ToJsonString()
                 );
-                return (PrunedExit(pruned, closed: execute), main, "");
+                return (PrunedExit(pruned), main, "");
             }
             finally
             {
@@ -460,14 +471,14 @@ internal static class JudgeClose
         }
 
         // Exit 7: the close landed (or had landed) with a review branch left. A preview deletes nothing, so it exits 1
-        // only when it could not check the branches.
-        int PrunedExit(bool? pruned, bool closed) =>
+        // only when it could not check the branches, already closed or not.
+        int PrunedExit(bool? pruned) =>
             pruned switch
             {
                 true => 0,
-                null when !execute => 1,
-                _ when closed => BranchesLeftExitCode,
-                _ => 0,
+                _ when execute => BranchesLeftExitCode,
+                null => 1,
+                false => 0,
             };
 
         // Deletes the rounds' review branches once main (here: the close commit, or main when already closed) holds

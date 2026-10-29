@@ -812,6 +812,32 @@ public sealed class ReviewdJudgeCloseTests
         matched.Skip(secrets.Length).Should().AllBeEquivalentTo(false, "these are not secrets");
     }
 
+    // Every credential shape the README lists.
+    private static readonly string[] ListedSecretShapes =
+    [
+        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123",
+        "Authorization: Basic QUJDREVGR0hJSktMTU5PUFFSU1RVVldY",
+        "Authorization: token 0123456789abcdef0123456789abcdef01234567",
+        "\"Authorization\": \"Basic dXNlcjpwYXQxMjM0NTY3ODkwYWJjZGVm\"",
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+        "DefaultEndpointsProtocol=https;AccountKey=abc",
+        "SharedAccessSignature=sv=2022",
+        "sig=abcdefghijklmnopqrstuvwxyz",
+        "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+        "-----BEGIN RSA PRIVATE KEY-----",
+        "the app secret Xyz7Q~abcdefghijklmnopqrstuvwxyz012345 leaked",
+        "password = \"Sup3rS3cret99\"",
+        "\"password\": \"Sup3rS3cret99\"",
+        "password='Sup3rS3cret99'",
+        "client_secret = \"Abc123def456ghi\"",
+        "\"clientSecret\": \"s3cr3tValue99\"",
+        "Server=db;Uid=svc;Pwd=Hunter2Hunter2;",
+        "--client-secret Abc123def456ghi789",
+        "--client-secret=Abc123def456ghi789",
+        "Authorization: Basic QWxhZGRpbjpvcGVuIHNlc2FtZTEyMzQ=",
+        "Authorization: abc123def456ghi789",
+    ];
+
     // Both scans read JSON text (json.dumps of ADO data at judge-inputs, the judge's judgment.json at close), where a
     // quote comes escaped. Each shape the README lists must match as written, JSON-escaped once and twice.
     [SkippableFact]
@@ -819,30 +845,6 @@ public sealed class ReviewdJudgeCloseTests
     {
         var python = await ReviewdSummaryReplyTests.FindPythonAsync();
         Skip.If(python is null, "no python3 on PATH");
-        string[] secrets =
-        [
-            "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123",
-            "Authorization: Basic QUJDREVGR0hJSktMTU5PUFFSU1RVVldY",
-            "Authorization: token 0123456789abcdef0123456789abcdef01234567",
-            "\"Authorization\": \"Basic dXNlcjpwYXQxMjM0NTY3ODkwYWJjZGVm\"",
-            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0",
-            "DefaultEndpointsProtocol=https;AccountKey=abc",
-            "SharedAccessSignature=sv=2022",
-            "sig=abcdefghijklmnopqrstuvwxyz",
-            "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
-            "-----BEGIN RSA PRIVATE KEY-----",
-            "the app secret Xyz7Q~abcdefghijklmnopqrstuvwxyz012345 leaked",
-            "password = \"Sup3rS3cret99\"",
-            "\"password\": \"Sup3rS3cret99\"",
-            "password='Sup3rS3cret99'",
-            "client_secret = \"Abc123def456ghi\"",
-            "\"clientSecret\": \"s3cr3tValue99\"",
-            "Server=db;Uid=svc;Pwd=Hunter2Hunter2;",
-            "--client-secret Abc123def456ghi789",
-            "--client-secret=Abc123def456ghi789",
-            "Authorization: Basic QWxhZGRpbjpvcGVuIHNlc2FtZTEyMzQ=",
-            "Authorization: abc123def456ghi789",
-        ];
         string[] clean =
         [
             "client_secret=<your-secret>",
@@ -861,17 +863,63 @@ public sealed class ReviewdJudgeCloseTests
             "--client-secret \"$CLIENT_SECRET\"",
             "the password must be rotated every 90 days",
         ];
-        static string Escaped(string text) => text.Replace("\\", "\\\\").Replace("\"", "\\\"");
-        static string[] Forms(string[] texts) =>
-            [.. texts.SelectMany(t => new[] { t, Escaped(t), Escaped(Escaped(t)) })];
+        var matched = await SecretMatchesAsync(python!, [.. Forms(ListedSecretShapes), .. Forms(clean)]);
 
-        var matched = await SecretMatchesAsync(python!, [.. Forms(secrets), .. Forms(clean)]);
-
-        var samples = Forms(secrets).Concat(Forms(clean)).ToArray();
+        var samples = Forms(ListedSecretShapes).Concat(Forms(clean)).ToArray();
         samples
-            .Where((_, i) => matched[i] != (i < secrets.Length * 3))
+            .Where((_, i) => matched[i] != (i < ListedSecretShapes.Length * 3))
             .Should()
             .BeEmpty("every listed secret shape matches in each form, and no placeholder does");
+    }
+
+    // Close files each listed shape (but a private key, which it refuses), in each form, with the value replaced and
+    // the key, scheme and JSON escapes kept: one replacement each, and no match left. A line main already has stays.
+    [SkippableFact]
+    public async Task Redact_secrets_replaces_every_listed_shape_plain_and_json_escaped()
+    {
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no python3 on PATH");
+        string[] shapes = Forms([
+            .. ListedSecretShapes.Where(s => !s.Contains("PRIVATE KEY", StringComparison.Ordinal)),
+        ]);
+
+        var redacted = await RedactAsync(python!, shapes);
+
+        redacted.Select(r => r.Count).Should().AllBeEquivalentTo(1);
+        (await SecretMatchesAsync(python!, [.. redacted.Select(r => r.Text)]))
+            .Should()
+            .AllBeEquivalentTo(false, "no listed shape is left");
+        (
+            await RedactAsync(
+                python!,
+                [
+                    "Authorization: Basic QUJDREVGR0hJSktMTU5PUFFSU1RVVldY",
+                    Escaped("\"password\": \"Sup3rS3cret99\""),
+                    "Server=db;Uid=svc;Pwd=Hunter2Hunter2;",
+                    "DefaultEndpointsProtocol=https;AccountKey=abc==;EndpointSuffix=core",
+                    "x eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnLW5hdHVyZQ y",
+                ]
+            )
+        )
+            .Select(r => r.Text)
+            .Should()
+            .Equal(
+                "Authorization: Basic **REDACTED**",
+                Escaped("\"password\": \"**REDACTED**\""),
+                "Server=db;Uid=svc;Pwd=**REDACTED**;",
+                "DefaultEndpointsProtocol=https;**REDACTED**;EndpointSuffix=core",
+                "x **REDACTED** y"
+            );
+        (
+            await ReviewdJudgeTests.SandboxAsync(
+                python!,
+                "sandbox.redact_secrets(data[0], data[1])",
+                new JsonArray("password=Sup3rS3cret99\nAccountKey=q\n", "password=Sup3rS3cret99\n")
+            )
+        )
+            .ToJsonString()
+            .Should()
+            .Be("""["password=Sup3rS3cret99\n**REDACTED**\n",1]""", "main's line is not this close's to change");
     }
 
     [SkippableFact]
@@ -956,6 +1004,26 @@ public sealed class ReviewdJudgeCloseTests
         exitCodes.Should().Contain("  6    main kept moving").And.Contain("  130  Ctrl+C");
         help.Should().Contain("only when exactly one completed final judgment exists");
     }
+
+    private static string Escaped(string text) => text.Replace("\\", "\\\\").Replace("\"", "\\\"");
+
+    // Each text as written, JSON-escaped once and twice.
+    private static string[] Forms(string[] texts) =>
+        [.. texts.SelectMany(t => new[] { t, Escaped(t), Escaped(Escaped(t)) })];
+
+    // Runs the embedded JudgeSandbox.py's redact_secrets over each sample as one added line.
+    private static async Task<(string Text, int Count)[]> RedactAsync(string python, string[] samples) =>
+        [
+            .. (
+                await ReviewdJudgeTests.SandboxAsync(
+                    python,
+                    "[sandbox.redact_secrets(s, '') for s in data]",
+                    new JsonArray([.. samples.Select(s => (JsonNode)s)])
+                )
+            )
+                .AsArray()
+                .Select(r => (r![0]!.GetValue<string>(), r[1]!.GetValue<int>())),
+        ];
 
     // Runs the embedded JudgeSandbox.py's SECRET_PATTERN over each sample.
     private static async Task<bool[]> SecretMatchesAsync(string python, string[] samples) =>
@@ -1448,8 +1516,10 @@ public sealed class ReviewdJudgeCloseTests
         universe.AssertClean();
     }
 
+    // A credential in text close adds is filed as **REDACTED**: main never gets the value, and the close goes on. The
+    // JSON names the path and a count, never the value.
     [SkippableFact]
-    public async Task Close_commit_refuses_a_file_that_looks_like_a_secret_C11()
+    public async Task Close_commit_files_a_credential_it_adds_as_REDACTED_C11()
     {
         Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
@@ -1459,16 +1529,18 @@ public sealed class ReviewdJudgeCloseTests
         var args = universe.CommitArgs(prepared, push: true);
         File.AppendAllText(
             Path.Combine(universe.Store, prepared["scratch"]!.GetValue<string>(), "CLOSING.md"),
-            "AccountKey=abc\n"
+            "Endpoint=https;AccountKey=abc;x\n"
         );
-        var refused = await phase("close-commit", args, default);
+        var closed = await phase("close-commit", args, default);
 
-        refused["reason"]!
-            .GetValue<string>()
+        closed["status"]!.GetValue<string>().Should().Be("closed");
+        closed["redacted"]!.ToJsonString().Should().Be("""[{"path":"PRs/x/CLOSING.md","count":1}]""");
+        closed.ToJsonString().Should().NotContain("AccountKey");
+        universe
+            .Git(universe.Origin, "show", "main:PRs/x/CLOSING.md")
             .Should()
-            .Be("PRs/x/CLOSING.md matches a credential pattern; nothing was committed");
-        universe.Git(universe.Origin, "rev-parse", "main").Should().Be(universe.Main);
-        universe.AssertClean();
+            .EndWith("Endpoint=https;**REDACTED**;x");
+        universe.AssertClean(pushed: closed["commit"]!.GetValue<string>());
     }
 
     [SkippableFact]
@@ -1491,28 +1563,53 @@ public sealed class ReviewdJudgeCloseTests
         universe.AssertClean();
     }
 
+    // An overlaid round file is text close adds too. Its mode stays, and only the lines main lacks change.
     [SkippableFact]
-    public async Task Close_commit_refuses_a_secret_in_a_round_file_it_overlays_C11()
+    public async Task Close_commit_redacts_a_secret_in_a_round_file_it_overlays_C11()
     {
         Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
-        universe.AddToRound2("PRs/x/leak.md", "sig=abcdefghijklmnopqrstuvwxyz");
+        universe.AddToRound2("PRs/x/leak.sh", "#!/bin/sh\ncurl \"$U?sig=abcdefghijklmnopqrstuvwxyz&se=1\"\n", "100755");
+        var phase = JudgeClose.Local(universe.Store);
+
+        var prepared = await phase("close-prepare", universe.PrepareArgs(3), default);
+        var closed = await phase("close-commit", universe.CommitArgs(prepared, push: true), default);
+
+        closed["status"]!.GetValue<string>().Should().Be("closed", "an overlaid round file is text close adds");
+        closed["redacted"]!.ToJsonString().Should().Be("""[{"path":"PRs/x/leak.sh","count":1}]""");
+        universe
+            .Git(universe.Origin, "show", "main:PRs/x/leak.sh")
+            .Should()
+            .Be("#!/bin/sh\ncurl \"$U?sig=**REDACTED**&se=1\"");
+        universe.Git(universe.Origin, "ls-tree", "main", "PRs/x/leak.sh").Should().StartWith("100755 blob ");
+        universe.AssertClean(pushed: closed["commit"]!.GetValue<string>());
+    }
+
+    // A private key is not redacted: close never files one, so the whole close is refused, and so is a match that
+    // spans two lines, which no single line holds.
+    [SkippableTheory]
+    [InlineData("-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n", "holds a private key")]
+    [InlineData("Authorization: Bearer\nabcdefghijklmnopqrstuvwxyz0123\n", "matches a credential pattern across lines")]
+    public async Task Close_commit_refuses_a_credential_it_cannot_redact(string text, string why)
+    {
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        using var universe = Universe.Create();
+        universe.AddToRound2("PRs/x/leak.md", text);
         var phase = JudgeClose.Local(universe.Store);
 
         var prepared = await phase("close-prepare", universe.PrepareArgs(3), default);
         var refused = await phase("close-commit", universe.CommitArgs(prepared, push: true), default);
 
-        refused["status"]!.GetValue<string>().Should().Be("refused", "an overlaid round file is text close adds");
-        refused["reason"]!
-            .GetValue<string>()
-            .Should()
-            .Be("PRs/x/leak.md matches a credential pattern; nothing was committed");
+        refused["status"]!.GetValue<string>().Should().Be("refused");
+        refused["reason"]!.GetValue<string>().Should().Be($"PRs/x/leak.md {why}; nothing was committed");
         universe.Git(universe.Origin, "rev-parse", "main").Should().Be(universe.Main);
         universe.AssertClean();
     }
 
+    // The judge's own outputs are JSON, where a quoted value comes escaped. The redacted copy keeps the escapes, so
+    // the filed judgment.json still parses; the judge's local file is not changed.
     [SkippableFact]
-    public async Task Close_commit_refuses_a_judgment_whose_only_secret_is_an_escaped_quoted_password()
+    public async Task Close_commit_redacts_an_escaped_quoted_password_in_a_judgment_and_keeps_its_JSON_valid()
     {
         Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
@@ -1528,14 +1625,17 @@ public sealed class ReviewdJudgeCloseTests
         var prepared = await phase("close-prepare", universe.PrepareArgs(3), default);
         var args = universe.CommitArgs(prepared, push: true);
         args["files"]!.AsArray().Add(new JsonObject { ["path"] = Judgment, ["source"] = Judgment });
-        var refused = await phase("close-commit", args, default);
+        var closed = await phase("close-commit", args, default);
 
-        refused["reason"]!
+        closed["redacted"]!.ToJsonString().Should().Be($$"""[{"path":"{{Judgment}}","count":1}]""");
+        var filed = universe.Git(universe.Origin, "show", $"main:{Judgment}");
+        filed.Should().Be("""{"issues": [{"evidence": "password = \"**REDACTED**\""}]}""");
+        JsonNode.Parse(filed)!["issues"]![0]!["evidence"]!
             .GetValue<string>()
             .Should()
-            .Be($"{Judgment} matches a credential pattern; nothing was committed");
-        universe.Git(universe.Origin, "rev-parse", "main").Should().Be(universe.Main);
-        universe.AssertClean();
+            .Be("password = \"**REDACTED**\"");
+        File.ReadAllText(Path.Combine(universe.Store, Judgment)).Should().Contain("Sup3rS3cret99");
+        universe.AssertClean(pushed: closed["commit"]!.GetValue<string>());
     }
 
     // Close copies every file the judge wrote besides its inputs. Main keeps only what a review archive keeps.

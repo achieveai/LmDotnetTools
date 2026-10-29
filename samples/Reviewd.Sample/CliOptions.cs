@@ -446,17 +446,18 @@ internal sealed class CliOptions
         index, local main and working tree never move. Preview (no --execute) builds the commit and prints it;
         --execute also pushes, never forced. It runs on the host (git through a local python3 in --store); the host's
         git credential helper does the push. It refuses a judgment whose files or inputs/packet.json changed since the
-        judge. It first removes its own private refs and scratch left by a close that ended over an hour ago, and
-        prints what it removed. When main moves between the fetch and the push, it fetches the new main and composes
-        again, 3 tries in all. Once main holds every round (closed now or before), it deletes each round's review branch
-        on the remote, with a lease on the round's tip: a branch that moved keeps its new work. A preview only lists
-        the branches it would delete.
+        judge. A credential-like value in the text it adds is filed as **REDACTED** (it prints the path and a count,
+        not the text); a private key is refused. It first removes its own private refs and scratch left by a close
+        that ended over an hour ago, and prints what it removed. When main moves between the fetch and the push, it
+        fetches the new main and composes again, 3 tries in all. Once main holds every round (closed now or before), it
+        deletes each round's review branch on the remote, with a lease on the round's tip: a branch that moved keeps its
+        new work. A preview only lists the branches it would delete.
 
         judge close exit codes:
           0    preview done, closed, or already closed (main has this judgment's CLOSING.md and every round), and no
                review branch is left
           1    failed or refused (no final judgment or several, changed files or packet, PR dir changed on main,
-               round tip moved, secret, ...)
+               round tip moved, private key, ...)
           2    usage error
           6    main kept moving: it moved on all 3 tries (nothing pushed; run close again; one JSON line on stdout)
           7    closed, but a review branch is left: its delete failed, it moved, or main does not hold it (stderr says

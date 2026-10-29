@@ -838,9 +838,10 @@ def tree_id(rev, path):
 
 
 def blob_text(name, env=None):
-    """The blob <name> (rev:path, or :path in env's index) as text, or "" when there is none."""
+    """The blob <name> (rev:path, or :path in env's index) as text (bytes that are not UTF-8 kept as surrogate escapes,
+    so a redacted copy encodes back to the same bytes), or "" when there is none."""
     p = subprocess.run(["git", "cat-file", "blob", name], capture_output=True, env={**os.environ, **(env or {})})
-    return p.stdout.decode("utf-8", "replace") if p.returncode == 0 else ""
+    return p.stdout.decode("utf-8", "surrogateescape") if p.returncode == 0 else ""
 
 
 def blob_head(blob):
@@ -857,6 +858,43 @@ def added_text(new, old):
         else:
             out.append(line)
     return "\n".join(out)
+
+
+# A credential close files is replaced by **REDACTED**. It keeps the key, scheme or "sig=" before the secret
+# (SECRET_KEEP), and the backslashes that end a JSON-escaped value. A bare marker (AccountKey=, SharedAccessSignature)
+# goes with the value after it up to a delimiter, and a JWT with its signature (SECRET_TAIL).
+REDACTED = "**REDACTED**"
+SECRET_KEEP = re.compile(r"(?i)bearer\s+|authorization\\*[\"']?\s*[:=]\s*\\*[\"']?\s*(?:(?:basic|bearer|token)\s+)?"
+                         r"|(?:client_?secret|password)\\*[\"']?\s*[:=]\s*\\*[\"']?|pwd\s*=\s*\\*[\"']?"
+                         r"|--client-secret(?:\s+|=)\s*\\*[\"']?|sig=")
+SECRET_TAIL = {"accountkey=": re.compile(r"[^\s\"'<>;,\\]*"), "sharedaccesssignature": re.compile(r"[=:\s]?[^\s\"'<>;,\\]*"),
+               "eyj": re.compile(r"(?:\.[A-Za-z0-9_-]*)?")}
+
+
+def redact_secrets(new, old):
+    """new with each credential match in the lines old lacks (as added_text counts them) replaced by REDACTED, and how
+    many it replaced; (None, 0) when one is a private key, which close never files."""
+    left, out, count = collections.Counter(old.splitlines()), [], 0
+    for segment in new.splitlines(keepends=True):
+        line = (segment.splitlines() or [""])[0]
+        if left[line]:
+            left[line] -= 1
+            out.append(segment)
+            continue
+        at, parts = 0, []
+        for m in SECRET_PATTERN.finditer(line):
+            if m.start() < at:
+                continue
+            if "private key" in m.group(0).lower():
+                return None, 0
+            tail = next((t for k, t in SECRET_TAIL.items() if m.group(0).lower().startswith(k)), None)
+            end = tail.match(line, m.end()).end() if tail else m.end()
+            keep = "" if tail or not (k := SECRET_KEEP.match(m.group(0))) else k.group(0)
+            value = line[m.start() + len(keep):end]
+            parts += [line[at:m.start()], keep, REDACTED, value[len(value.rstrip("\\")):]]
+            at, count = end, count + 1
+        out.append("".join(parts) + segment[at:])
+    return "".join(out), count
 
 
 def close_prepare():
@@ -966,13 +1004,31 @@ def close_commit():
                                          "nothing was committed"}))
             writes.append((path, source))
         # Scan only the text this close adds (overlaid round files, written files) against main's version of each
-        # path: main's existing text is not this close's to refuse. The reason names the path, never the match.
+        # path: main's existing text is not this close's to change. A credential in it is filed as REDACTED
+        # (redact_secrets) in the commit only; the source files stay as they are (a preview changes nothing). The JSON
+        # names the path and a count, never the match.
         overlaid = [p for p in git([], "diff-index", "--cached", "-z", "--name-only", main, env=index).stdout.split("\0") if p]
-        for path, new in [(p, blob_text(f":{p}", index)) for p in overlaid] + [(p, s.read_text(encoding="utf-8")) for p, s in writes]:
-            if SECRET_PATTERN.search(added_text(new, blob_text(f"{main}:{path}"))):
-                return print(json.dumps({"status": "refused", "reason": f"{path} matches a credential pattern; nothing was committed"}))
+        redacted, cleaned = [], {}
+        for path, source in [(p, None) for p in overlaid] + writes:
+            new = source.read_bytes().decode("utf-8", "surrogateescape") if source else blob_text(f":{path}", index)
+            old = blob_text(f"{main}:{path}")
+            if not SECRET_PATTERN.search(added_text(new, old)):
+                continue
+            text, count = redact_secrets(new, old)
+            if text is None:
+                return print(json.dumps({"status": "refused", "reason": f"{path} holds a private key; nothing was committed"}))
+            # A match that spans lines is one redact_secrets cannot see: the close is refused as before.
+            if SECRET_PATTERN.search(added_text(text, old)):
+                return print(json.dumps({"status": "refused",
+                                         "reason": f"{path} matches a credential pattern across lines; nothing was committed"}))
+            cleaned[path] = subprocess.run(["git", "hash-object", "-w", "--no-filters", "--stdin"], capture_output=True, check=True,
+                                           input=text.encode("utf-8", "surrogateescape")).stdout.decode().strip()
+            if not source:
+                mode = git([], "ls-files", "-s", "--", path, env=index).stdout.split()[0]
+                git([], "update-index", "--cacheinfo", f"{mode},{cleaned[path]},{path}", env=index)
+            redacted.append({"path": path, "count": count})
         for path, source in writes:
-            blob = git([], "hash-object", "-w", "--", str(source)).stdout.strip()
+            blob = cleaned.get(path) or git([], "hash-object", "-w", "--", str(source)).stdout.strip()
             git([], "update-index", "--add", "--cacheinfo", f"100644,{blob},{path}", env=index)
         tree = git([], "write-tree", env=index).stdout.strip()
         name, email = git([], "config", "user.name").stdout.strip(), git([], "config", "user.email").stdout.strip()
@@ -987,7 +1043,8 @@ def close_commit():
                                      f"outside {review_dir}/ ({', '.join(dropped[:5])}); nothing was pushed"}))
         files = [dict(zip(("added", "removed", "path"), e.split("\t", 2)))
                  for e in git([], "diff", "--numstat", "-z", "--no-renames", main, commit).stdout.split("\0") if e]
-        result = {"status": "planned", "commit": commit, "parents": parents, "files": files}
+        result = {"status": "planned", "commit": commit, "parents": parents, "files": files,
+                  **({"redacted": redacted} if redacted else {})}
         if args["push"]:
             if git([], "merge-base", "--is-ancestor", main, commit, check=False).returncode:
                 die("the close commit does not descend from main")

@@ -327,6 +327,50 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
         err.ReplaceLineEndings("\n").Should().Contain(says).And.NotContain("landed");
     }
 
+    // An already-closed PR previewed closes nothing either: a branch it would keep is printed, and it exits 0.
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(true, JudgeClose.BranchesLeftExitCode)]
+    public async Task An_already_closed_PR_exits_7_for_a_branch_left_only_with_execute(bool execute, int expected)
+    {
+        Save((4, Judged(Store, ReviewDir, 4)));
+        var phases = new Phases(Store) { Prepare = "already-closed", Prune = "kept" };
+
+        var (exit, _, err) = await Close(phases, ["--judgment", "4", .. execute ? new[] { "--execute" } : []]);
+
+        exit.Should().Be(expected);
+        err.Should().Contain("review/nova-5776213 kept: the fake left it");
+    }
+
+    // A close that filed a credential as REDACTED says where and how many, and prints none of the text it composed
+    // (the CLOSING.md, the lesson first lines, what it did not file): that text holds the credential.
+    [Theory]
+    [InlineData("planned", true)]
+    [InlineData("redacted", false)]
+    public async Task A_close_that_redacted_prints_the_paths_and_counts_not_its_text(string commit, bool printsText)
+    {
+        Save((4, Judged(Store, ReviewDir, 4)));
+        var phases = new Phases(Store);
+        phases.Commits.Enqueue(commit);
+
+        var (exit, output, _) = await Close(phases, "--judgment", "4");
+
+        exit.Should().Be(0);
+        var heading = phases.Closing!.Split('\n').First(l => l.StartsWith('#'));
+        output.Contains(heading, StringComparison.Ordinal).Should().Be(printsText);
+        output
+            .Contains("redacted 2 credential-like value(s) in PRs/x/CLOSING.md", StringComparison.Ordinal)
+            .Should()
+            .Be(!printsText);
+        var json = JsonNode.Parse(
+            output.ReplaceLineEndings("\n").Split('\n', StringSplitOptions.RemoveEmptyEntries)[^1]
+        )!;
+        json["notFiled"]!
+            .GetValueKind()
+            .Should()
+            .Be(printsText ? System.Text.Json.JsonValueKind.Array : System.Text.Json.JsonValueKind.Number);
+    }
+
     [Fact]
     public async Task A_main_that_keeps_moving_is_redone_three_times_then_exits_6_with_a_JSON_line()
     {
@@ -776,6 +820,16 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
                         {
                             ["status"] = "refused",
                             ["reason"] = "PRs/x matches a credential pattern; nothing was committed",
+                        },
+                        "redacted" => new JsonObject
+                        {
+                            ["status"] = "planned",
+                            ["commit"] = new string('c', 40),
+                            ["parents"] = new JsonArray(main),
+                            ["files"] = new JsonArray(),
+                            ["redacted"] = new JsonArray(
+                                new JsonObject { ["path"] = "PRs/x/CLOSING.md", ["count"] = 2 }
+                            ),
                         },
                         var status => new JsonObject
                         {
