@@ -994,9 +994,9 @@ public sealed class ReviewdJudgeCloseTests
 
     // A marker that ends a line takes the next line with a letter or digit (lines without one, main's too, carry it
     // on), from its first value character to its end: behind a list marker, quote, backtick, fence, bracket, tab, table
-    // pipe or bold too. A line that opens a block (a fence with a language, an HTML tag) goes and carries it on. A line
-    // main has keeps its value, which main holds already, and a file that parses as JSON, whatever its name, carries
-    // nothing.
+    // pipe or bold too. A line that opens a block (a fence with a language that starts it, behind a quote too, or an
+    // HTML tag) goes and carries it on; ```code``` inside prose does not, so the heading after it stays. A line main has
+    // keeps its value, which main holds already, and a file that parses as JSON, whatever its name, carries nothing.
     [SkippableFact]
     public async Task Redact_file_takes_the_next_line_with_a_value_after_a_marker_that_ends_one()
     {
@@ -1019,6 +1019,8 @@ public sealed class ReviewdJudgeCloseTests
                 new JsonArray("a.md", "AccountKey=\n```text\nFAKE1234567890\n```\n", ""),
                 new JsonArray("a.md", "AccountKey=\n~~~text\nFAKE1234567890\n~~~\n", ""),
                 new JsonArray("a.md", "AccountKey=\n<pre>\nFAKE1234567890\n</pre>\n", ""),
+                new JsonArray("a.md", "AccountKey=\n> ```text\n> FAKE1234567890\n", ""),
+                new JsonArray("a.md", "is AccountKey=\nWrap it in ```text``` delimiters.\n## Evidence\n", ""),
                 new JsonArray("a.md", "AccountKey=\n\tFAKE1234567890\n", ""),
                 new JsonArray("a.md", "AccountKey=\n| FAKE1234567890 |\n", ""),
                 new JsonArray("a.md", "AccountKey=\n**FAKE1234567890**\n", ""),
@@ -1045,6 +1047,8 @@ public sealed class ReviewdJudgeCloseTests
                 "**REDACTED**\n```**REDACTED**\n**REDACTED**\n```\n",
                 "**REDACTED**\n~~~**REDACTED**\n**REDACTED**\n~~~\n",
                 "**REDACTED**\n<**REDACTED**\n**REDACTED**\n</pre>\n",
+                "**REDACTED**\n> ```**REDACTED**\n> **REDACTED**\n",
+                "is **REDACTED**\n**REDACTED**\n## Evidence\n",
                 "**REDACTED**\n\t**REDACTED**\n",
                 "**REDACTED**\n| **REDACTED**\n",
                 "**REDACTED**\n****REDACTED**\n",

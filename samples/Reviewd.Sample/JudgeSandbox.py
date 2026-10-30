@@ -886,11 +886,12 @@ ESCAPED_CHAR = r"\\+(?:u[0-9A-Fa-f]{4}|/)"
 GAP = rf"(?:\s|{ESCAPED_SPACE}|\\*[\"'])"
 MARKER_TAIL = rf"(?:(?:{GAP}*(\\*[\"']))?(?:\s|{ESCAPED_SPACE})*(?=[A-Za-z0-9+/%]))?(?:[^\s\"'<>;,\\]|{ESCAPED_CHAR})*"
 # A marker with nothing but a gap after it ends its line, so its value is on the next line with a letter or digit. A
-# line that opens a block (a code fence, an HTML tag) comes before the value: it goes like a value line and carries
-# the marker on.
+# line that opens a block comes before the value: it goes like a value line and carries the marker on. That is a code
+# fence that starts the line (after quote and list markers; a backtick fence's language holds no backtick, so
+# ```code``` inside prose is not one), or a line of only HTML tags.
 MARKER_AT_LINE_END = re.compile(rf"(?i)(?:AccountKey=|SharedAccessSignature\s*[=:]?){GAP}*$")
 VALUE_LINE = re.compile(r"(?=.*[A-Za-z0-9])[^A-Za-z0-9+/%]*")
-BLOCK_LINE = re.compile(r"`{3}|~{3}|^\s*(?:<[^>]*>\s*)+$")
+BLOCK_LINE = re.compile(r"[\s>]*(?:(?:[-*+]|\d+[.)])\s+)?(?:`{3,}[^`]*|~{3,}.*)$|\s*(?:<[^>]*>\s*)+$")
 SECRET_TAIL = {"accountkey=": re.compile(MARKER_TAIL), "sharedaccesssignature": re.compile(rf"\s*[=:]?{MARKER_TAIL}"),
                "sig=": re.compile(rf"()(?:[^\s\"'<>;,&\\]|{ESCAPED_CHAR})*"), "eyj": re.compile(r"()(?:\.[A-Za-z0-9_-]*)?")}
 OPENING_QUOTE = re.compile(r"\\*[\"']$")
@@ -906,7 +907,7 @@ def redact_secrets(new, old, carry_lines=True):
         # A marker that ended an earlier line (main's too), with no letter or digit since, takes this line's value.
         carried = pending and (v := VALUE_LINE.match(line))
         pending = carry_lines and bool(
-            MARKER_AT_LINE_END.search(line) or pending and (not carried or BLOCK_LINE.search(line)))
+            MARKER_AT_LINE_END.search(line) or pending and (not carried or BLOCK_LINE.match(line)))
         if left[line]:
             left[line] -= 1
             out.append(segment)
