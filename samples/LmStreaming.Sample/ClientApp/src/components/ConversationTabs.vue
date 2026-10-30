@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ConversationTab } from '@/composables/useConversationTabs';
 import { MAIN_TAB_ID } from '@/composables/useConversationTabs';
 import { MAIN_TAB_COLOR } from '@/utils/agentColors';
+import { subAgentEndReason } from '@/utils/subAgentStatus';
 
 type AgentFilter = 'all' | 'running' | 'attention' | 'completed';
 const props = withDefaults(defineProps<{ tabs: ConversationTab[]; activeTabId: string; pendingQuestionAgentIds?: string[] }>(), { pendingQuestionAgentIds: () => [] });
@@ -20,9 +21,8 @@ const pendingIds = computed(() => new Set(props.pendingQuestionAgentIds));
 const needsAttention = (tab: ConversationTab) => pendingIds.value.has(tab.id) || tab.status === 'error' || tab.status === 'interrupted';
 function statusLabel(tab: ConversationTab): string {
   if (pendingIds.value.has(tab.id)) return 'Awaiting answer';
-  if (tab.status === 'error' && tab.failureCode) return `Error · ${tab.failureCode}`;
-  // #792: a provider switch that rebuilt the parent stopped this child; say so, not just "Stopped".
-  if (tab.status === 'stopped' && tab.failureCode === 'parent_recreated') return 'Stopped: parent provider changed';
+  const reason = subAgentEndReason(tab.status, tab.failureCode);
+  if (reason) return tab.status === 'error' ? `Error · ${reason}` : `Stopped: ${reason}`;
   if (!tab.status) return tab.kind === 'workflow' ? 'Workflow' : 'Agent';
   return tab.status.charAt(0).toUpperCase() + tab.status.slice(1);
 }

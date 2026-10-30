@@ -95,6 +95,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     // guarded by _stateLock, and the arrival source is swapped before the old one is completed, so a
     // waiter that captured it under the same lock as its scan cannot miss the next write.
     private readonly List<QueuedInput> _pendingRealInputs = [];
+
+    // Real input a drain took before its writer recorded it. A write lands on the channel and is only
+    // then recorded, so the loop can drain it in between; the drain finds nothing to retire, and the
+    // record made afterwards would stay in _pendingRealInputs for good. The record step consumes the
+    // note instead. Every successful write records exactly once, so no note outlives its input.
+    // Guarded by _stateLock.
+    private readonly HashSet<QueuedInput> _drainedBeforeRecorded = new(ReferenceEqualityComparer.Instance);
     private TaskCompletionSource _inputArrival = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     // Lifecycle
@@ -177,6 +184,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
     /// <summary>How many output subscribers are registered: lets a test wait until a viewer is attached.</summary>
     internal int SubscriberCountForTests => _outputSubscribers.Count;
+
+    /// <summary>
+    /// Runs on the writer's thread after real input has landed on the channel and before it is
+    /// recorded as queued, so a test can let the loop drain it first.
+    /// </summary>
+    internal Action<QueuedInput>? BeforeRecordingRealInputForTest { get; set; }
 
     /// <summary>
     /// The maximum turns per run.
@@ -1479,6 +1492,33 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     protected int PendingInputCount => _inputChannel.Reader.CanCount ? _inputChannel.Reader.Count : 0;
 
     /// <summary>
+    /// Queued input a run would act on, not yet drained: <see cref="PendingInputCount"/> without the
+    /// loop's own wake sentinel (or any other <see cref="QueuedInput.Resume"/> entry). Recorded by the
+    /// same <c>SignalIfRealInput</c> call that signals <see cref="HasRealInputQueued"/>; the two are
+    /// separate state and can briefly disagree.
+    /// </summary>
+    /// <remarks>
+    /// Can briefly UNDERcount: an input is recorded just after its channel write, so a read between the
+    /// two misses it. That reads exactly like the input landing just after the count was taken, which
+    /// every consumer already has to handle. Read from the loop's own completion paths it does not
+    /// overcount, because those never run alongside the loop's drain; a reader on another thread can
+    /// briefly count an input the drain has taken but not yet retired. <c>SubAgentManager</c> does not rely on
+    /// this count alone to keep a provider alive: it re-reads the live channel through
+    /// <c>MultiTurnAgentLoop.HasPendingLoopWork</c> after the completion arrives. The record cannot come
+    /// first: a peek waiter would then end its wait on an input whose parked write may still fail.
+    /// </remarks>
+    protected int PendingRealInputCount
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _pendingRealInputs.Count;
+            }
+        }
+    }
+
+    /// <summary>
     /// Whether input a run would actually act on is queued right now.
     /// </summary>
     /// <remarks>
@@ -1547,12 +1587,17 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             return;
         }
 
+        BeforeRecordingRealInputForTest?.Invoke(queued);
+
         TaskCompletionSource signal;
         TaskCompletionSource arrival;
         lock (_stateLock)
         {
             signal = _realInputSignal;
-            _pendingRealInputs.Add(queued);
+            if (!_drainedBeforeRecorded.Remove(queued))
+            {
+                _pendingRealInputs.Add(queued);
+            }
 
             // Swap first, complete second. A waiter captured the OLD source under the lock together
             // with its scan of the list, so completing it after the swap wakes exactly the waiters
@@ -1722,13 +1767,20 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             {
                 foreach (var taken in inputs)
                 {
+                    var retired = false;
                     for (var i = 0; i < _pendingRealInputs.Count; i++)
                     {
                         if (ReferenceEquals(_pendingRealInputs[i], taken))
                         {
                             _pendingRealInputs.RemoveAt(i);
+                            retired = true;
                             break;
                         }
+                    }
+
+                    if (!retired && taken.Resume == null)
+                    {
+                        _ = _drainedBeforeRecorded.Add(taken);
                     }
                 }
             }

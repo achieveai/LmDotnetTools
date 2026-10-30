@@ -285,6 +285,11 @@ public sealed class MultiTurnAgentLoop
     private int RetainedInputCount => Volatile.Read(ref _retainedInputs).Length;
     private int PendingWorkInputCount => PendingInputCount + RetainedInputCount;
 
+    // What a run that took no turn reports as queued: real input only. Its completion can find the
+    // loop's own wake-up still on the channel (a later result resolved while this one was being taken),
+    // and counting that would claim a run follows when none will.
+    private int PendingRealWorkInputCount => PendingRealInputCount + RetainedInputCount;
+
     internal bool HasPendingLoopWork => PendingWorkInputCount > 0 || !_delayed.IsEmpty || _delayed.HasPendingCauses;
 
     // Guards _wakeScheduled so at most one wake sentinel is ever outstanding on the input channel.
@@ -1645,7 +1650,7 @@ public sealed class MultiTurnAgentLoop
             await CompleteRunAsync(
                 assignment.RunId,
                 assignment.GenerationId,
-                pendingMessageCount: 0,
+                pendingMessageCount: PendingRealWorkInputCount,
                 isError: true,
                 errorMessage: "the child run carrying this delayed tool result could not be durably "
                     + "recorded as started; it was not run, and remains recoverable",
@@ -1683,7 +1688,7 @@ public sealed class MultiTurnAgentLoop
             await CompleteRunAsync(
                 assignment.RunId,
                 assignment.GenerationId,
-                pendingMessageCount: 0,
+                pendingMessageCount: PendingRealWorkInputCount,
                 outcome: LifecycleRunOutcomes.AwaitingSiblingResults,
                 ct: ct
             );
