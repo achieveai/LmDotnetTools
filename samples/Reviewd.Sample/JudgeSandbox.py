@@ -874,37 +874,37 @@ SECRET_KEEP = re.compile(rf"(?i)bearer\s+|authorization{OPEN}\s*[:=]\s*{OPEN}\s*
 # doubled or escaped. The last quote opens the value.
 GAP = r"(?:\s|\\+[nrt]|\\*[\"'])"
 MARKER_TAIL = rf"(?:(?:{GAP}*(\\*[\"']))?(?:\s|\\+[nrt])*(?=[A-Za-z0-9+/%]))?[^\s\"'<>;,\\]*"
-# A marker with nothing but a gap after it ends its line, so its value starts the next line that is not blank.
+# A marker with nothing but a gap after it ends its line, so its value is on the next line with a letter or digit.
 MARKER_AT_LINE_END = re.compile(rf"(?i)(?:AccountKey=|SharedAccessSignature\s*[=:]?){GAP}*$")
-BLANK = re.compile(rf"{GAP}*$")
-VALUE_AFTER_INDENT = re.compile(rf"(\s*){GAP}*(?=[A-Za-z0-9+/%])")
+VALUE_LINE = re.compile(r"(?=.*[A-Za-z0-9])[^A-Za-z0-9+/%]*")
 SECRET_TAIL = {"accountkey=": re.compile(MARKER_TAIL), "sharedaccesssignature": re.compile(rf"\s*[=:]?{MARKER_TAIL}"),
                "sig=": re.compile(r"()[^\s\"'<>;,&\\]*"), "eyj": re.compile(r"()(?:\.[A-Za-z0-9_-]*)?")}
 OPENING_QUOTE = re.compile(r"\\*[\"']$")
 
 
-def redact_secrets(new, old):
+def redact_secrets(new, old, carry_lines=True):
     """new with each credential match in the lines old lacks (as added_text counts them) replaced by REDACTED, and how
-    many it replaced; (None, 0) when one is a private key, which close never files. A marker that ends a line takes the
-    value that starts the next line that is not blank."""
+    many it replaced; (None, 0) when one is a private key, which close never files. With carry_lines, a marker that
+    ends a line also takes the next line with a letter or digit, from its first value character to its end."""
     left, out, count, pending = collections.Counter(old.splitlines()), [], 0, False
     for segment in new.splitlines(keepends=True):
         line = (segment.splitlines() or [""])[0]
-        # A marker that ended an earlier line, with only blank lines since (main's too), takes this line's first value.
-        carry, pending = pending, bool(MARKER_AT_LINE_END.search(line) or pending and BLANK.match(line))
+        # A marker that ended an earlier line (main's too), with no letter or digit since, takes this line's value.
+        carried = pending and (v := VALUE_LINE.match(line))
+        pending = carry_lines and bool(MARKER_AT_LINE_END.search(line) or pending and not carried)
         if left[line]:
             left[line] -= 1
             out.append(segment)
             continue
         at, parts = 0, []
-        matches = [(m.start(), m.end(), m.group(0)) for m in SECRET_PATTERN.finditer(line)]
-        if carry and (v := VALUE_AFTER_INDENT.match(line)):
-            matches.insert(0, (v.end(1), v.end(1), "AccountKey="))
-        for start, stop, match in matches:
-            if start < at:
-                continue
+        if carried:
+            parts, at, count = [line[:v.end()], REDACTED], len(line), count + 1
+        for m in SECRET_PATTERN.finditer(line):
+            start, stop, match = m.start(), m.end(), m.group(0)
             if "private key" in match.lower():
                 return None, 0
+            if start < at:
+                continue
             keep = k.group(0) if (k := SECRET_KEEP.match(match)) else ""
             opening, inside, end = OPENING_QUOTE.search(keep), start + len(keep), stop
             opening = opening and opening.group(0)
@@ -943,7 +943,8 @@ def parses(text):
 def redact_file(path, new, old):
     """(text, count, None): the text close files at path, each credential it adds replaced by REDACTED; or (None, 0,
     reason) when close must refuse it."""
-    text, count = redact_secrets(new, old)
+    # A JSON string never spans lines, so in a file that parses as JSON no value follows a marker on the next line.
+    text, count = redact_secrets(new, old, carry_lines=not (path.endswith(".json") and parses(new)))
     if text is None:
         return None, 0, f"{path} holds a private key"
     # A match that spans lines is one redact_secrets cannot see.
@@ -1070,11 +1071,12 @@ def close_commit():
         for path, source in {**{p: None for p in overlaid}, **dict(writes)}.items():
             new = source.read_bytes().decode("utf-8", "surrogateescape") if source else blob_text(f":{path}", index)
             old = blob_text(f"{main}:{path}")
-            if not SECRET_PATTERN.search(added_text(new, old)):
-                continue
+            # Every path, not only one whose added text matches: a value added under a marker line main has does not.
             text, count, refusal = redact_file(path, new, old)
             if refusal:
                 return print(json.dumps({"status": "refused", "reason": f"{refusal}; nothing was committed"}))
+            if not count:
+                continue
             cleaned[path] = subprocess.run(["git", "hash-object", "-w", "--no-filters", "--stdin"], capture_output=True, check=True,
                                            input=text.encode("utf-8", "surrogateescape")).stdout.decode().strip()
             if not source:
