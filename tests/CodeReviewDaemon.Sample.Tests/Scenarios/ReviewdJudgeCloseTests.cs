@@ -921,6 +921,9 @@ public sealed class ReviewdJudgeCloseTests
                     """{"a": "password=\"Sup3rS3cret99", "b": "x\""}""",
                     "sig=abcdefghijklmnopqrstuvwxyz+def/ghi=&se=1",
                     """{"SharedAccessSignature": "sv=2022&sig=ab+cdefghijklmnopqrstuvwxyz0="}""",
+                    """{"e": "AccountKey=\tFAKEFAKE1234567890"}""",
+                    """{"e": "AccountKey=\rFAKEFAKE1234567890"}""",
+                    "sig=ab/cdefghijklmnopqrstuvwxyz0&se=1",
                 ]
             )
         )
@@ -938,7 +941,10 @@ public sealed class ReviewdJudgeCloseTests
                 """{"evidence": "password=**REDACTED**"}""",
                 """{"a": "password=\"**REDACTED**", "b": "x\""}""",
                 "sig=**REDACTED**&se=1",
-                """{"**REDACTED**": "sv=2022&sig=**REDACTED**"}"""
+                """{"**REDACTED**": "sv=2022&sig=**REDACTED**"}""",
+                """{"e": "**REDACTED**"}""",
+                """{"e": "**REDACTED**"}""",
+                "sig=**REDACTED**&se=1"
             );
         (
             await ReviewdJudgeTests.SandboxAsync(
@@ -980,29 +986,42 @@ public sealed class ReviewdJudgeCloseTests
             );
     }
 
-    // A marker that ends a line refuses only when a later line holds a value-like token (16+ characters with a digit)
-    // that main lacks: a regex or a sentence that ends with the marker is filed.
+    // A marker that ends a line takes the value that starts the next line that is not blank (a blank line main has
+    // counts too), whatever its length. A line that starts with no value (a code fence, a list item) keeps its text,
+    // and a line main has keeps its value: main holds it already.
     [SkippableFact]
-    public async Task Redact_file_refuses_a_marker_at_a_line_end_only_before_a_new_value_like_token()
+    public async Task Redact_secrets_takes_the_value_that_starts_the_line_after_a_marker_that_ends_one()
     {
         var python = await ReviewdSummaryReplyTests.FindPythonAsync();
         Skip.If(python is null, "no python3 on PATH");
-        const string Why =
-            "a.md ends a line with AccountKey= or SharedAccessSignature and a later line looks like its value";
 
-        var refusals = await ReviewdJudgeTests.SandboxAsync(
+        var redacted = await ReviewdJudgeTests.SandboxAsync(
             python!,
-            "[sandbox.redact_file('a.md', new, old)[2] for new, old in data]",
+            "[sandbox.redact_file('a.md', new, old)[0] for new, old in data]",
             new JsonArray(
-                new JsonArray("AccountKey=\n\n  \"AKIAFAKE1234567890FAKE\"\n", ""),
-                new JsonArray("SharedAccessSignature\nsv=2022-11-02&sig=FAKE\n", ""),
+                new JsonArray("AccountKey=\nFAKE1234567890\n", ""),
+                new JsonArray("SharedAccessSignature=\n\n  'FAKEFAKEFAKEFAKEFAKE' x\n", ""),
+                new JsonArray("AccountKey=\n\nFAKE1234567890\n", "\n"),
+                new JsonArray("AccountKey=\nFAKE1234567890\n", "AccountKey=\n"),
                 new JsonArray("secret (?i)token|sig=|accountkey=\n```\n", ""),
-                new JsonArray("We sign uploads with a SharedAccessSignature\nfrom the vault.\n", ""),
-                new JsonArray("AccountKey=\nAKIAFAKE1234567890FAKE\n", "AKIAFAKE1234567890FAKE\n")
+                new JsonArray("AccountKey=\n- item\n", ""),
+                new JsonArray("AccountKey=\nFAKE1234567890\n", "FAKE1234567890\n")
             )
         );
 
-        refusals.AsArray().Select(r => r?.GetValue<string>()).Should().Equal(Why, Why, null, null, null);
+        redacted
+            .AsArray()
+            .Select(r => r!.GetValue<string>())
+            .Should()
+            .Equal(
+                "**REDACTED**\n**REDACTED**\n",
+                "**REDACTED**\n\n  **REDACTED**' x\n",
+                "**REDACTED**\n\n**REDACTED**\n",
+                "AccountKey=\n**REDACTED**\n",
+                "secret (?i)token|sig=|**REDACTED**\n```\n",
+                "**REDACTED**\n- item\n",
+                "**REDACTED**\nFAKE1234567890\n"
+            );
     }
 
     [SkippableFact]
@@ -1670,7 +1689,8 @@ public sealed class ReviewdJudgeCloseTests
 
     // A quoted or spaced value goes whole, up to its closing quote, and a JSON-escaped newline before a password or a
     // SAS goes with it, so the filed JSON still parses. A doubled or escaped quote, or a space after the quote, before
-    // an AccountKey goes too. Main gets neither the value nor any part of it.
+    // an AccountKey goes too, and so does a value on the line after a marker that ends one, short or not. Main gets
+    // neither the value nor any part of it.
     [SkippableTheory]
     [InlineData("PRs/x/conn.md", "AccountKey=\"AKIAFAKEFAKE1234567890FAKE\";x", "**REDACTED**\";x", "AKIAFAKE")]
     [InlineData("PRs/x/sas.md", "SharedAccessSignature: 'sv=2022&sig=FAKEFAKEFAKE'", "**REDACTED**'", "FAKEFAKE")]
@@ -1678,6 +1698,13 @@ public sealed class ReviewdJudgeCloseTests
     [InlineData("PRs/x/space.md", "AccountKey=\" AKIAFAKEFAKE1234567890FAKE\"", "**REDACTED**\"", "AKIAFAKE")]
     [InlineData("PRs/x/doubled.md", "AccountKey=''AKIAFAKEFAKE1234567890FAKE'", "**REDACTED**'", "AKIAFAKE")]
     [InlineData("PRs/x/escaped.md", "x = \"AccountKey=\\\" AKIAFAKE1234\\\"\"", "x = \"**REDACTED**\\\"\"", "AKIAFAKE")]
+    [InlineData("PRs/x/next.md", "AccountKey=\nFAKE1234567890", "**REDACTED**\n**REDACTED**", "FAKE1234567890")]
+    [InlineData(
+        "PRs/x/next-sas.md",
+        "SharedAccessSignature=\n\n  FAKEFAKEFAKEFAKEFAKE x",
+        "**REDACTED**\n\n  **REDACTED** x",
+        "FAKEFAKE"
+    )]
     [InlineData(
         "PRs/x/key.json",
         """{"e": "SharedAccessSignature=\nsv=2022&sig=FAKEFAKE"}""",
@@ -1734,14 +1761,10 @@ public sealed class ReviewdJudgeCloseTests
     }
 
     // A private key is not redacted: close never files one, so the whole close is refused, and so is a match that
-    // spans two lines, which no single line holds, and an AccountKey= that ends a line before its value.
+    // spans two lines, which no single line holds.
     [SkippableTheory]
     [InlineData("-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n", "holds a private key")]
     [InlineData("Authorization: Bearer\nabcdefghijklmnopqrstuvwxyz0123\n", "matches a credential pattern across lines")]
-    [InlineData(
-        "AccountKey=\nAKIAFAKEFAKE1234567890FAKE\n",
-        "ends a line with AccountKey= or SharedAccessSignature and a later line looks like its value"
-    )]
     public async Task Close_commit_refuses_a_credential_it_cannot_redact(string text, string why)
     {
         Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");

@@ -874,10 +874,10 @@ SECRET_KEEP = re.compile(rf"(?i)bearer\s+|authorization{OPEN}\s*[:=]\s*{OPEN}\s*
 # doubled or escaped. The last quote opens the value.
 GAP = r"(?:\s|\\+[nrt]|\\*[\"'])"
 MARKER_TAIL = rf"(?:(?:{GAP}*(\\*[\"']))?(?:\s|\\+[nrt])*(?=[A-Za-z0-9+/%]))?[^\s\"'<>;,\\]*"
-# A marker with nothing but a gap after it ends its line; a value-like token (16+ characters, a digit in them) after it
-# on a later line may be its value.
-MARKER_THEN_VALUE = re.compile(rf"(?i)(?:AccountKey=|SharedAccessSignature\s*[=:]?){GAP}*?\n{GAP}*"
-                               r"((?=[^\s\"'<>;,\\]*\d)[A-Za-z0-9+/%][^\s\"'<>;,\\]{15,})")
+# A marker with nothing but a gap after it ends its line, so its value starts the next line that is not blank.
+MARKER_AT_LINE_END = re.compile(rf"(?i)(?:AccountKey=|SharedAccessSignature\s*[=:]?){GAP}*$")
+BLANK = re.compile(rf"{GAP}*$")
+VALUE_AFTER_INDENT = re.compile(rf"(\s*){GAP}*(?=[A-Za-z0-9+/%])")
 SECRET_TAIL = {"accountkey=": re.compile(MARKER_TAIL), "sharedaccesssignature": re.compile(rf"\s*[=:]?{MARKER_TAIL}"),
                "sig=": re.compile(r"()[^\s\"'<>;,&\\]*"), "eyj": re.compile(r"()(?:\.[A-Za-z0-9_-]*)?")}
 OPENING_QUOTE = re.compile(r"\\*[\"']$")
@@ -885,25 +885,31 @@ OPENING_QUOTE = re.compile(r"\\*[\"']$")
 
 def redact_secrets(new, old):
     """new with each credential match in the lines old lacks (as added_text counts them) replaced by REDACTED, and how
-    many it replaced; (None, 0) when one is a private key, which close never files."""
-    left, out, count = collections.Counter(old.splitlines()), [], 0
+    many it replaced; (None, 0) when one is a private key, which close never files. A marker that ends a line takes the
+    value that starts the next line that is not blank."""
+    left, out, count, pending = collections.Counter(old.splitlines()), [], 0, False
     for segment in new.splitlines(keepends=True):
         line = (segment.splitlines() or [""])[0]
+        # A marker that ended an earlier line, with only blank lines since (main's too), takes this line's first value.
+        carry, pending = pending, bool(MARKER_AT_LINE_END.search(line) or pending and BLANK.match(line))
         if left[line]:
             left[line] -= 1
             out.append(segment)
             continue
         at, parts = 0, []
-        for m in SECRET_PATTERN.finditer(line):
-            if m.start() < at:
+        matches = [(m.start(), m.end(), m.group(0)) for m in SECRET_PATTERN.finditer(line)]
+        if carry and (v := VALUE_AFTER_INDENT.match(line)):
+            matches.insert(0, (v.end(1), v.end(1), "AccountKey="))
+        for start, stop, match in matches:
+            if start < at:
                 continue
-            if "private key" in m.group(0).lower():
+            if "private key" in match.lower():
                 return None, 0
-            keep = k.group(0) if (k := SECRET_KEEP.match(m.group(0))) else ""
-            opening, inside, end = OPENING_QUOTE.search(keep), m.start() + len(keep), m.end()
+            keep = k.group(0) if (k := SECRET_KEEP.match(match)) else ""
+            opening, inside, end = OPENING_QUOTE.search(keep), start + len(keep), stop
             opening = opening and opening.group(0)
-            if tail := next((t for key, t in SECRET_TAIL.items() if m.group(0).lower().startswith(key)), None):
-                t = tail.match(line, m.end())
+            if tail := next((t for key, t in SECRET_TAIL.items() if match.lower().startswith(key)), None):
+                t = tail.match(line, stop)
                 if t.group(1):
                     opening, inside = t.group(1), t.end(1)
                 end = t.end()
@@ -919,8 +925,8 @@ def redact_secrets(new, old):
                 if i - j == len(opening) - 1:
                     end = max(j, end - (len(value) - len(value.rstrip("\\"))))
                     break
-            value = line[m.start() + len(keep):end]
-            parts += [line[at:m.start()], keep, REDACTED, value[len(value.rstrip("\\")):]]
+            value = line[start + len(keep):end]
+            parts += [line[at:start], keep, REDACTED, value[len(value.rstrip("\\")):]]
             at, count = end, count + 1
         out.append("".join(parts) + segment[at:])
     return "".join(out), count
@@ -943,8 +949,6 @@ def redact_file(path, new, old):
     # A match that spans lines is one redact_secrets cannot see.
     if SECRET_PATTERN.search(added_text(text, old)):
         return None, 0, f"{path} matches a credential pattern across lines"
-    if any(m.group(1) not in old for m in MARKER_THEN_VALUE.finditer(new)):
-        return None, 0, f"{path} ends a line with AccountKey= or SharedAccessSignature and a later line looks like its value"
     if path.endswith(".json") and parses(new) and not parses(text):
         return None, 0, f"{path} would not stay valid JSON once redacted"
     return text, count, None
