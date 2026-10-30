@@ -257,10 +257,13 @@ public sealed class AgentHierarchyService(
             // A tab is written through only while its parent loop is live and polled, so one saved while
             // the child was still in flight reads back as interrupted. When the child's own saved row says
             // how it actually ended (#792: stopped, parent_recreated), that is the newer fact; the tab
-            // keeps its hierarchy fields and takes the ending from the row.
+            // keeps its hierarchy fields and takes the ending from the row. Only the same transcript's
+            // row counts: with collaboration off the root manager and a workflow controller number their
+            // children separately, so both can own an agent-1.
             merged[(tab.Kind, tab.AgentId)] =
                 tab.Status == SubAgentSummary.InterruptedStatus
                 && merged.TryGetValue((tab.Kind, tab.AgentId), out var saved)
+                && saved.ThreadId == tab.ThreadId
                 && IsTerminal(saved.Status)
                     ? tab with
                     {

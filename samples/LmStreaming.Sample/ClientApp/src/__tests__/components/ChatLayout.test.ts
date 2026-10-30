@@ -136,9 +136,10 @@ const sharedMocks = vi.hoisted(() => ({
   // it, so pushing a frame here is how a test conjures a board (and with it the TodoBoardPanel).
   conversationTodoRef: null as Ref<unknown> | null,
   subAgentChildren: [] as SubAgentSummary[],
-  // What the panel's refreshChildren() reads from the server; null = refresh leaves the list as it is.
-  refreshedSubAgentChildren: null as SubAgentSummary[] | null,
-  subAgentRefreshError: null as string | null,
+  // The roster read the provider switch makes for its own thread (#792), separate from the panel's list.
+  listSubAgents: vi.fn(async (_threadId: string): Promise<SubAgentSummary[]> => []),
+  // The live currentThreadId ref inside the useConversations mock, so a test can navigate mid-switch.
+  currentThreadIdRef: null as Ref<string | null> | null,
   focusedAgentIdRef: null as Ref<string | null> | null,
   focusChild: vi.fn(async (_agentId: string) => {}),
   subAgentQuestionResult: null as ToolCallResultMessage | null,
@@ -157,7 +158,7 @@ vi.mock('@/composables/useConversations', async () => {
   return {
     useConversations: () => ({
       conversations: ref(sharedMocks.conversations),
-      currentThreadId: ref(sharedMocks.currentThreadId),
+      currentThreadId: (sharedMocks.currentThreadIdRef = ref(sharedMocks.currentThreadId)),
       currentConversation: computed(() =>
         sharedMocks.conversations.find((c) => c.threadId === sharedMocks.currentThreadId)
       ),
@@ -385,6 +386,11 @@ vi.mock('@/api/conversationsApi', () => ({
 
 // The context/cost panel (#685) is wired into ChatLayout but exercised by its own tests; without
 // this the hoisted useContextReport would hit real fetch on every started conversation.
+vi.mock('@/api/subAgentsApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/subAgentsApi')>()),
+  listSubAgents: sharedMocks.listSubAgents,
+}));
+
 vi.mock('@/api/contextApi', () => ({
   getConversationContext: vi.fn(async () => null),
   requestCompaction: vi.fn(),
@@ -417,20 +423,15 @@ vi.mock('@/composables/useSubAgentPanel', async () => {
       }
       const focusedAgentId = ref<string | null>(null);
       sharedMocks.focusedAgentIdRef = focusedAgentId;
-      const children = ref(sharedMocks.subAgentChildren);
-      const error = ref<string | null>(null);
       return {
-        children,
+        children: ref(sharedMocks.subAgentChildren),
         focusedAgentId,
         focusedDisplayItems: ref([]),
         isFocusedStreaming: ref(false),
-        error,
+        error: ref<string | null>(null),
         startPolling: vi.fn(),
         stopPolling: vi.fn(),
-        refreshChildren: vi.fn(async () => {
-          if (sharedMocks.refreshedSubAgentChildren) children.value = sharedMocks.refreshedSubAgentChildren;
-          error.value = sharedMocks.subAgentRefreshError;
-        }),
+        refreshChildren: vi.fn(async () => {}),
         focusChild: sharedMocks.focusChild,
         unfocusChild: vi.fn(async () => {}),
         sendToFocusedChild: vi.fn(),
@@ -1581,28 +1582,28 @@ describe('ChatLayout warns before a provider switch stops sub-agents (#792)', ()
     sharedMocks.disconnectWebSocket.mockReset();
     sharedMocks.currentThreadId = 'thread-1';
     sharedMocks.conversations = [makeConversation({ threadId: 'thread-1', provider: 'test' })];
+    sharedMocks.listSubAgents.mockReset().mockResolvedValue([]);
   });
 
   afterEach(() => {
     sharedMocks.subAgentChildren = [];
-    sharedMocks.refreshedSubAgentChildren = null;
-    sharedMocks.subAgentRefreshError = null;
     vi.restoreAllMocks();
   });
 
   it('asks before an API-to-CLI switch with live sub-agents, and a cancel keeps the provider', async () => {
-    sharedMocks.subAgentChildren = [child('running'), child('queued'), child('completed')];
+    sharedMocks.listSubAgents.mockResolvedValue([child('running'), child('queued'), child('completed')]);
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
 
     await switchTo('claude');
 
+    expect(sharedMocks.listSubAgents).toHaveBeenCalledWith('thread-1');
     expect(confirm).toHaveBeenCalledWith('2 sub-agents are running and will be stopped. Switch anyway?');
     expect(sharedMocks.disconnectWebSocket).not.toHaveBeenCalled();
     expect(sharedMocks.switchProvider).not.toHaveBeenCalled();
   });
 
   it('switches once the user accepts the warning', async () => {
-    sharedMocks.subAgentChildren = [child('running')];
+    sharedMocks.listSubAgents.mockResolvedValue([child('running')]);
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
 
     await switchTo('claude-mock');
@@ -1611,19 +1612,24 @@ describe('ChatLayout warns before a provider switch stops sub-agents (#792)', ()
     expect(sharedMocks.switchProvider).toHaveBeenCalledWith('thread-1', 'claude-mock');
   });
 
-  it('reads a fresh roster first, so a child spawned since the last poll still gets the warning', async () => {
-    sharedMocks.subAgentChildren = [];
-    sharedMocks.refreshedSubAgentChildren = [child('running')];
+  // The panel's list can be a poll behind, or superseded by an overlapping poll, so the warning never
+  // reads it: a running child only the fresh read sees still asks, and a stale running one does not.
+  it.each([
+    ['asks for a child only the fresh read sees', [], [child('running')], true],
+    ['does not ask for a child only the stale panel list shows', [child('running')], [], false],
+  ])('%s', async (_case, panel, fresh, asks) => {
+    sharedMocks.subAgentChildren = panel;
+    sharedMocks.listSubAgents.mockResolvedValue(fresh);
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
 
     await switchTo('claude');
 
-    expect(confirm).toHaveBeenCalledWith('1 sub-agent is running and will be stopped. Switch anyway?');
-    expect(sharedMocks.switchProvider).not.toHaveBeenCalled();
+    expect(confirm).toHaveBeenCalledTimes(asks ? 1 : 0);
+    expect(sharedMocks.switchProvider).toHaveBeenCalledTimes(asks ? 0 : 1);
   });
 
   it('asks when the roster cannot be read, instead of treating it as empty', async () => {
-    sharedMocks.subAgentRefreshError = 'Failed to list sub-agents: 500';
+    sharedMocks.listSubAgents.mockRejectedValue(new Error('Failed to list sub-agents: 500'));
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
 
     await switchTo('claude');
@@ -1634,10 +1640,25 @@ describe('ChatLayout warns before a provider switch stops sub-agents (#792)', ()
     expect(sharedMocks.switchProvider).not.toHaveBeenCalled();
   });
 
+  it('drops the switch when another conversation is selected while the roster loads', async () => {
+    let finishRead: (list: SubAgentSummary[]) => void = () => {};
+    sharedMocks.listSubAgents.mockReturnValue(new Promise((resolve) => (finishRead = resolve)));
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    await switchTo('claude');
+    sharedMocks.currentThreadIdRef!.value = 'thread-2';
+    finishRead([child('running')]);
+    await flushPromises();
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(sharedMocks.disconnectWebSocket).not.toHaveBeenCalled();
+    expect(sharedMocks.switchProvider).not.toHaveBeenCalled();
+  });
+
   // A CLI agent owns no sub-agent manager, so leaving it stops nothing, whichever way the switch goes.
   it.each(['openai', 'codex'])('does not ask when leaving a CLI provider for %s', async (provider) => {
     sharedMocks.conversations = [makeConversation({ threadId: 'thread-1', provider: 'claude' })];
-    sharedMocks.subAgentChildren = [child('running')];
+    sharedMocks.listSubAgents.mockResolvedValue([child('running')]);
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
 
     await switchTo(provider);
@@ -1650,7 +1671,7 @@ describe('ChatLayout warns before a provider switch stops sub-agents (#792)', ()
     ['an API-to-API switch, which keeps the sub-agents', 'openai', [child('running')]],
     ['a switch with no live sub-agent', 'claude', [child('completed'), child('stopped')]],
   ])('does not ask for %s', async (_case, provider, children) => {
-    sharedMocks.subAgentChildren = children;
+    sharedMocks.listSubAgents.mockResolvedValue(children);
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
 
     await switchTo(provider);

@@ -771,6 +771,66 @@ public sealed class AgentHierarchyServiceTests
         }
     }
 
+    /// <summary>
+    /// A saved tab that reads back interrupted takes the ending of the saved row with the same id only
+    /// when both are the same transcript. With collaboration off the root manager and a workflow
+    /// controller number their children separately, so a delegate's <c>agent-1</c> must not inherit
+    /// the root's completed <c>agent-1</c>.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task BuildAsync_AnInterruptedTab_TakesTheSavedEnding_OnlyFromTheSameTranscript(bool sameTranscript)
+    {
+        const string agentId = "agent-1";
+        var indexDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "AgentHierarchyServiceTests-" + Guid.NewGuid().ToString("N")
+        );
+        try
+        {
+            var store = new InMemoryConversationStore();
+            await SeedProvenanceChildAsync(store, agentId, tenantId: null);
+            var registry = new WorkflowRunRegistry(indexDirectory);
+            var tabThread = sameTranscript ? SubAgentThreadIds.For(RootThread, agentId) : "delegate-transcript";
+            registry.PersistTabs(
+                RootThread,
+                [
+                    new SubAgentSummary
+                    {
+                        AgentId = agentId,
+                        Template = "delegate",
+                        Task = "the delegate's task",
+                        Status = AgentCollaborationStatuses.Running,
+                        ThreadId = tabThread,
+                    },
+                ]
+            );
+            await using var pool = CreateFakeAgentPool();
+            var service = new AgentHierarchyService(
+                pool,
+                registry,
+                store,
+                NullLogger<AgentHierarchyService>.Instance,
+                new SubAgentScanCoverageCache()
+            );
+
+            var (rows, _, _) = await service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+            var row = rows.Should().ContainSingle(r => r.AgentId == agentId).Subject;
+            row.ThreadId.Should().Be(tabThread);
+            row.Status.Should()
+                .Be(sameTranscript ? AgentCollaborationStatuses.Completed : SubAgentSummary.InterruptedStatus);
+        }
+        finally
+        {
+            if (Directory.Exists(indexDirectory))
+            {
+                Directory.Delete(indexDirectory, recursive: true);
+            }
+        }
+    }
+
     [Fact]
     public async Task BuildAsync_ForAGenuinelyChildlessRehydratedCollaborationOffLoop_ScansAtMostOnce_AndReusesEmptyResult()
     {
