@@ -656,6 +656,18 @@ public sealed class ReviewdJudgeTests
         JudgeRunner.JudgeBusyReads.Should().Be(120, "ten minutes of 5 s polls");
         delays.Should().Be(JudgeRunner.JudgeBusyReads);
         treeReads.Should().Be(JudgeRunner.JudgeBusyReads + 1);
+        using var capped = new CancellationTokenSource();
+        new JudgeRunner.CapWatch(
+            Client(host),
+            "thread-1",
+            [],
+            1m,
+            _ => Task.CompletedTask,
+            capped,
+            "NovaClient #5790557"
+        )
+            .PollEvery.Should()
+            .Be(TimeSpan.FromSeconds(5), "a running judge's wait delays one 5 s poll between reads");
     }
 
     [Fact]

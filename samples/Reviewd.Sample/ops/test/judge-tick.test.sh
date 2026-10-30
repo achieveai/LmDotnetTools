@@ -3,8 +3,8 @@
 # installs reach the batch as targets lines, a failure latches STOPPED and alerts once with its cause, alert bodies are
 # cut at a line, the daily summary goes out once, a missing CLI reads in words, the last unusable install fixed alerts
 # once, a lane passes its own judge lock and names itself, closes run once per newly judged PR, a STOPPED made during a
-# close stops the rest, and a close alert that was not sent is sent next tick. Nothing outside the temp dir is read or
-# written. Needs python3.
+# close stops the rest, a close alert that was not sent is sent next tick, and a shard lane passes --shard and closes
+# only its shard's PRs. Nothing outside the temp dir is read or written. Needs python3.
 #   ops/test/judge-tick.test.sh
 set -uo pipefail
 OPS=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
@@ -300,6 +300,29 @@ sed -i '/	109	/d' "$R/judge/close-failed.tsv"
 tick FAKE_RC=0 FAKE_CLOSE_REFUSE=109
 check "a close tried again after its line was removed alerts again when it fails the same way" \
     '[ "$(alerts "Judge b: 1 close")" -eq 3 ]'
+
+# Shards: lanes that share an install each set JUDGE_SHARD=i/n. The tick passes it to the batch as --shard and closes
+# only that shard's PRs; a PR id that is not a number is shard 0's.
+check "without JUDGE_SHARD the batch gets no --shard" '! grep -qx -- --shard "$T/args"'
+python3 -I - "$R/reviewd.db" <<'PY3'
+import json, sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+for pr in ("111", "112", "abc"):
+    db.execute("INSERT INTO cache VALUES (?, ?)", (f"reviewd/judge-run/org/p/repo/{pr}/1", json.dumps(
+        {"repository": "Org/P Q/Repo", "prId": pr, "n": 1, "stage": "completed", "outputStage": "final"})))
+db.commit()
+PY3
+echo JUDGE_SHARD=1/2 >> "$R/judge/judge.env"
+: > "$T/closes"
+tick FAKE_RC=0
+check "a shard lane passes its shard to the batch and closes only its own PRs" \
+    '[ "$(arg --shard)" = 1/2 ] && [ "$(grep -c . "$T/closes")" -eq 1 ] && grep -q -- "--pr 111 " "$T/closes"'
+sed -i 's|^JUDGE_SHARD=.*|JUDGE_SHARD=0/2|' "$R/judge/judge.env"
+: > "$T/closes"
+tick FAKE_RC=0
+check "the other shard closes the rest, the PR id that is not a number included" \
+    '[ "$(arg --shard)" = 0/2 ] && [ "$(grep -c . "$T/closes")" -eq 2 ] && grep -q -- "--pr 112 " "$T/closes" \
+        && grep -q -- "--pr abc " "$T/closes"'
 
 echo "$failures failure(s)"
 [ "$failures" -eq 0 ]
