@@ -5885,10 +5885,9 @@ public sealed class SubAgentManager : IAsyncDisposable
             return false;
         }
 
-        if (
-            !IsTerminal(record.Status)
-            || string.Equals(record.FailureCode, SubAgentFailureCodes.HostShutdown, StringComparison.Ordinal)
-        )
+        // Stopped is only ever set when the parent loop went away under a running child (host shutdown,
+        // or a recreated parent), so it keeps the interrupted semantics of a child still running.
+        if (!IsTerminal(record.Status) || record.Status == SubAgentStatus.Stopped)
         {
             _logger.LogInformation(
                 "Sub-agent {AgentId} was {Status} ({FailureCode}) when its parent stopped; left unregistered",

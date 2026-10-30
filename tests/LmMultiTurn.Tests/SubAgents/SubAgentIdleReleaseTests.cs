@@ -349,7 +349,8 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
         // Restore runs inside the rebuilt root's history recovery, so one child it cannot restore must
         // neither fail the root nor cost the other children their place. Each record is edited into a
         // state the restore must leave alone: unreadable, from a template that no longer exists, still
-        // running when the host died, or stopped by the host's shutdown; or not this root's to restore:
+        // running when the host died, or stopped because its parent loop went away (host shutdown or a
+        // recreated parent); or not this root's to restore:
         // no record, another parent's record, or a record naming an agent whose thread is elsewhere. A child
         // whose run failed is kept, and its error must read exactly as it did before the rebuild.
         const string threadId = "thread-rebuilt-skips";
@@ -382,6 +383,7 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
                     "retired",
                     "running",
                     "shutdown",
+                    "recreated",
                     "unrecorded",
                     "adopted",
                     "moved",
@@ -416,6 +418,11 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
         await EditRecordAsync(
             "shutdown",
             json => json.Replace("\"status\":\"completed\"", "\"status\":\"stopped\",\"failureCode\":\"host_shutdown\"")
+        );
+        await EditRecordAsync(
+            "recreated",
+            json =>
+                json.Replace("\"status\":\"completed\"", "\"status\":\"stopped\",\"failureCode\":\"parent_recreated\"")
         );
         await store.UpdateMetadataAsync(
             threads["unrecorded"],
