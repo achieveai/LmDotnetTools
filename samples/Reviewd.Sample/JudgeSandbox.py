@@ -887,11 +887,11 @@ GAP = rf"(?:\s|{ESCAPED_SPACE}|\\*[\"'])"
 MARKER_TAIL = rf"(?:(?:{GAP}*(\\*[\"']))?(?:\s|{ESCAPED_SPACE})*(?=[A-Za-z0-9+/%]))?(?:[^\s\"'<>;,\\]|{ESCAPED_CHAR})*"
 # A marker with nothing but a gap after it ends its line, so its value is on the next line with a letter or digit. A
 # line that opens a block comes before the value: it goes like a value line and carries the marker on. That is a code
-# fence that starts the line (after quote and list markers; a backtick fence's language holds no backtick, so
-# ```code``` inside prose is not one), or a line of only HTML tags.
+# fence or a run of HTML tags that starts the line, after any mix of quote and list markers (as in "- > ```text"). A
+# backtick fence's language holds no backtick, so ```code``` inside prose is not one.
 MARKER_AT_LINE_END = re.compile(rf"(?i)(?:AccountKey=|SharedAccessSignature\s*[=:]?){GAP}*$")
 VALUE_LINE = re.compile(r"(?=.*[A-Za-z0-9])[^A-Za-z0-9+/%]*")
-BLOCK_LINE = re.compile(r"[\s>]*(?:(?:[-*+]|\d+[.)])\s+)?(?:`{3,}[^`]*|~{3,}.*)$|\s*(?:<[^>]*>\s*)+$")
+BLOCK_LINE = re.compile(r"(?:\s*(?:>|(?:[-*+]|\d{1,9}[.)])(?=\s)))*\s*(?:`{3,}[^`]*|~{3,}.*|(?:<[^>]*>\s*)+)$")
 SECRET_TAIL = {"accountkey=": re.compile(MARKER_TAIL), "sharedaccesssignature": re.compile(rf"\s*[=:]?{MARKER_TAIL}"),
                "sig=": re.compile(rf"()(?:[^\s\"'<>;,&\\]|{ESCAPED_CHAR})*"), "eyj": re.compile(r"()(?:\.[A-Za-z0-9_-]*)?")}
 OPENING_QUOTE = re.compile(r"\\*[\"']$")
