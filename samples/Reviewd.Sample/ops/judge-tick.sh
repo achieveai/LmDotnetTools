@@ -183,9 +183,10 @@ fi
 # Close: for each PR whose newest judgment is a completed final one, judge close --execute files it on the store's main
 # and deletes its review branches. closed.tsv (label, repository, PR, judgment, when) lists what closed. A close that
 # fails, except "main kept moving" (exit 6, tried again next tick), goes to close-failed.tsv with its reason and alerts;
-# it is not tried again until its line is removed. close-alerted.tsv holds the failures whose alert was sent, so a failed
-# send is tried again next tick without running the close again (an alert may arrive twice, never not at all). Nothing
-# closes while STOPPED exists, including a STOPPED made while a close runs: the rest wait.
+# it is not tried again until its line is removed. close-alerted.tsv holds the failures whose alert was sent: a failed
+# send stays pending and is tried again on later close-enabled ticks, without running the close again, until notify
+# reports success (an alert may arrive twice). Nothing closes while STOPPED exists, including a STOPPED made while a
+# close runs: the rest wait.
 # pending: one "label<TAB>db<TAB>repository<TAB>PR<TAB>judgment" line per PR to close, read-only from each database.
 pending() {
     python3 -I - targets.tsv closed.tsv close-failed.tsv <<'PY'

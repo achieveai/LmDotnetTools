@@ -42,7 +42,7 @@ COMPLETENESS = {0: "InProgress", 1: "Partial", 2: "Complete"}
 SECRET_PATTERN = re.compile(r"(?i)(bearer\s+[a-z0-9._~+/=-]{20,}|eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{10,}"
                             r"|authorization\\*[\"']?\s*[:=]\s*\\*[\"']?\s*(?:basic|bearer|token)\s+(?=[^\s\"'<>\\]*[0-9+/=])"
                             r"[a-z0-9+/=._~-]{16,}"
-                            r"|AccountKey=|SharedAccessSignature|sig=[A-Za-z0-9%]{20,}|ghp_[A-Za-z0-9]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY"
+                            r"|AccountKey=|SharedAccessSignature|sig=[A-Za-z0-9%+/]{20,}|ghp_[A-Za-z0-9]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY"
                             r"|(?<![A-Za-z0-9_~.-])[A-Za-z0-9_~.]{3}\dQ~[A-Za-z0-9_~.-]{31,34}(?![A-Za-z0-9_~.-])"
                             r"|(?:(?:client_?secret|password|authorization)\\*[\"']?\s*[:=]|\bpwd\s*=(?![\s\"'\\]*[/~])|--client-secret(?:\s+|=))"
                             r"\s*\\*[\"']?(?![<*$%{\[]|changeme|redacted|placeholder|your)"
@@ -838,9 +838,10 @@ def tree_id(rev, path):
 
 
 def blob_text(name, env=None):
-    """The blob <name> (rev:path, or :path in env's index) as text, or "" when there is none."""
+    """The blob <name> (rev:path, or :path in env's index) as text (bytes that are not UTF-8 kept as surrogate escapes,
+    so a redacted copy encodes back to the same bytes), or "" when there is none."""
     p = subprocess.run(["git", "cat-file", "blob", name], capture_output=True, env={**os.environ, **(env or {})})
-    return p.stdout.decode("utf-8", "replace") if p.returncode == 0 else ""
+    return p.stdout.decode("utf-8", "surrogateescape") if p.returncode == 0 else ""
 
 
 def blob_head(blob):
@@ -848,15 +849,128 @@ def blob_head(blob):
     return subprocess.run(["git", "cat-file", "blob", blob], capture_output=True, check=True).stdout[:8000]
 
 
+def split_lines(text, keepends=False):
+    """text's lines, each ended by \\n, \\r\\n or \\r as in Markdown and JSON. str.splitlines also ends one at U+2028,
+    U+2029 and U+0085, which a JSON string may hold, so the value after a marker and one of them would sit on a line of
+    its own."""
+    lines = re.findall(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z", text)
+    return lines if keepends else [line.rstrip("\r\n") for line in lines]
+
+
 def added_text(new, old):
     """The lines of new that old lacks (a multiset difference): the text a close adds to one path."""
-    left, out = collections.Counter(old.splitlines()), []
-    for line in new.splitlines():
+    left, out = collections.Counter(split_lines(old)), []
+    for line in split_lines(new):
         if left[line]:
             left[line] -= 1
         else:
             out.append(line)
     return "\n".join(out)
+
+
+# A credential close files is replaced by **REDACTED**. It keeps the key, scheme or "sig=" before the secret, with the
+# quote that opens a quoted value (SECRET_KEEP). A bare marker (AccountKey=, SharedAccessSignature) goes with the value
+# after it, spaced or quoted, a JWT with its signature, and a sig= value runs to the next & (SECRET_TAIL; group 1: the
+# quote that opens the value). A quoted value is redacted up to its closing quote, escaped as it opened; with none on
+# the line, up to a delimiter, keeping the backslashes that end it.
+REDACTED = "**REDACTED**"
+OPEN = r"(?:\\*[\"'])?"
+SECRET_KEEP = re.compile(rf"(?i)bearer\s+|authorization{OPEN}\s*[:=]\s*{OPEN}\s*(?:(?:basic|bearer|token)\s+)?"
+                         rf"|(?:client_?secret|password){OPEN}\s*[:=]\s*{OPEN}|pwd\s*=\s*{OPEN}"
+                         rf"|--client-secret(?:\s+|=)\s*{OPEN}|sig=")
+# What may stand between AccountKey= or SharedAccessSignature and its value: spaces, JSON-escaped whitespace (\n, or
+# any \u escape) and quotes, doubled or escaped. The last quote opens the value. A value runs to a delimiter; a JSON
+# \u escape (System.Text.Json writes + as \u002B) or \/ inside it does not end it.
+ESCAPED_SPACE = r"\\+(?:[nrt]|u[0-9A-Fa-f]{4})"
+ESCAPED_CHAR = r"\\+(?:u[0-9A-Fa-f]{4}|/)"
+GAP = rf"(?:\s|{ESCAPED_SPACE}|\\*[\"'])"
+MARKER_TAIL = rf"(?:(?:{GAP}*(\\*[\"']))?(?:\s|{ESCAPED_SPACE})*(?=[A-Za-z0-9+/%]))?(?:[^\s\"'<>;,\\]|{ESCAPED_CHAR})*"
+# A marker with nothing but a gap after it ends its line, so its value is on the next line with a letter or digit. A
+# line that opens a block comes before the value: it goes like a value line and carries the marker on. That is a code
+# fence or a run of HTML tags that starts the line, after any mix of quote and list markers (as in "- > ```text"). A
+# backtick fence's language holds no backtick, so ```code``` inside prose is not one.
+MARKER_AT_LINE_END = re.compile(rf"(?i)(?:AccountKey=|SharedAccessSignature\s*[=:]?){GAP}*$")
+VALUE_LINE = re.compile(r"(?=.*[A-Za-z0-9])[^A-Za-z0-9+/%]*")
+BLOCK_LINE = re.compile(r"(?:\s*(?:>|(?:[-*+]|\d{1,9}[.)])(?=\s)))*\s*(?:`{3,}[^`]*|~{3,}.*|(?:<[^>]*>\s*)+)$")
+SECRET_TAIL = {"accountkey=": re.compile(MARKER_TAIL), "sharedaccesssignature": re.compile(rf"\s*[=:]?{MARKER_TAIL}"),
+               "sig=": re.compile(rf"()(?:[^\s\"'<>;,&\\]|{ESCAPED_CHAR})*"), "eyj": re.compile(r"()(?:\.[A-Za-z0-9_-]*)?")}
+OPENING_QUOTE = re.compile(r"\\*[\"']$")
+
+
+def redact_secrets(new, old, carry_lines=True):
+    """new with each credential match in the lines old lacks (as added_text counts them) replaced by REDACTED, and how
+    many it replaced; (None, 0) when one is a private key, which close never files. With carry_lines, a marker that
+    ends a line also takes the next line with a letter or digit, from its first value character to its end."""
+    left, out, count, pending = collections.Counter(split_lines(old)), [], 0, False
+    for segment in split_lines(new, keepends=True):
+        line = segment.rstrip("\r\n")
+        # A marker that ended an earlier line (main's too), with no letter or digit since, takes this line's value.
+        carried = pending and (v := VALUE_LINE.match(line))
+        pending = carry_lines and bool(
+            MARKER_AT_LINE_END.search(line) or pending and (not carried or BLOCK_LINE.match(line)))
+        if left[line]:
+            left[line] -= 1
+            out.append(segment)
+            continue
+        at, parts = 0, []
+        if carried:
+            parts, at, count = [line[:v.end()], REDACTED], len(line), count + 1
+        for m in SECRET_PATTERN.finditer(line):
+            start, stop, match = m.start(), m.end(), m.group(0)
+            if "private key" in match.lower():
+                return None, 0
+            if start < at:
+                continue
+            keep = k.group(0) if (k := SECRET_KEEP.match(match)) else ""
+            opening, inside, end = OPENING_QUOTE.search(keep), start + len(keep), stop
+            opening = opening and opening.group(0)
+            if tail := next((t for key, t in SECRET_TAIL.items() if match.lower().startswith(key)), None):
+                t = tail.match(line, stop)
+                if t.group(1):
+                    opening, inside = t.group(1), t.end(1)
+                end = t.end()
+            # The closing quote is the next one escaped exactly as the opening one. A quote escaped more is inside the
+            # value; one escaped less ends the string that holds this one, so the value has no closing quote here.
+            value, i = line[inside:end], inside - 1
+            while opening and (i := line.find(opening[-1], i + 1)) >= 0:
+                j = i
+                while j > inside and line[j - 1] == "\\":
+                    j -= 1
+                if i - j < len(opening) - 1:
+                    break
+                if i - j == len(opening) - 1:
+                    end = max(j, end - (len(value) - len(value.rstrip("\\"))))
+                    break
+            value = line[start + len(keep):end]
+            parts += [line[at:start], keep, REDACTED, value[len(value.rstrip("\\")):]]
+            at, count = end, count + 1
+        out.append("".join(parts) + segment[at:])
+    return "".join(out), count
+
+
+def parses(text):
+    try:
+        json.loads(text)
+        return True
+    except ValueError:
+        return False
+
+
+def redact_file(path, new, old):
+    """(text, count, None): the text close files at path, each credential it adds replaced by REDACTED; or (None, 0,
+    reason) when close must refuse it."""
+    # A JSON string never spans lines, so in a file that parses as JSON (whatever its name) no value follows a marker on
+    # the next line, and the file must still parse once redacted.
+    is_json = parses(new)
+    text, count = redact_secrets(new, old, carry_lines=not is_json)
+    if text is None:
+        return None, 0, f"{path} holds a private key"
+    # A match that spans lines is one redact_secrets cannot see.
+    if SECRET_PATTERN.search(added_text(text, old)):
+        return None, 0, f"{path} matches a credential pattern across lines"
+    if is_json and not parses(text):
+        return None, 0, f"{path} would not stay valid JSON once redacted"
+    return text, count, None
 
 
 def close_prepare():
@@ -966,13 +1080,29 @@ def close_commit():
                                          "nothing was committed"}))
             writes.append((path, source))
         # Scan only the text this close adds (overlaid round files, written files) against main's version of each
-        # path: main's existing text is not this close's to refuse. The reason names the path, never the match.
+        # path: main's existing text is not this close's to change. A credential in it is filed as REDACTED
+        # (redact_secrets) in the commit only; the source files stay as they are (a preview changes nothing). The JSON
+        # names the path and a count, never the match.
+        # Each path once, from the source it is committed from: a written file replaces a round file at its path.
         overlaid = [p for p in git([], "diff-index", "--cached", "-z", "--name-only", main, env=index).stdout.split("\0") if p]
-        for path, new in [(p, blob_text(f":{p}", index)) for p in overlaid] + [(p, s.read_text(encoding="utf-8")) for p, s in writes]:
-            if SECRET_PATTERN.search(added_text(new, blob_text(f"{main}:{path}"))):
-                return print(json.dumps({"status": "refused", "reason": f"{path} matches a credential pattern; nothing was committed"}))
+        redacted, cleaned = [], {}
+        for path, source in {**{p: None for p in overlaid}, **dict(writes)}.items():
+            new = source.read_bytes().decode("utf-8", "surrogateescape") if source else blob_text(f":{path}", index)
+            old = blob_text(f"{main}:{path}")
+            # Every path, not only one whose added text matches: a value added under a marker line main has does not.
+            text, count, refusal = redact_file(path, new, old)
+            if refusal:
+                return print(json.dumps({"status": "refused", "reason": f"{refusal}; nothing was committed"}))
+            if not count:
+                continue
+            cleaned[path] = subprocess.run(["git", "hash-object", "-w", "--no-filters", "--stdin"], capture_output=True, check=True,
+                                           input=text.encode("utf-8", "surrogateescape")).stdout.decode().strip()
+            if not source:
+                mode = git([], "ls-files", "-s", "--", path, env=index).stdout.split()[0]
+                git([], "update-index", "--cacheinfo", f"{mode},{cleaned[path]},{path}", env=index)
+            redacted.append({"path": path, "count": count})
         for path, source in writes:
-            blob = git([], "hash-object", "-w", "--", str(source)).stdout.strip()
+            blob = cleaned.get(path) or git([], "hash-object", "-w", "--", str(source)).stdout.strip()
             git([], "update-index", "--add", "--cacheinfo", f"100644,{blob},{path}", env=index)
         tree = git([], "write-tree", env=index).stdout.strip()
         name, email = git([], "config", "user.name").stdout.strip(), git([], "config", "user.email").stdout.strip()
@@ -987,7 +1117,8 @@ def close_commit():
                                      f"outside {review_dir}/ ({', '.join(dropped[:5])}); nothing was pushed"}))
         files = [dict(zip(("added", "removed", "path"), e.split("\t", 2)))
                  for e in git([], "diff", "--numstat", "-z", "--no-renames", main, commit).stdout.split("\0") if e]
-        result = {"status": "planned", "commit": commit, "parents": parents, "files": files}
+        result = {"status": "planned", "commit": commit, "parents": parents, "files": files,
+                  **({"redacted": redacted} if redacted else {})}
         if args["push"]:
             if git([], "merge-base", "--is-ancestor", main, commit, check=False).returncode:
                 die("the close commit does not descend from main")
