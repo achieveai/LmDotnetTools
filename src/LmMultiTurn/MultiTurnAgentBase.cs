@@ -1493,13 +1493,16 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
     /// <summary>
     /// Queued input a run would act on, not yet drained: <see cref="PendingInputCount"/> without the
-    /// loop's own wake sentinel (or any other <see cref="QueuedInput.Resume"/> entry). Counted from the
-    /// same write-site record <see cref="HasRealInputQueued"/> reads.
+    /// loop's own wake sentinel (or any other <see cref="QueuedInput.Resume"/> entry). Recorded by the
+    /// same <c>SignalIfRealInput</c> call that signals <see cref="HasRealInputQueued"/>; the two are
+    /// separate state and can briefly disagree.
     /// </summary>
     /// <remarks>
-    /// Can briefly UNDERcount, never overcount: an input is recorded just after its channel write, so a
-    /// read between the two misses it. That reads exactly like the input landing just after the count
-    /// was taken, which every consumer already has to handle. <c>SubAgentManager</c> does not rely on
+    /// Can briefly UNDERcount: an input is recorded just after its channel write, so a read between the
+    /// two misses it. That reads exactly like the input landing just after the count was taken, which
+    /// every consumer already has to handle. Read from the loop's own completion paths it does not
+    /// overcount, because those never run alongside the loop's drain; a reader on another thread can
+    /// briefly count an input the drain has taken but not yet retired. <c>SubAgentManager</c> does not rely on
     /// this count alone to keep a provider alive: it re-reads the live channel through
     /// <c>MultiTurnAgentLoop.HasPendingLoopWork</c> after the completion arrives. The record cannot come
     /// first: a peek waiter would then end its wait on an input whose parked write may still fail.
