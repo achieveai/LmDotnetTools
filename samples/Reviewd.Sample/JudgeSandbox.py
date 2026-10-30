@@ -849,10 +849,18 @@ def blob_head(blob):
     return subprocess.run(["git", "cat-file", "blob", blob], capture_output=True, check=True).stdout[:8000]
 
 
+def split_lines(text, keepends=False):
+    """text's lines, each ended by \\n, \\r\\n or \\r as in Markdown and JSON. str.splitlines also ends one at U+2028,
+    U+2029 and U+0085, which a JSON string may hold, so the value after a marker and one of them would sit on a line of
+    its own."""
+    lines = re.findall(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z", text)
+    return lines if keepends else [line.rstrip("\r\n") for line in lines]
+
+
 def added_text(new, old):
     """The lines of new that old lacks (a multiset difference): the text a close adds to one path."""
-    left, out = collections.Counter(old.splitlines()), []
-    for line in new.splitlines():
+    left, out = collections.Counter(split_lines(old)), []
+    for line in split_lines(new):
         if left[line]:
             left[line] -= 1
         else:
@@ -870,15 +878,21 @@ OPEN = r"(?:\\*[\"'])?"
 SECRET_KEEP = re.compile(rf"(?i)bearer\s+|authorization{OPEN}\s*[:=]\s*{OPEN}\s*(?:(?:basic|bearer|token)\s+)?"
                          rf"|(?:client_?secret|password){OPEN}\s*[:=]\s*{OPEN}|pwd\s*=\s*{OPEN}"
                          rf"|--client-secret(?:\s+|=)\s*{OPEN}|sig=")
-# What may stand between AccountKey= or SharedAccessSignature and its value: spaces, JSON-escaped whitespace and quotes,
-# doubled or escaped. The last quote opens the value.
-GAP = r"(?:\s|\\+[nrt]|\\*[\"'])"
-MARKER_TAIL = rf"(?:(?:{GAP}*(\\*[\"']))?(?:\s|\\+[nrt])*(?=[A-Za-z0-9+/%]))?[^\s\"'<>;,\\]*"
-# A marker with nothing but a gap after it ends its line, so its value is on the next line with a letter or digit.
+# What may stand between AccountKey= or SharedAccessSignature and its value: spaces, JSON-escaped whitespace (\n, or
+# any \u escape) and quotes, doubled or escaped. The last quote opens the value. A value runs to a delimiter; a JSON
+# \u escape (System.Text.Json writes + as \u002B) or \/ inside it does not end it.
+ESCAPED_SPACE = r"\\+(?:[nrt]|u[0-9A-Fa-f]{4})"
+ESCAPED_CHAR = r"\\+(?:u[0-9A-Fa-f]{4}|/)"
+GAP = rf"(?:\s|{ESCAPED_SPACE}|\\*[\"'])"
+MARKER_TAIL = rf"(?:(?:{GAP}*(\\*[\"']))?(?:\s|{ESCAPED_SPACE})*(?=[A-Za-z0-9+/%]))?(?:[^\s\"'<>;,\\]|{ESCAPED_CHAR})*"
+# A marker with nothing but a gap after it ends its line, so its value is on the next line with a letter or digit. A
+# line that opens a block (a code fence, an HTML tag) comes before the value: it goes like a value line and carries
+# the marker on.
 MARKER_AT_LINE_END = re.compile(rf"(?i)(?:AccountKey=|SharedAccessSignature\s*[=:]?){GAP}*$")
 VALUE_LINE = re.compile(r"(?=.*[A-Za-z0-9])[^A-Za-z0-9+/%]*")
+BLOCK_LINE = re.compile(r"`{3}|~{3}|^\s*(?:<[^>]*>\s*)+$")
 SECRET_TAIL = {"accountkey=": re.compile(MARKER_TAIL), "sharedaccesssignature": re.compile(rf"\s*[=:]?{MARKER_TAIL}"),
-               "sig=": re.compile(r"()[^\s\"'<>;,&\\]*"), "eyj": re.compile(r"()(?:\.[A-Za-z0-9_-]*)?")}
+               "sig=": re.compile(rf"()(?:[^\s\"'<>;,&\\]|{ESCAPED_CHAR})*"), "eyj": re.compile(r"()(?:\.[A-Za-z0-9_-]*)?")}
 OPENING_QUOTE = re.compile(r"\\*[\"']$")
 
 
@@ -886,12 +900,13 @@ def redact_secrets(new, old, carry_lines=True):
     """new with each credential match in the lines old lacks (as added_text counts them) replaced by REDACTED, and how
     many it replaced; (None, 0) when one is a private key, which close never files. With carry_lines, a marker that
     ends a line also takes the next line with a letter or digit, from its first value character to its end."""
-    left, out, count, pending = collections.Counter(old.splitlines()), [], 0, False
-    for segment in new.splitlines(keepends=True):
-        line = (segment.splitlines() or [""])[0]
+    left, out, count, pending = collections.Counter(split_lines(old)), [], 0, False
+    for segment in split_lines(new, keepends=True):
+        line = segment.rstrip("\r\n")
         # A marker that ended an earlier line (main's too), with no letter or digit since, takes this line's value.
         carried = pending and (v := VALUE_LINE.match(line))
-        pending = carry_lines and bool(MARKER_AT_LINE_END.search(line) or pending and not carried)
+        pending = carry_lines and bool(
+            MARKER_AT_LINE_END.search(line) or pending and (not carried or BLOCK_LINE.search(line)))
         if left[line]:
             left[line] -= 1
             out.append(segment)
@@ -943,14 +958,16 @@ def parses(text):
 def redact_file(path, new, old):
     """(text, count, None): the text close files at path, each credential it adds replaced by REDACTED; or (None, 0,
     reason) when close must refuse it."""
-    # A JSON string never spans lines, so in a file that parses as JSON no value follows a marker on the next line.
-    text, count = redact_secrets(new, old, carry_lines=not (path.endswith(".json") and parses(new)))
+    # A JSON string never spans lines, so in a file that parses as JSON (whatever its name) no value follows a marker on
+    # the next line, and the file must still parse once redacted.
+    is_json = parses(new)
+    text, count = redact_secrets(new, old, carry_lines=not is_json)
     if text is None:
         return None, 0, f"{path} holds a private key"
     # A match that spans lines is one redact_secrets cannot see.
     if SECRET_PATTERN.search(added_text(text, old)):
         return None, 0, f"{path} matches a credential pattern across lines"
-    if path.endswith(".json") and parses(new) and not parses(text):
+    if is_json and not parses(text):
         return None, 0, f"{path} would not stay valid JSON once redacted"
     return text, count, None
 

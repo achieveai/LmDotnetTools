@@ -958,8 +958,9 @@ public sealed class ReviewdJudgeCloseTests
             .Be("""["password=Sup3rS3cret99\n**REDACTED**\n",1]""", "main's line is not this close's to change");
     }
 
-    // redact_file refuses what it cannot file safely: a private key, a match across lines, and a JSON file the
-    // redaction would break. No shape in the pattern breaks JSON today, so a stand-in redact_secrets does.
+    // redact_file refuses what it cannot file safely: a private key, a match across lines, and a file that parses as
+    // JSON, whatever its name, the redaction would break. No shape in the pattern breaks JSON today, so a stand-in
+    // redact_secrets does.
     [SkippableFact]
     public async Task Redact_file_refuses_a_private_key_a_match_across_lines_and_broken_JSON()
     {
@@ -973,7 +974,8 @@ public sealed class ReviewdJudgeCloseTests
                 + " sandbox.redact_file('a.json', '{\"p\": \"password=Sup3rS3cret99\"}', '')[2],"
                 + " setattr(sandbox, 'redact_secrets', lambda *a, **k: ('{', 1)),"
                 + " sandbox.redact_file('a.json', '{\"p\": \"password=Sup3rS3cret99\"}', '')[2],"
-                + " sandbox.redact_file('a.md', 'password=Sup3rS3cret99', '')[2]]",
+                + " sandbox.redact_file('a.md', 'password=Sup3rS3cret99', '')[2],"
+                + " sandbox.redact_file('notes.md', '{\"p\": \"password=Sup3rS3cret99\"}', '')[2]]",
             new JsonArray()
         );
 
@@ -982,13 +984,19 @@ public sealed class ReviewdJudgeCloseTests
             .Should()
             .Be(
                 "[\"a.md holds a private key\",\"a.md matches a credential pattern across lines\",null,null,"
-                    + "\"a.json would not stay valid JSON once redacted\",null]"
+                    + "\"a.json would not stay valid JSON once redacted\",null,"
+                    + "\"notes.md would not stay valid JSON once redacted\"]"
             );
     }
 
+    // A list that ends with a marker: carried on, the next line with a letter would take the "other" key and break it.
+    private const string PrettyJson = "{\n  \"p\": [\n    \"AccountKey=\"\n  ],\n  \"other\": \"value\"\n}";
+
     // A marker that ends a line takes the next line with a letter or digit (lines without one, main's too, carry it
-    // on), from its first value character to its end: behind a list marker, quote, backtick, fence or bracket too. A
-    // line main has keeps its value, which main holds already, and a file that parses as JSON carries nothing.
+    // on), from its first value character to its end: behind a list marker, quote, backtick, fence, bracket, tab, table
+    // pipe or bold too. A line that opens a block (a fence with a language, an HTML tag) goes and carries it on. A line
+    // main has keeps its value, which main holds already, and a file that parses as JSON, whatever its name, carries
+    // nothing.
     [SkippableFact]
     public async Task Redact_file_takes_the_next_line_with_a_value_after_a_marker_that_ends_one()
     {
@@ -1008,7 +1016,15 @@ public sealed class ReviewdJudgeCloseTests
                 new JsonArray("a.md", "AccountKey=\n\n- FAKE1234567890\n", "AccountKey=\n\n"),
                 new JsonArray("a.md", "secret (?i)token|sig=|accountkey=\n```\n", ""),
                 new JsonArray("a.md", "AccountKey=\nFAKE1234567890\n", "FAKE1234567890\n"),
-                new JsonArray("a.json", "{\n  \"p\": [\n    \"AccountKey=\"\n  ],\n  \"other\": \"value\"\n}", "")
+                new JsonArray("a.md", "AccountKey=\n```text\nFAKE1234567890\n```\n", ""),
+                new JsonArray("a.md", "AccountKey=\n~~~text\nFAKE1234567890\n~~~\n", ""),
+                new JsonArray("a.md", "AccountKey=\n<pre>\nFAKE1234567890\n</pre>\n", ""),
+                new JsonArray("a.md", "AccountKey=\n\tFAKE1234567890\n", ""),
+                new JsonArray("a.md", "AccountKey=\n| FAKE1234567890 |\n", ""),
+                new JsonArray("a.md", "AccountKey=\n**FAKE1234567890**\n", ""),
+                new JsonArray("a.json", PrettyJson, ""),
+                new JsonArray("notes.md", PrettyJson, ""),
+                new JsonArray("copy.JSON", PrettyJson, "")
             )
         );
 
@@ -1026,7 +1042,52 @@ public sealed class ReviewdJudgeCloseTests
                 "AccountKey=\n\n- **REDACTED**\n",
                 "secret (?i)token|sig=|**REDACTED**\n```\n",
                 "**REDACTED**\nFAKE1234567890\n",
-                "{\n  \"p\": [\n    \"**REDACTED**\"\n  ],\n  \"other\": \"value\"\n}"
+                "**REDACTED**\n```**REDACTED**\n**REDACTED**\n```\n",
+                "**REDACTED**\n~~~**REDACTED**\n**REDACTED**\n~~~\n",
+                "**REDACTED**\n<**REDACTED**\n**REDACTED**\n</pre>\n",
+                "**REDACTED**\n\t**REDACTED**\n",
+                "**REDACTED**\n| **REDACTED**\n",
+                "**REDACTED**\n****REDACTED**\n",
+                PrettyJson.Replace("AccountKey=", "**REDACTED**", StringComparison.Ordinal),
+                PrettyJson.Replace("AccountKey=", "**REDACTED**", StringComparison.Ordinal),
+                PrettyJson.Replace("AccountKey=", "**REDACTED**", StringComparison.Ordinal)
+            );
+    }
+
+    // A JSON string may hold U+2028, U+2029 and U+0085 (str.splitlines ends a line at each) and \u escapes, before a
+    // value or inside one (System.Text.Json writes + as \u002B): the value goes whole and the JSON still parses.
+    [SkippableFact]
+    public async Task Redact_file_takes_a_JSON_value_after_a_line_separator_or_holding_a_unicode_escape()
+    {
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no python3 on PATH");
+
+        var redacted = await ReviewdJudgeTests.SandboxAsync(
+            python!,
+            "[sandbox.redact_file('a.json', new, '')[0] for new in data]",
+            new JsonArray(
+                "{\"e\": \"AccountKey=\u2028FAKE1234567890\"}",
+                "{\"e\": \"AccountKey=\u2029FAKE1234567890\"}",
+                "{\"e\": \"AccountKey=\u0085FAKE1234567890\"}",
+                """{"e": "AccountKey=\u000aFAKE1234567890"}""",
+                """{"e": "AccountKey=FAKE\u002BFAKE1234567890"}""",
+                """{"e": "sv=1&sig=abcdefghijklmnopqrstuvw\u002Bxyz&se=1"}""",
+                """{"e": "sig=abcdefghijklmnopqrstuvw\/xyz"}"""
+            )
+        );
+
+        redacted
+            .AsArray()
+            .Select(r => r!.GetValue<string>())
+            .Should()
+            .Equal(
+                """{"e": "**REDACTED**"}""",
+                """{"e": "**REDACTED**"}""",
+                """{"e": "**REDACTED**"}""",
+                """{"e": "**REDACTED**"}""",
+                """{"e": "**REDACTED**"}""",
+                """{"e": "sv=1&sig=**REDACTED**&se=1"}""",
+                """{"e": "sig=**REDACTED**"}"""
             );
     }
 
