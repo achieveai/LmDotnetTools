@@ -95,6 +95,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     // guarded by _stateLock, and the arrival source is swapped before the old one is completed, so a
     // waiter that captured it under the same lock as its scan cannot miss the next write.
     private readonly List<QueuedInput> _pendingRealInputs = [];
+
+    // Real input a drain took before its writer recorded it. A write lands on the channel and is only
+    // then recorded, so the loop can drain it in between; the drain finds nothing to retire, and the
+    // record made afterwards would stay in _pendingRealInputs for good. The record step consumes the
+    // note instead. Every successful write records exactly once, so no note outlives its input.
+    // Guarded by _stateLock.
+    private readonly HashSet<QueuedInput> _drainedBeforeRecorded = new(ReferenceEqualityComparer.Instance);
     private TaskCompletionSource _inputArrival = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     // Lifecycle
@@ -177,6 +184,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
     /// <summary>How many output subscribers are registered: lets a test wait until a viewer is attached.</summary>
     internal int SubscriberCountForTests => _outputSubscribers.Count;
+
+    /// <summary>
+    /// Runs on the writer's thread after real input has landed on the channel and before it is
+    /// recorded as queued, so a test can let the loop drain it first.
+    /// </summary>
+    internal Action<QueuedInput>? BeforeRecordingRealInputForTest { get; set; }
 
     /// <summary>
     /// The maximum turns per run.
@@ -1563,12 +1576,17 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             return;
         }
 
+        BeforeRecordingRealInputForTest?.Invoke(queued);
+
         TaskCompletionSource signal;
         TaskCompletionSource arrival;
         lock (_stateLock)
         {
             signal = _realInputSignal;
-            _pendingRealInputs.Add(queued);
+            if (!_drainedBeforeRecorded.Remove(queued))
+            {
+                _pendingRealInputs.Add(queued);
+            }
 
             // Swap first, complete second. A waiter captured the OLD source under the lock together
             // with its scan of the list, so completing it after the swap wakes exactly the waiters
@@ -1738,13 +1756,20 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             {
                 foreach (var taken in inputs)
                 {
+                    var retired = false;
                     for (var i = 0; i < _pendingRealInputs.Count; i++)
                     {
                         if (ReferenceEquals(_pendingRealInputs[i], taken))
                         {
                             _pendingRealInputs.RemoveAt(i);
+                            retired = true;
                             break;
                         }
+                    }
+
+                    if (!retired && taken.Resume == null)
+                    {
+                        _ = _drainedBeforeRecorded.Add(taken);
                     }
                 }
             }
