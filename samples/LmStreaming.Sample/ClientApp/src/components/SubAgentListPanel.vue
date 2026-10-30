@@ -2,6 +2,7 @@
 import { ref } from 'vue';
 import type { SubAgentSummary } from '@/api/subAgentsApi';
 import { isTestInstruction } from '@/composables/useChat';
+import { subAgentEndReason } from '@/utils/subAgentStatus';
 
 /**
  * Compact right-side LAUNCHER for a conversation's sub-agents. Stateless/presentational: it renders the
@@ -108,6 +109,12 @@ function attr(value: number | boolean | null | undefined): string | undefined {
             <div v-if="taskSummary(child.task)" class="subagent-task">{{ taskSummary(child.task) }}</div>
             <div class="subagent-status">
               {{ child.status }}
+              <span
+                v-if="subAgentEndReason(child.status, child.failureCode)"
+                class="subagent-end-reason"
+                data-testid="subagent-end-reason"
+                >· {{ subAgentEndReason(child.status, child.failureCode) }}</span
+              >
               <span
                 v-if="child.structuralDepth != null"
                 class="subagent-depth"

@@ -67,6 +67,21 @@ describe('SubAgentListPanel (launcher)', () => {
     expect(items[1].text()).toContain('planner');
   });
 
+  // The inspector says why a child ended, as the agent tabs do, rather than a bare "stopped" (#792).
+  it.each([
+    ['stopped', 'parent_recreated', 'parent provider changed'],
+    ['error', 'view_exceeds_window', 'view_exceeds_window'],
+    ['stopped', 'host_shutdown', null],
+    ['completed', null, null],
+  ] as const)('shows a %s child with code %s the reason "%s"', async (status, failureCode, reason) => {
+    const wrapper = mountPanel([summary('a1', { status, failureCode })]);
+    await wrapper.get('[data-testid="subagent-panel-toggle"]').trigger('click');
+
+    expect(wrapper.get('.subagent-status').text()).toContain(status);
+    const shown = wrapper.find('[data-testid="subagent-end-reason"]');
+    expect(shown.exists() ? shown.text() : null).toBe(reason === null ? null : `· ${reason}`);
+  });
+
   it('shows an empty state when there are no children', async () => {
     const wrapper = mountPanel([]);
     await wrapper.get('[data-testid="subagent-panel-toggle"]').trigger('click');

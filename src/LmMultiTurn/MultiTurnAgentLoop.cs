@@ -1645,7 +1645,7 @@ public sealed class MultiTurnAgentLoop
             await CompleteRunAsync(
                 assignment.RunId,
                 assignment.GenerationId,
-                pendingMessageCount: 0,
+                pendingMessageCount: PendingWorkInputCount,
                 isError: true,
                 errorMessage: "the child run carrying this delayed tool result could not be durably "
                     + "recorded as started; it was not run, and remains recoverable",
@@ -1683,7 +1683,7 @@ public sealed class MultiTurnAgentLoop
             await CompleteRunAsync(
                 assignment.RunId,
                 assignment.GenerationId,
-                pendingMessageCount: 0,
+                pendingMessageCount: PendingWorkInputCount,
                 outcome: LifecycleRunOutcomes.AwaitingSiblingResults,
                 ct: ct
             );

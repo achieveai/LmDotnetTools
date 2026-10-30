@@ -420,6 +420,45 @@ public class DelayedResultChildRunTests
         toolCompleted.Error!.Message.Should().Be("the upstream service rejected it");
     }
 
+    /// <summary>
+    /// A delayed-result child that ends without a turn — a sibling still waiting on another result, or
+    /// one whose start could not be recorded — must still report the input queued behind it.
+    /// <see cref="RunCompletedMessage.HasPendingMessages"/> is how a subscriber tells "another run
+    /// follows" from "the conversation is idle"; reporting none while a user's message waits makes a
+    /// consumer (the to-do nudge pump) treat a busy conversation as finished.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AChildRunThatTakesNoTurn_ReportsTheInputQueuedBehindIt(bool startNotRecorded)
+    {
+        var lifecycleStore = new FailableLifecycleStore(new InMemoryConversationStore());
+        await using var harness = await Harness.StartAsync(
+            _mockAgent,
+            startNotRecorded ? ["tc_a"] : ["tc_a", "tc_b"],
+            lifecycleStore: lifecycleStore
+        );
+        lifecycleStore.FailRunStarts = startNotRecorded;
+
+        // Delayed results outrank queued input, so a message sent just before the child is taken is
+        // still on the channel when that child completes.
+        var queueInput = 1;
+        harness.Loop.BeforeTakingNextWorkForTest = async ct =>
+        {
+            if (Interlocked.Exchange(ref queueInput, 0) == 1)
+            {
+                _ = await harness.Loop.SendAsync([new TextMessage { Text = "Also this", Role = Role.User }], ct: ct);
+            }
+        };
+
+        await harness.Loop.ResolveToolCallAsync("tc_a", "result-a");
+
+        var child = await harness.WaitForCompletionAsync(c => c.CompletedRunId != harness.OriginatingRunId);
+        child.IsError.Should().Be(startNotRecorded, "the two cases are the two ways a child ends without a turn");
+        child.PendingMessageCount.Should().BeGreaterThan(0, "the user's message is still queued behind this run");
+        child.HasPendingMessages.Should().BeTrue();
+    }
+
     #endregion
 
     #region Helpers
@@ -490,6 +529,7 @@ public class DelayedResultChildRunTests
         private readonly CancellationTokenSource _cts = new();
         private readonly TaskCompletionSource<bool> _firstRunCompleted = new();
         private readonly List<string> _completedRunIds = [];
+        private readonly List<RunCompletedMessage> _completions = [];
         private readonly Lock _gate = new();
 
         /// <summary>One permit per provider call, released once that call's bookkeeping is visible.</summary>
@@ -571,6 +611,25 @@ public class DelayedResultChildRunTests
             var pending = await loop.GetDeferredToolCallsAsync();
             pending.Should().HaveCount(toolCallIds.Count, "the harness starts from a fully parked run");
             return harness;
+        }
+
+        /// <summary>Waits for a run-completed message that matches, consuming one permit per completion seen.</summary>
+        public async Task<RunCompletedMessage> WaitForCompletionAsync(Func<RunCompletedMessage, bool> match)
+        {
+            while (true)
+            {
+                lock (_gate)
+                {
+                    if (_completions.FirstOrDefault(match) is { } found)
+                    {
+                        return found;
+                    }
+                }
+
+                (await _runCompleted.WaitAsync(WaitBudget))
+                    .Should()
+                    .BeTrue($"a matching run completion should have arrived within {WaitBudget}");
+            }
         }
 
         /// <summary>
@@ -724,6 +783,7 @@ public class DelayedResultChildRunTests
                             lock (_gate)
                             {
                                 _completedRunIds.Add(completed.CompletedRunId);
+                                _completions.Add(completed);
                             }
 
                             if (_firstRunCompleted.TrySetResult(true))
@@ -785,6 +845,9 @@ public class DelayedResultChildRunTests
         /// <summary>When set, <see cref="TryResolveDeferredToolCallAsync"/> throws instead of committing.</summary>
         public bool FailResolutions { get; set; }
 
+        /// <summary>When set, <see cref="RecordRunStartedAsync"/> throws, so a run's start is not durable.</summary>
+        public bool FailRunStarts { get; set; }
+
         /// <summary>
         /// Runs inside <see cref="TryResolveDeferredToolCallAsync"/> before it commits anything, so a
         /// test can decide what the store appears to do — including throwing.
@@ -792,7 +855,9 @@ public class DelayedResultChildRunTests
         public Func<CancellationToken, Task>? BeforeResolve { get; set; }
 
         public Task RecordRunStartedAsync(RunLifecycleState state, CancellationToken ct = default) =>
-            inner.RecordRunStartedAsync(state, ct);
+            FailRunStarts
+                ? throw new InvalidOperationException("simulated lifecycle store outage")
+                : inner.RecordRunStartedAsync(state, ct);
 
         public Task<RunLifecycleState?> LoadRunLifecycleAsync(string runId, CancellationToken ct = default) =>
             inner.LoadRunLifecycleAsync(runId, ct);
