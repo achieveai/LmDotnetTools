@@ -1,6 +1,9 @@
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using FluentAssertions;
@@ -221,6 +224,145 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
     }
 
     /// <summary>
+    /// The sub-agent socket rebuilds an unloaded parent so its finished children answer again (#868), and
+    /// the rebuild freezes the pooled agent's owner to the caller (#399). The socket admits on READ, so
+    /// a viewer must not rebuild: they keep the persisted replay, and the owner's own <c>/ws</c> must
+    /// still get her agent. The owner's tab, on write, still rebuilds. A replay tab has nothing live to
+    /// relay to, so a follow-up typed into it is refused, not dropped.
+    /// </summary>
+    [Fact]
+    public async Task WithEnforcementOn_AViewersSubAgentTab_DoesNotRebuildTheOwnersUnloadedParent()
+    {
+        LogTestStart();
+        using var factory = NewFactory();
+        var pool =
+            factory.Services.GetRequiredService<AchieveAi.LmDotnetTools.LmAgentInfra.Agents.MultiTurnAgentPool>();
+
+        // Fresh ids: the host's file store outlives the test, and a rebuild writes to the parent's row.
+        var sharedParent = $"thread-alices-shared-{Guid.NewGuid():N}";
+        var sharedChild = $"alices-shared-child-{Guid.NewGuid():N}";
+        await ProvisionOwnedThreadAsync(factory, sharedParent, Alice);
+        await SeedPersistedChildAsync(factory, sharedChild, sharedParent);
+        await GrantViewerAsync(factory, sharedParent, Bob);
+
+        var bobsSocket = await factory.ConnectSubAgentWebSocketAsync(
+            sharedParent,
+            sharedChild,
+            subProtocols: CredentialFor(Bob)
+        );
+        await using (var bob = new WebSocketTestClient(bobsSocket))
+        {
+            using var frames = await bob.CollectUntilDoneAsync(TimeSpan.FromSeconds(15));
+            _ = frames
+                .OfMessageType("done")
+                .Should()
+                .ContainSingle("a viewer keeps the read-only replay of the parent's finished child");
+            await ExpectReadOnlyRefusalAsync(bob);
+        }
+
+        _ = pool.TryGet(sharedParent, out _)
+            .Should()
+            .BeFalse("a viewer's tab must not rebuild the parent and freeze its owner to the viewer");
+
+        using var alicesSocket = await factory.ConnectWebSocketAsync(sharedParent, subProtocols: CredentialFor(Alice));
+        await Wait.UntilAsync(
+            () => pool.TryGet(sharedParent, out _),
+            because: "the owner's /ws puts her parent in the pool",
+            timeout: TimeSpan.FromSeconds(20)
+        );
+        _ = pool.GetAgentOwnerUserId(sharedParent).Should().Be(Alice);
+        await alicesSocket.CloseAsync(
+            System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
+            "done",
+            CancellationToken.None
+        );
+
+        // Non-vacuity: on write, the owner's own tab does rebuild, so the check above is not passing on a
+        // host whose rebuild never runs.
+        var ownParent = $"thread-alices-own-parent-{Guid.NewGuid():N}";
+        var ownChild = $"alices-own-child-{Guid.NewGuid():N}";
+        await ProvisionOwnedThreadAsync(factory, ownParent, Alice);
+        await SeedPersistedChildAsync(factory, ownChild, ownParent);
+
+        var alicesTab = await factory.ConnectSubAgentWebSocketAsync(
+            ownParent,
+            ownChild,
+            subProtocols: CredentialFor(Alice)
+        );
+        await using (var alice = new WebSocketTestClient(alicesTab))
+        {
+            using var frames = await alice.CollectUntilDoneAsync(TimeSpan.FromSeconds(15));
+
+            // The seeded child has no record to restore, so even the owner's tab is a replay.
+            await ExpectReadOnlyRefusalAsync(alice);
+        }
+
+        _ = pool.TryGet(ownParent, out _).Should().BeTrue("the owner's tab rebuilds her unloaded parent");
+        _ = pool.GetAgentOwnerUserId(ownParent).Should().Be(Alice);
+    }
+
+    /// <summary>
+    /// Following up a sub-agent is a write to the conversation, as a message to the root is. A viewer's
+    /// tab on a LOADED parent streams the child but must not reach it (#868); the owner's tab still does.
+    /// </summary>
+    [Fact]
+    public async Task WithEnforcementOn_AViewersFollowUp_NeverReachesTheOwnersLiveSubAgent()
+    {
+        LogTestStart();
+        using var factory = NewFactoryWithWorker();
+        var pool =
+            factory.Services.GetRequiredService<AchieveAi.LmDotnetTools.LmAgentInfra.Agents.MultiTurnAgentPool>();
+        var store = factory.Services.GetRequiredService<IConversationStore>();
+
+        var parent = $"thread-alices-live-{Guid.NewGuid():N}";
+        await ProvisionOwnedThreadAsync(factory, parent, Alice);
+        await GrantViewerAsync(factory, parent, Bob);
+
+        var alicesSocket = await factory.ConnectWebSocketAsync(parent, subProtocols: CredentialFor(Alice));
+        await using var alice = new WebSocketTestClient(alicesSocket);
+        await alice.SendUserMessageAsync("spawn a worker");
+        using (var _ = await alice.CollectUntilDoneAsync(TimeSpan.FromSeconds(30))) { }
+
+        _ = pool.TryGet(parent, out var root).Should().BeTrue();
+        var manager = ((MultiTurnAgentLoop)root!).SubAgentManager!;
+        await Wait.UntilAsync(
+            () => manager.ListAgents() is [{ Status: SubAgentStatus.Completed }],
+            because: "the worker finishes its first run",
+            timeout: TimeSpan.FromSeconds(20)
+        );
+        var child = manager.ListAgents().Single();
+        var messagesBefore = (await store.LoadMessagesAsync(child.ThreadId)).Count;
+
+        var bobsTab = await factory.ConnectSubAgentWebSocketAsync(
+            parent,
+            child.AgentId,
+            subProtocols: CredentialFor(Bob)
+        );
+        await using (var bob = new WebSocketTestClient(bobsTab))
+        {
+            await ExpectReadOnlyRefusalAsync(bob);
+        }
+
+        _ = manager.ListAgents().Single().Status.Should().Be(SubAgentStatus.Completed, "the viewer started no run");
+        _ = (await store.LoadMessagesAsync(child.ThreadId))
+            .Count.Should()
+            .Be(messagesBefore, "the viewer's follow-up never reached the child");
+
+        // Non-vacuity: the owner's follow-up on the same tab still reaches the child.
+        var alicesTab = await factory.ConnectSubAgentWebSocketAsync(
+            parent,
+            child.AgentId,
+            subProtocols: CredentialFor(Alice)
+        );
+        await using var tab = new WebSocketTestClient(alicesTab);
+        await tab.SendUserMessageAsync("owner follow-up");
+        using var answer = await tab.WaitForFrameAsync(
+            frame => frame.RootElement.GetRawText().Contains("worker answer 2", StringComparison.Ordinal),
+            TimeSpan.FromSeconds(20)
+        );
+    }
+
+    /// <summary>
     /// The case a metadata row cannot speak for: a child that is RUNNING, or that was killed mid-run.
     /// The agent appends each message as it produces it and writes metadata only when the run
     /// completes, so such a child has a transcript and no row - permanently, once it is killed, since
@@ -348,6 +490,35 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
         );
     }
 
+    /// <summary>Sends a follow-up on a sub-agent tab and waits for its <c>read_only</c> refusal.</summary>
+    private static async Task ExpectReadOnlyRefusalAsync(WebSocketTestClient client)
+    {
+        await client.SendUserMessageAsync("a follow-up");
+        using var refusal = await client.WaitForFrameAsync(
+            frame =>
+                frame.RootElement.TryGetProperty("code", out var code)
+                && string.Equals(code.GetString(), "read_only", StringComparison.Ordinal),
+            TimeSpan.FromSeconds(10)
+        );
+    }
+
+    /// <summary>Shares <paramref name="threadId"/> with <paramref name="subjectId"/> read-only.</summary>
+    private static Task GrantViewerAsync(E2EWebAppFactory factory, string threadId, string subjectId)
+    {
+        var grants = factory.Services.GetRequiredService<IResourceGrantStore>();
+        return grants.GrantAsync(
+            new ResourceGrant
+            {
+                TenantId = Tenant,
+                Resource = ConversationAuthorizer.ConversationRef(threadId),
+                SubjectId = subjectId,
+                Role = GrantRole.Viewer,
+                GrantedBy = Alice,
+                GrantedAt = DateTimeOffset.UtcNow,
+            }
+        );
+    }
+
     /// <summary>
     /// Seeds a COMPLETED sub-agent: a persisted transcript under <c>subagent-{agentId}</c> plus the
     /// durable parent link <see cref="SubAgentProvenance"/> stamps. Both halves matter - the
@@ -393,6 +564,65 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
         return new E2EWebAppFactory(
             "test",
             new ScriptedBuilder(responder.AsAnthropicHandler()),
+            new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["Identity:Enforce"] = "true",
+                ["Identity:DatabasePath"] = Path.Combine(Path.GetTempPath(), $"identity_ws419_{Guid.NewGuid():N}.db"),
+            },
+            services => services.AddSingleton<IRequestPrincipalSource, BearerUserPrincipalSource>()
+        );
+    }
+
+    /// <summary>
+    /// A host whose root spawns one background "worker" sub-agent on its first turn. The worker answers
+    /// "worker answer N" to its N-th request.
+    /// </summary>
+    private static E2EWebAppFactory NewFactoryWithWorker()
+    {
+        const string WorkerPrompt = "You are the ws419 worker.";
+        var responder = ScriptedSseResponder
+            .New()
+            .ForRole("worker", ctx => ctx.SystemPromptContains(WorkerPrompt))
+            .Turn(t => t.Text("worker answer 1"))
+            .Turn(t => t.Text("worker answer 2"))
+            .ForRole("parent", _ => true)
+            .Turn(t =>
+                t.ToolCall(
+                    "Agent",
+                    new
+                    {
+                        subagent_type = "worker",
+                        prompt = "do work",
+                        name = "alpha",
+                        run_in_background = true,
+                    }
+                )
+            )
+            .Turn(t => t.Text("spawned"))
+            .Turn(t => t.Text("ack 1"))
+            .Turn(t => t.Text("ack 2"))
+            .Turn(t => t.Text("ack 3"))
+            .Build();
+
+        return new E2EWebAppFactory(
+            "test-anthropic",
+            new ScriptedBuilder(
+                responder,
+                subAgentFactory: (_, providerAgentFactory) =>
+                    new SubAgentOptions
+                    {
+                        Templates = new Dictionary<string, SubAgentTemplate>
+                        {
+                            ["worker"] = new SubAgentTemplate
+                            {
+                                Name = "Worker",
+                                SystemPrompt = WorkerPrompt,
+                                AgentFactory = providerAgentFactory,
+                                MaxTurnsPerRun = 5,
+                            },
+                        },
+                    }
+            ),
             new Dictionary<string, string?>(StringComparer.Ordinal)
             {
                 ["Identity:Enforce"] = "true",

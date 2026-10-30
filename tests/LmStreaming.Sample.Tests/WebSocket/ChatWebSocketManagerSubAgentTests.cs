@@ -6,8 +6,10 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmStreaming.Sample.WebSocket;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Time.Testing;
 
 namespace LmStreaming.Sample.Tests.WebSocket;
 
@@ -55,6 +57,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
             ParentThreadId,
             agentId,
             mayReplayPersistedTranscript: true,
+            mayWrite: true,
             testCts.Token
         );
 
@@ -114,6 +117,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
             ParentThreadId,
             agentId,
             mayReplayPersistedTranscript: true,
+            mayWrite: true,
             testCts.Token
         );
 
@@ -182,6 +186,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
             ParentThreadId,
             agentId,
             mayReplayPersistedTranscript: true,
+            mayWrite: true,
             testCts.Token
         );
 
@@ -211,6 +216,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
             ParentThreadId,
             "does-not-exist",
             mayReplayPersistedTranscript: true,
+            mayWrite: true,
             testCts.Token
         );
 
@@ -260,6 +266,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
             ParentThreadId,
             agentId,
             mayReplayPersistedTranscript: true,
+            mayWrite: true,
             testCts.Token
         );
 
@@ -275,6 +282,186 @@ public sealed class ChatWebSocketManagerSubAgentTests
         // Client disconnect (here: shutdown) tears the read-only socket down cleanly.
         await testCts.CancelAsync();
         await handlerTask;
+    }
+
+    [Fact]
+    public async Task HandleSubAgentConnectionAsync_RebuildsAnUnloadedParent_SoItsFinishedSubAgentAnswersAgain()
+    {
+        // #868: after the parent conversation was unloaded, the sub-agent tab found no pooled parent and
+        // fell to the read-only replay, so the user could no longer talk to the finished sub-agent.
+        var (store, pool, agentId, mode) = await UnloadedParentWithAFinishedSubAgentAsync();
+        await using var ownedPool = pool;
+
+        var modeStore = new LmStreaming.Sample.Tests.Services.InMemoryChatModeStoreFake();
+        modeStore.Seed(mode);
+        var manager = new ChatWebSocketManager(
+            pool,
+            new WebSocketConnectionRegistry(),
+            new LmStreaming.Sample.Services.WorkflowRunRegistry(),
+            new PendingAuthCoordinator(
+                Mock.Of<IAuthEventNotifier>(),
+                new AuthOptions(),
+                NullLogger<PendingAuthCoordinator>.Instance
+            ),
+            store,
+            new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier(),
+            NullLogger<ChatWebSocketManager>.Instance,
+            modeStore
+        );
+        var socket = new FakeWebSocket();
+        socket.EnqueueTextFrame(JsonSerializer.Serialize(new ChatRequest("follow-up")));
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var handlerTask = manager.HandleSubAgentConnectionAsync(
+            socket,
+            ParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            mayWrite: true,
+            testCts.Token
+        );
+
+        await socket.WaitUntilAsync(() => socket.SentContains("echo: follow-up"), testCts.Token);
+        pool.HasAgent(ParentThreadId).Should().BeTrue("the tab put the unloaded parent back in the pool");
+
+        await testCts.CancelAsync();
+        await handlerTask;
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task HandleSubAgentConnectionAsync_WhenTheUnloadedParentCannotBeRebuilt_ReplaysAndRefusesFollowUps(
+        bool modeStoreThrows
+    )
+    {
+        // A rebuild that fails - the mode store throws, or no mode resolves - leaves the tab on the
+        // read-only replay it had before #868, and a follow-up there is refused, not dropped.
+        var (store, pool, agentId, _) = await UnloadedParentWithAFinishedSubAgentAsync();
+        await using var ownedPool = pool;
+        var modeStore = new Mock<LmStreaming.Sample.Persistence.IChatModeStore>();
+        if (modeStoreThrows)
+        {
+            _ = modeStore
+                .Setup(m => m.GetModeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ThrowsAsync(new InvalidOperationException("the mode store is down"));
+        }
+        else
+        {
+            _ = modeStore
+                .Setup(m => m.GetModeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((LmStreaming.Sample.Models.ChatMode?)null);
+        }
+
+        var manager = new ChatWebSocketManager(
+            pool,
+            new WebSocketConnectionRegistry(),
+            new LmStreaming.Sample.Services.WorkflowRunRegistry(),
+            new PendingAuthCoordinator(
+                Mock.Of<IAuthEventNotifier>(),
+                new AuthOptions(),
+                NullLogger<PendingAuthCoordinator>.Instance
+            ),
+            store,
+            new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier(),
+            NullLogger<ChatWebSocketManager>.Instance,
+            modeStore.Object
+        );
+        var socket = new FakeWebSocket();
+        socket.EnqueueTextFrame(JsonSerializer.Serialize(new ChatRequest("follow-up")));
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var handlerTask = manager.HandleSubAgentConnectionAsync(
+            socket,
+            ParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            mayWrite: true,
+            testCts.Token
+        );
+
+        await socket.WaitUntilAsync(() => socket.SentContains("\"code\":\"read_only\""), testCts.Token);
+        socket.SentContains("\"$type\":\"done\"").Should().BeTrue("the tab replays the persisted transcript");
+        socket.SentContains("echo: follow-up").Should().BeFalse("nothing reached the sub-agent");
+        pool.HasAgent(ParentThreadId).Should().BeFalse("the parent was not rebuilt");
+        handlerTask.IsCompleted.Should().BeFalse("the replay socket stays open");
+
+        await testCts.CancelAsync();
+        await handlerTask;
+    }
+
+    /// <summary>
+    /// A pooled parent that spawned sub-agent "alpha", saw it finish, and was then unloaded as idle.
+    /// The caller disposes the pool.
+    /// </summary>
+    private static async Task<(
+        InMemoryConversationStore Store,
+        MultiTurnAgentPool Pool,
+        string AgentId,
+        LmStreaming.Sample.Models.ChatMode Mode
+    )> UnloadedParentWithAFinishedSubAgentAsync()
+    {
+        var store = new InMemoryConversationStore();
+        var child = new ScriptedSubAgentProvider((messages, ct) => EchoLastUserText(messages));
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                [TemplateName] = new SubAgentTemplate
+                {
+                    Name = TemplateName,
+                    SystemPrompt = "You are a worker.",
+                    AgentFactory = () => child,
+                },
+            },
+            DefaultConversationStoreFactory = _ => store,
+        };
+        var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var pool = new MultiTurnAgentPool(
+            (threadId, _, _) =>
+                new MultiTurnAgentPool.AgentCreationResult(
+                    new MultiTurnAgentLoop(
+                        new ScriptedSubAgentProvider((messages, ct) => EmptyStream()),
+                        new FunctionRegistry(),
+                        threadId,
+                        store: store,
+                        subAgentOptions: options
+                    )
+                ),
+            NullLogger<MultiTurnAgentPool>.Instance
+        )
+        {
+            TimeProvider = time,
+        };
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var first = (MultiTurnAgentLoop)pool.GetOrCreateAgent(ParentThreadId, mode);
+        await foreach (
+            var _ in first.ExecuteRunAsync(new UserInput([new TextMessage { Text = "hi", Role = Role.User }]))
+        ) { }
+
+        // The spawn returns before the run's completion side effects end, and until they do the parent is
+        // not idle.
+        SubAgentState? finished = null;
+        first.SubAgentManager!.AfterSettlingRunCompletionForTest = (state, _) =>
+        {
+            finished ??= state;
+            return Task.CompletedTask;
+        };
+        (await first.SubAgentManager.SpawnAsync(TemplateName, "seed-task", name: "alpha"))
+            .Should()
+            .Be("echo: seed-task");
+        var agentId = first.SubAgentManager.ListAgents().Single().AgentId;
+        await Wait.UntilAsync(
+            async () =>
+                finished is { IsSettled: true }
+                && !await first.HasLiveWorkAsync()
+                && !pool.IsRunInProgress(ParentThreadId)
+                && pool.GetOutstandingInputCountForTest(ParentThreadId) == 0,
+            "the parent and its sub-agent have settled"
+        );
+        time.Advance(TimeSpan.FromHours(1));
+        (await pool.UnloadIdleAgentsAsync(TimeSpan.FromMinutes(5))).Should().Be(1);
+        return (store, pool, agentId, mode);
     }
 
     // ----- shared bounded receive pump (PR #209 findings #4/#5/#9/#10) -----
@@ -312,6 +499,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
             ParentThreadId,
             agentId,
             mayReplayPersistedTranscript: true,
+            mayWrite: true,
             testCts.Token
         );
         firstRunGate.SetResult();
@@ -359,6 +547,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
             ParentThreadId,
             agentId,
             mayReplayPersistedTranscript: true,
+            mayWrite: true,
             testCts.Token
         );
         firstRunGate.SetResult();
@@ -401,6 +590,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
             ParentThreadId,
             agentId,
             mayReplayPersistedTranscript: true,
+            mayWrite: true,
             testCts.Token
         );
         await handlerTask;
@@ -437,6 +627,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
             ParentThreadId,
             agentId,
             mayReplayPersistedTranscript: true,
+            mayWrite: true,
             testCts.Token
         );
         await handlerTask;
@@ -475,6 +666,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
             ParentThreadId,
             agentId,
             mayReplayPersistedTranscript: true,
+            mayWrite: true,
             testCts.Token
         );
         await handlerTask;
@@ -513,6 +705,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
             ParentThreadId,
             agentId,
             mayReplayPersistedTranscript: true,
+            mayWrite: true,
             testCts.Token
         );
 
@@ -558,6 +751,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
             ParentThreadId,
             agentId,
             mayReplayPersistedTranscript: true,
+            mayWrite: true,
             testCts.Token
         );
         firstRunGate.SetResult();
@@ -618,6 +812,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
             ParentThreadId,
             agentId,
             mayReplayPersistedTranscript: true,
+            mayWrite: true,
             testCts.Token
         );
 
@@ -1019,6 +1214,13 @@ public sealed class ChatWebSocketManagerSubAgentTests
         yield return new TextMessage { Role = Role.Assistant, Text = "chunk-one" };
         yield return new TextMessage { Role = Role.Assistant, Text = "chunk-two" };
         await gate.WaitAsync(ct);
+    }
+
+    private static async IAsyncEnumerable<IMessage> EchoLastUserText(IEnumerable<IMessage> messages)
+    {
+        var last = messages.OfType<TextMessage>().Last(m => m.Role == Role.User).Text;
+        await Task.CompletedTask;
+        yield return new TextMessage { Role = Role.Assistant, Text = $"echo: {last}" };
     }
 
     private static async IAsyncEnumerable<IMessage> EmptyStream()

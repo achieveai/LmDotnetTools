@@ -141,7 +141,9 @@ const sharedMocks = vi.hoisted(() => ({
   // The live currentThreadId ref inside the useConversations mock, so a test can navigate mid-switch.
   currentThreadIdRef: null as Ref<string | null> | null,
   focusedAgentIdRef: null as Ref<string | null> | null,
+  refusedTextRef: null as Ref<string | null> | null,
   focusChild: vi.fn(async (_agentId: string) => {}),
+  sendToFocusedChild: vi.fn(async (_text: string) => true),
   subAgentQuestionResult: null as ToolCallResultMessage | null,
   cumulativeTotalTokens: 0,
   cumulativeUsageRef: null as Ref<{ totalTokens: number }> | null,
@@ -423,18 +425,21 @@ vi.mock('@/composables/useSubAgentPanel', async () => {
       }
       const focusedAgentId = ref<string | null>(null);
       sharedMocks.focusedAgentIdRef = focusedAgentId;
+      const refusedText = ref<string | null>(null);
+      sharedMocks.refusedTextRef = refusedText;
       return {
         children: ref(sharedMocks.subAgentChildren),
         focusedAgentId,
         focusedDisplayItems: ref([]),
         isFocusedStreaming: ref(false),
         error: ref<string | null>(null),
+        refusedText,
         startPolling: vi.fn(),
         stopPolling: vi.fn(),
         refreshChildren: vi.fn(async () => {}),
         focusChild: sharedMocks.focusChild,
         unfocusChild: vi.fn(async () => {}),
-        sendToFocusedChild: vi.fn(),
+        sendToFocusedChild: sharedMocks.sendToFocusedChild,
         submitToFocusedChild: sharedMocks.submitToFocusedChild,
         getResultForToolCall: vi.fn(() => sharedMocks.subAgentQuestionResult),
       };
@@ -1286,6 +1291,88 @@ describe('ChatLayout provider placement', () => {
     expect(childComposer.find('[data-testid="mode-selector-stub"]').exists()).toBe(false);
     expect(wrapper.findAll('[data-testid="provider-selector-stub"]')).toHaveLength(1);
     expect(wrapper.findAll('[data-testid="mode-selector-stub"]')).toHaveLength(1);
+  });
+});
+
+describe('ChatLayout sub-agent composer keeps a reply that was not sent (#868)', () => {
+  const child: SubAgentSummary = {
+    agentId: 'agent-unsent-reply',
+    name: 'Child agent',
+    template: 'default',
+    task: 'Reply to the parent',
+    status: 'completed',
+    threadId: 'subagent-unsent-reply',
+    lastActivityUtc: null,
+  };
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' })];
+    sharedMocks.subAgentChildren = [child];
+    sharedMocks.focusChild.mockReset();
+    sharedMocks.focusChild.mockImplementation(async (agentId: string) => {
+      sharedMocks.focusedAgentIdRef!.value = agentId;
+    });
+    sharedMocks.sendToFocusedChild.mockReset();
+  });
+
+  afterEach(() => {
+    sharedMocks.subAgentChildren = [];
+    sharedMocks.focusedAgentIdRef = null;
+    sharedMocks.focusChild.mockReset();
+    sharedMocks.focusChild.mockImplementation(async () => {});
+    sharedMocks.sendToFocusedChild.mockReset();
+    sharedMocks.sendToFocusedChild.mockImplementation(async () => true);
+  });
+
+  const mounted: { unmount: () => void }[] = [];
+  afterEach(() => {
+    mounted.splice(0).forEach((w) => w.unmount());
+  });
+
+  const sendFromChildComposer = async (sent: boolean) => {
+    sharedMocks.sendToFocusedChild.mockResolvedValue(sent);
+    const wrapper = mount(ChatLayout, {
+      attachTo: document.body,
+      global: {
+        stubs: { ConversationSidebar: true, MessageList: true, PendingMessageQueue: true, PendingQuestionDock: true },
+      },
+    });
+    mounted.push(wrapper);
+    await flushPromises();
+    await wrapper.get('[data-testid="conversation-tab"][data-tab-id="agents"]').trigger('click');
+    await wrapper.get('[data-testid="agent-picker-option"][data-agent-id="agent-unsent-reply"]').trigger('click');
+    await flushPromises();
+
+    const textarea = wrapper.get('[data-testid="subagent-view"] [data-testid="chat-input-textarea"]');
+    await textarea.setValue('follow-up');
+    await wrapper.get('[data-testid="subagent-view"] [data-testid="send-button"]').trigger('click');
+    await flushPromises();
+    expect(sharedMocks.sendToFocusedChild).toHaveBeenCalledWith('follow-up');
+    return (textarea.element as HTMLTextAreaElement).value;
+  };
+
+  it('puts the text back in the composer when the send fails', async () => {
+    expect(await sendFromChildComposer(false)).toBe('follow-up');
+  });
+
+  it('clears the composer when the send succeeds', async () => {
+    expect(await sendFromChildComposer(true)).toBe('');
+  });
+
+  it('puts a reply the server refused as read-only back in the composer', async () => {
+    expect(await sendFromChildComposer(true)).toBe('');
+
+    sharedMocks.refusedTextRef!.value = 'follow-up';
+    await flushPromises();
+
+    const textarea = document.querySelector<HTMLTextAreaElement>(
+      '[data-testid="subagent-view"] [data-testid="chat-input-textarea"]'
+    );
+    expect(textarea?.value).toBe('follow-up');
+    expect(sharedMocks.refusedTextRef!.value, 'taken, so it is put back once').toBeNull();
   });
 });
 

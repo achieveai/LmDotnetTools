@@ -299,6 +299,7 @@ const {
   focusedDisplayItems,
   isFocusedStreaming,
   error: subAgentError,
+  refusedText: refusedSubAgentText,
   startPolling: startSubAgentPolling,
   focusChild,
   unfocusChild,
@@ -508,9 +509,21 @@ const { activeTabId, tabs, selectTab: selectConversationTab, getAgentColor } = u
   getParentThreadId: () => chatThreadId.value,
 });
 
-function handleSubAgentSend(text: string): void {
-  sendToFocusedChild(text);
+const subAgentTranscriptRef = ref<InstanceType<typeof SubAgentTranscript> | null>(null);
+
+/** A reply that could not be sent goes back into the composer; the panel's error says why (#868). */
+async function handleSubAgentSend(text: string): Promise<void> {
+  if (!(await sendToFocusedChild(text))) {
+    subAgentTranscriptRef.value?.setText(text);
+  }
 }
+
+// A reply the server refused as read-only goes back into the composer too (#868).
+watch(refusedSubAgentText, (text) => {
+  if (text === null) return;
+  subAgentTranscriptRef.value?.setText(text);
+  refusedSubAgentText.value = null;
+});
 
 /**
  * The question a toast is currently announcing, or null. Identified by (root, tool call) rather
@@ -1771,6 +1784,7 @@ onBeforeUnmount(() => {
              (routed to the focused child) + child-scoped tool-result provide live inside it. -->
         <SubAgentTranscript
           v-if="activeTabId !== 'main'"
+          ref="subAgentTranscriptRef"
           :key="questionScope"
           :question-scope="questionScope" :question-source="questionSource" :requested-question-id="requestedQuestionId"
           @question-busy="questionBusy = $event" @question-open="questionOpen = $event" @question-opened="questionOpened"

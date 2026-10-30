@@ -5138,9 +5138,18 @@ public sealed class MultiTurnAgentLoop
     /// history. This is deliberately separate from the block-wait reconcile in
     /// <see cref="OnHistoryRestoredAsync"/>, which legitimately needs restored message history
     /// and therefore does not run for message-less threads.
+    /// <para>
+    /// Finished sub-agents are registered again here too (#868), so the rebuilt loop lists them and can
+    /// message them from its first run. The order against the notify waits is not load-bearing.
+    /// </para>
     /// </remarks>
     protected override async Task OnThreadRecoveredAsync(CancellationToken ct)
     {
+        if (SubAgentManager is { } subAgents)
+        {
+            _ = await subAgents.RestoreFinishedAgentsAsync(ct);
+        }
+
         if (_triggerRuntime != null)
         {
             await _triggerRuntime.RestoreNotifyWaitsAsync(ct);

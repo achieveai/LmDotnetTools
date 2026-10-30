@@ -536,6 +536,15 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
     }
 
+    /// <summary>The directory's word for a finished status; anything not finished reads as stopped.</summary>
+    private static string ToCollaborationStatus(SubAgentStatus status) =>
+        status switch
+        {
+            SubAgentStatus.Completed => AgentCollaborationStatuses.Completed,
+            SubAgentStatus.Error => AgentCollaborationStatuses.Error,
+            _ => AgentCollaborationStatuses.Stopped,
+        };
+
     /// <summary>
     /// Withdraws a sub-agent from admission and returns its capacity slot — to the collaboration when
     /// one is in play, otherwise to this manager's own retained-runtime ceiling.
@@ -2379,17 +2388,28 @@ public sealed class SubAgentManager : IAsyncDisposable
             // Running while the directory still said "completed" would make the agent look terminal to
             // every other agent in the hierarchy, and a steer addressed to it would be refused for as
             // long as the restarted run lasted.
+            long? runningEpoch = null;
             await state.RunTransition.WaitAsync(ct);
             try
             {
                 if (state.TryArmRunning(runGeneration))
                 {
                     SyncCollaborationStatus(state.AgentId, AgentCollaborationStatuses.Running);
+                    runningEpoch = state.LifecycleEpoch;
                 }
             }
             finally
             {
                 _ = state.RunTransition.Release();
+            }
+
+            // Without this a host that dies during this run leaves the record saying the PREVIOUS run
+            // finished, and a rebuilt parent would restore the child as finished over a transcript that
+            // ends mid-run (#868). Not awaited: a slow store must not hold up the caller, the write logs
+            // its own failure, and its epoch guard keeps it from overwriting a later terminal push.
+            if (runningEpoch is { } epoch)
+            {
+                _ = PersistLifecycleStateAsync(state, epoch);
             }
 
             _logger.LogInformation(
@@ -3097,14 +3117,14 @@ public sealed class SubAgentManager : IAsyncDisposable
             //
             // BOUNDED for the same reason every other await on this path is: a slow or wedged store must
             // degrade host shutdown into a logged warning, never hang it. A push abandoned by that bound
-            // (or swallowed inside PersistTerminalStateAsync) leaves disk still saying `running`, which
+            // (or swallowed inside PersistLifecycleStateAsync) leaves disk still saying `running`, which
             // is acceptable ONLY because the read side is the backstop: a persisted in-flight child with
             // no live in-memory state is projected as interrupted rather than running
             // (SubAgentSummary.AsRetained, applied to the persisted roster in AgentHierarchyService).
             if (state.TryMarkStoppedAtShutdown(ShutdownFailureCode, out var shutdownEpoch))
             {
                 await AwaitBoundedTaskAsync(
-                    PersistTerminalStateAsync(state, shutdownEpoch),
+                    PersistLifecycleStateAsync(state, shutdownEpoch),
                     $"terminal status push for sub-agent {state.AgentId}",
                     "disposal"
                 );
@@ -3201,13 +3221,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         // that never ran, which is not in _agents at all — is stopped by disposal.
         var terminalStatuses = _agents.Values.ToDictionary(
             state => state.AgentId,
-            state =>
-                state.Status switch
-                {
-                    SubAgentStatus.Completed => AgentCollaborationStatuses.Completed,
-                    SubAgentStatus.Error => AgentCollaborationStatuses.Error,
-                    _ => AgentCollaborationStatuses.Stopped,
-                },
+            state => ToCollaborationStatus(state.Status),
             StringComparer.Ordinal
         );
 
@@ -5265,6 +5279,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         loop.AdmitRunAsync = async (runId, ct) =>
         {
+            long? reactivatedEpoch = null;
             await state.RunTransition.WaitAsync(ct);
             try
             {
@@ -5275,6 +5290,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                     state.ResetCompletionIfFinished();
                     state.ResetLifecycleCts();
                     state.ReactivateCurrentEpoch();
+                    reactivatedEpoch = state.LifecycleEpoch;
                 }
 
                 SyncCollaborationStatus(state.AgentId, AgentCollaborationStatuses.Running);
@@ -5282,6 +5298,13 @@ public sealed class SubAgentManager : IAsyncDisposable
             finally
             {
                 _ = state.RunTransition.Release();
+            }
+
+            // A warm loop restarting on its own (a direct input or a delayed tool result) is running again
+            // too, recorded for the same reason and in the same unawaited way as in RestartRunAsync (#868).
+            if (reactivatedEpoch is { } epoch)
+            {
+                _ = PersistLifecycleStateAsync(state, epoch);
             }
         };
     }
@@ -5371,7 +5394,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             // relying on the child's next metadata write — a background sub-agent that never receives
             // another message never writes metadata again, and the exact terminal status/timestamp
             // must still be persisted.
-            await PersistTerminalStateAsync(state, effects.LifecycleEpoch);
+            await PersistLifecycleStateAsync(state, effects.LifecycleEpoch);
 
             // Re-read, not carried across the await: the push above can be held by a slow store for as
             // long as that store likes, and a follow-up run admitted in the meantime has already
@@ -5762,6 +5785,205 @@ public sealed class SubAgentManager : IAsyncDisposable
     internal bool IsEmpty => _agents.IsEmpty && _queuedSpawns.IsEmpty;
 
     /// <summary>
+    /// Registers again the finished sub-agents this manager's parent had before its loop was rebuilt
+    /// (#868), as an idle release leaves them (<see cref="TryReleaseAsync"/>): listed with their status
+    /// and last result, and rebuilt from their transcript by the next message. Read from each child's
+    /// <see cref="SubAgentRecord"/>. A child that was still running, or stopped by host shutdown, stays
+    /// unregistered, as before. Called by the owning loop while it recovers, before it is ready.
+    /// </summary>
+    /// <remarks>
+    /// Never throws except for cancellation: the loop's startup treats any other exception as a failed
+    /// history recovery. A child that cannot be restored is skipped with a warning.
+    /// </remarks>
+    /// <returns>How many sub-agents were registered.</returns>
+    internal async Task<int> RestoreFinishedAgentsAsync(CancellationToken ct)
+    {
+        if (_ordinals.Store is not { } store)
+        {
+            return 0;
+        }
+
+        IReadOnlyList<string> threadIds;
+        try
+        {
+            threadIds = await ConversationThreadIdLookup.ListThreadIdsByPrefixAsync(
+                store,
+                _ordinals.ScopedThreadIdPrefix,
+                ct
+            );
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not list the sub-agent transcripts of {ParentThreadId}; its finished sub-agents are not restored",
+                _parentAgent.ThreadId
+            );
+            return 0;
+        }
+
+        var restored = 0;
+        foreach (var threadId in threadIds)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                if (await TryRestoreFinishedAgentAsync(store, threadId, ct))
+                {
+                    restored++;
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not restore sub-agent thread {ChildThreadId}; skipped", threadId);
+            }
+        }
+
+        _logger.LogInformation(
+            "Restored {RestoredCount} finished sub-agents of {ParentThreadId} from {CandidateCount} transcripts",
+            restored,
+            _parentAgent.ThreadId,
+            threadIds.Count
+        );
+        return restored;
+    }
+
+    private async Task<bool> TryRestoreFinishedAgentAsync(
+        IConversationStore store,
+        string threadId,
+        CancellationToken ct
+    )
+    {
+        var record = SubAgentRecord.Read(await store.LoadMetadataAsync(threadId, ct));
+
+        // No record: spawned before records existed, or never finished. Another parent's: a sibling or
+        // a descendant at another level, which that level's manager restores when its loop is rebuilt.
+        if (
+            record is null
+            || !string.Equals(record.ParentThreadId, _parentAgent.ThreadId, StringComparison.Ordinal)
+            || _agents.ContainsKey(record.AgentId)
+        )
+        {
+            return false;
+        }
+
+        if (!string.Equals(ChildThreadId(record.AgentId), threadId, StringComparison.Ordinal))
+        {
+            _logger.LogWarning(
+                "Sub-agent record on {ChildThreadId} names agent {AgentId}, whose thread is elsewhere; skipped",
+                threadId,
+                record.AgentId
+            );
+            return false;
+        }
+
+        if (
+            !IsTerminal(record.Status)
+            || string.Equals(record.FailureCode, SubAgentFailureCodes.HostShutdown, StringComparison.Ordinal)
+        )
+        {
+            _logger.LogInformation(
+                "Sub-agent {AgentId} was {Status} ({FailureCode}) when its parent stopped; left unregistered",
+                record.AgentId,
+                record.Status,
+                record.FailureCode
+            );
+            return false;
+        }
+
+        if (!_source.Templates.TryGetValue(record.TemplateName, out var template))
+        {
+            _logger.LogWarning(
+                "Sub-agent {AgentId} was spawned from template {TemplateName}, which no longer exists; skipped",
+                record.AgentId,
+                record.TemplateName
+            );
+            return false;
+        }
+
+        var spawnCapability = ProjectSpawnCapability(
+            template,
+            record.AddTools,
+            record.RemoveTools,
+            record.ModelOverride
+        );
+        var grantedName = AdmitAgent(
+            record.AgentId,
+            record.Name ?? string.Empty,
+            record.TemplateName,
+            template,
+            record.Role,
+            record.Description
+        );
+
+        var placeholder = new ReleasedSubAgentLoop(threadId);
+        var state = new SubAgentState
+        {
+            AgentId = record.AgentId,
+            Lineage = new AgentLineage
+            {
+                RootThreadId = _ordinals.RootThreadId,
+                ParentThreadId = _parentAgent.ThreadId,
+                ParentRunId = record.ParentRunId,
+                SpawningToolCallId = record.SpawningToolCallId,
+                SubAgentId = record.AgentId,
+            },
+            TemplateName = record.TemplateName,
+            Task = record.Task,
+            Agent = placeholder,
+            Template = template,
+            ModelOverride = record.ModelOverride,
+            ModelIntelligence = record.ModelIntelligence,
+            AuthoritativeModelSelectionSource = record.AuthoritativeModelSelectionSource,
+            EffectiveModelId = record.EffectiveModelId,
+            EffectiveModelIntelligence = record.EffectiveModelIntelligence,
+            ModelSelectionSource = record.ModelSelectionSource ?? "parent",
+            AddTools = record.AddTools,
+            RemoveTools = record.RemoveTools,
+            SpawnCapability = spawnCapability,
+            Name = string.IsNullOrWhiteSpace(grantedName) ? null : grantedName,
+        };
+        state.RestoreFinished(
+            record.Status,
+            record.TerminalAtUtc,
+            record.FailureCode,
+            record.LastResult,
+            record.ErrorMessage
+        );
+        state.InstallReleasedAgent(placeholder);
+        ObserveCompletionFaults(state);
+
+        bool registered;
+        lock (_spawnQueue)
+        {
+            registered = Volatile.Read(ref _disposeStarted) == 0 && !_quiesced && _agents.TryAdd(record.AgentId, state);
+        }
+
+        if (!registered)
+        {
+            WithdrawAgent(record.AgentId);
+            ReleaseNameClaim(grantedName, record.AgentId);
+            return false;
+        }
+
+        SyncCollaborationStatus(record.AgentId, ToCollaborationStatus(record.Status));
+        _logger.LogDebug(
+            "Restored finished sub-agent {AgentId} ({Status}); the next message to it rebuilds it",
+            record.AgentId,
+            record.Status
+        );
+        return true;
+    }
+
+    /// <summary>
     /// Releases one finished sub-agent for <see cref="ReleaseFinishedAgentsAsync"/>. It holds the restart
     /// claim throughout (<see cref="SubAgentState.TryBeginRelease"/>), so a message arriving meanwhile
     /// waits for it and then rebuilds the loop instead of injecting into one being disposed. The teardown
@@ -5950,8 +6172,9 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
-    /// Actively persists a sub-agent's just-flipped terminal status through its OWN
-    /// <see cref="IConversationStore"/>, at the moment of transition. This is the causal push:
+    /// Actively persists a sub-agent's just-flipped status (#868: running as well as terminal) through
+    /// its OWN <see cref="IConversationStore"/>, at the moment of transition, as its
+    /// <see cref="SubAgentRecord"/>. This is the causal push:
     /// the child's own post-run metadata write (<c>MultiTurnAgentBase.UpdateMetadataAsync</c>) runs
     /// once per run, and a background sub-agent that never receives another message never writes
     /// again — so without this push, the exact terminal status/timestamp would only ever be known in
@@ -5962,14 +6185,14 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// completely unaware of any such projection — no second registry, just one extra write through
     /// the same per-child store the manager already holds.
     /// </summary>
-    /// <param name="state">The sub-agent whose terminal transition is being pushed.</param>
+    /// <param name="state">The sub-agent whose transition is being pushed.</param>
     /// <param name="lifecycleEpoch">
     /// The status transition this push describes. Checked before the write is issued AND again inside
     /// the store's own atomic update, because this now runs off the run-transition gate: a slow store
     /// can hold the call open long enough for a newer run to be admitted and write its own metadata,
     /// and a terminal stamp applied on top of that would describe a child that is running again.
     /// </param>
-    private async Task PersistTerminalStateAsync(SubAgentState state, long lifecycleEpoch)
+    private async Task PersistLifecycleStateAsync(SubAgentState state, long lifecycleEpoch)
     {
         if (state.Store is null || !state.IsCurrentLifecycleEpoch(lifecycleEpoch))
         {
@@ -5985,20 +6208,25 @@ public sealed class SubAgentManager : IAsyncDisposable
                     // Re-read INSIDE the atomic section, not carried in from the pre-check above: the
                     // newer run's own write is serialized against this one by the store, so this is the
                     // only place that can see it. Superseded means hand back exactly what that run
-                    // left, untouched.
+                    // left, untouched. Otherwise the record (#868) is built here too, from the state
+                    // this transition left, so a rebuilt parent can register this child again.
                     !state.IsCurrentLifecycleEpoch(lifecycleEpoch) && existing is not null
                         ? existing
-                        : existing
-                            ?? new ThreadMetadata
-                            {
-                                ThreadId = threadId,
-                                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                            }
+                        : SubAgentRecord
+                            .From(state, _parentAgent.ThreadId, GetChildCollaboration(state.AgentId)?.Context)
+                            .WriteTo(
+                                existing
+                                    ?? new ThreadMetadata
+                                    {
+                                        ThreadId = threadId,
+                                        LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                                    }
+                            )
             );
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to persist terminal state for sub-agent {AgentId}", state.AgentId);
+            _logger.LogWarning(ex, "Failed to persist lifecycle state for sub-agent {AgentId}", state.AgentId);
         }
     }
 

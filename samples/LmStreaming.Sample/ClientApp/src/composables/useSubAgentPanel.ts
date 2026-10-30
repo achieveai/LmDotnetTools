@@ -111,6 +111,14 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
   const isFocusedStreaming = ref(false);
   // Last HTTP/connect failure surfaced to the view; cleared on the next successful refresh/focus.
   const error = ref<string | null>(null);
+  // Set while `error` reports what became of the user's own message: a send that failed, or one the
+  // server refused as read-only (#868). Such an error outlives list refreshes and later socket
+  // errors - a failed socket's own close lands just after the send gives up - and is cleared only by
+  // the user's next action on the tab: a send or a user focus.
+  let stickyError = false;
+  // The text of the last reply the server refused as read-only, for the caller to put back in the
+  // composer; null once taken.
+  const refusedText = ref<string | null>(null);
 
   // Per-focus state (rebuilt on every focusChild; never shared with useChat).
   let focusedIndex = new Map<string, DisplayableMessage>();
@@ -198,6 +206,15 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     lastAppliedParent = newParent;
     await unfocusChild();
     children.value = [];
+    // A send error belongs to the old conversation's tab.
+    stickyError = false;
+    refusedText.value = null;
+  }
+
+  /** Report what became of the user's own message; see {@link stickyError}. */
+  function setStickyError(message: string): void {
+    error.value = message;
+    stickyError = true;
   }
 
   /**
@@ -226,14 +243,14 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
       // a stale error cannot overwrite a newer success (or a newer error).
       if (parentGen === requestGen && requestSeq === refreshSeq && getParentThreadId() === parent) {
         log.error('Failed to list sub-agents', { parent, error: e });
-        error.value = `Failed to list sub-agents: ${errorMessage(e)}`;
+        if (!stickyError) error.value = `Failed to list sub-agents: ${errorMessage(e)}`;
       }
       return;
     }
     // Discard a late response for a superseded parent/epoch or a superseded (older) same-parent
     // request so it can't overwrite the newest list.
     if (parentGen !== requestGen || requestSeq !== refreshSeq || getParentThreadId() !== parent) return;
-    error.value = null;
+    if (!stickyError) error.value = null;
     children.value = list;
   }
 
@@ -564,6 +581,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
   async function focusChild(agentId: string, isAutoResume = false): Promise<void> {
     if (!isAutoResume) {
       autoResumeUsed = false;
+      stickyError = false;
     }
     // Tear down any prior focus FIRST; unfocusChild bumps focusSeq, so claim our token AFTER it so we
     // don't immediately supersede ourselves.
@@ -588,7 +606,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     focusedAgentId.value = agentId;
     merger = useMessageMerger();
     resetFocusState();
-    error.value = null;
+    if (!stickyError) error.value = null;
 
     // Live/history handoff: open the subscription FIRST and BUFFER incoming live messages, THEN
     // load persisted history, then drain the buffer on top (merge/dedup by the shared key). This
@@ -666,6 +684,16 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
             message: err || 'Sub-agent stream error.',
           });
           if (focusSeq !== token) return;
+          // The server refused one inbound frame on a tab that cannot relay (#868). The stream goes on;
+          // the refused reply leaves the transcript, so it does not look delivered, and goes back to
+          // the caller.
+          if (code === 'read_only') {
+            log.warn('Sub-agent refused a message as read-only', { agentId });
+            const refused = takeOldestOptimisticSend();
+            if (refused !== null) refusedText.value = refused;
+            setStickyError(err || 'This sub-agent is read-only here; the message was not sent.');
+            return;
+          }
           log.error('Sub-agent stream error', { agentId, code });
           isFocusedStreaming.value = false;
           // A structured error code marks a terminal application failure — record it so a
@@ -677,7 +705,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
           // Copy the failure into the public error ref so the panel's error banner shows
           // feedback (a relay_failed / subagent_unavailable / parse / socket error). The focus-token
           // guard above already prevents a stale focus from clobbering a newer focus's error.
-          error.value = err || 'Sub-agent stream error.';
+          if (!stickyError) error.value = err || 'Sub-agent stream error.';
         },
         onClose: (info) => {
           // Settle any pending submitToFocusedChild promise unconditionally (even for a superseded
@@ -914,7 +942,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
       focusedAgentId.value = null;
       isFocusedStreaming.value = false;
       resetFocusState();
-      error.value = `Failed to focus sub-agent: ${errorMessage(e)}`;
+      if (!stickyError) error.value = `Failed to focus sub-agent: ${errorMessage(e)}`;
     }
   }
 
@@ -968,6 +996,18 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     rebuildFocusedDisplayItems();
   }
 
+  /** Remove the oldest optimistic reply from the transcript and return its text, or null with none. */
+  function takeOldestOptimisticSend(): string | null {
+    const key = optimisticSendKeys.values().next().value;
+    if (key === undefined) return null;
+    const content = focusedIndex.get(key)?.content as TextMessage | undefined;
+    optimisticSendKeys.delete(key);
+    focusedIndex.delete(key);
+    focusedOrder = focusedOrder.filter((k) => k !== key);
+    rebuildFocusedDisplayItems();
+    return content?.text ?? null;
+  }
+
   /** Drop the optimistic replies before authoritative history lands on top of them. */
   function dropOptimisticSends(): void {
     if (optimisticSendKeys.size === 0) return;
@@ -976,14 +1016,58 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     optimisticSendKeys.clear();
   }
 
-  /** Send text input to the focused child over its live stream. */
-  function sendToFocusedChild(text: string): void {
-    if (!focusedConnection || focusedConnection.socket.readyState !== WebSocket.OPEN) {
-      log.warn('sendToFocusedChild: no open focused child connection');
-      return;
+  /**
+   * Send text input to the focused child over its live stream. Resolves true once sent.
+   *
+   * A tab whose socket died (an idle unload closes it abnormally, and onClose does not auto-resume
+   * that) reconnects here, on the user's send, never on the close itself: an eager reconnect would
+   * rebuild the unloaded root right away and defeat the unload (#868). One refocus, then the send.
+   * On failure it resolves false and {@link error} says the message was not sent and why, so the
+   * caller can keep the text.
+   */
+  async function sendToFocusedChild(text: string): Promise<boolean> {
+    // A send is the user's next action: the previous send's error has been read.
+    if (stickyError) {
+      stickyError = false;
+      error.value = null;
     }
-    sendWebSocketMessage(focusedConnection, text);
+    if (!focusedConnection || focusedConnection.socket.readyState !== WebSocket.OPEN) {
+      const agentId = focusedAgentId.value;
+      if (!agentId) {
+        log.warn('sendToFocusedChild: no focused child');
+        setStickyError('Message not sent. No sub-agent is selected.');
+        return false;
+      }
+      log.info('sendToFocusedChild: focused child has no open connection; reconnecting once', { agentId });
+      // focusChild's teardown and its own focus each advance focusSeq once; any further step means the
+      // user moved on (another tab, an unfocus, a parent switch) while it ran.
+      const reconnectToken = focusSeq + 2;
+      await focusChild(agentId);
+      if (
+        !focusedConnection ||
+        focusedConnection.socket.readyState !== WebSocket.OPEN ||
+        focusedAgentId.value !== agentId
+      ) {
+        log.warn('sendToFocusedChild: reconnect failed; message not sent', { agentId, error: error.value });
+        setStickyError(`Message not sent. ${error.value ?? 'Could not reconnect to the sub-agent.'}`);
+        // A failed focus clears the focus, which disables this tab's composer, and re-selecting the
+        // tab remounts it and loses the kept text. Stay on the child instead, still without a
+        // connection, so the next send makes its own single attempt.
+        if (focusSeq === reconnectToken && focusedAgentId.value === null) {
+          focusedAgentId.value = agentId;
+        }
+        return false;
+      }
+    }
+    try {
+      sendWebSocketMessage(focusedConnection, text);
+    } catch (e) {
+      log.error('sendToFocusedChild: send failed', { error: e });
+      setStickyError(`Message not sent. ${errorMessage(e)}`);
+      return false;
+    }
     recordOptimisticSend(text);
+    return true;
   }
 
   /**
@@ -1059,6 +1143,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     focusedDisplayItems,
     isFocusedStreaming,
     error,
+    refusedText,
     startPolling,
     stopPolling,
     refreshChildren,

@@ -46,7 +46,6 @@ internal sealed class SubAgentOrdinalAllocator
     /// <summary>Rows per page of the one-time scan in <see cref="ScanForHighestOrdinalAsync"/>.</summary>
     private const int ScanPageSize = 500;
 
-    private readonly IConversationStore? _store;
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private int _last;
@@ -56,12 +55,22 @@ internal sealed class SubAgentOrdinalAllocator
     public SubAgentOrdinalAllocator(string? rootThreadId, IConversationStore? store, ILogger logger)
     {
         RootThreadId = rootThreadId;
-        _store = string.IsNullOrWhiteSpace(rootThreadId) ? null : store;
+        Store = string.IsNullOrWhiteSpace(rootThreadId) ? null : store;
         _logger = logger;
     }
 
     /// <summary>The root conversation this sequence belongs to (null for a parent with no thread).</summary>
     public string? RootThreadId { get; }
+
+    /// <summary>
+    /// The store the root's transcripts are found through, or null when numbering is in-process only. A
+    /// rebuilt manager finds its finished sub-agents through it (#868), as the scan below finds ordinals.
+    /// </summary>
+    internal IConversationStore? Store { get; }
+
+    /// <summary>The prefix every sub-agent transcript under this root starts with.</summary>
+    internal string ScopedThreadIdPrefix =>
+        $"{SubAgentThreadIds.Prefix}{SubAgentThreadIds.ScopeTag(RootThreadId)}-{SubAgentThreadIds.AgentIdPrefix}";
 
     /// <summary>Allocates the next ordinal. Serialized, so concurrent spawns number in allocation order.</summary>
     public async ValueTask<int> AllocateAsync(CancellationToken ct)
@@ -70,7 +79,7 @@ internal sealed class SubAgentOrdinalAllocator
         try
         {
             var ordinal = _last + 1;
-            if (_store is not null)
+            if (Store is not null)
             {
                 ordinal = await AllocateThroughStoreAsync(ordinal, ct).ConfigureAwait(false);
             }
@@ -93,7 +102,7 @@ internal sealed class SubAgentOrdinalAllocator
     private async Task<int> AllocateThroughStoreAsync(int floor, CancellationToken ct)
     {
         var rootThreadId = RootThreadId!;
-        var existing = await _store!.LoadMetadataAsync(rootThreadId, ct).ConfigureAwait(false);
+        var existing = await Store!.LoadMetadataAsync(rootThreadId, ct).ConfigureAwait(false);
         if (existing is null || !HasCounter(existing))
         {
             // Nothing persisted says how far the sequence got before this process; the transcripts do.
@@ -111,7 +120,7 @@ internal sealed class SubAgentOrdinalAllocator
         }
 
         var allocated = 0;
-        await _store
+        await Store
             .UpdateMetadataAsync(
                 rootThreadId,
                 current =>
@@ -146,8 +155,7 @@ internal sealed class SubAgentOrdinalAllocator
             return known;
         }
 
-        var scopedPrefix =
-            $"{SubAgentThreadIds.Prefix}{SubAgentThreadIds.ScopeTag(RootThreadId)}-{SubAgentThreadIds.AgentIdPrefix}";
+        var scopedPrefix = ScopedThreadIdPrefix;
         var highest = 0;
 
         void Consider(string threadId)
@@ -166,7 +174,7 @@ internal sealed class SubAgentOrdinalAllocator
             }
         }
 
-        if (_store is IConversationThreadIdLookupStore lookup)
+        if (Store is IConversationThreadIdLookupStore lookup)
         {
             var threadIds = await lookup.ListThreadIdsByPrefixAsync(scopedPrefix, ct).ConfigureAwait(false);
             foreach (var threadId in threadIds)
@@ -180,7 +188,7 @@ internal sealed class SubAgentOrdinalAllocator
             {
                 _logger.LogWarning(
                     "Conversation store {StoreType} does not implement {Capability}; sub-agent ordinal allocation for root {RootThreadId} is falling back to full conversation listing",
-                    _store!.GetType().Name,
+                    Store!.GetType().Name,
                     nameof(IConversationThreadIdLookupStore),
                     RootThreadId
                 );
@@ -189,9 +197,7 @@ internal sealed class SubAgentOrdinalAllocator
 
             for (var offset = 0; ; offset += ScanPageSize)
             {
-                var page = await _store!
-                    .ListThreadsAsync(ScanPageSize, offset, options: null, ct)
-                    .ConfigureAwait(false);
+                var page = await Store!.ListThreadsAsync(ScanPageSize, offset, options: null, ct).ConfigureAwait(false);
                 foreach (var row in page)
                 {
                     Consider(row.ThreadId);

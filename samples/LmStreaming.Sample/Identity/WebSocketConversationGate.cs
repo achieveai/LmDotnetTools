@@ -20,7 +20,13 @@ namespace LmStreaming.Sample.Identity;
 /// it answers for an agent id that names nothing at all. Meaningless when
 /// <paramref name="Admitted"/> is false.
 /// </param>
-public sealed record SubAgentSocketAdmission(bool Admitted, bool MayReplayPersistedTranscript);
+/// <param name="MayWrite">
+/// Whether the caller may WRITE the parent, as <c>/ws</c> requires (#868). Only a writer may send the
+/// sub-agent follow-ups or have an unloaded parent rebuilt, which freezes the pooled agent's owner to the
+/// caller (#399). Without it the tab is read-only: it streams and replays, and refuses inbound frames.
+/// Meaningless when <paramref name="Admitted"/> is false.
+/// </param>
+public sealed record SubAgentSocketAdmission(bool Admitted, bool MayReplayPersistedTranscript, bool MayWrite);
 
 /// <summary>
 /// The per-conversation authorization the WebSocket transports were missing (#419): the socket
@@ -156,9 +162,10 @@ public sealed class WebSocketConversationGate
     /// <remarks>
     /// <para>
     /// Two independent checks, and both are needed. The FIRST is the parent conversation's own
-    /// authorization, on <see cref="AccessAction.Read"/> - the sub-agent socket is presentation-only,
-    /// it relays a child's stream and accepts no turns, so read on the parent is the right ask and
-    /// matches what <c>GET /api/conversations/{threadId}/subagents</c> already demands.
+    /// authorization, on <see cref="AccessAction.Read"/> - streaming a child is what
+    /// <c>GET /api/conversations/{threadId}/subagents</c> already allows on read. Write on the parent is
+    /// asked as well and reported as <see cref="SubAgentSocketAdmission.MayWrite"/>: follow-ups to the
+    /// child and a rebuild of the parent need it (#868).
     /// </para>
     /// <para>
     /// The SECOND is that the named child actually belongs to the named parent. Without it the first
@@ -220,7 +227,7 @@ public sealed class WebSocketConversationGate
 
         if (!_authorizer.IsEnforced)
         {
-            return new SubAgentSocketAdmission(true, true);
+            return new SubAgentSocketAdmission(true, true, true);
         }
 
         var parentMetadata = await _store.LoadMetadataAsync(parentThreadId, ct).ConfigureAwait(false);
@@ -230,8 +237,15 @@ public sealed class WebSocketConversationGate
         if (!parentResult.Allowed)
         {
             await RefuseAsync(context, parentThreadId, parentResult).ConfigureAwait(false);
-            return new SubAgentSocketAdmission(false, false);
+            return new SubAgentSocketAdmission(false, false, false);
         }
+
+        // Read admits the tab; following up a sub-agent or rebuilding the parent takes write (#868).
+        var mayWrite = (
+            await _authorizer
+                .AuthorizeAsync(parentThreadId, parentMetadata, AccessAction.Write, ct)
+                .ConfigureAwait(false)
+        ).Allowed;
 
         var childThreadId = SubAgentThreadIds.For(parentThreadId, agentId);
         var childMetadata = await _store.LoadMetadataAsync(childThreadId, ct).ConfigureAwait(false);
@@ -240,7 +254,7 @@ public sealed class WebSocketConversationGate
             // No row means no provenance to check, NOT "nothing persisted" - a mid-run child has
             // messages and no row. Admit the handshake (refusing it would be the oracle) and withhold
             // the replay, so an unverifiable child answers exactly like one that does not exist.
-            return new SubAgentSocketAdmission(true, false);
+            return new SubAgentSocketAdmission(true, false, mayWrite);
         }
 
         var stampedParent = SubAgentProvenance.TryProject(childMetadata)?.ParentThreadId;
@@ -254,7 +268,7 @@ public sealed class WebSocketConversationGate
             );
         }
 
-        return new SubAgentSocketAdmission(true, isOwnChild);
+        return new SubAgentSocketAdmission(true, isOwnChild, mayWrite);
     }
 
     /// <summary>

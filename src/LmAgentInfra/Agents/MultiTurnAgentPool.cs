@@ -2172,9 +2172,13 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// which is delivered only to a loaded conversation.
     /// </para>
     /// <para>
-    /// Everything else is rebuilt from the store, or is lost exactly as on a host restart: a finished
-    /// sub-agent can no longer be messaged, a frozen conversation comes back unfrozen (the slot reaper
-    /// that freezes one is done with it), and one whose run loop failed comes back with a working one.
+    /// Everything else is rebuilt from the store, or is lost exactly as on a host restart: a frozen
+    /// conversation comes back unfrozen (the slot reaper that freezes one is done with it), and one whose
+    /// run loop failed comes back with a working one. A finished sub-agent CAN still be messaged: the
+    /// rebuilt loop registers it again while it starts, so a caller that reaches it through the rebuilt
+    /// root waits for <see cref="IStartupReadinessAgent.WaitUntilReadyAsync"/> first (#868). That covers
+    /// the root's own sub-agents; a sub-agent's sub-agents come back when their parent is rebuilt by a
+    /// message.
     /// </para>
     /// <para>
     /// A conversation that stays loaded still frees each sub-agent that finished at least
