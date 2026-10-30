@@ -47,7 +47,10 @@ $reviewedRetiredMeasuredIds = @(
     "dotnet|tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj|LmStreaming.Sample.Tests.Services.Discovery.WorkspaceSubAgentLoaderTests.TryResolveContainedPath_DotDotEscape_Rejected()",
     "dotnet|tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj|LmStreaming.Sample.Tests.Services.Discovery.WorkspaceSubAgentLoaderTests.TryResolveContainedPath_EmptyInput_Rejected()",
     "dotnet|tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj|LmStreaming.Sample.Tests.Services.Discovery.WorkspaceSubAgentLoaderTests.TryResolveContainedPath_RelativeUnderBase_Accepted()",
-    "dotnet|tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj|LmStreaming.Sample.Tests.Services.Discovery.WorkspaceSubAgentLoaderTests.TryResolveContainedPath_SiblingPrefixAttack_Rejected()"
+    "dotnet|tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj|LmStreaming.Sample.Tests.Services.Discovery.WorkspaceSubAgentLoaderTests.TryResolveContainedPath_SiblingPrefixAttack_Rejected()",
+    # #792 replaces "a live CLI agent never scans the store" with "scans once per hydration" so a
+    # recreate's stopped children stay listed. The old name now states a false rule, so it retires.
+    "dotnet|tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj|LmStreaming.Sample.Tests.Services.AgentHierarchyServiceTests.BuildAsync_ForALiveNonMultiTurnAgentLoop_NeverCallsListThreadsAsync()"
 )
 
 function Assert-MeasuredCorpus {

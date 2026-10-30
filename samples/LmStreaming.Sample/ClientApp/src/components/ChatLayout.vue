@@ -9,6 +9,7 @@ import { egressDialogRequest, closeEgressDialog } from '@/composables/useEgressA
 import { conversationExists, updateConversationMetadata } from '@/api/conversationsApi';
 import { WorkspaceRevisionConflictError } from '@/api/workspacesApi';
 import { InvalidEnvError, activateMiniWebApps } from '@/api/chatModesApi';
+import { listSubAgents } from '@/api/subAgentsApi';
 import type { ChatModeCreateUpdate } from '@/types/chatMode';
 import type { WorkspaceCreate, WorkspaceUpdate } from '@/types/workspace';
 import { isWorkspaceSelectable } from '@/types/workspace';
@@ -906,13 +907,42 @@ async function handleSelectProvider(providerId: string): Promise<void> {
     conversations.value.some((c) => c.threadId === currentThreadId.value);
 
   if (started) {
+    const threadId = currentThreadId.value!;
     isSwitchingProvider.value = true;
     try {
+      // #792: moving from an API model onto a CLI provider rebuilds the parent agent, which stops every
+      // sub-agent it is running. Other switches keep them, so only this one asks first. The roster is
+      // this thread's own fresh read, not the panel's list: the last 3-second poll can miss a child
+      // spawned since, and a poll that overlaps this read can supersede it in the panel. A roster that
+      // cannot be read is not taken to mean "none".
+      const fromProvider =
+        conversations.value.find((c) => c.threadId === threadId)?.provider ?? selectedProviderId.value;
+      if (isCliBackedProvider(providerId) && !isCliBackedProvider(fromProvider)) {
+        const live = await listSubAgents(threadId).then(
+          (list) => list.filter((c) => c.status === 'running' || c.status === 'queued').length,
+          () => null
+        );
+        // Navigation is not blocked while the roster loads; the click was for the conversation it was
+        // made on, so it never switches the one selected since.
+        if (currentThreadId.value !== threadId) {
+          return;
+        }
+        const question =
+          live === null
+            ? 'Could not check for running sub-agents. Any that are running will be stopped. Switch anyway?'
+            : live > 0
+              ? `${live} sub-agent${live === 1 ? ' is' : 's are'} running and will be stopped. Switch anyway?`
+              : null;
+        if (question && !window.confirm(question)) {
+          return;
+        }
+      }
+
       await disconnectWebSocket();
-      await switchProvider(currentThreadId.value!, providerId);
+      await switchProvider(threadId, providerId);
       // Reflect the switched-to provider in the sidebar summary so the Bug-3 restore path
       // (restoreBindingsFromConversation on select / refresh) shows the new provider.
-      const existing = conversations.value.find((c) => c.threadId === currentThreadId.value);
+      const existing = conversations.value.find((c) => c.threadId === threadId);
       if (existing) {
         addOrUpdateConversation({ ...existing, provider: providerId });
       }

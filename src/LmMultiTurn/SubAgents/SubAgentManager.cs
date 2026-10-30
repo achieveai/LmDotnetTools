@@ -276,6 +276,14 @@ public sealed class SubAgentManager : IAsyncDisposable
     internal TimeSpan? TestPerAgentBackgroundTaskDisposeCeiling { get; set; }
 
     /// <summary>
+    /// The <see cref="SubAgentSnapshot.FailureCode"/> that <see cref="DisposeAsync"/> stamps on a child
+    /// still running at disposal. Defaults to <see cref="SubAgentFailureCodes.HostShutdown"/>; a host
+    /// that disposes this manager for another reason sets it first, so the child says why it stopped
+    /// (e.g. <see cref="SubAgentFailureCodes.ParentRecreated"/> when the parent's agent is replaced).
+    /// </summary>
+    public string ShutdownFailureCode { get; set; } = SubAgentFailureCodes.HostShutdown;
+
+    /// <summary>
     /// The parent agent's handle on the collaboration, or null when collaboration is off. Null is the
     /// feature gate: every collaboration branch in this manager is skipped and the legacy behaviour —
     /// per-manager limits only, one ordinary nesting level, no directory — is unchanged.
@@ -3093,7 +3101,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             // is acceptable ONLY because the read side is the backstop: a persisted in-flight child with
             // no live in-memory state is projected as interrupted rather than running
             // (SubAgentSummary.AsRetained, applied to the persisted roster in AgentHierarchyService).
-            if (state.TryMarkStoppedAtShutdown(SubAgentFailureCodes.HostShutdown, out var shutdownEpoch))
+            if (state.TryMarkStoppedAtShutdown(ShutdownFailureCode, out var shutdownEpoch))
             {
                 await AwaitBoundedTaskAsync(
                     PersistTerminalStateAsync(state, shutdownEpoch),

@@ -32,6 +32,13 @@ public static class SubAgentFailureCodes
     /// process, and no later run of this child can ever resume it.
     /// </summary>
     public const string HostShutdown = "host_shutdown";
+
+    /// <summary>
+    /// The child was still running when the host replaced its parent's agent (for example, a provider
+    /// switch the parent could not take in place). The process is still up, but the parent loop that
+    /// owned the child was disposed, and the replacement has no way to resume it.
+    /// </summary>
+    public const string ParentRecreated = "parent_recreated";
 }
 
 /// <summary>Thrown when the bounded deferred-spawn queue has no remaining capacity.</summary>

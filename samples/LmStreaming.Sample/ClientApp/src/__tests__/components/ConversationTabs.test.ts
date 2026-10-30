@@ -227,3 +227,14 @@ describe('ConversationTabs agent picker', () => {
     expect(wrapper.find('[data-testid="agent-picker-popover"]').exists()).toBe(false);
   });
 });
+
+describe('ConversationTabs stopped-agent label (#792)', () => {
+  it.each([
+    ['parent_recreated', 'Stopped: parent provider changed'],
+    ['host_shutdown', 'Stopped'],
+  ])('labels a child stopped with %s as "%s"', (failureCode, label) => {
+    const stopped = tab('s1', 'stopped', { failureCode });
+    const wrapper = mount(ConversationTabs, { props: { tabs: [TABS[0], stopped], activeTabId: 's1' } });
+    expect(wrapper.get('.agent-picker__trigger-status').text()).toBe(label);
+  });
+});

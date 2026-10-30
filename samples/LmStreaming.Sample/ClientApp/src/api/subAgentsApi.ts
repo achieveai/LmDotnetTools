@@ -3,9 +3,10 @@ import { apiFetch } from '@/api/http';
 /**
  * Status of a sub-agent, mirroring the backend `SubAgentSummary.status` values. `'interrupted'` is
  * what a row that was still in flight when its host stopped is reported as once it comes back from
- * storage (#244) — it is a retained snapshot, not work that is still happening.
+ * storage (#244) — it is a retained snapshot, not work that is still happening. `'queued'` is a spawn
+ * still waiting for a concurrency slot.
  */
-export type SubAgentStatus = 'running' | 'completed' | 'error' | 'stopped' | 'interrupted';
+export type SubAgentStatus = 'queued' | 'running' | 'completed' | 'error' | 'stopped' | 'interrupted';
 
 /**
  * What kind of run a `/subagents` entry represents. A plain `'subagent'` is a spawned Agent; a

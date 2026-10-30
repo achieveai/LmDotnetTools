@@ -200,15 +200,18 @@ public sealed class AgentHierarchyService(
         // child the manager stops looking empty and a per-call gate would silently drop every recovered
         // row on the next call, since ordinary collaboration-off rows are never write-through-persisted
         // above):
-        //   - a live agent that is not a MultiTurnAgentLoop (Codex/Copilot CLI loops), or a
-        //     MultiTurnAgentLoop built with no SubAgentManager at all — it can never own an Agent-tool
-        //     child, so scanning on its behalf would only pay a store-wide cost on every hot poll for a
-        //     roster it structurally cannot have. Skip.
+        //   - a live MultiTurnAgentLoop built with no SubAgentManager at all — it can never own an
+        //     Agent-tool child, and no switch leaves one behind for it (a loop is only ever replaced by a
+        //     recreate, which hands the conversation to a new agent). Skip.
         //   - a live MultiTurnAgentLoop with collaboration ON — the write-through above (or the enriched
         //     persisted WorkflowRunRegistry tabs a few lines down) already accounts for every child that
         //     matters. Skip.
-        //   - everything else (no live agent at all, or a live collaboration-OFF MultiTurnAgentLoop with
-        //     a SubAgentManager) — the persisted roster is relevant, but is resolved through
+        //   - everything else (no live agent at all, a live collaboration-OFF MultiTurnAgentLoop with a
+        //     SubAgentManager, or a live agent that is not a MultiTurnAgentLoop at all) — the persisted
+        //     roster is relevant. A CLI agent (Claude/Codex/Copilot) owns no Agent-tool children itself,
+        //     but the API loop it replaced may have (#792): a provider switch onto a CLI arm recreates the
+        //     parent and stops that loop's children, and the saved rows are the only record of them. It is
+        //     resolved through
         //     GetOrScanPersistedSubAgentChildrenAsync below rather than scanned unconditionally: that
         //     helper caches the FIRST answer for this thread's process lifetime (via
         //     SubAgentScanCoverageCache, the one thing shared across the otherwise-fresh
@@ -216,16 +219,20 @@ public sealed class AgentHierarchyService(
         //     genuinely childless loop stops paying for a rescan on every 3-second poll, and a rehydrated
         //     loop's recovered roster survives every later poll — including the one right after it
         //     spawns a new child, when the manager stops looking empty.
-        var subAgentRosterRelevant = !isLive || loop is { Collaboration: null, SubAgentManager: not null };
+        var subAgentRosterRelevant =
+            !isLive || loop is null || loop is { Collaboration: null, SubAgentManager: not null };
         if (subAgentRosterRelevant)
         {
             // The cache entry is keyed on this owner alongside threadId (see SubAgentScanCoverageCache's
-            // remarks): the live SubAgentManager instance when one covers this thread, or the shared
-            // NoLiveManager sentinel otherwise. A mode/provider switch, pool eviction+reopen, or restart
-            // rehydration each construct a brand-new SubAgentManager, so the owner here changes and the
-            // cache is invalidated automatically — no recreation call site needs to remember to do it.
-            var owner = loop is { Collaboration: null, SubAgentManager: { } liveSubAgentManager }
-                ? liveSubAgentManager
+            // remarks): the live SubAgentManager instance when one covers this thread, the live agent
+            // itself when it is not a loop, or the shared NoLiveManager sentinel when nothing is live. A
+            // mode/provider switch, pool eviction+reopen, or restart rehydration each construct a
+            // brand-new agent, so the owner here changes and the cache is invalidated automatically — no
+            // recreation call site needs to remember to do it. For a live CLI agent that makes the scan
+            // run once per hydration, not on every poll: its own children never change the saved roster.
+            object owner =
+                loop is { Collaboration: null, SubAgentManager: { } liveSubAgentManager } ? liveSubAgentManager
+                : isLive && loop is null ? agent!
                 : SubAgentScanCoverageCache.NoLiveManager;
             // AsRetained() for the same reason the persisted WorkflowRunRegistry tabs below get it: a row
             // read back from storage describes an agent that is not running HERE. A child still in flight
@@ -247,7 +254,24 @@ public sealed class AgentHierarchyService(
 
         foreach (var tab in workflowRunRegistry.GetPersistedTabs(threadId))
         {
-            merged[(tab.Kind, tab.AgentId)] = tab;
+            // A tab is written through only while its parent loop is live and polled, so one saved while
+            // the child was still in flight reads back as interrupted. When the child's own saved row says
+            // how it actually ended (#792: stopped, parent_recreated), that is the newer fact; the tab
+            // keeps its hierarchy fields and takes the ending from the row. Only the same transcript's
+            // row counts: with collaboration off the root manager and a workflow controller number their
+            // children separately, so both can own an agent-1.
+            merged[(tab.Kind, tab.AgentId)] =
+                tab.Status == SubAgentSummary.InterruptedStatus
+                && merged.TryGetValue((tab.Kind, tab.AgentId), out var saved)
+                && saved.ThreadId == tab.ThreadId
+                && IsTerminal(saved.Status)
+                    ? tab with
+                    {
+                        Status = saved.Status,
+                        TerminalAtUtc = saved.TerminalAtUtc,
+                        FailureCode = saved.FailureCode,
+                    }
+                    : tab;
         }
 
         foreach (var tab in workflowTabs.Concat(summaries))
@@ -472,6 +496,12 @@ public sealed class AgentHierarchyService(
             RequestedReasoningEffort = s.RequestedReasoningEffort,
             ShapedReasoningEffort = s.ShapedReasoningEffort,
         };
+
+    private static bool IsTerminal(string status) =>
+        status
+            is AgentCollaborationStatuses.Completed
+                or AgentCollaborationStatuses.Error
+                or AgentCollaborationStatuses.Stopped;
 
     /// <summary>
     ///     Returns the persisted Agent-tool child roster for <paramref name="threadId"/>, scanning the

@@ -136,6 +136,10 @@ const sharedMocks = vi.hoisted(() => ({
   // it, so pushing a frame here is how a test conjures a board (and with it the TodoBoardPanel).
   conversationTodoRef: null as Ref<unknown> | null,
   subAgentChildren: [] as SubAgentSummary[],
+  // The roster read the provider switch makes for its own thread (#792), separate from the panel's list.
+  listSubAgents: vi.fn(async (_threadId: string): Promise<SubAgentSummary[]> => []),
+  // The live currentThreadId ref inside the useConversations mock, so a test can navigate mid-switch.
+  currentThreadIdRef: null as Ref<string | null> | null,
   focusedAgentIdRef: null as Ref<string | null> | null,
   focusChild: vi.fn(async (_agentId: string) => {}),
   subAgentQuestionResult: null as ToolCallResultMessage | null,
@@ -154,7 +158,7 @@ vi.mock('@/composables/useConversations', async () => {
   return {
     useConversations: () => ({
       conversations: ref(sharedMocks.conversations),
-      currentThreadId: ref(sharedMocks.currentThreadId),
+      currentThreadId: (sharedMocks.currentThreadIdRef = ref(sharedMocks.currentThreadId)),
       currentConversation: computed(() =>
         sharedMocks.conversations.find((c) => c.threadId === sharedMocks.currentThreadId)
       ),
@@ -382,6 +386,11 @@ vi.mock('@/api/conversationsApi', () => ({
 
 // The context/cost panel (#685) is wired into ChatLayout but exercised by its own tests; without
 // this the hoisted useContextReport would hit real fetch on every started conversation.
+vi.mock('@/api/subAgentsApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/subAgentsApi')>()),
+  listSubAgents: sharedMocks.listSubAgents,
+}));
+
 vi.mock('@/api/contextApi', () => ({
   getConversationContext: vi.fn(async () => null),
   requestCompaction: vi.fn(),
@@ -1525,6 +1534,150 @@ describe('ChatLayout handleSelectProvider start-gating', () => {
 
     expect(sharedMocks.switchProvider).not.toHaveBeenCalled();
     expect(sharedMocks.selectProvider).not.toHaveBeenCalled();
+  });
+});
+
+// #792: a switch onto a CLI provider rebuilds the parent agent, which stops its running sub-agents. The
+// picker asks first, but only for that switch: every other one is served in place and keeps them.
+describe('ChatLayout warns before a provider switch stops sub-agents (#792)', () => {
+  let target = 'claude';
+  const child = (status: SubAgentSummary['status']): SubAgentSummary => ({
+    agentId: `agent-${status}`,
+    name: 'Child agent',
+    template: 'default',
+    task: 'Work for the parent',
+    status,
+    threadId: `subagent-${status}`,
+    lastActivityUtc: null,
+  });
+  const switchTo = async (provider: string) => {
+    target = provider;
+    const wrapper = mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: {
+            template: '<div><slot name="mode-control" /><slot name="context-control" /></div>',
+          },
+          ProviderSelector: {
+            props: ['disabled'],
+            setup: () => ({ pick: () => target }),
+            template:
+              '<button data-test="provider-select" :disabled="disabled" @click="$emit(\'select-provider\', pick())">Provider</button>',
+          },
+        },
+      },
+    });
+    await flushPromises();
+    await wrapper.get('[data-test="provider-select"]').trigger('click');
+    await flushPromises();
+  };
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.switchProvider.mockReset();
+    sharedMocks.disconnectWebSocket.mockReset();
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1', provider: 'test' })];
+    sharedMocks.listSubAgents.mockReset().mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    sharedMocks.subAgentChildren = [];
+    vi.restoreAllMocks();
+  });
+
+  it('asks before an API-to-CLI switch with live sub-agents, and a cancel keeps the provider', async () => {
+    sharedMocks.listSubAgents.mockResolvedValue([child('running'), child('queued'), child('completed')]);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    await switchTo('claude');
+
+    expect(sharedMocks.listSubAgents).toHaveBeenCalledWith('thread-1');
+    expect(confirm).toHaveBeenCalledWith('2 sub-agents are running and will be stopped. Switch anyway?');
+    expect(sharedMocks.disconnectWebSocket).not.toHaveBeenCalled();
+    expect(sharedMocks.switchProvider).not.toHaveBeenCalled();
+  });
+
+  it('switches once the user accepts the warning', async () => {
+    sharedMocks.listSubAgents.mockResolvedValue([child('running')]);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    await switchTo('claude-mock');
+
+    expect(confirm).toHaveBeenCalledWith('1 sub-agent is running and will be stopped. Switch anyway?');
+    expect(sharedMocks.switchProvider).toHaveBeenCalledWith('thread-1', 'claude-mock');
+  });
+
+  // The panel's list can be a poll behind, or superseded by an overlapping poll, so the warning never
+  // reads it: a running child only the fresh read sees still asks, and a stale running one does not.
+  it.each([
+    ['asks for a child only the fresh read sees', [], [child('running')], true],
+    ['does not ask for a child only the stale panel list shows', [child('running')], [], false],
+  ])('%s', async (_case, panel, fresh, asks) => {
+    sharedMocks.subAgentChildren = panel;
+    sharedMocks.listSubAgents.mockResolvedValue(fresh);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    await switchTo('claude');
+
+    expect(confirm).toHaveBeenCalledTimes(asks ? 1 : 0);
+    expect(sharedMocks.switchProvider).toHaveBeenCalledTimes(asks ? 0 : 1);
+  });
+
+  it('asks when the roster cannot be read, instead of treating it as empty', async () => {
+    sharedMocks.listSubAgents.mockRejectedValue(new Error('Failed to list sub-agents: 500'));
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    await switchTo('claude');
+
+    expect(confirm).toHaveBeenCalledWith(
+      'Could not check for running sub-agents. Any that are running will be stopped. Switch anyway?'
+    );
+    expect(sharedMocks.switchProvider).not.toHaveBeenCalled();
+  });
+
+  it('drops the switch when another conversation is selected while the roster loads', async () => {
+    let finishRead: (list: SubAgentSummary[]) => void = () => {};
+    sharedMocks.listSubAgents.mockReturnValue(new Promise((resolve) => (finishRead = resolve)));
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    await switchTo('claude');
+    sharedMocks.currentThreadIdRef!.value = 'thread-2';
+    finishRead([child('running')]);
+    await flushPromises();
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(sharedMocks.disconnectWebSocket).not.toHaveBeenCalled();
+    expect(sharedMocks.switchProvider).not.toHaveBeenCalled();
+  });
+
+  // A CLI agent owns no sub-agent manager, so leaving it stops nothing, whichever way the switch goes.
+  it.each(['openai', 'codex'])('does not ask when leaving a CLI provider for %s', async (provider) => {
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1', provider: 'claude' })];
+    sharedMocks.listSubAgents.mockResolvedValue([child('running')]);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    await switchTo(provider);
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(sharedMocks.switchProvider).toHaveBeenCalledWith('thread-1', provider);
+  });
+
+  it.each([
+    ['an API-to-API switch, which keeps the sub-agents', 'openai', [child('running')]],
+    ['a switch with no live sub-agent', 'claude', [child('completed'), child('stopped')]],
+  ])('does not ask for %s', async (_case, provider, children) => {
+    sharedMocks.listSubAgents.mockResolvedValue(children);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    await switchTo(provider);
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(sharedMocks.switchProvider).toHaveBeenCalledWith('thread-1', provider);
   });
 });
 
