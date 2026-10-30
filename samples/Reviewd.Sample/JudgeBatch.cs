@@ -19,6 +19,7 @@ namespace Reviewd.Sample;
 ///     capped ones ($0), then, only while no judge is in flight anywhere and the stop file is absent, new starts under
 ///     the day cap, the average guard and --limit, taking turns across targets.
 ///     </para>
+///     <para>With <c>--shard i/n</c> the batch sees only its share of PRs (see <see cref="Shard" />).</para>
 /// </summary>
 internal static class JudgeBatch
 {
@@ -49,8 +50,40 @@ internal static class JudgeBatch
         decimal MaxUsdPerDay,
         decimal AvgUsdTarget,
         int MaxAgeDays,
-        string PromptSha256
+        string PromptSha256,
+        Shard? Shard = null
     );
+
+    /// <summary>
+    ///     <c>--shard i/n</c>: the batch takes only the PRs whose number is i modulo n. n lanes over the same installs,
+    ///     each with its own judge lock and its own i, then judge side by side: none picks another's PR or waits for
+    ///     another's judge, and each lane's spend, caps and guards count its own judgments. A PR id that is not a number
+    ///     goes to shard 0.
+    /// </summary>
+    internal sealed record Shard(int Index, int Count)
+    {
+        internal bool Takes(string prId) =>
+            long.TryParse(prId, NumberStyles.None, CultureInfo.InvariantCulture, out var number)
+                ? number % Count == Index
+                : Index == 0;
+
+        internal static Shard? Parse(string? value)
+        {
+            if (value is null)
+                return null;
+            var parts = value.Split('/');
+            if (
+                parts.Length == 2
+                && int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var index)
+                && int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var count)
+                && index < count
+            )
+                return new(index, count);
+            throw new ArgumentException(
+                $"--shard {value}: expected i/n with 0 <= i < n, as 0/3, 1/3 and 2/3 for three lanes."
+            );
+        }
+    }
 
     /// <summary>One verified review in one target: its judge receipts (oldest first) and its snapshot facts.</summary>
     internal sealed record PrState(
@@ -169,7 +202,8 @@ internal static class JudgeBatch
             options.GetDollars("max-usd-per-day") ?? DefaultMaxUsdPerDay,
             options.GetDollars("avg-usd-target") ?? DefaultAvgUsdTarget,
             options.GetCount("max-age-days") ?? DefaultMaxAgeDays,
-            await JudgeRunner.EmbeddedPromptSha256Async(ct)
+            await JudgeRunner.EmbeddedPromptSha256Async(ct),
+            Shard.Parse(options.Get("shard"))
         );
         var limit = options.GetCount("limit") ?? int.MaxValue;
         var stopFile = options.Get("stop-file");
@@ -669,8 +703,11 @@ internal static class JudgeBatch
     {
         using var connection = Open(target.Db, SqliteOpenMode.ReadOnly);
         await connection.OpenAsync(ct);
+        // A shard lane reads only its own PRs (the last segment of a key or group is the PR id).
+        bool Mine(string key) => settings.Shard?.Takes(key[(key.LastIndexOf('/') + 1)..]) ?? true;
         var judgments = (await RowsAsync(connection, "reviewd/judge-run/", ct))
             .GroupBy(row => row.Key[..(row.Key.LastIndexOf('/') + 1)], StringComparer.Ordinal)
+            .Where(prefix => Mine(prefix.Key[..^1]))
             .ToDictionary(
                 prefix => prefix.Key["reviewd/judge-run/".Length..^1],
                 prefix => Judgments(prefix, prefix.Key),
@@ -681,13 +718,15 @@ internal static class JudgeBatch
             row => Row(row.Key, row.Value),
             StringComparer.Ordinal
         );
-        var skips = (await RowsAsync(connection, "reviewd/judge-skip/", ct)).ToDictionary(
-            row => row.Key["reviewd/judge-skip/".Length..],
-            row => Time(Row(row.Key, row.Value)["at"]),
-            StringComparer.Ordinal
-        );
+        var skips = (await RowsAsync(connection, "reviewd/judge-skip/", ct))
+            .Where(row => Mine(row.Key))
+            .ToDictionary(
+                row => row.Key["reviewd/judge-skip/".Length..],
+                row => Time(Row(row.Key, row.Value)["at"]),
+                StringComparer.Ordinal
+            );
 
-        var reviews = await ReviewsAsync(connection, ct);
+        var reviews = (await ReviewsAsync(connection, ct)).Where(review => Mine(review.PrId)).ToList();
         // A PR reads as its repo's short name (NovaClient !5764750); one install reviews several repos.
         var labels = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var review in reviews)

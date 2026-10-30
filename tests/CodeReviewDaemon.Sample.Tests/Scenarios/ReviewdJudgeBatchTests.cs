@@ -5,14 +5,16 @@ using System.Text.Json.Nodes;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Configuration;
 using Reviewd::Reviewd.Sample;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
 /// <summary>
 ///     <c>judge batch</c> selection over real temp SQLite stores and a scripted host: the scan reads them read-only
-///     and the plan decides what may run.
+///     and the plan decides what may run. One test runs the CLI entry and reads its output, so the class runs apart.
 /// </summary>
+[Collection(ConsoleCapturingCollection.Name)]
 public sealed class ReviewdJudgeBatchTests : IDisposable
 {
     private const string Repo = "O365Exchange/Weve_DA/Nova";
@@ -930,6 +932,126 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             .NotContain(entry => entry.Pick.Pr.Pr == "5");
     }
 
+    // Two lanes share one install as shards 0/2 and 1/2. The even lane's judge on 7002 is in flight and has spent
+    // $4: the odd lane neither waits for it nor charges its cost (it reads nothing of it on the host), and plans only
+    // the odd PRs, newest merge first. The even lane still waits for its own judge before 7004.
+    [Fact]
+    public async Task A_shard_lane_takes_only_its_own_PRs_and_waits_only_for_its_own_judges()
+    {
+        var alpha = Db(
+            "alpha",
+            Review("7001"),
+            Review("7002"),
+            Review("7003"),
+            Review("7004"),
+            Snapshot(
+                ("7001", "Merged", Now.AddDays(-4)),
+                ("7002", "Merged", Now.AddDays(-3)),
+                ("7003", "Merged", Now.AddDays(-2)),
+                ("7004", "Merged", Now.AddDays(-1))
+            ),
+            Judgment("7002", 1, Receipt("judge-running", thread: "thread-even", usd: 4m)),
+            // Two days old: 7004 may start, and only the even lane's Needs you mentions the skip.
+            ("reviewd/judge-skip/" + RepoKey + "/7004", new JsonObject { ["at"] = Now.AddDays(-2) }.ToJsonString())
+        );
+        var quiet = new FakeHttpMessageHandler();
+
+        var (odd, oddPlan) = await PlanAsync(quiet, [], Settings with { Shard = new(1, 2) }, Target("alpha", alpha));
+
+        odd.InFlight.Should().BeEmpty();
+        odd.Guard.Spent24h.Should().Be(0m);
+        odd.NeedsYou.Should().BeEmpty();
+        quiet.Requests.Should().BeEmpty();
+        oddPlan
+            .Select(entry => (entry.Pick.Pr.Label, entry.Pick.Kind, entry.Wait))
+            .Should()
+            .Equal(("Nova !7003", JudgeBatch.Kind.Start, null), ("Nova !7001", JudgeBatch.Kind.Start, null));
+
+        var host = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "thread-even/run-state", Active);
+        var (even, evenPlan) = await PlanAsync(host, [], Settings with { Shard = new(0, 2) }, Target("alpha", alpha));
+
+        even.InFlight.Should().Equal("Nova !7002");
+        even.NeedsYou.Select(note => note.ToString()).Should().ContainMatch("*Nova !7004*not completed*");
+        evenPlan
+            .Single(entry => entry.Pick.Kind == JudgeBatch.Kind.Start)
+            .Should()
+            .Match<(JudgeBatch.Pick Pick, string? Wait)>(entry =>
+                entry.Pick.Pr.Label == "Nova !7004" && entry.Wait == "waits: judge in flight on Nova !7002"
+            );
+    }
+
+    // The tick passes JUDGE_SHARD as --shard: a preview of the CLI entry plans only that shard's PRs. No PR here has a
+    // judgment, so the preview makes no host read.
+    [Fact]
+    public async Task Judge_batch_with_shard_plans_only_its_own_PRs()
+    {
+        var alpha = Db(
+            "alpha",
+            Review("7001"),
+            Review("7002"),
+            Snapshot(("7001", "Merged", Now.AddDays(-2)), ("7002", "Merged", Now.AddDays(-1)))
+        );
+        var targets = Path.Combine(_dir, "targets.tsv");
+        await File.WriteAllTextAsync(targets, $"alpha\t{alpha}\tsession-1\t{Workspace}\n");
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        var (stdout, stderr) = (Console.Out, Console.Error);
+        using var output = new StringWriter();
+        Console.SetOut(output);
+        Console.SetError(TextWriter.Null);
+        int exit;
+        try
+        {
+            exit = await JudgeBatch.RunAsync(
+                CliOptions.Parse(["judge", "batch", "--targets", targets, "--shard", "1/2"]),
+                config,
+                CancellationToken.None
+            );
+        }
+        finally
+        {
+            Console.SetOut(stdout);
+            Console.SetError(stderr);
+        }
+
+        exit.Should().Be(0);
+        JsonNode.Parse(output.ToString().TrimEnd().Split('\n')[^1])!["plan"]!
+            .AsArray()
+            .Select(row => row!["pr"]!.GetValue<string>())
+            .Should()
+            .Equal("Nova !7001");
+    }
+
+    [Fact]
+    public void Shard_parses_i_of_n_and_the_cli_refuses_anything_else()
+    {
+        JudgeBatch.Shard.Parse(null).Should().BeNull();
+        JudgeBatch.Shard.Parse("0/1").Should().Be(new JudgeBatch.Shard(0, 1));
+        JudgeBatch.Shard.Parse("4/5").Should().Be(new JudgeBatch.Shard(4, 5));
+        CliOptions.Parse(["judge", "batch", "--targets", "t.tsv", "--shard", "4/5"]).Get("shard").Should().Be("4/5");
+        foreach (var bad in new[] { "5/5", "0/0", "1/0", "-1/2", "+1/2", " 1/2", "1/2/3", "a/2", "1", "" })
+        {
+            FluentActions
+                .Invoking(() => JudgeBatch.Shard.Parse(bad))
+                .Should()
+                .Throw<ArgumentException>(bad)
+                .WithMessage($"--shard {bad}: expected i/n with 0 <= i < n*");
+            FluentActions
+                .Invoking(() => CliOptions.Parse(["judge", "batch", "--targets", "t.tsv", "--shard", bad]))
+                .Should()
+                .Throw<ArgumentException>(bad);
+        }
+    }
+
+    [Fact]
+    public void A_shard_takes_each_PR_number_once_across_its_lanes()
+    {
+        var shards = Enumerable.Range(0, 5).Select(i => new JudgeBatch.Shard(i, 5)).ToList();
+        foreach (var pr in new[] { "0", "5764750", "5815488", "5833977", "5838315", "abc", "" })
+            shards.Count(shard => shard.Takes(pr)).Should().Be(1, pr);
+        new JudgeBatch.Shard(0, 5).Takes("abc").Should().BeTrue("a PR id that is not a number is shard 0's");
+        new JudgeBatch.Shard(3, 5).Takes("5764753").Should().BeTrue();
+    }
+
     [Fact]
     public async Task A_preview_scan_writes_nothing()
     {
@@ -971,16 +1093,23 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
     private const string Active = """{"threadId":"t","isInProgress":true,"currentRunId":"run-1"}""";
     private const string Idle = """{"threadId":"t","isInProgress":false,"currentRunId":null}""";
 
-    private async Task<(JudgeBatch.Scan Scan, List<(JudgeBatch.Pick Pick, string? Wait)> Plan)> PlanAsync(
+    private Task<(JudgeBatch.Scan Scan, List<(JudgeBatch.Pick Pick, string? Wait)> Plan)> PlanAsync(
         FakeHttpMessageHandler host,
         List<(string Name, string Reason)> broken,
+        params JudgeBatch.Target[] targets
+    ) => PlanAsync(host, broken, Settings, targets);
+
+    private static async Task<(JudgeBatch.Scan Scan, List<(JudgeBatch.Pick Pick, string? Wait)> Plan)> PlanAsync(
+        FakeHttpMessageHandler host,
+        List<(string Name, string Reason)> broken,
+        JudgeBatch.Settings settings,
         params JudgeBatch.Target[] targets
     )
     {
         using var http = new HttpClient(host) { BaseAddress = new Uri("http://localhost/") };
         var client = new LmStreamingS2SClient(http, null, null, null);
-        var scan = await JudgeBatch.ScanAsync([.. targets], broken, client, Settings, Now, CancellationToken.None);
-        return (scan, JudgeBatch.Plan(scan, [], latched: false, 0, int.MaxValue, Settings, Now));
+        var scan = await JudgeBatch.ScanAsync([.. targets], broken, client, settings, Now, CancellationToken.None);
+        return (scan, JudgeBatch.Plan(scan, [], latched: false, 0, int.MaxValue, settings, Now));
     }
 
     private async Task<string[]> SummaryLinesAsync(FakeHttpMessageHandler host, string db)
