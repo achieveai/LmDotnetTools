@@ -123,17 +123,43 @@ public sealed class ChatWebSocketManager
     /// sub-agents again while it starts, so this waits for it to be ready.
     /// </summary>
     /// <remarks>
-    /// Only a root that is not pooled, not a running workflow, and has persisted metadata is rebuilt, in
-    /// its persisted mode, as <c>ConversationsController</c> does. A sub-agent parent is never pooled: it
+    /// A root that is already pooled is only waited for. Only a root that is not pooled, not a running
+    /// workflow, and has persisted metadata is rebuilt, in its persisted mode, as
+    /// <c>ConversationsController</c> does. A sub-agent parent is never pooled: it
     /// is reached through its own parent's manager, which a follow-up rebuilds. Any failure is logged and
     /// leaves the tab on the replay path it took before. The caller must hold write on the parent: the
     /// rebuild freezes the pooled agent's owner to <paramref name="ownerUserId"/>.
     /// </remarks>
     private async Task RebuildUnloadedParentAsync(string parentThreadId, string? ownerUserId, CancellationToken ct)
     {
+        if (_agentPool.TryGet(parentThreadId, out var pooled))
+        {
+            // A root pooled moments ago may still be restoring its sub-agents, so wait for its startup too.
+            if (pooled is IStartupReadinessAgent pooledStartup)
+            {
+                try
+                {
+                    await WaitUntilStartedAndReadyAsync(pooledStartup, ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Pooled parent {ParentThreadId} did not become ready; its sub-agent tab may replay the transcript",
+                        parentThreadId
+                    );
+                }
+            }
+
+            return;
+        }
+
         if (
             _modeStore is null
-            || _agentPool.TryGet(parentThreadId, out _)
             || _workflowRunRegistry.TryGet(parentThreadId, out _)
             || SubAgentThreadIds.TryGetAgentId(parentThreadId, out _)
         )
@@ -473,8 +499,10 @@ public sealed class ChatWebSocketManager
     /// Handles a WebSocket connection focused on a single FOCUSED child sub-agent: streams that
     /// child's live + replayed output to the client (via the manager's restart-spanning
     /// <see cref="SubAgentManager.SubscribeToAgentAcrossRestartsAsync"/> fed through
-    /// <see cref="PumpMessagesToClientAsync"/>) and relays inbound text frames to it in background mode.
-    /// Presentation-only — it never mutates the parent connection or drives agent execution.
+    /// <see cref="PumpMessagesToClientAsync"/>). For a caller who may write the parent it also relays
+    /// inbound text frames to the child in background mode, which starts a run, and rebuilds an unloaded
+    /// root parent first (#868); every other caller's frames are refused as <c>read_only</c>. It never
+    /// touches the parent's own connection.
     /// </summary>
     /// <param name="webSocket">The WebSocket connection.</param>
     /// <param name="parentThreadId">Thread id of the parent agent that owns the sub-agent.</param>
@@ -651,7 +679,7 @@ public sealed class ChatWebSocketManager
 
             // The sub-agent wrapper reuses the shared frame pump (the {"$type":"done"} sentinel after
             // RunCompletedMessage) but adds failure-to-structured-error handling scoped to this path.
-            // This is a presentation-only view, so no recording.
+            // No recording on this tab.
             var subscriptionTask = PumpSubAgentStreamAsync(connection, stream, agentId, connectionCts.Token);
 
             // Follow-up messages relay only to an Agent-tool sub-agent and only for a caller who may write
@@ -1722,7 +1750,7 @@ public sealed class ChatWebSocketManager
     /// <summary>
     /// Sends a structured, correlated <c>relay_failed</c> error frame to the client without closing the
     /// connection — a transient relay failure must not silently drop the client's input nor tear down the
-    /// presentation-only view. The frame carries no message body (EUII).
+    /// sub-agent tab. The frame carries no message body (EUII).
     /// </summary>
     private async Task SendRelayFailedErrorAsync(
         RegisteredWebSocketConnection connection,

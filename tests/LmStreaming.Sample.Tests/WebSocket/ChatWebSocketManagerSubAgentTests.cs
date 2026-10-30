@@ -15,8 +15,7 @@ namespace LmStreaming.Sample.Tests.WebSocket;
 
 /// <summary>
 /// Tests for the focused sub-agent WebSocket handler (WI #194, Task 4):
-/// <see cref="ChatWebSocketManager.HandleSubAgentConnectionAsync"/>. The handler is
-/// presentation-only — it streams a FOCUSED child sub-agent's live+replayed output to the client
+/// <see cref="ChatWebSocketManager.HandleSubAgentConnectionAsync"/>. The handler streams a FOCUSED child sub-agent's live+replayed output to the client
 /// (reusing the parent's <c>StreamMessagesToClientAsync</c>) and relays inbound text frames to the
 /// child via <see cref="SubAgentManager.SendMessageAsync(string, string, bool, CancellationToken)"/>
 /// in background mode. It never touches
@@ -336,7 +335,8 @@ public sealed class ChatWebSocketManagerSubAgentTests
     )
     {
         // A rebuild that fails - the mode store throws, or no mode resolves - leaves the tab on the
-        // read-only replay it had before #868, and a follow-up there is refused, not dropped.
+        // read-only replay it had before #868. This caller may write the parent, yet its follow-up gets a
+        // read_only refusal there (a known limit); it is not silently dropped.
         var (store, pool, agentId, _) = await UnloadedParentWithAFinishedSubAgentAsync();
         await using var ownedPool = pool;
         var modeStore = new Mock<LmStreaming.Sample.Persistence.IChatModeStore>();
@@ -390,18 +390,78 @@ public sealed class ChatWebSocketManagerSubAgentTests
         await handlerTask;
     }
 
+    [Fact]
+    public async Task HandleSubAgentConnectionAsync_WaitsForAPooledParentStillRestoringItsSubAgents()
+    {
+        // The parent is back in the pool but its startup has not registered "alpha" yet. The tab waits for
+        // that startup rather than falling to the read-only replay.
+        GatedListingStore? gated = null;
+        var (store, pool, agentId, mode) = await UnloadedParentWithAFinishedSubAgentAsync(inner =>
+            gated = new GatedListingStore(inner)
+        );
+        await using var ownedPool = pool;
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        _ = pool.GetOrCreateAgent(ParentThreadId, mode);
+        await gated!.ListingEntered.Task.WaitAsync(testCts.Token);
+
+        var modeStore = new LmStreaming.Sample.Tests.Services.InMemoryChatModeStoreFake();
+        modeStore.Seed(mode);
+        var manager = new ChatWebSocketManager(
+            pool,
+            new WebSocketConnectionRegistry(),
+            new LmStreaming.Sample.Services.WorkflowRunRegistry(),
+            new PendingAuthCoordinator(
+                Mock.Of<IAuthEventNotifier>(),
+                new AuthOptions(),
+                NullLogger<PendingAuthCoordinator>.Instance
+            ),
+            store,
+            new LmStreaming.Sample.Tests.Services.NoOpSandboxEnvApplier(),
+            NullLogger<ChatWebSocketManager>.Instance,
+            modeStore
+        );
+        var socket = new FakeWebSocket();
+        socket.EnqueueTextFrame(JsonSerializer.Serialize(new ChatRequest("follow-up")));
+
+        var handlerTask = manager.HandleSubAgentConnectionAsync(
+            socket,
+            ParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            mayWrite: true,
+            testCts.Token
+        );
+        // The handler has no observable point while it waits, so the startup is released on a short timer.
+        _ = Task.Delay(TimeSpan.FromMilliseconds(300), testCts.Token)
+            .ContinueWith(_ => gated.Release(), TaskScheduler.Default);
+
+        await socket.WaitUntilAsync(
+            () => socket.SentContains("echo: follow-up") || socket.SentContains("\"code\":\"read_only\""),
+            testCts.Token
+        );
+        socket.SentContains("\"code\":\"read_only\"").Should().BeFalse("the tab reached the live sub-agent");
+        socket.SentContains("echo: follow-up").Should().BeTrue();
+
+        await testCts.CancelAsync();
+        await handlerTask;
+    }
+
     /// <summary>
     /// A pooled parent that spawned sub-agent "alpha", saw it finish, and was then unloaded as idle.
-    /// The caller disposes the pool.
+    /// The caller disposes the pool. <paramref name="subAgentStoreAfterUnload"/>, when given, wraps the
+    /// store the next pooled parent lists and restores its sub-agents through.
     /// </summary>
     private static async Task<(
         InMemoryConversationStore Store,
         MultiTurnAgentPool Pool,
         string AgentId,
         LmStreaming.Sample.Models.ChatMode Mode
-    )> UnloadedParentWithAFinishedSubAgentAsync()
+    )> UnloadedParentWithAFinishedSubAgentAsync(
+        Func<InMemoryConversationStore, IConversationStore>? subAgentStoreAfterUnload = null
+    )
     {
         var store = new InMemoryConversationStore();
+        IConversationStore subAgentStore = store;
         var child = new ScriptedSubAgentProvider((messages, ct) => EchoLastUserText(messages));
         var options = new SubAgentOptions
         {
@@ -414,7 +474,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
                     AgentFactory = () => child,
                 },
             },
-            DefaultConversationStoreFactory = _ => store,
+            DefaultConversationStoreFactory = _ => subAgentStore,
         };
         var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
         var pool = new MultiTurnAgentPool(
@@ -461,7 +521,73 @@ public sealed class ChatWebSocketManagerSubAgentTests
         );
         time.Advance(TimeSpan.FromHours(1));
         (await pool.UnloadIdleAgentsAsync(TimeSpan.FromMinutes(5))).Should().Be(1);
+        subAgentStore = subAgentStoreAfterUnload?.Invoke(store) ?? store;
         return (store, pool, agentId, mode);
+    }
+
+    /// <summary>
+    /// Forwards everything to <c>inner</c>, but holds the sub-agent transcript listing a starting parent
+    /// restores from until <see cref="Release"/>.
+    /// </summary>
+    private sealed class GatedListingStore(InMemoryConversationStore inner)
+        : IConversationStore,
+            IConversationThreadIdLookupStore
+    {
+        private readonly TaskCompletionSource _gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>Fires once the listing has been entered and is parked on the gate.</summary>
+        public TaskCompletionSource ListingEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Release() => _gate.TrySetResult();
+
+        public async Task<IReadOnlyList<string>> ListThreadIdsByPrefixAsync(
+            string prefix,
+            CancellationToken ct = default
+        )
+        {
+            _ = ListingEntered.TrySetResult();
+            await _gate.Task.WaitAsync(ct);
+            return await ConversationThreadIdLookup.ListThreadIdsByPrefixAsync(inner, prefix, ct);
+        }
+
+        public Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default
+        ) => inner.AppendMessagesAsync(threadId, messages, ct);
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => inner.LoadMessagesAsync(threadId, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            inner.LoadMetadataAsync(threadId, ct);
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default
+        ) => inner.UpdateMetadataAsync(threadId, update, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            ConversationListOptions? options = null,
+            CancellationToken ct = default
+        ) => inner.ListThreadsAsync(limit, offset, options, ct);
     }
 
     // ----- shared bounded receive pump (PR #209 findings #4/#5/#9/#10) -----

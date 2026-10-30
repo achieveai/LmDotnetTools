@@ -225,19 +225,35 @@ public sealed class WebSocketConversationGate
         ArgumentException.ThrowIfNullOrWhiteSpace(parentThreadId);
         ArgumentException.ThrowIfNullOrWhiteSpace(agentId);
 
+        var parentMetadata = await _store.LoadMetadataAsync(parentThreadId, ct).ConfigureAwait(false);
+        if (_authorizer.IsEnforced)
+        {
+            var parentResult = await _authorizer
+                .AuthorizeAsync(parentThreadId, parentMetadata, AccessAction.Read, ct)
+                .ConfigureAwait(false);
+            if (!parentResult.Allowed)
+            {
+                await RefuseAsync(context, parentThreadId, parentResult).ConfigureAwait(false);
+                return new SubAgentSocketAdmission(false, false, false);
+            }
+        }
+
+        // A deleted parent that forks still read is refused as unknown, as AdmitAsync refuses it, with
+        // authorization on or off: its sub-agents must not be rebuilt or messaged (#868).
+        if (ConversationLineage.IsDeleted(parentMetadata))
+        {
+            await RefuseAsync(
+                    context,
+                    parentThreadId,
+                    new ConversationAccessResult(false, DeletedConversationReason, HidesExistence: true)
+                )
+                .ConfigureAwait(false);
+            return new SubAgentSocketAdmission(false, false, false);
+        }
+
         if (!_authorizer.IsEnforced)
         {
             return new SubAgentSocketAdmission(true, true, true);
-        }
-
-        var parentMetadata = await _store.LoadMetadataAsync(parentThreadId, ct).ConfigureAwait(false);
-        var parentResult = await _authorizer
-            .AuthorizeAsync(parentThreadId, parentMetadata, AccessAction.Read, ct)
-            .ConfigureAwait(false);
-        if (!parentResult.Allowed)
-        {
-            await RefuseAsync(context, parentThreadId, parentResult).ConfigureAwait(false);
-            return new SubAgentSocketAdmission(false, false, false);
         }
 
         // Read admits the tab; following up a sub-agent or rebuilding the parent takes write (#868).

@@ -1929,6 +1929,25 @@ describe('useSubAgentPanel — a send after the tab socket died (#868)', () => {
     expect(panel.focusedAgentId.value).toBeNull();
   });
 
+  it('leaves the not-sent error off another child the user moved to during the failed attempt', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusThenDrop(panel);
+    subAgentsMocks.listSubAgents.mockResolvedValue([
+      summary('a1', { status: 'completed' }),
+      summary('a2', { status: 'completed' }),
+    ]);
+    await panel.refreshChildren();
+    wsSubMocks.connectSubAgent.mockImplementationOnce(async () => {
+      await panel.focusChild('a2');
+      throw new Error('WebSocket connection error');
+    });
+
+    expect(await panel.sendToFocusedChild('follow-up')).toBe(false);
+
+    expect(panel.focusedAgentId.value).toBe('a2');
+    expect(panel.error.value, "a1's failed send is not a2's error").toBeNull();
+  });
+
   it('keeps the not-sent error through a sub-agent list refresh', async () => {
     const panel = useSubAgentPanel(() => 'parent-1');
     await focusThenDrop(panel);

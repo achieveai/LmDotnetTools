@@ -3583,11 +3583,12 @@ try
         }
     );
 
-    // Map a SEPARATE WebSocket endpoint for a FOCUSED sub-agent (WI #194, presentation-only). Kept
-    // distinct from "/ws" so the parent handler stays byte-compatible: this route resolves the live
-    // child through the parent conversation's SubAgentManager (never a pooled "subagent-{id}" thread,
-    // which would wrongly be a top-level agent) and streams/relays it read-only. Only an unloaded ROOT
-    // parent is put back in the pool, so its finished sub-agents are live again (#868).
+    // Map a SEPARATE WebSocket endpoint for a FOCUSED sub-agent (WI #194). Kept distinct from "/ws" so
+    // the parent handler stays byte-compatible: this route resolves the live child through the parent
+    // conversation's SubAgentManager (never a pooled "subagent-{id}" thread, which would wrongly be a
+    // top-level agent) and streams it. A caller with write on the parent may also message the child, and
+    // an unloaded ROOT parent is put back in the pool for them, so its finished sub-agents run again
+    // (#868). Every other caller's frames are refused as read_only.
     _ = app.Map(
         "/ws/subagent",
         async (

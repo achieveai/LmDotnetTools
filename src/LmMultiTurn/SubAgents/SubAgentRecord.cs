@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
@@ -19,14 +18,21 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 /// result, and they differ by host, so the SDK keeps its own.
 /// </para>
 /// <para>
-/// Stored as a JSON string rather than nested values: an in-memory store hands back the string it was
-/// given, and a file or SQLite store a <see cref="JsonElement"/>; <see cref="Read"/> accepts both.
+/// Stored as a JSON string rather than nested values, through <see cref="ThreadMetadataProjection"/> like
+/// the other projections in the bag. It carries a schema version: a record written by a newer build reads
+/// as absent, so that child is skipped, and is never overwritten by this build's lifecycle writes.
 /// </para>
 /// </remarks>
 internal sealed record SubAgentRecord
 {
     /// <summary>Library-owned metadata key on the child thread.</summary>
     internal const string Property = "subagent_record";
+
+    /// <summary>The persisted schema version this build writes.</summary>
+    internal const int CurrentSchemaVersion = 1;
+
+    /// <summary>The JSON member holding <see cref="SchemaVersion"/>.</summary>
+    internal const string SchemaVersionPropertyName = "schema_version";
 
     /// <summary>
     /// Longest <see cref="LastResult"/> or <see cref="ErrorMessage"/> kept, in characters, marker included.
@@ -47,6 +53,10 @@ internal sealed record SubAgentRecord
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
     };
+
+    /// <summary>Schema version of this record.</summary>
+    [JsonPropertyName(SchemaVersionPropertyName)]
+    public int SchemaVersion { get; init; } = CurrentSchemaVersion;
 
     /// <summary>
     /// The thread of the agent that spawned it. Not required: a parent with no thread id (a test double)
@@ -124,36 +134,39 @@ internal sealed record SubAgentRecord
             ErrorMessage = Cap(FaultMessage(state), ErrorTruncationMarker),
         };
 
-    /// <summary><paramref name="metadata"/> with this record set, keeping every other property.</summary>
-    internal ThreadMetadata WriteTo(ThreadMetadata metadata)
-    {
-        var properties = metadata.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
-        properties[Property] = JsonSerializer.Serialize(this, JsonOptions);
-        return metadata with { Properties = properties.ToImmutable() };
-    }
+    /// <summary>
+    /// <paramref name="metadata"/> with this record set, keeping every other property. Unchanged when it
+    /// holds a record a newer build wrote.
+    /// </summary>
+    internal ThreadMetadata WriteTo(ThreadMetadata metadata) =>
+        IsFromANewerBuild(metadata)
+            ? metadata
+            : ThreadMetadataProjection.WithProjection(metadata, Property, JsonSerializer.Serialize(this, JsonOptions));
 
     /// <summary>
-    /// The record on <paramref name="metadata"/>, or null when it has none.
+    /// The record on <paramref name="metadata"/>, or null when it has none or a newer build wrote it.
     /// </summary>
     /// <exception cref="JsonException">The record is present but cannot be read.</exception>
     internal static SubAgentRecord? Read(ThreadMetadata? metadata)
     {
-        if (metadata?.Properties?.TryGetValue(Property, out var value) != true || value is null)
+        var json = ThreadMetadataProjection.RawJson(metadata, Property);
+        if (json is null || IsFromANewerBuild(metadata))
         {
             return null;
         }
 
-        var json = value switch
-        {
-            string s => s,
-            JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
-            JsonElement { ValueKind: JsonValueKind.Object } je => je.GetRawText(),
-            _ => throw new JsonException($"Unexpected {Property} value of type {value.GetType().Name}."),
-        };
-
-        return JsonSerializer.Deserialize<SubAgentRecord>(json!, JsonOptions)
+        return JsonSerializer.Deserialize<SubAgentRecord>(json, JsonOptions)
             ?? throw new JsonException($"The {Property} value is null.");
     }
+
+    /// <summary>Whether <paramref name="metadata"/> holds a record with a schema version newer than this build's.</summary>
+    internal static bool IsFromANewerBuild(ThreadMetadata? metadata) =>
+        ThreadMetadataProjection.PersistedSchemaVersion(
+            metadata,
+            Property,
+            SchemaVersionPropertyName,
+            whenUnversioned: CurrentSchemaVersion
+        ) > CurrentSchemaVersion;
 
     /// <summary>The message a waiter on the run's completion sees, or null when it did not fail.</summary>
     private static string? FaultMessage(SubAgentState state) =>

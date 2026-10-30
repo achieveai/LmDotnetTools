@@ -1023,7 +1023,8 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
    * that) reconnects here, on the user's send, never on the close itself: an eager reconnect would
    * rebuild the unloaded root right away and defeat the unload (#868). One refocus, then the send.
    * On failure it resolves false and {@link error} says the message was not sent and why, so the
-   * caller can keep the text.
+   * caller can keep the text. If the user moved to another child meanwhile, that child's tab gets
+   * neither the error nor the text.
    */
   async function sendToFocusedChild(text: string): Promise<boolean> {
     // A send is the user's next action: the previous send's error has been read.
@@ -1049,12 +1050,15 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
         focusedAgentId.value !== agentId
       ) {
         log.warn('sendToFocusedChild: reconnect failed; message not sent', { agentId, error: error.value });
-        setStickyError(`Message not sent. ${error.value ?? 'Could not reconnect to the sub-agent.'}`);
         // A failed focus clears the focus, which disables this tab's composer, and re-selecting the
         // tab remounts it and loses the kept text. Stay on the child instead, still without a
         // connection, so the next send makes its own single attempt.
         if (focusSeq === reconnectToken && focusedAgentId.value === null) {
           focusedAgentId.value = agentId;
+        }
+        // The error belongs to this child's tab: not to another child the user moved to meanwhile.
+        if (focusedAgentId.value === agentId) {
+          setStickyError(`Message not sent. ${error.value ?? 'Could not reconnect to the sub-agent.'}`);
         }
         return false;
       }

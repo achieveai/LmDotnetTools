@@ -1,3 +1,4 @@
+using System.Net.Http.Json;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
@@ -363,6 +364,105 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
     }
 
     /// <summary>
+    /// A deleted conversation that a fork still reads is kept in the store, hidden. Its sub-agent tab is
+    /// refused as unknown, with authorization on or off, so the deleted parent is not put back in the
+    /// pool and its sub-agent gets no new messages (#868).
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task TheSubAgentSocket_RefusesADeletedParentThatAForkStillReads(bool enforce)
+    {
+        LogTestStart();
+        using var factory = NewFactoryWithWorker(enforce);
+        var pool =
+            factory.Services.GetRequiredService<AchieveAi.LmDotnetTools.LmAgentInfra.Agents.MultiTurnAgentPool>();
+        var store = factory.Services.GetRequiredService<IConversationStore>();
+
+        var parent = $"thread-alices-deleted-{Guid.NewGuid():N}";
+        await ProvisionOwnedThreadAsync(factory, parent, Alice);
+
+        var alicesSocket = await factory.ConnectWebSocketAsync(parent, subProtocols: CredentialFor(Alice));
+        await using (var alice = new WebSocketTestClient(alicesSocket))
+        {
+            await alice.SendUserMessageAsync("spawn a worker");
+            using var _ = await alice.CollectUntilDoneAsync(TimeSpan.FromSeconds(30));
+        }
+
+        _ = pool.TryGet(parent, out var root).Should().BeTrue();
+        var manager = ((MultiTurnAgentLoop)root!).SubAgentManager!;
+        await Wait.UntilAsync(
+            () => manager.ListAgents() is [{ Status: SubAgentStatus.Completed }] && !pool.IsRunInProgress(parent),
+            because: "the worker finishes its first run and the parent is idle",
+            timeout: TimeSpan.FromSeconds(20)
+        );
+        var child = manager.ListAgents().Single();
+
+        using var http = factory.CreateClient();
+        http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+            "Bearer",
+            Alice
+        );
+        var latestRunId = (await store.LoadMessagesAsync(parent)).Last().RunId;
+        using (
+            var forked = await http.PostAsJsonAsync(
+                $"/api/conversations/{parent}/fork",
+                new { afterRunId = latestRunId }
+            )
+        )
+        {
+            _ = forked
+                .StatusCode.Should()
+                .Be(System.Net.HttpStatusCode.Created, await forked.Content.ReadAsStringAsync());
+        }
+
+        using (var deleted = await http.DeleteAsync($"/api/conversations/{parent}"))
+        {
+            _ = deleted.StatusCode.Should().Be(System.Net.HttpStatusCode.NoContent);
+        }
+
+        _ = ConversationLineage
+            .IsDeleted(await store.LoadMetadataAsync(parent))
+            .Should()
+            .BeTrue("the fork keeps the deleted parent in the store");
+        _ = pool.TryGet(parent, out _).Should().BeFalse("deleting it evicted its agent");
+        var childMessagesBefore = (await store.LoadMessagesAsync(child.ThreadId)).Count;
+
+        System.Net.WebSockets.WebSocket? tab = null;
+        try
+        {
+            tab = await factory.ConnectSubAgentWebSocketAsync(
+                parent,
+                child.AgentId,
+                subProtocols: CredentialFor(Alice)
+            );
+        }
+        catch (InvalidOperationException) { }
+
+        if (tab is not null)
+        {
+            // Only an admitted handshake gets here: give its follow-up the time to reach the sub-agent, so
+            // the assertions below see what it did.
+            await using var client = new WebSocketTestClient(tab);
+            await client.SendUserMessageAsync("a follow-up");
+            try
+            {
+                using var answer = await client.WaitForFrameAsync(
+                    frame => frame.RootElement.GetRawText().Contains("worker answer 2", StringComparison.Ordinal),
+                    TimeSpan.FromSeconds(10)
+                );
+            }
+            catch (Exception ex) when (ex is TimeoutException or InvalidOperationException) { }
+        }
+
+        _ = tab.Should().BeNull("the handshake is refused for a deleted parent");
+        _ = pool.TryGet(parent, out _).Should().BeFalse("the deleted parent was not put back in the pool");
+        _ = (await store.LoadMessagesAsync(child.ThreadId))
+            .Count.Should()
+            .Be(childMessagesBefore, "nothing reached the deleted parent's sub-agent");
+    }
+
+    /// <summary>
     /// The case a metadata row cannot speak for: a child that is RUNNING, or that was killed mid-run.
     /// The agent appends each message as it produces it and writes metadata only when the run
     /// completes, so such a child has a transcript and no row - permanently, once it is killed, since
@@ -577,7 +677,7 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
     /// A host whose root spawns one background "worker" sub-agent on its first turn. The worker answers
     /// "worker answer N" to its N-th request.
     /// </summary>
-    private static E2EWebAppFactory NewFactoryWithWorker()
+    private static E2EWebAppFactory NewFactoryWithWorker(bool enforce = true)
     {
         const string WorkerPrompt = "You are the ws419 worker.";
         var responder = ScriptedSseResponder
@@ -625,7 +725,7 @@ public sealed class WebSocketConversationAuthorizationTests : LoggingTestBase
             ),
             new Dictionary<string, string?>(StringComparer.Ordinal)
             {
-                ["Identity:Enforce"] = "true",
+                ["Identity:Enforce"] = enforce ? "true" : "false",
                 ["Identity:DatabasePath"] = Path.Combine(Path.GetTempPath(), $"identity_ws419_{Guid.NewGuid():N}.db"),
             },
             services => services.AddSingleton<IRequestPrincipalSource, BearerUserPrincipalSource>()

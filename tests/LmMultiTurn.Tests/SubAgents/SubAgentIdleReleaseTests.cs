@@ -4,6 +4,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
@@ -547,6 +548,161 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
         rebuilt.SubAgentManager!.ListAgents().Should().BeEmpty();
         (await rebuilt.SubAgentManager.RestoreFinishedAgentsAsync(CancellationToken.None)).Should().Be(0);
         store.ListingAttempts.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task ARecordFromANewerBuild_IsNotOverwritten_AndItsSubAgentIsNotRestored()
+    {
+        // During a rollback or a mixed-version deployment, this build must neither misread a record a newer
+        // build wrote nor replace it with its own older shape.
+        var store = new InMemoryConversationStore();
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new() { SystemPrompt = "You are a worker.", AgentFactory = AnsweringProvider },
+            },
+            DefaultConversationStoreFactory = _ => store,
+        };
+        await using var first = NewManager(options);
+        _ = await SpawnSettledAsync(first, "kept task", "kept");
+        _ = await SpawnSettledAsync(first, "newer task", "newer");
+        var newerThread = first.ListAgents().Single(a => a.Name == "newer").ThreadId;
+        var current = (string)(await store.LoadMetadataAsync(newerThread))!.Properties![SubAgentRecord.Property];
+        var newer = current.Replace(
+            $"\"{SubAgentRecord.SchemaVersionPropertyName}\":{SubAgentRecord.CurrentSchemaVersion}",
+            $"\"{SubAgentRecord.SchemaVersionPropertyName}\":2,\"addedLater\":\"x\"",
+            StringComparison.Ordinal
+        );
+        newer.Should().NotBe(current, "the record carries its schema version");
+        await store.UpdateMetadataAsync(
+            newerThread,
+            metadata => metadata! with { Properties = metadata.Properties!.SetItem(SubAgentRecord.Property, newer) }
+        );
+
+        // A follow-up runs the child again, so its running and terminal writes both happen.
+        SubAgentState? settled = null;
+        first.AfterSettlingRunCompletionForTest = (state, _) =>
+        {
+            settled ??= state;
+            return Task.CompletedTask;
+        };
+        _ = await first.SendMessageAsync("newer", "follow-up", runInBackground: false);
+        await Wait.UntilAsync(() => settled is { IsSettled: true }, "the follow-up's run has settled");
+
+        var metadata = await store.LoadMetadataAsync(newerThread);
+        metadata!.Properties![SubAgentRecord.Property].Should().Be(newer, "this build left the newer record alone");
+        SubAgentRecord.Read(metadata).Should().BeNull("a record from a newer build reads as absent");
+
+        await using var rebuilt = NewManager(options);
+        (await rebuilt.RestoreFinishedAgentsAsync(CancellationToken.None)).Should().Be(1);
+        rebuilt.ListAgents().Select(a => a.Name).Should().Equal("kept");
+    }
+
+    [Fact]
+    public async Task ARestoredSubAgent_KeepsItsSpawnArgumentsLineageAndCollaborationIdentity()
+    {
+        // The record carries everything a follow-up rebuilds the child from. A field dropped on the way
+        // in or out would change the child after its parent is rebuilt: a removed tool handed back, a
+        // lost role in the directory, a tool call no longer traced to the child.
+        var store = new InMemoryConversationStore();
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new() { SystemPrompt = "You are a worker.", AgentFactory = AnsweringProvider },
+            },
+            DefaultConversationStoreFactory = _ => store,
+        };
+
+        await using var first = NewManager(options, RegisteredCollaborationRoot());
+        SubAgentState? spawned = null;
+        first.AfterSettlingRunCompletionForTest = (state, _) =>
+        {
+            spawned ??= state;
+            return Task.CompletedTask;
+        };
+        _ = await first.SpawnAsync(
+            "worker",
+            "review the change",
+            name: "reviewer",
+            model: "model-override",
+            addTools: ["extra_tool"],
+            removeTools: ["withheld_tool"],
+            spawningToolCallId: "call-42",
+            role: "code reviewer",
+            description: "Reviews changes for defects."
+        );
+        await Wait.UntilAsync(() => spawned is { IsSettled: true }, "the spawn's run has settled");
+        var original = SubAgentRecord.Read(await store.LoadMetadataAsync(spawned!.Agent.ThreadId))!;
+
+        var collaboration = RegisteredCollaborationRoot();
+        await using var rebuilt = NewManager(options, collaboration);
+        (await rebuilt.RestoreFinishedAgentsAsync(CancellationToken.None)).Should().Be(1);
+
+        var entry = collaboration.Directory.Snapshot().Single(e => e.AgentId == original.AgentId);
+        entry.Role.Should().Be("code reviewer");
+        entry.Description.Should().Be("Reviews changes for defects.");
+        entry.Name.Should().Be("reviewer");
+
+        // The follow-up rebuilds the child from the restored state and records it again.
+        SubAgentState? restarted = null;
+        rebuilt.AfterSettlingRunCompletionForTest = (state, _) =>
+        {
+            restarted ??= state;
+            return Task.CompletedTask;
+        };
+        _ = await rebuilt.SendMessageAsync("reviewer", "follow-up", runInBackground: false);
+        await Wait.UntilAsync(() => restarted is { IsSettled: true }, "the follow-up's run has settled");
+
+        restarted!.AddTools.Should().Equal("extra_tool");
+        restarted.RemoveTools.Should().Equal("withheld_tool");
+        restarted.ModelOverride.Should().Be("model-override");
+        restarted.Lineage.SpawningToolCallId.Should().Be("call-42");
+        var rewritten = SubAgentRecord.Read(await store.LoadMetadataAsync(restarted.Agent.ThreadId))!;
+        rewritten
+            .Should()
+            .BeEquivalentTo(
+                original with
+                {
+                    LastResult = rewritten.LastResult,
+                    TerminalAtUtc = rewritten.TerminalAtUtc,
+                },
+                "everything but the new run's outcome survives the rebuild"
+            );
+    }
+
+    /// <summary>A manager whose parent is root thread "thread-restored-parent", as every rebuild of it is.</summary>
+    private static SubAgentManager NewManager(SubAgentOptions options, AgentCollaborationSetup? collaboration = null)
+    {
+        var parent = new Mock<IMultiTurnAgent>();
+        _ = parent.SetupGet(p => p.ThreadId).Returns("thread-restored-parent");
+        _ = parent
+            .Setup(p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(new SendReceipt("receipt-1", null, DateTimeOffset.UtcNow));
+        return new SubAgentManager(
+            parent.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates),
+            collaboration: collaboration
+        );
+    }
+
+    /// <summary>A collaboration root registered in its own directory, as a root loop registers itself.</summary>
+    private static AgentCollaborationSetup RegisteredCollaborationRoot()
+    {
+        var setup = AgentCollaborationSetup.CreateRoot(new AgentCollaborationOptions());
+        _ = setup.Directory.TryRegister(setup.Context, setup.Name, AgentCollaborationStatuses.Running);
+        return setup;
     }
 
     private async Task<SubAgentStatus?> RecordStatusAsync(string threadId) =>

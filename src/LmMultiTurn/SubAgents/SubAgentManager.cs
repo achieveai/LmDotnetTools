@@ -5862,7 +5862,14 @@ public sealed class SubAgentManager : IAsyncDisposable
         CancellationToken ct
     )
     {
-        var record = SubAgentRecord.Read(await store.LoadMetadataAsync(threadId, ct));
+        var metadata = await store.LoadMetadataAsync(threadId, ct);
+        if (SubAgentRecord.IsFromANewerBuild(metadata))
+        {
+            _logger.LogWarning("Sub-agent record on {ChildThreadId} was written by a newer build; skipped", threadId);
+            return false;
+        }
+
+        var record = SubAgentRecord.Read(metadata);
 
         // No record: spawned before records existed, or never finished. Another parent's: a sibling or
         // a descendant at another level, which that level's manager restores when its loop is rebuilt.

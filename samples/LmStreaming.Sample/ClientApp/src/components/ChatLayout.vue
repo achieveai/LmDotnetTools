@@ -513,7 +513,9 @@ const subAgentTranscriptRef = ref<InstanceType<typeof SubAgentTranscript> | null
 
 /** A reply that could not be sent goes back into the composer; the panel's error says why (#868). */
 async function handleSubAgentSend(text: string): Promise<void> {
-  if (!(await sendToFocusedChild(text))) {
+  // The text goes back only to the child it was written for; the user may have moved to another one.
+  const agentId = focusedAgentId.value;
+  if (!(await sendToFocusedChild(text)) && focusedAgentId.value === agentId) {
     subAgentTranscriptRef.value?.setText(text);
   }
 }
