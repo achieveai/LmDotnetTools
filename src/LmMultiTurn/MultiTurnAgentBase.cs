@@ -1479,6 +1479,22 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     protected int PendingInputCount => _inputChannel.Reader.CanCount ? _inputChannel.Reader.Count : 0;
 
     /// <summary>
+    /// Queued input a run would act on, not yet drained: <see cref="PendingInputCount"/> without the
+    /// loop's own wake sentinel (or any other <see cref="QueuedInput.Resume"/> entry). Counted from the
+    /// same write-site record <see cref="HasRealInputQueued"/> reads.
+    /// </summary>
+    protected int PendingRealInputCount
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _pendingRealInputs.Count;
+            }
+        }
+    }
+
+    /// <summary>
     /// Whether input a run would actually act on is queued right now.
     /// </summary>
     /// <remarks>

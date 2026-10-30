@@ -459,6 +459,35 @@ public class DelayedResultChildRunTests
         child.HasPendingMessages.Should().BeTrue();
     }
 
+    /// <summary>
+    /// The other side of the same report: the loop's own wake-up is not input. A result that resolves
+    /// while the loop is about to take an earlier one leaves a wake-up on the channel, and the earlier
+    /// child, still waiting on a third result, must not claim a run follows because of it.
+    /// </summary>
+    [Fact]
+    public async Task AChildRunThatTakesNoTurn_DoesNotCountTheLoopsOwnWakeUp()
+    {
+        await using var harness = await Harness.StartAsync(_mockAgent, ["tc_a", "tc_b", "tc_c"]);
+
+        // Runs after the loop has consumed tc_a's wake-up and before it takes tc_a's cause, so tc_b's
+        // wake-up is the only thing on the channel when tc_a's child completes.
+        var resolveNext = 1;
+        harness.Loop.BeforeTakingNextWorkForTest = async ct =>
+        {
+            if (Interlocked.Exchange(ref resolveNext, 0) == 1)
+            {
+                await harness.Loop.ResolveToolCallAsync("tc_b", "result-b", ct: ct);
+            }
+        };
+
+        await harness.Loop.ResolveToolCallAsync("tc_a", "result-a");
+
+        var child = await harness.WaitForCompletionAsync(c => c.CompletedRunId != harness.OriginatingRunId);
+        child.IsError.Should().BeFalse();
+        child.PendingMessageCount.Should().Be(0, "only the loop's own wake-up is queued, and no input follows");
+        child.HasPendingMessages.Should().BeFalse();
+    }
+
     #endregion
 
     #region Helpers
