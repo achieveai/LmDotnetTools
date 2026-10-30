@@ -1496,6 +1496,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// loop's own wake sentinel (or any other <see cref="QueuedInput.Resume"/> entry). Counted from the
     /// same write-site record <see cref="HasRealInputQueued"/> reads.
     /// </summary>
+    /// <remarks>
+    /// Can briefly UNDERcount, never overcount: an input is recorded just after its channel write, so a
+    /// read between the two misses it. That reads exactly like the input landing just after the count
+    /// was taken, which every consumer already has to handle. <c>SubAgentManager</c> does not rely on
+    /// this count alone to keep a provider alive: it re-reads the live channel through
+    /// <c>MultiTurnAgentLoop.HasPendingLoopWork</c> after the completion arrives. The record cannot come
+    /// first: a peek waiter would then end its wait on an input whose parked write may still fail.
+    /// </remarks>
     protected int PendingRealInputCount
     {
         get
