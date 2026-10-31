@@ -440,7 +440,8 @@ internal sealed class CliOptions
                     [--remote <url or name> (default origin)] [--execute]
 
         Files one completed final judgment and merges every review round of the PR into the store's remote main as one
-        commit: parents [main, round 1 tip, ...]. Without --judgment it runs
+        commit: parents [main, round 1 tip, ...]. A round whose branch the remote lacks is read from the store: its
+        files go on main, but its commit is no parent and is never pushed. Without --judgment it runs
         only when exactly one completed final judgment exists; with several it lists them and refuses.
         It adds write-now lessons to the KnowledgeBase (append, with a "Seen in" line), one ledger line per miss under
         Improvements/, the PR author's review habits under DeveloperLearnings/<author>/review-behaviors.md (one marked

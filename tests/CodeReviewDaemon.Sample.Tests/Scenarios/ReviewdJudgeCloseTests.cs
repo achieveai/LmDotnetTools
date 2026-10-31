@@ -558,13 +558,14 @@ public sealed class ReviewdJudgeCloseTests
             [7] = Run(null, thread: null),
         };
 
-        var text = JudgeClose.Closing(4, judgments, new JsonObject { ["verdict"] = "v" }, Packet(), Plan(), [], []);
+        var text = JudgeClose.Closing(4, judgments, new JsonObject { ["verdict"] = "v" }, Packet(), Plan(), [], [], []);
         var ownUnknown = JudgeClose.Closing(
             6,
             judgments,
             new JsonObject { ["verdict"] = "v" },
             Packet(),
             Plan(),
+            [],
             [],
             []
         );
@@ -605,6 +606,7 @@ public sealed class ReviewdJudgeCloseTests
             Packet(rounds: 2),
             plan,
             ["PRs/nova-5776213/review.md", "PRs/nova-5776213/setup-context.json"],
+            [],
             []
         );
 
@@ -648,7 +650,7 @@ public sealed class ReviewdJudgeCloseTests
         ];
 
         var lines = JudgeClose
-            .Closing(4, new() { [4] = Run(1m) }, new JsonObject { ["verdict"] = "v" }, Packet(2), Plan(), [], kept)
+            .Closing(4, new() { [4] = Run(1m) }, new JsonObject { ["verdict"] = "v" }, Packet(2), Plan(), [], kept, [])
             .Split('\n');
 
         lines
@@ -662,6 +664,46 @@ public sealed class ReviewdJudgeCloseTests
                 ],
                 "the branch is deleted after the close, so a kept file is found by its round's commit"
             );
+        lines.Should().NotContain(l => l.Contains("from the store", StringComparison.Ordinal));
+    }
+
+    // A round the remote lacks is filed from the store (JudgeSandbox.py close-prepare): main gets its files, never its
+    // commit, so CLOSING.md must not send a reader to main's history for it.
+    [Fact]
+    public void Close_closing_marks_a_round_read_from_the_store_and_its_kept_files()
+    {
+        List<JsonObject> kept =
+        [
+            new()
+            {
+                ["path"] = "PRs/nova-5776213/setup-context.json",
+                ["branch"] = "review/nova-5776213",
+                ["kind"] = "large",
+                ["bytes"] = 2_202_009L,
+            },
+        ];
+
+        var lines = JudgeClose
+            .Closing(
+                4,
+                new() { [4] = Run(1m) },
+                new JsonObject { ["verdict"] = "v" },
+                Packet(2),
+                Plan(),
+                [],
+                kept,
+                ["review/nova-5776213"]
+            )
+            .Split('\n');
+
+        lines
+            .Should()
+            .Contain([
+                "- round 1: review/nova-5776213 at bbbbbbbbb (from the store: not on the remote)",
+                "- round 2: review/nova-5776213-r2 at ccccccccc",
+                "- A round from the store is the exception: main has its files, and its commit stays in the store.",
+                "  - setup-context.json (2.1 MiB, round 1 at bbbbbbbbb, in the store only)",
+            ]);
     }
 
     [Fact]
@@ -670,7 +712,16 @@ public sealed class ReviewdJudgeCloseTests
         var replaced = Enumerable.Range(1, 12).Select(i => $"PRs/nova-5776213/f{i:00}.md").ToList();
 
         var lines = JudgeClose
-            .Closing(4, new() { [4] = Run(1m) }, new JsonObject { ["verdict"] = "v" }, Packet(2), Plan(), replaced, [])
+            .Closing(
+                4,
+                new() { [4] = Run(1m) },
+                new JsonObject { ["verdict"] = "v" },
+                Packet(2),
+                Plan(),
+                replaced,
+                [],
+                []
+            )
             .Split('\n');
 
         lines.Should().Contain("- Replaced by a later round (the older file stays in its round's history): 12 files");
@@ -1607,6 +1658,68 @@ public sealed class ReviewdJudgeCloseTests
         universe.AssertClean();
     }
 
+    // A round committed in the store and never pushed (11 merged PRs, October 2026) failed every close at its fetch.
+    // Close reads it from the store: main gets its files, checked and redacted like any round's, and never its commit,
+    // so text close did not check never reaches the remote. A rerun says already closed.
+    [SkippableFact]
+    public async Task Close_files_a_round_the_remote_never_had_from_the_store_without_pushing_its_commit()
+    {
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        using var universe = Universe.Create();
+        var local = universe.RoundOnlyInStore("PRs/x/leak.sh", "curl \"$U?sig=abcdefghijklmnopqrstuvwxyz&se=1\"\n");
+        var raw = universe.Git(universe.Store, "rev-parse", $"{local["tip"]}:PRs/x/leak.sh");
+        var phase = JudgeClose.Local(universe.Store);
+        JsonObject Args(JsonObject args)
+        {
+            args["rounds"]!.AsArray().Add(local.DeepClone());
+            return args;
+        }
+
+        var prepared = await phase("close-prepare", Args(universe.PrepareArgs(3)), default);
+        var closed = await phase("close-commit", Args(universe.CommitArgs(prepared, push: true)), default);
+        var again = await phase("close-prepare", Args(universe.PrepareArgs(3)), default);
+
+        prepared["fromStore"]!.AsArray().Select(b => b!.GetValue<string>()).Should().Equal("review/x-3c0d1e2f");
+        closed["status"]!.GetValue<string>().Should().Be("closed");
+        var commit = closed["commit"]!.GetValue<string>();
+        universe
+            .Git(universe.Origin, "rev-list", "--parents", "-n1", commit)
+            .Split(' ')
+            .Skip(1)
+            .Should()
+            .Equal([universe.Main, universe.Round1, universe.Round2], "a round from the store is no parent");
+        universe
+            .Git(universe.Origin, "show", $"{commit}:PRs/x/leak.sh")
+            .Should()
+            .Be("curl \"$U?sig=**REDACTED**&se=1\"");
+        universe
+            .Git(universe.Origin, "cat-file", "--batch-check=%(objectname)", "--batch-all-objects")
+            .Split('\n')
+            .Should()
+            .NotContain([local["tip"]!.GetValue<string>(), raw], "neither its commit nor its raw file was pushed");
+        again["status"]!.GetValue<string>().Should().Be("already-closed");
+        universe.AssertClean(pushed: commit);
+    }
+
+    [SkippableFact]
+    public async Task Close_prepare_refuses_a_round_neither_the_remote_nor_the_store_has()
+    {
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        using var universe = Universe.Create();
+        var args = universe.PrepareArgs(3);
+        args["rounds"]!
+            .AsArray()
+            .Add(new JsonObject { ["branch"] = "review/x-3c0d1e2f", ["tip"] = new string('d', 40) });
+
+        var refused = await JudgeClose.Local(universe.Store)("close-prepare", args, default);
+
+        refused["reason"]!
+            .GetValue<string>()
+            .Should()
+            .Be("review/x-3c0d1e2f is not on the remote, and this store does not have the judged round 3 (ddddddddd)");
+        universe.AssertClean();
+    }
+
     [SkippableFact]
     public async Task Close_prepare_does_not_fetch_inside_a_populated_submodule()
     {
@@ -2182,6 +2295,7 @@ public sealed class ReviewdJudgeCloseTests
                 ["remote"] = Origin,
                 ["main"] = prepared["main"]!.DeepClone(),
                 ["rounds"] = Rounds(),
+                ["fromStore"] = prepared["fromStore"]!.DeepClone(),
                 ["files"] = new JsonArray(
                     new JsonObject { ["path"] = "PRs/x/CLOSING.md", ["source"] = $"{prepared["scratch"]}/CLOSING.md" }
                 ),
@@ -2196,6 +2310,19 @@ public sealed class ReviewdJudgeCloseTests
                 new JsonObject { ["branch"] = "review/x", ["tip"] = Round1 },
                 new JsonObject { ["branch"] = "review/x-2e69ca4b", ["tip"] = Round2 }
             );
+
+        /// <summary>
+        /// Commits round review/x-3c0d1e2f (off main's base, one file) and fetches it into the store's own branch,
+        /// never pushing it: the remote has neither the branch nor its objects. Returns it as a round.
+        /// </summary>
+        public JsonObject RoundOnlyInStore(string path, string content)
+        {
+            var tip = Branch("review/x-3c0d1e2f", Git(Seed, "rev-parse", "main~1"), (path, content));
+            Git(Seed, "checkout", "-q", "main");
+            Git(Store, "fetch", "-q", Seed, "review/x-3c0d1e2f:review/x-3c0d1e2f");
+            Rebaseline();
+            return new JsonObject { ["branch"] = "review/x-3c0d1e2f", ["tip"] = tip };
+        }
 
         public void CommitOnMain(string path, string message)
         {
