@@ -70,8 +70,9 @@ def parse_time(text):
 
 
 def masked(text):
-    """text with the user and password of each URL in it (as in a --remote URL, or git's error about one) as ***."""
-    return re.sub(r"://[^/@\s]+@", "://***@", text)
+    """text with the user and password of each URL in it (as in a --remote URL, or git's error about one), and the value
+    of its access_token, token or sig query parameter, as ***."""
+    return re.sub(r"(?i)([?&](?:access_token|token|sig)=)[^&#\s'\"]+", r"\1***", re.sub(r"://[^/@\s]+@", "://***@", text))
 
 
 def git(git_args, *cmd, check=True, env=None, stdin=None):

@@ -1742,8 +1742,9 @@ public sealed class ReviewdJudgeCloseTests
         universe.AssertClean(pushed: commit);
     }
 
-    // The remote can be a URL with a user and password. When round discovery (git ls-remote) fails after main was
-    // fetched, prepare fails without printing them, origin main does not move, and its private refs and scratch go.
+    // The remote can be a URL with a user and password, or a token in its query (access_token, token, sig). When round
+    // discovery (git ls-remote) fails after main was fetched, prepare fails without printing them, origin main does not
+    // move, and its private refs and scratch go.
     [SkippableFact]
     public async Task Close_prepare_fails_on_a_failed_round_discovery_without_printing_remote_credentials()
     {
@@ -1751,14 +1752,16 @@ public sealed class ReviewdJudgeCloseTests
         Skip.If(OperatingSystem.IsWindows(), "the failing transport is a sh script");
         using var universe = Universe.Create();
         var args = universe.PrepareArgs(3);
-        args["remote"] = universe.FailSecondConnection("https://fake-user:FAKE-TOKEN-0000@example.invalid/store.git");
+        args["remote"] = universe.FailSecondConnection(
+            "https://fake-user:FAKE-TOKEN-0000@example.invalid/store.git?access_token=FAKE-AT-1111&sig=FAKE-SIG-2222"
+        );
 
         var prepare = () => JudgeClose.Local(universe.Store)("close-prepare", args, default);
 
         var failure = (await prepare.Should().ThrowAsync<InvalidOperationException>()).Which;
         failure.Message.Should().StartWith("close step close-prepare failed (exit 2): git ls-remote ext::");
-        failure.Message.Should().Contain("https://***@example.invalid/store.git");
-        failure.Message.Should().NotContain("FAKE-TOKEN-0000").And.NotContain("fake-user");
+        failure.Message.Should().Contain("https://***@example.invalid/store.git?access_token=***&sig=***");
+        failure.Message.Should().NotContain("FAKE-").And.NotContain("fake-user");
         universe.Git(universe.Origin, "rev-parse", "main").Should().Be(universe.Main);
         universe.AssertClean();
     }
