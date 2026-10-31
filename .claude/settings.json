@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Select-Object *)",
+      "PowerShell(Format-Table *)",
+      "PowerShell(Select-String *)",
+      "PowerShell(Out-String *)",
+      "PowerShell(Get-ChildItem *)",
+      "PowerShell(Sort-Object *)",
+      "PowerShell(Measure-Object *)",
+      "PowerShell(Get-CimInstance *)",
+      "PowerShell(Get-PSDrive *)",
+      "PowerShell(Format-List *)",
+      "PowerShell(ConvertFrom-Json *)",
+      "PowerShell(ConvertTo-Json *)",
+      "PowerShell(git status *)",
+      "PowerShell(Get-Date *)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(Get-Content *)",
+      "Bash(dotnet csharpier check *)",
+      "PowerShell(git rev-list *)",
+      "Bash(tasklist *)"
+    ]
+  }
+}
