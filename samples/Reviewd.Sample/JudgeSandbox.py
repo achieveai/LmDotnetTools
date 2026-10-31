@@ -785,6 +785,11 @@ def judge_outputs():
 
 SHA = re.compile(r"[0-9a-f]{40}")
 NO_PROMPT = {"GIT_TERMINAL_PROMPT": "0"}
+# A push that lost main to another writer: git saw a stale tip, or the server saw main move while it applied this push,
+# as when two closes on one store push at once (a local remote says "incorrect old value provided", GitHub "cannot lock
+# ref 'refs/heads/main': is at <sha> but expected <sha>"). A hook that declines the push is not one.
+MAIN_MOVED = re.compile(r"\[rejected\]|non-fast-forward|fetch first"
+                        r"|\[remote rejected\][^\n]*\((?:incorrect old value provided|cannot lock ref [^\n]*but expected)")
 # Main keeps what a review archive keeps (ReviewRunnerSandbox.py set_aside_unarchivable): text files of at most 1 MiB.
 ARCHIVE_FILE_LIMIT = 1024 * 1024
 
@@ -1124,9 +1129,9 @@ def close_commit():
                 die("the close commit does not descend from main")
             pushed = git(["-c", "http.postBuffer=524288000", "-c", "http.version=HTTP/1.1"], "push", "--recurse-submodules=no",
                          args["remote"], f"{commit}:refs/heads/main", check=False, env=NO_PROMPT)
-            rejected = [line for line in pushed.stderr.splitlines() if "[rejected]" in line]
+            rejected = [line for line in pushed.stderr.splitlines() if "rejected]" in line]
             detail = re.sub(r"://[^/@\s]+@", "://***@", rejected[0].strip() if rejected else pushed.stderr.strip())[-400:]
-            if pushed.returncode and re.search(r"\[rejected\]|non-fast-forward|fetch first", pushed.stderr):
+            if pushed.returncode and MAIN_MOVED.search(pushed.stderr):
                 return print(json.dumps({**result, "status": "main-moved", "detail": detail}))
             if pushed.returncode:
                 die(f"push failed ({pushed.returncode}): {detail}")
