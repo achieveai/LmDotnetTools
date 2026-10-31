@@ -1026,6 +1026,8 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
     [Theory]
     [InlineData(null)]
     [InlineData("0123abc")]
+    [InlineData("0123456789abcdef0123456789abcdef0123456")]
+    [InlineData("0123456789abcdef0123456789abcdef012345678")]
     public async Task A_review_with_no_verified_artifact_commit_is_counted_and_never_picked(string? artifactCommit)
     {
         var alpha = Db(
