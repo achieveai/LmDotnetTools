@@ -69,11 +69,16 @@ def parse_time(text):
     return datetime.datetime.fromisoformat(text.replace("Z", "+00:00")) if text else None
 
 
+def masked(text):
+    """text with the user and password of each URL in it (as in a --remote URL, or git's error about one) as ***."""
+    return re.sub(r"://[^/@\s]+@", "://***@", text)
+
+
 def git(git_args, *cmd, check=True, env=None, stdin=None):
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", **(env or {})}
     p = subprocess.run(["git", *git_args, *cmd], capture_output=True, text=True, env=env, input=stdin)
     if check and p.returncode != 0:
-        die(f"git {' '.join(cmd[:3])} failed ({p.returncode}): {p.stderr.strip()[:400]}")
+        die(f"git {masked(' '.join(cmd[:3]))} failed ({p.returncode}): {masked(p.stderr.strip())[:400]}")
     return p
 
 
@@ -1166,7 +1171,7 @@ def close_commit():
             pushed = git(["-c", "http.postBuffer=524288000", "-c", "http.version=HTTP/1.1"], "push", "--recurse-submodules=no",
                          args["remote"], f"{commit}:refs/heads/main", check=False, env=NO_PROMPT)
             rejected = [line for line in pushed.stderr.splitlines() if "rejected]" in line]
-            detail = re.sub(r"://[^/@\s]+@", "://***@", rejected[0].strip() if rejected else pushed.stderr.strip())[-400:]
+            detail = masked(rejected[0].strip() if rejected else pushed.stderr.strip())[-400:]
             if pushed.returncode and MAIN_MOVED.search(pushed.stderr):
                 return print(json.dumps({**result, "status": "main-moved", "detail": detail}))
             if pushed.returncode:
@@ -1174,7 +1179,7 @@ def close_commit():
             # git accepted the push, so a read of main that fails after it is not a plain git failure: the close landed.
             def unconfirmed(read, p):
                 die(f"the push of {commit[:9]} was accepted but not confirmed: git {read} failed ({p.returncode}); "
-                    f"run close again: it says already closed. {p.stderr.strip()[:300]}")
+                    f"run close again: it says already closed. {masked(p.stderr.strip())[:300]}")
             listed = git([], "ls-remote", args["remote"], "refs/heads/main", check=False, env=NO_PROMPT)
             if listed.returncode:
                 unconfirmed("ls-remote", listed)
@@ -1203,7 +1208,7 @@ def close_prune():
             not re.fullmatch(r"review/[A-Za-z0-9][A-Za-z0-9._/-]*", r["branch"]) or not SHA.fullmatch(r["tip"]) for r in rounds):
         die("bad main or rounds")
     def redacted(stderr):
-        return re.sub(r"://[^/@\s]+@", "://***@", stderr.strip())[-300:]
+        return masked(stderr.strip())[-300:]
     # main is the close commit or the fetched main; a later run may find its objects gone, so it fetches main again
     # (objects only: no ref moves).
     if git([], "cat-file", "-e", f"{main}^{{commit}}", check=False).returncode:

@@ -1666,7 +1666,7 @@ public sealed class ReviewdJudgeCloseTests
     {
         Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
         using var universe = Universe.Create();
-        var local = universe.RoundOnlyInStore("PRs/x/leak.sh", "curl \"$U?sig=abcdefghijklmnopqrstuvwxyz&se=1\"\n");
+        var local = universe.RoundOnlyInStore(("PRs/x/leak.sh", "curl \"$U?sig=abcdefghijklmnopqrstuvwxyz&se=1\"\n"));
         var raw = universe.Git(universe.Store, "rev-parse", $"{local["tip"]}:PRs/x/leak.sh");
         var phase = JudgeClose.Local(universe.Store);
         JsonObject Args(JsonObject args)
@@ -1699,6 +1699,68 @@ public sealed class ReviewdJudgeCloseTests
             .NotContain([local["tip"]!.GetValue<string>(), raw], "neither its commit nor its raw file was pushed");
         again["status"]!.GetValue<string>().Should().Be("already-closed");
         universe.AssertClean(pushed: commit);
+    }
+
+    // A store round's file main does not keep (a binary that wins over round 2's text on the same path) stays in the
+    // store: prepare names that round for CLOSING.md, main drops the path, and origin gets neither the file nor its
+    // commit.
+    [SkippableFact]
+    public async Task Close_keeps_a_store_rounds_binary_winner_off_main_and_off_the_remote()
+    {
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        using var universe = Universe.Create();
+        var local = universe.RoundOnlyInStore(("PRs/x/review.md", "binary\0round 3"));
+        var blob = universe.Git(universe.Store, "rev-parse", $"{local["tip"]}:PRs/x/review.md");
+        var phase = JudgeClose.Local(universe.Store);
+        JsonObject Args(JsonObject args)
+        {
+            args["rounds"]!.AsArray().Add(local.DeepClone());
+            return args;
+        }
+
+        var prepared = await phase("close-prepare", Args(universe.PrepareArgs(3)), default);
+        var closed = await phase("close-commit", Args(universe.CommitArgs(prepared, push: true)), default);
+
+        prepared["keptOnBranch"]!
+            .ToJsonString()
+            .Should()
+            .Be("""[{"path":"PRs/x/review.md","branch":"review/x-3c0d1e2f","kind":"binary","bytes":14}]""");
+        var commit = closed["commit"]!.GetValue<string>();
+        universe
+            .Git(universe.Origin, "ls-tree", "--name-only", $"{commit}:PRs/x")
+            .Split('\n')
+            .Should()
+            .Equal(
+                ["CLOSING.md", "r1.md", "r2.md"],
+                "the winning file is the store round's binary, which main does not keep"
+            );
+        universe
+            .Git(universe.Origin, "cat-file", "--batch-check=%(objectname)", "--batch-all-objects")
+            .Split('\n')
+            .Should()
+            .NotContain([local["tip"]!.GetValue<string>(), blob]);
+        universe.AssertClean(pushed: commit);
+    }
+
+    // The remote can be a URL with a user and password. When round discovery (git ls-remote) fails after main was
+    // fetched, prepare fails without printing them, origin main does not move, and its private refs and scratch go.
+    [SkippableFact]
+    public async Task Close_prepare_fails_on_a_failed_round_discovery_without_printing_remote_credentials()
+    {
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        Skip.If(OperatingSystem.IsWindows(), "the failing transport is a sh script");
+        using var universe = Universe.Create();
+        var args = universe.PrepareArgs(3);
+        args["remote"] = universe.FailSecondConnection("https://fake-user:FAKE-TOKEN-0000@example.invalid/store.git");
+
+        var prepare = () => JudgeClose.Local(universe.Store)("close-prepare", args, default);
+
+        var failure = (await prepare.Should().ThrowAsync<InvalidOperationException>()).Which;
+        failure.Message.Should().StartWith("close step close-prepare failed (exit 2): git ls-remote ext::");
+        failure.Message.Should().Contain("https://***@example.invalid/store.git");
+        failure.Message.Should().NotContain("FAKE-TOKEN-0000").And.NotContain("fake-user");
+        universe.Git(universe.Origin, "rev-parse", "main").Should().Be(universe.Main);
+        universe.AssertClean();
     }
 
     [SkippableFact]
@@ -2312,16 +2374,45 @@ public sealed class ReviewdJudgeCloseTests
             );
 
         /// <summary>
-        /// Commits round review/x-3c0d1e2f (off main's base, one file) and fetches it into the store's own branch,
-        /// never pushing it: the remote has neither the branch nor its objects. Returns it as a round.
+        /// Commits round review/x-3c0d1e2f (off main's base, with <paramref name="files" />) and fetches it into the
+        /// store's own branch, never pushing it: the remote has neither the branch nor its objects. Returns it as a
+        /// round.
         /// </summary>
-        public JsonObject RoundOnlyInStore(string path, string content)
+        public JsonObject RoundOnlyInStore(params (string Path, string Content)[] files)
         {
-            var tip = Branch("review/x-3c0d1e2f", Git(Seed, "rev-parse", "main~1"), (path, content));
+            var tip = Branch("review/x-3c0d1e2f", Git(Seed, "rev-parse", "main~1"), files);
             Git(Seed, "checkout", "-q", "main");
             Git(Store, "fetch", "-q", Seed, "review/x-3c0d1e2f:review/x-3c0d1e2f");
             Rebaseline();
             return new JsonObject { ["branch"] = "review/x-3c0d1e2f", ["tip"] = tip };
+        }
+
+        /// <summary>
+        /// A remote URL (git's ext transport, allowed in the store) that serves origin on the first connection and fails
+        /// every later one, naming <paramref name="decoy" /> in its error as git names a URL it cannot reach. Close's
+        /// main fetch is the first connection, its round discovery the second.
+        /// </summary>
+        public string FailSecondConnection(string decoy)
+        {
+            var script = Path.Combine(_root, "flaky.sh");
+            File.WriteAllText(
+                script,
+                """
+                #!/bin/sh
+                n=$(cat "$0.count" 2>/dev/null || echo 0)
+                echo $((n + 1)) > "$0.count"
+                if [ "$n" -gt 0 ]; then
+                    echo "fatal: unable to access '$3/': The requested URL returned error: 503" >&2
+                    exit 128
+                fi
+                exec git "$1" "$2"
+
+                """.Replace("\r\n", "\n", StringComparison.Ordinal)
+            );
+            if (!OperatingSystem.IsWindows())
+                File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            Git(Store, "config", "protocol.ext.allow", "always");
+            return $"ext::{script} %s {Origin} {decoy}";
         }
 
         public void CommitOnMain(string path, string message)
