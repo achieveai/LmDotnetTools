@@ -442,6 +442,124 @@ public class RerankingServiceTests
         Debug.WriteLine($"Oversized-query rerank completed with {result.Count} results");
     }
 
+    [Fact]
+    [Trait("Category", "TokenBudgetBatching")]
+    public async Task RerankAsync_WhenBatchExceedsContextWindow_SplitsInHalfAndRemapsIndices()
+    {
+        // Arrange - 5 short documents fit one token-budget batch, but the fake server rejects any
+        // request with more than 2 documents as a context overflow. Halving 5 -> 2 + 3 -> 2 + (1 + 2)
+        // gives 5 requests and an uneven split, so the right half's index offset is exercised.
+        var documentsList = Enumerable.Range(0, 5).Select(i => BuildMarkerDocument(i, 20)).ToList();
+        var requestCount = 0;
+
+        var fakeHandler = new FakeHttpMessageHandler(
+            async (request, cancellationToken) =>
+            {
+                requestCount++;
+
+                var bodyJson = await request.Content!.ReadAsStringAsync(cancellationToken);
+                using var bodyDoc = JsonDocument.Parse(bodyJson);
+                var sentDocuments = bodyDoc
+                    .RootElement.GetProperty("documents")
+                    .EnumerateArray()
+                    .Select(d => d.GetString()!)
+                    .ToList();
+
+                if (sentDocuments.Count > 2)
+                {
+                    return CreateContextOverflowResponse();
+                }
+
+                // Score rises with the marker, so the merged result must be re-sorted across halves.
+                var results = sentDocuments.Select(
+                    (d, i) => new { index = i, relevance_score = (double)ParseMarker(d) }
+                );
+                var responseJson = JsonSerializer.Serialize(new { id = Guid.NewGuid().ToString(), results });
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(responseJson, Encoding.UTF8, "application/json"),
+                };
+            }
+        );
+        using var service = CreateRerankingService(fakeHandler);
+
+        // Act
+        var result = await service.RerankAsync("test query", documentsList);
+
+        // Assert
+        Assert.Equal(5, requestCount);
+        Assert.Equal([4, 3, 2, 1, 0], result.Select(r => r.Index));
+        foreach (var r in result)
+        {
+            Assert.Equal(documentsList[r.Index], r.Document);
+            Assert.Equal(r.Index, r.Score);
+        }
+    }
+
+    [Fact]
+    public async Task RerankAsync_WithOtherBadRequest_ThrowsWithoutSplitting()
+    {
+        // Arrange
+        var requestCount = 0;
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleHandler(_ =>
+        {
+            Interlocked.Increment(ref requestCount);
+            return new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent(
+                    """{"error":{"message":"invalid model"}}""",
+                    Encoding.UTF8,
+                    "application/json"
+                ),
+            };
+        });
+        using var service = CreateRerankingService(fakeHandler);
+
+        // Act & Assert
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(() => service.RerankAsync("test", documents));
+        Assert.Equal(HttpStatusCode.BadRequest, ex.StatusCode);
+        Assert.Equal(1, requestCount);
+    }
+
+    [Fact]
+    public async Task RerankAsync_WhenSingleDocumentExceedsContextWindow_ThrowsWithoutRetrying()
+    {
+        // Arrange - a lone document cannot be split further, so the overflow must surface.
+        var requestCount = 0;
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleHandler(_ =>
+        {
+            Interlocked.Increment(ref requestCount);
+            return CreateContextOverflowResponse();
+        });
+        using var service = CreateRerankingService(fakeHandler);
+
+        // Act & Assert
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(() => service.RerankAsync("test", documentsArray0));
+        Assert.Equal(HttpStatusCode.BadRequest, ex.StatusCode);
+        Assert.Contains("maximum context length", ex.Message);
+        Assert.Equal(1, requestCount);
+    }
+
+    [Fact]
+    public async Task RerankAsync_WhenEveryRequestOverflows_FailsAfterOneRequestPerHalvingLevel()
+    {
+        // Arrange - e.g. an over-long query: no split can fit, so the first lone document's
+        // overflow must stop the search instead of walking the whole split tree.
+        var requestCount = 0;
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleHandler(_ =>
+        {
+            Interlocked.Increment(ref requestCount);
+            return CreateContextOverflowResponse();
+        });
+        using var service = CreateRerankingService(fakeHandler);
+        var documentsList = Enumerable.Range(0, 25).Select(i => $"short document {i}").ToList();
+
+        // Act & Assert - 25 -> 12 -> 6 -> 3 -> 1
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(() => service.RerankAsync("test", documentsList));
+        Assert.Equal(HttpStatusCode.BadRequest, ex.StatusCode);
+        Assert.Equal(5, requestCount);
+    }
+
     // Helper Methods
     private RerankingService CreateRerankingService(
         FakeHttpMessageHandler httpHandler,
@@ -484,6 +602,20 @@ public class RerankingServiceTests
             $"Document did not contain a MARKER tag: {document[..Math.Min(20, document.Length)]}"
         );
         return int.Parse(match.Groups[1].Value);
+    }
+
+    /// <summary>
+    ///     The 400 a vLLM-hosted reranker returns when the query plus documents exceed its context window.
+    /// </summary>
+    private static HttpResponseMessage CreateContextOverflowResponse()
+    {
+        const string body = """
+            {"error":{"message":"This model's maximum context length is 8192 tokens. However, you requested 0 output tokens and your prompt contains at least 8193 input tokens, for a total of at least 8193 tokens. Please reduce the length of the input prompt."}}
+            """;
+        return new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        };
     }
 
     private static string CreateValidRerankResponse(int documentCount)

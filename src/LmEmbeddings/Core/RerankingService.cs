@@ -224,10 +224,49 @@ public class RerankingService : IRerankService, IDisposable
     }
 
     /// <summary>
-    ///     Sends a single rerank request for a batch of documents that already fits within the
-    ///     model's context window.
+    ///     Sends a single rerank request for a batch of documents. If the server still rejects the
+    ///     batch as too long for the model's context window (the 4 chars/token estimate undercounts
+    ///     dense text), the batch is halved and each half reranked, down to single documents.
+    ///     The halves run in turn. Splits stay rare and shallow because a budget batch holds at most
+    ///     <see cref="MaxTokensPerBatch" /> estimated tokens. A lone document that still overflows
+    ///     throws at once, so a request no split can fit fails after one request per halving level.
     /// </summary>
     private async Task<List<RankedDocument>> RerankBatchAsync(
+        string query,
+        IList<string> docList,
+        CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            return await SendRerankRequestAsync(query, docList, cancellationToken);
+        }
+        catch (HttpRequestException ex)
+            when (docList.Count > 1 && ex.StatusCode == HttpStatusCode.BadRequest && IsContextOverflow(ex.Message))
+        {
+            var mid = docList.Count / 2;
+            _logger.LogWarning(
+                "Rerank batch of {DocumentCount} documents exceeded the model's context window; splitting it in half",
+                docList.Count
+            );
+
+            var results = await RerankBatchAsync(query, [.. docList.Take(mid)], cancellationToken);
+            var right = await RerankBatchAsync(query, [.. docList.Skip(mid)], cancellationToken);
+            results.AddRange(
+                right.Select(r => new RankedDocument
+                {
+                    Index = r.Index + mid,
+                    Score = r.Score,
+                    Document = r.Document,
+                })
+            );
+
+            results.Sort((a, b) => b.Score.CompareTo(a.Score));
+            return results;
+        }
+    }
+
+    private async Task<List<RankedDocument>> SendRerankRequestAsync(
         string query,
         IList<string> docList,
         CancellationToken cancellationToken
@@ -253,6 +292,20 @@ public class RerankingService : IRerankService, IDisposable
                 {
                     var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
                     return ParseResponse(responseJson, docList);
+                }
+
+                if (response.StatusCode == HttpStatusCode.BadRequest)
+                {
+                    // Carry the body so the caller can tell a context overflow from any other 400.
+                    var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                    if (IsContextOverflow(errorBody))
+                    {
+                        throw new HttpRequestException(
+                            $"HTTP 400 BadRequest: {errorBody}",
+                            null,
+                            HttpStatusCode.BadRequest
+                        );
+                    }
                 }
 
                 if (!IsRetryableStatusCode(response.StatusCode))
@@ -306,6 +359,10 @@ public class RerankingService : IRerankService, IDisposable
     }
 
     private static int EstimateTokens(string text) => (int)Math.Ceiling(text.Length / CharsPerTokenEstimate);
+
+    // vLLM: "This model's maximum context length is 8192 tokens. However, ... prompt contains at least ..."
+    private static bool IsContextOverflow(string errorText) =>
+        errorText.Contains("maximum context length", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     ///     Executes an operation with linear retry logic (500ms × retryCount)
