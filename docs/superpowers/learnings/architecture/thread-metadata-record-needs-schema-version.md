@@ -9,7 +9,7 @@ applies_when:
   - Changing the shape of an existing projection record
 skip_when:
   - The value is a plain scalar property that no build ever rewrites (for example a mode id)
-source: "#868 / PR #889, code review finding F-005, 2026-10-30"
+source: "#868 / PR #889: finding F-005 of the local pre-publication review of de8c2b20 (2026-10-29), fixed in e7d69e93. Not one of the review findings published on the PR."
 status: applied
 revalidate_when: ThreadMetadataProjection is removed, or Properties stops being a shared bag rewritten by several builds
 ---
@@ -29,7 +29,7 @@ through `ThreadMetadataProjection.RawJson`, `PersistedSchemaVersion` and `WithPr
 reads as absent, and a write never replaces it.
 
 ## Why it works
-Several builds share one store during a rolling deploy or a rollback. Every first-parent commit to main publishes to
-nuget.org (`ci.yml`), so a record format freezes at merge. The version guard lets an older build step around a
-newer row instead of misreading or overwriting it. The shared helper keeps the version probe name and the record's
-property name from drifting apart.
+Several builds share one store during a rolling deploy or a rollback. Each first-parent main commit after the recorded
+published baseline publishes one stable patch (`ci.yml`, packages job), so a record format freezes at merge. The
+version guard lets an older build step around a newer row instead of misreading or overwriting it. The shared helper
+keeps the version probe name and the record's property name from drifting apart.
