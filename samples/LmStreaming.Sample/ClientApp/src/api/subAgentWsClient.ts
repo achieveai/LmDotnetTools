@@ -21,9 +21,10 @@ export interface SubAgentWsCallbacks {
    * (e.g. `subagent_unavailable`, `subagent_stream_failed`, `relay_failed`) when present, letting the
    * panel treat a terminal application error differently from a transient/parse failure. Forwarded
    * verbatim from the shared {@link openWebSocketConnection} handler; backward-compatible with
-   * `(error) => void` callers.
+   * `(error) => void` callers. `clientMessageId` is the id of the sent message the error is about,
+   * when the server echoes one (`relay_failed`, `read_only`, `subagent_unavailable`).
    */
-  onError: (error: string, code?: string) => void;
+  onError: (error: string, code?: string, clientMessageId?: string) => void;
   /**
    * Fired when the focus socket closes for any reason (clean or not). The server closes the socket
    * (NormalClosure) after a backpressure drop expecting the client to reconnect + replay; a clean
