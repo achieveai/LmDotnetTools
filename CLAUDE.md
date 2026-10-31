@@ -27,7 +27,7 @@ dotnet test tests/LmCore.Tests/LmCore.Tests.csproj
 - `samples/` - Example applications
 - `docs/` - Additional documentation
 - `McpServers/` - MCP server implementations
-- `external/SandboxedOstoolsMcpServer/` - submodule: the sandbox gateway (private repo, Rust), tracking gateway master for cross-repo work. Pin only: nothing here builds from it, so a plain clone builds without it. Fetch it with `git submodule update --init`. It may run ahead of `IMAGE_TAG` in `.github/workflows/sandbox-contract.yml`, the released contract CI verifies.
+- `external/SandboxedOstoolsMcpServer/` - submodule: the sandbox gateway (private repo, Rust), pinned to a gateway master commit for cross-repo work; advance it with `git submodule update --remote` and commit the new pin. Pin only: nothing here builds from it, so a plain clone builds without it. Fetch it with `git submodule update --init`. It may run ahead of `IMAGE_TAG` in `.github/workflows/sandbox-contract.yml`, the released contract CI verifies.
 
 ## Coding Conventions
 - Use CSharpier for code formatting — config in `.csharpierrc`, version pinned in `.config/dotnet-tools.json`. It is the formatting authority: the pre-commit hook checks staged `.cs` files and CI runs `dotnet csharpier check .` over the whole tree. Run `dotnet csharpier format .` to fix. (Roslyn's own formatter, IDE0055, is off because its wrapping disagrees with CSharpier's.)
