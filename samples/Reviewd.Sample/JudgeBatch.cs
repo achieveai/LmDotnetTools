@@ -839,7 +839,7 @@ internal static class JudgeBatch
                 scan.NeedsYou.Add(new(LabelOf(group), "not completed when it was picked, so it was skipped"));
         }
 
-        foreach (var (repository, prId, reviewStage, workspace) in reviews)
+        foreach (var (repository, prId, reviewStage, workspace, artifactCommit) in reviews)
         {
             if (reviewStage != "completed-verified")
             {
@@ -855,6 +855,12 @@ internal static class JudgeBatch
             if (repo.Provider == "github")
             {
                 Count(scan, "unsupported");
+                continue;
+            }
+            // The judge refuses a review with no verified artifact commit; picking it would only fail every run.
+            if (artifactCommit is not { Length: 40 })
+            {
+                Count(scan, "no-artifact-commit");
                 continue;
             }
             var group = $"{repo.NormalizedKey}/{prId}";
@@ -928,17 +934,17 @@ internal static class JudgeBatch
         return true;
     }
 
-    private static async Task<List<(string Repository, string PrId, string? Stage, string? Workspace)>> ReviewsAsync(
-        SqliteConnection connection,
-        CancellationToken ct
-    )
+    private static async Task<
+        List<(string Repository, string PrId, string? Stage, string? Workspace, string? ArtifactCommit)>
+    > ReviewsAsync(SqliteConnection connection, CancellationToken ct)
     {
         using var query = connection.CreateCommand();
         query.CommandText =
             "SELECT json_extract(value,'$.repository'), json_extract(value,'$.prId'), json_extract(value,'$.stage'), "
-            + "json_extract(value,'$.workspaceId') FROM cache WHERE substr(key,1,length(@prefix))=@prefix";
+            + "json_extract(value,'$.workspaceId'), json_extract(value,'$.artifactCommit.commit') "
+            + "FROM cache WHERE substr(key,1,length(@prefix))=@prefix";
         query.Parameters.AddWithValue("@prefix", "reviewd/review-run/");
-        var rows = new List<(string, string, string?, string?)>();
+        var rows = new List<(string, string, string?, string?, string?)>();
         using var reader = await query.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
@@ -949,7 +955,8 @@ internal static class JudgeBatch
                     reader.GetString(0),
                     reader.GetString(1),
                     reader.IsDBNull(2) ? null : reader.GetString(2),
-                    reader.IsDBNull(3) ? null : reader.GetString(3)
+                    reader.IsDBNull(3) ? null : reader.GetString(3),
+                    reader.IsDBNull(4) ? null : reader.GetString(4)
                 )
             );
         }
@@ -1404,6 +1411,7 @@ internal static class JudgeBatch
         ("review-not-verified", "review not verified"),
         ("other-workspace", "in another workspace"),
         ("unsupported", "on GitHub (not supported)"),
+        ("no-artifact-commit", "review has no verified artifact commit"),
     ];
 
     private static string PrCounts(SortedDictionary<string, int> counts) =>

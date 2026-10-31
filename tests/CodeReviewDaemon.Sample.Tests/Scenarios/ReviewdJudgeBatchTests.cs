@@ -1021,6 +1021,30 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             .Equal("Nova !7001");
     }
 
+    // The judge refuses a verified review whose receipt has no artifact commit (eleven Nova reviews have none). The
+    // scan counts it and never picks it; picked, it failed every run and two in a row stopped the lane.
+    [Theory]
+    [InlineData(null)]
+    [InlineData("0123abc")]
+    public async Task A_review_with_no_verified_artifact_commit_is_counted_and_never_picked(string? artifactCommit)
+    {
+        var alpha = Db(
+            "alpha",
+            Review("7001"),
+            Review("7002", artifactCommit),
+            Snapshot(("7001", "Merged", Now.AddDays(-2)), ("7002", "Merged", Now.AddDays(-1)))
+        );
+
+        var (scan, plan) = await PlanAsync(new FakeHttpMessageHandler(), [], Target("alpha", alpha));
+
+        plan.Select(entry => entry.Pick.Pr.Label).Should().Equal("Nova !7001");
+        scan.Counts.Should().BeEquivalentTo(new Dictionary<string, int> { ["Start"] = 1, ["no-artifact-commit"] = 1 });
+        JudgeBatch
+            .Summary(scan, plan, [], [], Settings, execute: false, "ok", 0, Now)
+            .Should()
+            .Contain("- PRs: 1 to start, 1 review has no verified artifact commit.");
+    }
+
     [Fact]
     public void Shard_parses_i_of_n_and_the_cli_refuses_anything_else()
     {
@@ -1157,7 +1181,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         return path;
     }
 
-    private static (string Key, string Value) Review(string pr) =>
+    private static (string Key, string Value) Review(string pr, string? artifactCommit = ArtifactCommit) =>
         (
             $"reviewd/review-run/{RepoKey}/{pr}",
             new JsonObject
@@ -1166,8 +1190,11 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
                 ["prId"] = pr,
                 ["stage"] = "completed-verified",
                 ["workspaceId"] = Workspace,
+                ["artifactCommit"] = artifactCommit is null ? null : new JsonObject { ["commit"] = artifactCommit },
             }.ToJsonString()
         );
+
+    private const string ArtifactCommit = "0123456789abcdef0123456789abcdef01234567";
 
     private static (string Key, string Value) Snapshot(
         params (string Pr, string Lifecycle, DateTimeOffset Changed)[] prs
