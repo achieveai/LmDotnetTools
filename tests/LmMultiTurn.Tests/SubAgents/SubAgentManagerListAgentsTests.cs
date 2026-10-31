@@ -425,7 +425,7 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
         manager.TestAgentFactoryOverride = (agentId, _) =>
             new FakeMultiTurnAgent
             {
-                // Mirrors the real subagent-{scope}-{agentId} thread-id convention (PersistTerminalStateAsync
+                // Mirrors the real subagent-{scope}-{agentId} thread-id convention (PersistLifecycleStateAsync
                 // reads it straight off state.Agent.ThreadId); the fake's default "fake-thread" would
                 // otherwise mismatch the id the manager registers this state under.
                 ThreadId = SubAgentManager.SubAgentThreadId(_parentMock.Object.ThreadId, agentId),

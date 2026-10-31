@@ -231,6 +231,10 @@ public sealed class MultiTurnAgentLoop
     // Owns the Wait/trigger lifecycle when trigger options are supplied. Null otherwise.
     private readonly TriggerRuntime? _triggerRuntime;
 
+    // True while a finished-sub-agent restore has started and not completed (#868). History recovery
+    // runs once per loop, so a start cancelled partway leaves this set and the next start retries it.
+    private bool _finishedSubAgentsRestorePending;
+
     // Resolved root delivery target for a descendant's parked AskUserQuestion (#246). Always non-null
     // after construction — see the ctor's descendantQuestionSink resolution.
     private readonly Func<NotifyMessage, CancellationToken, ValueTask> _descendantQuestionSink;
@@ -5143,13 +5147,40 @@ public sealed class MultiTurnAgentLoop
     /// history. This is deliberately separate from the block-wait reconcile in
     /// <see cref="OnHistoryRestoredAsync"/>, which legitimately needs restored message history
     /// and therefore does not run for message-less threads.
+    /// <para>
+    /// Finished sub-agents are registered again here too (#868), so the rebuilt loop lists them and can
+    /// message them from its first run. The order against the notify waits is not load-bearing.
+    /// </para>
     /// </remarks>
     protected override async Task OnThreadRecoveredAsync(CancellationToken ct)
     {
+        await RestoreFinishedSubAgentsAsync(ct);
+
         if (_triggerRuntime != null)
         {
             await _triggerRuntime.RestoreNotifyWaitsAsync(ct);
         }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Retries a finished-sub-agent restore that a cancelled start left partway (#868). The restore skips
+    /// a sub-agent already registered, so the retry registers only the ones still missing.
+    /// </remarks>
+    protected override Task OnRunStartingAsync(CancellationToken ct) =>
+        _finishedSubAgentsRestorePending ? RestoreFinishedSubAgentsAsync(ct) : Task.CompletedTask;
+
+    private async Task RestoreFinishedSubAgentsAsync(CancellationToken ct)
+    {
+        if (SubAgentManager is not { } subAgents)
+        {
+            return;
+        }
+
+        // Cleared only once the restore completes, so a cancelled one is retried by the next start.
+        _finishedSubAgentsRestorePending = true;
+        _ = await subAgents.RestoreFinishedAgentsAsync(ct);
+        _finishedSubAgentsRestorePending = false;
     }
 
     /// <summary>True when this loop accepts <see cref="RequestCompactionAsync"/>: compaction mode is Compact and it has a store.</summary>

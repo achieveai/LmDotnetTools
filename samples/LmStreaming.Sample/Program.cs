@@ -3571,10 +3571,12 @@ try
         }
     );
 
-    // Map a SEPARATE WebSocket endpoint for a FOCUSED sub-agent (WI #194, presentation-only). Kept
-    // distinct from "/ws" so the parent handler stays byte-compatible: this route resolves the live
-    // child through the parent conversation's SubAgentManager (never the pool, which would wrongly
-    // create a top-level agent for a "subagent-{id}" thread) and streams/relays it read-only.
+    // Map a SEPARATE WebSocket endpoint for a FOCUSED sub-agent (WI #194). Kept distinct from "/ws" so
+    // the parent handler stays byte-compatible: this route resolves the live child through the parent
+    // conversation's SubAgentManager (never a pooled "subagent-{id}" thread, which would wrongly be a
+    // top-level agent) and streams it. A caller with write on the parent may also message the child, and
+    // an unloaded ROOT parent is put back in the pool for them, so its finished sub-agents run again
+    // (#868). Every other caller's frames are refused as read_only.
     _ = app.Map(
         "/ws/subagent",
         async (
@@ -3616,6 +3618,12 @@ try
                 return;
             }
 
+            // As on "/ws": the pool records this owner if the parent has to be rebuilt (#399), which is
+            // why only a caller who may write the parent gets a rebuild or a relay (#868).
+            var ownerUserId = (
+                context.Items[IdentityHttpItems.PrincipalKey] as AchieveAi.LmDotnetTools.LmCore.Identity.Principal
+            )?.EffectiveUserId;
+
             var webSocket = await AcceptNegotiatedWebSocketAsync(context);
             wsLogger.LogInformation(
                 "Sub-agent WebSocket connection established for agent {AgentId} on parent {ParentThreadId}",
@@ -3630,7 +3638,9 @@ try
                     parentThreadId,
                     agentId,
                     admission.MayReplayPersistedTranscript,
-                    cancellationToken
+                    admission.MayWrite,
+                    cancellationToken,
+                    ownerUserId
                 );
             }
             finally

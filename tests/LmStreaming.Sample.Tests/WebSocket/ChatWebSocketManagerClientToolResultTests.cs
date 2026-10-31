@@ -465,6 +465,7 @@ public sealed class ChatWebSocketManagerClientToolResultTests
             SubAgentParentThreadId,
             agentId,
             mayReplayPersistedTranscript: true,
+            mayWrite: true,
             ct.Token
         );
 
@@ -508,6 +509,7 @@ public sealed class ChatWebSocketManagerClientToolResultTests
             SubAgentParentThreadId,
             agentId,
             mayReplayPersistedTranscript: true,
+            mayWrite: true,
             ct.Token
         );
 
@@ -603,6 +605,7 @@ public sealed class ChatWebSocketManagerClientToolResultTests
             SubAgentParentThreadId,
             agentId,
             mayReplayPersistedTranscript: true,
+            mayWrite: true,
             ct.Token
         );
 

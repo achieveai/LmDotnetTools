@@ -18,7 +18,12 @@ function setText(text: string): void {
   inputText.value = text;
 }
 
-defineExpose({ setText });
+/** The current draft, as typed. */
+function getText(): string {
+  return inputText.value;
+}
+
+defineExpose({ setText, getText });
 
 function handleSubmit() {
   const text = inputText.value.trim();

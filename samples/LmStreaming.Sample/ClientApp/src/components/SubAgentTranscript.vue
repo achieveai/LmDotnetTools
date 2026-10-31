@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { provide } from 'vue';
+import { provide, ref } from 'vue';
 import type { DisplayItem, ToolCallResultMessage } from '@/types';
 import type { ViewPreference } from '@/composables/useViewPreference';
 import { GET_RESULT_FOR_TOOL_CALL, IS_QUESTION_ANSWERED } from '@/composables/useToolResult';
@@ -48,6 +48,23 @@ provide(IS_QUESTION_ANSWERED, props.isQuestionAnswered ?? (() => false));
 // QuestionRich inside this subtree) answers over the FOCUSED CHILD connection, not the root (#246).
 provide(SUBMIT_CLIENT_TOOL_RESULT, props.submitClientToolResult);
 const safeAgentId = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '-');
+
+const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null);
+
+/**
+ * Puts a reply that could not be sent back in the composer (#868), unless the user has since typed a
+ * different draft there: that draft is never overwritten. Returns whether the text went back.
+ */
+function restoreText(text: string): boolean {
+  const input = chatInputRef.value;
+  if (!input) return false;
+  const draft = input.getText();
+  if (draft.trim() !== '' && draft !== text) return false;
+  input.setText(text);
+  return true;
+}
+
+defineExpose({ restoreText });
 </script>
 
 <template>
@@ -74,6 +91,7 @@ const safeAgentId = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '-');
     <!-- Send-only: never streaming (so no Stop button) — a reply resumes a completed child. Disabled
          until the live connection for this exact tab is attached, so a send can't drop on a dead socket. -->
     <ChatInput
+      ref="chatInputRef"
       :streaming="false"
       :disabled="focusedAgentId !== activeAgentId"
       @send="emit('send', $event)"

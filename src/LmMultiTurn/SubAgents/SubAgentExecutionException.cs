@@ -14,6 +14,20 @@ public sealed class SubAgentExecutionException : Exception
         TemplateName = templateName;
     }
 
+    private SubAgentExecutionException(string message, string agentId, string templateName, Exception? innerException)
+        : base(message, innerException)
+    {
+        AgentId = agentId;
+        TemplateName = templateName;
+    }
+
+    /// <summary>
+    /// The failure of a run that ended before its parent was rebuilt (#868), carrying the message a waiter
+    /// saw then word for word rather than wrapping it a second time.
+    /// </summary>
+    internal static SubAgentExecutionException Restored(string agentId, string templateName, string message) =>
+        new(message, agentId, templateName, innerException: null);
+
     /// <summary>The id of the sub-agent whose run failed.</summary>
     public string AgentId { get; }
 

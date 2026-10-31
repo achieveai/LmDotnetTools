@@ -299,6 +299,7 @@ const {
   focusedDisplayItems,
   isFocusedStreaming,
   error: subAgentError,
+  refusedText: refusedSubAgentText,
   startPolling: startSubAgentPolling,
   focusChild,
   unfocusChild,
@@ -508,9 +509,39 @@ const { activeTabId, tabs, selectTab: selectConversationTab, getAgentColor } = u
   getParentThreadId: () => chatThreadId.value,
 });
 
-function handleSubAgentSend(text: string): void {
-  sendToFocusedChild(text);
+const subAgentTranscriptRef = ref<InstanceType<typeof SubAgentTranscript> | null>(null);
+
+/**
+ * Gives an unsent reply back (#868). It goes into the composer when that is empty or still holds it.
+ * A newer draft typed meanwhile is kept, and the unsent text goes into the error banner instead, which
+ * already says why it was not sent, so the user can still copy it.
+ */
+function restoreUnsentSubAgentText(text: string): void {
+  if (subAgentTranscriptRef.value?.restoreText(text)) return;
+  subAgentError.value = `${subAgentError.value ?? 'Message not sent.'} Your newer draft was kept. The unsent message was: ${text}`;
 }
+
+/** A reply that could not be sent goes back to the user; the panel's error says why (#868). */
+async function handleSubAgentSend(text: string): Promise<void> {
+  // The text goes back only to the child it was written for; the user may have moved to another
+  // child, or to another conversation whose child has the same id.
+  const agentId = focusedAgentId.value;
+  const parentThreadId = subAgentParentThreadId.value;
+  if (
+    !(await sendToFocusedChild(text)) &&
+    focusedAgentId.value === agentId &&
+    subAgentParentThreadId.value === parentThreadId
+  ) {
+    restoreUnsentSubAgentText(text);
+  }
+}
+
+// A reply the server refused as read-only goes back to the user too (#868).
+watch(refusedSubAgentText, (text) => {
+  if (text === null) return;
+  restoreUnsentSubAgentText(text);
+  refusedSubAgentText.value = null;
+});
 
 /**
  * The question a toast is currently announcing, or null. Identified by (root, tool call) rather
@@ -1771,6 +1802,7 @@ onBeforeUnmount(() => {
              (routed to the focused child) + child-scoped tool-result provide live inside it. -->
         <SubAgentTranscript
           v-if="activeTabId !== 'main'"
+          ref="subAgentTranscriptRef"
           :key="questionScope"
           :question-scope="questionScope" :question-source="questionSource" :requested-question-id="requestedQuestionId"
           @question-busy="questionBusy = $event" @question-open="questionOpen = $event" @question-opened="questionOpened"

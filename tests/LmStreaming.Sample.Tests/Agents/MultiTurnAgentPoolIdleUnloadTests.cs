@@ -293,6 +293,57 @@ public class MultiTurnAgentPoolIdleUnloadTests
     }
 
     [Fact]
+    public async Task AnUnloadedConversation_CanStillMessageTheSubAgentItFinishedWith()
+    {
+        // #868: the rebuilt root started with no sub-agents, so a finished child could no longer be
+        // listed or messaged although its transcript was still in the store.
+        var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var store = new InMemoryConversationStore();
+        var options = WorkerTemplate(AnsweringProvider) with { DefaultConversationStoreFactory = _ => store };
+        await using var pool = CreatePool(
+            time,
+            threadId => new MultiTurnAgentLoop(
+                AnsweringProvider(),
+                new FunctionRegistry(),
+                threadId,
+                store: store,
+                subAgentOptions: options
+            )
+        );
+        var first = (MultiTurnAgentLoop)pool.GetOrCreateAgent("thread-parent", Mode);
+        await DrainRunAsync(first, "hi");
+        _ = await SpawnSettledAsync(first.SubAgentManager!, "short task", "done");
+        await WaitUntilSettledAsync(pool, first, "thread-parent");
+
+        time.Advance(IdleAfter + TimeSpan.FromMinutes(1));
+        (await pool.UnloadIdleAgentsAsync(IdleAfter)).Should().Be(1);
+
+        // The pool starts the rebuilt loop on a worker thread, and its startup restores the sub-agents.
+        var rebuilt = (MultiTurnAgentLoop)pool.GetOrCreateAgent("thread-parent", Mode);
+        Task? ready = null;
+        await Wait.UntilAsync(
+            () =>
+            {
+                try
+                {
+                    ready = rebuilt.WaitUntilReadyAsync();
+                    return true;
+                }
+                catch (InvalidOperationException)
+                {
+                    return false;
+                }
+            },
+            "the rebuilt loop started"
+        );
+        await ready!.WaitAsync(TimeSpan.FromSeconds(10));
+        var manager = rebuilt.SubAgentManager!;
+
+        manager.ListAgents().Should().ContainSingle(a => a.Name == "done" && a.Status == SubAgentStatus.Completed);
+        (await manager.SendMessageAsync("done", "follow-up", runInBackground: false)).Should().Be("Done.");
+    }
+
+    [Fact]
     public async Task KeepsALoop_WhileAMessageIsRebuildingASubAgentItReleased()
     {
         // A message can reach a finished sub-agent without going through the pool (its focused view,

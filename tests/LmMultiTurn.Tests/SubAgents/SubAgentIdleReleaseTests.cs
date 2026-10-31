@@ -4,8 +4,10 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
@@ -25,6 +27,7 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
     private readonly Mock<IMultiTurnAgent> _parent = new();
     private readonly List<List<IMessage>> _requests = [];
     private SubAgentManager? _manager;
+    private InMemoryConversationStore? _store;
 
     public Task InitializeAsync()
     {
@@ -313,6 +316,546 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
         _ = await message.Should().NotThrowAsync();
     }
 
+    [Fact]
+    public async Task ARebuiltParent_CanStillMessageTheSubAgentItFinishedWith()
+    {
+        // #868: unloading a conversation disposes its root loop, and the rebuilt root started with no
+        // sub-agents, so a finished child could no longer be listed or messaged although its transcript
+        // was still in the store.
+        var store = new InMemoryConversationStore();
+        await RebuildParentAndFollowUpAsync(() => store);
+    }
+
+    [Fact]
+    public async Task ARebuiltParent_RestoresItsFinishedSubAgent_FromASqliteStore()
+    {
+        // A SQLite store hands metadata properties back as JSON elements, not the strings written.
+        var databasePath = Path.Combine(Path.GetTempPath(), $"rebuilt_parent_{Guid.NewGuid():N}.db");
+        try
+        {
+            await RebuildParentAndFollowUpAsync(() => new SqliteConversationStore(databasePath));
+        }
+        finally
+        {
+            SqliteConnectionFactory.ClearPool(databasePath);
+            File.Delete(databasePath);
+            File.Delete(databasePath + "-wal");
+            File.Delete(databasePath + "-shm");
+        }
+    }
+
+    [Fact]
+    public async Task ARebuiltParent_SkipsSubAgentsItCannotRestore_AndKeepsTheRest()
+    {
+        // Restore runs inside the rebuilt root's history recovery, so one child it cannot restore must
+        // neither fail the root nor cost the other children their place. Each record is edited into a
+        // state the restore must leave alone: unreadable, from a template that no longer exists, still
+        // running when the host died, or stopped because its parent loop went away (host shutdown or a
+        // recreated parent); or not this root's to restore:
+        // no record, another parent's record, or a record naming an agent whose thread is elsewhere. A child
+        // whose run failed is kept, and its error must read exactly as it did before the rebuild.
+        const string threadId = "thread-rebuilt-skips";
+        var store = new InMemoryConversationStore();
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new() { SystemPrompt = "You are a worker.", AgentFactory = AnsweringProvider },
+                ["failing"] = new() { SystemPrompt = "You fail.", AgentFactory = FailingProvider },
+            },
+            DefaultConversationStoreFactory = _ => store,
+        };
+
+        var threads = new Dictionary<string, string>();
+        var agentIds = new Dictionary<string, string>();
+        string failure;
+        await using (var first = RootLoop(store, threadId, options))
+        {
+            _ = first.RunAsync();
+            await foreach (
+                var _ in first.ExecuteRunAsync(new UserInput([new TextMessage { Text = "hi", Role = Role.User }]))
+            ) { }
+
+            foreach (
+                var name in new[]
+                {
+                    "kept",
+                    "unreadable",
+                    "retired",
+                    "running",
+                    "shutdown",
+                    "recreated",
+                    "unrecorded",
+                    "adopted",
+                    "moved",
+                }
+            )
+            {
+                _ = await SpawnSettledAsync(first.SubAgentManager!, $"{name} task", name);
+            }
+
+            failure = (
+                await FluentActions
+                    .Awaiting(() => SpawnSettledAsync(first.SubAgentManager!, "failed task", "failed", "failing"))
+                    .Should()
+                    .ThrowAsync<SubAgentExecutionException>()
+            )
+                .Which
+                .Message;
+
+            foreach (var agent in first.SubAgentManager!.ListAgents())
+            {
+                threads[agent.Name!] = agent.ThreadId;
+                agentIds[agent.Name!] = agent.AgentId;
+            }
+        }
+
+        await EditRecordAsync("unreadable", _ => "{not json");
+        await EditRecordAsync(
+            "retired",
+            json => json.Replace("\"templateName\":\"worker\"", "\"templateName\":\"retired\"")
+        );
+        await EditRecordAsync("running", json => json.Replace("\"status\":\"completed\"", "\"status\":\"running\""));
+        await EditRecordAsync(
+            "shutdown",
+            json => json.Replace("\"status\":\"completed\"", "\"status\":\"stopped\",\"failureCode\":\"host_shutdown\"")
+        );
+        await EditRecordAsync(
+            "recreated",
+            json =>
+                json.Replace("\"status\":\"completed\"", "\"status\":\"stopped\",\"failureCode\":\"parent_recreated\"")
+        );
+        await store.UpdateMetadataAsync(
+            threads["unrecorded"],
+            metadata => metadata! with { Properties = metadata.Properties!.Remove(SubAgentRecord.Property) }
+        );
+        await EditRecordAsync(
+            "adopted",
+            json => json.Replace($"\"parentThreadId\":\"{threadId}\"", "\"parentThreadId\":\"thread-another-parent\"")
+        );
+        await EditRecordAsync(
+            "moved",
+            json => json.Replace($"\"agentId\":\"{agentIds["moved"]}\"", "\"agentId\":\"agent-99\"")
+        );
+
+        await using var rebuilt = RootLoop(store, threadId, options);
+        _ = rebuilt.RunAsync();
+        await rebuilt.WaitUntilReadyAsync().WaitAsync(TimeSpan.FromSeconds(10));
+
+        rebuilt.SubAgentManager!.ListAgents().Select(a => a.Name).Should().BeEquivalentTo("kept", "failed");
+        (await rebuilt.SubAgentManager.RestoreFinishedAgentsAsync(CancellationToken.None))
+            .Should()
+            .Be(0, "a sub-agent already registered is not registered twice");
+        (await rebuilt.SubAgentManager.SendMessageAsync("kept", "follow-up", runInBackground: false))
+            .Should()
+            .StartWith("answer");
+
+        failure.Should().Contain("boom-868");
+        var failed = rebuilt.SubAgentManager.ListAgents().Single(a => a.Name == "failed");
+        failed.Status.Should().Be(SubAgentStatus.Error);
+        (
+            await FluentActions
+                .Awaiting(() => rebuilt.SubAgentManager.ObserveCompletionAsync(failed.AgentId, CancellationToken.None))
+                .Should()
+                .ThrowAsync<SubAgentExecutionException>()
+        )
+            .Which.Message.Should()
+            .Be(failure);
+
+        async Task EditRecordAsync(string name, Func<string, string> edit)
+        {
+            var record = (await store.LoadMetadataAsync(threads[name]))!.Properties![SubAgentRecord.Property];
+            var edited = edit((string)record);
+            edited.Should().NotBe((string)record, "the edit must change the {0} record", name);
+            await store.UpdateMetadataAsync(
+                threads[name],
+                metadata =>
+                    metadata! with
+                    {
+                        Properties = metadata.Properties!.SetItem(SubAgentRecord.Property, edited),
+                    }
+            );
+        }
+    }
+
+    [Fact]
+    public async Task AFollowUpOnAFinishedSubAgent_RecordsItAsRunning()
+    {
+        // #868: without the running write, a host that dies during the follow-up leaves the record saying
+        // the previous run finished, and a rebuilt parent restores the child as finished over a
+        // transcript that ends mid-run.
+        var manager = CreateManager(AnswersOnceThenBlocks());
+        _ = await SpawnSettledAsync(manager, "task", "followed");
+        var threadId = manager.ListAgents().Single().ThreadId;
+        (await RecordStatusAsync(threadId)).Should().Be(SubAgentStatus.Completed);
+
+        _ = await manager.SendMessageAsync("followed", "follow-up", runInBackground: true);
+
+        await Wait.UntilAsync(
+            async () => await RecordStatusAsync(threadId) == SubAgentStatus.Running,
+            "the follow-up's run is recorded as running",
+            TimeSpan.FromSeconds(5)
+        );
+    }
+
+    [Fact]
+    public async Task ADirectInputToAFinishedSubAgent_RecordsItAsRunning()
+    {
+        // The same record, written when the warm loop restarts on its own (a direct input or a delayed
+        // tool result) instead of through the manager.
+        var manager = CreateManager(AnswersOnceThenBlocks());
+        _ = await SpawnSettledAsync(manager, "task", "direct");
+        var threadId = manager.ListAgents().Single().ThreadId;
+        (await RecordStatusAsync(threadId)).Should().Be(SubAgentStatus.Completed);
+        manager.TryGetAgent("direct", out var loop).Should().BeTrue();
+
+        _ = await loop!.SendAsync([new TextMessage { Text = "direct input", Role = Role.User }]);
+
+        await Wait.UntilAsync(
+            async () => await RecordStatusAsync(threadId) == SubAgentStatus.Running,
+            "the direct input's run is recorded as running",
+            TimeSpan.FromSeconds(5)
+        );
+    }
+
+    [Fact]
+    public async Task ARebuiltParentWhoseStoreCannotListTranscripts_RestoresNothing_WithoutThrowing()
+    {
+        // Restore runs inside the root's history recovery, where a throw ends that recovery early and the
+        // notify waits it restores next are not restored. So a store that cannot list leaves the root with
+        // no restored sub-agents rather than throwing. Recovery runs only for a thread that already has
+        // metadata, as a rebuilt root's thread does.
+        const string threadId = "thread-unlistable";
+        var store = new UnlistableStore(new InMemoryConversationStore());
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata { ThreadId = threadId, LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() }
+        );
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new() { SystemPrompt = "You are a worker.", AgentFactory = AnsweringProvider },
+            },
+            DefaultConversationStoreFactory = _ => store,
+        };
+
+        await using var rebuilt = RootLoop(store, threadId, options);
+        _ = rebuilt.RunAsync();
+        await rebuilt.WaitUntilReadyAsync().WaitAsync(TimeSpan.FromSeconds(10));
+
+        store.ListingAttempts.Should().Be(1, "the root's recovery asked the store for the sub-agent transcripts");
+        rebuilt.SubAgentManager!.ListAgents().Should().BeEmpty();
+        (await rebuilt.SubAgentManager.RestoreFinishedAgentsAsync(CancellationToken.None)).Should().Be(0);
+        store.ListingAttempts.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task ARebuiltParentWhoseStartIsCancelledMidRestore_RestoresTheRestOnItsNextStart()
+    {
+        // Restore runs inside the root's history recovery, which runs once per loop. A start cancelled
+        // partway through the restore must not leave the next start of the same loop with only the
+        // sub-agents registered before the cancellation.
+        const string threadId = "thread-restore-cancelled";
+        var store = new MetadataLoadHookStore(new InMemoryConversationStore());
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new() { SystemPrompt = "You are a worker.", AgentFactory = AnsweringProvider },
+            },
+            DefaultConversationStoreFactory = _ => store,
+        };
+        await using (var first = RootLoop(store, threadId, options))
+        {
+            _ = first.RunAsync();
+            await foreach (
+                var _ in first.ExecuteRunAsync(new UserInput([new TextMessage { Text = "hi", Role = Role.User }]))
+            ) { }
+
+            _ = await SpawnSettledAsync(first.SubAgentManager!, "one task", "one");
+            _ = await SpawnSettledAsync(first.SubAgentManager!, "two task", "two");
+        }
+
+        await using var rebuilt = RootLoop(store, threadId, options);
+        using var firstStart = new CancellationTokenSource();
+        // Cancel once the first sub-agent record has been read, so that one is registered and the other is not.
+        store.AfterLoadMetadata = loadedThreadId =>
+        {
+            if (loadedThreadId != threadId)
+            {
+                store.AfterLoadMetadata = null;
+                firstStart.Cancel();
+            }
+        };
+        _ = await FluentActions
+            .Awaiting(() => rebuilt.RunAsync(firstStart.Token))
+            .Should()
+            .ThrowAsync<OperationCanceledException>();
+        rebuilt.SubAgentManager!.ListAgents().Should().ContainSingle("the cancelled start registered only one");
+
+        _ = rebuilt.RunAsync();
+        await rebuilt.WaitUntilReadyAsync().WaitAsync(TimeSpan.FromSeconds(10));
+
+        rebuilt.SubAgentManager.ListAgents().Select(a => a.Name).Should().BeEquivalentTo("one", "two");
+    }
+
+    [Fact]
+    public async Task ARecordFromANewerBuild_IsNotOverwritten_AndItsSubAgentIsNotRestored()
+    {
+        // During a rollback or a mixed-version deployment, this build must neither misread a record a newer
+        // build wrote nor replace it with its own older shape.
+        var store = new InMemoryConversationStore();
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new() { SystemPrompt = "You are a worker.", AgentFactory = AnsweringProvider },
+            },
+            DefaultConversationStoreFactory = _ => store,
+        };
+        await using var first = NewManager(options);
+        _ = await SpawnSettledAsync(first, "kept task", "kept");
+        _ = await SpawnSettledAsync(first, "newer task", "newer");
+        var newerThread = first.ListAgents().Single(a => a.Name == "newer").ThreadId;
+        var current = (string)(await store.LoadMetadataAsync(newerThread))!.Properties![SubAgentRecord.Property];
+        var newer = current.Replace(
+            $"\"{SubAgentRecord.SchemaVersionPropertyName}\":{SubAgentRecord.CurrentSchemaVersion}",
+            $"\"{SubAgentRecord.SchemaVersionPropertyName}\":2,\"addedLater\":\"x\"",
+            StringComparison.Ordinal
+        );
+        newer.Should().NotBe(current, "the record carries its schema version");
+        await store.UpdateMetadataAsync(
+            newerThread,
+            metadata => metadata! with { Properties = metadata.Properties!.SetItem(SubAgentRecord.Property, newer) }
+        );
+
+        // A follow-up runs the child again, so its running and terminal writes both happen.
+        SubAgentState? settled = null;
+        first.AfterSettlingRunCompletionForTest = (state, _) =>
+        {
+            settled ??= state;
+            return Task.CompletedTask;
+        };
+        _ = await first.SendMessageAsync("newer", "follow-up", runInBackground: false);
+        await Wait.UntilAsync(() => settled is { IsSettled: true }, "the follow-up's run has settled");
+
+        var metadata = await store.LoadMetadataAsync(newerThread);
+        metadata!.Properties![SubAgentRecord.Property].Should().Be(newer, "this build left the newer record alone");
+        SubAgentRecord.Read(metadata).Should().BeNull("a record from a newer build reads as absent");
+
+        await using var rebuilt = NewManager(options);
+        (await rebuilt.RestoreFinishedAgentsAsync(CancellationToken.None)).Should().Be(1);
+        rebuilt.ListAgents().Select(a => a.Name).Should().Equal("kept");
+    }
+
+    [Fact]
+    public async Task ARestoredSubAgent_KeepsItsSpawnArgumentsLineageAndCollaborationIdentity()
+    {
+        // The record carries everything a follow-up rebuilds the child from. A field dropped on the way
+        // in or out would change the child after its parent is rebuilt: a removed tool handed back, a
+        // lost role in the directory, a tool call no longer traced to the child.
+        var store = new InMemoryConversationStore();
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new() { SystemPrompt = "You are a worker.", AgentFactory = AnsweringProvider },
+            },
+            DefaultConversationStoreFactory = _ => store,
+        };
+
+        await using var first = NewManager(options, RegisteredCollaborationRoot());
+        SubAgentState? spawned = null;
+        first.AfterSettlingRunCompletionForTest = (state, _) =>
+        {
+            spawned ??= state;
+            return Task.CompletedTask;
+        };
+        _ = await first.SpawnAsync(
+            "worker",
+            "review the change",
+            name: "reviewer",
+            model: "model-override",
+            addTools: ["extra_tool"],
+            removeTools: ["withheld_tool"],
+            spawningToolCallId: "call-42",
+            role: "code reviewer",
+            description: "Reviews changes for defects."
+        );
+        await Wait.UntilAsync(() => spawned is { IsSettled: true }, "the spawn's run has settled");
+        var original = SubAgentRecord.Read(await store.LoadMetadataAsync(spawned!.Agent.ThreadId))!;
+
+        var collaboration = RegisteredCollaborationRoot();
+        await using var rebuilt = NewManager(options, collaboration);
+        (await rebuilt.RestoreFinishedAgentsAsync(CancellationToken.None)).Should().Be(1);
+
+        var entry = collaboration.Directory.Snapshot().Single(e => e.AgentId == original.AgentId);
+        entry.Role.Should().Be("code reviewer");
+        entry.Description.Should().Be("Reviews changes for defects.");
+        entry.Name.Should().Be("reviewer");
+
+        // The follow-up rebuilds the child from the restored state and records it again.
+        SubAgentState? restarted = null;
+        rebuilt.AfterSettlingRunCompletionForTest = (state, _) =>
+        {
+            restarted ??= state;
+            return Task.CompletedTask;
+        };
+        _ = await rebuilt.SendMessageAsync("reviewer", "follow-up", runInBackground: false);
+        await Wait.UntilAsync(() => restarted is { IsSettled: true }, "the follow-up's run has settled");
+
+        restarted!.AddTools.Should().Equal("extra_tool");
+        restarted.RemoveTools.Should().Equal("withheld_tool");
+        restarted.ModelOverride.Should().Be("model-override");
+        restarted.Lineage.SpawningToolCallId.Should().Be("call-42");
+        var rewritten = SubAgentRecord.Read(await store.LoadMetadataAsync(restarted.Agent.ThreadId))!;
+        rewritten
+            .Should()
+            .BeEquivalentTo(
+                original with
+                {
+                    LastResult = rewritten.LastResult,
+                    TerminalAtUtc = rewritten.TerminalAtUtc,
+                },
+                "everything but the new run's outcome survives the rebuild"
+            );
+    }
+
+    /// <summary>A manager whose parent is root thread "thread-restored-parent", as every rebuild of it is.</summary>
+    private static SubAgentManager NewManager(SubAgentOptions options, AgentCollaborationSetup? collaboration = null)
+    {
+        var parent = new Mock<IMultiTurnAgent>();
+        _ = parent.SetupGet(p => p.ThreadId).Returns("thread-restored-parent");
+        _ = parent
+            .Setup(p =>
+                p.SendAsync(
+                    It.IsAny<List<IMessage>>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<string?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(new SendReceipt("receipt-1", null, DateTimeOffset.UtcNow));
+        return new SubAgentManager(
+            parent.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates),
+            collaboration: collaboration
+        );
+    }
+
+    /// <summary>A collaboration root registered in its own directory, as a root loop registers itself.</summary>
+    private static AgentCollaborationSetup RegisteredCollaborationRoot()
+    {
+        var setup = AgentCollaborationSetup.CreateRoot(new AgentCollaborationOptions());
+        _ = setup.Directory.TryRegister(setup.Context, setup.Name, AgentCollaborationStatuses.Running);
+        return setup;
+    }
+
+    private async Task<SubAgentStatus?> RecordStatusAsync(string threadId) =>
+        SubAgentRecord.Read(await _store!.LoadMetadataAsync(threadId))?.Status;
+
+    /// <summary>
+    /// A root that spawned a sub-agent and saw it finish is disposed and rebuilt over the same thread; the
+    /// rebuilt root must list the sub-agent as it was and reach it with its transcript intact.
+    /// </summary>
+    /// <param name="openStore">Opens a store over the one database every loop and child shares.</param>
+    private async Task RebuildParentAndFollowUpAsync(Func<IConversationStore> openStore)
+    {
+        const string threadId = "thread-rebuilt-parent";
+        var childBuilds = 0;
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new()
+                {
+                    SystemPrompt = "You are a worker.",
+                    AgentFactory = () =>
+                    {
+                        _ = Interlocked.Increment(ref childBuilds);
+                        return AnsweringProvider();
+                    },
+                },
+            },
+            DefaultConversationStoreFactory = _ => openStore(),
+        };
+
+        var firstStore = openStore();
+        DateTimeOffset? finishedAt;
+        await using (var first = RootLoop(firstStore, threadId, options))
+        {
+            _ = first.RunAsync();
+            await foreach (
+                var _ in first.ExecuteRunAsync(new UserInput([new TextMessage { Text = "hi", Role = Role.User }]))
+            ) { }
+
+            (await SpawnSettledAsync(first.SubAgentManager!, "original task", "reviewer")).Should().Be("answer 1");
+            finishedAt = first.SubAgentManager!.ListAgents().Single().TerminalAtUtc;
+        }
+
+        var secondStore = openStore();
+        await using var rebuilt = RootLoop(secondStore, threadId, options);
+        _ = rebuilt.RunAsync();
+        await rebuilt.WaitUntilReadyAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        var manager = rebuilt.SubAgentManager!;
+
+        manager.TryGetAgent("reviewer", out _).Should().BeTrue();
+        manager
+            .ListAgents()
+            .Should()
+            .ContainSingle(a =>
+                a.Name == "reviewer" && a.Status == SubAgentStatus.Completed && a.TerminalAtUtc == finishedAt
+            );
+        manager.CheckAgents(["reviewer"]).Entries.Single().LastResult.Should().Be("answer 1");
+        manager.ObserveCompletionAsync("agent-1", CancellationToken.None).IsCompleted.Should().BeTrue();
+
+        (await manager.SendMessageAsync("reviewer", "follow-up", runInBackground: false)).Should().Be("answer 2");
+
+        childBuilds.Should().Be(2, "the follow-up rebuilt the sub-agent's loop");
+        _requests[1]
+            .OfType<TextMessage>()
+            .Select(m => m.Text)
+            .Should()
+            .ContainInOrder("original task", "answer 1", "follow-up");
+        await DisposeIfOwnedAsync(firstStore);
+        await DisposeIfOwnedAsync(secondStore);
+
+        static async ValueTask DisposeIfOwnedAsync(IConversationStore store)
+        {
+            if (store is IAsyncDisposable disposable)
+            {
+                await disposable.DisposeAsync();
+            }
+        }
+    }
+
+    private static MultiTurnAgentLoop RootLoop(IConversationStore store, string threadId, SubAgentOptions options)
+    {
+        var provider = new Mock<IStreamingAgent>();
+        _ = provider
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(() =>
+                Task.FromResult(ToAsyncEnumerable(new TextMessage { Text = "root answer", Role = Role.Assistant }))
+            );
+        return new MultiTurnAgentLoop(
+            provider.Object,
+            new FunctionRegistry(),
+            threadId,
+            store: store,
+            subAgentOptions: options
+        );
+    }
+
     private SubAgentManager CreateManager(IStreamingAgent childProvider, bool withStore = true) =>
         CreateManager(() => childProvider, withStore);
 
@@ -321,7 +864,12 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
     /// answer before the run's completion side effects end, and until they do the sub-agent can be neither
     /// released nor closed.
     /// </summary>
-    private static async Task<string> SpawnSettledAsync(SubAgentManager manager, string task, string name)
+    private static async Task<string> SpawnSettledAsync(
+        SubAgentManager manager,
+        string task,
+        string name,
+        string template = "worker"
+    )
     {
         SubAgentState? finished = null;
         manager.AfterSettlingRunCompletionForTest = (state, _) =>
@@ -329,10 +877,15 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
             finished ??= state;
             return Task.CompletedTask;
         };
-        var answer = await manager.SpawnAsync("worker", task, name: name);
-        await Wait.UntilAsync(() => finished is { IsSettled: true }, "the sub-agent's run has settled");
-        manager.AfterSettlingRunCompletionForTest = null;
-        return answer;
+        try
+        {
+            return await manager.SpawnAsync(template, task, name: name);
+        }
+        finally
+        {
+            await Wait.UntilAsync(() => finished is { IsSettled: true }, "the sub-agent's run has settled");
+            manager.AfterSettlingRunCompletionForTest = null;
+        }
     }
 
     private SubAgentManager CreateManager(
@@ -341,7 +894,7 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
         int maxConcurrent = 5
     )
     {
-        var store = new InMemoryConversationStore();
+        var store = _store = new InMemoryConversationStore();
         var options = new SubAgentOptions
         {
             Templates = new Dictionary<string, SubAgentTemplate>
@@ -367,6 +920,22 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
     {
         manager.TryGetAgent(name, out var agent).Should().BeTrue();
         return new WeakReference(agent.Should().BeOfType<MultiTurnAgentLoop>().Subject);
+    }
+
+    /// <summary>Fails every request with "boom-868".</summary>
+    private static IStreamingAgent FailingProvider()
+    {
+        var provider = new Mock<IStreamingAgent>();
+        _ = provider
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ThrowsAsync(new InvalidOperationException("boom-868"));
+        return provider.Object;
     }
 
     /// <summary>Answers each request with "answer N", recording what it was sent.</summary>
@@ -427,6 +996,36 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
         yield return new TextMessage { Text = "late answer", Role = Role.Assistant };
     }
 
+    /// <summary>
+    /// Builds providers that answer "answer 1" to the first request any of them gets, then block like
+    /// <see cref="BlockingProvider"/>. Shared across builds, so a rebuilt loop's provider blocks too.
+    /// </summary>
+    private static Func<IStreamingAgent> AnswersOnceThenBlocks()
+    {
+        var requests = 0;
+        return () =>
+        {
+            var provider = new Mock<IStreamingAgent>();
+            _ = provider
+                .Setup(a =>
+                    a.GenerateReplyStreamingAsync(
+                        It.IsAny<IEnumerable<IMessage>>(),
+                        It.IsAny<GenerateReplyOptions>(),
+                        It.IsAny<CancellationToken>()
+                    )
+                )
+                .Returns(
+                    (IEnumerable<IMessage> _, GenerateReplyOptions? _, CancellationToken ct) =>
+                        Task.FromResult(
+                            Interlocked.Increment(ref requests) == 1
+                                ? ToAsyncEnumerable(new TextMessage { Text = "answer 1", Role = Role.Assistant })
+                                : BlockingStream(ct)
+                        )
+                );
+            return provider.Object;
+        };
+    }
+
     /// <summary>A provider whose stream never yields and only unwinds on cancellation.</summary>
     private static IStreamingAgent BlockingProvider()
     {
@@ -460,5 +1059,109 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
         }
 
         await Task.CompletedTask;
+    }
+
+    /// <summary>A store that calls <see cref="AfterLoadMetadata"/> after each metadata read; everything is delegated.</summary>
+    private sealed class MetadataLoadHookStore(IConversationStore inner) : IConversationStore
+    {
+        public Action<string>? AfterLoadMetadata { get; set; }
+
+        public async Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default)
+        {
+            var metadata = await inner.LoadMetadataAsync(threadId, ct);
+            AfterLoadMetadata?.Invoke(threadId);
+            return metadata;
+        }
+
+        public Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default
+        ) => inner.AppendMessagesAsync(threadId, messages, ct);
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => inner.LoadMessagesAsync(threadId, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default
+        ) => inner.UpdateMetadataAsync(threadId, update, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            ConversationListOptions? options = null,
+            CancellationToken ct = default
+        ) => inner.ListThreadsAsync(limit, offset, options, ct);
+    }
+
+    /// <summary>A store whose thread-id prefix lookup always throws; everything else is delegated.</summary>
+    private sealed class UnlistableStore(IConversationStore inner)
+        : IConversationStore,
+            IConversationThreadIdLookupStore
+    {
+        private int _listingAttempts;
+
+        public int ListingAttempts => Volatile.Read(ref _listingAttempts);
+
+        public Task<IReadOnlyList<string>> ListThreadIdsByPrefixAsync(string prefix, CancellationToken ct = default)
+        {
+            _ = Interlocked.Increment(ref _listingAttempts);
+            throw new IOException("the store cannot list threads");
+        }
+
+        public Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default
+        ) => inner.AppendMessagesAsync(threadId, messages, ct);
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => inner.LoadMessagesAsync(threadId, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            inner.LoadMetadataAsync(threadId, ct);
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default
+        ) => inner.UpdateMetadataAsync(threadId, update, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            ConversationListOptions? options = null,
+            CancellationToken ct = default
+        ) => inner.ListThreadsAsync(limit, offset, options, ct);
     }
 }

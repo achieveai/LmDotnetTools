@@ -81,6 +81,36 @@ public sealed class DeletedForkOriginalTests
             .BeTrue("a new conversation's first socket still opens it");
     }
 
+    /// <summary>The sub-agent socket refuses it too, so its sub-agents are neither rebuilt nor messaged (#868).</summary>
+    [Fact]
+    public async Task TheSubAgentSocket_RefusesADeletedOriginal_EvenWithAuthorizationOff()
+    {
+        await using var pool = ConversationsControllerTests.CreatePool();
+        _ = await SeedDeletedOriginalWithForkAsync(
+            ConversationsControllerTests.CreateController(
+                _store,
+                pool,
+                ConversationsControllerTests.ModeStoreResolvingSystemModes()
+            )
+        );
+        var gate = new WebSocketConversationGate(
+            TestAuthorizers.Disabled(),
+            _store,
+            NullLogger<WebSocketConversationGate>.Instance
+        );
+
+        var refused = new DefaultHttpContext { Response = { Body = new MemoryStream() } };
+        var admission = await gate.AdmitSubAgentAsync(refused, Source, "agent-1");
+
+        admission.Should().Be(new SubAgentSocketAdmission(false, false, false));
+        refused.Response.StatusCode.Should().Be(404);
+        refused.Response.Headers[IdentityMiddleware.RefusalCodeHeader].ToString().Should().Be("unknown_thread");
+
+        (await gate.AdmitSubAgentAsync(new DefaultHttpContext(), "thread-new", "agent-1"))
+            .Admitted.Should()
+            .BeTrue("a parent that is not deleted still opens");
+    }
+
     /// <summary>Source <c>u1 a1</c> (run-1), forked after run-1, then the source deleted.</summary>
     private async Task<string> SeedDeletedOriginalWithForkAsync(ConversationsController controller)
     {

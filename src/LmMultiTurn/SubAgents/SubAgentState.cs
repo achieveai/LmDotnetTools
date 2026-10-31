@@ -841,6 +841,58 @@ internal class SubAgentState
         }
     }
 
+    /// <summary>
+    /// Seeds a sub-agent restored from its record after its parent was rebuilt (#868) with the state an
+    /// idle release leaves behind: finished, its run's completion resolved, and its answer already
+    /// delivered (the parent's transcript holds it). Call before the state is registered.
+    /// </summary>
+    /// <param name="status">The finished status the record holds.</param>
+    /// <param name="terminalAtUtc">When the recorded run finished.</param>
+    /// <param name="failureCode">The recorded run's failure code, if any.</param>
+    /// <param name="lastResult">The recorded run's last answer, if any.</param>
+    /// <param name="errorMessage">The message the recorded run's completion failed with, if it failed.</param>
+    internal void RestoreFinished(
+        SubAgentStatus status,
+        DateTimeOffset? terminalAtUtc,
+        string? failureCode,
+        string? lastResult,
+        string? errorMessage
+    )
+    {
+        lock (_lifecycleLock)
+        {
+            _terminalGeneration = _runGeneration;
+            _status = status;
+            _terminalAtUtc = terminalAtUtc;
+            _failureCode = failureCode;
+            _lifecycleEpoch++;
+        }
+
+        LastResult = lastResult;
+
+        // Resolved as the finished run left it, so a waiter returns at once rather than hanging on a run
+        // that already ended, and sees the error it would have seen before the rebuild. A record without an
+        // error message says only that the run failed.
+        _ =
+            status == SubAgentStatus.Completed ? TryCompleteWithResult(lastResult ?? "(no text response)")
+            : errorMessage is not null
+                ? TryCompleteWithException(SubAgentExecutionException.Restored(AgentId, TemplateName, errorMessage))
+            : TryCompleteWithException(
+                new SubAgentExecutionException(
+                    AgentId,
+                    TemplateName,
+                    "the run failed before its parent was reloaded"
+                        + (failureCode is null ? string.Empty : $" ({failureCode})")
+                )
+            );
+
+        lock (_completionRelayLock)
+        {
+            _notifyParentOnCompletion = false;
+            _completionRelayDispatched = true;
+        }
+    }
+
     /// <summary>Opens a new loop/monitor epoch for a restart.</summary>
     public long BeginRunGeneration()
     {

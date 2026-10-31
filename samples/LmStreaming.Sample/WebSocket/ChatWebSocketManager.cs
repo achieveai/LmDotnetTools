@@ -46,6 +46,12 @@ public sealed class ChatWebSocketManager
     /// pooled agent. See <see cref="Services.SandboxEnvApplier.ApplyForActivationAsync"/>.
     /// </summary>
     private readonly Services.SandboxEnvApplier _envApplier;
+
+    /// <summary>
+    /// Resolves an unloaded parent's persisted mode so a sub-agent tab can rebuild it (#868). Null leaves
+    /// that tab on the read-only persisted replay, as it was before.
+    /// </summary>
+    private readonly IChatModeStore? _modeStore;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly ILogger<ChatWebSocketManager> _logger;
 
@@ -96,7 +102,8 @@ public sealed class ChatWebSocketManager
         PendingAuthCoordinator pendingAuth,
         IConversationStore conversationStore,
         Services.SandboxEnvApplier envApplier,
-        ILogger<ChatWebSocketManager> logger
+        ILogger<ChatWebSocketManager> logger,
+        IChatModeStore? modeStore = null
     )
     {
         _agentPool = agentPool ?? throw new ArgumentNullException(nameof(agentPool));
@@ -106,8 +113,144 @@ public sealed class ChatWebSocketManager
         _conversationStore = conversationStore ?? throw new ArgumentNullException(nameof(conversationStore));
         _envApplier = envApplier ?? throw new ArgumentNullException(nameof(envApplier));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _modeStore = modeStore;
         _jsonOptions = JsonSerializerOptionsFactory.CreateForProduction();
     }
+
+    /// <summary>
+    /// Puts an unloaded root conversation back in the pool so a sub-agent tab opened on it reaches the
+    /// live sub-agent rather than its read-only transcript (#868). The rebuilt root registers its finished
+    /// sub-agents again while it starts, so this waits for it to be ready.
+    /// </summary>
+    /// <remarks>
+    /// A root that is already pooled is only waited for. Only a root that is not pooled, not a running
+    /// workflow, and has persisted metadata is rebuilt, in its persisted mode, as
+    /// <c>ConversationsController</c> does. A sub-agent parent is never pooled: it
+    /// is reached through its own parent's manager, which a follow-up rebuilds. Any failure is logged and
+    /// leaves the tab on the replay path it took before. The caller must hold write on the parent: the
+    /// rebuild freezes the pooled agent's owner to <paramref name="ownerUserId"/>.
+    /// </remarks>
+    private async Task RebuildUnloadedParentAsync(string parentThreadId, string? ownerUserId, CancellationToken ct)
+    {
+        if (_agentPool.TryGet(parentThreadId, out var pooled))
+        {
+            // A root pooled moments ago may still be restoring its sub-agents, so wait for its startup too.
+            if (pooled is IStartupReadinessAgent pooledStartup)
+            {
+                try
+                {
+                    await WaitUntilStartedAndReadyAsync(pooledStartup, ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Pooled parent {ParentThreadId} did not become ready; its sub-agent tab may replay the transcript",
+                        parentThreadId
+                    );
+                }
+            }
+
+            return;
+        }
+
+        if (
+            _modeStore is null
+            || _workflowRunRegistry.TryGet(parentThreadId, out _)
+            || SubAgentThreadIds.TryGetAgentId(parentThreadId, out _)
+        )
+        {
+            return;
+        }
+
+        try
+        {
+            var metadata = await _conversationStore.LoadMetadataAsync(parentThreadId, ct);
+            if (metadata is null)
+            {
+                return;
+            }
+
+            var persistedModeId =
+                metadata.Properties?.TryGetValue(MultiTurnAgentPool.ModePropertyKey, out var modeObj) == true
+                    ? modeObj?.ToString()
+                    : null;
+            var mode =
+                await _modeStore.GetModeAsync(persistedModeId ?? SystemChatModes.DefaultModeId, ct)
+                ?? await _modeStore.GetModeAsync(SystemChatModes.DefaultModeId, ct);
+            if (mode is null)
+            {
+                _logger.LogWarning(
+                    "Could not resolve the mode of unloaded parent {ParentThreadId}; its sub-agent tab replays the transcript",
+                    parentThreadId
+                );
+                return;
+            }
+
+            _ = _agentPool.GetOrCreateAgent(
+                parentThreadId,
+                mode,
+                requestedProviderId: null,
+                requestResponseDumpFileName: null,
+                ownerUserId: ownerUserId
+            );
+            var agent = (
+                await _agentPool.EnsureCurrentAgentAsync(parentThreadId, ct: ct, ownerUserId: ownerUserId)
+            ).Agent;
+            if (agent is IStartupReadinessAgent startup)
+            {
+                await WaitUntilStartedAndReadyAsync(startup, ct);
+            }
+
+            _logger.LogInformation("Rebuilt unloaded parent {ParentThreadId} for a sub-agent tab", parentThreadId);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not rebuild unloaded parent {ParentThreadId}; its sub-agent tab replays the transcript",
+                parentThreadId
+            );
+        }
+    }
+
+    /// <summary>
+    /// Waits for a freshly pooled agent's startup. The pool starts <c>RunAsync</c> on a worker thread, so
+    /// for a moment after <see cref="MultiTurnAgentPool.GetOrCreateAgent(string, AgentProfile, string?)"/>
+    /// returns there is no startup to wait for yet and <see cref="IStartupReadinessAgent.WaitUntilReadyAsync"/>
+    /// throws. Retried for <see cref="RebuildStartupTimeout"/> at most.
+    /// </summary>
+    private static async Task WaitUntilStartedAndReadyAsync(IStartupReadinessAgent agent, CancellationToken ct)
+    {
+        var deadline = DateTimeOffset.UtcNow + RebuildStartupTimeout;
+        while (true)
+        {
+            Task ready;
+            try
+            {
+                ready = agent.WaitUntilReadyAsync(ct);
+            }
+            catch (InvalidOperationException) when (DateTimeOffset.UtcNow < deadline)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(10), ct);
+                continue;
+            }
+
+            await ready.WaitAsync(RebuildStartupTimeout, ct);
+            return;
+        }
+    }
+
+    /// <summary>How long a sub-agent tab waits for an unloaded parent to start and restore its sub-agents.</summary>
+    private static readonly TimeSpan RebuildStartupTimeout = TimeSpan.FromSeconds(30);
 
     /// <summary>
     /// Handles a WebSocket connection for chat.
@@ -356,8 +499,10 @@ public sealed class ChatWebSocketManager
     /// Handles a WebSocket connection focused on a single FOCUSED child sub-agent: streams that
     /// child's live + replayed output to the client (via the manager's restart-spanning
     /// <see cref="SubAgentManager.SubscribeToAgentAcrossRestartsAsync"/> fed through
-    /// <see cref="PumpMessagesToClientAsync"/>) and relays inbound text frames to it in background mode.
-    /// Presentation-only — it never mutates the parent connection or drives agent execution.
+    /// <see cref="PumpMessagesToClientAsync"/>). For a caller who may write the parent it also relays
+    /// inbound text frames to the child in background mode, which starts a run, and rebuilds an unloaded
+    /// root parent first (#868); every other caller's frames are refused as <c>read_only</c>. It never
+    /// touches the parent's own connection.
     /// </summary>
     /// <param name="webSocket">The WebSocket connection.</param>
     /// <param name="parentThreadId">Thread id of the parent agent that owns the sub-agent.</param>
@@ -378,13 +523,26 @@ public sealed class ChatWebSocketManager
     /// legitimate callers.
     /// </para>
     /// </param>
+    /// <param name="mayWrite">
+    /// Whether the caller may write the parent (#868) - see
+    /// <see cref="LmStreaming.Sample.Identity.SubAgentSocketAdmission.MayWrite"/>. Only then are inbound
+    /// frames relayed to the child and an unloaded parent rebuilt; otherwise each inbound frame is
+    /// answered with a <c>read_only</c> error. REQUIRED for the same reason as
+    /// <paramref name="mayReplayPersistedTranscript"/>.
+    /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
+    /// <param name="ownerUserId">
+    /// The caller's user id, passed to the pool when an unloaded parent is rebuilt, exactly as the
+    /// primary <c>/ws</c> socket passes it (#399).
+    /// </param>
     public async Task HandleSubAgentConnectionAsync(
         System.Net.WebSockets.WebSocket webSocket,
         string parentThreadId,
         string agentId,
         bool mayReplayPersistedTranscript,
-        CancellationToken cancellationToken
+        bool mayWrite,
+        CancellationToken cancellationToken,
+        string? ownerUserId = null
     )
     {
         ArgumentNullException.ThrowIfNull(webSocket);
@@ -414,6 +572,11 @@ public sealed class ChatWebSocketManager
             System.Collections.Generic.IAsyncEnumerable<AchieveAi.LmDotnetTools.LmCore.Messages.IMessage>? stream =
                 null;
             SubAgentManager? subAgentManager = null;
+
+            if (mayWrite && mayReplayPersistedTranscript)
+            {
+                await RebuildUnloadedParentAsync(parentThreadId, ownerUserId, connectionCts.Token);
+            }
 
             if (
                 _agentPool.TryGet(parentThreadId, out var parentAgent)
@@ -501,11 +664,12 @@ public sealed class ChatWebSocketManager
                 if (await connection.TrySendTextAsync(doneJson, connectionCts.Token))
                 {
                     // Keep the read-only socket open until the client disconnects (or shutdown cancels),
-                    // mirroring a completed shared-provider tab. Drain inbound frames without relaying.
+                    // mirroring a completed shared-provider tab. Nothing live to relay to, so each inbound
+                    // frame is refused rather than dropped.
                     await ReceiveTextMessagesAsync(
                         webSocket,
                         $"subagent-replay {agentId}",
-                        (_, _) => Task.CompletedTask,
+                        (_, token) => RefuseReadOnlyFrameAsync(connection, parentThreadId, agentId, token),
                         connectionCts.Token
                     );
                 }
@@ -515,25 +679,27 @@ public sealed class ChatWebSocketManager
 
             // The sub-agent wrapper reuses the shared frame pump (the {"$type":"done"} sentinel after
             // RunCompletedMessage) but adds failure-to-structured-error handling scoped to this path.
-            // This is a presentation-only view, so no recording.
+            // No recording on this tab.
             var subscriptionTask = PumpSubAgentStreamAsync(connection, stream, agentId, connectionCts.Token);
 
-            // Follow-up messages relay only to an Agent-tool sub-agent; a workflow tab is read-only, so its
-            // receive loop just drains client frames to detect disconnect.
-            var receiveTask = subAgentManager is not null
-                ? ReceiveSubAgentMessagesFromClientAsync(
-                    webSocket,
-                    connection,
-                    subAgentManager,
-                    agentId,
-                    connectionCts.Token
-                )
-                : ReceiveTextMessagesAsync(
-                    webSocket,
-                    $"workflow {agentId}",
-                    (_, _) => Task.CompletedTask,
-                    connectionCts.Token
-                );
+            // Follow-up messages relay only to an Agent-tool sub-agent and only for a caller who may write
+            // the parent (#868). Every other frame - a reader's, or any on a workflow tab, which is
+            // read-only - is refused.
+            var receiveTask =
+                subAgentManager is not null && mayWrite
+                    ? ReceiveSubAgentMessagesFromClientAsync(
+                        webSocket,
+                        connection,
+                        subAgentManager,
+                        agentId,
+                        connectionCts.Token
+                    )
+                    : ReceiveTextMessagesAsync(
+                        webSocket,
+                        subAgentManager is null ? $"workflow {agentId}" : $"sub-agent-read-only {agentId}",
+                        (_, token) => RefuseReadOnlyFrameAsync(connection, parentThreadId, agentId, token),
+                        connectionCts.Token
+                    );
 
             try
             {
@@ -1584,7 +1750,7 @@ public sealed class ChatWebSocketManager
     /// <summary>
     /// Sends a structured, correlated <c>relay_failed</c> error frame to the client without closing the
     /// connection — a transient relay failure must not silently drop the client's input nor tear down the
-    /// presentation-only view. The frame carries no message body (EUII).
+    /// sub-agent tab. The frame carries no message body (EUII).
     /// </summary>
     private async Task SendRelayFailedErrorAsync(
         RegisteredWebSocketConnection connection,
@@ -1603,6 +1769,34 @@ public sealed class ChatWebSocketManager
 
         // Best-effort: a dying connection turns this into a quiet false. No close (transient failure).
         _ = await connection.TrySendTextAsync(json, ct);
+    }
+
+    /// <summary>
+    /// Answers an inbound frame on a tab that cannot relay - a caller without write on the parent, a
+    /// persisted replay with no live child, or a workflow tab (#868) - with a <c>read_only</c> error, so the client's input
+    /// is refused visibly instead of dropped. No close and no message body (EUII).
+    /// </summary>
+    private async Task RefuseReadOnlyFrameAsync(
+        RegisteredWebSocketConnection connection,
+        string parentThreadId,
+        string agentId,
+        CancellationToken ct
+    )
+    {
+        _logger.LogWarning(
+            "Refused an inbound frame for sub-agent {AgentId} of parent {ParentThreadId}; the tab is read-only",
+            agentId,
+            parentThreadId
+        );
+
+        var payload = new Dictionary<string, object?>
+        {
+            ["$type"] = "error",
+            ["code"] = "read_only",
+            ["agentId"] = agentId,
+            ["message"] = $"Sub-agent '{agentId}' is read-only here; the message was not sent.",
+        };
+        _ = await connection.TrySendTextAsync(JsonSerializer.Serialize(payload, _jsonOptions), ct);
     }
 
     private async Task SendSubAgentUnavailableErrorAsync(

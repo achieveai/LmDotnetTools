@@ -1471,6 +1471,17 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Called on every start of <see cref="RunAsync"/>, after history recovery and before the loop is
+    /// ready, with the run's own token. History recovery runs once per loop, so a start cancelled during
+    /// it does not recover again; override this to finish recovery work such a start left undone.
+    /// </summary>
+    /// <param name="ct">The run's token; <see cref="StopAsync"/> cancels it.</param>
+    protected virtual Task OnRunStartingAsync(CancellationToken ct)
+    {
+        return Task.CompletedTask;
+    }
+
     #endregion
 
     #region Input API
@@ -2792,6 +2803,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                 );
             }
         }
+
+        await OnRunStartingAsync(ct);
 
         if (RunLedgerStore != null && !_runLedgerReconciled)
         {

@@ -1826,3 +1826,185 @@ describe('useSubAgentPanel — the user own reply to a child (BUG 7)', () => {
     }
   });
 });
+
+/**
+ * #868: an open tab's socket dies when its parent conversation idle-unloads (abnormal close, no
+ * auto-resume). The next follow-up used to vanish. A send now re-focuses the child once - which
+ * reconnects and rebuilds the parent - and sends; nothing reconnects before the user sends, or idle
+ * unload would be undone at once.
+ */
+describe('useSubAgentPanel — a send after the tab socket died (#868)', () => {
+  async function focusThenDrop(panel: ReturnType<typeof useSubAgentPanel>) {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1', { status: 'completed' })]);
+    await panel.refreshChildren();
+    await panel.focusChild('a1');
+    captured[0].callbacks.onError('WebSocket closed unexpectedly: Unknown reason');
+    captured[0].callbacks.onClose!({ wasClean: false, code: 1006, reason: '' });
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+  }
+
+  /**
+   * Makes the next connect fail the way a browser socket does: `onerror` (an error callback, then the
+   * rejection), and in a LATER task the `onclose` of the socket that never opened, which reports an
+   * abnormal close. Resolves once that trailing close has been delivered.
+   */
+  function failNextConnectLikeABrowser(): Promise<void> {
+    let closed!: () => void;
+    const trailingClose = new Promise<void>((resolve) => (closed = resolve));
+    wsSubMocks.connectSubAgent.mockImplementationOnce(
+      async (_parent: string, _agent: string, _thread: string, callbacks: Captured['callbacks']) => {
+        callbacks.onError('WebSocket connection error');
+        setTimeout(() => {
+          callbacks.onError('WebSocket closed unexpectedly: Unknown reason');
+          callbacks.onClose!({ wasClean: false, code: 1006, reason: '' });
+          closed();
+        }, 0);
+        throw new Error('WebSocket connection error');
+      }
+    );
+    return trailingClose;
+  }
+
+  const userBubbles = (panel: ReturnType<typeof useSubAgentPanel>) =>
+    panel.focusedDisplayItems.value
+      .filter((i) => i.type === 'user-message')
+      .map((i) => (i as { content?: { text?: string } }).content?.text);
+
+  it('reconnects the focused child on the next send, sends on the new socket, and clears the stale error', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusThenDrop(panel);
+    expect(captured, 'nothing reconnects until the user sends').toHaveLength(1);
+    expect(panel.error.value).toContain('closed unexpectedly');
+
+    const sent = await panel.sendToFocusedChild('follow-up');
+
+    expect(captured).toHaveLength(2);
+    expect(captured[1].agentId).toBe('a1');
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledTimes(1);
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(captured[1].connection, 'follow-up');
+    expect(panel.error.value).toBeNull();
+    expect(sent).toBe(true);
+  });
+
+  it('reports the message as not sent, with the reason, when the reconnect fails', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusThenDrop(panel);
+    const trailingClose = failNextConnectLikeABrowser();
+
+    const sent = await panel.sendToFocusedChild('follow-up');
+    await trailingClose;
+
+    expect(wsMocks.sendWebSocketMessage).not.toHaveBeenCalled();
+    expect(panel.error.value, 'the failed socket closing afterwards must not replace it').toContain('not sent');
+    expect(panel.error.value).toContain('WebSocket connection error');
+    expect(sent).toBe(false);
+  });
+
+  it('keeps the child focused after a failed send, so the next send tries once more and delivers', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusThenDrop(panel);
+    const trailingClose = failNextConnectLikeABrowser();
+    expect(await panel.sendToFocusedChild('follow-up')).toBe(false);
+    await trailingClose;
+    expect(panel.focusedAgentId.value, 'the composer stays usable for a retry').toBe('a1');
+    expect(captured, 'no reconnect of its own after the failure').toHaveLength(1);
+
+    expect(await panel.sendToFocusedChild('follow-up')).toBe(true);
+
+    expect(captured).toHaveLength(2);
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(captured[1].connection, 'follow-up');
+    expect(panel.error.value).toBeNull();
+  });
+
+  it('does not bring the child back into focus when the user left it during the failed attempt', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusThenDrop(panel);
+    wsSubMocks.connectSubAgent.mockImplementationOnce(async () => {
+      await panel.unfocusChild();
+      throw new Error('WebSocket connection error');
+    });
+
+    expect(await panel.sendToFocusedChild('follow-up')).toBe(false);
+
+    expect(panel.focusedAgentId.value).toBeNull();
+  });
+
+  it('leaves the not-sent error off another child the user moved to during the failed attempt', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusThenDrop(panel);
+    subAgentsMocks.listSubAgents.mockResolvedValue([
+      summary('a1', { status: 'completed' }),
+      summary('a2', { status: 'completed' }),
+    ]);
+    await panel.refreshChildren();
+    wsSubMocks.connectSubAgent.mockImplementationOnce(async () => {
+      await panel.focusChild('a2');
+      throw new Error('WebSocket connection error');
+    });
+
+    expect(await panel.sendToFocusedChild('follow-up')).toBe(false);
+
+    expect(panel.focusedAgentId.value).toBe('a2');
+    expect(panel.error.value, "a1's failed send is not a2's error").toBeNull();
+  });
+
+  it("does not send on another conversation's child with the same id when the user switched during the reconnect", async () => {
+    let parent = 'parent-A';
+    const panel = useSubAgentPanel(() => parent);
+    await focusThenDrop(panel);
+    let finishHistory!: (messages: unknown[]) => void;
+    convMocks.loadConversationMessages.mockImplementationOnce(
+      () => new Promise((resolve) => (finishHistory = resolve))
+    );
+
+    const sending = panel.sendToFocusedChild('meant for A');
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(captured, "A's reconnect is waiting on its history").toHaveLength(2);
+
+    // Conversation B also has a child called a1, and it takes focus with an open socket.
+    parent = 'parent-B';
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1', { status: 'completed' })]);
+    await panel.refreshChildren();
+    await panel.focusChild('a1');
+    expect(captured[2].parentThreadId).toBe('parent-B');
+    finishHistory([]);
+
+    expect(await sending).toBe(false);
+    expect(wsMocks.sendWebSocketMessage, "A's text must not reach B's child").not.toHaveBeenCalled();
+    expect(panel.focusedAgentId.value).toBe('a1');
+    expect(panel.error.value, "A's failed send is not B's error").toBeNull();
+  });
+
+  it('keeps the not-sent error through a sub-agent list refresh', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusThenDrop(panel);
+    const trailingClose = failNextConnectLikeABrowser();
+    expect(await panel.sendToFocusedChild('follow-up')).toBe(false);
+    await trailingClose;
+
+    await panel.refreshChildren();
+
+    expect(panel.error.value).toContain('not sent');
+  });
+
+  it('shows a read_only refusal until the next user action, and hands back the refused text', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1', { status: 'completed' })]);
+    await panel.refreshChildren();
+    await panel.focusChild('a1');
+    expect(await panel.sendToFocusedChild('hello')).toBe(true);
+    expect(userBubbles(panel)).toEqual(['hello']);
+
+    captured[0].callbacks.onError("Sub-agent 'a1' is read-only here; the message was not sent.", 'read_only');
+
+    expect(panel.error.value).toContain('read-only');
+    expect(userBubbles(panel), 'the refused reply must not look delivered').toEqual([]);
+    expect(panel.refusedText.value).toBe('hello');
+
+    await panel.refreshChildren();
+    expect(panel.error.value, 'a list refresh does not clear it').toContain('read-only');
+
+    await panel.focusChild('a1');
+    expect(panel.error.value, 'selecting the tab again clears it').toBeNull();
+  });
+});
