@@ -1679,6 +1679,63 @@ public sealed class ReviewdJudgeCloseTests
         moved.ToJsonString().Should().Be("[true,true,true,true,false,false]");
     }
 
+    // The same race through close-commit: another writer moves main while origin applies the push, so git itself saw
+    // no stale tip. Close pushes nothing and says main moved, with git's one rejected line as the detail.
+    [SkippableFact]
+    public async Task Close_commit_says_main_moved_when_main_moves_while_the_push_is_applied()
+    {
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        using var universe = Universe.Create();
+        var version = universe
+            .Git(universe.Store, "--version")
+            .Split(' ')[2] // "git version 2.53.0"
+            .Split('.')
+            .Take(2)
+            .Select(part => int.Parse(part, System.Globalization.CultureInfo.InvariantCulture))
+            .ToArray();
+        Skip.If(
+            new Version(version[0], version[1]) < new Version(2, 51),
+            "git before 2.51 words the race 'failed to update ref'; GitHub and later git name the old value"
+        );
+        var phase = JudgeClose.Local(universe.Store);
+        var prepared = await phase("close-prepare", universe.PrepareArgs(3), default);
+        universe.MoveMainWhileThePushIsApplied();
+
+        var pushed = await phase("close-commit", universe.CommitArgs(prepared, push: true), default);
+
+        pushed["status"]!.GetValue<string>().Should().Be("main-moved");
+        pushed["detail"]!
+            .GetValue<string>()
+            .Should()
+            .StartWith("! [remote rejected]")
+            .And.EndWith("(incorrect old value provided)")
+            .And.NotContain("\n");
+        universe.Git(universe.Origin, "log", "-1", "--format=%s", "main").Should().Be("other writer");
+        universe.AssertClean();
+    }
+
+    // A hook that declines the push is not main moving: close fails and says why, and main keeps no close.
+    [SkippableFact]
+    public async Task Close_commit_fails_when_a_hook_declines_the_push()
+    {
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        using var universe = Universe.Create();
+        var phase = JudgeClose.Local(universe.Store);
+        var prepared = await phase("close-prepare", universe.PrepareArgs(3), default);
+        var main = universe.Git(universe.Origin, "rev-parse", "main");
+        universe.DeclineThePush();
+
+        var commit = () => phase("close-commit", universe.CommitArgs(prepared, push: true), default);
+
+        var failure = (await commit.Should().ThrowAsync<InvalidOperationException>()).Which;
+        failure
+            .Message.Should()
+            .StartWith("close step close-commit failed (exit 2): push failed (1): ! [remote rejected] ")
+            .And.Contain("(pre-receive hook declined)");
+        universe.Git(universe.Origin, "rev-parse", "main").Should().Be(main);
+        universe.AssertClean();
+    }
+
     [SkippableFact]
     public async Task Close_commit_says_closed_when_another_writer_built_on_it_before_the_check()
     {
@@ -2237,6 +2294,45 @@ public sealed class ReviewdJudgeCloseTests
 
                 """.Replace("\r\n", "\n", StringComparison.Ordinal)
             );
+            if (!OperatingSystem.IsWindows())
+                File.SetUnixFileMode(hook, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        /// <summary>
+        /// Another writer: a pre-receive hook on origin moves main once, after git checked the tip and before origin
+        /// applies the push. The hook leaves the push's quarantine, where git refuses ref updates.
+        /// </summary>
+        public void MoveMainWhileThePushIsApplied() =>
+            OriginHook(
+                """
+                #!/bin/sh
+                cat >/dev/null
+                unset GIT_QUARANTINE_PATH GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+                export GIT_AUTHOR_NAME=Other GIT_AUTHOR_EMAIL=other@example.com
+                export GIT_COMMITTER_NAME=Other GIT_COMMITTER_EMAIL=other@example.com
+                main=$(git rev-parse refs/heads/main)
+                git update-ref refs/heads/main "$(git commit-tree "$main^{tree}" -p "$main" -m 'other writer')" "$main"
+                rm -f "$0"
+
+                """
+            );
+
+        /// <summary>A pre-receive hook on origin that declines every push.</summary>
+        public void DeclineThePush() =>
+            OriginHook(
+                """
+                #!/bin/sh
+                cat >/dev/null
+                echo 'main is frozen' >&2
+                exit 1
+
+                """
+            );
+
+        private void OriginHook(string script)
+        {
+            var hook = Path.Combine(Origin, "hooks", "pre-receive");
+            File.WriteAllText(hook, script.Replace("\r\n", "\n", StringComparison.Ordinal));
             if (!OperatingSystem.IsWindows())
                 File.SetUnixFileMode(hook, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
