@@ -2912,30 +2912,46 @@ def validate_parent_origin_remote(root: Path, *, remote: str = "origin") -> str:
     Requires HTTPS with no embedded credentials (enforced by
     ``_normalized_remote_base``) and refuses a URL that names one of the
     configured source repositories -- the parent repository's own remote must
-    never be confused with a nested, read-only source. Returns the raw
-    configured URL; callers must not print it verbatim.
+    never be confused with a nested, read-only source. Callers push and read by
+    remote name, so git rewrites the URL first (``pushurl``, ``pushInsteadOf``,
+    ``insteadOf``): every effective URL is held to the same rules, not only the
+    configured one. Returns the raw configured URL; callers must not print it verbatim.
     """
     result = run_git_read(root, ["config", "--get", f"remote.{remote}.url"], check=False)
     if result.returncode:
         raise ReviewError("Parent-origin remote is not configured.")
     url = result.stdout.strip()
-    _normalized_remote_base(url)
-    # A store hosted on GitHub or Azure DevOps can review sources on the same host, so host alone cannot
-    # tell them apart: refuse the parent origin only when it names one of this store's own source repositories.
+    effective = [url]
+    for args in (["remote", "get-url", "--all", remote], ["remote", "get-url", "--push", "--all", remote]):
+        listed = run_git_read(root, args, check=False)
+        if listed.returncode:
+            raise ReviewError("Parent-origin remote URLs could not be resolved.")
+        effective += [line.strip() for line in listed.stdout.splitlines() if line.strip()]
+    sources = read_submodules(root, read_only=True) if (root / ".gitmodules").is_file() else []
+    for candidate in dict.fromkeys(effective):
+        _normalized_remote_base(candidate)
+        if _names_source_repository(candidate, sources):
+            raise ReviewError("Parent-origin remote must not be a nested source repository.")
+    return url
+
+
+def _names_source_repository(url: str, sources: list[dict]) -> bool:
+    """Whether ``url`` names one of ``sources`` (a store on the same host as its sources is normal).
+
+    GitHub matches owner + repository (``parse_github_url`` already drops a ``.git`` suffix, which GitHub
+    resolves to the same repository). Azure DevOps matches org + project + repository exactly: it does not
+    resolve ``_git/Repo.git`` to ``Repo`` (TF401019, repository does not exist), so the suffix stays.
+    """
     try:
         parent = parse_source_url(url)
     except ReviewError:
-        return url
-    if parent["provider"] == "github":
-        identity = ("owner", "repository")
-    else:
-        identity = ("org_url", "project", "repository")
-    if (root / ".gitmodules").is_file():
-        for module in read_submodules(root, read_only=True):
-            if module.get("provider") == parent["provider"] and all(
-                    module[field].casefold() == parent[field].casefold() for field in identity):
-                raise ReviewError("Parent-origin remote must not be a nested source repository.")
-    return url
+        return False
+    identity = ("owner", "repository") if parent["provider"] == "github" else ("org_url", "project", "repository")
+    return any(
+        module.get("provider") == parent["provider"]
+        and all(module[field].casefold() == parent[field].casefold() for field in identity)
+        for module in sources
+    )
 
 
 def validate_parent_ref(root: Path, value: str) -> str:
