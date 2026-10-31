@@ -88,8 +88,11 @@ still has `reviews.db` and `data/reviews.db` is empty, `start-batch.sh` and `sta
 to start. Starting on the empty database would hide every slot the old reviews hold.
 
 1. Stop the batch, `auth serve` and the host. Step 1 must show none of them.
-2. Copy the databases. SQLite's backup also takes in what their `-wal` files still hold, so never
-   copy a `.db` file without its sidecars:
+2. Copy the databases. SQLite's logical backup also takes in what their `-wal` files still hold,
+   so never copy a `.db` file alone when WAL may contain committed data. The command below opens
+   the originals and can create or change SQLite sidecars, even with a read-only connection.
+   It is a legacy migration recipe, **not an unchanged-source evidence capture**. For Windows
+   maintenance with a strict source-file guard, use [offline capture](#windows-offline-state-capture).
 
    ```bash
    OLD=$REVIEWD_LEGACY_RUN_DIR
@@ -112,6 +115,109 @@ to start. Starting on the empty database would hide every slot the old reviews h
   not imported.
 - To start fresh on purpose instead, set `REVIEWD_LEGACY_STATE=abandoned` in `env/batch.env`. The new
   database then knows nothing of the slots the old reviews hold.
+
+### Windows offline state capture
+
+Use `ops/backup-offline-state.ps1` with PowerShell **7.5+** and Python 3. It copies files first;
+SQLite is opened only against separate working copies. It does not stop services, restore files,
+change scheduling, or approve deployment. Linux ACL preservation is outside this helper's scope.
+
+Before capture, disable and drain discovery/watchdogs, drain admitted reviews, then stop the host,
+both runners and their authentication/launcher processes. Review shutdown logs: exit code0 and an
+empty queue do not prove final writes succeeded. Investigate unknown writers before proceeding.
+Keep those producers stopped throughout capture and verification.
+
+Write an explicit scope JSON outside the source trees. `databases` must include `conversations`,
+`identity`, `github` and `ado`; add other databases, such as a separate `notify-waits.db`, when used.
+Every `entries` path is required and copied recursively, including empty directories. List all host
+auxiliary state, root configuration JSON, runner config, selection/control snapshots and any shared
+token state required by your recovery plan. An omitted path is **not backed up**. Do not list a file
+again inside a selected directory. The helper rejects overlaps, missing paths and reparse points.
+
+```json
+{
+  "schema": 1,
+  "databases": [
+    { "name": "conversations", "path": "C:\\Reviewd\\state\\host\\conversations.db" },
+    { "name": "identity", "path": "C:\\Reviewd\\state\\host\\identity.db" },
+    { "name": "github", "path": "C:\\Reviewd\\state\\reviews.db" },
+    { "name": "ado", "path": "C:\\ADO-Reviewd\\state\\reviews.db" }
+  ],
+  "entries": [
+    { "name": "chat-modes", "path": "C:\\Reviewd\\state\\host\\chat-modes" },
+    { "name": "legacy-conversations", "path": "C:\\Reviewd\\state\\host\\conversations" },
+    { "name": "oauth-tokens", "path": "C:\\Reviewd\\state\\host\\oauth-tokens" },
+    { "name": "workflow-index", "path": "C:\\Reviewd\\state\\host\\workflow-index" },
+    { "name": "workspaces", "path": "C:\\Reviewd\\state\\host\\workspaces" },
+    { "name": "host-config", "path": "C:\\Reviewd\\state\\host\\appsettings.json" },
+    { "name": "hierarchy-index", "path": "C:\\Reviewd\\state\\host\\conversations.parent-child-index.json" },
+    { "name": "github-config", "path": "C:\\Reviewd\\state\\config" },
+    { "name": "ado-config", "path": "C:\\ADO-Reviewd\\state\\config" }
+  ],
+  "runtime": {
+    "processPaths": ["C:\\Reviewd\\host\\LmStreaming.Sample.exe", "C:\\Reviewd\\cli\\Reviewd.Sample.exe", "C:\\ADO-Reviewd\\cli\\Reviewd.Sample.exe"],
+    "commandPaths": ["C:\\Reviewd\\start-host.ps1", "C:\\Reviewd\\ensure-reviewd.ps1", "C:\\ADO-Reviewd\\ensure-reviewd.ps1"],
+    "tasks": ["Reviewd Discovery", "Reviewd Watchdog", "ADO Reviewd Discovery", "ADO Reviewd Watchdog"],
+    "ports": [5310, 5311, 5312, 5321, 5322]
+  }
+}
+```
+
+Adapt every path and runtime list to the inspected installation; this example is not discovery.
+Inventory the host's root JSON files while preparing the scope; include each actual file rather
+than assuming `appsettings.json` is the only configuration/index file. Freeze and review that list.
+For `dotnet app.dll` and PowerShell wrappers, include the DLL/script path in `commandPaths` too.
+Task names must identify one task each. The helper checks these declared processes, command paths,
+listeners and disabled/drained tasks. It cannot certify that an omitted or unreadable unrelated
+process is harmless. Reviewed quiescence evidence must address the complete producer/writer scope.
+
+Record the evidence as JSON, with real UTC observation time and SHA256 of the **exact scope bytes**:
+
+```json
+{
+  "schema": 1,
+  "observedAtUtc": "2026-10-29T17:00:00Z",
+  "scopeSha256": "<64 hexadecimal characters>",
+  "producersDisabled": true,
+  "writersStopped": true,
+  "shutdownDurabilityPassed": true,
+  "unknownWriters": false,
+  "owners": 0,
+  "unreleasedAttempts": 0
+}
+```
+
+These are operator-reviewed claims, not values the script discovers or authenticates. Do not fill
+them from process liveness alone. The receipt must be no more than ten minutes old and not future
+dated. Pin its SHA256 after review, then invoke from a file/terminal without putting credentials in
+arguments. The destination parent must already exist; the destination itself must be new.
+`shutdownDurabilityPassed` must be a boolean. Set it to `false` when final writes failed: capture
+can still preserve the valid saved state, and records that failure without approving an upgrade.
+
+```powershell
+pwsh -NoProfile -File ./samples/Reviewd.Sample/ops/backup-offline-state.ps1 `
+  -ScopePath C:\maintenance\scope.json -QuiescencePath C:\maintenance\quiescence.json `
+  -ReviewedQuiescenceSha256 <reviewed-sha256> -Destination D:\recovery\capture-unique-name
+```
+
+The helper compares source file sets, bytes and owner/group/access rules before and after capture.
+Read handles deny writes while files are copied. Each destination receives checked, protected
+owner/group/access rules before private bytes; Windows audit rules (SACLs) are not copied. Raw main,
+WAL and rollback-journal files are retained; SHM is a transient index rebuilt only in working copies.
+Missing optional sidecars are recorded in `source-inventory.json`. Never delete or overwrite a
+failed attempt to retry: inspect it, resolve the cause, review fresh evidence and use a new path.
+
+Success produces `complete.json`, raw file hashes and per-database integrity/schema results. A
+failure after destination creation retains partial files and `failed.json`, when access permits;
+absence of `complete.json` means incomplete. Working-copy recovery may finalize WAL/journal state;
+the raw capture must remain byte-identical. Integrity proves saved-state validity, not that failed
+memory-only writes were saved, nor that schema compatibility or a later deployment is safe.
+
+For recovery, keep writers stopped, verify the complete receipt/raw hashes and restore only into
+new reviewed paths. Use a coherent database bundle (main plus saved WAL/journal) or a separately
+validated finalized working copy; do not overlay an old main onto unrelated live sidecars. Preserve
+the existing installation/state until recovery is independently checked. This helper intentionally
+has no restore or deletion action.
 
 ## 5. Find PRs and write the selection (about 8 minutes)
 

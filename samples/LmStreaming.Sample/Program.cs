@@ -705,15 +705,13 @@ try
         conversationDbDir ?? AppContext.BaseDirectory,
         "conversations.parent-child-index.json"
     );
-    SqliteConversationStore? innerConversationStore = null;
-    _ = builder.Services.AddSingleton(sp =>
-    {
-        innerConversationStore = new SqliteConversationStore(
-            conversationDbPath,
-            sp.GetRequiredService<ILogger<SqliteConversationStore>>()
-        );
-        return new IndexedConversationStore(innerConversationStore, conversationIndexPath);
-    });
+    _ = builder.Services.AddSingleton(sp => new SqliteConversationStoreLifetime(
+        new SqliteConversationStore(conversationDbPath, sp.GetRequiredService<ILogger<SqliteConversationStore>>())
+    ));
+    _ = builder.Services.AddSingleton(sp => new IndexedConversationStore(
+        sp.GetRequiredService<SqliteConversationStoreLifetime>().Store,
+        conversationIndexPath
+    ));
     _ = builder.Services.AddSingleton<IConversationStore>(sp => sp.GetRequiredService<IndexedConversationStore>());
     _ = builder.Services.AddSingleton<IRunLedgerStore>(sp => sp.GetRequiredService<IndexedConversationStore>());
     _ = builder.Services.AddHostedService(sp =>
@@ -3286,16 +3284,6 @@ try
     {
         await indexedStore.InitializeAsync();
     }
-
-    // IndexedConversationStore does not own/dispose its inner store, and SqliteConversationStore is
-    // IAsyncDisposable-only, so a container-tracked singleton would make the synchronous
-    // ServiceProvider.Dispose() (used by BrowserWebAppFactory's IHost.Dispose()) throw. Dispose the
-    // inner SQLite store asynchronously on shutdown instead. Deliberately NOT calling the process-wide
-    // SqliteConnection.ClearAllPools() here: it would evict the pooled connections of parallel E2E
-    // hosts in the same process. The WAL is durable; the pool drains on process exit.
-    app.Lifetime.ApplicationStopped.Register(() =>
-        innerConversationStore?.DisposeAsync().AsTask().GetAwaiter().GetResult()
-    );
 
     // Log startup information
     var logger = app.Services.GetRequiredService<ILogger<Program>>();
