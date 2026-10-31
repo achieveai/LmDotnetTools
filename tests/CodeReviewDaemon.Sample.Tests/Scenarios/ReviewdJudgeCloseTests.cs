@@ -1654,6 +1654,31 @@ public sealed class ReviewdJudgeCloseTests
         universe.AssertClean();
     }
 
+    // Two closes on one store (shard lanes) can push main at once. The server then refuses the loser's stale update, in
+    // git's words from a local remote and in GitHub's; that is main moving, so close fetches and composes again. A hook
+    // that declines the push is not.
+    [SkippableFact]
+    public async Task A_push_that_lost_main_to_a_concurrent_push_reads_as_main_moved()
+    {
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no python3 on PATH");
+
+        var moved = await ReviewdJudgeTests.SandboxAsync(
+            python!,
+            "[bool(sandbox.MAIN_MOVED.search(s)) for s in data]",
+            new JsonArray(
+                " ! [rejected]        5f1c2e9 -> main (fetch first)",
+                " ! [rejected]        5f1c2e9 -> main (non-fast-forward)",
+                " ! [remote rejected] 5f1c2e9 -> main (incorrect old value provided)",
+                " ! [remote rejected] main -> main (cannot lock ref 'refs/heads/main': is at 1111111 but expected 2222222)",
+                " ! [remote rejected] main -> main (pre-receive hook declined)",
+                " ! [remote rejected] main -> main (protected branch hook declined)"
+            )
+        );
+
+        moved.ToJsonString().Should().Be("[true,true,true,true,false,false]");
+    }
+
     [SkippableFact]
     public async Task Close_commit_says_closed_when_another_writer_built_on_it_before_the_check()
     {
