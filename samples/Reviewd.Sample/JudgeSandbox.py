@@ -69,10 +69,14 @@ def parse_time(text):
     return datetime.datetime.fromisoformat(text.replace("Z", "+00:00")) if text else None
 
 
+# Query parameters whose value is a secret: OAuth and API tokens, SAS and pre-signed (S3) URL signatures, passwords.
+SECRET_QUERY_NAMES = "access_token|token|sig|signature|key|password|client_secret|x-amz-signature|x-amz-security-token"
+
+
 def masked(text):
     """text with the user and password of each URL in it (as in a --remote URL, or git's error about one), and the value
-    of its access_token, token or sig query parameter, as ***."""
-    return re.sub(r"(?i)([?&](?:access_token|token|sig)=)[^&#\s'\"]+", r"\1***", re.sub(r"://[^/@\s]+@", "://***@", text))
+    of each query parameter that carries a secret (SECRET_QUERY_NAMES, any case), as ***."""
+    return re.sub(rf"(?i)([?&](?:{SECRET_QUERY_NAMES})=)[^&#\s'\"]+", r"\1***", re.sub(r"://[^/@\s]+@", "://***@", text))
 
 
 def git(git_args, *cmd, check=True, env=None, stdin=None):

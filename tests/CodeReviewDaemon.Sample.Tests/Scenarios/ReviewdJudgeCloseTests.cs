@@ -1742,9 +1742,9 @@ public sealed class ReviewdJudgeCloseTests
         universe.AssertClean(pushed: commit);
     }
 
-    // The remote can be a URL with a user and password, or a token in its query (access_token, token, sig). When round
-    // discovery (git ls-remote) fails after main was fetched, prepare fails without printing them, origin main does not
-    // move, and its private refs and scratch go.
+    // The remote can be a URL with a user and password, or secrets in its query (tokens, signatures, a password).
+    // When round discovery (git ls-remote) fails after main was fetched, prepare fails without printing any of them,
+    // origin main does not move, and its private refs and scratch go. A plain query value (ref) stays as it is.
     [SkippableFact]
     public async Task Close_prepare_fails_on_a_failed_round_discovery_without_printing_remote_credentials()
     {
@@ -1753,14 +1753,19 @@ public sealed class ReviewdJudgeCloseTests
         using var universe = Universe.Create();
         var args = universe.PrepareArgs(3);
         args["remote"] = universe.FailSecondConnection(
-            "https://fake-user:FAKE-TOKEN-0000@example.invalid/store.git?access_token=FAKE-AT-1111&sig=FAKE-SIG-2222"
+            "https://fake-user:FAKE-TOKEN-0000@example.invalid/store.git?access_token=FAKE-AT-1111&sig=FAKE-SIG-2222&key=FAKE-KEY-3333&Signature=FAKE-SN-4444&password=FAKE-PW-5555&client_secret=FAKE-CS-6666&X-Amz-Signature=FAKE-AS-7777&X-Amz-Security-Token=FAKE-ST-8888&ref=main"
         );
 
         var prepare = () => JudgeClose.Local(universe.Store)("close-prepare", args, default);
 
         var failure = (await prepare.Should().ThrowAsync<InvalidOperationException>()).Which;
         failure.Message.Should().StartWith("close step close-prepare failed (exit 2): git ls-remote ext::");
-        failure.Message.Should().Contain("https://***@example.invalid/store.git?access_token=***&sig=***");
+        failure
+            .Message.Should()
+            .Contain(
+                "https://***@example.invalid/store.git?access_token=***&sig=***&key=***&Signature=***&password=***"
+                    + "&client_secret=***&X-Amz-Signature=***&X-Amz-Security-Token=***&ref=main"
+            );
         failure.Message.Should().NotContain("FAKE-").And.NotContain("fake-user");
         universe.Git(universe.Origin, "rev-parse", "main").Should().Be(universe.Main);
         universe.AssertClean();
