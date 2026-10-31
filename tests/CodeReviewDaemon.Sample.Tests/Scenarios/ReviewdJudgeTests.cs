@@ -413,6 +413,60 @@ public sealed class ReviewdJudgeTests
         compared[3]!["sample"]![0]!.GetValue<string>().Should().StartWith("comment 7/2 changed");
     }
 
+    // A judge lane stopped on two Nova receipts: a draft whose comments were never posted (no commentId), and one
+    // rebuilt by hand that names rootCommentId. Neither is ours; each is a limitation, so the judgment goes on.
+    [SkippableFact]
+    public async Task A_draft_receipt_and_comments_without_both_ids_are_limitations_not_ours()
+    {
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no python3 on PATH");
+
+        var parsed = await SandboxAsync(
+            python!,
+            "[sandbox.parse_receipt(json.dumps(r), 'publication_receipts_draft_4.json') for r in data]",
+            JsonNode.Parse(
+                """
+                [{"draft": true, "comments": [{"threadId": null, "commentId": null, "kind": "finding"}]},
+                 {"headSha": "aaaa", "comments": [{"threadId": 11, "commentId": 1}]}]
+                """
+            )!
+        );
+        parsed[0]!
+            .ToJsonString()
+            .Should()
+            .Be("""[null,"publication_receipts_draft_4.json is a draft: its comments were never posted"]""");
+        parsed[1]![0]!["headSha"]!.GetValue<string>().Should().Be("aaaa");
+        parsed[1]![1].Should().BeNull();
+
+        var collected = await SandboxAsync(
+            python!,
+            """(lambda lim: {"ours": list(sandbox.collect_ours(data, lim).values()), "limitations": lim})([])""",
+            JsonNode.Parse(
+                """
+                [[{"threadId": 11, "commentId": 1, "kind": "finding"}, "branch:review/nova-1:a.json", "review/nova-1"],
+                 [{"threadId": "11", "commentId": "1"}, "receipt:latest", "review/nova-1"],
+                 [{"threadId": null, "commentId": null, "kind": "finding"}, "store-HEAD:b.json", "UNKNOWN"],
+                 [{"threadId": 12, "commentId": "x"}, "store-HEAD:b.json", "UNKNOWN"],
+                 [{"threadId": 13, "rootCommentId": 1, "content": "rebuilt"}, "store-HEAD:c.json", "UNKNOWN"]]
+                """
+            )!
+        );
+        collected["ours"]!
+            .ToJsonString()
+            .Should()
+            .Be(
+                """[{"threadId":11,"commentId":1,"kind":"finding","rounds":["review/nova-1"],"sources":["branch:review/nova-1:a.json","receipt:latest"]}]"""
+            );
+        collected["limitations"]!
+            .AsArray()
+            .Select(node => node!.GetValue<string>())
+            .Should()
+            .Equal(
+                "store-HEAD:b.json: 2 comment(s) without a threadId and commentId not counted as ours",
+                "store-HEAD:c.json: 1 comment(s) without a threadId and commentId not counted as ours"
+            );
+    }
+
     [Fact]
     public async Task The_judge_thread_is_provisioned_headless_with_read_only_egress()
     {

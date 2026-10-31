@@ -198,15 +198,41 @@ def size_tier(files, lines):
 
 
 def read_receipt_file(store_git, ref, path):
-    text = git(store_git, "show", f"{ref}:{path}").stdout
+    return parse_receipt(git(store_git, "show", f"{ref}:{path}").stdout, f"{ref}:{path}")
+
+
+def parse_receipt(text, where):
+    """(receipt, None), or (None, why it is not read). A draft lists comments it never posted, so it is no receipt."""
     try:
         data = json.loads(text)
     except json.JSONDecodeError as e:
-        return None, f"{ref}:{path} is not JSON ({e})"
+        return None, f"{where} is not JSON ({e})"
     comments = data.get("comments") if isinstance(data, dict) else None
     if not isinstance(comments, list):
-        return None, f"{ref}:{path} has no comments[] list"
+        return None, f"{where} has no comments[] list"
+    if data.get("draft"):
+        return None, f"{where} is a draft: its comments were never posted"
     return data, None
+
+
+def collect_ours(found, limitations):
+    """Our comments from (comment, source, round) triples, keyed by (threadId, commentId). A comment without both ids,
+    as in a receipt rebuilt by hand that names rootCommentId, is left out and counted per source as a limitation."""
+    ours, unkeyed = {}, collections.Counter()
+    for c, source, round_name in found:
+        try:
+            k = int(c["threadId"]), int(c["commentId"])
+        except (KeyError, TypeError, ValueError):
+            unkeyed[source] += 1
+            continue
+        e = ours.setdefault(k, {"threadId": k[0], "commentId": k[1], "kind": c.get("kind"), "rounds": [], "sources": []})
+        e["kind"] = e["kind"] or c.get("kind")
+        if round_name not in e["rounds"]:
+            e["rounds"].append(round_name)
+        e["sources"].append(source)
+    limitations.extend(f"{source}: {n} comment(s) without a threadId and commentId not counted as ours"
+                       for source, n in unkeyed.items())
+    return ours
 
 
 # ---------------------------------------------------------------- judge-inputs digests (P2)
@@ -405,15 +431,7 @@ def judge_inputs():
     if other_refs:
         limitations.append(f"refs mentioning {leaf} not used for ours: {other_refs}")
 
-    ours = {}
-
-    def add_ours(c, source, round_name):
-        k = (int(c["threadId"]), int(c["commentId"]))
-        e = ours.setdefault(k, {"threadId": k[0], "commentId": k[1], "kind": c.get("kind"), "rounds": [], "sources": []})
-        e["kind"] = e["kind"] or c.get("kind")
-        if round_name not in e["rounds"]:
-            e["rounds"].append(round_name)
-        e["sources"].append(source)
+    found = []
 
     rounds = []
     for name, sha in branches:
@@ -439,7 +457,7 @@ def judge_inputs():
                 rd["headSha"] = rd["headSha"] or data.get("headSha")
                 rd["mergeSha"] = rd["mergeSha"] or data.get("mergeSha")
                 for c in data["comments"]:
-                    add_ours(c, f"branch:{name}:{review_dir}/{f}", name)
+                    found.append((c, f"branch:{name}:{review_dir}/{f}", name))
         if not rd["receiptFiles"]:
             limitations.append(f"{name}: no publication_receipts*.json under {review_dir}/")
         if rd["headSha"] is None and "setup-context.json" in base:
@@ -451,10 +469,10 @@ def judge_inputs():
         rd["round"] = i
     round_of_head = {r["headSha"]: r["branch"] for r in rounds if r["headSha"]}
     for c in (receipt.get("verifiedPublication") or {}).get("comments", []):
-        add_ours(c, "receipt:latest", art["branch"])
+        found.append((c, "receipt:latest", art["branch"]))
     for k, h in history:
         for c in (h.get("verifiedPublication") or {}).get("comments", []):
-            add_ours(c, f"attempt-history:{k.rsplit('/', 1)[1][:16]}", round_of_head.get(h.get("headSha"), "UNKNOWN"))
+            found.append((c, f"attempt-history:{k.rsplit('/', 1)[1][:16]}", round_of_head.get(h.get("headSha"), "UNKNOWN")))
     main_receipts = [f for f in git(store_git, "ls-tree", "-r", "--name-only", "HEAD", "--", f"{review_dir}/").stdout.splitlines()
                      if re.fullmatch(r"publication_receipts.*\.json", os.path.basename(f))]
     for f in main_receipts:
@@ -463,7 +481,8 @@ def judge_inputs():
             limitations.append(err)
             continue
         for c in data["comments"]:
-            add_ours(c, f"store-HEAD:{f}", round_of_head.get(data.get("headSha"), "UNKNOWN"))
+            found.append((c, f"store-HEAD:{f}", round_of_head.get(data.get("headSha"), "UNKNOWN")))
+    ours = collect_ours(found, limitations)
 
     # --- ADO pre-fetch (GET only)
     project_id, repo_id = repository["project"]["id"], repository["id"]
@@ -655,7 +674,7 @@ def judge_inputs():
             "iterationsAfterReview": after_review,
         },
         "ours": {
-            "rule": "ours = latest receipt verifiedPublication U attempt-history verifiedPublication U publication_receipts*.json on every review/<leaf>[-<head>] branch (and store HEAD). Never by author.",
+            "rule": "ours = latest receipt verifiedPublication U attempt-history verifiedPublication U publication_receipts*.json on every review/<leaf>[-<head>] branch (and store HEAD). Never by author. Drafts and comments without both ids are left out, each as a limitation.",
             "posted": sorted(ours.values(), key=lambda e: (e["threadId"], e["commentId"])),
             "operatorIdentityIds": sorted(i for i in operator_ids if i),
             "unreceiptedRevobot": unreceipted,
