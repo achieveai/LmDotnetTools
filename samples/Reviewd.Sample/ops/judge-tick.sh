@@ -10,7 +10,8 @@
 # Reviewd.Sample.dll), JUDGE_EXECUTE (1 = execute, else preview), JUDGE_PROVIDER, JUDGE_EFFORT, JUDGE_MAX_USD,
 # JUDGE_MAX_USD_PER_DAY, JUDGE_AVG_USD_TARGET, JUDGE_MAX_AGE_DAYS, JUDGE_LIMIT (optional), JUDGE_SUMMARY_HOUR;
 # for a judge lane (one of several ticks judging side by side, each over its own installs):
-# JUDGE_LANE (a name for its alerts) and JUDGE_LOCK (its own judge lock file; unset: the host-wide judge.lock); to
+# JUDGE_LANE (a name for its alerts), JUDGE_LOCK (its own judge lock file; unset: the host-wide judge.lock) and, for
+# lanes that share installs, JUDGE_SHARD (i/n: this lane judges and closes only PRs whose number is i modulo n); to
 # close: JUDGE_CLOSE (1 = close), JUDGE_STORES (the folder holding each install's store, <label>-reviews) and
 # JUDGE_CLOSE_LIMIT (closes per tick, default 30).
 # Stop gracefully: touch $JUDGE_HOME/STOPPED (resume-only: running judges finish, none start, nothing closes).
@@ -21,7 +22,7 @@
 #   reviewd-judge.service: [Service] Type=oneshot TimeoutStartSec=infinity
 #                          ExecStart=%h/.local/share/lmdotnettools-review-daemon/judge/judge-tick.sh
 # Judge lanes use template units instead, one instance per lane (JUDGE_HOME judge-<lane>, whose judge.env sets JUDGE_LOCK
-# and installs no other lane has):
+# and installs no other lane has, or JUDGE_SHARD i/n where lanes share installs: one n for all, each i once):
 #   reviewd-judge@.timer:   [Timer] OnActiveSec=1min OnUnitInactiveSec=5min   [Install] WantedBy=timers.target
 #   reviewd-judge@.service: [Service] Type=oneshot TimeoutStartSec=infinity
 #                           Environment=JUDGE_HOME=%h/.local/share/lmdotnettools-review-daemon/judge-%i
@@ -112,6 +113,7 @@ args=(judge batch --config "$CFG" --targets "$JUDGE_HOME/targets.tsv" --stop-fil
     --max-usd-per-day "$JUDGE_MAX_USD_PER_DAY" --avg-usd-target "$JUDGE_AVG_USD_TARGET"
     --max-age-days "$JUDGE_MAX_AGE_DAYS")
 [ -n "${JUDGE_LIMIT:-}" ] && args+=(--limit "$JUDGE_LIMIT")
+[ -n "${JUDGE_SHARD:-}" ] && args+=(--shard "$JUDGE_SHARD")
 [ "${JUDGE_EXECUTE:-0}" = 1 ] && args+=(--execute)
 cause='' why='' fix=''
 if [ -f "$JUDGE_CLI" ]; then
@@ -187,12 +189,16 @@ fi
 # send stays pending and is tried again on later close-enabled ticks, without running the close again, until notify
 # reports success (an alert may arrive twice). Nothing closes while STOPPED exists, including a STOPPED made while a
 # close runs: the rest wait.
-# pending: one "label<TAB>db<TAB>repository<TAB>PR<TAB>judgment" line per PR to close, read-only from each database.
+# pending: one "label<TAB>db<TAB>repository<TAB>PR<TAB>judgment" line per PR to close, read-only from each database;
+# with JUDGE_SHARD, only that shard's PRs, as the batch picks them (a PR id that is not a number is shard 0's).
 pending() {
-    python3 -I - targets.tsv closed.tsv close-failed.tsv <<'PY'
+    python3 -I - "${JUDGE_SHARD:-0/1}" targets.tsv closed.tsv close-failed.tsv <<'PY'
 import json, sqlite3, sys, urllib.request
-done = {tuple(line.rstrip("\n").split("\t")[:4]) for name in sys.argv[2:] for line in open(name) if line.strip()}
-for line in open(sys.argv[1]):
+index, count = map(int, sys.argv[1].split("/"))
+done = {tuple(line.rstrip("\n").split("\t")[:4]) for name in sys.argv[3:] for line in open(name) if line.strip()}
+def mine(pr):
+    return int(pr) % count == index if pr.isascii() and pr.isdigit() else index == 0
+for line in open(sys.argv[2]):
     target = line.rstrip("\n").split("\t")
     if len(target) != 4:
         continue
@@ -206,6 +212,8 @@ for line in open(sys.argv[1]):
     newest = {}
     for key, value in rows:
         pr, _, n = key.rpartition("/")
+        if not mine(pr.rpartition("/")[2]):
+            continue
         if n.isdigit() and int(n) > newest.get(pr, (0, ""))[0]:
             newest[pr] = (int(n), value)
     for n, value in (newest[pr] for pr in sorted(newest)):

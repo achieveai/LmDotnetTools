@@ -50,7 +50,15 @@ internal static class JudgeRunner
     private static readonly TimeSpan SettleBudget = TimeSpan.FromMinutes(20);
     private static readonly TimeSpan UsagePollInterval = TimeSpan.FromSeconds(60);
     private const int MaxUsageReadFailures = 5;
-    private static readonly TimeSpan Poll = TimeSpan.FromSeconds(1);
+
+    // How often a judge's waits read the host: three requests a read, like a review's (ReviewRunner.PollInterval).
+    // At 1 s, 15 judges side by side would add ~45 requests a second to the ~18 the host served on 30 October; at
+    // 5 s they add ~9.
+    // A judge runs for many minutes, so it notices its end up to 4 s later and costs the same.
+    private static readonly TimeSpan Poll = TimeSpan.FromSeconds(5);
+
+    // A judge rides out about ten minutes of consecutive busy tree reads, one poll apart, as a review does.
+    internal static readonly int JudgeBusyReads = (int)(TimeSpan.FromMinutes(10) / Poll);
     private static readonly TimeSpan SettlePoll = TimeSpan.FromSeconds(10);
 
     /// <summary>
@@ -766,15 +774,14 @@ internal static class JudgeRunner
                         );
                     return;
                 }
-                catch (LmStreamingS2SClient.HierarchyBusyException)
-                    when (++busyReads <= ReviewRunner.MaxConsecutiveBusyReads)
+                catch (LmStreamingS2SClient.HierarchyBusyException) when (++busyReads <= JudgeBusyReads)
                 {
                     await Task.Delay(Poll, ct);
                 }
                 catch (LmStreamingS2SClient.HierarchyBusyException)
                 {
                     throw new InvalidOperationException(
-                        $"Host hierarchy stayed busy for {ReviewRunner.MaxConsecutiveBusyReads} reads, so previous judge "
+                        $"Host hierarchy stayed busy for {JudgeBusyReads} reads, so previous judge "
                             + $"{thread} could not be checked; nothing was started. Rerun later."
                     );
                 }
@@ -1628,7 +1635,8 @@ internal static class JudgeRunner
                         capped,
                         clock,
                         orphaned: dead.Orphaned,
-                        busyDelay: delay
+                        busyDelay: delay,
+                        maxBusyReads: JudgeBusyReads
                     )
                 );
             }

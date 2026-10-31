@@ -128,6 +128,7 @@ internal sealed class CliOptions
                 "max-age-days",
                 "limit",
                 "stop-file",
+                "shard",
                 "execute",
             ],
             "judge close" => ["repo", "pr", "db", "store", "judgment", "remote", "execute"],
@@ -287,6 +288,7 @@ internal sealed class CliOptions
             _ = result.Required("targets");
             _ = result.GetCount("max-age-days");
             _ = result.GetCount("limit");
+            _ = JudgeBatch.Shard.Parse(result.Get("shard"));
             // One judge's cap above the day cap would make every start wait forever.
             var cap = result.GetDollars("max-usd") ?? JudgeRunner.DefaultMaxUsd;
             var day = result.GetDollars("max-usd-per-day") ?? JudgeBatch.DefaultMaxUsdPerDay;
@@ -410,7 +412,7 @@ internal sealed class CliOptions
 
         judge batch --targets <file> [--provider <id>] [--reasoning-effort <level>] [--max-usd <dollars> (default 15)]
                     [--max-usd-per-day <dollars> (default 30)] [--avg-usd-target <dollars> (default 4)]
-                    [--max-age-days <n> (default 7)] [--limit <n>] [--stop-file <path>] [--execute]
+                    [--max-age-days <n> (default 7)] [--limit <n>] [--stop-file <path>] [--shard <i>/<n>] [--execute]
 
         Judges merged PRs with a verified review across installs, one at a time. Each targets line is
         name<TAB>db<TAB>session<TAB>workspace (# comments allowed). Receipts are the only state; each pass re-reads
@@ -424,6 +426,8 @@ internal sealed class CliOptions
         lock (REVIEWD_JUDGE_LOCK, else judge.lock; busy: exit 0) and writes only reviewd/judge-skip/<repo>/<pr> when a PR is not completed (24 h).
         Output: markdown, then one JSON line. A broken target is skipped and listed under Needs you; while any
         target is skipped, readable ones still resume and post-check, but nothing new starts.
+        --shard i/n: only PRs whose number is i modulo n (0 <= i < n). n batches over the same installs, each with
+        its own judge lock and i, judge side by side; each one's waits, caps and average count only its own PRs.
 
         judge batch exit codes:
           0    done, nothing to do, busy, in flight (resumes next run), cap or limit reached, resume-only

@@ -611,6 +611,65 @@ public sealed class ReviewdJudgeTests
             .Contain("Rerun to resume the wait; nothing is resent.");
     }
 
+    // A judge polls the host every 5 s, not every second, so its wait passes a smaller busy count to keep about ten
+    // minutes of busy tree reads; with the 1 s count it would ride out a stuck hierarchy for fifty. The budget is time
+    // only because each busy read waits one poll, so the delays are counted too. Past it the busy read is an outage,
+    // and with no give-up time left the wait stops at once.
+    [Fact]
+    public async Task A_judge_wait_rides_out_ten_minutes_of_busy_tree_reads_at_its_poll()
+    {
+        var treeReads = 0;
+        var delays = 0;
+        var host = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/status", """{"status":"InProgress","runId":"r1"}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":true,"currentRunId":"r1"}""")
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/subagents", StringComparison.Ordinal),
+                _ =>
+                {
+                    treeReads++;
+                    return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                    {
+                        Content = new StringContent("""{"code":"hierarchy_busy"}"""),
+                    };
+                }
+            );
+
+        var wait = () =>
+            WaitOnHost(
+                    Client(host),
+                    FastOutage with
+                    {
+                        GiveUpAfter = TimeSpan.Zero,
+                    },
+                    async _ =>
+                    {
+                        delays++;
+                        await Task.Yield();
+                    }
+                )
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+        (await wait.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should()
+            .Contain("Rerun to resume the wait; nothing is resent.");
+        JudgeRunner.JudgeBusyReads.Should().Be(120, "ten minutes of 5 s polls");
+        delays.Should().Be(JudgeRunner.JudgeBusyReads);
+        treeReads.Should().Be(JudgeRunner.JudgeBusyReads + 1);
+        using var capped = new CancellationTokenSource();
+        new JudgeRunner.CapWatch(
+            Client(host),
+            "thread-1",
+            [],
+            1m,
+            _ => Task.CompletedTask,
+            capped,
+            "NovaClient #5790557"
+        )
+            .PollEvery.Should()
+            .Be(TimeSpan.FromSeconds(5), "a running judge's wait delays one 5 s poll between reads");
+    }
+
     [Fact]
     public async Task The_cost_cap_still_stops_the_wait_while_the_host_is_down()
     {

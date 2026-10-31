@@ -153,7 +153,9 @@ include lock waits and GC suspension.
     still changing.
   - Budgets counted in polls derive from it, so they keep their wall-clock length: a refused send is retried
     every 30 s, and a wait gives up after ten minutes of busy tree reads.
-  - Merge and judge waits keep their 1 s poll.
+  - Merge waits keep their 1 s poll. Judge waits moved to 5 s on 30 October, with the same ten-minute busy budget,
+    before judges ran side by side: 3 judges made 8.9 of the host's ~19 polling requests a second, and 15 at 1 s
+    would have added ~45.
 - **Deferred:**
   - **Metadata parsed on every request.** Every request authorizes through `LoadMetadataAsync`. Root metadata is
     ~84 KB at p50: 41% `context.observations`, 25% `todo.board`. It costs 0.29 threads, 0.16 of them in parsing.
