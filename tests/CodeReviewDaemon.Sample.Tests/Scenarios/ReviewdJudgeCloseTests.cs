@@ -1694,8 +1694,8 @@ public sealed class ReviewdJudgeCloseTests
             .Select(part => int.Parse(part, System.Globalization.CultureInfo.InvariantCulture))
             .ToArray();
         Skip.If(
-            new Version(version[0], version[1]) < new Version(2, 50),
-            "git before 2.50 words the race 'failed to update ref'; GitHub and later git name the old value"
+            new Version(version[0], version[1]) < new Version(2, 51),
+            "git before 2.51 words the race 'failed to update ref'; GitHub and later git name the old value"
         );
         var phase = JudgeClose.Local(universe.Store);
         var prepared = await phase("close-prepare", universe.PrepareArgs(3), default);
