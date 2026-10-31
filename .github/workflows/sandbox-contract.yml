@@ -79,6 +79,10 @@ env:
   # 0.1.18 is the floor for SandboxMcpPolicyLiveContractTests: MCP library create policy,
   # secret-free manifests and Docker-shipped sbx-mcp first ship there (upstream ADR 0046).
   # Gateway and agent remote tag manifests were verified before this bump.
+  #
+  # Bump the external/SandboxedOstoolsMcpServer submodule with this tag: it points at the
+  # gateway release commit of the same version (v0.1.18 = 1f5b4ada), so the gateway source
+  # the SDK speaks to is one checkout away. CI does not build from it; it pulls these images.
   IMAGE_TAG: '0.1.18'
   GATEWAY_IMAGE: ghcr.io/achieveai/mcp-gateway
   AGENT_IMAGE: ghcr.io/achieveai/llm-sandbox-agent
