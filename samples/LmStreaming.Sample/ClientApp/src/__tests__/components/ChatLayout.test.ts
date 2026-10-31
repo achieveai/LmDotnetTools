@@ -142,6 +142,7 @@ const sharedMocks = vi.hoisted(() => ({
   currentThreadIdRef: null as Ref<string | null> | null,
   focusedAgentIdRef: null as Ref<string | null> | null,
   refusedTextRef: null as Ref<string | null> | null,
+  subAgentErrorRef: null as Ref<string | null> | null,
   focusChild: vi.fn(async (_agentId: string) => {}),
   sendToFocusedChild: vi.fn(async (_text: string) => true),
   subAgentQuestionResult: null as ToolCallResultMessage | null,
@@ -427,12 +428,14 @@ vi.mock('@/composables/useSubAgentPanel', async () => {
       sharedMocks.focusedAgentIdRef = focusedAgentId;
       const refusedText = ref<string | null>(null);
       sharedMocks.refusedTextRef = refusedText;
+      const error = ref<string | null>(null);
+      sharedMocks.subAgentErrorRef = error;
       return {
         children: ref(sharedMocks.subAgentChildren),
         focusedAgentId,
         focusedDisplayItems: ref([]),
         isFocusedStreaming: ref(false),
-        error: ref<string | null>(null),
+        error,
         refusedText,
         startPolling: vi.fn(),
         stopPolling: vi.fn(),
@@ -1373,6 +1376,101 @@ describe('ChatLayout sub-agent composer keeps a reply that was not sent (#868)',
     );
     expect(textarea?.value).toBe('follow-up');
     expect(sharedMocks.refusedTextRef!.value, 'taken, so it is put back once').toBeNull();
+  });
+
+  const childComposer = () =>
+    document.querySelector<HTMLTextAreaElement>('[data-testid="subagent-view"] [data-testid="chat-input-textarea"]')!;
+  const childError = () => document.querySelector('[data-testid="subagent-view"] [data-testid="subagent-error"]');
+
+  it('keeps a newer draft when a late send failure arrives, and shows the unsent text in the error', async () => {
+    let finishSend!: (sent: boolean) => void;
+    sharedMocks.sendToFocusedChild.mockImplementation(
+      () => new Promise<boolean>((resolve) => (finishSend = resolve))
+    );
+    const wrapper = mount(ChatLayout, {
+      attachTo: document.body,
+      global: {
+        stubs: { ConversationSidebar: true, MessageList: true, PendingMessageQueue: true, PendingQuestionDock: true },
+      },
+    });
+    mounted.push(wrapper);
+    await flushPromises();
+    await wrapper.get('[data-testid="conversation-tab"][data-tab-id="agents"]').trigger('click');
+    await wrapper.get('[data-testid="agent-picker-option"][data-agent-id="agent-unsent-reply"]').trigger('click');
+    await flushPromises();
+    const textarea = wrapper.get('[data-testid="subagent-view"] [data-testid="chat-input-textarea"]');
+    await textarea.setValue('follow-up');
+    await wrapper.get('[data-testid="subagent-view"] [data-testid="send-button"]').trigger('click');
+    await flushPromises();
+
+    await textarea.setValue('newer draft');
+    sharedMocks.subAgentErrorRef!.value = 'Message not sent. Could not reconnect to the sub-agent.';
+    finishSend(false);
+    await flushPromises();
+
+    expect(childComposer().value, 'the newer draft is not overwritten').toBe('newer draft');
+    expect(childError()?.textContent).toContain('Could not reconnect');
+    expect(childError()?.textContent, 'the unsent text stays recoverable').toContain('follow-up');
+  });
+
+  it('keeps a newer draft when a read-only refusal arrives, and shows the refused text in the error', async () => {
+    expect(await sendFromChildComposer(true)).toBe('');
+    const textarea = childComposer();
+    textarea.value = 'newer draft';
+    textarea.dispatchEvent(new Event('input'));
+    await flushPromises();
+
+    sharedMocks.subAgentErrorRef!.value = 'This sub-agent is read-only here; the message was not sent.';
+    sharedMocks.refusedTextRef!.value = 'follow-up';
+    await flushPromises();
+
+    expect(childComposer().value, 'the newer draft is not overwritten').toBe('newer draft');
+    expect(childError()?.textContent).toContain('read-only');
+    expect(childError()?.textContent, 'the refused text stays recoverable').toContain('follow-up');
+    expect(sharedMocks.refusedTextRef!.value).toBeNull();
+  });
+
+  it("does not put a failed reply into another conversation's child with the same id", async () => {
+    sharedMocks.conversations = [makeConversation({ threadId: 'thread-1' }), makeConversation({ threadId: 'thread-2' })];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 404, statusText: 'Not Found', json: async () => ({}) }))
+    );
+    let finishSend!: (sent: boolean) => void;
+    sharedMocks.sendToFocusedChild.mockImplementation(
+      () => new Promise<boolean>((resolve) => (finishSend = resolve))
+    );
+    const wrapper = mount(ChatLayout, {
+      attachTo: document.body,
+      global: {
+        stubs: { ConversationSidebar: true, MessageList: true, PendingMessageQueue: true, PendingQuestionDock: true },
+      },
+    });
+    mounted.push(wrapper);
+    const openChild = async () => {
+      await wrapper.get('[data-testid="conversation-tab"][data-tab-id="agents"]').trigger('click');
+      await wrapper.get('[data-testid="agent-picker-option"][data-agent-id="agent-unsent-reply"]').trigger('click');
+      await flushPromises();
+    };
+    try {
+      await flushPromises();
+      await openChild();
+      await wrapper.get('[data-testid="subagent-view"] [data-testid="chat-input-textarea"]').setValue('meant for thread-1');
+      await wrapper.get('[data-testid="subagent-view"] [data-testid="send-button"]').trigger('click');
+      await flushPromises();
+
+      // The user moves to thread-2, whose child has the same id, before the send settles.
+      sharedMocks.chatThreadIdRef!.value = 'thread-2';
+      await flushPromises();
+      await openChild();
+      expect(sharedMocks.focusedAgentIdRef!.value).toBe('agent-unsent-reply');
+      finishSend(false);
+      await flushPromises();
+
+      expect(childComposer().value, "thread-1's reply does not land in thread-2").toBe('');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

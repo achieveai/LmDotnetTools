@@ -51,12 +51,20 @@ const safeAgentId = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '-');
 
 const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null);
 
-/** Puts text back in the composer, e.g. a reply that could not be sent (#868). */
-function setText(text: string): void {
-  chatInputRef.value?.setText(text);
+/**
+ * Puts a reply that could not be sent back in the composer (#868), unless the user has since typed a
+ * different draft there: that draft is never overwritten. Returns whether the text went back.
+ */
+function restoreText(text: string): boolean {
+  const input = chatInputRef.value;
+  if (!input) return false;
+  const draft = input.getText();
+  if (draft.trim() !== '' && draft !== text) return false;
+  input.setText(text);
+  return true;
 }
 
-defineExpose({ setText });
+defineExpose({ restoreText });
 </script>
 
 <template>

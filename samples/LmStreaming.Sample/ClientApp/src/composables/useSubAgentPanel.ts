@@ -1023,8 +1023,8 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
    * that) reconnects here, on the user's send, never on the close itself: an eager reconnect would
    * rebuild the unloaded root right away and defeat the unload (#868). One refocus, then the send.
    * On failure it resolves false and {@link error} says the message was not sent and why, so the
-   * caller can keep the text. If the user moved to another child meanwhile, that child's tab gets
-   * neither the error nor the text.
+   * caller can keep the text. If the user moved to another child or another conversation meanwhile,
+   * the text is not sent at all, and that child's tab gets neither the error nor the text.
    */
   async function sendToFocusedChild(text: string): Promise<boolean> {
     // A send is the user's next action: the previous send's error has been read.
@@ -1043,8 +1043,14 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
       // focusChild's teardown and its own focus each advance focusSeq once; any further step means the
       // user moved on (another tab, an unfocus, a parent switch) while it ran.
       const reconnectToken = focusSeq + 2;
+      const parentAtSend = getParentThreadId();
       await focusChild(agentId);
+      // An agent id is unique only within its parent: another conversation can have a child with the
+      // same id, so a matching focusedAgentId alone does not prove this is still the same child.
+      const sameParent = getParentThreadId() === parentAtSend;
       if (
+        !sameParent ||
+        focusSeq !== reconnectToken ||
         !focusedConnection ||
         focusedConnection.socket.readyState !== WebSocket.OPEN ||
         focusedAgentId.value !== agentId
@@ -1053,11 +1059,11 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
         // A failed focus clears the focus, which disables this tab's composer, and re-selecting the
         // tab remounts it and loses the kept text. Stay on the child instead, still without a
         // connection, so the next send makes its own single attempt.
-        if (focusSeq === reconnectToken && focusedAgentId.value === null) {
+        if (sameParent && focusSeq === reconnectToken && focusedAgentId.value === null) {
           focusedAgentId.value = agentId;
         }
         // The error belongs to this child's tab: not to another child the user moved to meanwhile.
-        if (focusedAgentId.value === agentId) {
+        if (sameParent && focusedAgentId.value === agentId) {
           setStickyError(`Message not sent. ${error.value ?? 'Could not reconnect to the sub-agent.'}`);
         }
         return false;

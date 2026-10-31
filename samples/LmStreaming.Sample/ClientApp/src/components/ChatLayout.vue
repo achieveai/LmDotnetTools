@@ -511,19 +511,35 @@ const { activeTabId, tabs, selectTab: selectConversationTab, getAgentColor } = u
 
 const subAgentTranscriptRef = ref<InstanceType<typeof SubAgentTranscript> | null>(null);
 
-/** A reply that could not be sent goes back into the composer; the panel's error says why (#868). */
+/**
+ * Gives an unsent reply back (#868). It goes into the composer when that is empty or still holds it.
+ * A newer draft typed meanwhile is kept, and the unsent text goes into the error banner instead, which
+ * already says why it was not sent, so the user can still copy it.
+ */
+function restoreUnsentSubAgentText(text: string): void {
+  if (subAgentTranscriptRef.value?.restoreText(text)) return;
+  subAgentError.value = `${subAgentError.value ?? 'Message not sent.'} Your newer draft was kept. The unsent message was: ${text}`;
+}
+
+/** A reply that could not be sent goes back to the user; the panel's error says why (#868). */
 async function handleSubAgentSend(text: string): Promise<void> {
-  // The text goes back only to the child it was written for; the user may have moved to another one.
+  // The text goes back only to the child it was written for; the user may have moved to another
+  // child, or to another conversation whose child has the same id.
   const agentId = focusedAgentId.value;
-  if (!(await sendToFocusedChild(text)) && focusedAgentId.value === agentId) {
-    subAgentTranscriptRef.value?.setText(text);
+  const parentThreadId = subAgentParentThreadId.value;
+  if (
+    !(await sendToFocusedChild(text)) &&
+    focusedAgentId.value === agentId &&
+    subAgentParentThreadId.value === parentThreadId
+  ) {
+    restoreUnsentSubAgentText(text);
   }
 }
 
-// A reply the server refused as read-only goes back into the composer too (#868).
+// A reply the server refused as read-only goes back to the user too (#868).
 watch(refusedSubAgentText, (text) => {
   if (text === null) return;
-  subAgentTranscriptRef.value?.setText(text);
+  restoreUnsentSubAgentText(text);
   refusedSubAgentText.value = null;
 });
 

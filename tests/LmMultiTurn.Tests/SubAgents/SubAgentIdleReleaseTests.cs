@@ -551,6 +551,56 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ARebuiltParentWhoseStartIsCancelledMidRestore_RestoresTheRestOnItsNextStart()
+    {
+        // Restore runs inside the root's history recovery, which runs once per loop. A start cancelled
+        // partway through the restore must not leave the next start of the same loop with only the
+        // sub-agents registered before the cancellation.
+        const string threadId = "thread-restore-cancelled";
+        var store = new MetadataLoadHookStore(new InMemoryConversationStore());
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new() { SystemPrompt = "You are a worker.", AgentFactory = AnsweringProvider },
+            },
+            DefaultConversationStoreFactory = _ => store,
+        };
+        await using (var first = RootLoop(store, threadId, options))
+        {
+            _ = first.RunAsync();
+            await foreach (
+                var _ in first.ExecuteRunAsync(new UserInput([new TextMessage { Text = "hi", Role = Role.User }]))
+            ) { }
+
+            _ = await SpawnSettledAsync(first.SubAgentManager!, "one task", "one");
+            _ = await SpawnSettledAsync(first.SubAgentManager!, "two task", "two");
+        }
+
+        await using var rebuilt = RootLoop(store, threadId, options);
+        using var firstStart = new CancellationTokenSource();
+        // Cancel once the first sub-agent record has been read, so that one is registered and the other is not.
+        store.AfterLoadMetadata = loadedThreadId =>
+        {
+            if (loadedThreadId != threadId)
+            {
+                store.AfterLoadMetadata = null;
+                firstStart.Cancel();
+            }
+        };
+        _ = await FluentActions
+            .Awaiting(() => rebuilt.RunAsync(firstStart.Token))
+            .Should()
+            .ThrowAsync<OperationCanceledException>();
+        rebuilt.SubAgentManager!.ListAgents().Should().ContainSingle("the cancelled start registered only one");
+
+        _ = rebuilt.RunAsync();
+        await rebuilt.WaitUntilReadyAsync().WaitAsync(TimeSpan.FromSeconds(10));
+
+        rebuilt.SubAgentManager.ListAgents().Select(a => a.Name).Should().BeEquivalentTo("one", "two");
+    }
+
+    [Fact]
     public async Task ARecordFromANewerBuild_IsNotOverwritten_AndItsSubAgentIsNotRestored()
     {
         // During a rollback or a mixed-version deployment, this build must neither misread a record a newer
@@ -1009,6 +1059,55 @@ public class SubAgentIdleReleaseTests : IAsyncLifetime
         }
 
         await Task.CompletedTask;
+    }
+
+    /// <summary>A store that calls <see cref="AfterLoadMetadata"/> after each metadata read; everything is delegated.</summary>
+    private sealed class MetadataLoadHookStore(IConversationStore inner) : IConversationStore
+    {
+        public Action<string>? AfterLoadMetadata { get; set; }
+
+        public async Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default)
+        {
+            var metadata = await inner.LoadMetadataAsync(threadId, ct);
+            AfterLoadMetadata?.Invoke(threadId);
+            return metadata;
+        }
+
+        public Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default
+        ) => inner.AppendMessagesAsync(threadId, messages, ct);
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => inner.LoadMessagesAsync(threadId, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default
+        ) => inner.UpdateMetadataAsync(threadId, update, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            ConversationListOptions? options = null,
+            CancellationToken ct = default
+        ) => inner.ListThreadsAsync(limit, offset, options, ct);
     }
 
     /// <summary>A store whose thread-id prefix lookup always throws; everything else is delegated.</summary>

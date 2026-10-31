@@ -1948,6 +1948,33 @@ describe('useSubAgentPanel — a send after the tab socket died (#868)', () => {
     expect(panel.error.value, "a1's failed send is not a2's error").toBeNull();
   });
 
+  it("does not send on another conversation's child with the same id when the user switched during the reconnect", async () => {
+    let parent = 'parent-A';
+    const panel = useSubAgentPanel(() => parent);
+    await focusThenDrop(panel);
+    let finishHistory!: (messages: unknown[]) => void;
+    convMocks.loadConversationMessages.mockImplementationOnce(
+      () => new Promise((resolve) => (finishHistory = resolve))
+    );
+
+    const sending = panel.sendToFocusedChild('meant for A');
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(captured, "A's reconnect is waiting on its history").toHaveLength(2);
+
+    // Conversation B also has a child called a1, and it takes focus with an open socket.
+    parent = 'parent-B';
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1', { status: 'completed' })]);
+    await panel.refreshChildren();
+    await panel.focusChild('a1');
+    expect(captured[2].parentThreadId).toBe('parent-B');
+    finishHistory([]);
+
+    expect(await sending).toBe(false);
+    expect(wsMocks.sendWebSocketMessage, "A's text must not reach B's child").not.toHaveBeenCalled();
+    expect(panel.focusedAgentId.value).toBe('a1');
+    expect(panel.error.value, "A's failed send is not B's error").toBeNull();
+  });
+
   it('keeps the not-sent error through a sub-agent list refresh', async () => {
     const panel = useSubAgentPanel(() => 'parent-1');
     await focusThenDrop(panel);
