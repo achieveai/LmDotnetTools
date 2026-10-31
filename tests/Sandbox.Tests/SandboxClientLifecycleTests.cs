@@ -196,9 +196,38 @@ public class SandboxClientLifecycleTests
         var body = JsonDocument.Parse(sent.Body!).RootElement;
 
         body.TryGetProperty("auth_providers", out _).Should().BeFalse();
-        body.TryGetProperty("network", out _).Should().BeFalse();
+        body.GetProperty("network").TryGetProperty("rules", out _).Should().BeFalse();
         body.TryGetProperty("discovery", out _).Should().BeFalse();
         body.TryGetProperty("marketplaces", out _).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CreateAsync_AlwaysSendsDefaultDeny_WithOrWithoutRules(bool withRules)
+    {
+        // The gateway applies network.default_action to whatever no rule matches, and uses its own
+        // default when the field is absent. Sending "deny" keeps egress closed on a gateway whose
+        // default is allow.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreateResponseJson);
+
+        _ = await client.CreateAsync(
+            new SandboxCreateRequest(
+                "ws",
+                networkRules: withRules ? [new SandboxNetworkRule("github", "allow", hosts: ["github.com"])] : null
+            )
+        );
+
+        var sent = handler.Requests.Single(r => r.Method == HttpMethod.Post);
+        var network = JsonDocument.Parse(sent.Body!).RootElement.GetProperty("network");
+
+        network.GetProperty("default_action").GetString().Should().Be("deny");
+        network.TryGetProperty("rules", out var rules).Should().Be(withRules);
+        if (withRules)
+        {
+            rules.GetArrayLength().Should().Be(1);
+        }
     }
 
     [Fact]

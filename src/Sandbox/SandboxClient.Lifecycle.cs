@@ -173,7 +173,11 @@ public sealed partial class SandboxClient
             App: new AppRefDto(appId),
             Workspace: request.Workspace,
             AuthProviders: request.AuthProviders.Count > 0 ? [.. request.AuthProviders.Select(ToDto)] : null,
-            Network: request.NetworkRules.Count > 0 ? new NetworkDto([.. request.NetworkRules.Select(ToDto)]) : null,
+            // Always sent, so unmatched egress is denied whatever the gateway's own default is.
+            Network: new NetworkDto(
+                DefaultAction: "deny",
+                Rules: request.NetworkRules.Count > 0 ? [.. request.NetworkRules.Select(ToDto)] : null
+            ),
             Discovery: request.Discovery is { } discovery
                 ? new DiscoveryDto(new DiscoveryWebhookDto(discovery.WebhookUrl, discovery.WebhookAuth))
                 : null,

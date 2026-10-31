@@ -39,7 +39,8 @@ public sealed class SandboxMcpAuthTests
             .Select(value => value.GetString())
             .Should()
             .Contain("auth_request", "auth_post_response_failure");
-        sent.RootElement.TryGetProperty("network", out _)
+        sent.RootElement.GetProperty("network")
+            .TryGetProperty("rules", out _)
             .Should()
             .BeFalse("both legacy same-host credential routes must be suppressed");
     }
