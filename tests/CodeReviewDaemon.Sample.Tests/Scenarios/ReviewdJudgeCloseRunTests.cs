@@ -123,6 +123,23 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
         phases.Closing.Should().Contain("  - shot.png (binary, round 1 at bbbbbbbbb)\n");
     }
 
+    // Prepare read a round from the store (its branch is not on the remote): close tells the commit, which leaves it out
+    // of the parents, and CLOSING.md says so.
+    [Fact]
+    public async Task A_round_prepare_read_from_the_store_reaches_the_commit_and_CLOSING_md()
+    {
+        Save((4, Judged(Store, ReviewDir, 4)));
+        var phases = new Phases(Store) { FromStore = ["review/nova-5776213"] };
+
+        var (exit, _, _) = await Close(phases);
+
+        exit.Should().Be(0);
+        phases.CommitFromStore.Should().Equal("review/nova-5776213");
+        phases
+            .Closing.Should()
+            .Contain("- round 1: review/nova-5776213 at bbbbbbbbb (from the store: not on the remote)\n");
+    }
+
     [Fact]
     public async Task The_default_judgment_is_the_only_completed_final_one_Q_C1()
     {
@@ -761,6 +778,12 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
         /// <summary>What prepare says main did not keep.</summary>
         public JsonArray KeptOnBranch { get; init; } = [];
 
+        /// <summary>The round branches prepare says it read from the store.</summary>
+        public JsonArray FromStore { get; init; } = [];
+
+        /// <summary>The fromStore close handed to the last close-commit.</summary>
+        public List<string>? CommitFromStore { get; private set; }
+
         /// <summary>What close-prune says of every round: deleted (would-delete without push), failed, kept, or throws.</summary>
         public string Prune { get; init; } = "deleted";
 
@@ -777,6 +800,8 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
         {
             Calls.Add(name);
             var main = new string('m', 40);
+            if (name == "close-commit" && args["fromStore"] is JsonArray fromStore)
+                CommitFromStore = [.. fromStore.Select(b => b!.GetValue<string>())];
             if (name == "close-commit" && args["files"] is JsonArray files)
                 Closing = File.ReadAllText(
                     Path.Combine(
@@ -905,6 +930,7 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
                 ["scratch"] = scratch,
                 ["overridden"] = new JsonArray(),
                 ["keptOnBranch"] = KeptOnBranch.DeepClone(),
+                ["fromStore"] = FromStore.DeepClone(),
             };
             // A malformed answer makes close fail after prepare, before it commits.
             if (Prepare == "ready-without-overridden")

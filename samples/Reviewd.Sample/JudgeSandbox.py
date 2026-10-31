@@ -69,11 +69,17 @@ def parse_time(text):
     return datetime.datetime.fromisoformat(text.replace("Z", "+00:00")) if text else None
 
 
+def masked(text):
+    """text with the user and password of each URL in it (as in a --remote URL, or git's error about one), and the value
+    of its access_token, token or sig query parameter, as ***."""
+    return re.sub(r"(?i)([?&](?:access_token|token|sig)=)[^&#\s'\"]+", r"\1***", re.sub(r"://[^/@\s]+@", "://***@", text))
+
+
 def git(git_args, *cmd, check=True, env=None, stdin=None):
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", **(env or {})}
     p = subprocess.run(["git", *git_args, *cmd], capture_output=True, text=True, env=env, input=stdin)
     if check and p.returncode != 0:
-        die(f"git {' '.join(cmd[:3])} failed ({p.returncode}): {p.stderr.strip()[:400]}")
+        die(f"git {masked(' '.join(cmd[:3]))} failed ({p.returncode}): {masked(p.stderr.strip())[:400]}")
     return p
 
 
@@ -1016,19 +1022,34 @@ def close_prepare():
     try:
         fetch(f"+refs/heads/main:{refs}main")
         main = git([], "rev-parse", f"{refs}main^{{commit}}").stdout.strip()
-        # Idempotence lives on main: this judgment's CLOSING.md marker, and every round already merged. It is read before
-        # any round is fetched: close-prune deletes a closed PR's round branches.
+        # A round whose branch the remote lacks (never pushed, or deleted unmerged) is read from this store: its files go
+        # on main, checked and redacted like any round's, but it is no parent of the close commit (close_commit), so its
+        # raw commits never leave the store.
+        listed = git([], "ls-remote", remote, *[f"refs/heads/{r['branch']}" for r in rounds], env=NO_PROMPT).stdout
+        heads = {line.split("\t", 1)[1] for line in listed.splitlines() if "\t" in line}
+        from_store = [r["branch"] for r in rounds if f"refs/heads/{r['branch']}" not in heads]
+        # Idempotence lives on main: this judgment's CLOSING.md marker, and every round already merged (or, with its
+        # branch gone, filed from the store). It is read before any round is fetched: close-prune deletes a closed PR's
+        # round branches.
         closing = git([], "show", f"{main}:{review_dir}/CLOSING.md", check=False)
         if closing.returncode == 0:
             marker = re.match(r"<!-- reviewd-close judgment=(\d+) ", closing.stdout)
-            merged = all(git([], "merge-base", "--is-ancestor", r["tip"], main, check=False).returncode == 0 for r in rounds)
+            merged = all(r["branch"] in from_store or git([], "merge-base", "--is-ancestor", r["tip"], main, check=False).returncode == 0
+                         for r in rounds)
             if marker and int(marker.group(1)) == n and merged:
                 return print(json.dumps({"status": "already-closed", "main": main}))
             return print(json.dumps({"status": "refused", "reason": f"main already has {review_dir}/CLOSING.md for judgment "
                                      f"{marker.group(1) if marker else 'unknown'}; re-closing is not supported"}))
-        fetch(*[f"+refs/heads/{r['branch']}:{refs}r{i}" for i, r in enumerate(rounds)])
+        if on_remote := [f"+refs/heads/{r['branch']}:{refs}r{i}" for i, r in enumerate(rounds) if r["branch"] not in from_store]:
+            fetch(*on_remote)
         for i, r in enumerate(rounds):
-            if (got := git([], "rev-parse", f"{refs}r{i}^{{commit}}").stdout.strip()) != r["tip"]:
+            if r["branch"] in from_store:
+                # The private ref keeps the store's copy from gc until the close ends.
+                if git([], "cat-file", "-e", f"{r['tip']}^{{commit}}", check=False).returncode:
+                    return print(json.dumps({"status": "refused", "reason": f"{r['branch']} is not on the remote, and this store "
+                                             f"does not have the judged round {i + 1} ({r['tip'][:9]})"}))
+                git([], "update-ref", f"{refs}r{i}", r["tip"])
+            elif (got := git([], "rev-parse", f"{refs}r{i}^{{commit}}").stdout.strip()) != r["tip"]:
                 return print(json.dumps({"status": "refused", "reason": f"{r['branch']} on the remote is {got[:9]}; the judged round {i + 1} is {r['tip'][:9]}"}))
         # Main's tree, then each round's PR dir in order (a later round wins on the same path).
         scratch.mkdir(parents=True)
@@ -1073,7 +1094,7 @@ def close_prepare():
             with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as t:
                 t.extractall(tree, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
         print(json.dumps({"status": "ready", "main": main, "scratch": str(scratch.relative_to(root)), "overridden": overridden,
-                          "keptOnBranch": kept_on_branch}))
+                          "keptOnBranch": kept_on_branch, "fromStore": from_store}))
         ok = True
     finally:
         if not ok:
@@ -1131,7 +1152,9 @@ def close_commit():
         tree = git([], "write-tree", env=index).stdout.strip()
         name, email = git([], "config", "user.name").stdout.strip(), git([], "config", "user.email").stdout.strip()
         who = {f"GIT_{k}_{v}": x for k in ("AUTHOR", "COMMITTER") for v, x in (("NAME", name), ("EMAIL", email))}
-        parents = [main] + [r["tip"] for r in args["rounds"]]
+        # A round read from the store (close_prepare's fromStore) is no parent: its files are in the tree, checked and
+        # redacted above, but its raw commits are not pushed.
+        parents = [main] + [r["tip"] for r in args["rounds"] if r["branch"] not in args["fromStore"]]
         commit = git([], "commit-tree", tree, *[a for p in parents for a in ("-p", p)], "-m", args["message"], env=who).stdout.strip()
         # A close only adds: it may drop a path only inside its own PR dir.
         dropped = [p for p in git([], "diff", "--name-only", "-z", "--no-renames", "--diff-filter=D", main, commit).stdout.split("\0")
@@ -1149,7 +1172,7 @@ def close_commit():
             pushed = git(["-c", "http.postBuffer=524288000", "-c", "http.version=HTTP/1.1"], "push", "--recurse-submodules=no",
                          args["remote"], f"{commit}:refs/heads/main", check=False, env=NO_PROMPT)
             rejected = [line for line in pushed.stderr.splitlines() if "rejected]" in line]
-            detail = re.sub(r"://[^/@\s]+@", "://***@", rejected[0].strip() if rejected else pushed.stderr.strip())[-400:]
+            detail = masked(rejected[0].strip() if rejected else pushed.stderr.strip())[-400:]
             if pushed.returncode and MAIN_MOVED.search(pushed.stderr):
                 return print(json.dumps({**result, "status": "main-moved", "detail": detail}))
             if pushed.returncode:
@@ -1157,7 +1180,7 @@ def close_commit():
             # git accepted the push, so a read of main that fails after it is not a plain git failure: the close landed.
             def unconfirmed(read, p):
                 die(f"the push of {commit[:9]} was accepted but not confirmed: git {read} failed ({p.returncode}); "
-                    f"run close again: it says already closed. {p.stderr.strip()[:300]}")
+                    f"run close again: it says already closed. {masked(p.stderr.strip())[:300]}")
             listed = git([], "ls-remote", args["remote"], "refs/heads/main", check=False, env=NO_PROMPT)
             if listed.returncode:
                 unconfirmed("ls-remote", listed)
@@ -1186,7 +1209,7 @@ def close_prune():
             not re.fullmatch(r"review/[A-Za-z0-9][A-Za-z0-9._/-]*", r["branch"]) or not SHA.fullmatch(r["tip"]) for r in rounds):
         die("bad main or rounds")
     def redacted(stderr):
-        return re.sub(r"://[^/@\s]+@", "://***@", stderr.strip())[-300:]
+        return masked(stderr.strip())[-300:]
     # main is the close commit or the fetched main; a later run may find its objects gone, so it fetches main again
     # (objects only: no ref moves).
     if git([], "cat-file", "-e", f"{main}^{{commit}}", check=False).returncode:
