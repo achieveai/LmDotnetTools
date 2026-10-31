@@ -97,7 +97,13 @@ internal sealed record AuthProviderDto(
     [property: JsonPropertyName("required_scopes")] IReadOnlyList<string> RequiredScopes
 );
 
-internal sealed record NetworkDto([property: JsonPropertyName("rules")] IReadOnlyList<NetworkRuleDto> Rules);
+// `default_action` is always "deny". The gateway reads it per sandbox (SandboxNetworkPolicy, serde
+// default Deny) and applies it to any request no rule matches. Sending it means a gateway build whose
+// default changed cannot open all egress. `rules` is null (omitted) when the caller has none.
+internal sealed record NetworkDto(
+    [property: JsonPropertyName("default_action")] string DefaultAction,
+    [property: JsonPropertyName("rules")] IReadOnlyList<NetworkRuleDto>? Rules
+);
 
 // `auth_provider` is `Option<String>` on the gateway's NetworkRule (proxy_policy/models.rs,
 // SandboxedOsToolsMcpServer@c0dc9cfe) and, when present, is looked up by id (proxy.rs) — a
