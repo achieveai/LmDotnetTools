@@ -72,17 +72,54 @@ def parse_time(text):
 # A query parameter holds a secret when its name, percent-decoded and in any case, contains one of these words: as in
 # access_token, api_key, sig, X-Amz-Signature, client_secret, password, pwd, X-Amz-Credential or auth.
 SECRET_QUERY_NAME = re.compile(r"token|key|sig|secret|pass|pwd|credential|auth", re.I)
+QUERY_NAME = re.compile(r"[?&]([^=&#\s]+)=")
+# A query value runs to the next parameter (an & then name=), a # or the line's end.
+QUERY_VALUE = re.compile(r"(?:[^&#\r\n]|&(?![^=&#\s]*=))*")
+USERINFO = re.compile(r"://[^/@\r\n]+@")
+# The secrets of this run's --remote and of the URL it names (set at start). git can print a URL decoded (a
+# file:// path), where %23, %26 or %0A in a value ends it for any pattern, so masked() replaces these first, as they are.
+remote_secrets = []
+
+
+def query_secrets(text):
+    """(start, end) of each secret query value in text. A name is matched percent-decoded; a plain value is not skipped,
+    so a URL nested in it (ref=https://...?token=...) is read too."""
+    spans, at = [], 0
+    for m in QUERY_NAME.finditer(text):
+        if m.start() >= at and SECRET_QUERY_NAME.search(unquote(m[1])):
+            at = QUERY_VALUE.match(text, m.end()).end()
+            spans.append((m.end(), at))
+    return spans
+
+
+def url_secrets(url):
+    """Each secret query value in url, as written and decoded. url is read as written and decoded, so a URL
+    percent-encoded in a plain value (redirect_uri=https%3A...) gives up its secrets too."""
+    found = set()
+    for form in (url, unquote(url)):
+        for a, b in query_secrets(form):
+            found |= {form[a:b], unquote(form[a:b])}
+    return found
+
+
+def remote_url_secrets(remote):
+    """url_secrets of remote, and of its URL when it names a remote of the store, longest first."""
+    urls = {remote, git([], "remote", "get-url", remote, check=False).stdout.strip()}
+    return sorted({s for url in urls if url for s in url_secrets(url) if s}, key=len, reverse=True)
 
 
 def masked(text):
-    """text with the user and password of each URL in it (as in a --remote URL, or git's error about one), and the value
-    of each query parameter whose name holds a secret (SECRET_QUERY_NAME), as ***. A value runs to the next parameter
-    (an & then name=), a # or the line's end, so neither a space, a quote nor an & (as %26 decoded) ends it; the name
-    keeps its spelling."""
-    def query(m):
-        return m[1] + "***" if SECRET_QUERY_NAME.search(unquote(m[2])) else m[0]
-    value = r"(?:[^&#\r\n]|&(?![^=&#\s]*=))+"
-    return re.sub(rf"([?&]([^=&#\s]+)=){value}", query, re.sub(r"://[^/@\r\n]+@", "://***@", text))
+    """text with each of remote_secrets, the user and password of each URL in it, and the value of each query parameter
+    whose name holds a secret (SECRET_QUERY_NAME), as ***. A value runs to the next parameter, so neither a space, a
+    quote nor an & in it ends it; the name keeps its spelling."""
+    for secret in remote_secrets:
+        text = text.replace(secret, "***")
+    text = USERINFO.sub("://***@", text)
+    out, at = [], 0
+    for start, end in query_secrets(text):
+        out += [text[at:start], "***"]
+        at = end
+    return "".join(out) + text[at:]
 
 
 def git(git_args, *cmd, check=True, env=None, stdin=None):
@@ -1264,6 +1301,7 @@ def read_argv(argv):
 if __name__ == "__main__":  # imported (tests), only the functions load
     phase, args, template = read_argv(sys.argv[1:])
     root = Path.cwd().resolve()
+    remote_secrets = remote_url_secrets(args["remote"]) if isinstance(args, dict) and args.get("remote") else []
     {"judge-inputs": judge_inputs, "judge-snapshot": judge_snapshot, "judge-outputs": judge_outputs,
      "close-sweep": close_sweep, "close-prepare": close_prepare, "close-commit": close_commit,
      "close-prune": close_prune}.get(phase, lambda: die(f"unknown phase {phase}"))()
