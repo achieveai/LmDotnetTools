@@ -248,9 +248,12 @@ def github_belongs(kind, item):
 
 
 def github_reply_wrapper(comment):
-    # GitHub files each reply to a review thread under its own empty COMMENTED review. A publisher may list
-    # that wrapper too, but it carries no text: the reply itself is verified as its review_comment entry.
-    return comment.get('commentType') == 'review' and comment.get('kind') == 'reply' and comment.get('content') == ''
+    # GitHub files each reply to a review thread, and each inline comment posted on its own, under an empty
+    # COMMENTED review. A publisher may list that wrapper too (AgentWorkBench #83 listed it as kind inline), but
+    # it carries no text: the reply or inline comment itself is verified as its review_comment entry. An empty
+    # summary review is still refused, because a summary must carry text.
+    return (comment.get('commentType') == 'review' and comment.get('kind') in ('reply', 'inline')
+            and comment.get('content') == '')
 
 
 def same_text(posted, recorded):
