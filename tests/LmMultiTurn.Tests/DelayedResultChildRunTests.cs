@@ -488,17 +488,33 @@ public class DelayedResultChildRunTests
         // Runs after the loop has consumed tc_a's wake-up and before it takes tc_a's cause, so tc_b's
         // wake-up is the only thing on the channel when tc_a's child completes.
         var resolveNext = 1;
+        var tcBResolved = 0;
         harness.Loop.BeforeTakingNextWorkForTest = async ct =>
         {
             if (Interlocked.Exchange(ref resolveNext, 0) == 1)
             {
                 await harness.Loop.ResolveToolCallAsync("tc_b", "result-b", ct: ct);
+                Volatile.Write(ref tcBResolved, 1);
             }
+        };
+
+        // tc_a's child reports zero pending input whether or not the hook ran first, so the count
+        // alone cannot tell this scenario from one where tc_b's wake-up was never queued. Record
+        // what the first delayed child found when it started: -1 until it starts, then 0 or 1.
+        var tcBResolvedAtFirstChild = -1;
+        harness.Loop.BeforeStartingDelayedRunForTest = ct =>
+        {
+            _ = Interlocked.CompareExchange(ref tcBResolvedAtFirstChild, Volatile.Read(ref tcBResolved), -1);
+            return Task.CompletedTask;
         };
 
         await harness.Loop.ResolveToolCallAsync("tc_a", "result-a");
 
         var child = await harness.WaitForCompletionAsync(c => c.CompletedRunId != harness.OriginatingRunId);
+        Volatile
+            .Read(ref tcBResolvedAtFirstChild)
+            .Should()
+            .Be(1, "tc_b resolves before tc_a's child is taken, so its wake-up is on the channel when that child ends");
         child.IsError.Should().Be(startNotRecorded, "the two cases are the two ways a child ends without a turn");
         child.PendingMessageCount.Should().Be(0, "only the loop's own wake-up is queued, and no input follows");
         child.HasPendingMessages.Should().BeFalse();
