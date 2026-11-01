@@ -28,7 +28,7 @@ import subprocess
 import sys
 import tarfile
 import time
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 COMPLETENESS = {0: "InProgress", 1: "Partial", 2: "Complete"}
 # Material that must never land in the inputs (they sit in a git working tree) or in a close commit. Both scans read
@@ -69,14 +69,20 @@ def parse_time(text):
     return datetime.datetime.fromisoformat(text.replace("Z", "+00:00")) if text else None
 
 
-# Query parameters whose value is a secret: OAuth and API tokens, SAS and pre-signed (S3) URL signatures, passwords.
-SECRET_QUERY_NAMES = "access_token|token|sig|signature|key|password|client_secret|x-amz-signature|x-amz-security-token"
+# A query parameter holds a secret when its name, percent-decoded and in any case, contains one of these words: as in
+# access_token, api_key, sig, X-Amz-Signature, client_secret, password, pwd, X-Amz-Credential or auth.
+SECRET_QUERY_NAME = re.compile(r"token|key|sig|secret|pass|pwd|credential|auth", re.I)
 
 
 def masked(text):
     """text with the user and password of each URL in it (as in a --remote URL, or git's error about one), and the value
-    of each query parameter that carries a secret (SECRET_QUERY_NAMES, any case), as ***."""
-    return re.sub(rf"(?i)([?&](?:{SECRET_QUERY_NAMES})=)[^&#\s'\"]+", r"\1***", re.sub(r"://[^/@\s]+@", "://***@", text))
+    of each query parameter whose name holds a secret (SECRET_QUERY_NAME), as ***. A value runs to the next parameter
+    (an & then name=), a # or the line's end, so neither a space, a quote nor an & (as %26 decoded) ends it; the name
+    keeps its spelling."""
+    def query(m):
+        return m[1] + "***" if SECRET_QUERY_NAME.search(unquote(m[2])) else m[0]
+    value = r"(?:[^&#\r\n]|&(?![^=&#\s]*=))+"
+    return re.sub(rf"([?&]([^=&#\s]+)=){value}", query, re.sub(r"://[^/@\r\n]+@", "://***@", text))
 
 
 def git(git_args, *cmd, check=True, env=None, stdin=None):

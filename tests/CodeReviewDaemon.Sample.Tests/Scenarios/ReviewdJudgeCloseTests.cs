@@ -1742,9 +1742,10 @@ public sealed class ReviewdJudgeCloseTests
         universe.AssertClean(pushed: commit);
     }
 
-    // The remote can be a URL with a user and password, or secrets in its query (tokens, signatures, a password).
-    // When round discovery (git ls-remote) fails after main was fetched, prepare fails without printing any of them,
-    // origin main does not move, and its private refs and scratch go. A plain query value (ref) stays as it is.
+    // The remote can be a URL with a user and password (here with a space and a quote), or secrets in its query: one
+    // name for each word that marks a secret name, and token itself. When round discovery (git ls-remote) fails after
+    // main was fetched, prepare fails without printing any of them, origin main does not move, and its private refs and
+    // scratch go. A plain query value (ref) stays as it is.
     [SkippableFact]
     public async Task Close_prepare_fails_on_a_failed_round_discovery_without_printing_remote_credentials()
     {
@@ -1753,7 +1754,7 @@ public sealed class ReviewdJudgeCloseTests
         using var universe = Universe.Create();
         var args = universe.PrepareArgs(3);
         args["remote"] = universe.FailSecondConnection(
-            "https://fake-user:FAKE-TOKEN-0000@example.invalid/store.git?access_token=FAKE-AT-1111&sig=FAKE-SIG-2222&key=FAKE-KEY-3333&Signature=FAKE-SN-4444&password=FAKE-PW-5555&client_secret=FAKE-CS-6666&X-Amz-Signature=FAKE-AS-7777&X-Amz-Security-Token=FAKE-ST-8888&ref=main"
+            "https://fake-user:FAKE-PW 0000'x@example.invalid/store.git?access_token=FAKE-AT-1111&token=FAKE-TK-1112&api_key=FAKE-AK-2222&sig=FAKE-SIG-3333&X-Amz-Signature=FAKE-AS-3334&client_secret=FAKE-CS-4444&password=FAKE-PW-5555&pwd=FAKE-PWD-6666&X-Amz-Credential=FAKE-CR-7777&auth=FAKE-AU-8888&ref=main"
         );
 
         var prepare = () => JudgeClose.Local(universe.Store)("close-prepare", args, default);
@@ -1763,11 +1764,40 @@ public sealed class ReviewdJudgeCloseTests
         failure
             .Message.Should()
             .Contain(
-                "https://***@example.invalid/store.git?access_token=***&sig=***&key=***&Signature=***&password=***"
-                    + "&client_secret=***&X-Amz-Signature=***&X-Amz-Security-Token=***&ref=main"
+                "https://***@example.invalid/store.git?access_token=***&token=***&api_key=***&sig=***"
+                    + "&X-Amz-Signature=***&client_secret=***&password=***&pwd=***&X-Amz-Credential=***&auth=***&ref=main"
             );
         failure.Message.Should().NotContain("FAKE-").And.NotContain("fake-user");
         universe.Git(universe.Origin, "rev-parse", "main").Should().Be(universe.Main);
+        universe.AssertClean();
+    }
+
+    // A secret query value runs to the next parameter (an & then name=) or a #: a space, a quote, an encoded & (%26) or a
+    // decoded one in it is hidden with the rest. A percent-encoded name (%6Bey is key) is matched decoded and printed as
+    // written.
+    [SkippableTheory]
+    [InlineData("password")]
+    [InlineData("key")]
+    [InlineData("%6Bey")]
+    public async Task Close_prepare_masks_a_query_secret_with_a_space_a_quote_or_an_ampersand(string name)
+    {
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        Skip.If(OperatingSystem.IsWindows(), "the failing transport is a sh script");
+        using var universe = Universe.Create();
+        var args = universe.PrepareArgs(3);
+        args["remote"] = universe.FailSecondConnection(
+            $"https://example.invalid/store.git?{name}=FAKE-SP 1111&{name}=FAKE-QT'2222&{name}=FAKE-AMP%263333&{name}=FAKE-RAW&4444&ref=main"
+        );
+
+        var prepare = () => JudgeClose.Local(universe.Store)("close-prepare", args, default);
+
+        var failure = (await prepare.Should().ThrowAsync<InvalidOperationException>()).Which;
+        // The failed git command shows the remote as passed to git, where ext writes a % as %%.
+        var masked = string.Join("&", Enumerable.Repeat($"{name.Replace("%", "%%", StringComparison.Ordinal)}=***", 4));
+        failure
+            .Message.Should()
+            .Contain($" https://example.invalid/store.git?{masked}&ref=main refs/heads/review/x failed");
+        failure.Message.Should().NotContainAny("FAKE-", "1111", "2222", "3333", "4444");
         universe.AssertClean();
     }
 
@@ -2398,7 +2428,8 @@ public sealed class ReviewdJudgeCloseTests
         /// <summary>
         /// A remote URL (git's ext transport, allowed in the store) that serves origin on the first connection and fails
         /// every later one, naming <paramref name="decoy" /> in its error as git names a URL it cannot reach. Close's
-        /// main fetch is the first connection, its round discovery the second.
+        /// main fetch is the first connection, its round discovery the second. A space or % in the decoy reaches the
+        /// script as written (escaped as ext wants: "% " and "%%").
         /// </summary>
         public string FailSecondConnection(string decoy)
         {
@@ -2420,7 +2451,10 @@ public sealed class ReviewdJudgeCloseTests
             if (!OperatingSystem.IsWindows())
                 File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
             Git(Store, "config", "protocol.ext.allow", "always");
-            return $"ext::{script} %s {Origin} {decoy}";
+            var escaped = decoy
+                .Replace("%", "%%", StringComparison.Ordinal)
+                .Replace(" ", "% ", StringComparison.Ordinal);
+            return $"ext::{script} %s {Origin} {escaped}";
         }
 
         public void CommitOnMain(string path, string message)
