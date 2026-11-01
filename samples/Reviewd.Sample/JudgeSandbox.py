@@ -203,6 +203,25 @@ def size_tier(files, lines):
     return "TINY"
 
 
+def round_size(sg, rd):
+    """A reviewed round's size from the local source store, or UNKNOWN when git cannot measure it."""
+    m = rd["mergeSha"]
+    if not m or git(sg, "cat-file", "-e", f"{m}^{{commit}}", check=False).returncode != 0:
+        return {"round": rd["branch"], "status": "UNKNOWN", "reason": f"merge {m} not in source store"}
+    # Diffing files of hundreds of MB can outgrow the sandbox's memory, and git is killed (-9).
+    p = git(sg, "diff", "--numstat", f"{m}^1", m, check=False)
+    if p.returncode != 0:
+        error = p.stderr.strip()[:200] or ("killed, likely out of memory" if p.returncode == -9 else "no message")
+        return {"round": rd["branch"], "mergeSha": m, "status": "UNKNOWN",
+                "reason": f"git diff --numstat failed ({p.returncode}): {error}"}
+    stat = p.stdout.splitlines()
+    added = sum(int(a) for a, _, _ in (s.split("\t", 2) for s in stat) if a != "-")
+    removed = sum(int(b) for _, b, _ in (s.split("\t", 2) for s in stat) if b != "-")
+    return {"round": rd["branch"], "mergeSha": m, "filesChanged": len(stat), "linesAdded": added,
+            "linesRemoved": removed, "changedLines": added + removed, "tier": size_tier(len(stat), added + removed),
+            "tierBasis": "partial: classify-review.mjs file/line rules only; architecture, new-module, public-type, risk-flag and mechanical adjustments not computed"}
+
+
 def read_receipt_file(store_git, ref, path):
     return parse_receipt(git(store_git, "show", f"{ref}:{path}").stdout, f"{ref}:{path}")
 
@@ -581,18 +600,7 @@ def judge_inputs():
         limitations.append(f"source store missing: {src_git_dir}; size UNKNOWN")
     else:
         sg = [f"--git-dir={src_git_dir}"]
-        for rd in rounds:
-            m = rd["mergeSha"]
-            if not m or git(sg, "cat-file", "-e", f"{m}^{{commit}}", check=False).returncode != 0:
-                size.append({"round": rd["branch"], "status": "UNKNOWN", "reason": f"merge {m} not in source store"})
-                continue
-            stat = git(sg, "diff", "--numstat", f"{m}^1", m).stdout.splitlines()
-            added = sum(int(a) for a, _, _ in (s.split("\t", 2) for s in stat) if a != "-")
-            removed = sum(int(b) for _, b, _ in (s.split("\t", 2) for s in stat) if b != "-")
-            size.append({"round": rd["branch"], "mergeSha": m, "filesChanged": len(stat), "linesAdded": added,
-                         "linesRemoved": removed, "changedLines": added + removed,
-                         "tier": size_tier(len(stat), added + removed),
-                         "tierBasis": "partial: classify-review.mjs file/line rules only; architecture, new-module, public-type, risk-flag and mechanical adjustments not computed"})
+        size = [round_size(sg, rd) for rd in rounds]
         for label, sha in (("finalHead", (pr_detail.get("lastMergeSourceCommit") or {}).get("commitId")),
                            ("finalMerge", (pr_detail.get("lastMergeCommit") or {}).get("commitId"))):
             availability[label] = {"sha": sha, "inLocalSourceStore": bool(sha) and git(sg, "cat-file", "-e", f"{sha}^{{commit}}", check=False).returncode == 0}
