@@ -86,9 +86,20 @@ Match types: `always`, `system_contains` (with `value`), `user_contains` (with `
 `tool` (with `name`). Message kinds: `text`, `text_len` (with `wordCount`), `tool_call`
 (with `name` and optional `args`).
 
-`/v1/responses` uses embedded instruction chains from the latest user input as an
-override. If no instruction chain is present, it consumes the same JSON scenario
-turn queue as `/v1/chat/completions` and `/v1/messages`; if no scenario matches,
+Every route takes embedded instruction chains (`<|instruction_start|>…<|instruction_end|>`)
+as an override of the scenario:
+
+- `/v1/chat/completions` and `/v1/messages`: when the latest human text holds a chain, the
+  request goes to `TestSseMessageHandler` / `AnthropicTestSseMessageHandler`. The human text is
+  the newest user text that is not an envelope (`<system-reminder>` parts from Claude Code,
+  LmMultiTurn notifications). Tool results keep a running chain going; a new plain message goes
+  back to the scenario.
+- `/v1/responses` (HTTP and WebSocket): the newest user input that holds a chain wins, even
+  with plain user messages after it. So a request that resends the whole history keeps
+  answering an old chain. Codex's WebSocket turns send only the new input, so it goes back to
+  the scenario. Codex namespace tools are listed by `tools_list` as `<namespace>__<tool>`.
+
+Without a chain, a request consumes the JSON scenario turn queue; if no scenario matches,
 it emits the scripted fallback response.
 
 ## Embedded use (the common case)
