@@ -1480,24 +1480,42 @@ describe('ChatLayout sub-agent composer keeps a reply that was not sent (#868)',
     textarea.dispatchEvent(new Event('input'));
     await flushPromises();
     expect(putBack().disabled).toBe(false);
+    putBack().focus();
     putBack().click();
     await flushPromises();
     expect(childComposer().value).toBe('first reply');
     expect(unsentTexts(), 'a reply put back leaves the list').toEqual([]);
+    expect(document.activeElement, 'focus follows the text into the composer').toBe(childComposer());
   });
 
-  it('dismisses a listed reply', async () => {
+  it('dismisses a listed reply and moves focus to the next one, then to the composer', async () => {
     await sendThenDraft('newer draft');
     await failRelay('first reply', 'relay failed');
     await failRelay('second reply', 'relay failed');
+    await failRelay('third reply', 'relay failed');
+    const dismissButtons = () =>
+      Array.from(
+        document.querySelectorAll<HTMLButtonElement>('[data-testid="subagent-view"] [data-testid="subagent-unsent-dismiss"]')
+      );
+    const dismissFocused = async (index: number) => {
+      dismissButtons()[index].focus();
+      dismissButtons()[index].click();
+      await flushPromises();
+    };
 
-    document
-      .querySelector<HTMLButtonElement>('[data-testid="subagent-view"] [data-testid="subagent-unsent-dismiss"]')!
-      .click();
-    await flushPromises();
-
-    expect(unsentTexts()).toEqual(['second reply']);
+    await dismissFocused(0);
+    expect(unsentTexts()).toEqual(['second reply', 'third reply']);
     expect(childComposer().value).toBe('newer draft');
+    expect(document.activeElement, 'the row that slid into place takes focus').toBe(dismissButtons()[0]);
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Dismiss unsent message 1');
+
+    await dismissFocused(1);
+    expect(unsentTexts()).toEqual(['second reply']);
+    expect(document.activeElement, 'after the last row, focus goes to the row above').toBe(dismissButtons()[0]);
+
+    await dismissFocused(0);
+    expect(unsentTexts()).toEqual([]);
+    expect(document.activeElement, 'with the list gone, focus goes to the composer').toBe(childComposer());
   });
 
   it('clears the unsent list when the user moves to another child', async () => {

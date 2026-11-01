@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, provide, ref } from 'vue';
+import { computed, nextTick, provide, ref } from 'vue';
 import type { DisplayItem, ToolCallResultMessage } from '@/types';
 import type { ViewPreference } from '@/composables/useViewPreference';
 import { GET_RESULT_FOR_TOOL_CALL, IS_QUESTION_ANSWERED } from '@/composables/useToolResult';
@@ -74,15 +74,32 @@ function keepUnsentText(text: string): void {
   unsentTexts.value.push({ id: ++unsentSeq, text });
 }
 
+const unsentSectionRef = ref<HTMLElement | null>(null);
+
+/** Removes an entry. The button that held focus goes with its row, so focus moves on, never to the page. */
+async function removeUnsent(id: number, focusComposer: boolean): Promise<void> {
+  const index = unsentTexts.value.findIndex((e) => e.id === id);
+  if (index < 0) return;
+  unsentTexts.value.splice(index, 1);
+  await nextTick();
+  // Dismiss stays enabled whatever the draft holds, so the row that slid into place can always take focus.
+  const dismissButtons = unsentSectionRef.value?.querySelectorAll<HTMLButtonElement>(
+    '[data-testid="subagent-unsent-dismiss"]'
+  );
+  const next = dismissButtons?.[Math.min(index, dismissButtons.length - 1)];
+  if (!focusComposer && next) next.focus();
+  else chatInputRef.value?.focus();
+}
+
 function putBack(id: number): void {
   const entry = unsentTexts.value.find((e) => e.id === id);
   if (!entry || !chatInputRef.value || !composerEmpty.value) return;
   chatInputRef.value.setText(entry.text);
-  dismiss(id);
+  void removeUnsent(id, true);
 }
 
 function dismiss(id: number): void {
-  unsentTexts.value = unsentTexts.value.filter((e) => e.id !== id);
+  void removeUnsent(id, false);
 }
 
 const unsentHintId = computed(() => `subagent-unsent-hint-${safeAgentId(props.activeAgentId)}`);
@@ -112,7 +129,7 @@ defineExpose({ keepUnsentText });
       :active="focusedAgentId === activeAgentId" :requested-question-id="requestedQuestionId"
       @busy-change="emit('questionBusy', $event)" @open-change="emit('questionOpen', $event)" @opened="emit('questionOpened', $event)" />
     <!-- Apart from the error banner on purpose, so a later error cannot take an unsent reply away. -->
-    <section v-if="unsentTexts.length > 0" class="subagent-view__unsent" data-testid="subagent-unsent"
+    <section v-if="unsentTexts.length > 0" ref="unsentSectionRef" class="subagent-view__unsent" data-testid="subagent-unsent"
       aria-label="Messages not sent">
       <p class="subagent-view__unsent-title" role="status">Not sent ({{ unsentTexts.length }})</p>
       <ul class="subagent-view__unsent-list">
@@ -170,10 +187,13 @@ defineExpose({ keepUnsentText });
   margin: 0;
 }
 
+/* Only the list scrolls: the title, the hint and the composer below stay in view however long it gets. */
 .subagent-view__unsent-list {
   list-style: none;
   margin: 4px 0;
   padding: 0;
+  max-height: 120px;
+  overflow-y: auto;
 }
 
 .subagent-view__unsent-item {
