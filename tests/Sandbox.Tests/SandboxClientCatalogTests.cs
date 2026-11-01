@@ -412,4 +412,57 @@ public class SandboxClientCatalogTests
 
         catalog.PluginFilteringSupported.Should().BeFalse();
     }
+
+    [Fact]
+    public async Task PreviewMarketplacesAsync_UnknownAlias400_SurfacesAvailableMarketplacesInOrder()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/marketplaces/preview",
+            """{"error":"unknown marketplace alias(es): nope","code":400,"unknown":["nope"],"available":["official","team","g-abc"]}""",
+            System.Net.HttpStatusCode.BadRequest
+        );
+
+        var exception = await Assert.ThrowsAsync<SandboxException>(() => client.PreviewMarketplacesAsync(["nope"]));
+
+        exception.StatusCode.Should().Be(400);
+        exception.AvailableMarketplaces.Should().Equal("official", "team", "g-abc");
+    }
+
+    [Fact]
+    public async Task PreviewMarketplacesAsync_400WithoutAvailable_LeavesAvailableMarketplacesNull()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/marketplaces/preview",
+            """{"error":"bad request","code":400}""",
+            System.Net.HttpStatusCode.BadRequest
+        );
+
+        var exception = await Assert.ThrowsAsync<SandboxException>(() => client.PreviewMarketplacesAsync(["nope"]));
+
+        exception.StatusCode.Should().Be(400);
+        exception.AvailableMarketplaces.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CreateAsync_UnknownPlugin400_PluginRefAvailableIsNotSurfacedAsMarketplaces()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            """{"error":"unknown plugin id(s): x@official","code":400,"unknown":[{"marketplace":"official","plugin":"x"}],"available":[{"marketplace":"official","plugin":"review"}]}""",
+            System.Net.HttpStatusCode.BadRequest
+        );
+
+        var exception = await Assert.ThrowsAsync<SandboxException>(() =>
+            client.CreateAsync(new SandboxCreateRequest("ws", pluginSelection: [new SandboxPluginRef("official", "x")]))
+        );
+
+        exception.StatusCode.Should().Be(400);
+        exception.AvailableMarketplaces.Should().BeNull();
+    }
 }

@@ -447,7 +447,7 @@ public sealed partial class SandboxClient
     /// <summary>
     /// Builds the classified <see cref="SandboxException"/> for a non-2xx response from its (possibly
     /// absent) parsed error body: the kind from <see cref="MapGatewayErrorKind"/>, plus every structured
-    /// field the gateway sent (<c>error_code</c>, <c>retryable</c>, <c>keys</c>, <c>snapshots</c>) and a
+    /// field the gateway sent (<c>error_code</c>, <c>retryable</c>, <c>keys</c>, <c>snapshots</c>, <c>available</c>) and a
     /// delta-seconds <c>Retry-After</c>. Shared by the control-plane and direct-API mappers so both speak
     /// one vocabulary.
     /// </summary>
@@ -472,9 +472,36 @@ public sealed partial class SandboxClient
             Retryable = error?.Retryable,
             InvalidKeys = error?.Keys,
             SnapshotIds = error?.Snapshots,
+            AvailableMarketplaces = ToAvailableMarketplaces(error?.Available),
             RetryAfter = response.Headers.RetryAfter?.Delta,
             ImageReport = error?.Report is { } report ? TryToImageReport(report) : null,
         };
+    }
+
+    /// <summary>
+    /// The error body's <c>available</c> field as marketplace aliases, in order, only when it is an array of
+    /// strings (the unknown-alias/item 400). The unknown-plugin 400 sends <c>{marketplace, plugin}</c> objects
+    /// under the same name; those are not aliases, so any non-string element yields <c>null</c>.
+    /// </summary>
+    private static IReadOnlyList<string>? ToAvailableMarketplaces(JsonElement? available)
+    {
+        if (available is not { ValueKind: JsonValueKind.Array } array)
+        {
+            return null;
+        }
+
+        var aliases = new List<string>(array.GetArrayLength());
+        foreach (var element in array.EnumerateArray())
+        {
+            if (element.ValueKind != JsonValueKind.String)
+            {
+                return null;
+            }
+
+            aliases.Add(element.GetString()!);
+        }
+
+        return aliases;
     }
 
     /// <summary>
