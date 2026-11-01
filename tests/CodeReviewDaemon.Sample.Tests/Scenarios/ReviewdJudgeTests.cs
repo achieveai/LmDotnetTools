@@ -1164,6 +1164,50 @@ public sealed class ReviewdJudgeTests
         return (digests["threads"]!.GetValue<string>(), digests["summary"]!.GetValue<string>());
     }
 
+    // VivaSkills !5797647 changed two JSON files of about 300 MB. Counting their lines took git 2.4 GB, the sandbox
+    // killed it at 2 GB, and judge-inputs failed on every tick. A round git cannot diff now has an UNKNOWN size, as a
+    // round missing from the source store has; here a deleted blob makes the diff fail.
+    [SkippableFact]
+    public async Task A_round_git_cannot_diff_has_an_unknown_size_and_the_other_rounds_are_measured()
+    {
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no python3 on PATH");
+        using var universe = ReviewdJudgeCloseTests.Universe.Create();
+        var blob = universe.Git(universe.Origin, "rev-parse", $"{universe.Round1}:PRs/x/r1.md");
+        var loose = Path.Combine(universe.Origin, "objects", blob[..2], blob[2..]);
+        File.Exists(loose).Should().BeTrue("the pushed objects are loose, so deleting one breaks the diff");
+        File.Delete(loose);
+        var missing = new string('0', 40);
+
+        var sizes = await SandboxAsync(
+            python!,
+            "[sandbox.round_size([f'--git-dir={data[0]}'], rd) for rd in data[1]]",
+            new JsonArray(
+                universe.Origin,
+                new JsonArray(
+                    new JsonObject { ["branch"] = "review/x", ["mergeSha"] = universe.Round1 },
+                    new JsonObject { ["branch"] = "review/x-2e69ca4b", ["mergeSha"] = universe.Round2 },
+                    new JsonObject { ["branch"] = "review/x-3", ["mergeSha"] = missing }
+                )
+            )
+        );
+
+        sizes[0]!["status"]!.GetValue<string>().Should().Be("UNKNOWN");
+        sizes[0]!["mergeSha"]!.GetValue<string>().Should().Be(universe.Round1);
+        sizes[0]!["reason"]!
+            .GetValue<string>()
+            .Should()
+            .StartWith("git diff --numstat failed (128): ")
+            .And.Contain(blob);
+        sizes[1]!["filesChanged"]!.GetValue<int>().Should().Be(1, "round 2's last commit adds PRs/x/r2.md only");
+        sizes[1]!["changedLines"]!.GetValue<int>().Should().Be(1);
+        sizes[1]!["tier"]!.GetValue<string>().Should().Be("TINY");
+        sizes[2]!
+            .ToJsonString()
+            .Should()
+            .Be($$"""{"round":"review/x-3","status":"UNKNOWN","reason":"merge {{missing}} not in source store"}""");
+    }
+
     // A review retried many times carries a long attempt history. Its judge-inputs arguments outgrew Linux's 128 KiB
     // limit for one argv string (IdeasWatchTower !5817047, 146,812 bytes), so that PR could never be judged.
     [SkippableFact]
