@@ -76,6 +76,8 @@ QUERY_NAME = re.compile(r"[?&]([^=&#\s]+)=")
 # A query value runs to the next parameter (an & then name=), a # or the line's end.
 QUERY_VALUE = re.compile(r"(?:[^&#\r\n]|&(?![^=&#\s]*=))*")
 USERINFO = re.compile(r"://[^/@\r\n]+@")
+# git prints a control character other than a tab or newline as ?.
+CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 # The secrets of this run's --remote and of the URL it names (set at start). git can print a URL decoded (a
 # file:// path), where %23, %26 or %0A in a value ends it for any pattern, so masked() replaces these first, as they are.
 remote_secrets = []
@@ -93,13 +95,14 @@ def query_secrets(text):
 
 
 def url_secrets(url):
-    """Each secret query value in url, as written and decoded. url is read as written and decoded, so a URL
-    percent-encoded in a plain value (redirect_uri=https%3A...) gives up its secrets too."""
+    """Each secret query value in url: as written, decoded and encoded, each also with its control characters as git
+    prints them. url is read as written and decoded, so a URL percent-encoded in a plain value (redirect_uri=https%3A...)
+    gives up its secrets too, and encoding one again gives the form the outer URL carries."""
     found = set()
     for form in (url, unquote(url)):
         for a, b in query_secrets(form):
-            found |= {form[a:b], unquote(form[a:b])}
-    return found
+            found |= {form[a:b], unquote(form[a:b]), quote(form[a:b], safe="")}
+    return found | {CONTROL.sub("?", s) for s in found}
 
 
 def remote_url_secrets(remote):
@@ -112,9 +115,10 @@ def masked(text):
     """text with each of remote_secrets, the user and password of each URL in it, and the value of each query parameter
     whose name holds a secret (SECRET_QUERY_NAME), as ***. A value runs to the next parameter, so neither a space, a
     quote nor an & in it ends it; the name keeps its spelling."""
+    # The user and password go first: a secret that is (or decodes to) @ would take the @ that marks them.
+    text = USERINFO.sub("://***@", text)
     for secret in remote_secrets:
         text = text.replace(secret, "***")
-    text = USERINFO.sub("://***@", text)
     out, at = [], 0
     for start, end in query_secrets(text):
         out += [text[at:start], "***"]

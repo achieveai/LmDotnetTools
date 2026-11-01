@@ -1801,9 +1801,10 @@ public sealed class ReviewdJudgeCloseTests
         universe.AssertClean();
     }
 
-    // git prints a file:// remote's path decoded, so a %23, %26 before a name, or %0A in a secret value would end it
-    // for any pattern. Close reads the secrets from the URL the remote's name stands for, as written and decoded, and
-    // hides them as they are. A URL nested in a plain parameter (continue=) keeps its token hidden too.
+    // git prints a file:// remote's path decoded, so a %23, %26 before a name, %0A, or %0D%0A (its CR as ?) in a secret
+    // value would end it for any pattern. Close reads the secrets from the URL the remote's name stands for, as written
+    // and decoded, and hides them as git prints them. A URL nested in a plain parameter (continue=) keeps its token
+    // hidden too.
     [SkippableFact]
     public async Task Close_prepare_hides_the_secrets_of_a_remote_url_git_prints_decoded()
     {
@@ -1817,6 +1818,7 @@ public sealed class ReviewdJudgeCloseTests
             "add",
             "decoy",
             $"file://{missing}?password=FAKE-HS%231111&key=FAKE-AR%26ref=2222&api_key=FAKE-NL%0A3333"
+                + "&passwd=FAKE-CR%0D%0A5555&sig=FAKE-RC%0A%0D6666"
                 + "&continue=https://idp.invalid/cb?client_token=FAKE-NT-4444&ref=main"
         );
         universe.Rebaseline();
@@ -1832,10 +1834,10 @@ public sealed class ReviewdJudgeCloseTests
         failure
             .Message.Should()
             .Contain(
-                "missing.git?password=***&key=***&api_key=***&continue=https://idp.invalid/cb?client_token=***&ref=main'"
-                    + " does not appear to be a git repository"
+                "missing.git?password=***&key=***&api_key=***&passwd=***&sig=***"
+                    + "&continue=https://idp.invalid/cb?client_token=***&ref=main' does not appear to be a git repository"
             );
-        failure.Message.Should().NotContainAny("FAKE-", "1111", "2222", "3333", "4444");
+        failure.Message.Should().NotContainAny("FAKE-", "1111", "2222", "3333", "4444", "5555", "6666");
         universe.AssertClean();
     }
 
@@ -1862,6 +1864,32 @@ public sealed class ReviewdJudgeCloseTests
             );
         failure.Message.Should().NotContainAny("FAKE-", "5555");
         universe.AssertClean();
+    }
+
+    // The forms no transport here can make git print: a secret that decodes to @ (the user and password go first, so
+    // it cannot take their @), and a token in a URL encoded inside a plain value, carried by the outer URL as %2523.
+    [SkippableTheory]
+    [InlineData("https://fake-user:FAKE-UI-0000@example.invalid/store.git?password=%40&ref=main")]
+    [InlineData(
+        "https://example.invalid/store.git?redirect_uri=https%3A%2F%2Fidp.invalid%3Ftoken%3DFAKE-EN%25235555&ref=main"
+    )]
+    public async Task Close_masks_a_remote_url_when_a_secret_decodes_to_an_at_sign_or_is_encoded_twice(string url)
+    {
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is not "python3", "no python3 on PATH");
+
+        var shown = await ReviewdJudgeTests.SandboxAsync(
+            python,
+            "[setattr(sandbox, 'remote_secrets', sorted(sandbox.url_secrets(data['url']), key=len, reverse=True)),"
+                + " sandbox.masked(data['text'])][1]",
+            new JsonObject
+            {
+                ["url"] = url,
+                ["text"] = $"git ls-remote {url} refs/heads/x failed (128): fatal: unable to access '{url}/': 503",
+            }
+        );
+
+        shown.GetValue<string>().Should().EndWith("&ref=main/': 503").And.NotContainAny("FAKE-", "fake-user", "5555");
     }
 
     [SkippableFact]
