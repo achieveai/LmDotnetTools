@@ -1743,8 +1743,10 @@ public sealed class ReviewdJudgeCloseTests
     }
 
     // The remote can be a URL with a user and password, or a credential in its query (access_token, sig, key, signature,
-    // password, client_secret, X-Amz-Signature). When round discovery (git ls-remote) fails after main was fetched,
-    // prepare fails without printing them, origin main does not move, and its private refs and scratch go.
+    // password, client_secret, X-Amz-Signature, X-Amz-Credential), including a value holding or starting with an
+    // apostrophe and a name spelled with percent-encoding (api%5Fkey, %6Bey; %% in the ext command) or brackets. When
+    // round discovery (git ls-remote) fails after main was fetched, prepare fails without printing them, origin main
+    // does not move, and its private refs and scratch go.
     [SkippableFact]
     public async Task Close_prepare_fails_on_a_failed_round_discovery_without_printing_remote_credentials()
     {
@@ -1754,8 +1756,9 @@ public sealed class ReviewdJudgeCloseTests
         var args = universe.PrepareArgs(3);
         args["remote"] = universe.FailSecondConnection(
             "https://fake-user:FAKE-TOKEN-0000@example.invalid/store.git?access_token=FAKE-AT-1111&sig=FAKE-SIG-2222"
-                + "&key=FAKE-KEY-3333&signature=FAKE-SN-4444&password=FAKE-PW-5555&client_secret=FAKE-CS-6666"
-                + "&X-Amz-Signature=FAKE-AMZ-7777"
+                + "&key=FAKE-KEY-3333&signature=FAKE-SN-4444&password=FAKE-PW'5555&client_secret=FAKE-CS-6666"
+                + "&X-Amz-Signature=FAKE-AMZ-7777&X-Amz-Credential=FAKE-CRED-8888&db_password='FAKE-Q-9999"
+                + "&api_key[]=FAKE-BR-1010&api%%5Fkey=FAKE-ENC-1111&%%6Bey=FAKE-ENC-1212"
         );
 
         var prepare = () => JudgeClose.Local(universe.Store)("close-prepare", args, default);
@@ -1766,7 +1769,8 @@ public sealed class ReviewdJudgeCloseTests
             .Message.Should()
             .Contain(
                 "https://***@example.invalid/store.git?access_token=***&sig=***&key=***&signature=***&password=***"
-                    + "&client_secret=***&X-Amz-Signature=***"
+                    + "&client_secret=***&X-Amz-Signature=***&X-Amz-Credential=***&db_password=***&api_key[]=***"
+                    + "&api%%5Fkey=***&%%6Bey=***"
             );
         failure.Message.Should().NotContain("FAKE-").And.NotContain("fake-user");
         universe.Git(universe.Origin, "rev-parse", "main").Should().Be(universe.Main);

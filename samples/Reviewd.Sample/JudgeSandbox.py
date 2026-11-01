@@ -28,7 +28,7 @@ import subprocess
 import sys
 import tarfile
 import time
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 COMPLETENESS = {0: "InProgress", 1: "Partial", 2: "Complete"}
 # Material that must never land in the inputs (they sit in a git working tree) or in a close commit. Both scans read
@@ -69,15 +69,21 @@ def parse_time(text):
     return datetime.datetime.fromisoformat(text.replace("Z", "+00:00")) if text else None
 
 
+CREDENTIAL_NAME = re.compile(r"token|key|sig|secret|password|credential")
+
+
+def masked_query_value(m):
+    # The name is judged by its letters once percent-decoded, so api%5Fkey, %6Bey and api_key[] read as apikey and key.
+    name = re.sub(r"[^a-z]", "", unquote(m.group(2)).lower())
+    return f"{m.group(1)}{m.group(2)}=***" if m.group(3) and CREDENTIAL_NAME.search(name) else m.group(0)
+
+
 def masked(text):
     """text with the user and password of each URL in it (as in a --remote URL, or git's error about one), and the value
     of each query parameter whose name holds token, key, sig, secret, password or credential (access_token, key,
-    signature, client_secret, X-Amz-Signature, X-Amz-Credential, ...), as ***."""
-    return re.sub(
-        r"(?i)([?&][\w.-]*(?:token|key|sig|secret|password|credential)[\w.-]*=)[^&#\s'\"]+",
-        r"\1***",
-        re.sub(r"://[^/@\s]+@", "://***@", text),
-    )
+    signature, client_secret, X-Amz-Signature, X-Amz-Credential, api%5Fkey, api_key[], ...), as ***. A value runs to the
+    next &, # or whitespace, quotes included: a value cut at a quote would leak the rest of a password holding one."""
+    return re.sub(r"([?&])([^&#=\s]*)=([^&#\s]*)", masked_query_value, re.sub(r"://[^/@\s]+@", "://***@", text))
 
 
 def git(git_args, *cmd, check=True, env=None, stdin=None):
