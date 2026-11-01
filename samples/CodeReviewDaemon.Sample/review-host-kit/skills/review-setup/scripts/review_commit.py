@@ -3,8 +3,8 @@
 
 Artifacts are committed to the local ``review/{repo}-{pr}`` branch exactly as before, and
 the branch is then pushed to the parent repository's own HTTPS ``origin`` -- our review/
-artifact repository. ``create_or_update_parent_remote_ref`` refuses any Azure DevOps origin,
-so this never touches a customer source remote. The push runs inside the slot-writer scope
+artifact repository. ``create_or_update_parent_remote_ref`` refuses an origin naming a configured
+source repository, so this never touches a customer source remote. The push runs inside the slot-writer scope
 the commit already holds and is idempotent: a re-review fast-forwards the existing remote
 branch; an unchanged re-run whose remote tip already matches is a no-op. Never resets.
 """
@@ -115,7 +115,7 @@ def push_review_branch(outer: Path, branch: str, *, push: bool = True) -> dict |
     The branch physically lives in this sandbox outer checkout, so the publish must run
     here, inside the slot-writer scope ``commit_review`` already holds. Only this top-level
     review repository is ever pushed: ``create_or_update_parent_remote_ref`` operates on
-    ``outer`` alone and refuses an Azure DevOps origin, so the nested source submodule is
+    ``outer`` alone and refuses an origin naming a source repository, so the nested source submodule is
     never pushed and no customer source remote is touched. The top-level branch carries the
     source only as a gitlink pointer, so ``git push`` sends no submodule objects. Idempotent:
     a first publish creates the ref (``expected_old=None``); a re-review fast-forwards the
