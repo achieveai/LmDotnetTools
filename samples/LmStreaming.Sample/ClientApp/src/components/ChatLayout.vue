@@ -536,7 +536,7 @@ async function handleSubAgentSend(text: string): Promise<void> {
   }
 }
 
-// A reply the server refused as read-only goes back to the user too (#868).
+// A reply the server refused as read-only (#868), or could not relay, goes back to the user too.
 watch(refusedSubAgentText, (text) => {
   if (text === null) return;
   restoreUnsentSubAgentText(text);
