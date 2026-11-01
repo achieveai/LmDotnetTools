@@ -1176,7 +1176,7 @@ public sealed class ReviewdJudgeTests
         var blob = universe.Git(universe.Origin, "rev-parse", $"{universe.Round1}:PRs/x/r1.md");
         var loose = Path.Combine(universe.Origin, "objects", blob[..2], blob[2..]);
         File.Exists(loose).Should().BeTrue("the pushed objects are loose, so deleting one breaks the diff");
-        File.Delete(loose);
+        new FileInfo(loose) { IsReadOnly = false }.Delete(); // git writes objects read-only, which Windows won't delete
         var missing = new string('0', 40);
 
         var sizes = await SandboxAsync(
