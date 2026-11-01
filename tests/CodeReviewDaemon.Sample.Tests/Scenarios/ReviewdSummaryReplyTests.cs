@@ -88,7 +88,7 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
     }
 
     [SkippableFact]
-    public async Task Github_verify_skips_only_the_empty_review_that_wraps_a_reply()
+    public async Task Github_verify_skips_only_the_empty_review_that_wraps_a_reply_or_inline_comment()
     {
         // LmDotnetTools #803: each thread reply also made an empty COMMENTED review, the publisher listed it,
         // and verify refused the whole receipt as invalid. AgentWorkBench #83 did the same with the wrapper
@@ -116,6 +116,81 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
         var results = await RunRuleAsync(python!, "github_reply_wrapper", "c", cases.ToJsonString());
 
         results.Should().Equal(true, false, true, false, false, false, false);
+    }
+
+    [SkippableFact]
+    public async Task Github_verify_requires_the_comment_each_skipped_wrapper_holds()
+    {
+        // LmDotnetTools #910: verify skipped an empty inline wrapper without looking for the inline comment it
+        // holds, so a receipt whose inline comment was never posted still passed on its summary. GitHub gives that
+        // comment the wrapper's id as its pull_request_review_id.
+        var python = await FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox's verify rule cannot be run");
+        static JsonObject Entry(string type, int id, string kind, string content) =>
+            new()
+            {
+                ["commentType"] = type,
+                ["commentId"] = id,
+                ["kind"] = kind,
+                ["content"] = content,
+            };
+        static JsonObject Case(JsonObject live, params JsonObject[] comments)
+        {
+            live["issues/comments/1"] = new JsonObject
+            {
+                ["id"] = 1,
+                ["body"] = "summary",
+                ["issue_url"] = "https://api.github.com/repos/o/r/issues/17",
+            };
+            return new JsonObject { ["comments"] = new JsonArray([.. comments]), ["live"] = live };
+        }
+        static JsonObject Live(int reviewId) =>
+            new()
+            {
+                ["pulls/comments/600"] = new JsonObject
+                {
+                    ["id"] = 600,
+                    ["body"] = "finding",
+                    ["pull_request_url"] = "https://api.github.com/repos/o/r/pulls/17",
+                    ["pull_request_review_id"] = reviewId,
+                },
+            };
+        static JsonObject Summary() => Entry("issue_comment", 1, "summary", "summary");
+        var cases = new JsonArray(
+            // The #908 case: the wrapper and the inline comment it holds.
+            Case(
+                Live(500),
+                Summary(),
+                Entry("review", 500, "inline", ""),
+                Entry("review_comment", 600, "inline", "finding")
+            ),
+            // The #910 defect: the wrapper alone, its inline comment lost.
+            Case([], Summary(), Entry("review", 500, "inline", "")),
+            // An inline comment that belongs to another review does not stand for this wrapper.
+            Case(
+                Live(501),
+                Summary(),
+                Entry("review", 500, "inline", ""),
+                Entry("review_comment", 600, "inline", "finding")
+            ),
+            // A thread reply's wrapper holds the reply the same way.
+            Case(
+                Live(500),
+                Summary(),
+                Entry("review", 500, "reply", ""),
+                Entry("review_comment", 600, "reply", "finding")
+            ),
+            Case([], Summary(), Entry("review", 500, "reply", ""))
+        );
+
+        var results = await RunAsync(
+            python!,
+            ["GITHUB_COMMENTS", "github_belongs", "github_reply_wrapper", "same_text", "github_verify"],
+            "passes(lambda: github_verify(c['comments'], c['live'].get, []))",
+            cases.ToJsonString()
+        );
+
+        results.Should().Equal(true, false, false, true, false);
     }
 
     public void Dispose()
@@ -153,7 +228,15 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
     }
 
     /// <summary>Runs one of the sandbox script's own rules, lifted out of the embedded script.</summary>
-    private static async Task<bool[]> RunRuleAsync(string python, string rule, string arguments, string cases)
+    private static Task<bool[]> RunRuleAsync(string python, string rule, string arguments, string cases) =>
+        RunAsync(python, [rule], $"{rule}({arguments})", cases);
+
+    /// <summary>
+    ///     Lifts the named top-level functions and assignments out of the embedded sandbox script and evaluates
+    ///     <paramref name="expression" /> for each case as <c>c</c>. <c>passes(f)</c> is true unless <c>f()</c> raises
+    ///     ReviewError; the script's <c>pr</c> is 17.
+    /// </summary>
+    private static async Task<bool[]> RunAsync(string python, string[] names, string expression, string cases)
     {
         var script = Path.Combine(Path.GetTempPath(), $"reviewd-sandbox-{Guid.NewGuid():N}.py");
         using (
@@ -166,13 +249,27 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
         try
         {
             const string harness = """
-                import ast, json, sys
+                import ast, hashlib, json, sys
                 tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
-                name, arguments = sys.argv[2], sys.argv[3]
-                rule = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
-                scope = {}
-                exec(compile(ast.Module([rule], []), name, 'exec'), scope)
-                call = eval('lambda c: rule(' + arguments + ')', {'rule': scope[name]})
+                names, expression = sys.argv[2].split(','), sys.argv[3]
+                def named(node):
+                    if isinstance(node, ast.FunctionDef):
+                        return node.name
+                    if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+                        return node.targets[0].id
+                lifted = [n for n in tree.body if named(n) in names]
+                assert sorted(named(n) for n in lifted) == sorted(names), 'not found: ' + str(names)
+                class ReviewError(Exception):
+                    pass
+                def passes(call):
+                    try:
+                        call()
+                        return True
+                    except ReviewError:
+                        return False
+                scope = {'pr': 17, 'hashlib': hashlib, 'ReviewError': ReviewError, 'passes': passes}
+                exec(compile(ast.Module(lifted, []), 'rules', 'exec'), scope)
+                call = eval('lambda c: ' + expression, scope)
                 cases = json.loads(sys.stdin.read())
                 print(json.dumps([call(c) for c in cases]))
                 """;
@@ -185,8 +282,8 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
             start.ArgumentList.Add("-c");
             start.ArgumentList.Add(harness);
             start.ArgumentList.Add(script);
-            start.ArgumentList.Add(rule);
-            start.ArgumentList.Add(arguments);
+            start.ArgumentList.Add(string.Join(',', names));
+            start.ArgumentList.Add(expression);
             using var process = Process.Start(start)!;
             await process.StandardInput.WriteAsync(cases);
             process.StandardInput.Close();

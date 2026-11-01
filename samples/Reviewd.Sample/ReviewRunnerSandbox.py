@@ -260,6 +260,39 @@ def same_text(posted, recorded):
     return isinstance(posted, str) and posted.replace('\r\n', '\n') == recorded.replace('\r\n', '\n')
 
 
+def github_verify(comments, read, baseline):
+    # A GitHub summary is a top-level PR comment or a review body. Each round posts its own, so there is no
+    # reply-in-thread summary to recognise. Returns the verified entries; raises when any cannot be verified.
+    verified, seen, summarized, wrappers, holders = [], set(), False, [], set()
+    for comment in comments:
+        if github_reply_wrapper(comment):
+            wrappers.append(comment.get('commentId'))
+            continue
+        kind, comment_id, content = comment.get('commentType'), comment.get('commentId'), comment.get('content')
+        if (kind not in GITHUB_COMMENTS or type(comment_id) is not int or comment_id <= 0
+                or (kind, comment_id) in seen or [kind, comment_id] in baseline
+                or not isinstance(content, str) or not content.strip()):
+            raise ReviewError('Publication IDs invalid, duplicated, or already present before this review.')
+        seen.add((kind, comment_id))
+        posted = read(GITHUB_COMMENTS[kind][1].format(comment_id))
+        if (not isinstance(posted, dict) or posted.get('id') != comment_id or not github_belongs(kind, posted)
+                or not same_text(posted.get('body'), content)):
+            raise ReviewError('Publication could not be independently verified.')
+        if kind == 'review_comment':
+            holders.add(posted.get('pull_request_review_id'))
+        summarized = summarized or (comment.get('kind') == 'summary' and kind in ('issue_comment', 'review'))
+        verified.append({'commentType': kind, 'commentId': comment_id, 'kind': comment.get('kind'),
+                         'contentSha256': hashlib.sha256(content.encode()).hexdigest()})
+    if not summarized:
+        raise ReviewError('Publication receipt must include a posted summary.')
+    # A skipped wrapper stands in for the comment it holds, so that comment must be in the receipt and verified.
+    # GitHub reports the wrapper's id as that comment's pull_request_review_id (seen on #905 replies and the #908
+    # inline comment). Without this a lost inline comment passed verify on its empty wrapper alone (#910).
+    if any(type(wrapper) is not int or wrapper not in holders for wrapper in wrappers):
+        raise ReviewError('An empty review wrapper has no verified review comment of its own in the receipt.')
+    return verified
+
+
 def summary_reply(thread, posted, summary_threads):
     # A re-review of an already-summarized PR posts its summary as a reply in the earlier summary thread. Only
     # a thread an earlier verified round of this PR recorded as its summary counts, so a reply in any other
@@ -780,31 +813,11 @@ elif phase == 'verify':
     if not isinstance(comments, list) or not comments:
         raise ReviewError('Publication receipt must include a posted summary.')
     payload, _ = live()
-    verified, seen, summarized = [], set(), False
     if github:
-        # A GitHub summary is a top-level PR comment or a review body. Each round posts its own, so there is
-        # no reply-in-thread summary to recognise.
-        for comment in comments:
-            if github_reply_wrapper(comment):
-                continue
-            kind, comment_id, content = comment.get('commentType'), comment.get('commentId'), comment.get('content')
-            if (kind not in GITHUB_COMMENTS or type(comment_id) is not int or comment_id <= 0
-                    or (kind, comment_id) in seen or [kind, comment_id] in args['baselineComments']
-                    or not isinstance(content, str) or not content.strip()):
-                raise ReviewError('Publication IDs invalid, duplicated, or already present before this review.')
-            seen.add((kind, comment_id))
-            posted = client.request(GITHUB_COMMENTS[kind][1].format(comment_id))
-            if (not isinstance(posted, dict) or posted.get('id') != comment_id or not github_belongs(kind, posted)
-                    or not same_text(posted.get('body'), content)):
-                raise ReviewError('Publication could not be independently verified.')
-            summarized = summarized or (comment.get('kind') == 'summary' and kind in ('issue_comment', 'review'))
-            verified.append({'commentType': kind, 'commentId': comment_id, 'kind': comment.get('kind'),
-                             'contentSha256': hashlib.sha256(content.encode()).hexdigest()})
-        if not summarized:
-            raise ReviewError('Publication receipt must include a posted summary.')
-        print(json.dumps({'comments': verified}))
+        print(json.dumps({'comments': github_verify(comments, client.request, args['baselineComments'])}))
         sys.exit(0)
     api = ado_pr_api(payload)
+    verified, seen, summarized = [], set(), False
     summary_threads = set(args.get('summaryThreads') or [])
     for comment in comments:
         thread_id, comment_id = comment.get('threadId'), comment.get('commentId')
