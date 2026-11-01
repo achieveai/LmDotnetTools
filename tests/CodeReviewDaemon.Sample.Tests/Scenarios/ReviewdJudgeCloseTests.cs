@@ -1744,9 +1744,9 @@ public sealed class ReviewdJudgeCloseTests
 
     // The remote can be a URL with a user and password, or a credential in its query (access_token, sig, key, signature,
     // password, client_secret, X-Amz-Signature, X-Amz-Credential), including a value holding or starting with an
-    // apostrophe and a name spelled with percent-encoding (api%5Fkey, %6Bey; %% in the ext command) or brackets. When
-    // round discovery (git ls-remote) fails after main was fetched, prepare fails without printing them, origin main
-    // does not move, and its private refs and scratch go.
+    // apostrophe and a name spelled with percent-encoding (api%5Fkey, %6Bey; %% in the ext command), brackets or
+    // punctuation (k-e-y). When round discovery (git ls-remote) fails after main was fetched, prepare fails without
+    // printing them, origin main does not move, and its private refs and scratch go.
     [SkippableFact]
     public async Task Close_prepare_fails_on_a_failed_round_discovery_without_printing_remote_credentials()
     {
@@ -1758,7 +1758,7 @@ public sealed class ReviewdJudgeCloseTests
             "https://fake-user:FAKE-TOKEN-0000@example.invalid/store.git?access_token=FAKE-AT-1111&sig=FAKE-SIG-2222"
                 + "&key=FAKE-KEY-3333&signature=FAKE-SN-4444&password=FAKE-PW'5555&client_secret=FAKE-CS-6666"
                 + "&X-Amz-Signature=FAKE-AMZ-7777&X-Amz-Credential=FAKE-CRED-8888&db_password='FAKE-Q-9999"
-                + "&api_key[]=FAKE-BR-1010&api%%5Fkey=FAKE-ENC-1111&%%6Bey=FAKE-ENC-1212"
+                + "&api_key[]=FAKE-BR-1010&api%%5Fkey=FAKE-ENC-1111&%%6Bey=FAKE-ENC-1212&k-e-y=FAKE-NORM-1313"
         );
 
         var prepare = () => JudgeClose.Local(universe.Store)("close-prepare", args, default);
@@ -1770,10 +1770,38 @@ public sealed class ReviewdJudgeCloseTests
             .Contain(
                 "https://***@example.invalid/store.git?access_token=***&sig=***&key=***&signature=***&password=***"
                     + "&client_secret=***&X-Amz-Signature=***&X-Amz-Credential=***&db_password=***&api_key[]=***"
-                    + "&api%%5Fkey=***&%%6Bey=***"
+                    + "&api%%5Fkey=***&%%6Bey=***&k-e-y=***"
             );
         failure.Message.Should().NotContain("FAKE-").And.NotContain("fake-user");
         universe.Git(universe.Origin, "rev-parse", "main").Should().Be(universe.Main);
+        universe.AssertClean();
+    }
+
+    // A query value can carry a URL of its own: redirect=https://h/x?token=..., next=/a?api_key=..., or one
+    // percent-encoded (%% in the ext command). A credential inside it is masked too, and a plain pair (ref=main)
+    // stays. Its own test: with the names above the error would pass the 400-character cap and hide what it checks.
+    [SkippableFact]
+    public async Task Close_prepare_fails_on_a_failed_round_discovery_without_printing_a_credential_nested_in_a_query_value()
+    {
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        Skip.If(OperatingSystem.IsWindows(), "the failing transport is a sh script");
+        using var universe = Universe.Create();
+        var args = universe.PrepareArgs(3);
+        args["remote"] = universe.FailSecondConnection(
+            "https://h.invalid/s.git?redirect=https://h.invalid/x?token=FAKE-NEST-1111&next=/a?api_key=FAKE-NEXT-2222"
+                + "&back=https%%3A%%2F%%2Fh.invalid%%2Fy%%3Fsig%%3DFAKE-ENC-3333&ref=main"
+        );
+
+        var prepare = () => JudgeClose.Local(universe.Store)("close-prepare", args, default);
+
+        var failure = (await prepare.Should().ThrowAsync<InvalidOperationException>()).Which;
+        failure.Message.Should().StartWith("close step close-prepare failed (exit 2): git ls-remote ext::");
+        failure
+            .Message.Should()
+            .Contain(
+                "https://h.invalid/s.git?redirect=https://h.invalid/x?token=***&next=/a?api_key=***&back=***&ref=main"
+            );
+        failure.Message.Should().NotContain("FAKE-");
         universe.AssertClean();
     }
 

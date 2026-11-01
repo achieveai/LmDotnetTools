@@ -75,7 +75,17 @@ CREDENTIAL_NAME = re.compile(r"token|key|sig|secret|password|credential")
 def masked_query_value(m):
     # The name is judged by its letters once percent-decoded, so api%5Fkey, %6Bey and api_key[] read as apikey and key.
     name = re.sub(r"[^a-z]", "", unquote(m.group(2)).lower())
-    return f"{m.group(1)}{m.group(2)}=***" if m.group(3) and CREDENTIAL_NAME.search(name) else m.group(0)
+    value = m.group(3)
+    if not value:
+        return m.group(0)
+    if CREDENTIAL_NAME.search(name):
+        return f"{m.group(1)}{m.group(2)}=***"
+    # A value can carry a URL of its own (redirect=https://h/x?token=..., next=/a?api_key=...): its pairs are masked
+    # too. One percent-encoded so that masking it in place is not possible is hidden whole if it holds a credential.
+    inner = masked(value)
+    if inner == value and masked(unquote(value)) != unquote(value):
+        inner = "***"
+    return f"{m.group(1)}{m.group(2)}={inner}"
 
 
 def masked(text):
