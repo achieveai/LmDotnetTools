@@ -51,7 +51,7 @@ interface Captured {
   callbacks: {
     onMessage: (m: any) => void;
     onDone: () => void;
-    onError: (e: string, code?: string) => void;
+    onError: (e: string, code?: string, clientMessageId?: string) => void;
     onClose?: (info: { wasClean: boolean; code: number; reason: string }) => void;
     onClientToolResultAck?: (toolCallId: string, duplicate: boolean) => void;
     onClientToolResultError?: (toolCallId: string | undefined, code: string, message: string) => void;
@@ -357,7 +357,7 @@ describe('useSubAgentPanel — send & unfocus', () => {
     await focusFirst(panel);
 
     panel.sendToFocusedChild('hello child');
-    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(captured[0].connection, 'hello child');
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(captured[0].connection, 'hello child', expect.any(String));
   });
 
   it('sendToFocusedChild is a no-op with no focused child', () => {
@@ -432,7 +432,7 @@ describe('useSubAgentPanel — hardening', () => {
     expect(wsMocks.closeWebSocketConnection).toHaveBeenCalledWith(a1Conn);
     // Sending routes to a2's connection, proving a1's late connection never clobbered focusedConnection.
     panel.sendToFocusedChild('to a2');
-    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(a2Conn, 'to a2');
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(a2Conn, 'to a2', expect.any(String));
   });
 
   it('focusChild same-agent concurrent-guard: a superseding re-focus of the SAME agent closes the stale connection', async () => {
@@ -475,7 +475,7 @@ describe('useSubAgentPanel — hardening', () => {
     expect(wsMocks.closeWebSocketConnection).toHaveBeenCalledWith(firstConn);
     // Sending routes to the SECOND connection, proving the stale one never clobbered focusedConnection.
     panel.sendToFocusedChild('hi');
-    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(secondConn, 'hi');
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(secondConn, 'hi', expect.any(String));
   });
 
   it('onClose (unexpected): stops streaming, resumes once, and a second close is terminal (no loop)', async () => {
@@ -499,7 +499,7 @@ describe('useSubAgentPanel — hardening', () => {
 
     // Sends route to the resumed connection, not the dead one.
     panel.sendToFocusedChild('after resume');
-    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(captured[1].connection, 'after resume');
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(captured[1].connection, 'after resume', expect.any(String));
 
     // A SECOND unexpected close must NOT loop — resume budget is spent, so it ends terminal.
     wsMocks.sendWebSocketMessage.mockClear();
@@ -1724,7 +1724,7 @@ describe('useSubAgentPanel — the user own reply to a child (BUG 7)', () => {
 
     panel.sendToFocusedChild('please use the other file');
 
-    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(captured[0].connection, 'please use the other file');
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(captured[0].connection, 'please use the other file', expect.any(String));
     expect(userBubbles(panel)).toEqual(['please use the other file']);
   });
 
@@ -1881,7 +1881,7 @@ describe('useSubAgentPanel — a send after the tab socket died (#868)', () => {
     expect(captured).toHaveLength(2);
     expect(captured[1].agentId).toBe('a1');
     expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledTimes(1);
-    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(captured[1].connection, 'follow-up');
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(captured[1].connection, 'follow-up', expect.any(String));
     expect(panel.error.value).toBeNull();
     expect(sent).toBe(true);
   });
@@ -1912,7 +1912,7 @@ describe('useSubAgentPanel — a send after the tab socket died (#868)', () => {
     expect(await panel.sendToFocusedChild('follow-up')).toBe(true);
 
     expect(captured).toHaveLength(2);
-    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(captured[1].connection, 'follow-up');
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(captured[1].connection, 'follow-up', expect.any(String));
     expect(panel.error.value).toBeNull();
   });
 
@@ -2006,5 +2006,88 @@ describe('useSubAgentPanel — a send after the tab socket died (#868)', () => {
 
     await panel.focusChild('a1');
     expect(panel.error.value, 'selecting the tab again clears it').toBeNull();
+  });
+});
+
+describe('useSubAgentPanel — an error that names the reply it is about', () => {
+  const relayFailed = "Failed to relay the message to sub-agent 'a1'. Please retry.";
+
+  async function focusRunningChild(panel: ReturnType<typeof useSubAgentPanel>) {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    await panel.refreshChildren();
+    await panel.focusChild('a1');
+  }
+
+  /** The client message id each send carried, in send order. */
+  const sentIds = () => wsMocks.sendWebSocketMessage.mock.calls.map((call: unknown[]) => call[2] as string);
+
+  const userBubbles = (panel: ReturnType<typeof useSubAgentPanel>) =>
+    panel.focusedDisplayItems.value
+      .filter((i) => i.type === 'user-message')
+      .map((i) => (i as { content?: { text?: string } }).content?.text);
+
+  it('a relay_failed naming the second of two replies takes back that reply only', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusRunningChild(panel);
+    expect(await panel.sendToFocusedChild('first')).toBe(true);
+    expect(await panel.sendToFocusedChild('second')).toBe(true);
+    const [firstId, secondId] = sentIds();
+    expect(firstId, 'each reply carries its own id').not.toBe(secondId);
+
+    captured[0].callbacks.onError(relayFailed, 'relay_failed', secondId);
+
+    expect(userBubbles(panel), 'the delivered first reply stays').toEqual(['first']);
+    expect(panel.refusedText.value, 'the failed reply goes back to the composer').toBe('second');
+    expect(panel.error.value).toContain('not sent');
+    await panel.refreshChildren();
+    expect(panel.error.value, 'a list refresh does not clear it').toContain('not sent');
+  });
+
+  it.each([
+    ['no id (an older server)', undefined],
+    ['an id this tab does not hold', 'local-user-999'],
+  ])('a relay_failed with %s takes nothing back', async (_label, clientMessageId) => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusRunningChild(panel);
+    expect(await panel.sendToFocusedChild('hello')).toBe(true);
+
+    captured[0].callbacks.onError(relayFailed, 'relay_failed', clientMessageId);
+
+    expect(userBubbles(panel), 'no reply is guessed at').toEqual(['hello']);
+    expect(panel.refusedText.value).toBeNull();
+    expect(panel.error.value).toContain('relay');
+    expect(panel.isFocusedStreaming.value, 'handled as before').toBe(false);
+  });
+
+  it('after a relay_failed the tab stays live: a resend goes out on the same socket and a clean close resumes', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusRunningChild(panel);
+    expect(await panel.sendToFocusedChild('hello')).toBe(true);
+
+    captured[0].callbacks.onError(relayFailed, 'relay_failed', sentIds()[0]);
+    expect(panel.isFocusedStreaming.value, "the child's own stream goes on").toBe(true);
+
+    expect(await panel.sendToFocusedChild('hello')).toBe(true);
+    expect(wsMocks.sendWebSocketMessage.mock.calls[1][0], 'the resend uses the same socket').toBe(captured[0].connection);
+    expect(userBubbles(panel)).toEqual(['hello']);
+    expect(panel.error.value, 'the resend clears the error').toBeNull();
+
+    // A relay_failed is not a terminal error, so a later backpressure (clean) close still resumes.
+    captured[0].callbacks.onClose!({ wasClean: true, code: 1000, reason: '' });
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(captured, 'the tab reconnected once').toHaveLength(2);
+  });
+
+  it('a read_only naming the second of two replies takes back that reply, not the oldest', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusRunningChild(panel);
+    expect(await panel.sendToFocusedChild('first')).toBe(true);
+    expect(await panel.sendToFocusedChild('second')).toBe(true);
+
+    captured[0].callbacks.onError("Sub-agent 'a1' is read-only here; the message was not sent.", 'read_only', sentIds()[1]);
+
+    expect(userBubbles(panel)).toEqual(['first']);
+    expect(panel.refusedText.value).toBe('second');
+    expect(panel.error.value).toContain('read-only');
   });
 });

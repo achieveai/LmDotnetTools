@@ -1382,7 +1382,12 @@ describe('ChatLayout sub-agent composer keeps a reply that was not sent (#868)',
     document.querySelector<HTMLTextAreaElement>('[data-testid="subagent-view"] [data-testid="chat-input-textarea"]')!;
   const childError = () => document.querySelector('[data-testid="subagent-view"] [data-testid="subagent-error"]');
 
-  it('keeps a newer draft when a late send failure arrives, and shows the unsent text in the error', async () => {
+  const unsentTexts = () =>
+    Array.from(document.querySelectorAll('[data-testid="subagent-view"] [data-testid="subagent-unsent-text"]')).map(
+      (el) => el.textContent
+    );
+
+  it('keeps a newer draft when a late send failure arrives, and lists the unsent text', async () => {
     let finishSend!: (sent: boolean) => void;
     sharedMocks.sendToFocusedChild.mockImplementation(
       () => new Promise<boolean>((resolve) => (finishSend = resolve))
@@ -1410,10 +1415,10 @@ describe('ChatLayout sub-agent composer keeps a reply that was not sent (#868)',
 
     expect(childComposer().value, 'the newer draft is not overwritten').toBe('newer draft');
     expect(childError()?.textContent).toContain('Could not reconnect');
-    expect(childError()?.textContent, 'the unsent text stays recoverable').toContain('follow-up');
+    expect(unsentTexts(), 'the unsent text stays recoverable').toEqual(['follow-up']);
   });
 
-  it('keeps a newer draft when a read-only refusal arrives, and shows the refused text in the error', async () => {
+  it('keeps a newer draft when a read-only refusal arrives, and lists the refused text', async () => {
     expect(await sendFromChildComposer(true)).toBe('');
     const textarea = childComposer();
     textarea.value = 'newer draft';
@@ -1426,8 +1431,107 @@ describe('ChatLayout sub-agent composer keeps a reply that was not sent (#868)',
 
     expect(childComposer().value, 'the newer draft is not overwritten').toBe('newer draft');
     expect(childError()?.textContent).toContain('read-only');
-    expect(childError()?.textContent, 'the refused text stays recoverable').toContain('follow-up');
+    expect(unsentTexts(), 'the refused text stays recoverable').toEqual(['follow-up']);
     expect(sharedMocks.refusedTextRef!.value).toBeNull();
+  });
+
+  /** Sends one reply, then types a newer draft that each later failure must leave alone. */
+  const sendThenDraft = async (draft: string) => {
+    expect(await sendFromChildComposer(true)).toBe('');
+    const textarea = childComposer();
+    textarea.value = draft;
+    textarea.dispatchEvent(new Event('input'));
+    await flushPromises();
+  };
+  const failRelay = async (text: string, error: string) => {
+    sharedMocks.subAgentErrorRef!.value = `Message not sent. ${error}`;
+    sharedMocks.refusedTextRef!.value = text;
+    await flushPromises();
+  };
+
+  it('keeps both replies when two relay failures arrive behind a newer draft', async () => {
+    await sendThenDraft('newer draft');
+
+    await failRelay('first reply', 'relay one failed');
+    await failRelay('second reply', 'relay two failed');
+
+    expect(childComposer().value, 'the newer draft is not overwritten').toBe('newer draft');
+    expect(childError()?.textContent, 'the banner shows the latest error').toContain('relay two failed');
+    expect(unsentTexts(), 'the second failure does not take the first reply away').toEqual([
+      'first reply',
+      'second reply',
+    ]);
+  });
+
+  it('puts a listed reply back only into an empty composer', async () => {
+    await sendThenDraft('newer draft');
+    await failRelay('first reply', 'relay failed');
+    const putBack = () =>
+      document.querySelector<HTMLButtonElement>('[data-testid="subagent-view"] [data-testid="subagent-unsent-put-back"]')!;
+
+    expect(putBack().disabled, 'not while the newer draft is there').toBe(true);
+    putBack().click();
+    await flushPromises();
+    expect(childComposer().value).toBe('newer draft');
+    expect(unsentTexts()).toEqual(['first reply']);
+
+    const textarea = childComposer();
+    textarea.value = '';
+    textarea.dispatchEvent(new Event('input'));
+    await flushPromises();
+    expect(putBack().disabled).toBe(false);
+    putBack().focus();
+    putBack().click();
+    await flushPromises();
+    expect(childComposer().value).toBe('first reply');
+    expect(unsentTexts(), 'a reply put back leaves the list').toEqual([]);
+    expect(document.activeElement, 'focus follows the text into the composer').toBe(childComposer());
+  });
+
+  it('dismisses a listed reply and moves focus to the next one, then to the composer', async () => {
+    await sendThenDraft('newer draft');
+    await failRelay('first reply', 'relay failed');
+    await failRelay('second reply', 'relay failed');
+    await failRelay('third reply', 'relay failed');
+    const dismissButtons = () =>
+      Array.from(
+        document.querySelectorAll<HTMLButtonElement>('[data-testid="subagent-view"] [data-testid="subagent-unsent-dismiss"]')
+      );
+    const dismissFocused = async (index: number) => {
+      dismissButtons()[index].focus();
+      dismissButtons()[index].click();
+      await flushPromises();
+    };
+
+    await dismissFocused(0);
+    expect(unsentTexts()).toEqual(['second reply', 'third reply']);
+    expect(childComposer().value).toBe('newer draft');
+    expect(document.activeElement, 'the row that slid into place takes focus').toBe(dismissButtons()[0]);
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Dismiss unsent message 1');
+
+    await dismissFocused(1);
+    expect(unsentTexts()).toEqual(['second reply']);
+    expect(document.activeElement, 'after the last row, focus goes to the row above').toBe(dismissButtons()[0]);
+
+    await dismissFocused(0);
+    expect(unsentTexts()).toEqual([]);
+    expect(document.activeElement, 'with the list gone, focus goes to the composer').toBe(childComposer());
+  });
+
+  it('clears the unsent list when the user moves to another child', async () => {
+    sharedMocks.subAgentChildren = [child, { ...child, agentId: 'agent-other', threadId: 'subagent-other' }];
+    await sendThenDraft('newer draft');
+    await failRelay('first reply', 'relay failed');
+    expect(unsentTexts()).toEqual(['first reply']);
+
+    // With a child open, the agent tab is named after that child.
+    document.querySelector<HTMLElement>('[data-testid="conversation-tab"][data-tab-id="agent-unsent-reply"]')!.click();
+    await flushPromises();
+    document.querySelector<HTMLElement>('[data-testid="agent-picker-option"][data-agent-id="agent-other"]')!.click();
+    await flushPromises();
+
+    expect(sharedMocks.focusedAgentIdRef!.value).toBe('agent-other');
+    expect(unsentTexts(), "another child's tab does not show this child's unsent replies").toEqual([]);
   });
 
   it("does not put a failed reply into another conversation's child with the same id", async () => {

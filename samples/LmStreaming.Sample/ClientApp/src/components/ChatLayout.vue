@@ -512,13 +512,13 @@ const { activeTabId, tabs, selectTab: selectConversationTab, getAgentColor } = u
 const subAgentTranscriptRef = ref<InstanceType<typeof SubAgentTranscript> | null>(null);
 
 /**
- * Gives an unsent reply back (#868). It goes into the composer when that is empty or still holds it.
- * A newer draft typed meanwhile is kept, and the unsent text goes into the error banner instead, which
- * already says why it was not sent, so the user can still copy it.
+ * Gives an unsent reply back (#868): into the composer when that is empty or still holds it, else into
+ * the transcript's unsent list, which keeps every such reply until the user takes it, so a newer draft
+ * is never overwritten and a later error cannot drop it. Both callers act only for the child that is
+ * still focused, and its tab is the one mounted.
  */
 function restoreUnsentSubAgentText(text: string): void {
-  if (subAgentTranscriptRef.value?.restoreText(text)) return;
-  subAgentError.value = `${subAgentError.value ?? 'Message not sent.'} Your newer draft was kept. The unsent message was: ${text}`;
+  subAgentTranscriptRef.value?.keepUnsentText(text);
 }
 
 /** A reply that could not be sent goes back to the user; the panel's error says why (#868). */
@@ -536,7 +536,7 @@ async function handleSubAgentSend(text: string): Promise<void> {
   }
 }
 
-// A reply the server refused as read-only goes back to the user too (#868).
+// A reply the server refused as read-only (#868), or could not relay, goes back to the user too.
 watch(refusedSubAgentText, (text) => {
   if (text === null) return;
   restoreUnsentSubAgentText(text);

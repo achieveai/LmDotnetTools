@@ -80,9 +80,10 @@ env:
   # secret-free manifests and Docker-shipped sbx-mcp first ship there (upstream ADR 0046).
   # Gateway and agent remote tag manifests were verified before this bump.
   #
-  # The external/SandboxedOstoolsMcpServer submodule tracks gateway master for development, so
-  # it may run ahead of this tag. This tag is the released contract CI verifies; CI pulls these
-  # images and never builds from the submodule.
+  # The external/SandboxedOstoolsMcpServer submodule is pinned to a gateway master commit for
+  # development (advance it with `git submodule update --remote`), so it may run ahead of this
+  # tag. This tag is the released contract CI verifies; CI pulls these images and never builds
+  # from the submodule.
   IMAGE_TAG: '0.1.18'
   GATEWAY_IMAGE: ghcr.io/achieveai/mcp-gateway
   AGENT_IMAGE: ghcr.io/achieveai/llm-sandbox-agent

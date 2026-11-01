@@ -91,7 +91,8 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
     public async Task Github_verify_skips_only_the_empty_review_that_wraps_a_reply()
     {
         // LmDotnetTools #803: each thread reply also made an empty COMMENTED review, the publisher listed it,
-        // and verify refused the whole receipt as invalid.
+        // and verify refused the whole receipt as invalid. AgentWorkBench #83 did the same with the wrapper
+        // of a new inline comment, listed as kind inline.
         var python = await FindPythonAsync();
         Skip.If(python is null, "no Python interpreter on PATH, so the sandbox's wrapper rule cannot be run");
         static JsonObject Entry(string type, string kind, string content) =>
@@ -106,13 +107,15 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
             Entry("review", "reply", ""),
             Entry("review", "reply", "text"),
             Entry("review", "inline", ""),
+            Entry("review", "inline", "text"),
+            Entry("review", "summary", ""),
             Entry("review_comment", "reply", ""),
             Entry("issue_comment", "summary", "")
         );
 
         var results = await RunRuleAsync(python!, "github_reply_wrapper", "c", cases.ToJsonString());
 
-        results.Should().Equal(true, false, false, false, false);
+        results.Should().Equal(true, false, true, false, false, false, false);
     }
 
     public void Dispose()

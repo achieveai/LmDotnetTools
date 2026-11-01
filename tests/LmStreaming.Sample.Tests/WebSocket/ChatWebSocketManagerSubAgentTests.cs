@@ -957,6 +957,114 @@ public sealed class ChatWebSocketManagerSubAgentTests
     }
 
     [Fact]
+    public async Task ReceivePump_RelayFailedFrame_EchoesTheClientMessageIdOfTheMessageThatFailed()
+    {
+        // Each relay_failed frame names the message it is about, by the id the client gave it, so the
+        // client can put that exact message back in the composer. A message sent without an id (an older
+        // client) gets a frame without one. Same deterministic failure as the test above: the single
+        // concurrency slot is held by a second child, so restarting the finished one throws.
+        var betaGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var creation = 0;
+        Func<IStreamingAgent> factory = () =>
+        {
+            var call = Interlocked.Increment(ref creation);
+            return call == 1
+                ? new ScriptedSubAgentProvider((messages, ct) => OneMessageThenComplete())
+                : new ScriptedSubAgentProvider((messages, ct) => TwoMessagesThenBlock(betaGate.Task, ct));
+        };
+
+        await using var loop = CreateParentLoop(factory, maxConcurrent: 1);
+        await using var pool = CreatePoolReturning(loop);
+        RegisterParent(pool);
+
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var agentId = ParseAgentId(
+            await loop.SubAgentManager!.SpawnAsync(TemplateName, "do work", name: "alpha", runInBackground: true)
+        );
+        _ = await loop.SubAgentManager!.ObserveCompletionAsync(agentId, testCts.Token);
+        _ = await loop.SubAgentManager!.SpawnAsync(TemplateName, "hold-slot", name: "beta", runInBackground: true);
+
+        var manager = CreateManager(pool);
+        var socket = new FakeWebSocket();
+        socket.EnqueueTextFrame(JsonSerializer.Serialize(new ChatRequest("relayed-one", "local-user-1")));
+        socket.EnqueueTextFrame(JsonSerializer.Serialize(new ChatRequest("relayed-two")));
+
+        var handlerTask = manager.HandleSubAgentConnectionAsync(
+            socket,
+            ParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            mayWrite: true,
+            testCts.Token
+        );
+
+        await socket.WaitUntilAsync(() => ErrorFrames(socket, "relay_failed").Count >= 2, testCts.Token);
+
+        ErrorFrames(socket, "relay_failed")
+            .Select(EchoedClientMessageId)
+            .Should()
+            .Equal(["local-user-1", null], "each frame names its own message, and only when it had an id");
+
+        await testCts.CancelAsync();
+        betaGate.SetResult();
+        await handlerTask;
+    }
+
+    [Fact]
+    public async Task ReadOnlyTab_RefusalFrame_EchoesTheClientMessageIdOfTheRefusedMessage()
+    {
+        // A caller who may not write the parent gets every message refused as read_only. The refusal
+        // names the refused message by its client id, and has no id when the message had none.
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var provider = new ScriptedSubAgentProvider((messages, ct) => TwoMessagesThenBlock(gate.Task, ct));
+
+        await using var loop = CreateParentLoop(() => provider);
+        await using var pool = CreatePoolReturning(loop);
+        RegisterParent(pool);
+
+        var agentId = ParseAgentId(
+            await loop.SubAgentManager!.SpawnAsync(TemplateName, "do work", name: "alpha", runInBackground: true)
+        );
+
+        var manager = CreateManager(pool);
+        var socket = new FakeWebSocket();
+        socket.EnqueueTextFrame(JsonSerializer.Serialize(new ChatRequest("refused-one", "local-user-7")));
+        socket.EnqueueTextFrame(JsonSerializer.Serialize(new ChatRequest("refused-two")));
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var handlerTask = manager.HandleSubAgentConnectionAsync(
+            socket,
+            ParentThreadId,
+            agentId,
+            mayReplayPersistedTranscript: true,
+            mayWrite: false,
+            testCts.Token
+        );
+
+        await socket.WaitUntilAsync(() => ErrorFrames(socket, "read_only").Count >= 2, testCts.Token);
+
+        ErrorFrames(socket, "read_only")
+            .Select(EchoedClientMessageId)
+            .Should()
+            .Equal(["local-user-7", null], "each refusal names its own message, and only when it had an id");
+
+        await testCts.CancelAsync();
+        gate.SetResult();
+        await handlerTask;
+    }
+
+    /// <summary>The error frames with this code that the socket sent, in order.</summary>
+    private static List<string> ErrorFrames(FakeWebSocket socket, string code) =>
+        [.. socket.SentFrames.Where(f => f.Contains($"\"code\":\"{code}\"", StringComparison.Ordinal))];
+
+    /// <summary>An error frame's <c>clientMessageId</c>, or null when the frame has none.</summary>
+    private static string? EchoedClientMessageId(string frame)
+    {
+        using var doc = JsonDocument.Parse(frame);
+        return doc.RootElement.TryGetProperty("clientMessageId", out var id) ? id.GetString() : null;
+    }
+
+    [Fact]
     public async Task PumpSubAgentStream_OnNonCancellationSourceFault_SendsStructuredError_AndClosesAbnormally()
     {
         // Finding #6: a NON-cancellation fault from the sub-agent message source (or serialization)

@@ -49,8 +49,10 @@ export interface WebSocketClientCallbacks {
    * server error frame (e.g. `subagent_unavailable`, `subagent_stream_failed`, `relay_failed`) when
    * one is present, so callers can distinguish a terminal application error from a transient/parse
    * failure. Optional and backward-compatible — existing `(error) => void` callers still bind.
+   * `clientMessageId` is the id of the sent message the error is about, when the frame echoes one
+   * (see {@link sendWebSocketMessage}).
    */
-  onError: (error: string, code?: string) => void;
+  onError: (error: string, code?: string, clientMessageId?: string) => void;
   /**
    * Out-of-band deferred-auth events (`auth_required` / `auth_completed`) pushed by the
    * backend while a sandbox webhook call is held awaiting an interactive sign-in.
@@ -414,7 +416,8 @@ export function openWebSocketConnection(
           log.error('Received error', { error: errorData });
           onError(
             errorData.message || 'Unknown error',
-            typeof errorData.code === 'string' ? errorData.code : undefined
+            typeof errorData.code === 'string' ? errorData.code : undefined,
+            typeof errorData.clientMessageId === 'string' ? errorData.clientMessageId : undefined
           );
           return;
         }
@@ -497,17 +500,21 @@ export function createWebSocketConnection(
 
 /**
  * Send a chat message over an existing WebSocket connection.
- * The message is sent as JSON and the server streams responses back.
+ * The message is sent as JSON and the server streams responses back. A `clientMessageId`, when
+ * given, comes back on a sub-agent tab's error frame about this message, so the caller knows which
+ * send failed.
  */
 export function sendWebSocketMessage(
   connection: WebSocketConnection,
-  message: string
+  message: string,
+  clientMessageId?: string
 ): void {
   if (!connection.isConnected || connection.socket.readyState !== WebSocket.OPEN) {
     throw new Error('WebSocket is not connected');
   }
 
-  const request: ChatRequest = { Message: message };
+  const request: ChatRequest =
+    clientMessageId === undefined ? { Message: message } : { Message: message, ClientMessageId: clientMessageId };
   log.info('Sending chat message via WebSocket', { messageLength: message.length });
   connection.socket.send(JSON.stringify(request));
 }

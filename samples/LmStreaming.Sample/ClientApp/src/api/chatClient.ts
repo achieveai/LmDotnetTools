@@ -16,6 +16,8 @@ const log = logger.forComponent('ChatClient');
  */
 export interface ChatRequest {
   Message: string;
+  /** Optional id for this message; a sub-agent tab's error frame about it echoes it as `clientMessageId`. */
+  ClientMessageId?: string;
 }
 
 /**

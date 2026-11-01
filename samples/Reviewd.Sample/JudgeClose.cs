@@ -17,7 +17,9 @@ namespace Reviewd.Sample;
 ///     on the host), so the store's HEAD, index, local main and working tree never move. The host's git credential
 ///     helper does the push, which is never forced: a moved main is fetched and composed again, up to 3 tries, then
 ///     exit 6. Idempotence lives on main: its CLOSING.md marker plus every round merged. Once main holds the rounds,
-///     close deletes their review branches on the remote (close-prune); exit 7 when one is left.
+///     close deletes their review branches on the remote (close-prune); exit 7 when one is left. A round whose branch
+///     the remote lacks (never pushed) is read from the store: its files go on main, checked and redacted like the
+///     rest, but it is no parent, so its raw commits never leave the store.
 /// </summary>
 internal static class JudgeClose
 {
@@ -339,6 +341,7 @@ internal static class JudgeClose
                     throw new InvalidOperationException($"close-prepare returned {prepared["status"]}.");
                 var main = Text(prepared, "main");
                 var scratch = Text(prepared, "scratch");
+                var fromStore = prepared["fromStore"]!.AsArray().Select(b => b!.GetValue<string>()).ToList();
                 // ---- compose against main's files, in this try's private scratch. Compose is not cancelled part way:
                 // one check, right before the commit, decides whether a Ctrl+C stops this close.
                 var tree = Path.Combine(store, scratch, "tree");
@@ -362,7 +365,8 @@ internal static class JudgeClose
                     packet,
                     plan,
                     [.. prepared["overridden"]!.AsArray().Select(p => p!.GetValue<string>())],
-                    [.. prepared["keptOnBranch"]!.AsArray().OfType<JsonObject>()]
+                    [.. prepared["keptOnBranch"]!.AsArray().OfType<JsonObject>()],
+                    fromStore
                 );
                 await File.WriteAllTextAsync(
                     Path.Combine(store, scratch, "CLOSING.md"),
@@ -401,6 +405,7 @@ internal static class JudgeClose
                             {
                                 ["main"] = main,
                                 ["rounds"] = roundsJson.DeepClone(),
+                                ["fromStore"] = prepared["fromStore"]!.DeepClone(),
                                 ["files"] = files,
                                 ["message"] = $"close: {repo.RepoName} !{pr} (judgment {n})",
                                 ["push"] = execute,
@@ -824,7 +829,8 @@ internal static class JudgeClose
         JsonObject packet,
         Plan plan,
         List<string> overridden,
-        List<JsonObject> keptOnBranch
+        List<JsonObject> keptOnBranch,
+        List<string> fromStore
     )
     {
         var receipt = judgments[n];
@@ -906,17 +912,23 @@ internal static class JudgeClose
             text.Append('\n')
                 .Append(string.Concat(unknown.Select(u => $"- {u.Label}: cost unknown, capped at {Usd(u.Cap)}\n")));
         text.Append("\n## Review rounds merged\n\n");
-        // A round's commit, by its branch: the branch is deleted after the close, the commit stays in main's history.
+        // A round's commit, by its branch: the branch is deleted after the close, the commit stays in main's history,
+        // or only in the store for a round read from it.
         string At(string branch) =>
             rounds.Select((r, i) => (r, i)).FirstOrDefault(x => Text(x.r, "branch") == branch) is { r: not null } hit
-                ? $"round {hit.i + 1} at {Text(hit.r, "tip")[..Math.Min(9, Text(hit.r, "tip").Length)]}"
+                ? $"round {hit.i + 1} at {Text(hit.r, "tip")[..Math.Min(9, Text(hit.r, "tip").Length)]}{(fromStore.Contains(branch) ? ", in the store only" : "")}"
                 : branch;
         foreach (var (round, i) in rounds.Select((r, i) => (r, i)))
             text.Append(
                 CultureInfo.InvariantCulture,
-                $"- round {i + 1}: {Text(round, "branch")} at {Text(round, "tip")[..Math.Min(9, Text(round, "tip").Length)]}\n"
+                $"- round {i + 1}: {Text(round, "branch")} at {Text(round, "tip")[..Math.Min(9, Text(round, "tip").Length)]}"
+                    + $"{(fromStore.Contains(Text(round, "branch")) ? " (from the store: not on the remote)" : "")}\n"
             );
         text.Append("- The review branches are deleted once main holds them; each round stays in main's history.\n");
+        if (fromStore.Count > 0)
+            text.Append(
+                "- A round from the store is the exception: main has its files, and its commit stays in the store.\n"
+            );
         var under = Text(identity, "reviewDirectory") + "/";
         if (overridden.Count > 0)
         {

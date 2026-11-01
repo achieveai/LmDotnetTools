@@ -4,14 +4,16 @@ using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.MockProviderHost;
 
 /// <summary>
 /// Builds a runnable mock-provider HTTP host that wraps a <see cref="ScriptedSseResponder"/>
 /// behind OpenAI- and Anthropic-compatible endpoints. The host is a thin transport adapter:
-/// every byte streamed back originates from the wrapped <c>ScriptedSseResponder</c>'s
-/// in-process handlers; the host adds no new SSE framing.
+/// every byte streamed back originates from LmTestUtils' in-process handlers (the scripted
+/// responder's, or the instruction-chain handlers when a request carries an instruction
+/// prompt); the host adds no new SSE framing.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -24,10 +26,14 @@ namespace AchieveAi.LmDotnetTools.MockProviderHost;
 /// </remarks>
 public static class MockProviderHostBuilder
 {
+    // The scripted handlers' pace, so CLI tests driven by instruction chains don't drag.
+    private const int ChainWordsPerChunk = 10;
+    private const int ChainChunkDelayMs = 5;
+
     /// <summary>
     /// Builds (but does not start) a <see cref="WebApplication"/> hosting the mock endpoints.
     /// </summary>
-    /// <param name="responder">Scripted responder whose handlers serve every request.</param>
+    /// <param name="responder">Scripted responder that serves every request without an instruction prompt.</param>
     /// <param name="urls">Optional URLs to bind to. Pass <c>http://127.0.0.1:0</c> for ephemeral.</param>
     /// <param name="loggerFactory">Optional logger factory; the host uses this for both ASP.NET
     /// Core logging and the inner scripted handlers.</param>
@@ -39,8 +45,31 @@ public static class MockProviderHostBuilder
     {
         ArgumentNullException.ThrowIfNull(responder);
 
-        var openAiHandler = responder.AsOpenAiHandler(loggerFactory?.CreateLogger("MockProviderHost.OpenAi"));
-        var anthropicHandler = responder.AsAnthropicHandler(loggerFactory?.CreateLogger("MockProviderHost.Anthropic"));
+        // An instruction prompt overrides the scenario on every wire, as the Responses handler
+        // already does: chat and Anthropic requests go through a router to the chain handlers.
+        var logs = loggerFactory ?? NullLoggerFactory.Instance;
+        var chainParser = new InstructionChainParser(logs.CreateLogger<InstructionChainParser>());
+        var chainAnalyzer = new ConversationAnalyzer(logs.CreateLogger<ConversationAnalyzer>(), chainParser);
+        var openAiHandler = new InstructionChainRouter(
+            new TestSseMessageHandler(logs.CreateLogger<TestSseMessageHandler>(), chainParser, chainAnalyzer)
+            {
+                WordsPerChunk = ChainWordsPerChunk,
+                ChunkDelayMs = ChainChunkDelayMs,
+            },
+            responder.AsOpenAiHandler(loggerFactory?.CreateLogger("MockProviderHost.OpenAi"))
+        );
+        var anthropicHandler = new InstructionChainRouter(
+            new AnthropicTestSseMessageHandler(
+                logs.CreateLogger<AnthropicTestSseMessageHandler>(),
+                chainParser,
+                chainAnalyzer
+            )
+            {
+                WordsPerChunk = ChainWordsPerChunk,
+                ChunkDelayMs = ChainChunkDelayMs,
+            },
+            responder.AsAnthropicHandler(loggerFactory?.CreateLogger("MockProviderHost.Anthropic"))
+        );
         var responsesHandler = responder.AsOpenAiResponsesHandler(
             loggerFactory?.CreateLogger("MockProviderHost.OpenAiResponses")
         );

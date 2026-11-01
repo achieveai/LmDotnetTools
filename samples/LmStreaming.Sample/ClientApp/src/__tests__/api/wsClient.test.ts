@@ -5,6 +5,7 @@ import {
   createWebSocketConnection,
   openWebSocketConnection,
   sendClientToolResult,
+  sendWebSocketMessage,
   type WebSocketConnection,
 } from '@/api/wsClient';
 import {
@@ -247,7 +248,28 @@ describe('openWebSocketConnection onmessage sanitization + error-code plumbing (
       data: JSON.stringify({ $type: 'error', code: 'subagent_unavailable', message: "Sub-agent 'a1' is not available." }),
     });
 
-    expect(onError).toHaveBeenCalledWith("Sub-agent 'a1' is not available.", 'subagent_unavailable');
+    expect(onError).toHaveBeenCalledWith("Sub-agent 'a1' is not available.", 'subagent_unavailable', undefined);
+  });
+
+  it('forwards the clientMessageId an error frame echoes as the third onError argument', async () => {
+    const onError = vi.fn();
+    const { socket } = await open({ onError });
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        $type: 'error',
+        code: 'relay_failed',
+        agentId: 'a1',
+        message: "Failed to relay the message to sub-agent 'a1'. Please retry.",
+        clientMessageId: 'local-user-2',
+      }),
+    });
+
+    expect(onError).toHaveBeenCalledWith(
+      "Failed to relay the message to sub-agent 'a1'. Please retry.",
+      'relay_failed',
+      'local-user-2'
+    );
   });
 
   it('types a run_completed ErrorCode as errorCode, and leaves an unclassified failure without one (#774 F-005)', async () => {
@@ -285,7 +307,7 @@ describe('openWebSocketConnection onmessage sanitization + error-code plumbing (
 
     socket.onmessage?.({ data: JSON.stringify({ $type: 'error', message: 'Unstructured failure' }) });
 
-    expect(onError).toHaveBeenCalledWith('Unstructured failure', undefined);
+    expect(onError).toHaveBeenCalledWith('Unstructured failure', undefined, undefined);
   });
 
   it('forwards sandbox refresh through the chat connection wrapper', async () => {
@@ -333,6 +355,26 @@ describe('openWebSocketConnection onmessage sanitization + error-code plumbing (
 // over the SAME socket with `{ $type: 'client_tool_result', toolCallId, result, isError? }` and the
 // server replies with a typed `client_tool_result_ack` / `client_tool_result_error` frame — the
 // resolved value itself always arrives separately as an ordinary ToolCallResultMessage.
+describe('sendWebSocketMessage (chat frame)', () => {
+  function fakeConnection(): { connection: WebSocketConnection; send: ReturnType<typeof vi.fn> } {
+    const send = vi.fn();
+    const socket = { readyState: WebSocket.OPEN, send } as unknown as WebSocket;
+    return { connection: { socket, connectionId: 'conn-1', threadId: 'thread-1', isConnected: true }, send };
+  }
+
+  it('carries a given client message id as ClientMessageId, and leaves it out otherwise', () => {
+    const { connection, send } = fakeConnection();
+
+    sendWebSocketMessage(connection, 'hello', 'local-user-1');
+    sendWebSocketMessage(connection, 'plain');
+
+    expect(send.mock.calls.map((call) => JSON.parse(call[0] as string))).toEqual([
+      { Message: 'hello', ClientMessageId: 'local-user-1' },
+      { Message: 'plain' },
+    ]);
+  });
+});
+
 describe('sendClientToolResult (#246 outbound frame)', () => {
   function fakeConnection(): { connection: WebSocketConnection; send: ReturnType<typeof vi.fn> } {
     const send = vi.fn();

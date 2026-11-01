@@ -646,7 +646,12 @@ public sealed class ChatWebSocketManager
                         parentThreadId
                     );
 
-                    await SendSubAgentUnavailableErrorAsync(connection, agentId, cancellationToken);
+                    await SendSubAgentUnavailableErrorAsync(
+                        connection,
+                        agentId,
+                        clientMessageId: null,
+                        cancellationToken
+                    );
                     return;
                 }
 
@@ -669,7 +674,7 @@ public sealed class ChatWebSocketManager
                     await ReceiveTextMessagesAsync(
                         webSocket,
                         $"subagent-replay {agentId}",
-                        (_, token) => RefuseReadOnlyFrameAsync(connection, parentThreadId, agentId, token),
+                        (frame, token) => RefuseReadOnlyFrameAsync(connection, parentThreadId, agentId, frame, token),
                         connectionCts.Token
                     );
                 }
@@ -697,7 +702,7 @@ public sealed class ChatWebSocketManager
                     : ReceiveTextMessagesAsync(
                         webSocket,
                         subAgentManager is null ? $"workflow {agentId}" : $"sub-agent-read-only {agentId}",
-                        (_, token) => RefuseReadOnlyFrameAsync(connection, parentThreadId, agentId, token),
+                        (frame, token) => RefuseReadOnlyFrameAsync(connection, parentThreadId, agentId, frame, token),
                         connectionCts.Token
                     );
 
@@ -1441,7 +1446,7 @@ public sealed class ChatWebSocketManager
                 byteCount,
                 "subagent_unavailable"
             );
-            await SendSubAgentUnavailableErrorAsync(connection, agentId, ct);
+            await SendSubAgentUnavailableErrorAsync(connection, agentId, request.ClientMessageId, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1451,7 +1456,7 @@ public sealed class ChatWebSocketManager
             // stable category and content-free identifiers are logged; the exception object is never
             // handed to the logger (its message/ToString can echo prompt/transcript/tool content — EUII).
             LogSubAgentRelayFailure(agentId, byteCount, ex);
-            await SendRelayFailedErrorAsync(connection, agentId, ct);
+            await SendRelayFailedErrorAsync(connection, agentId, request.ClientMessageId, ct);
         }
     }
 
@@ -1750,11 +1755,12 @@ public sealed class ChatWebSocketManager
     /// <summary>
     /// Sends a structured, correlated <c>relay_failed</c> error frame to the client without closing the
     /// connection — a transient relay failure must not silently drop the client's input nor tear down the
-    /// sub-agent tab. The frame carries no message body (EUII).
+    /// sub-agent tab. The frame carries no message body (EUII), only the message's client id when it had one.
     /// </summary>
     private async Task SendRelayFailedErrorAsync(
         RegisteredWebSocketConnection connection,
         string agentId,
+        string? clientMessageId,
         CancellationToken ct
     )
     {
@@ -1765,6 +1771,7 @@ public sealed class ChatWebSocketManager
             ["agentId"] = agentId,
             ["message"] = $"Failed to relay the message to sub-agent '{agentId}'. Please retry.",
         };
+        AddClientMessageId(payload, clientMessageId);
         var json = JsonSerializer.Serialize(payload, _jsonOptions);
 
         // Best-effort: a dying connection turns this into a quiet false. No close (transient failure).
@@ -1774,12 +1781,14 @@ public sealed class ChatWebSocketManager
     /// <summary>
     /// Answers an inbound frame on a tab that cannot relay - a caller without write on the parent, a
     /// persisted replay with no live child, or a workflow tab (#868) - with a <c>read_only</c> error, so the client's input
-    /// is refused visibly instead of dropped. No close and no message body (EUII).
+    /// is refused visibly instead of dropped. No close and no message body (EUII); the refused frame's
+    /// client id is echoed when it had one.
     /// </summary>
     private async Task RefuseReadOnlyFrameAsync(
         RegisteredWebSocketConnection connection,
         string parentThreadId,
         string agentId,
+        string frame,
         CancellationToken ct
     )
     {
@@ -1796,12 +1805,14 @@ public sealed class ChatWebSocketManager
             ["agentId"] = agentId,
             ["message"] = $"Sub-agent '{agentId}' is read-only here; the message was not sent.",
         };
+        AddClientMessageId(payload, ReadClientMessageId(frame));
         _ = await connection.TrySendTextAsync(JsonSerializer.Serialize(payload, _jsonOptions), ct);
     }
 
     private async Task SendSubAgentUnavailableErrorAsync(
         RegisteredWebSocketConnection connection,
         string agentId,
+        string? clientMessageId,
         CancellationToken ct
     )
     {
@@ -1812,6 +1823,7 @@ public sealed class ChatWebSocketManager
             ["agentId"] = agentId,
             ["message"] = $"Sub-agent '{agentId}' is not available.",
         };
+        AddClientMessageId(payload, clientMessageId);
         var json = JsonSerializer.Serialize(payload, _jsonOptions);
 
         if (!await connection.TrySendTextAsync(json, ct))
@@ -1825,6 +1837,31 @@ public sealed class ChatWebSocketManager
             "Sub-agent unavailable",
             CancellationToken.None
         );
+    }
+
+    /// <summary>
+    /// Adds the <see cref="ChatRequest.ClientMessageId"/> of the message an error frame is about, so the
+    /// client knows which of its sends failed. Left out when the message had none (an older client).
+    /// </summary>
+    private static void AddClientMessageId(Dictionary<string, object?> payload, string? clientMessageId)
+    {
+        if (clientMessageId is not null)
+        {
+            payload["clientMessageId"] = clientMessageId;
+        }
+    }
+
+    /// <summary>Reads an inbound frame's optional client message id; null when it has none or is not a chat request.</summary>
+    private string? ReadClientMessageId(string frame)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<ChatRequest>(frame, _jsonOptions)?.ClientMessageId;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private async Task SendProviderUnavailableErrorAsync(
@@ -2015,4 +2052,9 @@ public sealed class ChatWebSocketManager
 /// <summary>
 /// Request format for chat messages from client.
 /// </summary>
-public record ChatRequest(string Message);
+/// <param name="Message">The user's text.</param>
+/// <param name="ClientMessageId">
+/// Optional id the client gave this message. A sub-agent tab's error frame about the message echoes it
+/// as <c>clientMessageId</c>, so the client knows which of its sends failed.
+/// </param>
+public record ChatRequest(string Message, string? ClientMessageId = null);

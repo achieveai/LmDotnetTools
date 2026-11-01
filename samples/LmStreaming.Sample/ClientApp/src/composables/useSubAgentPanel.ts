@@ -116,8 +116,8 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
   // errors - a failed socket's own close lands just after the send gives up - and is cleared only by
   // the user's next action on the tab: a send or a user focus.
   let stickyError = false;
-  // The text of the last reply the server refused as read-only, for the caller to put back in the
-  // composer; null once taken.
+  // The text of the last reply the server refused as read-only or failed to relay, for the caller to
+  // put back in the composer; null once taken.
   const refusedText = ref<string | null>(null);
 
   // Per-focus state (rebuilt on every focusChild; never shared with useChat).
@@ -675,7 +675,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
           doneSeenDuringFocus = true;
           isFocusedStreaming.value = false;
         },
-        onError: (err: string, code?: string) => {
+        onError: (err: string, code?: string, clientMessageId?: string) => {
           // Settle any pending submitToFocusedChild promise unconditionally (even for a superseded
           // focus) so a resolver never leaks — see settlePendingSubmissions doc comment.
           settlePendingSubmissions({
@@ -686,13 +686,28 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
           if (focusSeq !== token) return;
           // The server refused one inbound frame on a tab that cannot relay (#868). The stream goes on;
           // the refused reply leaves the transcript, so it does not look delivered, and goes back to
-          // the caller.
+          // the caller. A server that names the refused reply gets exactly that one; an older one that
+          // does not gets the oldest.
           if (code === 'read_only') {
             log.warn('Sub-agent refused a message as read-only', { agentId });
-            const refused = takeOldestOptimisticSend();
+            const refused =
+              clientMessageId === undefined ? takeOldestOptimisticSend() : takeOptimisticSend(clientMessageId);
             if (refused !== null) refusedText.value = refused;
             setStickyError(err || 'This sub-agent is read-only here; the message was not sent.');
             return;
+          }
+          // The server could not relay one reply, and named it. The socket stays open, so this is not
+          // terminal: that reply leaves the transcript and goes back to the caller, and the user can
+          // send it again. Without a known id (an older server, or the copy is gone) nothing is
+          // guessed, and the error is handled as before.
+          if (code === 'relay_failed' && clientMessageId !== undefined) {
+            const unsent = takeOptimisticSend(clientMessageId);
+            if (unsent !== null) {
+              log.warn('Sub-agent relay failed; the reply goes back to the composer', { agentId });
+              refusedText.value = unsent;
+              setStickyError(`Message not sent. ${err || 'Failed to relay the message to the sub-agent.'}`);
+              return;
+            }
           }
           log.error('Sub-agent stream error', { agentId, code });
           isFocusedStreaming.value = false;
@@ -982,8 +997,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
    * `focusChild`/`unfocusChild`), and the overflow reconcile — the one rehydrate that reuses the
    * index inside a single focus — drops it explicitly.
    */
-  function recordOptimisticSend(text: string): void {
-    const key = `${OPTIMISTIC_SEND_KEY_PREFIX}${++optimisticSendSeq}`;
+  function recordOptimisticSend(text: string, key: string): void {
     optimisticSendKeys.add(key);
     focusedIndex.set(key, {
       id: key,
@@ -999,7 +1013,12 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
   /** Remove the oldest optimistic reply from the transcript and return its text, or null with none. */
   function takeOldestOptimisticSend(): string | null {
     const key = optimisticSendKeys.values().next().value;
-    if (key === undefined) return null;
+    return key === undefined ? null : takeOptimisticSend(key);
+  }
+
+  /** Remove the optimistic reply with this key from the transcript and return its text, or null with none. */
+  function takeOptimisticSend(key: string): string | null {
+    if (!optimisticSendKeys.has(key)) return null;
     const content = focusedIndex.get(key)?.content as TextMessage | undefined;
     optimisticSendKeys.delete(key);
     focusedIndex.delete(key);
@@ -1069,14 +1088,17 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
         return false;
       }
     }
+    // The optimistic copy's key doubles as the message's client id, which the server echoes on an error
+    // about this message, so that error can find this exact copy.
+    const key = `${OPTIMISTIC_SEND_KEY_PREFIX}${++optimisticSendSeq}`;
     try {
-      sendWebSocketMessage(focusedConnection, text);
+      sendWebSocketMessage(focusedConnection, text, key);
     } catch (e) {
       log.error('sendToFocusedChild: send failed', { error: e });
       setStickyError(`Message not sent. ${errorMessage(e)}`);
       return false;
     }
-    recordOptimisticSend(text);
+    recordOptimisticSend(text, key);
     return true;
   }
 
