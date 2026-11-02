@@ -1777,9 +1777,9 @@ public sealed class ReviewdJudgeCloseTests
         universe.AssertClean();
     }
 
-    // A query value can carry a URL of its own: redirect=https://h/x?token=..., next=/a?api_key=..., or one
-    // percent-encoded (%% in the ext command). A credential inside it is masked too, and a plain pair (ref=main)
-    // stays. Its own test: with the names above the error would pass the 400-character cap and hide what it checks.
+    // A query value can carry a URL of its own: redirect=https://h/x?token=..., next=/a?api_key=..., one
+    // percent-encoded (%% in the ext command), or one mixing an encoded credential with a raw one (mix=). A credential
+    // inside it is masked too, and a plain pair (ref=main) stays. Its own test: with the names above the error would pass the 400-character cap and hide what it checks.
     [SkippableFact]
     public async Task Close_prepare_fails_on_a_failed_round_discovery_without_printing_a_credential_nested_in_a_query_value()
     {
@@ -1789,7 +1789,8 @@ public sealed class ReviewdJudgeCloseTests
         var args = universe.PrepareArgs(3);
         args["remote"] = universe.FailSecondConnection(
             "https://h.invalid/s.git?redirect=https://h.invalid/x?token=FAKE-NEST-1111&next=/a?api_key=FAKE-NEXT-2222"
-                + "&back=https%%3A%%2F%%2Fh.invalid%%2Fy%%3Fsig%%3DFAKE-ENC-3333&ref=main"
+                + "&back=https%%3A%%2F%%2Fh.invalid%%2Fy%%3Fsig%%3DFAKE-ENC-3333"
+                + "&mix=https%%3A%%2F%%2Fh.invalid%%2Fy%%3Fsig%%3DFAKE-MIX-4444?token=FAKE-MIX-5555&ref=main"
         );
 
         var prepare = () => JudgeClose.Local(universe.Store)("close-prepare", args, default);
@@ -1799,7 +1800,8 @@ public sealed class ReviewdJudgeCloseTests
         failure
             .Message.Should()
             .Contain(
-                "https://h.invalid/s.git?redirect=https://h.invalid/x?token=***&next=/a?api_key=***&back=***&ref=main"
+                "https://h.invalid/s.git?redirect=https://h.invalid/x?token=***&next=/a?api_key=***&back=***&mix=***"
+                    + "&ref=main"
             );
         failure.Message.Should().NotContain("FAKE-");
         universe.AssertClean();
