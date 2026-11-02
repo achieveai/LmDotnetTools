@@ -16,6 +16,7 @@ host database.
 """
 import collections
 import datetime
+import functools
 import hashlib
 import html
 import io
@@ -84,7 +85,9 @@ def masked_query_value(m, depth):
     # A value can carry a URL of its own (redirect=https://h/x?token=..., next=/a?api_key=...): its pairs are masked
     # too. What is still percent-encoded after that cannot be masked in place, so if decoding it shows a credential the
     # value is hidden whole, raw parts masked or not. The decoded text is masked only when decoding changed something,
-    # so a chain of raw nested URLs costs one pass per level; past MAX_NESTED_URLS levels a value is hidden whole.
+    # so a chain of raw nested URLs costs one pass per level; past MAX_NESTED_URLS levels a value is hidden whole. A chain
+    # whose levels are each encoded once more masks both forms at every level, mostly the same text: masked() is cached,
+    # so that text is masked once rather than twice per level (16 levels took over a second each; now milliseconds).
     inner = masked(value, depth + 1)
     decoded = unquote(inner)
     if decoded != inner and masked(decoded, depth + 1) != decoded:
@@ -92,6 +95,7 @@ def masked_query_value(m, depth):
     return f"{m.group(1)}{m.group(2)}={inner}"
 
 
+@functools.lru_cache(maxsize=None)  # one process per phase, so the cache lives no longer than the phase
 def masked(text, depth=0):
     """text with the user and password of each URL in it (as in a --remote URL, or git's error about one), and the value
     of each query parameter whose name holds token, key, sig, secret, password or credential (access_token, key,

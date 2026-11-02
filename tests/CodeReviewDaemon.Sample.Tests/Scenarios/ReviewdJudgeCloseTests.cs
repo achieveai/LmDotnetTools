@@ -1807,6 +1807,38 @@ public sealed class ReviewdJudgeCloseTests
         universe.AssertClean();
     }
 
+    // Query values nested 17 deep (n=x?n=...): past 16 the value is hidden whole. A chain whose every level is encoded
+    // once more than the one holding it is masked in two forms per level, raw and decoded; without masked()'s cache 16
+    // levels took over a second each, so twelve of them here would take far past the budget.
+    [SkippableFact]
+    public async Task Close_prepare_fails_on_a_failed_round_discovery_hiding_a_value_nested_past_16_levels_in_time()
+    {
+        Skip.If(await ReviewdSummaryReplyTests.FindPythonAsync() is not "python3", "no python3 on PATH");
+        Skip.If(OperatingSystem.IsWindows(), "the failing transport is a sh script");
+        static string Chain(int levels)
+        {
+            var chain = "ref=a%2Fb";
+            for (var level = 1; level < levels; level++)
+                chain = "x?n=" + chain.Replace("%", "%25", StringComparison.Ordinal);
+            return chain;
+        }
+        using var universe = Universe.Create();
+        var args = universe.PrepareArgs(3);
+        var url = "https://h.invalid/s.git?n=" + Chain(17) + string.Concat(Enumerable.Repeat("&n=" + Chain(16), 12));
+        args["remote"] = universe.FailSecondConnection(url.Replace("%", "%%", StringComparison.Ordinal));
+
+        var prepare = () => JudgeClose.Local(universe.Store)("close-prepare", args, default);
+
+        var clock = Stopwatch.StartNew();
+        var failure = (await prepare.Should().ThrowAsync<InvalidOperationException>()).Which;
+        clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10), "masking is cached, not redone twice per level");
+        failure.Message.Should().StartWith("close step close-prepare failed (exit 2): git ls-remote ext::");
+        failure
+            .Message.Should()
+            .Contain("https://h.invalid/s.git?n=" + string.Concat(Enumerable.Repeat("x?n=", 16)) + "***&n=x?n=");
+        universe.AssertClean();
+    }
+
     [SkippableFact]
     public async Task Close_prepare_refuses_a_round_neither_the_remote_nor_the_store_has()
     {
