@@ -16,6 +16,7 @@ host database.
 """
 import collections
 import datetime
+import functools
 import hashlib
 import html
 import io
@@ -28,7 +29,7 @@ import subprocess
 import sys
 import tarfile
 import time
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 COMPLETENESS = {0: "InProgress", 1: "Partial", 2: "Complete"}
 # Material that must never land in the inputs (they sit in a git working tree) or in a close commit. Both scans read
@@ -69,10 +70,42 @@ def parse_time(text):
     return datetime.datetime.fromisoformat(text.replace("Z", "+00:00")) if text else None
 
 
-def masked(text):
+CREDENTIAL_NAME = re.compile(r"token|key|sig|secret|password|credential")
+MAX_NESTED_URLS = 16
+
+
+def masked_query_value(m, depth):
+    # The name is judged by its letters once percent-decoded, so api%5Fkey, %6Bey and api_key[] read as apikey and key.
+    name = re.sub(r"[^a-z]", "", unquote(m.group(2)).lower())
+    value = m.group(3)
+    if not value:
+        return m.group(0)
+    if CREDENTIAL_NAME.search(name) or depth >= MAX_NESTED_URLS:
+        return f"{m.group(1)}{m.group(2)}=***"
+    # A value can carry a URL of its own (redirect=https://h/x?token=..., next=/a?api_key=...): its pairs are masked
+    # too. What is still percent-encoded after that cannot be masked in place, so if decoding it shows a credential the
+    # value is hidden whole, raw parts masked or not. The decoded text is masked only when decoding changed something,
+    # so a chain of raw nested URLs costs one pass per level; past MAX_NESTED_URLS levels a value is hidden whole. A chain
+    # whose levels are each encoded once more masks both forms at every level, mostly the same text: masked() is cached,
+    # so that text is masked once rather than twice per level (16 levels took over a second each; now milliseconds).
+    inner = masked(value, depth + 1)
+    decoded = unquote(inner)
+    if decoded != inner and masked(decoded, depth + 1) != decoded:
+        inner = "***"
+    return f"{m.group(1)}{m.group(2)}={inner}"
+
+
+@functools.lru_cache(maxsize=None)  # one process per phase, so the cache lives no longer than the phase
+def masked(text, depth=0):
     """text with the user and password of each URL in it (as in a --remote URL, or git's error about one), and the value
-    of its access_token, token or sig query parameter, as ***."""
-    return re.sub(r"(?i)([?&](?:access_token|token|sig)=)[^&#\s'\"]+", r"\1***", re.sub(r"://[^/@\s]+@", "://***@", text))
+    of each query parameter whose name holds token, key, sig, secret, password or credential (access_token, key,
+    signature, client_secret, X-Amz-Signature, X-Amz-Credential, api%5Fkey, api_key[], ...), as ***. A value runs to the
+    next &, # or whitespace, quotes included: a value cut at a quote would leak the rest of a password holding one."""
+    return re.sub(
+        r"([?&])([^&#=\s]*)=([^&#\s]*)",
+        lambda m: masked_query_value(m, depth),
+        re.sub(r"://[^/@\s]+@", "://***@", text),
+    )
 
 
 def git(git_args, *cmd, check=True, env=None, stdin=None):
