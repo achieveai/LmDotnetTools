@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Sandbox: explicit marketplace lists and the gateway's available aliases.** `SandboxCreateRequest.ExplicitMarketplaces`
+  sends `Marketplaces` as given, so an empty (or omitted) list sends `"marketplaces": []` and mounts none (gateway 0.1.18+);
+  without it an empty list still omits the field and the gateway mounts its default set. `SandboxException.AvailableMarketplaces`
+  carries the `available` aliases of an unknown-alias or unknown-item 400, and stays null for the unknown-plugin 400, whose
+  `available` lists plugin refs. The error-body read limit rises from 64 KiB to 4 MiB, so a long alias list still parses.
+
 - **LmMultiTurn: `SubAgentManager.TryResolveToolCallAsync(threadId, toolCallId, result, isError)`.** Answers a call parked on a
   sub-agent at any depth after a restart. A sub-agent parked on `AskUserQuestion` was running at shutdown, so a rebuilt root
   never restored it and its question could not be answered. The method uses a live loop when one exists. Otherwise it checks

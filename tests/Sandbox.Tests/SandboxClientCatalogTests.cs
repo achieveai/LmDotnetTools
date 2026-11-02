@@ -454,7 +454,7 @@ public class SandboxClientCatalogTests
         handler.OnJson(
             HttpMethod.Post,
             "/api/v1/sandboxes",
-            """{"error":"unknown plugin id(s): x@official","code":400,"unknown":[{"marketplace":"official","plugin":"x"}],"available":[{"marketplace":"official","plugin":"review"}]}""",
+            """{"error":"unknown plugin id(s): x@official","code":400,"retryable":true,"unknown":[{"marketplace":"official","plugin":"x"}],"available":[{"marketplace":"official","plugin":"review"}]}""",
             System.Net.HttpStatusCode.BadRequest
         );
 
@@ -463,7 +463,44 @@ public class SandboxClientCatalogTests
         );
 
         exception.StatusCode.Should().Be(400);
+        exception.Retryable.Should().BeTrue("the body parsed; a status-only fallback would leave it null");
         exception.AvailableMarketplaces.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CreateAsync_UnknownPlugin400WithEmptyAvailable_LeavesAvailableMarketplacesNull()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            """{"error":"unknown plugin id(s): x@official","code":400,"retryable":true,"unknown":[{"marketplace":"official","plugin":"x"}],"available":[]}""",
+            System.Net.HttpStatusCode.BadRequest
+        );
+
+        var exception = await Assert.ThrowsAsync<SandboxException>(() =>
+            client.CreateAsync(new SandboxCreateRequest("ws", pluginSelection: [new SandboxPluginRef("official", "x")]))
+        );
+
+        exception.Retryable.Should().BeTrue("the body parsed; a status-only fallback would leave it null");
+        exception.AvailableMarketplaces.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task PreviewMarketplacesAsync_UnknownAlias400WithEmptyAvailable_SurfacesEmptyList()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/marketplaces/preview",
+            UnknownAliasBody([]),
+            System.Net.HttpStatusCode.BadRequest
+        );
+
+        var exception = await Assert.ThrowsAsync<SandboxException>(() => client.PreviewMarketplacesAsync(["nope"]));
+
+        exception.StatusCode.Should().Be(400);
+        exception.AvailableMarketplaces.Should().NotBeNull().And.BeEmpty();
     }
 
     [Fact]

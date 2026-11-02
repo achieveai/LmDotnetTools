@@ -27,6 +27,7 @@ public sealed class SandboxCreateRequest
     /// <c>true</c> sends <see cref="Marketplaces"/> exactly as given, an empty list as an explicit
     /// <c>"marketplaces": []</c> that mounts no marketplaces at all (gateway 0.1.18+). <c>false</c> (the
     /// default) keeps the legacy behaviour: an empty list omits the field and the gateway applies its default set.
+    /// With <c>true</c>, an omitted or <c>null</c> list is an empty one too: it sends <c>[]</c> and mounts none.
     /// </summary>
     public bool ExplicitMarketplaces { get; init; }
 

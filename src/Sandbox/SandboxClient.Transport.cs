@@ -474,7 +474,7 @@ public sealed partial class SandboxClient
             Retryable = error?.Retryable,
             InvalidKeys = error?.Keys,
             SnapshotIds = error?.Snapshots,
-            AvailableMarketplaces = ToAvailableMarketplaces(error?.Available),
+            AvailableMarketplaces = ToAvailableMarketplaces(error?.Available, error?.Unknown),
             RetryAfter = response.Headers.RetryAfter?.Delta,
             ImageReport = error?.Report is { } report ? TryToImageReport(report) : null,
         };
@@ -482,12 +482,13 @@ public sealed partial class SandboxClient
 
     /// <summary>
     /// The error body's <c>available</c> field as marketplace aliases, in order, only when it is an array of
-    /// strings (the unknown-alias/item 400). The unknown-plugin 400 sends <c>{marketplace, plugin}</c> objects
-    /// under the same name; those are not aliases, so any non-string element yields <c>null</c>.
+    /// strings (the unknown-alias/item 400). The unknown-plugin 400 sends <c>{marketplace, plugin}</c> refs
+    /// under the same name; those are not aliases, so that 400 yields <c>null</c>, even with an empty
+    /// <c>available</c> (its <c>unknown</c> entries name a <c>plugin</c>), as does any non-string element.
     /// </summary>
-    private static IReadOnlyList<string>? ToAvailableMarketplaces(JsonElement? available)
+    private static IReadOnlyList<string>? ToAvailableMarketplaces(JsonElement? available, JsonElement? unknown)
     {
-        if (available is not { ValueKind: JsonValueKind.Array } array)
+        if (available is not { ValueKind: JsonValueKind.Array } array || NamesPlugins(unknown))
         {
             return null;
         }
@@ -505,6 +506,12 @@ public sealed partial class SandboxClient
 
         return aliases;
     }
+
+    private static bool NamesPlugins(JsonElement? unknown) =>
+        unknown is { ValueKind: JsonValueKind.Array } entries
+        && entries
+            .EnumerateArray()
+            .Any(entry => entry.ValueKind == JsonValueKind.Object && entry.TryGetProperty("plugin", out _));
 
     /// <summary>
     /// Sends a session-scoped direct-API (ADR 0031) request that returns a SMALL JSON snapshot and hands
