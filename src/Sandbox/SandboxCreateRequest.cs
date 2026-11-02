@@ -15,13 +15,20 @@ public sealed class SandboxCreateRequest
     public string Workspace { get; }
 
     /// <summary>
-    /// Marketplace aliases to activate for this sandbox, defensively copied at construction. Empty
-    /// means "omit the field" so the gateway applies its own default set, matching the gateway's
-    /// distinction between "no marketplaces selected" (which would need an explicit empty array)
-    /// and "caller expressed no preference". Since gateway ADR 0045 that default is the operator set PLUS every
-    /// git marketplace the app registered (<see cref="SandboxClient.RegisterAppMarketplaceAsync"/>).
+    /// Marketplace aliases to activate for this sandbox, defensively copied at construction. By default
+    /// empty means "omit the field" so the gateway applies its own default set ("caller expressed no
+    /// preference"). Since gateway ADR 0045 that default is the operator set PLUS every git marketplace the
+    /// app registered (<see cref="SandboxClient.RegisterAppMarketplaceAsync"/>). To mount NO marketplaces,
+    /// set <see cref="ExplicitMarketplaces"/>, which sends an empty list as <c>[]</c>.
     /// </summary>
     public IReadOnlyList<string> Marketplaces { get; }
+
+    /// <summary>
+    /// <c>true</c> sends <see cref="Marketplaces"/> exactly as given, an empty list as an explicit
+    /// <c>"marketplaces": []</c> that mounts no marketplaces at all (gateway 0.1.18+). <c>false</c> (the
+    /// default) keeps the legacy behaviour: an empty list omits the field and the gateway applies its default set.
+    /// </summary>
+    public bool ExplicitMarketplaces { get; init; }
 
     /// <summary>Auth providers to attach, defensively copied at construction. Never constructed by the SDK.</summary>
     public IReadOnlyList<SandboxAuthProvider> AuthProviders { get; }

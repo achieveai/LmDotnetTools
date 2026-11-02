@@ -335,10 +335,12 @@ public sealed partial class SandboxClient
     private Uri ResolveRequestUri(string relativeUri) => new(_options.ServerAddress, relativeUri);
 
     /// <summary>
-    /// Upper bound on a non-2xx error body the SDK reads to classify a failure. Gateway error bodies are a
-    /// few hundred bytes; anything past this is not a gateway error body and is classified by status alone.
+    /// Upper bound on a non-2xx error body the SDK reads to classify a failure. Most gateway error bodies are a
+    /// few hundred bytes, but the unknown-alias <c>400</c> lists every selectable alias in <c>available</c>
+    /// (<see cref="SandboxException.AvailableMarketplaces"/>), about 30 bytes each, so 4 MiB keeps roughly
+    /// 140,000 aliases. Anything past this is not read in full and is classified by status alone.
     /// </summary>
-    internal const long MaxErrorBodyBytes = 64 * 1024;
+    internal const long MaxErrorBodyBytes = 4L * 1024 * 1024;
 
     /// <summary>
     /// Classifies a non-success control-plane (REST) response into a <see cref="SandboxException"/>.
@@ -447,7 +449,7 @@ public sealed partial class SandboxClient
     /// <summary>
     /// Builds the classified <see cref="SandboxException"/> for a non-2xx response from its (possibly
     /// absent) parsed error body: the kind from <see cref="MapGatewayErrorKind"/>, plus every structured
-    /// field the gateway sent (<c>error_code</c>, <c>retryable</c>, <c>keys</c>, <c>snapshots</c>) and a
+    /// field the gateway sent (<c>error_code</c>, <c>retryable</c>, <c>keys</c>, <c>snapshots</c>, <c>available</c>) and a
     /// delta-seconds <c>Retry-After</c>. Shared by the control-plane and direct-API mappers so both speak
     /// one vocabulary.
     /// </summary>
@@ -472,9 +474,36 @@ public sealed partial class SandboxClient
             Retryable = error?.Retryable,
             InvalidKeys = error?.Keys,
             SnapshotIds = error?.Snapshots,
+            AvailableMarketplaces = ToAvailableMarketplaces(error?.Available),
             RetryAfter = response.Headers.RetryAfter?.Delta,
             ImageReport = error?.Report is { } report ? TryToImageReport(report) : null,
         };
+    }
+
+    /// <summary>
+    /// The error body's <c>available</c> field as marketplace aliases, in order, only when it is an array of
+    /// strings (the unknown-alias/item 400). The unknown-plugin 400 sends <c>{marketplace, plugin}</c> objects
+    /// under the same name; those are not aliases, so any non-string element yields <c>null</c>.
+    /// </summary>
+    private static IReadOnlyList<string>? ToAvailableMarketplaces(JsonElement? available)
+    {
+        if (available is not { ValueKind: JsonValueKind.Array } array)
+        {
+            return null;
+        }
+
+        var aliases = new List<string>(array.GetArrayLength());
+        foreach (var element in array.EnumerateArray())
+        {
+            if (element.ValueKind != JsonValueKind.String)
+            {
+                return null;
+            }
+
+            aliases.Add(element.GetString()!);
+        }
+
+        return aliases;
     }
 
     /// <summary>
