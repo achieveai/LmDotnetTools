@@ -465,4 +465,43 @@ public class SandboxClientCatalogTests
         exception.StatusCode.Should().Be(400);
         exception.AvailableMarketplaces.Should().BeNull();
     }
+
+    [Fact]
+    public async Task PreviewMarketplacesAsync_UnknownAlias400OverOldLimit_SurfacesEveryAvailableAlias()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        var aliases = Enumerable.Range(0, 5_000).Select(i => $"g-{i:x24}").ToArray();
+        var body = UnknownAliasBody(aliases);
+        body.Length.Should().BeGreaterThan(64 * 1024, "the list must outgrow the old 64 KiB error-body limit");
+        handler.OnJson(HttpMethod.Get, "/api/v1/marketplaces/preview", body, System.Net.HttpStatusCode.BadRequest);
+
+        var exception = await Assert.ThrowsAsync<SandboxException>(() => client.PreviewMarketplacesAsync(["nope"]));
+
+        exception.StatusCode.Should().Be(400);
+        exception.AvailableMarketplaces.Should().Equal(aliases);
+    }
+
+    [Fact]
+    public async Task PreviewMarketplacesAsync_UnknownAlias400OverLimit_FallsBackToStatusOnly()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        var aliases = Enumerable
+            .Range(0, (int)(SandboxClient.MaxErrorBodyBytes / 29) + 1)
+            .Select(i => $"g-{i:x24}")
+            .ToArray();
+        var body = UnknownAliasBody(aliases);
+        body.Length.Should().BeGreaterThan((int)SandboxClient.MaxErrorBodyBytes);
+        handler.OnJson(HttpMethod.Get, "/api/v1/marketplaces/preview", body, System.Net.HttpStatusCode.BadRequest);
+
+        var exception = await Assert.ThrowsAsync<SandboxException>(() => client.PreviewMarketplacesAsync(["nope"]));
+
+        exception.StatusCode.Should().Be(400);
+        exception.AvailableMarketplaces.Should().BeNull();
+        exception.IsDirectReadCapExceeded.Should().BeFalse();
+    }
+
+    private static string UnknownAliasBody(IEnumerable<string> available) =>
+        "{\"error\":\"unknown marketplace alias(es): nope\",\"code\":400,\"unknown\":[\"nope\"],\"available\":["
+        + string.Join(",", available.Select(alias => $"\"{alias}\""))
+        + "]}";
 }

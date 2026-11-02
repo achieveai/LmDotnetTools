@@ -335,10 +335,12 @@ public sealed partial class SandboxClient
     private Uri ResolveRequestUri(string relativeUri) => new(_options.ServerAddress, relativeUri);
 
     /// <summary>
-    /// Upper bound on a non-2xx error body the SDK reads to classify a failure. Gateway error bodies are a
-    /// few hundred bytes; anything past this is not a gateway error body and is classified by status alone.
+    /// Upper bound on a non-2xx error body the SDK reads to classify a failure. Most gateway error bodies are a
+    /// few hundred bytes, but the unknown-alias <c>400</c> lists every selectable alias in <c>available</c>
+    /// (<see cref="SandboxException.AvailableMarketplaces"/>), about 30 bytes each, so 4 MiB keeps roughly
+    /// 140,000 aliases. Anything past this is not read in full and is classified by status alone.
     /// </summary>
-    internal const long MaxErrorBodyBytes = 64 * 1024;
+    internal const long MaxErrorBodyBytes = 4L * 1024 * 1024;
 
     /// <summary>
     /// Classifies a non-success control-plane (REST) response into a <see cref="SandboxException"/>.
