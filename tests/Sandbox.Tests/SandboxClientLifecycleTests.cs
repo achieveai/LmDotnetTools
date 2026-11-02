@@ -632,6 +632,51 @@ public class SandboxClientLifecycleTests
     }
 
     [Fact]
+    public async Task CreateAsync_ExplicitMarketplacesWithEmptyList_SendsEmptyMarketplacesArray()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreateResponseJson);
+
+        _ = await client.CreateAsync(new SandboxCreateRequest("ws", marketplaces: []) { ExplicitMarketplaces = true });
+
+        var sent = handler.Requests.Single(r => r.Method == HttpMethod.Post);
+        var body = JsonDocument.Parse(sent.Body!).RootElement;
+
+        body.GetProperty("marketplaces").ValueKind.Should().Be(JsonValueKind.Array);
+        body.GetProperty("marketplaces").GetArrayLength().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task CreateAsync_DefaultMarketplacesWithEmptyList_OmitsMarketplacesField()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreateResponseJson);
+
+        _ = await client.CreateAsync(new SandboxCreateRequest("ws", marketplaces: []));
+
+        var sent = handler.Requests.Single(r => r.Method == HttpMethod.Post);
+        var body = JsonDocument.Parse(sent.Body!).RootElement;
+
+        body.TryGetProperty("marketplaces", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CreateAsync_ExplicitMarketplacesWithList_SendsList()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreateResponseJson);
+
+        _ = await client.CreateAsync(
+            new SandboxCreateRequest("ws", marketplaces: ["official", "team"]) { ExplicitMarketplaces = true }
+        );
+
+        var sent = handler.Requests.Single(r => r.Method == HttpMethod.Post);
+        var body = JsonDocument.Parse(sent.Body!).RootElement;
+
+        body.GetProperty("marketplaces").EnumerateArray().Select(e => e.GetString()).Should().Equal("official", "team");
+    }
+
+    [Fact]
     public async Task CreateAsync_ResponseWithPluginResolution_ParsesIntoSandboxInfo()
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();

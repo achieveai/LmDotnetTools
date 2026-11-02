@@ -118,6 +118,14 @@ public sealed class SandboxException : Exception
     public IReadOnlyList<string>? SnapshotIds { get; init; }
 
     /// <summary>
+    /// The gateway's <c>available</c> marketplace aliases from a <c>400</c> unknown-alias (or unknown-item)
+    /// rejection, in the gateway's order: the aliases this caller's app may select (operator aliases plus the
+    /// app's materialized registrations). <c>null</c> when the body did not carry the field, and for every
+    /// other failure.
+    /// </summary>
+    public IReadOnlyList<string>? AvailableMarketplaces { get; init; }
+
+    /// <summary>
     /// The JSON-RPC <c>error.code</c> of a <see cref="SandboxErrorKind.McpCallFailed"/> failure, when the
     /// envelope carried an integer code. <c>null</c> for every other failure.
     /// </summary>

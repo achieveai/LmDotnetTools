@@ -166,7 +166,9 @@ public sealed partial class SandboxClient
     /// Maps a public <see cref="SandboxCreateRequest"/> to the exact gateway wire shape. Empty
     /// collections become <c>null</c> so <see cref="SandboxJson.RestOptions"/> omits the field
     /// entirely (matching the gateway's "field absent ⇒ apply my default" contract, distinct from
-    /// "field present but empty ⇒ select nothing").
+    /// "field present but empty ⇒ select nothing"). The exceptions send an empty list on purpose:
+    /// <see cref="SandboxCreateRequest.PluginSelection"/> (tri-state) and <see cref="SandboxCreateRequest.Marketplaces"/>
+    /// under <see cref="SandboxCreateRequest.ExplicitMarketplaces"/>.
     /// </summary>
     private static CreateSandboxRequestDto ToWireDto(SandboxCreateRequest request, string appId) =>
         new(
@@ -181,7 +183,11 @@ public sealed partial class SandboxClient
             Discovery: request.Discovery is { } discovery
                 ? new DiscoveryDto(new DiscoveryWebhookDto(discovery.WebhookUrl, discovery.WebhookAuth))
                 : null,
-            Marketplaces: request.Marketplaces.Count > 0 ? [.. request.Marketplaces] : null,
+            // Opt-in exact passthrough: ExplicitMarketplaces sends an empty list as [] (mount none);
+            // otherwise empty is omitted and the gateway applies its default set.
+            Marketplaces: request.ExplicitMarketplaces || request.Marketplaces.Count > 0
+                ? [.. request.Marketplaces]
+                : null,
             // Tri-state passthrough: null stays null (field omitted by RestOptions' WhenWritingNull),
             // an empty selection is sent as an explicit empty array.
             PluginSelection: request.PluginSelection is null

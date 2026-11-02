@@ -378,7 +378,14 @@ internal sealed record GatewayErrorDto(
     // Present on only_partial_snapshots (409): the gateway-minted partial snapshot ids to restore from.
     [property: JsonPropertyName("snapshots")] IReadOnlyList<string>? Snapshots = null,
     // Present on a 422 image_unsupported conformance-probe rejection: the runtime's report on the image.
-    [property: JsonPropertyName("report")] ImageReportDto? Report = null
+    [property: JsonPropertyName("report")] ImageReportDto? Report = null,
+    // Present on an unknown marketplace alias/item 400: the alias list the app may select, in gateway order.
+    // Raw JSON because the unknown-plugin 400 reuses the name for {marketplace, plugin} objects; a string list
+    // here would fail the whole body's parse and drop every other field. See ToAvailableMarketplaces.
+    [property: JsonPropertyName("available")] System.Text.Json.JsonElement? Available = null,
+    // The rejected entries of the same 400s: alias strings, {marketplace, name} items, or {marketplace, plugin}
+    // refs. Raw JSON for the same reason; only read to tell the unknown-plugin 400 apart.
+    [property: JsonPropertyName("unknown")] System.Text.Json.JsonElement? Unknown = null
 );
 
 // --- Session env REST contract (gateway PR #183 / v0.1.11) ---
