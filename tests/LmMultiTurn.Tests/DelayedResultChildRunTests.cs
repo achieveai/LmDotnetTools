@@ -488,17 +488,33 @@ public class DelayedResultChildRunTests
         // Runs after the loop has consumed tc_a's wake-up and before it takes tc_a's cause, so tc_b's
         // wake-up is the only thing on the channel when tc_a's child completes.
         var resolveNext = 1;
+        var tcBResolved = 0;
         harness.Loop.BeforeTakingNextWorkForTest = async ct =>
         {
             if (Interlocked.Exchange(ref resolveNext, 0) == 1)
             {
                 await harness.Loop.ResolveToolCallAsync("tc_b", "result-b", ct: ct);
+                Volatile.Write(ref tcBResolved, 1);
             }
+        };
+
+        // tc_a's child reports zero pending input whether or not the hook ran first, so the count
+        // alone cannot tell this scenario from one where tc_b's wake-up was never queued. Record
+        // what the first delayed child found when it started: -1 until it starts, then 0 or 1.
+        var tcBResolvedAtFirstChild = -1;
+        harness.Loop.BeforeStartingDelayedRunForTest = ct =>
+        {
+            _ = Interlocked.CompareExchange(ref tcBResolvedAtFirstChild, Volatile.Read(ref tcBResolved), -1);
+            return Task.CompletedTask;
         };
 
         await harness.Loop.ResolveToolCallAsync("tc_a", "result-a");
 
         var child = await harness.WaitForCompletionAsync(c => c.CompletedRunId != harness.OriginatingRunId);
+        Volatile
+            .Read(ref tcBResolvedAtFirstChild)
+            .Should()
+            .Be(1, "tc_b resolves before tc_a's child is taken, so its wake-up is on the channel when that child ends");
         child.IsError.Should().Be(startNotRecorded, "the two cases are the two ways a child ends without a turn");
         child.PendingMessageCount.Should().Be(0, "only the loop's own wake-up is queued, and no input follows");
         child.HasPendingMessages.Should().BeFalse();
@@ -577,6 +593,15 @@ public class DelayedResultChildRunTests
         private readonly List<RunCompletedMessage> _completions = [];
         private readonly Lock _gate = new();
 
+        /// <summary>
+        /// Set when the loop, with the opening run behind it, is about to wait for input. By then it
+        /// has already checked <see cref="MultiTurnAgentLoop.BeforeTakingNextWorkForTest"/> and found no
+        /// cause, so any cause it takes later is taken on a fresh pass, after a fresh check of the hook.
+        /// </summary>
+        private readonly TaskCompletionSource _idleAfterOpeningRun = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+
         /// <summary>One permit per provider call, released once that call's bookkeeping is visible.</summary>
         private readonly SemaphoreSlim _providerCalled = new(0);
 
@@ -648,6 +673,20 @@ public class DelayedResultChildRunTests
             var harness = new Harness(loop, store, threadId, toolCallIds.Count);
             SetupProvider(mockAgent, toolCallIds, harness);
 
+            // A test that sets a run-loop hook after this method returns must not race the loop's
+            // own pass after the opening run: a loop between its hook check and its dequeue would
+            // take the next cause without calling the hook, and the hook would then fire during
+            // disposal instead. Returning only once the loop is idle closes that window. The
+            // provider count tells this pass from the one before the opening message, because the
+            // opening run calls the provider before the loop can come back here.
+            loop.WaitingForInputForTest = () =>
+            {
+                if (harness.ProviderCallCount > 0)
+                {
+                    _ = harness._idleAfterOpeningRun.TrySetResult();
+                }
+            };
+
             _ = loop.RunAsync(harness._cts.Token);
             harness.Observe();
 
@@ -667,6 +706,7 @@ public class DelayedResultChildRunTests
 
             await loop.SendAsync([new TextMessage { Text = "Go", Role = Role.User }]);
             await harness._firstRunCompleted.Task.WaitAsync(WaitBudget);
+            await harness._idleAfterOpeningRun.Task.WaitAsync(WaitBudget);
 
             var pending = await loop.GetDeferredToolCallsAsync();
             pending.Should().HaveCount(toolCallIds.Count, "the harness starts from a fully parked run");
@@ -846,9 +886,14 @@ public class DelayedResultChildRunTests
                                 _completions.Add(completed);
                             }
 
-                            if (_firstRunCompleted.TrySetResult(true))
+                            // The id is published before the signal, never after: a waiter released by
+                            // the signal reads it at once, and an empty id matches every completion,
+                            // the opening run's included. Only this pump sets either, so the check
+                            // and the set cannot interleave with another writer.
+                            if (!_firstRunCompleted.Task.IsCompleted)
                             {
                                 OriginatingRunId = completed.CompletedRunId;
+                                _ = _firstRunCompleted.TrySetResult(true);
                             }
 
                             // Released after the recording, so a waiter that wakes on it sees the run

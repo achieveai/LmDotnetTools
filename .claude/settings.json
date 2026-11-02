@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-CimInstance *)",
+      "PowerShell(Get-Process *)",
+      "Bash(dotnet csharpier check *)",
+      "Bash(tasklist *)",
+      "PowerShell(gh pr view *)",
+      "PowerShell(gh pr checks *)",
+      "PowerShell(gh run view *)",
+      "PowerShell(gh issue view *)",
+      "PowerShell(git check-ignore *)",
+      "PowerShell(Get-NetTCPConnection *)",
+      "mcp__hitl__ReadWork"
+    ]
+  }
+}

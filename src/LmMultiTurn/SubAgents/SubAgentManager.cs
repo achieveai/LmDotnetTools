@@ -2168,10 +2168,11 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
-    /// Restarts a finished (completed/error/stopped) sub-agent's run with a new message.
+    /// Restarts a finished (completed/error/stopped) sub-agent's run with a new message, or with none to
+    /// only rebuild its loop from its transcript (<see cref="TryResolveToolCallAsync"/>).
     /// On success the new monitor owns the concurrency gate; on failure the gate is released.
     /// </summary>
-    private async Task RestartRunAsync(SubAgentState state, IMessage message, CancellationToken ct)
+    private async Task RestartRunAsync(SubAgentState state, IMessage? message, CancellationToken ct)
     {
         if (!await _concurrencyGate.WaitAsync(TimeSpan.FromSeconds(5), ct))
         {
@@ -2377,7 +2378,10 @@ public sealed class SubAgentManager : IAsyncDisposable
             // Re-subscribe BEFORE sending to avoid subscribe-after-send race
             state.MonitorTask = MonitorSubAgentAsync(state, gateGuard, runGeneration, cts.Token);
 
-            _ = await state.Agent.SendAsync([message], ct: ct);
+            if (message is not null)
+            {
+                _ = await state.Agent.SendAsync([message], ct: ct);
+            }
 
             // Publish Running as the final step of the restart transition, but skip it if the restarted
             // run already completed-and-disposed (a fast run can finish before this line executes):
@@ -5856,10 +5860,248 @@ public sealed class SubAgentManager : IAsyncDisposable
         return restored;
     }
 
+    /// <summary>
+    /// Resolves a deferred call (an <c>AskUserQuestion</c>) parked on the sub-agent whose transcript is
+    /// <paramref name="threadId"/>, at any depth below this manager, after a restart. A restart leaves such a
+    /// sub-agent unregistered (it was running when its parent went away) or registered without a loop, and
+    /// the same holds for each parent between it and this manager. Each one on the path is registered from
+    /// its <see cref="SubAgentRecord"/> if needed and its loop rebuilt from its transcript, which parks the
+    /// call again, and then the call is resolved on the rebuilt loop. A sub-agent with a live loop is used as
+    /// it is.
+    /// </summary>
+    /// <returns>
+    /// The loop's outcome. <see cref="ResolveToolCallOutcome.NotFound"/> when the thread is not a sub-agent
+    /// below this manager, cannot be rebuilt, or never parked the call; <see cref="ResolveToolCallOutcome.Duplicate"/>
+    /// or <see cref="ResolveToolCallOutcome.Conflict"/> when its transcript already holds the answer. Those three
+    /// leave every sub-agent and record as they were.
+    /// </returns>
+    public async Task<ResolveToolCallOutcome> TryResolveToolCallAsync(
+        string threadId,
+        string toolCallId,
+        string result,
+        bool isError = false,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentException.ThrowIfNullOrEmpty(threadId);
+        ArgumentException.ThrowIfNullOrEmpty(toolCallId);
+        ArgumentNullException.ThrowIfNull(result);
+
+        // A live loop decides for itself; its newest deferral may not be saved yet.
+        if (LiveLoop(threadId) is { } live)
+        {
+            return await live.TryResolveToolCallAsync(toolCallId, result, isError, ct: ct);
+        }
+
+        // Waking registers and restarts sub-agents, so a stale or repeated answer must be refused before it.
+        var saved = await SavedCallStateAsync(threadId, toolCallId, result, isError, ct);
+        if (saved is { } refused)
+        {
+            return refused;
+        }
+
+        var loop = await WakeAsync(threadId, MaxWakeDepth, ct);
+        return loop is null
+            ? ResolveToolCallOutcome.NotFound
+            : await loop.TryResolveToolCallAsync(toolCallId, result, isError, ct: ct);
+    }
+
+    // Bounds the walk up a chain of records, so a corrupt record that names itself cannot loop forever.
+    private const int MaxWakeDepth = 32;
+
+    /// <summary>The live loop on <paramref name="threadId"/> at any depth below this manager; null when there is none.</summary>
+    private MultiTurnAgentLoop? LiveLoop(string threadId)
+    {
+        foreach (var state in _agents.Values)
+        {
+            if (state.Agent is not MultiTurnAgentLoop loop || state.HasDisposedAgentLoop)
+            {
+                continue;
+            }
+
+            if (string.Equals(loop.ThreadId, threadId, StringComparison.Ordinal))
+            {
+                return loop;
+            }
+
+            if (loop.SubAgentManager?.LiveLoop(threadId) is { } nested)
+            {
+                return nested;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// What the saved transcript on <paramref name="threadId"/> says about <paramref name="toolCallId"/>: null
+    /// while the call is still parked there (its last result is the deferred placeholder), otherwise the
+    /// refusal. The transcript is what a rebuilt loop parks again, so it decides whether a wake can help.
+    /// </summary>
+    private async Task<ResolveToolCallOutcome?> SavedCallStateAsync(
+        string threadId,
+        string toolCallId,
+        string result,
+        bool isError,
+        CancellationToken ct
+    )
+    {
+        if (
+            _ordinals.Store is not { } store
+            || !threadId.StartsWith(_ordinals.ScopedThreadIdPrefix, StringComparison.Ordinal)
+        )
+        {
+            return ResolveToolCallOutcome.NotFound;
+        }
+
+        var history = MessagePersistenceConverter.FromPersistedMessagesResilient(
+            await store.LoadMessagesAsync(threadId, ct),
+            cancellationToken: ct
+        );
+        var last = history
+            .OfType<ToolCallResultMessage>()
+            .LastOrDefault(r => string.Equals(r.ToolCallId, toolCallId, StringComparison.Ordinal));
+        if (last is { IsDeferred: false } && EarlySettlePlaceholders.IsEarlySettleResult(last.Result))
+        {
+            // Settled early, so the question is still open: the rebuilt loop redirects the answer into
+            // the conversation. Once one answer went in that way, a repeat must not wake it again.
+            return RedirectedAnswer(history, toolCallId) is not { } redirected ? null
+                : !isError && redirected.Contains("\n<answer>\n" + result + "\n</answer>\n", StringComparison.Ordinal)
+                    ? ResolveToolCallOutcome.Duplicate
+                : ResolveToolCallOutcome.Conflict;
+        }
+
+        return last switch
+        {
+            null => ResolveToolCallOutcome.NotFound,
+            { IsDeferred: true } => null,
+            _ when last.IsError == isError && string.Equals(last.Result, result, StringComparison.Ordinal) =>
+                ResolveToolCallOutcome.Duplicate,
+            _ => ResolveToolCallOutcome.Conflict,
+        };
+    }
+
+    /// <summary>
+    /// The text of the user turn that carried a late answer to the early-settled <paramref name="toolCallId"/>
+    /// into the conversation, or null when none was injected yet.
+    /// </summary>
+    private static string? RedirectedAnswer(IEnumerable<IMessage> history, string toolCallId)
+    {
+        var marker = " tool-call-id=\"" + System.Security.SecurityElement.Escape(toolCallId) + "\">\n<request>\n";
+        return history
+            .OfType<TextMessage>()
+            .Select(m => m.Text)
+            .LastOrDefault(t => t.StartsWith('<') && t.Contains(marker, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The live loop of the sub-agent on <paramref name="threadId"/> below this manager, rebuilt from its
+    /// transcript (with every parent between) when a restart or an idle release left it without one.
+    /// </summary>
+    private async Task<MultiTurnAgentLoop?> WakeAsync(string threadId, int depth, CancellationToken ct)
+    {
+        if (
+            depth <= 0
+            || _ordinals.Store is not { } store
+            || !threadId.StartsWith(_ordinals.ScopedThreadIdPrefix, StringComparison.Ordinal)
+        )
+        {
+            return null;
+        }
+
+        var metadata = await store.LoadMetadataAsync(threadId, ct);
+        if (SubAgentRecord.IsFromANewerBuild(metadata) || SubAgentRecord.Read(metadata) is not { } record)
+        {
+            return null;
+        }
+
+        if (!string.Equals(record.ParentThreadId, _parentAgent.ThreadId, StringComparison.Ordinal))
+        {
+            // Deeper: wake the parent first, whose rebuilt loop's own manager owns this one.
+            if (string.IsNullOrEmpty(record.ParentThreadId))
+            {
+                return null;
+            }
+
+            var parent = await WakeAsync(record.ParentThreadId, depth - 1, ct);
+            return parent?.SubAgentManager is { } nested ? await nested.WakeAsync(threadId, depth - 1, ct) : null;
+        }
+
+        if (!_agents.ContainsKey(record.AgentId))
+        {
+            _ = await TryRestoreFinishedAgentAsync(store, threadId, ct, admitInterrupted: true);
+        }
+
+        if (
+            !_agents.TryGetValue(record.AgentId, out var state)
+            || !string.Equals(state.Agent.ThreadId, threadId, StringComparison.Ordinal)
+        )
+        {
+            return null;
+        }
+
+        lock (_spawnQueue)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0 || _quiesced, this);
+            _messagesInFlight++;
+        }
+
+        try
+        {
+            while (true)
+            {
+                if (state.Agent is MultiTurnAgentLoop live && !state.HasDisposedAgentLoop)
+                {
+                    return live;
+                }
+
+                // The answer's run relays its result to the parent, as the parked run would have.
+                var decision = state.BeginContinuation(notifyParentOnCompletion: true);
+                if (decision.Mode == ContinuationMode.Inject)
+                {
+                    // Running on a loop installed since the check above: use that loop.
+                    state.EndInjectLease();
+                    return state.HasDisposedAgentLoop ? null : state.Agent as MultiTurnAgentLoop;
+                }
+
+                if (decision.Mode == ContinuationMode.AwaitRestart)
+                {
+                    await decision.RestartCompleted!.WaitAsync(ct);
+                    continue;
+                }
+
+                state.ResetCompletionIfFinished();
+                try
+                {
+                    await RestartRunAsync(state, message: null, ct);
+                }
+                finally
+                {
+                    state.EndRestart();
+                }
+
+                _logger.LogInformation(
+                    "Rebuilt sub-agent {AgentId} from its transcript to resolve a parked call",
+                    state.AgentId
+                );
+            }
+        }
+        finally
+        {
+            lock (_spawnQueue)
+            {
+                _messagesInFlight--;
+            }
+        }
+    }
+
+    // admitInterrupted also registers a sub-agent that was running, or stopped by host shutdown, when its
+    // parent went away, as Stopped. Only TryResolveToolCallAsync asks for it: an answer is waiting for it.
     private async Task<bool> TryRestoreFinishedAgentAsync(
         IConversationStore store,
         string threadId,
-        CancellationToken ct
+        CancellationToken ct,
+        bool admitInterrupted = false
     )
     {
         var metadata = await store.LoadMetadataAsync(threadId, ct);
@@ -5894,7 +6136,8 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         // Stopped is only ever set when the parent loop went away under a running child (host shutdown,
         // or a recreated parent), so it keeps the interrupted semantics of a child still running.
-        if (!IsTerminal(record.Status) || record.Status == SubAgentStatus.Stopped)
+        var interrupted = !IsTerminal(record.Status) || record.Status == SubAgentStatus.Stopped;
+        if (interrupted && !admitInterrupted)
         {
             _logger.LogInformation(
                 "Sub-agent {AgentId} was {Status} ({FailureCode}) when its parent stopped; left unregistered",
@@ -5957,10 +6200,11 @@ public sealed class SubAgentManager : IAsyncDisposable
             SpawnCapability = spawnCapability,
             Name = string.IsNullOrWhiteSpace(grantedName) ? null : grantedName,
         };
+        // A run the parent's shutdown cut short is Stopped by that shutdown, whatever its record last said.
         state.RestoreFinished(
-            record.Status,
-            record.TerminalAtUtc,
-            record.FailureCode,
+            interrupted ? SubAgentStatus.Stopped : record.Status,
+            interrupted ? record.TerminalAtUtc ?? DateTimeOffset.UtcNow : record.TerminalAtUtc,
+            interrupted ? record.FailureCode ?? ShutdownFailureCode : record.FailureCode,
             record.LastResult,
             record.ErrorMessage
         );
@@ -5980,7 +6224,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             return false;
         }
 
-        SyncCollaborationStatus(record.AgentId, ToCollaborationStatus(record.Status));
+        SyncCollaborationStatus(record.AgentId, ToCollaborationStatus(state.Status));
         _logger.LogDebug(
             "Restored finished sub-agent {AgentId} ({Status}); the next message to it rebuilds it",
             record.AgentId,

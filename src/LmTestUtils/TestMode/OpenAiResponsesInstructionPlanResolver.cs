@@ -127,6 +127,11 @@ public static class OpenAiResponsesInstructionPlanResolver
                 continue;
             }
 
+            if (TryAddNamespaceToolNames(tool, uniqueToolNames, toolNames))
+            {
+                continue;
+            }
+
             if (TryAddResponseToolName(tool, uniqueToolNames, toolNames))
             {
                 continue;
@@ -136,6 +141,49 @@ public static class OpenAiResponsesInstructionPlanResolver
         }
 
         return toolNames.Count == 0 ? "No tools available" : string.Join(", ", toolNames);
+    }
+
+    /// <summary>
+    ///     Codex groups each MCP server's tools as one <c>{"type":"namespace","name":"mcp__server","tools":[…]}</c>
+    ///     entry; lists each inner tool as <c>mcp__server__tool</c> instead of the group name.
+    /// </summary>
+    private static bool TryAddNamespaceToolNames(
+        JsonElement tool,
+        HashSet<string> uniqueToolNames,
+        List<string> toolNames
+    )
+    {
+        if (
+            !tool.TryGetProperty("type", out var type)
+            || type.ValueKind != JsonValueKind.String
+            || type.GetString() != "namespace"
+            || !tool.TryGetProperty("name", out var name)
+            || name.ValueKind != JsonValueKind.String
+            || !tool.TryGetProperty("tools", out var innerTools)
+            || innerTools.ValueKind != JsonValueKind.Array
+        )
+        {
+            return false;
+        }
+
+        foreach (var inner in innerTools.EnumerateArray())
+        {
+            if (
+                inner.ValueKind == JsonValueKind.Object
+                && inner.TryGetProperty("name", out var innerName)
+                && innerName.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(innerName.GetString())
+            )
+            {
+                var qualified = $"{name.GetString()}__{innerName.GetString()}";
+                if (uniqueToolNames.Add(qualified))
+                {
+                    toolNames.Add(qualified);
+                }
+            }
+        }
+
+        return true;
     }
 
     private static bool TryAddResponseToolName(

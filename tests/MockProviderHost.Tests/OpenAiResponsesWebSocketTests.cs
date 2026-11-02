@@ -99,6 +99,34 @@ public sealed class OpenAiResponsesWebSocketTests
     }
 
     [Fact]
+    public async Task Tools_list_names_each_tool_inside_a_codex_namespace()
+    {
+        var responder = ScriptedSseResponder.New().ForRole("scenario", _ => true).Turn(t => t.Text("unused")).Build();
+        await using var fixture = await EphemeralHostFixture.StartAsync(responder);
+        using var socket = new ClientWebSocket();
+        await socket.ConnectAsync(BuildWsUri(fixture.BaseUrl), CancellationToken.None);
+
+        // Codex 0.16x sends each MCP server's tools as one namespace entry.
+        const string chainPrompt =
+            """<|instruction_start|>{"instruction_chain":[{"id":"tools","messages":[{"tools_list":{}}]}]}<|instruction_end|>""";
+        var promptJson = JsonSerializer.Serialize(chainPrompt);
+        var frame = $$"""
+            {"type":"response.create","model":"gpt-test",
+             "tools":[{"type":"function","name":"exec_command","parameters":{"type":"object"} },
+                      {"type":"namespace","name":"mcp__sample_tools","description":"d","tools":[
+                        {"type":"function","name":"echo","parameters":{"type":"object"} },
+                        {"type":"function","name":"Agent","parameters":{"type":"object"} }]}],
+             "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":{{promptJson}} }]}]}
+            """;
+        await SendJsonAsync(socket, frame);
+
+        var events = await ReadStreamUntilCompletedAsync(socket);
+        var text = string.Concat(events.OfType<ResponseOutputTextDeltaEvent>().Select(d => d.Delta));
+
+        text.Should().Be("exec_command, mcp__sample_tools__echo, mcp__sample_tools__Agent");
+    }
+
+    [Fact]
     public async Task Multiple_response_create_frames_share_one_socket()
     {
         var responder = ScriptedSseResponder

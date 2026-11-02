@@ -23,7 +23,14 @@ function getText(): string {
   return inputText.value;
 }
 
-defineExpose({ setText, getText });
+const textareaRef = ref<HTMLTextAreaElement | null>(null);
+
+/** Moves keyboard focus to the message box, e.g. after the control that held it was removed. */
+function focus(): void {
+  textareaRef.value?.focus();
+}
+
+defineExpose({ setText, getText, focus });
 
 function handleSubmit() {
   const text = inputText.value.trim();
@@ -55,6 +62,7 @@ function handleKeydown(event: KeyboardEvent) {
         <label class="sr-only" for="chat-message-input">Message</label>
         <textarea
           id="chat-message-input"
+          ref="textareaRef"
           v-model="inputText"
           :disabled="disabled"
           aria-describedby="chat-input-hint"
