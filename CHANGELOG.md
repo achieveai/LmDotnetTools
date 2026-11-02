@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **LmMultiTurn: `SubAgentManager.TryResolveToolCallAsync(threadId, toolCallId, result, isError)`.** Answers a call parked on a
+  sub-agent at any depth after a restart. A sub-agent parked on `AskUserQuestion` was running at shutdown, so a rebuilt root
+  never restored it and its question could not be answered. The method uses a live loop when one exists. Otherwise it checks
+  the saved transcript first: only a call still parked there wakes anything. It then registers the sub-agent and each parent
+  between it and the manager from their records, rebuilds their loops from their transcripts, and resolves on the exact thread.
+  An unknown thread or call answers `NotFound`, an answered one `Duplicate` or `Conflict`; none of them registers or restarts
+  a sub-agent. A question settled early (other input arrived while it was parked) is still open: the answer wakes the
+  sub-agent and is redirected into its conversation, as on a live loop. Once that has happened, a repeat answer is
+  `Duplicate` or `Conflict` and wakes nothing. Startup restore rules are unchanged.
+
 - **Sandbox SDK: every create sends `network.default_action: "deny"`.** The gateway applies that action to any request no rule allows, and uses its own default when the field is missing. Before, the SDK never sent it, so a gateway build whose default was allow would open all sandbox egress. A create with no rules now sends `network: {"default_action": "deny"}` instead of no `network` block; the gateway treats both the same today.
 
 - **LmMultiTurn: `SqliteConversationStore` schema v7 (#821).** The first call on a v6 database upgrades it, and every call waits until that finishes. The upgrade adds compact listing columns and the `conversation_usage_state` / `conversation_usage_records` tables. It took about 2 minutes for 13.5k conversations and about 23 minutes on a 10x copy. It commits in 100-row batches and resumes after a restart. Older builds refuse a v7 database, so back it up first.
