@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using FluentAssertions;
 using LmStreaming.Sample.Browser.E2E.Tests.Infrastructure;
@@ -227,6 +229,107 @@ public sealed class AskUserQuestionTests
         await session.SaveSuccessScreenshotAsync(
             "AskUserQuestion.Pending_question_survives_reload_and_can_still_be_answered"
         );
+    }
+
+    /// <summary>
+    /// The inbox learns about a question in ANOTHER conversation from the server's push alone. It used
+    /// to read every conversation's transcript and sub-agent roster on each page load (and every 30 s
+    /// after), which on a busy host meant thousands of requests, half of them 503. A fresh load of
+    /// conversation B must list A's question without the page asking for anything of A's, and
+    /// answering it from the inbox must clear it.
+    /// </summary>
+    [Fact]
+    public async Task A_question_in_another_conversation_reaches_the_inbox_without_reading_that_conversation()
+    {
+        const string ProviderMode = "test-anthropic";
+        var responder = ScriptedSseResponder
+            .New()
+            .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
+            .Turn(t => t.Text("Hello from B."))
+            .Turn(t =>
+                t.ToolCall(
+                    "AskUserQuestion",
+                    new
+                    {
+                        context = "Need to know your favorite color before continuing.",
+                        questions = new object[]
+                        {
+                            new
+                            {
+                                prompt = "Pick a color",
+                                options = new object[]
+                                {
+                                    new { label = "Red", value = "red" },
+                                    new { label = "Blue", value = "blue" },
+                                },
+                            },
+                        },
+                    }
+                )
+            )
+            .Turn(t => t.Text("Great, blue it is."))
+            .Build();
+
+        await using var session = await _fixture.OpenAsync(
+            ProviderMode,
+            responder.HandlerFor(ProviderMode),
+            sandboxToolCatalogProbe: new BaselineSandboxToolCatalogProbe()
+        );
+        var page = session.Page;
+
+        await page.NewChatButton().ClickAsync();
+        await page.SendMessageAsync("hello");
+        await page.AssistantText().WaitForTextContainsAsync("Hello from B.", timeoutMs: 20_000);
+        await page.WaitForStreamIdleAsync();
+        var conversationB = (await page.ConversationThreadIdsAsync()).Single();
+
+        await page.NewChatButton().ClickAsync();
+        await page.SendMessageAsync("what should I pick?");
+        await page.WaitForStreamIdleAsync();
+        await page.QuestionForm().WaitForAsync();
+        await page.ConversationItems().WaitForCountAtLeastAsync(2);
+        var conversationA = (await page.ConversationThreadIdsAsync()).Single(id => id != conversationB);
+
+        // A fresh load of B. Everything the page asks for from here on is recorded.
+        var requested = new ConcurrentQueue<string>();
+        page.Request += (_, request) => requested.Enqueue(request.Url);
+        await page.GotoAsync($"{session.Factory.ServerAddress.TrimEnd('/')}/?threadId={conversationB}");
+        await page.Textarea().WaitForAsync();
+        await page.AssistantText().WaitForTextContainsAsync("Hello from B.", timeoutMs: 20_000);
+
+        var elsewhere = page.GetByTestId("elsewhere-question-dock");
+        await Assertions.Expect(elsewhere).ToContainTextAsync("Pick a color");
+        await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
+        await session.SaveSuccessScreenshotAsync("AskUserQuestion.question_elsewhere_listed_from_push");
+
+        // The open conversation reads its own transcript and roster; nothing else is read per conversation.
+        requested
+            .Where(url => url.Contains("/api/conversations/thread-", StringComparison.Ordinal))
+            .Should()
+            .OnlyContain(
+                url => url.Contains($"/api/conversations/{conversationB}/", StringComparison.Ordinal),
+                "A's question arrived by push"
+            );
+        requested
+            .Should()
+            .NotContain(
+                url => url.Contains("limit=1000", StringComparison.Ordinal),
+                "nothing paged every conversation"
+            );
+
+        await elsewhere.GetByTestId("elsewhere-question-review").ClickAsync();
+        await page.QuestionForm().WaitForAsync();
+        await page.QuestionOption("blue").ClickAsync();
+        await page.QuestionSubmitButton().ClickAsync();
+        await page.AssistantText().WaitForTextContainsAsync("blue it is", timeoutMs: 20_000);
+        await page.WaitForStreamIdleAsync();
+
+        await Assertions
+            .Expect(page.GetByTestId("question-inbox-trigger"))
+            .Not.ToHaveClassAsync(new Regex("has-questions"));
+        await Assertions.Expect(elsewhere).ToHaveCountAsync(0);
+        responder.RemainingTurns["parent"].Should().Be(0);
+        await session.SaveSuccessScreenshotAsync("AskUserQuestion.question_elsewhere_answered_and_cleared");
     }
 
     private sealed class BaselineSandboxToolCatalogProbe : ISandboxToolCatalogProbe

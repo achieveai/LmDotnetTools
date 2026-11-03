@@ -194,6 +194,51 @@ public class AskUserQuestionEarlySettleTests
         await fixture.DisposeAsync();
     }
 
+    // ---------------------------------------------------------------- what the host is told
+
+    /// <summary>
+    /// An early settle lets the AGENT move on; the human can still answer. So the host's
+    /// pending-question observer must keep showing the question until the redirected answer lands,
+    /// and a host re-reading the persisted transcript after a restart must reach the same verdict.
+    /// Reporting the settle at the early settle made a question the user could still answer vanish
+    /// from every other conversation's inbox.
+    /// </summary>
+    [Fact]
+    public async Task EarlySettle_KeepsTheQuestionPendingForTheHost_UntilTheRedirectedAnswerLands()
+    {
+        var store = new InMemoryConversationStore();
+        var observer = new RecordingQuestionObserver();
+        var fixture = await ParkOnQuestionAsync(store, "observed-thread", observer: observer);
+        observer.Raised.Should().ContainSingle(n => n.ToolCallId == QuestionCallId);
+
+        await fixture.Loop.SendAsync([new TextMessage { Text = "wait, hold on", Role = Role.User }]);
+        await fixture.Collector.WaitForCompletionsAsync(2);
+
+        observer.Settled.Should().BeEmpty();
+        PendingQuestionNotices
+            .IsAwaitingAnswer(await PersistedHistoryAsync(store, "observed-thread"), QuestionCallId)
+            .Should()
+            .BeTrue();
+
+        (await fixture.Loop.TryResolveToolCallAsync(QuestionCallId, "Blue"))
+            .Should()
+            .Be(ResolveToolCallOutcome.Resolved);
+        await fixture.Collector.WaitForCompletionsAsync(3);
+
+        observer.Settled.Should().ContainSingle().Which.Should().Be(("observed-thread", QuestionCallId));
+        PendingQuestionNotices
+            .IsAwaitingAnswer(await PersistedHistoryAsync(store, "observed-thread"), QuestionCallId)
+            .Should()
+            .BeFalse();
+
+        await fixture.DisposeAsync();
+    }
+
+    private static async Task<IReadOnlyList<IMessage>> PersistedHistoryAsync(
+        IConversationStore store,
+        string threadId
+    ) => MessagePersistenceConverter.FromPersistedMessagesResilient(await store.LoadMessagesAsync(threadId));
+
     // ---------------------------------------------------------------- criterion 9
 
     [Fact]
@@ -521,7 +566,8 @@ public class AskUserQuestionEarlySettleTests
     private async Task<Fixture> ParkOnQuestionAsync(
         IConversationStore? store = null,
         string? threadId = null,
-        bool persistRunLedger = false
+        bool persistRunLedger = false,
+        IPendingQuestionObserver? observer = null
     )
     {
         var requests = new List<List<IMessage>>();
@@ -560,7 +606,10 @@ public class AskUserQuestionEarlySettleTests
             store: store,
             logger: _loggerMock.Object,
             persistRunLedger: persistRunLedger
-        );
+        )
+        {
+            PendingQuestionObserver = observer,
+        };
 
         var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
@@ -628,6 +677,51 @@ public class AskUserQuestionEarlySettleTests
             ct.ThrowIfCancellationRequested();
             yield return msg;
             await Task.Yield();
+        }
+    }
+}
+
+/// <summary>Records what a loop tells its host about questions.</summary>
+internal sealed class RecordingQuestionObserver : IPendingQuestionObserver
+{
+    private readonly List<PendingQuestionNotice> _raised = [];
+    private readonly List<(string RootThreadId, string ToolCallId)> _settled = [];
+
+    public IReadOnlyList<PendingQuestionNotice> Raised
+    {
+        get
+        {
+            lock (_raised)
+            {
+                return [.. _raised];
+            }
+        }
+    }
+
+    public IReadOnlyList<(string RootThreadId, string ToolCallId)> Settled
+    {
+        get
+        {
+            lock (_settled)
+            {
+                return [.. _settled];
+            }
+        }
+    }
+
+    public void OnQuestionRaised(PendingQuestionNotice notice)
+    {
+        lock (_raised)
+        {
+            _raised.Add(notice);
+        }
+    }
+
+    public void OnQuestionSettled(string rootThreadId, string toolCallId)
+    {
+        lock (_settled)
+        {
+            _settled.Add((rootThreadId, toolCallId));
         }
     }
 }

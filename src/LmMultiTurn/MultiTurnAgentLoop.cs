@@ -3905,6 +3905,7 @@ public sealed class MultiTurnAgentLoop
             contentBlocks,
             truncated,
             originalBytes,
+            isEarlySettle,
             ct
         );
     }
@@ -3959,6 +3960,7 @@ public sealed class MultiTurnAgentLoop
         IList<ToolResultContentBlock>? contentBlocks,
         bool truncated,
         int? originalBytes,
+        bool isEarlySettle,
         CancellationToken ct
     )
     {
@@ -4122,9 +4124,13 @@ public sealed class MultiTurnAgentLoop
 
         var cause = _delayed.CompleteResolve(pending, newMessage);
 
-        // Settled: answered, cancelled, or redirected. One call for every way a question stops
-        // waiting, because every one of them commits through CompleteResolve.
-        SettleQuestionIfPending(pending.Entry);
+        // Settled: answered or cancelled. An early settle is the one CompleteResolve that does not end
+        // the wait for the HUMAN: the question stays answerable, and its answer is redirected into the
+        // conversation later — RedirectAnswerToConversationAsync reports the settle when that lands.
+        if (!isEarlySettle)
+        {
+            SettleQuestionIfPending(pending.Entry.FunctionName, toolCallId);
+        }
 
         Logger.LogInformation(
             "Tool call {ToolCallId} resolved (was deferred for {ElapsedMs}ms)",
@@ -4456,6 +4462,7 @@ public sealed class MultiTurnAgentLoop
             contentBlocks,
             truncated,
             originalBytes,
+            isEarlySettle,
             ct
         );
     }
@@ -4562,6 +4569,10 @@ public sealed class MultiTurnAgentLoop
             "Tool call {ToolCallId} was settled early; its answer was injected into the conversation instead",
             toolCallId
         );
+
+        // The human's wait ends here, not at the early settle: until this turn existed the question was
+        // still answerable, and the host kept showing it.
+        SettleQuestionIfPending(ToolNameOf(toolCallId), toolCallId);
         return (ResolveToolCallOutcome.Resolved, null);
     }
 
@@ -4687,11 +4698,11 @@ public sealed class MultiTurnAgentLoop
     /// Tells the host's <see cref="IPendingQuestionObserver"/> that an <c>AskUserQuestion</c> has
     /// stopped waiting. Same guards as <see cref="RaiseQuestionIfPending"/>.
     /// </summary>
-    private void SettleQuestionIfPending(DeferredEntry entry)
+    private void SettleQuestionIfPending(string? functionName, string toolCallId)
     {
         if (
             _pendingQuestionObserver is not { } observer
-            || !string.Equals(entry.FunctionName, AskUserQuestionToolProvider.ToolName, StringComparison.Ordinal)
+            || !string.Equals(functionName, AskUserQuestionToolProvider.ToolName, StringComparison.Ordinal)
         )
         {
             return;
@@ -4699,13 +4710,23 @@ public sealed class MultiTurnAgentLoop
 
         try
         {
-            observer.OnQuestionSettled(ThreadId, entry.ToolCallId);
+            observer.OnQuestionSettled(ThreadId, toolCallId);
         }
         catch (Exception ex)
         {
-            Logger.LogWarning(ex, "Pending-question observer threw settling tool call {ToolCallId}", entry.ToolCallId);
+            Logger.LogWarning(ex, "Pending-question observer threw settling tool call {ToolCallId}", toolCallId);
         }
     }
+
+    /// <summary>
+    /// The tool <paramref name="toolCallId"/> called, read from history. Only needed once the call is
+    /// no longer deferred, when the deferral registry has already forgotten it.
+    /// </summary>
+    private string? ToolNameOf(string toolCallId) =>
+        GetHistorySnapshot()
+            .OfType<ToolCallMessage>()
+            .LastOrDefault(tc => string.Equals(tc.ToolCallId, toolCallId, StringComparison.Ordinal))
+            ?.FunctionName;
 
     /// <summary>
     /// Returns the set of tool calls currently deferred (awaiting external resolution).

@@ -487,10 +487,13 @@ function Invoke-GitMetadata {
 # survive a Recognized-deployment update untouched. Everything else in the staged output
 # replaces the destination's current content (deny-by-default). ".env" is the ONLY preserve
 # entry that a fresh publish never produces on its own -- it is carried over from the
-# EXISTING destination only, never from staging.
+# EXISTING destination only, never from staging. conversations.pending-questions.json is the
+# question inbox's list beside the default database: nothing can rebuild it, unlike the
+# parent-child index next to it.
 $script:DestinationPreserveList = @(
     'conversations',
     'conversations.db',
+    'conversations.pending-questions.json',
     'notify-waits.db',
     'oauth-tokens',
     'workspaces',

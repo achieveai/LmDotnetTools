@@ -38,6 +38,8 @@ const makeConversation = (overrides: Partial<ConversationSummary> = {}): Convers
 const sharedMocks = vi.hoisted(() => ({
   questionEntries: [] as QuestionInboxEntry[],
   questionEntriesRef: null as Ref<QuestionInboxEntry[]> | null,
+  /** The mocked inbox's `refresh` (a reconnect in the real composable), captured at mount. */
+  inboxRefresh: null as ReturnType<typeof vi.fn> | null,
   /** `useQuestionInbox`'s `onQuestionRaised` hook, captured at mount. See the mock below. */
   raiseQuestion: null as ((question: PendingQuestionEvent) => void) | null,
   chatLoading: false,
@@ -405,13 +407,14 @@ vi.mock('@/api/contextApi', () => ({
 // mounting ChatLayout doesn't fire real fetch/WebSocket polling (which would reject in jsdom).
 vi.mock('@/composables/useQuestionInbox', async () => {
   const { ref } = await import('vue');
-  return { useQuestionInbox: (_current: unknown, options?: { onQuestionRaised?: (q: unknown) => void }) => {
+  return { useQuestionInbox: (options?: { onQuestionRaised?: (q: unknown) => void }) => {
     const entries = ref(sharedMocks.questionEntries);
     sharedMocks.questionEntriesRef = entries;
     // Capture the push hook so the toast tests can raise a question the way `/ws/events` does,
     // without a socket. The real composable calls it once per genuinely new pushed question.
     sharedMocks.raiseQuestion = options?.onQuestionRaised ?? null;
-    return { entries, isRefreshing: ref(false), error: ref(null), refresh: vi.fn(async () => {}) };
+    sharedMocks.inboxRefresh = vi.fn(async () => {});
+    return { entries, isRefreshing: ref(false), error: ref(null), refresh: sharedMocks.inboxRefresh };
   } };
 });
 
@@ -870,6 +873,41 @@ describe('ChatLayout question inbox automatic retry', () => {
     wrapper.unmount();
   });
 
+  /**
+   * The server can list a question this conversation's transcript already shows answered (a settle it
+   * missed). Refreshing used to re-read every transcript, which dropped it; now it only reconnects, and
+   * the server's snapshot lists it again — which re-ran the automatic open, which reconnected again.
+   */
+  it('opens a question the transcript shows answered once, and neither reconnects nor retries it', async () => {
+    sharedMocks.subAgentQuestionResult = { ...deferredResult, result: '{"answers":[]}', is_deferred: false };
+    sharedMocks.focusChild.mockImplementation(async (agentId: string) => {
+      sharedMocks.focusedAgentIdRef!.value = agentId;
+    });
+    const wrapper = mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          PendingQuestionDock: true,
+          ChatInput: true,
+        },
+      },
+    });
+    await flushPromises();
+
+    // The server keeps listing it: each reconnect delivers the same snapshot as a fresh list.
+    for (let snapshot = 0; snapshot < 3; snapshot += 1) {
+      sharedMocks.questionEntriesRef!.value = [{ ...entry }];
+      await flushPromises();
+    }
+
+    expect(sharedMocks.focusChild).toHaveBeenCalledTimes(1);
+    expect(wrapper.text()).toContain('This question is no longer waiting for an answer.');
+    expect(sharedMocks.inboxRefresh).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
   it('leaves another conversation in the inbox until the user selects it', async () => {
     const otherEntry: QuestionInboxEntry = {
       ...entry,
@@ -973,6 +1011,9 @@ describe('ChatLayout question inbox automatic retry', () => {
     toolCallId: 'question-9',
     prompt: 'Which quarter should I start from?',
     conversationTitle: 'Budget review',
+    provider: null,
+    mode: null,
+    workspace: null,
     agentName: null,
     raisedAtUtc: '2026-09-21T10:00:00.0000000Z',
     ...overrides,
@@ -1024,6 +1065,44 @@ describe('ChatLayout question inbox automatic retry', () => {
 
     expect(sharedMocks.disconnectWebSocket).toHaveBeenCalledTimes(1);
     expect(wrapper.find('[data-testid="question-toast"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  /**
+   * The inbox's summary is built from the push, so it carries the bindings but none of the listing's
+   * other fields. It may only stand in for a conversation the sidebar has not paged in: overwriting a
+   * listed one would drop its preview, sharing and lineage.
+   */
+  it('adds an unlisted conversation from the inbox, with its bindings, and leaves a listed one alone', async () => {
+    const unlisted = {
+      ...remoteEntry,
+      conversation: { ...remoteEntry.conversation, provider: 'openai', mode: 'coder', workspace: 'repo' },
+    };
+    sharedMocks.questionEntries = [unlisted];
+    sharedMocks.addOrUpdateConversation.mockClear();
+    let wrapper = mountLayout();
+    await flushPromises();
+    sharedMocks.raiseQuestion!(raised());
+    await flushPromises();
+    await wrapper.get('[data-testid="question-toast-review"]').trigger('click');
+    await flushPromises();
+    expect(sharedMocks.addOrUpdateConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'thread-9', provider: 'openai', mode: 'coder', workspace: 'repo' })
+    );
+    wrapper.unmount();
+
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [entry.conversation, makeConversation({ threadId: 'thread-9', preview: 'Listed' })];
+    sharedMocks.addOrUpdateConversation.mockClear();
+    wrapper = mountLayout();
+    await flushPromises();
+    sharedMocks.raiseQuestion!(raised());
+    await flushPromises();
+    await wrapper.get('[data-testid="question-toast-review"]').trigger('click');
+    await flushPromises();
+    expect(sharedMocks.addOrUpdateConversation).not.toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'thread-9' })
+    );
     wrapper.unmount();
   });
 
