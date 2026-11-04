@@ -4344,6 +4344,12 @@ public sealed class ReviewdRunnerTests
                 .And.Contain("Do not reset or rerun setup")
                 .And.Contain("give it only to a history specialist, who writes anything useful into history-notes.md")
                 .And.Contain("The rest of the review reads history-notes.md and ignores setup-history files");
+            // The judged ratings are split by the rules header in the sent prompt; v1 reviews say "Review quality rules."
+            var reviewText = JsonNode.Parse(
+                handler.Requests.First(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal)).Body!
+            )!["text"]!.GetValue<string>();
+            reviewText.Should().Contain(ReviewRunner.ReviewQualityRules).And.Contain("Review quality rules v2.");
+            reviewText.Should().NotContain("Review quality rules.");
             await SnapshotAsync('d');
             var beforeReReview = handler.Requests.Count;
             first["reviewCompletedAt"] = DateTimeOffset.UtcNow.AddHours(-1);
