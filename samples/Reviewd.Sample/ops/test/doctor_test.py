@@ -25,6 +25,7 @@ class FakeProbe(doctor.Probe):
     def __init__(self):
         self.pids, self.release, self.linked, self.timers, self.status = ["42"], "r2", "r2", True, {}
         self.hung = set()
+        self.memory, self.disk, self.biggest = 20.0, 500.0, [("claude", 64709, 16.5), ("dotnet", 811, 2.3)]
 
     def batch_pids(self, install):
         if install.name in self.hung:
@@ -42,6 +43,15 @@ class FakeProbe(doctor.Probe):
 
     def http_status(self, url):
         return self.status.get(url, "200" if ":5000" in url else "405")
+
+    def memory_available_gb(self):
+        return self.memory
+
+    def disk_free_gb(self):
+        return self.disk
+
+    def top_memory(self, count=3):
+        return self.biggest[:count]
 
 
 def make_install(root, name="reviewd-alpha", rows=(), batch_log="", keepalive_log=""):
@@ -193,6 +203,21 @@ class Checks(unittest.TestCase):
         found = {p["kind"]: p["fix"] for p in doctor.fleet_problems(self.probe)}
         self.assertEqual(found, {"host-down": None, "auth-down": "start-auth"})
 
+    def test_low_memory_and_low_disk_are_alert_only_and_name_the_biggest_process(self):
+        self.probe.memory, self.probe.disk = 4.2, 120.0
+        found = {p["kind"]: p for p in doctor.fleet_problems(self.probe)}
+        self.assertEqual({kind: p["fix"] for kind, p in found.items()}, {"low-memory": None, "low-disk": None})
+        self.assertIn("4.2 GB", found["low-memory"]["detail"])
+        self.assertIn("claude pid 64709 16.5 GB, dotnet pid 811 2.3 GB", found["low-memory"]["detail"])
+        self.assertIn("120 GB", found["low-disk"]["detail"])
+
+    def test_memory_below_three_gb_is_critical(self):
+        self.probe.memory = 2.9
+        self.assertEqual([p["kind"] for p in doctor.fleet_problems(self.probe)], ["memory-critical"])
+
+    def test_enough_memory_and_disk_raise_nothing(self):
+        self.probe.memory, self.probe.disk = 5.0, 150.0
+        self.assertEqual(doctor.fleet_problems(self.probe), [])
 
     def test_start_auth_without_a_nova_install_fails_instead_of_crashing(self):
         make_install(self.root, "reviewd-alpha")
@@ -250,6 +275,18 @@ class Ticks(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         self.assertIn("host-down", self.sent[0][1])
         self.assertEqual(self.fixed, [], "the shared host is never restarted by the doctor")
+
+    def test_low_memory_alerts_after_thirty_minutes_but_critical_memory_alerts_at_once(self):
+        self.probe.memory = 4.0
+        early = NOW.replace(hour=1)
+        self.tick(early)
+        self.assertEqual(self.sent, [])
+        self.probe.memory = 2.5
+        self.tick(early + minutes(15))
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("memory-critical", self.sent[0][1])
+        self.assertIn("claude pid 64709", self.sent[0][1])
+        self.assertEqual(self.fixed, [], "the doctor never kills a process to free memory")
 
     def test_a_cleared_problem_is_forgotten(self):
         self.probe.timers = False

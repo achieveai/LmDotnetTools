@@ -19,6 +19,7 @@ import json
 import os
 import re
 import select
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -51,6 +52,12 @@ SCHEDULING = re.compile(r"^(Batch scheduling finished|\S.* #\d+: (prepare|verify
 FAILURE = re.compile(r"^PR \S.* (?:requeued|held on lane \d+|quarantined after \d+ identical failures on head \S+): (.*)")
 # Reaper lines that mean the slot's conversation still has live agents: the reaper waits on those by design.
 ACTIVE = ("still active", "in progress", "did not quiesce")
+# Host guard. On 11-02 a Claude supervision session grew to 22 GB and filled swap. The kernel's out-of-memory kill
+# then took the machine down for 18 hours. Name the biggest processes while there is still time to act. Below the
+# critical line the alert goes out at once, not after ALERT_AFTER.
+LOW_MEMORY_GB = 5
+CRITICAL_MEMORY_GB = 3
+LOW_DISK_GB = 150
 
 
 def ts(value):
@@ -111,6 +118,26 @@ class Probe:
     def http_status(self, url):
         return subprocess.run(["curl", "-s", "-o", "/dev/null", "-m", "10", "-w", "%{http_code}", url],
                               capture_output=True, text=True).stdout.strip()
+
+    def memory_available_gb(self):
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / 2**20
+        return None
+
+    def disk_free_gb(self):
+        return shutil.disk_usage("/").free / 2**30
+
+    def top_memory(self, count=3):
+        """The biggest processes by resident memory, as (name, pid, GB)."""
+        rows = []
+        for status in glob.glob("/proc/[0-9]*/status"):
+            try:
+                fields = dict(line.split(":", 1) for line in Path(status).read_text().splitlines() if ":" in line)
+                rows.append((fields["Name"].strip(), int(fields["Pid"]), int(fields["VmRSS"].split()[0]) / 2**20))
+            except (OSError, KeyError, ValueError):
+                continue  # gone since the listing, or a kernel thread or zombie with no VmRSS
+        return sorted(rows, key=lambda row: -row[2])[:count]
 
 
 def read_db(install):
@@ -261,6 +288,17 @@ def host_problems(probe):
     if probe.http_status("http://172.17.0.1:5206/api/auth/webhook/ado") != "405":
         found.append({"key": "fleet:auth-down:", "install": "fleet", "kind": "auth-down",
                       "detail": "auth serve :5206 is not answering", "fix": "start-auth"})
+    available = probe.memory_available_gb()
+    if available is not None and available < LOW_MEMORY_GB:
+        kind = "memory-critical" if available < CRITICAL_MEMORY_GB else "low-memory"
+        biggest = ", ".join(f"{name} pid {pid} {gb:.1f} GB" for name, pid, gb in probe.top_memory())
+        found.append({"key": f"fleet:{kind}:", "install": "fleet", "kind": kind,
+                      "detail": f"memory available {available:.1f} GB (alert below {LOW_MEMORY_GB} GB); "
+                                f"biggest: {biggest}", "fix": None})
+    free = probe.disk_free_gb()
+    if free < LOW_DISK_GB:
+        found.append({"key": "fleet:low-disk:", "install": "fleet", "kind": "low-disk",
+                      "detail": f"free disk {free:.0f} GB (alert below {LOW_DISK_GB} GB)", "fix": None})
     return found
 
 
@@ -412,7 +450,7 @@ def tick(now, probe, dry_run=False, root=None, state_path=None, notifier=None, f
             record({"key": p["key"], "fix": p["fix"], "exit": code, "output": output, "busy": busy}, dry_run)
             continue
         age = now - (ts(entry["first"]) or now)
-        due = (p["kind"] == "new-failure" or (p["fix"] is None and age >= ALERT_AFTER)
+        due = (p["kind"] in ("new-failure", "memory-critical") or (p["fix"] is None and age >= ALERT_AFTER)
                or entry["attempts"] >= MAX_FIX_ATTEMPTS)
         if due and (not ts(entry["alerted"]) or now - ts(entry["alerted"]) >= REALERT):
             alerts.append((p, entry))
