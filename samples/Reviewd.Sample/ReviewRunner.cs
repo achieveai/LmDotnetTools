@@ -63,9 +63,11 @@ internal static class ReviewRunner
     internal const int NoSlotExitCode = 3;
 
     // The rules the merged-PR judge grades every review on (Prompts/merged-judge.md, "The owner's rules"). The pilot's
-    // lowest grades were a clear verdict, the right amount and thread help.
+    // lowest grades were a clear verdict, the right amount and thread help. v2 adds the judges' most repeated lessons
+    // from ~2,400 judged PRs: issues lost between finding and posting, weak dismissals, unchecked fixes, cases merged
+    // away, and failing checks left unexplained. The judge is unchanged, so "v2" in the first line splits the ratings.
     internal const string ReviewQualityRules = """
-        Review quality rules. Every review is graded on these after the PR merges; give them to any sub-agent that writes or posts comments:
+        Review quality rules v2. Every review is graded on these after the PR merges; give them to any sub-agent that checks, decides on, writes or posts findings:
         - Verdict first: the summary's first line is REQUEST_CHANGES, APPROVE_WITH_COMMENTS or APPROVE, then the blockers, then smaller suggestions, as short bullets. Each round's summary stands alone and says only what is new or still open; never call it "round 2" when no earlier round was posted.
         - Short and plain: the point first, at most three short lines per finding. Say "iteration 3", not a commit SHA; a short file name, not a full path; no finding ids, lane names or thread ids. Never list checks that passed, lanes that ran, or limitations the author cannot act on.
         - Build on others: when a human or another bot already raised a point, reply in their thread (agree and say why, add missing evidence, or correct it) instead of posting it again as yours.
@@ -74,6 +76,15 @@ internal static class ReviewRunner
         - No invention: every code example, API, file and line you post exists at the head you reviewed, and a suggested fix stays within what you verified.
         - Right severity: ask for cheap, worthwhile fixes (an easy missing test, hygiene) as required, not optional; keep blockers for real merge risks; do not ask for a change the author would later have to undo.
         - Keep artifacts: never delete earlier rounds' context, notes or findings; a later round reuses them.
+        - One decision per issue: before posting, list every issue any agent raised (findings, tables, test-gap rows, notes) and mark each posted, merged into another, refuted or deferred, with a one-line reason. Nothing is dropped without a reason.
+        - Drop only with proof: refute a finding only by citing the guard or test that handles that exact input on the same code path. Call it pre-existing only after checking the target branch and showing this PR adds no new way to reach it. A reachable, allowed input is proof enough; do not wait for an incident or a failing test.
+        - Severity needs evidence: lower a verified bug's severity only with evidence. An unknown rollout, flag or traffic state is a question for the author, not a reason to soften. Low severity lowers priority, never validity.
+        - Check the fix like the bug: verify every suggested fix, example and alternative against the code before posting; it fixes the proven case, breaks no other caller, and goes no wider than what you verified.
+        - Merge wording, not cases: merge findings only when trigger, faulty step and result are the same. Keep each distinct case, file and missing test as its own short line; short never means fewer cases.
+        - Trace before claiming: claim harm only with the path trigger -> faulty step -> missing guard -> result; if one link is unknown, ask one scoped question instead. Before calling something missing, search for it and say where you looked.
+        - Repo rules: read the repo's instruction files for the changed paths (.github/copilot-instructions.md, .github/instructions/*.instructions.md, AGENTS.md, CLAUDE.md, coding standards) and cite the rule id or section a finding rests on. Apply them to new and changed lines only.
+        - Look where misses cluster: for each changed branch try odd but allowed inputs (empty, null, duplicate, boundary, retry, timeout); trace every caller of a changed signature, schema or contract; find docs, comments and PR text the change made untrue; check that each new test would fail without the change.
+        - Failing checks: read failing builds, tests, coverage and bot reports on the PR; in the summary say whether this PR caused each failure, its likely cause (file and line) and the fix.
         """;
 
     public static async Task<int> RunAsync(CliOptions options, ReviewdConfig config, CancellationToken ct)
