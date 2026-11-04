@@ -220,7 +220,7 @@ public class ConversationsControllerContextTests
     }
 
     [Fact]
-    public async Task GetContext_ReturnsHierarchyBusy503DuringUnrelatedPublication_ThenRecovers()
+    public async Task GetContext_ReturnsHierarchyBusy503DuringALinkChangeElsewhere_ThenRecovers()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"context-busy-{Guid.NewGuid():N}");
         await using var pool = ConversationsControllerTests.CreatePool();
@@ -241,16 +241,27 @@ public class ConversationsControllerContextTests
             .Setup(s => s.LoadMetadataAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 0 });
         blockedInner
-            .Setup(s => s.SaveMetadataAsync("unrelated", It.IsAny<ThreadMetadata>(), It.IsAny<CancellationToken>()))
+            .Setup(s =>
+                s.SaveMetadataAsync("subagent-elsewhere", It.IsAny<ThreadMetadata>(), It.IsAny<CancellationToken>())
+            )
             .Returns(async () =>
             {
                 entered.SetResult();
                 await release.Task;
             });
         var blocked = new IndexedConversationStore(blockedInner.Object, Path.Combine(directory, ".blocked.json"));
+        // Only a parent-link change holds discovery off, and it does so host-wide: this one attaches a
+        // sub-agent under another root.
         var mutation = blocked.SaveMetadataAsync(
-            "unrelated",
-            new ThreadMetadata { ThreadId = "unrelated", LastUpdated = 0 }
+            "subagent-elsewhere",
+            new ThreadMetadata
+            {
+                ThreadId = "subagent-elsewhere",
+                LastUpdated = 0,
+                Properties = SubAgentProvenance
+                    .Build("another-root", null)
+                    .Add(SubAgentProvenance.AgentIdKey, "agent-elsewhere"),
+            }
         );
         try
         {

@@ -282,14 +282,12 @@ public sealed class IndexedConversationStoreTests : IDisposable
             .Setup(s => s.LoadMetadataAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((ThreadMetadata?)null);
         var store = Create(inner.Object);
+        // Every attempt sees a sub-agent attached somewhere else: only a parent link moves the epoch.
         inner
             .Setup(s => s.LoadMetadataAsync("root", It.IsAny<CancellationToken>()))
             .Returns(async () =>
             {
-                await store.SaveMetadataAsync(
-                    "unrelated",
-                    new ThreadMetadata { ThreadId = "unrelated", LastUpdated = 0 }
-                );
+                await store.SaveMetadataAsync("subagent-elsewhere", Child("subagent-elsewhere", "elsewhere"));
                 return new ThreadMetadata { ThreadId = "root", LastUpdated = 0 };
             });
 
@@ -332,9 +330,9 @@ public sealed class IndexedConversationStoreTests : IDisposable
     }
 
     // Reads re-check every child against its metadata, so a stale relation only shows in the published index.
-    private Dictionary<string, string> PublishedParents() =>
+    private Dictionary<string, string> PublishedParents(string file = ".index.json") =>
         JsonDocument
-            .Parse(File.ReadAllText(Path.Combine(_directory, ".index.json")))
+            .Parse(File.ReadAllText(Path.Combine(_directory, file)))
             .RootElement.GetProperty("parents")
             .EnumerateObject()
             .ToDictionary(p => p.Name, p => p.Value.GetString()!);
@@ -375,11 +373,29 @@ public sealed class IndexedConversationStoreTests : IDisposable
         // This fixture owns the empty snapshot. Replace its target with a directory to force rename failure.
         File.Delete(Path.Combine(_directory, ".index.json"));
         Directory.CreateDirectory(Path.Combine(_directory, ".index.json"));
+        var publication = store.SaveMetadataAsync("subagent-child", Child("subagent-child", "root"));
+        // The index file is derived state, written after the new link is visible: reads are not held for the
+        // ~1 s the rename spends retrying. Before, every read on the host was busy for the whole write.
+        var seenWhileWriting = false;
+        while (!publication.IsCompleted && !seenWhileWriting)
+        {
+            try
+            {
+                seenWhileWriting = (await store.ReadChildrenAsync("root", true)).Any(n =>
+                    n.ThreadId == "subagent-child"
+                );
+            }
+            catch (InvalidOperationException)
+            {
+                // Busy for the instant the link is being published, then faulted once the write gives up.
+            }
+            await Task.Delay(5);
+        }
+        seenWhileWriting.Should().BeTrue();
         // Renaming onto a directory is an IOException on Linux but UnauthorizedAccessException on Windows.
-        var publication = await Record.ExceptionAsync(() =>
-            store.SaveMetadataAsync("subagent-child", Child("subagent-child", "root"))
-        );
-        publication.Should().Match(e => e is IOException || e is UnauthorizedAccessException);
+        (await Record.ExceptionAsync(() => publication))
+            .Should()
+            .Match(e => e is IOException || e is UnauthorizedAccessException);
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.ReadChildrenAsync("root", true));
         Directory.Delete(Path.Combine(_directory, ".index.json"));
         await store.SaveMetadataAsync("unrelated", new ThreadMetadata { ThreadId = "unrelated", LastUpdated = 0 });
@@ -388,31 +404,20 @@ public sealed class IndexedConversationStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task PendingMutation_BlocksDiscoveryAndFailedCallbackReconcilesBeforeRethrowing()
+    public async Task PendingLinkChange_BlocksDiscovery_AndAFailedCallbackRethrowsItsOwnError()
     {
-        var inner = new FileConversationStore(_directory, null, strictMetadataReads: true);
+        var inner = new HoldingConversationStore(
+            new FileConversationStore(_directory, null, strictMetadataReads: true)
+        );
         var store = Create(inner);
         await store.SaveMetadataAsync("subagent-child", Child("subagent-child", "root"));
-        using var entered = new ManualResetEventSlim();
-        using var release = new ManualResetEventSlim();
-        var mutation = Task.Run(() =>
-            store.UpdateMetadataAsync(
-                "subagent-child",
-                row =>
-                {
-                    entered.Set();
-                    if (!release.Wait(TimeSpan.FromMinutes(2)))
-                        throw new TimeoutException("The test did not release the metadata callback.");
-                    return row! with
-                    {
-                        Properties = row.Properties!.SetItem(SubAgentProvenance.StatusKey, "completed"),
-                    };
-                }
-            )
+        // Attaching a new child is a real link change: held after it is judged, before it lands.
+        var attach = await inner.HoldUpdateAsync(
+            "subagent-late",
+            () => store.UpdateMetadataAsync("subagent-late", _ => Child("subagent-late", "root"))
         );
         try
         {
-            entered.Wait(TimeSpan.FromMinutes(2)).Should().BeTrue();
             var busy = await Assert.ThrowsAsync<IndexedConversationStore.HierarchyBusyException>(() =>
                 store.ReadChildrenAsync("root", true)
             );
@@ -441,16 +446,171 @@ public sealed class IndexedConversationStoreTests : IDisposable
         }
         finally
         {
-            release.Set();
-            await mutation;
+            inner.Release();
+            await attach;
         }
-        (await store.ReadChildrenAsync("root", true)).Should().ContainSingle(n => n.Status == "completed");
+        (await store.ReadChildrenAsync("root", true))
+            .Select(n => n.ThreadId)
+            .Should()
+            .Equal("subagent-child", "subagent-late");
         var expected = new InvalidOperationException("callback failed");
         var observed = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             store.UpdateMetadataAsync("subagent-child", _ => throw expected)
         );
         observed.Should().BeSameAs(expected);
+        (await store.ReadChildrenAsync("root", true)).Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task LinkChangeThatLandsThenFails_IsPublished_AndRethrowsItsOwnError()
+    {
+        var rows = new Dictionary<string, ThreadMetadata>(StringComparer.Ordinal);
+        var expected = new IOException("connection lost after the commit");
+        var inner = new Mock<IConversationStore>();
+        inner
+            .Setup(s =>
+                s.ListThreadsAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<ConversationListOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync([]);
+        inner
+            .Setup(s => s.LoadMetadataAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string id, CancellationToken _) => rows.GetValueOrDefault(id));
+        inner
+            .Setup(s =>
+                s.SaveMetadataAsync(It.IsAny<string>(), It.IsAny<ThreadMetadata>(), It.IsAny<CancellationToken>())
+            )
+            .Callback((string id, ThreadMetadata row, CancellationToken _) => rows[id] = row)
+            .ThrowsAsync(expected);
+        var store = Create(inner.Object);
+
+        var observed = await Assert.ThrowsAsync<IOException>(() =>
+            store.SaveMetadataAsync("subagent-child", Child("subagent-child", "root"))
+        );
+
+        observed.Should().BeSameAs(expected);
+        // The write landed despite the error, so the reread publishes it: reads neither stay busy nor miss it.
+        (await store.ReadChildrenAsync("root", true))
+            .Should()
+            .ContainSingle(n => n.ThreadId == "subagent-child");
+    }
+
+    /// <summary>
+    /// Only a parent link is hierarchy state. Usage, context and status writes land on every conversation
+    /// many times a turn; while each of them counted as a hierarchy change, a read of ANY conversation's
+    /// sub-agents answered 503 whenever one was in flight anywhere on the host.
+    /// </summary>
+    [Fact]
+    public async Task ContentWrites_DoNotBlockDiscovery()
+    {
+        Directory.CreateDirectory(_directory);
+        await using var sqlite = new SqliteConversationStore(Path.Combine(_directory, "conversations.db"));
+        var inner = new HoldingConversationStore(sqlite);
+        var store = Create(inner);
+        await store.SaveMetadataAsync("subagent-child", Child("subagent-child", "root"));
+        await store.SaveMetadataAsync("other", new ThreadMetadata { ThreadId = "other", LastUpdated = 0 });
+
+        // A write to an unrelated conversation, held as it lands. It holds SQLite's one metadata write lock,
+        // so a write to the child itself queues behind it, as writes queue on the host.
+        var held = await inner.HoldUpdateAsync(
+            "other",
+            () => store.UpdateMetadataAsync("other", row => row! with { LastUpdated = 1 })
+        );
+        var queued = store.UpdateMetadataAsync("subagent-child", row => row! with { LastUpdated = 1 });
+        await ReadWhileHeld(held, queued);
+        // The child's own status write, held as it lands.
+        held = await inner.HoldUpdateAsync(
+            "subagent-child",
+            () =>
+                store.UpdateMetadataAsync(
+                    "subagent-child",
+                    row => row! with { Properties = row.Properties!.SetItem(SubAgentProvenance.StatusKey, "completed") }
+                )
+        );
+        await ReadWhileHeld(held);
+
         (await store.ReadChildrenAsync("root", true)).Should().ContainSingle(n => n.Status == "completed");
+        SqliteConnection.ClearAllPools();
+
+        async Task ReadWhileHeld(params Task[] writes)
+        {
+            try
+            {
+                (await store.ReadChildrenAsync("root", true))
+                    .Should()
+                    .ContainSingle(n => n.ThreadId == "subagent-child" && n.Status == "running");
+            }
+            finally
+            {
+                inner.Release();
+                await Task.WhenAll(writes);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The live index is updated in place rather than rebuilt, so after any mix of writes it must still be
+    /// exactly what a restart rebuilds from metadata: every published link, and every parent's children.
+    /// </summary>
+    [Fact]
+    public async Task LiveIndex_MatchesARestartAfterAnyMixOfWrites()
+    {
+        var inner = new FileConversationStore(_directory, null, strictMetadataReads: true);
+        var store = Create(inner);
+        var random = new Random(918);
+        string[] roots = ["root-a", "root-b"];
+        // Two spellings of one storage slot: the index must treat them as the same child.
+        string[] children =
+        [
+            "subagent-0",
+            "subagent-1",
+            "subagent-2",
+            "subagent-a_b",
+            "subagent-a" + Path.GetInvalidFileNameChars()[0] + "b",
+        ];
+        for (var step = 0; step < 120; step++)
+        {
+            var id = children[random.Next(children.Length)];
+            var parents = roots.Concat(children.Where(c => c != id)).ToArray();
+            var parent = parents[random.Next(parents.Length)];
+            switch (random.Next(5))
+            {
+                case 0:
+                    await store.SaveMetadataAsync(id, Child(id, parent));
+                    break;
+                case 1:
+                    await store.UpdateMetadataAsync(id, _ => Child(id, parent));
+                    break;
+                case 2:
+                    await store.UpdateMetadataAsync(
+                        id,
+                        row =>
+                            (row ?? new ThreadMetadata { ThreadId = id, LastUpdated = 0 }) with
+                            {
+                                LastUpdated = step,
+                            }
+                    );
+                    break;
+                case 3:
+                    await store.SaveMetadataAsync(id, new ThreadMetadata { ThreadId = id, LastUpdated = step });
+                    break;
+                default:
+                    await store.DeleteThreadAsync(id);
+                    break;
+            }
+
+            var restarted = new IndexedConversationStore(inner, Path.Combine(_directory, ".restart.json"));
+            await restarted.InitializeAsync();
+            PublishedParents().Should().Equal(PublishedParents(".restart.json"), $"step {step}");
+            foreach (var node in roots.Concat(children))
+                (await store.ReadChildrenAsync(node, recursive: false))
+                    .Should()
+                    .BeEquivalentTo(await restarted.ReadChildrenAsync(node, recursive: false), $"step {step}");
+        }
     }
 
     [Theory]

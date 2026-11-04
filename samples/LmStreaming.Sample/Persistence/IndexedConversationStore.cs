@@ -38,8 +38,9 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
     private Dictionary<string, string> _parents = new(StringComparer.Ordinal);
     private Dictionary<string, HashSet<string>> _children = new(StringComparer.Ordinal);
 
-    // How many ids in _parents share each storage key, so a write that changes nothing skips the scan.
-    private Dictionary<string, int> _aliasCounts = new(StorageComparer);
+    // The ids in _parents under each storage key, so a write is judged and relinked without a scan.
+    // After startup all three maps change in place, only while holding both _publish and _gate.
+    private Dictionary<string, HashSet<string>> _idsByKey = new(StorageComparer);
     private bool _ready;
     private long _epoch;
     private int _pending;
@@ -127,15 +128,63 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
     private void RebuildDerived()
     {
         _children = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
-        _aliasCounts = new Dictionary<string, int>(StorageComparer);
+        _idsByKey = new Dictionary<string, HashSet<string>>(StorageComparer);
         foreach (var (child, parent) in _parents)
         {
-            if (!_children.TryGetValue(parent, out var children))
-                _children[parent] = children = new HashSet<string>(StringComparer.Ordinal);
-            children.Add(child);
-            var key = StorageKey(child);
-            _aliasCounts[key] = _aliasCounts.GetValueOrDefault(key) + 1;
+            Add(_children, parent, child);
+            Add(_idsByKey, StorageKey(child), child);
         }
+    }
+
+    private static void Add(Dictionary<string, HashSet<string>> sets, string key, string id)
+    {
+        if (!sets.TryGetValue(key, out var set))
+            sets[key] = set = new HashSet<string>(StringComparer.Ordinal);
+        set.Add(id);
+    }
+
+    private static void Remove(Dictionary<string, HashSet<string>> sets, string key, string id)
+    {
+        if (sets.TryGetValue(key, out var set) && set.Remove(id) && set.Count == 0)
+            sets.Remove(key);
+    }
+
+    private static string? ParentOf(ThreadMetadata? metadata) =>
+        metadata is null ? null : SubAgentProvenance.TryProject(metadata)?.ParentThreadId;
+
+    // Whether a storage slot's published link already says what its record says: no entry for a root, or
+    // exactly this child under the same parent. Callers hold _gate.
+    private bool LinkMatches(string key, string childId, string? parent)
+    {
+        var ids = _idsByKey.GetValueOrDefault(key);
+        return parent is null
+            ? ids is null
+            : ids is { Count: 1 }
+                && ids.Contains(childId)
+                && _parents.TryGetValue(childId, out var current)
+                && current == parent;
+    }
+
+    // Points a storage slot at its record's link: drops every alias under the slot, then links the child.
+    // Callers hold _publish and _gate.
+    private void Relink(string key, string childId, string? parent)
+    {
+        foreach (var alias in _idsByKey.GetValueOrDefault(key)?.ToArray() ?? [])
+            Unlink(alias);
+        if (parent is null)
+            return;
+        Unlink(childId);
+        _parents[childId] = parent;
+        Add(_children, parent, childId);
+        Add(_idsByKey, StorageKey(childId), childId);
+    }
+
+    private void Unlink(string childId)
+    {
+        if (!_parents.Remove(childId, out var parent))
+            return;
+        Remove(_children, parent, childId);
+        Remove(_idsByKey, StorageKey(childId), childId);
     }
 
     private static string StorageKey(string threadId) =>
@@ -143,7 +192,9 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
             Path.GetFullPath(string.Join("_", threadId.Split(Path.GetInvalidFileNameChars())))
         );
 
-    private async Task MutateAsync(string threadId, Func<Task> mutate, CancellationToken ct)
+    // `mutate` must call its argument with the record it is about to store (null for a delete), before
+    // the write can land.
+    private async Task MutateAsync(string threadId, Func<Action<ThreadMetadata?>, Task> mutate, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(threadId);
         await InitializeAsync(ct);
@@ -151,17 +202,31 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
         var key = StorageKey(threadId);
         var mutationGate = _mutationGates.GetOrAdd(key, static _ => new SemaphoreSlim(1, 1));
         await mutationGate.WaitAsync(ct);
-        lock (_gate)
+        var marked = false;
+
+        // Only a write that changes this slot's parent link is a hierarchy change, and it holds reads off
+        // until it is published. Usage, context, status and tenant writes leave every link as it is, so
+        // reads go on. The slot's mutation gate keeps its link still between the check and the write.
+        void Mark(ThreadMetadata? next)
         {
-            _pending++;
-            _epoch++;
+            var parent = ParentOf(next);
+            lock (_gate)
+            {
+                // A record naming another thread may read back under either id: always reconcile it.
+                if (marked || ((next is null || next.ThreadId == threadId) && LinkMatches(key, threadId, parent)))
+                    return;
+                marked = true;
+                _pending++;
+                _epoch++;
+            }
         }
+
         try
         {
             ExceptionDispatchInfo? failure = null;
             try
             {
-                await mutate();
+                await mutate(Mark);
             }
             catch (Exception ex)
             {
@@ -170,14 +235,17 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
 
             // A canceled/failed atomic write may already have landed. Reread actual state after
             // the inner directory gate is released; never infer rollback from the exception.
-            try
+            if (marked)
             {
-                await ReconcileAsync(threadId);
-            }
-            catch (Exception) when (failure is not null)
-            {
-                // Preserve the original mutation error; unresolved index state still blocks reads.
-                failure.Throw();
+                try
+                {
+                    await ReconcileAsync(threadId, key);
+                }
+                catch (Exception) when (failure is not null)
+                {
+                    // Preserve the original mutation error; unresolved index state still blocks reads.
+                    failure.Throw();
+                }
             }
             failure?.Throw();
         }
@@ -187,70 +255,42 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
         }
     }
 
-    private async Task ReconcileAsync(string threadId)
+    private async Task ReconcileAsync(string threadId, string key)
     {
         await _publish.WaitAsync();
+        var pending = true;
         try
         {
             var metadata = await inner.LoadMetadataAsync(threadId, CancellationToken.None);
-            var parent = metadata is null ? null : SubAgentProvenance.TryProject(metadata)?.ParentThreadId;
             var childId = metadata?.ThreadId ?? threadId;
-            var key = StorageKey(threadId);
-            Dictionary<string, string> updated;
+            var parent = ParentOf(metadata);
             bool changed;
             lock (_gate)
             {
-                // Most writes leave the relation as it is: no entry for a root, or exactly this child
-                // under the same parent. Only a write that may change it pays for the copy and scan.
-                var aliasCount = _aliasCounts.GetValueOrDefault(key);
-                var unchanged = parent is null
-                    ? aliasCount == 0
-                    : aliasCount == 1
-                        && _parents.TryGetValue(childId, out var current)
-                        && current == parent
-                        && StorageComparer.Equals(StorageKey(childId), key);
-                if (unchanged)
-                {
-                    updated = _parents;
-                    changed = false;
-                }
-                else
-                {
-                    updated = new Dictionary<string, string>(_parents, StringComparer.Ordinal);
-                    var aliases = updated.Keys.Where(id => StorageComparer.Equals(StorageKey(id), key)).ToArray();
-                    foreach (var alias in aliases)
-                        updated.Remove(alias);
-                    if (parent is not null)
-                        updated[childId] = parent;
-                    changed =
-                        updated.Count != _parents.Count
-                        || updated.Any(pair =>
-                            !_parents.TryGetValue(pair.Key, out var previous) || previous != pair.Value
-                        );
-                }
-            }
-            if (changed)
-                await PersistAsync(updated, CancellationToken.None);
-            lock (_gate)
-            {
+                changed = !LinkMatches(key, childId, parent);
                 if (changed)
-                {
-                    _parents = updated;
-                    RebuildDerived();
-                }
+                    Relink(key, childId, parent);
                 _epoch++;
+                _pending--;
+                pending = false;
             }
+            // Nothing reads the file back: a restart rebuilds from metadata. So reads go on while it is
+            // written, and _publish keeps the index still and the writes in order.
+            if (changed)
+                await PersistAsync(_parents, CancellationToken.None);
         }
         catch
         {
             lock (_gate)
+            {
                 _faulted = true;
+                if (pending)
+                    _pending--;
+            }
             throw;
         }
         finally
         {
-            lock (_gate)
-                _pending--;
             _publish.Release();
         }
         // Publication failure is latched separately from active writes. Only restart reconstructs
@@ -395,16 +435,47 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
     }
 
     public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
-        MutateAsync(threadId, () => inner.SaveMetadataAsync(threadId, metadata, ct), ct);
+        MutateAsync(
+            threadId,
+            mark =>
+            {
+                mark(metadata);
+                return inner.SaveMetadataAsync(threadId, metadata, ct);
+            },
+            ct
+        );
 
     public Task UpdateMetadataAsync(
         string threadId,
         Func<ThreadMetadata?, ThreadMetadata> update,
         CancellationToken ct = default
-    ) => MutateAsync(threadId, () => inner.UpdateMetadataAsync(threadId, update, ct), ct);
+    ) =>
+        MutateAsync(
+            threadId,
+            mark =>
+                inner.UpdateMetadataAsync(
+                    threadId,
+                    existing =>
+                    {
+                        var next = update(existing);
+                        mark(next);
+                        return next;
+                    },
+                    ct
+                ),
+            ct
+        );
 
     public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
-        MutateAsync(threadId, () => inner.DeleteThreadAsync(threadId, ct), ct);
+        MutateAsync(
+            threadId,
+            mark =>
+            {
+                mark(null);
+                return inner.DeleteThreadAsync(threadId, ct);
+            },
+            ct
+        );
 
     public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
         inner.LoadMetadataAsync(threadId, ct);
