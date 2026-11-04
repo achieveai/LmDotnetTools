@@ -1,3 +1,5 @@
+using System.Security;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
@@ -71,9 +73,16 @@ public interface IPendingQuestionObserver
     /// <param name="rootThreadId">The root conversation named in the raise.</param>
     /// <param name="toolCallId">The call that settled.</param>
     /// <remarks>
+    /// <para>
     /// Idempotent by contract: a host may be told a call settled that it never heard raise (a
     /// resolution adopted from persisted history) and must treat that as "not pending" rather than an
     /// error.
+    /// </para>
+    /// <para>
+    /// An early settle — the loop writing the question's placeholder so an interrupting input can run
+    /// — is NOT reported here. The human can still answer, so the question is still waiting; this is
+    /// called when that answer has been injected into the conversation instead.
+    /// </para>
     /// </remarks>
     void OnQuestionSettled(string rootThreadId, string toolCallId);
 }
@@ -172,4 +181,61 @@ public static class PendingQuestionNotices
                 RaisedAtUtc: raisedAtUtc
             )
             : null;
+
+    /// <summary>
+    /// Whether the <c>AskUserQuestion</c> call <paramref name="toolCallId"/> is still waiting for the
+    /// human, judged from <paramref name="history"/> alone.
+    /// </summary>
+    /// <param name="history">The asking agent's own transcript.</param>
+    /// <param name="toolCallId">The question's call id.</param>
+    /// <remarks>
+    /// <para>
+    /// The server-side twin of the client's <c>isQuestionAwaitingAnswer</c>, for a host that has to
+    /// decide without a live loop — re-checking, after a restart, the questions it was showing before.
+    /// </para>
+    /// <para>
+    /// Two endings leave a question open. The ordinary one: its result is still the deferred
+    /// placeholder. The other: the loop settled it early so an interrupting input could run, and the
+    /// human's real answer — which arrives later as a user turn under the injection tag, naming this
+    /// call — has not landed yet. False when the call has no result in this transcript at all.
+    /// </para>
+    /// </remarks>
+    public static bool IsAwaitingAnswer(IEnumerable<IMessage> history, string toolCallId)
+    {
+        ArgumentNullException.ThrowIfNull(history);
+        ArgumentException.ThrowIfNullOrEmpty(toolCallId);
+
+        var tag = EarlySettlePlaceholders.TryGet(AskUserQuestionToolProvider.ToolName, out var spec)
+            ? spec.InjectionTag
+            : "user-answer";
+        var envelopeStart = $"<{tag} ";
+        var namesThisCall = $" tool-call-id=\"{SecurityElement.Escape(toolCallId)}\"";
+
+        ToolCallResultMessage? result = null;
+        var answered = false;
+        foreach (var message in history)
+        {
+            if (message is ToolCallResultMessage candidate)
+            {
+                if (string.Equals(candidate.ToolCallId, toolCallId, StringComparison.Ordinal))
+                {
+                    result = candidate;
+                }
+            }
+            else if (
+                message is TextMessage { Role: Role.User } text
+                && text.Text.StartsWith(envelopeStart, StringComparison.Ordinal)
+            )
+            {
+                // The header line only: the request and answer bodies are inlined verbatim below it
+                // and may quote another call's envelope.
+                var headerEnd = text.Text.IndexOf('\n', StringComparison.Ordinal);
+                var header = headerEnd < 0 ? text.Text : text.Text[..headerEnd];
+                answered |= header.Contains(namesThisCall, StringComparison.Ordinal);
+            }
+        }
+
+        return result is not null
+            && (result.IsDeferred || (EarlySettlePlaceholders.IsEarlySettleResult(result.Result) && !answered));
+    }
 }

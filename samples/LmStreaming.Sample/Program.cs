@@ -3271,8 +3271,17 @@ try
     // inert until an agent loop reports a parked AskUserQuestion, and a client that never opens the
     // socket costs it one idle pump. Conversation sockets are per-thread, so a question raised in a
     // conversation the user is not looking at has no socket of its own to arrive on — this is that
-    // socket. See PendingQuestionHub for why polling could not close the same gap.
-    _ = builder.Services.AddSingleton<PendingQuestionHub>();
+    // socket. See PendingQuestionHub for why polling could not close the same gap. Its list of waiting
+    // questions lives beside the database, like the hierarchy index, so a restart does not forget them.
+    var pendingQuestionsPath = Path.Combine(
+        conversationDbDir ?? AppContext.BaseDirectory,
+        "conversations.pending-questions.json"
+    );
+    _ = builder.Services.AddSingleton(sp => new PendingQuestionHub(
+        sp.GetRequiredService<IServiceScopeFactory>(),
+        sp.GetRequiredService<ILogger<PendingQuestionHub>>(),
+        pendingQuestionsPath
+    ));
 
     var app = builder.Build();
     // UseSerilog made the host's logger the static one while the host was built.

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Threading.Channels;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
@@ -68,6 +69,14 @@ public sealed class QuestionEventSubscriber : IDisposable
 /// snapshot" would be delivered and then overwritten by a snapshot that predates it.
 /// </para>
 /// <para>
+/// <b>Survives a restart.</b> The client no longer sweeps transcripts at all, so this map is the only
+/// thing that lists a question in a conversation nobody has open. With a state path it is written to a
+/// small JSON file beside the conversation database on every change and read back at startup, where
+/// each question is re-checked against its transcript first (see <see cref="IsStillWaitingAsync"/>):
+/// the file is a cache of what was waiting, the transcript is what decides. The gate stays held until
+/// that load finishes, so no subscriber is sent a snapshot that predates it.
+/// </para>
+/// <para>
 /// <b>Authorization is per event, per subscriber.</b> The channel is app-wide but the conversations
 /// on it are not: an event names a root thread, and a subscriber is told about it only if
 /// <see cref="ConversationAuthorizer"/> would let them READ that conversation. With
@@ -94,23 +103,30 @@ public sealed class PendingQuestionHub : IPendingQuestionObserver, IAsyncDisposa
 
     private readonly ConcurrentDictionary<string, QuestionEventSubscriber> _subscribers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PendingQuestion> _pending = new(StringComparer.Ordinal);
-    private readonly SemaphoreSlim _applyGate = new(1, 1);
+
+    // Starts HELD: the pump releases it once the saved state is loaded (see RunPumpAsync).
+    private readonly SemaphoreSlim _applyGate = new(0, 1);
     private readonly WebSocketConnectionRegistry _sockets = new();
     private readonly CancellationTokenSource _shutdown = new();
     private readonly IServiceScopeFactory _scopes;
     private readonly ILogger<PendingQuestionHub> _logger;
+    private readonly string? _statePath;
     private readonly Task _pump;
 
     /// <summary>Creates the hub and starts its pump.</summary>
     /// <param name="scopes">Scope factory, used to resolve the conversation store and the authorizer per event.</param>
     /// <param name="logger">Logger.</param>
-    public PendingQuestionHub(IServiceScopeFactory scopes, ILogger<PendingQuestionHub> logger)
+    /// <param name="statePath">
+    /// Where the waiting questions are kept across restarts, or null to keep them in memory only.
+    /// </param>
+    public PendingQuestionHub(IServiceScopeFactory scopes, ILogger<PendingQuestionHub> logger, string? statePath = null)
     {
         ArgumentNullException.ThrowIfNull(scopes);
         ArgumentNullException.ThrowIfNull(logger);
 
         _scopes = scopes;
         _logger = logger;
+        _statePath = statePath;
         _pump = RunPumpAsync(_shutdown.Token);
     }
 
@@ -129,6 +145,17 @@ public sealed class PendingQuestionHub : IPendingQuestionObserver, IAsyncDisposa
     /// <inheritdoc />
     public void OnQuestionSettled(string rootThreadId, string toolCallId) =>
         _ = _events.Writer.TryWrite(new QuestionEvent(null, rootThreadId, toolCallId));
+
+    /// <summary>
+    /// Drops every question held for <paramref name="rootThreadId"/>, telling subscribers each one
+    /// settled. For a deleted conversation: its loop is gone, so nothing else will ever settle them.
+    /// </summary>
+    /// <param name="rootThreadId">The deleted root conversation.</param>
+    public void ForgetConversation(string rootThreadId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(rootThreadId);
+        _ = _events.Writer.TryWrite(new QuestionEvent(null, rootThreadId, null));
+    }
 
     /// <summary>
     /// Registers an accepted <c>/ws/events</c> socket and sends it the snapshot of everything already
@@ -234,6 +261,21 @@ public sealed class PendingQuestionHub : IPendingQuestionObserver, IAsyncDisposa
 
     private async Task RunPumpAsync(CancellationToken ct)
     {
+        // Let the constructor return before the load touches the container that is building us.
+        await Task.Yield();
+        try
+        {
+            await LoadAsync(ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Saved pending questions could not be loaded; starting empty.");
+        }
+        finally
+        {
+            _ = _applyGate.Release();
+        }
+
         try
         {
             await foreach (var item in _events.Reader.ReadAllAsync(ct))
@@ -268,6 +310,7 @@ public sealed class PendingQuestionHub : IPendingQuestionObserver, IAsyncDisposa
 
         if (item.Notice is { } notice)
         {
+            var conversation = await ConversationOfAsync(notice.RootThreadId, ct);
             var question = new PendingQuestion
             {
                 RootThreadId = notice.RootThreadId,
@@ -275,7 +318,10 @@ public sealed class PendingQuestionHub : IPendingQuestionObserver, IAsyncDisposa
                 ChildThreadId = notice.AgentId is null ? null : notice.ThreadId,
                 ToolCallId = notice.ToolCallId,
                 Prompt = FirstQuestionText(notice.FunctionArgs),
-                ConversationTitle = await TitleOfAsync(notice.RootThreadId, ct),
+                ConversationTitle = conversation.Title,
+                Provider = conversation.Provider,
+                Mode = conversation.Mode,
+                Workspace = conversation.Workspace,
                 AgentName = notice.AgentName,
                 RaisedAtUtc = notice.RaisedAtUtc,
             };
@@ -285,15 +331,27 @@ public sealed class PendingQuestionHub : IPendingQuestionObserver, IAsyncDisposa
                 _pending[Key(notice.RootThreadId, notice.ToolCallId)] = question;
             }
 
+            await SaveAsync(ct);
             await BroadcastAsync(question.RootThreadId, PendingFrame(question), ct);
             return;
         }
 
-        var key = Key(item.RootThreadId!, item.ToolCallId!);
+        if (item.ToolCallId is null)
+        {
+            await ForgetAsync(item.RootThreadId!, ct);
+            return;
+        }
+
+        var key = Key(item.RootThreadId!, item.ToolCallId);
         bool removed;
         lock (_pending)
         {
             removed = _pending.Remove(key);
+        }
+
+        if (removed)
+        {
+            await SaveAsync(ct);
         }
 
         // Broadcast even when nothing was held: a restart can settle a question this process never
@@ -309,7 +367,164 @@ public sealed class PendingQuestionHub : IPendingQuestionObserver, IAsyncDisposa
             );
         }
 
-        await BroadcastAsync(item.RootThreadId!, SettledFrame(item.RootThreadId!, item.ToolCallId!), ct);
+        await BroadcastAsync(item.RootThreadId!, SettledFrame(item.RootThreadId!, item.ToolCallId), ct);
+    }
+
+    private async Task ForgetAsync(string rootThreadId, CancellationToken ct)
+    {
+        List<PendingQuestion> forgotten;
+        lock (_pending)
+        {
+            forgotten =
+            [
+                .. _pending.Values.Where(q => string.Equals(q.RootThreadId, rootThreadId, StringComparison.Ordinal)),
+            ];
+            foreach (var question in forgotten)
+            {
+                _ = _pending.Remove(Key(question.RootThreadId, question.ToolCallId));
+            }
+        }
+
+        if (forgotten.Count == 0)
+        {
+            return;
+        }
+
+        await SaveAsync(ct);
+        foreach (var question in forgotten)
+        {
+            await BroadcastAsync(rootThreadId, SettledFrame(rootThreadId, question.ToolCallId), ct);
+        }
+    }
+
+    /// <summary>
+    /// Reads the questions saved by the previous process, keeping only those their transcripts say are
+    /// still waiting. Runs on the pump before the first event, with the gate held.
+    /// </summary>
+    private async Task LoadAsync(CancellationToken ct)
+    {
+        if (_statePath is null || !File.Exists(_statePath))
+        {
+            return;
+        }
+
+        PendingQuestionState? state;
+        try
+        {
+            await using var stream = File.OpenRead(_statePath);
+            state = await JsonSerializer.DeserializeAsync<PendingQuestionState>(stream, JsonOptions, ct);
+        }
+        catch (Exception ex) when (ex is JsonException or IOException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Saved pending questions at {StatePath} are unreadable; starting empty.",
+                _statePath
+            );
+            return;
+        }
+
+        if (state is not { SchemaVersion: PendingQuestionState.CurrentSchemaVersion, Questions: { } saved })
+        {
+            _logger.LogWarning(
+                "Saved pending questions at {StatePath} have an unknown shape; starting empty.",
+                _statePath
+            );
+            return;
+        }
+
+        var dropped = 0;
+        foreach (var question in saved)
+        {
+            if (await IsStillWaitingAsync(question, ct))
+            {
+                lock (_pending)
+                {
+                    _pending[Key(question.RootThreadId, question.ToolCallId)] = question;
+                }
+            }
+            else
+            {
+                dropped++;
+            }
+        }
+
+        if (dropped > 0)
+        {
+            await SaveAsync(ct);
+        }
+
+        _logger.LogInformation(
+            "Loaded {Kept} saved pending question(s); dropped {Dropped} no longer waiting.",
+            saved.Count - dropped,
+            dropped
+        );
+    }
+
+    /// <summary>
+    /// Whether a saved question is still waiting, by the asking agent's transcript.
+    /// </summary>
+    /// <remarks>
+    /// This is the cleanup point for a question nothing settled: its conversation was deleted, or the
+    /// process stopped between the answer and the save. A question that cannot be CHECKED is kept — a
+    /// store hiccup at startup must not silently lose a real question, and a stale one costs a click.
+    /// </remarks>
+    private async Task<bool> IsStillWaitingAsync(PendingQuestion question, CancellationToken ct)
+    {
+        try
+        {
+            using var scope = _scopes.CreateScope();
+            var store = scope.ServiceProvider.GetRequiredService<IConversationStore>();
+            var root = await store.LoadMetadataAsync(question.RootThreadId, ct);
+            if (root is null || ConversationLineage.IsDeleted(root))
+            {
+                return false;
+            }
+
+            var rows = await store.LoadMessagesAsync(question.ChildThreadId ?? question.RootThreadId, ct);
+            var history = MessagePersistenceConverter.FromPersistedMessagesResilient(rows, cancellationToken: ct);
+            return PendingQuestionNotices.IsAwaitingAnswer(history, question.ToolCallId);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not re-check saved pending question {ToolCallId} on {RootThreadId}; keeping it.",
+                question.ToolCallId,
+                question.RootThreadId
+            );
+            return true;
+        }
+    }
+
+    /// <summary>Writes the current map to the state file. A failed write is logged, never thrown.</summary>
+    private async Task SaveAsync(CancellationToken ct)
+    {
+        if (_statePath is null)
+        {
+            return;
+        }
+
+        PendingQuestion[] questions;
+        lock (_pending)
+        {
+            questions = [.. _pending.Values];
+        }
+
+        try
+        {
+            await AtomicFile.WriteJsonAsync(
+                _statePath,
+                new PendingQuestionState { Questions = questions },
+                JsonOptions,
+                ct
+            );
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The live map is still right; only a restart before the next successful write loses this.
+            _logger.LogWarning(ex, "Pending questions could not be saved to {StatePath}.", _statePath);
+        }
     }
 
     private async Task BroadcastAsync(string rootThreadId, string json, CancellationToken ct)
@@ -351,23 +566,35 @@ public sealed class PendingQuestionHub : IPendingQuestionObserver, IAsyncDisposa
         return result.Allowed;
     }
 
-    private async Task<string?> TitleOfAsync(string rootThreadId, CancellationToken ct)
+    /// <summary>
+    /// The root conversation's title and bindings, so a client can open a conversation it has not
+    /// listed yet with the right provider, mode and workspace selected.
+    /// </summary>
+    private async Task<ConversationInfo> ConversationOfAsync(string rootThreadId, CancellationToken ct)
     {
         try
         {
             using var scope = _scopes.CreateScope();
             var store = scope.ServiceProvider.GetRequiredService<IConversationStore>();
-            var metadata = await store.LoadMetadataAsync(rootThreadId, ct);
-            return metadata?.Properties?.TryGetValue("title", out var title) == true ? title?.ToString() : null;
+            var properties = (await store.LoadMetadataAsync(rootThreadId, ct))?.Properties;
+            string? Read(string key) => properties?.TryGetValue(key, out var value) == true ? value?.ToString() : null;
+            return new ConversationInfo(
+                Read("title"),
+                Read(MultiTurnAgentPool.ProviderPropertyKey),
+                Read(MultiTurnAgentPool.ModePropertyKey),
+                Read(MultiTurnAgentPool.WorkspacePropertyKey)
+            );
         }
         catch (Exception ex)
         {
-            // A title is decoration. The client already knows the conversation id and fills the real
-            // title from its own listing on the refresh this event triggers.
-            _logger.LogDebug(ex, "Could not read the title of {RootThreadId} for a question event.", rootThreadId);
-            return null;
+            // Decoration. The question itself is still right without it; a client missing the
+            // bindings opens the conversation with its current selectors.
+            _logger.LogDebug(ex, "Could not read conversation {RootThreadId} for a question event.", rootThreadId);
+            return new ConversationInfo(null, null, null, null);
         }
     }
+
+    private sealed record ConversationInfo(string? Title, string? Provider, string? Mode, string? Workspace);
 
     /// <summary>
     /// The text of the FIRST question in an <c>AskUserQuestion</c> batch, or a safe label when the
@@ -449,16 +676,36 @@ public sealed class PendingQuestionHub : IPendingQuestionObserver, IAsyncDisposa
             ["toolCallId"] = question.ToolCallId,
             ["prompt"] = question.Prompt,
             ["conversationTitle"] = question.ConversationTitle,
+            ["provider"] = question.Provider,
+            ["mode"] = question.Mode,
+            ["workspace"] = question.Workspace,
             ["agentName"] = question.AgentName,
             ["raisedAtUtc"] = question.RaisedAtUtc.UtcDateTime.ToString("O"),
         };
 
+    /// <summary>
+    /// One queued change: a raise (<see cref="Notice"/>), a settle (root and tool call id), a whole
+    /// conversation forgotten (root only), or a <see cref="DrainAsync"/> barrier.
+    /// </summary>
     private sealed record QuestionEvent(
         PendingQuestionNotice? Notice,
         string? RootThreadId,
         string? ToolCallId,
         TaskCompletionSource? Barrier = null
     );
+}
+
+/// <summary>The state file's shape.</summary>
+internal sealed record PendingQuestionState
+{
+    /// <summary>The only shape this build reads; anything else starts empty.</summary>
+    public const int CurrentSchemaVersion = 1;
+
+    /// <summary>Shape version.</summary>
+    public int SchemaVersion { get; init; } = CurrentSchemaVersion;
+
+    /// <summary>The questions waiting when the file was written.</summary>
+    public IReadOnlyList<PendingQuestion>? Questions { get; init; }
 }
 
 /// <summary>One question the hub currently holds as waiting, as it goes on the wire.</summary>
@@ -481,6 +728,15 @@ public sealed record PendingQuestion
 
     /// <summary>The conversation's title when one is stored.</summary>
     public string? ConversationTitle { get; init; }
+
+    /// <summary>The conversation's bound provider, when one is stored.</summary>
+    public string? Provider { get; init; }
+
+    /// <summary>The conversation's bound mode, when one is stored.</summary>
+    public string? Mode { get; init; }
+
+    /// <summary>The conversation's bound workspace, when one is stored.</summary>
+    public string? Workspace { get; init; }
 
     /// <summary>The asking sub-agent's display name when the spawning manager knew one.</summary>
     public string? AgentName { get; init; }

@@ -573,7 +573,7 @@ function announceRemoteQuestion(question: PendingQuestionEvent): void {
   };
 }
 
-const questionInbox = useQuestionInbox(() => currentThreadId.value, {
+const questionInbox = useQuestionInbox({
   onQuestionRaised: announceRemoteQuestion,
 });
 const questionInboxEntries = computed(() => questionInbox.entries.value.map((entry) => ({
@@ -613,7 +613,11 @@ async function openInboxQuestion(entry: QuestionInboxEntry): Promise<void> {
   requestedQuestionId.value = '';
   try {
     if (entry.rootThreadId !== currentThreadId.value) {
-      addOrUpdateConversation(entry.conversation);
+      // Only for a conversation the sidebar has not paged in yet: the listed summary is the fuller one,
+      // and replacing it with the inbox's would drop its preview, sharing and lineage fields.
+      if (!conversations.value.some((conversation) => conversation.threadId === entry.rootThreadId)) {
+        addOrUpdateConversation(entry.conversation);
+      }
       await handleSelectConversation(entry.rootThreadId);
     }
     if (currentThreadId.value !== entry.rootThreadId) return;
@@ -631,7 +635,9 @@ async function openInboxQuestion(entry: QuestionInboxEntry): Promise<void> {
     const result = entry.agentId ? getSubAgentResultForToolCall(entry.toolCallId) : getResultForToolCall(entry.toolCallId);
     if (!isQuestionAwaitingAnswer(result, entry.agentId ? isSubAgentQuestionAnswered : isQuestionAnswered)) {
       questionNavigationError.value = 'This question is no longer waiting for an answer.';
-      void questionInbox.refresh();
+      // Not reopened automatically, and no reconnect: the server's snapshot would list it again, which
+      // re-ran this watcher-driven open — a reconnect loop. The settle push removes it when it comes.
+      autoOpenedQuestions.add(autoQuestionKey(entry));
       return;
     }
     requestedQuestionId.value = entry.toolCallId;
@@ -668,7 +674,7 @@ function selectInboxQuestion(key: string): void {
 
 /**
  * Questions raised somewhere OTHER than the conversation on screen (BUG 8). `useQuestionInbox`
- * already sweeps every conversation and every readable child, but the only thing that surfaced a
+ * already lists every conversation's and every child's questions, but the only thing that surfaced a
  * remote one was the header icon's count — which the user misses — because both the automatic open
  * below and `PendingQuestionDock` are scoped to the current conversation by construction.
  *

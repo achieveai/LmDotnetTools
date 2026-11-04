@@ -89,6 +89,10 @@ public sealed class PublishLaunchDestinationTests : IDisposable
         WriteFile(destination, "logs", "app.log", "log line 1\nlog line 2\n");
         WriteFile(destination, "recordings", "session.jsonl", "{\"event\":1}\n");
         File.WriteAllText(Path.Combine(destination, ".env"), envContent);
+        File.WriteAllText(
+            Path.Combine(destination, "conversations.pending-questions.json"),
+            "{\"SchemaVersion\":1,\"Questions\":[{\"RootThreadId\":\"thread-1\",\"ToolCallId\":\"call-1\"}]}"
+        );
 
         if (seedNotifyWaitsDb)
         {
@@ -629,6 +633,7 @@ public sealed class PublishLaunchDestinationTests : IDisposable
             Path.Combine("recordings", "session.jsonl"),
             ".env",
             "notify-waits.db",
+            "conversations.pending-questions.json",
         };
         var hashesBefore = preserveRelativeFiles.ToDictionary(
             relative => relative,

@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+using System.Net;
 using System.Net.WebSockets;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -70,12 +72,27 @@ public sealed class PendingQuestionEventsTests
 
     private sealed class EventsHost : WebApplicationFactory<Program>
     {
+        // Its own database directory, because the hub keeps its state file beside the database: a
+        // question one test leaves waiting must not appear in another test's snapshot.
+        private readonly string _dataDir = Path.Combine(Path.GetTempPath(), $"pending-questions-{Guid.NewGuid():N}");
+
         public EventsHost() => Environment.SetEnvironmentVariable("LM_PROVIDER_MODE", "test");
+
+        public override async ValueTask DisposeAsync()
+        {
+            await base.DisposeAsync();
+            try
+            {
+                Directory.Delete(_dataDir, recursive: true);
+            }
+            catch (IOException) { }
+        }
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             // Production: no Vite dev-server auto-spawn, matching the other in-process host tests.
             builder.UseEnvironment("Production");
+            builder.UseSetting("LmStreaming:ConversationDbPath", Path.Combine(_dataDir, "conversations.db"));
             builder.UseSetting("SandboxGateway:BaseUrl", "http://127.0.0.1:1");
             builder.UseSetting("SandboxGateway:AutoSpawn", "false");
             builder.UseSetting("Identity:Enforce", "false");
@@ -245,6 +262,176 @@ public sealed class PendingQuestionEventsTests
 
         // The predicate is segment-based, so this is not merely a prefix match on the string.
         IdentityMiddleware.IsGuardedWebSocketPath(new PathString("/wsevents")).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A pushed question carries its conversation's bindings, so a client can open a conversation its
+    /// sidebar has not paged in yet with the right provider, mode and workspace selected — the inbox no
+    /// longer reads the conversation list to find them.
+    /// </summary>
+    [Fact]
+    public async Task AQuestion_CarriesItsConversationsTitleAndBindings()
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var host = new EventsHost();
+        await host
+            .Services.GetRequiredService<IConversationStore>()
+            .SaveMetadataAsync(RootThreadId, RootMetadata(), cts.Token);
+        var hub = host.Services.GetRequiredService<PendingQuestionHub>();
+
+        hub.OnQuestionRaised(Notice());
+        await hub.DrainAsync(cts.Token);
+        using var socket = await ConnectAsync(host, cts.Token);
+        var question = (await ReceiveFrameAsync(socket, cts.Token)).GetProperty("questions")[0];
+
+        question.GetProperty("conversationTitle").GetString().Should().Be("Shed");
+        question.GetProperty("provider").GetString().Should().Be("openai");
+        question.GetProperty("mode").GetString().Should().Be("coder");
+        question.GetProperty("workspace").GetString().Should().Be("repo");
+    }
+
+    // ------------------------------------------------------------------ the state file
+
+    private static ThreadMetadata RootMetadata(string threadId = RootThreadId) =>
+        new()
+        {
+            ThreadId = threadId,
+            LastUpdated = 1,
+            Properties = ImmutableDictionary<string, object>
+                .Empty.Add("title", "Shed")
+                .Add(MultiTurnAgentPool.ProviderPropertyKey, "openai")
+                .Add(MultiTurnAgentPool.ModePropertyKey, "coder")
+                .Add(MultiTurnAgentPool.WorkspacePropertyKey, "repo"),
+        };
+
+    /// <summary>Persists a question call and its result, the way a loop leaves them in history.</summary>
+    private static Task SeedQuestionAsync(
+        IConversationStore store,
+        string threadId,
+        string toolCallId,
+        ToolCallResultMessage result
+    ) =>
+        store.AppendMessagesAsync(
+            threadId,
+            MessagePersistenceConverter.ToPersistedMessages(
+                [
+                    new ToolCallMessage
+                    {
+                        FunctionName = AskUserQuestionToolProvider.ToolName,
+                        FunctionArgs = QuestionArgs(),
+                        ToolCallId = toolCallId,
+                        Role = Role.Assistant,
+                    },
+                    result with
+                    {
+                        ToolCallId = toolCallId,
+                    },
+                ],
+                threadId,
+                "run-1"
+            )
+        );
+
+    private static PendingQuestionHub Hub(IConversationStore store, string statePath) =>
+        new(
+            new ServiceCollection()
+                .AddSingleton(store)
+                .BuildServiceProvider()
+                .GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<PendingQuestionHub>.Instance,
+            statePath
+        );
+
+    /// <summary>
+    /// The restart the client now depends on: it no longer sweeps transcripts, so a question the
+    /// server forgot on restart would be invisible until someone opened that conversation. The saved
+    /// list comes back, but only what its transcript says is still waiting — a question answered just
+    /// before the process stopped, or whose conversation is gone, is dropped and the file rewritten.
+    /// </summary>
+    [Fact]
+    public async Task ARestart_KeepsWhatTheTranscriptsStillHaveWaiting_AndDropsTheRest()
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var dir = Directory.CreateTempSubdirectory("pending-questions-");
+        var statePath = Path.Combine(dir.FullName, "pending.json");
+        try
+        {
+            var store = new InMemoryConversationStore();
+            await store.SaveMetadataAsync(RootThreadId, RootMetadata(), cts.Token);
+            await SeedQuestionAsync(
+                store,
+                RootThreadId,
+                "tc_waiting",
+                new ToolCallResultMessage { Result = "", IsDeferred = true }
+            );
+            await SeedQuestionAsync(store, RootThreadId, "tc_answered", new ToolCallResultMessage { Result = "Red" });
+            await SeedQuestionAsync(
+                store,
+                ChildThreadId,
+                "tc_child",
+                new ToolCallResultMessage { Result = "", IsDeferred = true }
+            );
+
+            await using (var before = Hub(store, statePath))
+            {
+                before.OnQuestionRaised(Notice(toolCallId: "tc_waiting"));
+                before.OnQuestionRaised(Notice(toolCallId: "tc_answered"));
+                before.OnQuestionRaised(Notice(ChildThreadId, "tc_child") with { RootThreadId = RootThreadId });
+                before.OnQuestionRaised(Notice(toolCallId: "tc_gone") with { RootThreadId = "deleted-root" });
+                await before.DrainAsync(cts.Token);
+                before.PendingSnapshot().Should().HaveCount(4);
+            }
+
+            await using var after = Hub(store, statePath);
+            await after.DrainAsync(cts.Token);
+
+            after.PendingSnapshot().Select(q => q.ToolCallId).Should().BeEquivalentTo("tc_waiting", "tc_child");
+            after.PendingSnapshot().Single(q => q.ToolCallId == "tc_child").ChildThreadId.Should().Be(ChildThreadId);
+            after.PendingSnapshot().Single(q => q.ToolCallId == "tc_waiting").Provider.Should().Be("openai");
+            (await File.ReadAllTextAsync(statePath, cts.Token))
+                .Should()
+                .NotContain("tc_answered")
+                .And.NotContain("tc_gone");
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// A deleted conversation's agent is evicted, so nothing would ever settle its questions; the
+    /// delete route forgets them instead, and only them.
+    /// </summary>
+    /// <summary>
+    /// Through the real DELETE route: the evicted agent never settles its questions, so the controller
+    /// has to tell the hub, or every open inbox keeps a question nobody can answer.
+    /// </summary>
+    [Fact]
+    public async Task DeletingAConversation_DropsOnlyItsQuestions()
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var host = new EventsHost();
+        await host
+            .Services.GetRequiredService<IConversationStore>()
+            .SaveMetadataAsync(RootThreadId, RootMetadata(), cts.Token);
+        var hub = host.Services.GetRequiredService<PendingQuestionHub>();
+        hub.OnQuestionRaised(Notice(toolCallId: "tc_a1"));
+        hub.OnQuestionRaised(Notice(toolCallId: "tc_a2"));
+        hub.OnQuestionRaised(Notice(toolCallId: "tc_b") with { RootThreadId = "other-root" });
+        await hub.DrainAsync(cts.Token);
+        using var socket = await ConnectAsync(host, cts.Token);
+        _ = await ReceiveFrameAsync(socket, cts.Token);
+
+        using var client = host.CreateClient();
+        var deleted = await client.DeleteAsync($"/api/conversations/{RootThreadId}", cts.Token);
+        deleted.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var settled = new[] { await ReceiveFrameAsync(socket, cts.Token), await ReceiveFrameAsync(socket, cts.Token) };
+        settled.Select(TypeOf).Should().AllBe(PendingQuestionHub.SettledType);
+        settled.Select(f => f.GetProperty("toolCallId").GetString()).Should().BeEquivalentTo("tc_a1", "tc_a2");
+        await hub.DrainAsync(cts.Token);
+        hub.PendingSnapshot().Should().ContainSingle().Which.ToolCallId.Should().Be("tc_b");
     }
 
     // ------------------------------------------------------------------ the depth rule

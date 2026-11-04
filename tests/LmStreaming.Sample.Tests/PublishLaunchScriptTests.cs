@@ -774,6 +774,7 @@ public class PublishLaunchScriptTests
                 "$script:DestinationPreserveList = @(\n"
                     + "    'conversations',\n"
                     + "    'conversations.db',\n"
+                    + "    'conversations.pending-questions.json',\n"
                     + "    'notify-waits.db',\n"
                     + "    'oauth-tokens',\n"
                     + "    'workspaces',\n"

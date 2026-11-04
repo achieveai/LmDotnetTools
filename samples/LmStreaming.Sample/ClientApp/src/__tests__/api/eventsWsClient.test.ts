@@ -3,8 +3,8 @@ import { connectQuestionEvents, type QuestionEventHandlers } from '@/api/eventsW
 
 // `/ws/events` is the app-wide pending-question stream. What is specific to THIS module is the frame
 // contract (`snapshot` / `question_pending` / `question_settled`) and the reconnect: a parked
-// question is invisible to the conversation list, so if this socket stays down after a drop the only
-// thing left is the 30-second sweep, which is the latency the push exists to remove.
+// question is invisible to the conversation list, and the inbox no longer sweeps transcripts, so if
+// this socket stays down after a drop nothing else tells the client a question is waiting.
 
 class MockWebSocket {
   static readonly CONNECTING = 0;
@@ -73,6 +73,7 @@ function start(handlers: Partial<QuestionEventHandlers> = {}, retryDelaysMs = [0
     onSnapshot: vi.fn<QuestionEventHandlers['onSnapshot']>(handlers.onSnapshot),
     onPending: vi.fn<QuestionEventHandlers['onPending']>(handlers.onPending),
     onSettled: vi.fn<QuestionEventHandlers['onSettled']>(handlers.onSettled),
+    onConnectionChange: vi.fn<NonNullable<QuestionEventHandlers['onConnectionChange']>>(),
   };
   const stream = connectQuestionEvents(calls, {
     url: 'ws://test/ws/events',
@@ -105,6 +106,20 @@ describe('connectQuestionEvents frame contract', () => {
       conversationTitle: 'Palette',
     });
     expect(calls.onSettled).toHaveBeenCalledWith('root-1', 'call-1');
+    stream.close();
+  });
+
+  it("carries the conversation's bindings, and reads their absence as null", () => {
+    const { stream, socket, calls } = start();
+
+    socket.deliver({
+      $type: 'question_pending',
+      ...question({ provider: 'openai', mode: 'coder', workspace: 'repo' }),
+    });
+    socket.deliver({ $type: 'question_pending', ...question({ toolCallId: 'call-2' }) });
+
+    expect(calls.onPending.mock.calls[0][0]).toMatchObject({ provider: 'openai', mode: 'coder', workspace: 'repo' });
+    expect(calls.onPending.mock.calls[1][0]).toMatchObject({ provider: null, mode: null, workspace: null });
     stream.close();
   });
 
@@ -162,6 +177,28 @@ describe('connectQuestionEvents reconnect', () => {
       'call-9',
     ]);
     stream.close();
+  });
+
+  it('reports the connection dropping and coming back', async () => {
+    const { stream, socket, calls } = start();
+    expect(calls.onConnectionChange.mock.calls).toEqual([[true]]);
+
+    socket.drop();
+    expect(calls.onConnectionChange.mock.calls).toEqual([[true], [false]]);
+
+    await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(2));
+    MockWebSocket.instances[1].open();
+    expect(calls.onConnectionChange.mock.calls).toEqual([[true], [false], [true]]);
+    stream.close();
+  });
+
+  it('stays silent about a socket the caller closed, so a reconnect cannot be shown as down', () => {
+    const { stream, socket, calls } = start();
+
+    stream.close();
+    socket.onclose?.({ wasClean: true, code: 1000, reason: 'Client closing' });
+
+    expect(calls.onConnectionChange.mock.calls).toEqual([[true]]);
   });
 
   it('stops reconnecting once closed by the caller', async () => {

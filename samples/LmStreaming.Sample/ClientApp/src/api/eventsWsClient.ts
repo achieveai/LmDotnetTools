@@ -17,6 +17,10 @@ export interface PendingQuestionEvent {
   toolCallId: string;
   prompt: string;
   conversationTitle: string | null;
+  /** The conversation's bound provider, mode and workspace, so it can be opened unlisted. */
+  provider: string | null;
+  mode: string | null;
+  workspace: string | null;
   agentName: string | null;
   raisedAtUtc: string;
 }
@@ -32,15 +36,16 @@ export interface QuestionEventHandlers {
    * read. Delivered once per successful connect — so ALSO after a reconnect, which is the point:
    * anything raised or settled while the socket was down is reconciled by this frame.
    *
-   * Additive by contract. A snapshot is the server's IN-MEMORY state, and an agent whose loop has
-   * been evicted from the pool still has a genuinely pending question in its transcript, so a
-   * consumer must not read absence from a snapshot as "settled".
+   * Complete by contract: the server keeps this list across pool evictions and restarts, so a
+   * question absent from a snapshot is not waiting.
    */
   onSnapshot: (questions: PendingQuestionEvent[]) => void;
   /** A question has just parked. May repeat for a call already known (restart recovery re-raises). */
   onPending: (question: PendingQuestionEvent) => void;
   /** A question stopped waiting — answered, cancelled, or unwound. Idempotent. */
   onSettled: (rootThreadId: string, toolCallId: string) => void;
+  /** The socket opened (true) or dropped and is retrying (false). Never called after `close()`. */
+  onConnectionChange?: (connected: boolean) => void;
 }
 
 export interface QuestionEventStreamOptions {
@@ -90,6 +95,9 @@ function asQuestion(value: unknown): PendingQuestionEvent | null {
     childThreadId: text(row.childThreadId),
     prompt: text(row.prompt) ?? 'Question waiting for your answer',
     conversationTitle: text(row.conversationTitle),
+    provider: text(row.provider),
+    mode: text(row.mode),
+    workspace: text(row.workspace),
     agentName: text(row.agentName),
     raisedAtUtc: text(row.raisedAtUtc) ?? new Date().toISOString(),
   };
@@ -192,6 +200,7 @@ export function connectQuestionEvents(
       // still backs off instead of being hammered at the shortest delay forever.
       attempt = 0;
       log.info('Question events connected');
+      if (!closed) handlers.onConnectionChange?.(true);
     };
     next.onmessage = (event) => {
       try {
@@ -209,6 +218,7 @@ export function connectQuestionEvents(
     next.onclose = (event) => {
       socket = null;
       log.info('Question events closed', { code: event.code, wasClean: event.wasClean });
+      if (!closed) handlers.onConnectionChange?.(false);
       scheduleReconnect();
     };
   }

@@ -23,6 +23,7 @@ using LmStreaming.Sample.Identity;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
 using LmStreaming.Sample.Services;
+using LmStreaming.Sample.WebSocket;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 
@@ -230,7 +231,8 @@ public class ConversationsController(
     // compatible that is a silent mis-binding rather than a compile error.
     SandboxEnvApplier? envApplier = null,
     SandboxApps.SandboxAppCatalog? sandboxAppCatalog = null,
-    SandboxApps.ISandboxAppModeReadiness? sandboxAppModeReadiness = null
+    SandboxApps.ISandboxAppModeReadiness? sandboxAppModeReadiness = null,
+    PendingQuestionHub? pendingQuestions = null
 ) : ControllerBase
 {
     /// <summary>
@@ -2366,6 +2368,9 @@ public class ConversationsController(
         // entry was also recorded under — a coincidental owner match that would otherwise resurrect the
         // deleted conversation's stale recovered rows. Forget it explicitly so a reused id always rescans.
         scanCoverageCache.Forget(threadId);
+
+        // Its questions can no longer be answered, and the evicted agent will never settle them.
+        pendingQuestions?.ForgetConversation(threadId);
 
         return NoContent();
     }
