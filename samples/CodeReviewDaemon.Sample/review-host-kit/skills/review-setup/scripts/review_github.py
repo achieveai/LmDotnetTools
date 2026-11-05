@@ -35,6 +35,10 @@ _PAGE_LIMIT = 50
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
+class GitHubNotFound(ReviewError):
+    """HTTP 404: the resource does not exist in this repository (or is hidden from the reader)."""
+
+
 class PullRequestNotActive(ReviewError):
     """Confirmed closed GitHub PR; callers may skip it without preparing a slot."""
 
@@ -118,6 +122,8 @@ class GitHubClient:
                     continue
                 if status in (401, 403):
                     raise ReviewError(f"GitHub authentication or egress policy refused the read (HTTP {status}).")
+                if status == 404:
+                    raise GitHubNotFound(f"GitHub query failed (HTTP {status}); the resource may be inaccessible.")
                 if not 200 <= status < 300:
                     raise ReviewError(f"GitHub query failed (HTTP {status}); the resource may be inaccessible.")
                 try:
@@ -195,18 +201,23 @@ def _linked_issues(client: GitHubClient, snapshot: dict) -> dict:
     """Issues the PR text names with GitHub closing keywords or a bare #N, fetched read-only."""
     text = snapshot["title"] + "\n" + snapshot["description"]
     numbers = sorted({int(n) for n in re.findall(r"(?<![\w/])#(\d{1,7})\b", text)} - {snapshot["pr_number"]})
-    issues, warnings = {}, []
+    issues, warnings, not_found = {}, [], []
     for number in numbers[:50]:
         try:
             raw = client.request(f"issues/{number}")
             issues[str(number)] = {"id": number, "title": raw.get("title", ""), "body": raw.get("body") or "",
                                    "state": raw.get("state"), "is_pull_request": "pull_request" in raw,
                                    "url": raw.get("html_url")}
+        except GitHubNotFound:
+            # A bare #N that names another repository's issue (seen live: "#914" meaning LmDotnetTools#914 in an
+            # AgentWorkBench PR) does not exist here. That is a fact about the text, not missing context, so it
+            # must not stop setup; every other failure still marks the context incomplete.
+            not_found.append(number)
         except ReviewError:
             warnings.append(f"Linked issue {number} is unavailable.")
     if len(numbers) > 50:
         warnings.append("More than 50 linked issue references; only the first 50 were read.")
-    return {"items": issues, "warnings": warnings, "complete": not warnings}
+    return {"items": issues, "not_found": not_found, "warnings": warnings, "complete": not warnings}
 
 
 def _discussion(client: GitHubClient, pr: int) -> dict:
