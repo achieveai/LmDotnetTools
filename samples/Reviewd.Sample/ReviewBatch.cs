@@ -40,6 +40,8 @@ internal static class ReviewBatch
                         await Task.Delay(TimeSpan.FromSeconds(5), token);
                         continue;
                     }
+                    if (unreadable is not null)
+                        Console.Error.WriteLine("Selection readable again.");
                     unreadable = null;
                     var digest = SlotRelease.Digest(text);
                     if (!options.Has("execute"))
