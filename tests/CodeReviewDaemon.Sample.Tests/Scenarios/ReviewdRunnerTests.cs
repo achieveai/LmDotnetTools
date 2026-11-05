@@ -940,6 +940,36 @@ public sealed class ReviewdRunnerTests
         }
     }
 
+    [Fact]
+    public async Task Batch_selection_read_reports_a_locked_or_missing_file_as_a_retry_not_an_exception()
+    {
+        // Live 2026-11-04: discovery replaced selection.json while the batch read it; the read threw a sharing
+        // violation and the batch stopped scheduling for good. Missing and locked must both come back as a retry.
+        var path = Path.Combine(Path.GetTempPath(), $"reviewd-selection-{Guid.NewGuid():N}.json");
+        try
+        {
+            var missing = await ReviewBatch.TryReadSelectionAsync(path, CancellationToken.None);
+            missing.Text.Should().BeNull();
+            missing.Error.Should().NotBeNullOrEmpty();
+
+            await File.WriteAllTextAsync(path, "{\"repositories\":{}}");
+            using (new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                var locked = await ReviewBatch.TryReadSelectionAsync(path, CancellationToken.None);
+                locked.Text.Should().BeNull();
+                locked.Error.Should().Contain("being used by another process");
+            }
+
+            var read = await ReviewBatch.TryReadSelectionAsync(path, CancellationToken.None);
+            read.Text.Should().Be("{\"repositories\":{}}");
+            read.Error.Should().BeNull();
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("xhigh")]

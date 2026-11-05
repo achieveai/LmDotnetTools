@@ -27,9 +27,20 @@ internal static class ReviewBatch
                     (delay, cancellation) => Task.Delay(delay, cancellation),
                     token
                 );
+                string? unreadable = null;
                 while (!token.IsCancellationRequested)
                 {
-                    var text = await File.ReadAllTextAsync(options.Required("selection"), token);
+                    var (text, error) = await TryReadSelectionAsync(options.Required("selection"), token);
+                    if (text is null)
+                    {
+                        // Logged once per distinct error, not every poll, so a long outage stays readable.
+                        if (error != unreadable)
+                            Console.Error.WriteLine($"Selection unreadable; retrying every 5 seconds: {error}");
+                        unreadable = error;
+                        await Task.Delay(TimeSpan.FromSeconds(5), token);
+                        continue;
+                    }
+                    unreadable = null;
                     var digest = SlotRelease.Digest(text);
                     if (!options.Has("execute"))
                         throw new InvalidOperationException("review batch requires --execute; no state was changed.");
@@ -78,6 +89,21 @@ internal static class ReviewBatch
                 await reaper;
             }
         );
+
+    // The discovery job replaces the selection file while the batch polls it, so a read can find it locked by the
+    // replace or briefly missing. That is a miss to retry on the next poll, not a reason to stop: seen live, one
+    // sharing violation ended scheduling for 7 hours while the process stayed up, so the watchdog never replaced it.
+    internal static async Task<(string? Text, string? Error)> TryReadSelectionAsync(string path, CancellationToken ct)
+    {
+        try
+        {
+            return (await File.ReadAllTextAsync(path, ct), null);
+        }
+        catch (Exception ex) when ((ex is IOException or UnauthorizedAccessException) && !ct.IsCancellationRequested)
+        {
+            return (null, ex.Message);
+        }
+    }
 
     internal static async Task SweepPeriodicallyAsync(
         Func<CancellationToken, Task> sweep,
