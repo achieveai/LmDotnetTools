@@ -50,7 +50,12 @@ $reviewedRetiredMeasuredIds = @(
     "dotnet|tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj|LmStreaming.Sample.Tests.Services.Discovery.WorkspaceSubAgentLoaderTests.TryResolveContainedPath_SiblingPrefixAttack_Rejected()",
     # #792 replaces "a live CLI agent never scans the store" with "scans once per hydration" so a
     # recreate's stopped children stay listed. The old name now states a false rule, so it retires.
-    "dotnet|tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj|LmStreaming.Sample.Tests.Services.AgentHierarchyServiceTests.BuildAsync_ForALiveNonMultiTurnAgentLoop_NeverCallsListThreadsAsync()"
+    "dotnet|tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj|LmStreaming.Sample.Tests.Services.AgentHierarchyServiceTests.BuildAsync_ForALiveNonMultiTurnAgentLoop_NeverCallsListThreadsAsync()",
+    # The Copilot WebSocket transport stops auto-chaining previous_response_id: the agent already
+    # resends the full history, so chaining billed every earlier reply again as uncached input.
+    # Both old names now state a removed behaviour, so they retire.
+    "dotnet|tests/GithubCopilotProvider.Tests/AchieveAi.LmDotnetTools.GithubCopilotProvider.Tests.csproj|AchieveAi.LmDotnetTools.GithubCopilotProvider.Tests.Agents.CopilotResponsesWebSocketClientTests.Chains_previous_response_id_across_turns()",
+    "dotnet|tests/GithubCopilotProvider.Tests/AchieveAi.LmDotnetTools.GithubCopilotProvider.Tests.csproj|AchieveAi.LmDotnetTools.GithubCopilotProvider.Tests.Agents.CopilotResponsesWebSocketClientRetryTests.Truncated_turn_does_not_advance_previous_response_id()"
 )
 
 function Assert-MeasuredCorpus {

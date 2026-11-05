@@ -1,7 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Net.WebSockets;
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 using AchieveAi.LmDotnetTools.LmCore.Http;
@@ -14,8 +13,8 @@ namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Tests.Agents;
 ///     Connect-retry + close/fault behaviour for <see cref="CopilotResponsesWebSocketClient"/>:
 ///     transient connect failures are retried with a FRESH socket per attempt (bounded by
 ///     <see cref="RetryOptions"/>); non-retryable failures and cancellation surface immediately; a
-///     mid-turn peer close before the terminal lifecycle event is reported as an error; and a
-///     truncated turn never advances the <c>previous_response_id</c> chain.
+///     mid-turn peer close before the terminal lifecycle event is reported as an error; and the next
+///     turn after a truncation reconnects on a fresh socket.
 /// </summary>
 public sealed class CopilotResponsesWebSocketClientRetryTests
 {
@@ -454,7 +453,7 @@ public sealed class CopilotResponsesWebSocketClientRetryTests
     }
 
     [Fact]
-    public async Task Truncated_turn_does_not_advance_previous_response_id()
+    public async Task Truncated_turn_disposes_the_stale_socket_and_next_turn_reconnects()
     {
         var created = new List<FakeSocket>();
         var turn = 0;
@@ -475,20 +474,18 @@ public sealed class CopilotResponsesWebSocketClientRetryTests
             return socket;
         });
 
-        // First turn truncates -> throws and must NOT advance _previousResponseId.
+        // First turn truncates -> throws.
         var act = async () => await CollectAsync(client.StreamResponseAsync(Request()));
         await act.Should().ThrowAsync<IOException>();
 
-        // Second turn reconnects (peer closed the first socket) and completes; its frame must carry
-        // no previous_response_id because the truncated turn never reached response.completed.
+        // Second turn reconnects (peer closed the first socket) and completes on the new socket.
         _ = await CollectAsync(client.StreamResponseAsync(Request()));
 
         created.Should().HaveCount(2);
         created[0]
             .Disposed.Should()
             .BeTrue("the stale, disconnected socket from the truncated turn must be disposed on reconnect, not leaked");
-        var secondFrame = JsonDocument.Parse(created[1].Sent.Single()).RootElement;
-        secondFrame.TryGetProperty("previous_response_id", out _).Should().BeFalse();
+        created[1].Sent.Should().ContainSingle();
     }
 
     private static async Task<List<ResponseEvent>> CollectAsync(IAsyncEnumerable<ResponseEvent> stream)
