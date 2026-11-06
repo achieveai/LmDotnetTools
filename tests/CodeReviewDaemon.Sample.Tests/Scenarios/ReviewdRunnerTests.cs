@@ -4375,11 +4375,27 @@ public sealed class ReviewdRunnerTests
                 .And.Contain("give it only to a history specialist, who writes anything useful into history-notes.md")
                 .And.Contain("The rest of the review reads history-notes.md and ignores setup-history files");
             // The judged ratings are split by the rules header in the sent prompt; v1 reviews say "Review quality rules."
+            // and v2 reviews "Review quality rules v2. Every".
             var reviewText = JsonNode.Parse(
                 handler.Requests.First(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal)).Body!
             )!["text"]!.GetValue<string>();
-            reviewText.Should().Contain(ReviewRunner.ReviewQualityRules).And.Contain("Review quality rules v2.");
-            reviewText.Should().NotContain("Review quality rules.");
+            reviewText.Should().Contain(ReviewRunner.ReviewQualityRules).And.Contain("Review quality rules v2.1.");
+            reviewText.Should().NotContain("Review quality rules.").And.NotContain("Review quality rules v2. ");
+            // A confirmation that sees a blocker the posted summary missed corrects the verdict in the summary thread.
+            JsonNode.Parse(
+                handler
+                    .Requests.Where(r =>
+                        r.Method == HttpMethod.Post
+                        && r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal)
+                    )
+                    .ElementAt(1)
+                    .Body!
+            )!["text"]!
+                .GetValue<string>()
+                .Should()
+                .Contain("that the summary you posted does not list as a blocker, reply in that summary thread now")
+                .And.Contain("\"REQUEST_CHANGES (replaces the verdict above)\"")
+                .And.Contain("Waiting for reviewer votes, approvals or policies is not such a blocker.");
             await SnapshotAsync('d');
             var beforeReReview = handler.Requests.Count;
             first["reviewCompletedAt"] = DateTimeOffset.UtcNow.AddHours(-1);
