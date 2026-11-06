@@ -4381,6 +4381,12 @@ public sealed class ReviewdRunnerTests
             )!["text"]!.GetValue<string>();
             reviewText.Should().Contain(ReviewRunner.ReviewQualityRules).And.Contain("Review quality rules v2.1.");
             reviewText.Should().NotContain("Review quality rules.").And.NotContain("Review quality rules v2. ");
+            // Checked by content as well, so dropping v2.1's approve-last rule from the block fails here.
+            reviewText
+                .Should()
+                .Contain(
+                    "- Approve last: choose APPROVE or APPROVE_WITH_COMMENTS only when no item on that list is still open"
+                );
             // A confirmation that sees a blocker the posted summary missed corrects the verdict in the summary thread.
             JsonNode.Parse(
                 handler
@@ -4393,8 +4399,11 @@ public sealed class ReviewdRunnerTests
             )!["text"]!
                 .GetValue<string>()
                 .Should()
-                .Contain("that the summary you posted does not list as a blocker, reply in that summary thread now")
+                .Contain(
+                    "If this review verified a medium or high issue, or a failing required check this PR caused, that the summary you posted does not list as a blocker, reply in that summary thread now"
+                )
                 .And.Contain("\"REQUEST_CHANGES (replaces the verdict above)\"")
+                .And.Contain("record the reply in publication_receipts.json.")
                 .And.Contain("Waiting for reviewer votes, approvals or policies is not such a blocker.");
             await SnapshotAsync('d');
             var beforeReReview = handler.Requests.Count;
