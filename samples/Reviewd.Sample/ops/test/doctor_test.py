@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Tests for ops/doctor.py over fixture installs (temp dirs with a cache-table database and logs).
   python3 samples/Reviewd.Sample/ops/test/doctor_test.py"""
+import contextlib
 import datetime
+import io
 import json
 import sqlite3
 import subprocess
@@ -223,14 +225,49 @@ class Checks(unittest.TestCase):
         self.probe.quota = 3
         found = doctor.stall_problems(NOW, [NOW - minutes(70)], [NOW - minutes(10), NOW - minutes(90)], self.probe)
         self.assertEqual([(p["kind"], p["fix"]) for p in found], [("no-reviews", None)])
-        self.assertIn("since 2026-10-21 10:50Z, though 1 attempt(s) started since", found[0]["detail"])
+        self.assertIn("since 2026-10-21 10:50Z, though 1 attempt(s) started after it", found[0]["detail"])
         self.assertIn("3 HTTP 402 errors", found[0]["detail"])
+
+    def test_a_resumed_attempt_counts_as_one_start(self):
+        row = {"repository": "R", "prId": "9", "claimToken": "t", "stage": "review-running",
+               "startedAt": (NOW - minutes(20)).isoformat()}
+        install = make_install(self.root, rows=[("reviewd/review-attempt/x/9", row),
+                                                ("reviewd/attempt-history/x/9/t", row)])
+        self.assertEqual(len(doctor.facts(install, NOW, self.probe)["started"]), 1)
+
+    def test_the_newest_finish_in_any_store_counts(self):
+        self.assertEqual(doctor.stall_problems(NOW, [NOW - minutes(120), NOW - minutes(10)], [NOW - minutes(20)],
+                                               self.probe), [])
+
+    def test_a_fleet_that_never_finished_a_review_counts_from_its_first_start(self):
+        found = doctor.stall_problems(NOW, [], [NOW - minutes(70), NOW - minutes(5)], self.probe)
+        self.assertEqual([p["kind"] for p in found], ["no-reviews"])
+        self.assertIn("no review has finished in any store yet, though 2 attempt(s) started since 2026-10-21 10:50Z",
+                      found[0]["detail"])
+        self.assertEqual(doctor.stall_problems(NOW, [], [NOW - minutes(10)], self.probe), [])
+
+    def test_quota_errors_counts_402_lines_only_in_the_end_of_the_host_log(self):
+        home = doctor.HOME
+        try:
+            doctor.HOME = Path(self.root)
+            self.assertEqual(doctor.Probe().quota_errors(), 0, "no host log yet")
+            log = Path(self.root) / "logs" / "host-console.log"
+            log.parent.mkdir()
+            log.write_text("status PaymentRequired (Payment Required)\nok\nstatus PaymentRequired\n")
+            self.assertEqual(doctor.Probe().quota_errors(), 2)
+            log.write_text("status PaymentRequired\n" + "x" * (doctor.HOST_LOG_TAIL + 10))
+            self.assertEqual(doctor.Probe().quota_errors(), 0, "an old 402 before the tail does not count")
+            log.unlink()
+            log.mkdir()
+            self.assertEqual(doctor.Probe().quota_errors(), 0, "an unreadable path is not an error")
+        finally:
+            doctor.HOME = home
 
     def test_a_short_gap_or_an_idle_fleet_is_not_a_stall(self):
         self.assertEqual(doctor.stall_problems(NOW, [NOW - minutes(50)], [NOW - minutes(10)], self.probe), [])
         self.assertEqual(doctor.stall_problems(NOW, [NOW - minutes(70)], [NOW - minutes(80)], self.probe), [],
                          "nothing started since the last finished review: there is no work, not a stall")
-        self.assertEqual(doctor.stall_problems(NOW, [], [NOW - minutes(10)], self.probe), [])
+        self.assertEqual(doctor.stall_problems(NOW, [], [], self.probe), [], "an empty fleet is not a stall")
 
     def test_enough_memory_and_disk_raise_nothing(self):
         self.probe.memory, self.probe.disk = 5.0, 150.0
@@ -307,17 +344,54 @@ class Ticks(unittest.TestCase):
 
     def test_a_fleet_wide_stall_alerts_after_thirty_minutes(self):
         early = NOW.replace(hour=1)
-        make_install(self.root, "reviewd", batch_log=FINISHED, keepalive_log=picked(NOW), rows=[
-            ("reviewd/attempt-history/x/1", {"repository": "R", "prId": "1", "stage": "completed-verified",
-                                             "startedAt": (early - minutes(150)).isoformat(),
-                                             "finishedAt": (early - minutes(120)).isoformat()}),
-            ("reviewd/attempt-history/x/2", {"repository": "R", "prId": "2", "stage": "failed-released",
-                                             "startedAt": (early - minutes(20)).isoformat()})])
+        self.stalled_nova(early)
         self.tick(early)
         self.assertEqual(self.sent, [])
         self.tick(early + minutes(30))
         self.assertEqual(len(self.sent), 1)
         self.assertIn("no-reviews", self.sent[0][1])
+
+    def stalled_nova(self, at):
+        make_install(self.root, "reviewd", batch_log=FINISHED, keepalive_log=picked(NOW), rows=[
+            ("reviewd/attempt-history/x/1", {"repository": "R", "prId": "1", "stage": "completed-verified",
+                                             "startedAt": (at - minutes(150)).isoformat(),
+                                             "finishedAt": (at - minutes(120)).isoformat()}),
+            ("reviewd/attempt-history/x/2", {"repository": "R", "prId": "2", "stage": "failed-released",
+                                             "startedAt": (at - minutes(20)).isoformat()})])
+
+    def test_a_store_that_cannot_be_read_neither_asserts_nor_clears_a_stall(self):
+        early = NOW.replace(hour=1)
+        self.stalled_nova(early)
+        make_install(self.root, "reviewd-alpha", batch_log=FINISHED, keepalive_log=picked(NOW), rows=[
+            ("reviewd/attempt-history/y/3", {"repository": "S", "prId": "3", "stage": "completed-verified",
+                                             "startedAt": (early - minutes(30)).isoformat(),
+                                             "finishedAt": (early - minutes(5)).isoformat()})])
+        self.probe.hung.add("alpha")
+        self.tick(early)
+        self.assertNotIn(doctor.STALL_KEY, json.loads(self.state.read_text())["problems"],
+                         "alpha's finish 5 minutes ago may be the one that shows the fleet works")
+        (self.root / "reviewd-alpha" / "data" / "reviews.db").unlink()
+        make_install(self.root, "reviewd-alpha", batch_log=FINISHED, keepalive_log=picked(NOW))
+        self.probe.hung.clear()
+        self.tick(early + minutes(15))
+        self.probe.hung.add("alpha")
+        self.tick(early + minutes(30))
+        self.assertIn(doctor.STALL_KEY, json.loads(self.state.read_text())["problems"], "an unknown tick keeps it")
+        self.assertEqual(self.sent, [])
+        self.probe.hung.clear()
+        self.tick(early + minutes(45))
+        self.assertEqual(len(self.sent), 1, "30 minutes after the stall was first seen, despite the unknown tick")
+        self.assertIn("no-reviews", self.sent[0][1])
+
+    def test_check_prints_the_stall_and_its_quota_cause(self):
+        self.stalled_nova(NOW)
+        self.probe.quota = 7
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = doctor.check(NOW, self.probe, self.root)
+        self.assertEqual(code, 1)
+        self.assertIn("no-reviews", out.getvalue())
+        self.assertIn("7 HTTP 402 errors", out.getvalue())
 
     def test_a_cleared_problem_is_forgotten(self):
         self.probe.timers = False
