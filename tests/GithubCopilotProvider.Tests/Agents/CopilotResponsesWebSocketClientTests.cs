@@ -8,8 +8,8 @@ namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Tests.Agents;
 
 /// <summary>
 ///     Verifies the WebSocket Responses transport: <c>response.create</c> framing, event parsing
-///     via the shared <see cref="ResponseEventParser"/>, and automatic <c>previous_response_id</c>
-///     chaining across turns over a single socket.
+///     via the shared <see cref="ResponseEventParser"/>, socket reuse across turns, and NO automatic
+///     <c>previous_response_id</c> chaining (the agent already sends the full history).
 /// </summary>
 public sealed class CopilotResponsesWebSocketClientTests
 {
@@ -124,7 +124,51 @@ public sealed class CopilotResponsesWebSocketClientTests
     }
 
     [Fact]
-    public async Task Chains_previous_response_id_across_turns()
+    public async Task Full_history_turn_is_not_chained_to_the_previous_response()
+    {
+        // The agent resends the whole conversation every turn. If the client also chained
+        // previous_response_id, the server would prepend turn 1's context to that full history and
+        // bill every earlier reply again as uncached input (measured live: +390 tokens per prior turn).
+        var turn = 0;
+        var fake = new FakeSocket(sent => ScriptedTurn(sent, turn++));
+        using var client = new CopilotResponsesWebSocketClient(
+            new Uri("wss://host/responses"),
+            new StubTokenProvider(),
+            new CopilotSessionContext("m", "s"),
+            socketFactory: () => fake
+        );
+
+        var first = Request();
+        _ = await CollectAsync(client.StreamResponseAsync(first));
+        var second = first with
+        {
+            Input =
+            [
+                .. first.Input,
+                new ResponseInputItem
+                {
+                    Role = "assistant",
+                    Content = [new ResponseInputContent { Type = "output_text", Text = "hello" }],
+                },
+                new ResponseInputItem { Role = "user", Content = [new ResponseInputContent { Text = "more" }] },
+            ],
+        };
+        _ = await CollectAsync(client.StreamResponseAsync(second));
+
+        foreach (var sent in fake.Sent)
+        {
+            JsonDocument.Parse(sent).RootElement.TryGetProperty("previous_response_id", out _).Should().BeFalse();
+        }
+
+        var secondFrame = JsonDocument.Parse(fake.Sent[1]).RootElement;
+        secondFrame.GetProperty("input").GetArrayLength().Should().Be(3, "the full history is sent as-is");
+
+        // The socket is reused across turns (connected once).
+        fake.Connects.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Caller_supplied_previous_response_id_is_passed_through()
     {
         var turn = 0;
         var fake = new FakeSocket(sent => ScriptedTurn(sent, turn++));
@@ -135,18 +179,14 @@ public sealed class CopilotResponsesWebSocketClientTests
             socketFactory: () => fake
         );
 
-        _ = await CollectAsync(client.StreamResponseAsync(Request()));
-        _ = await CollectAsync(client.StreamResponseAsync(Request()));
+        _ = await CollectAsync(client.StreamResponseAsync(Request() with { PreviousResponseId = "resp-explicit" }));
 
-        // First frame has no previous_response_id; second chains off the first turn's completed id.
-        var firstFrame = JsonDocument.Parse(fake.Sent[0]).RootElement;
-        firstFrame.TryGetProperty("previous_response_id", out _).Should().BeFalse();
-
-        var secondFrame = JsonDocument.Parse(fake.Sent[1]).RootElement;
-        secondFrame.GetProperty("previous_response_id").GetString().Should().Be("resp-0");
-
-        // The socket is reused across turns (connected once).
-        fake.Connects.Should().ContainSingle();
+        JsonDocument
+            .Parse(fake.Sent.Single())
+            .RootElement.GetProperty("previous_response_id")
+            .GetString()
+            .Should()
+            .Be("resp-explicit");
     }
 
     private static async Task<List<ResponseEvent>> CollectAsync(IAsyncEnumerable<ResponseEvent> stream)

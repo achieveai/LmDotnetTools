@@ -19,9 +19,13 @@ namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
 ///     the server's event frames until the turn's terminal lifecycle event.
 /// </summary>
 /// <remarks>
-///     Multi-turn chaining is automatic: the <c>response.completed.response.id</c> of one turn is
-///     fed as <c>previous_response_id</c> on the next, matching the Copilot CLI's behaviour. The
-///     socket stays open across turns. Server event frames are parsed with the shared
+///     The client does NOT chain turns with <c>previous_response_id</c>. The agent already sends the
+///     full conversation as <c>input</c> on every turn, so chaining as well made the server prepend
+///     the previous response's context to that full history: every earlier reply was billed again as
+///     uncached input, growing each turn. A caller that sets
+///     <see cref="ResponseCreateRequest.PreviousResponseId"/> itself (and sends only the new items) is
+///     passed through unchanged. The socket stays open across turns. Server event frames are parsed
+///     with the shared
 ///     <see cref="ResponseEventParser"/>, so the same <see cref="OpenAiResponsesAgent"/> mapping is
 ///     reused as for the SSE transport.
 /// </remarks>
@@ -42,7 +46,6 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
     private readonly SemaphoreSlim _turnGate = new(1, 1);
 
     private ICopilotResponsesSocket? _socket;
-    private string? _previousResponseId;
     private bool _disposed;
 
     /// <summary>Creates a WebSocket Responses client.</summary>
@@ -99,7 +102,6 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
                 Stream = null, // WebSocket frames are inherently streamed; omit the HTTP-only flag.
                 Initiator = request.Initiator ?? _options.DefaultInitiator,
                 Store = request.Store ?? false,
-                PreviousResponseId = request.PreviousResponseId ?? _previousResponseId,
             };
 
             var json = JsonSerializer.Serialize(frame, s_serializerOptions);
@@ -118,8 +120,7 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
 
                 // A null is a genuine peer Close frame. Reaching here means the socket closed BEFORE a
                 // terminal response.completed/response.failed event, i.e. the turn was truncated. Surface
-                // it as an error instead of silently ending the stream as though the turn had completed
-                // (which would also wrongly leave _previousResponseId chained to a partial turn).
+                // it as an error instead of silently ending the stream as though the turn had completed.
                 var text =
                     await socket.ReceiveTextAsync(cancellationToken).ConfigureAwait(false)
                     ?? throw new IOException(
@@ -132,14 +133,6 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
                 }
 
                 var ev = ResponseEventParser.Parse(text);
-
-                if (
-                    ev is ResponseLifecycleEvent lifecycle
-                    && string.Equals(lifecycle.Type, ResponseEventTypes.ResponseCompleted, StringComparison.Ordinal)
-                )
-                {
-                    _previousResponseId = TryGetResponseId(lifecycle.Response) ?? _previousResponseId;
-                }
 
                 yield return ev;
 
@@ -266,20 +259,6 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
         {
             // Best-effort cleanup of a failed socket — never mask the original connect failure.
         }
-    }
-
-    private static string? TryGetResponseId(JsonElement response)
-    {
-        if (
-            response.ValueKind == JsonValueKind.Object
-            && response.TryGetProperty("id", out var idEl)
-            && idEl.ValueKind == JsonValueKind.String
-        )
-        {
-            return idEl.GetString();
-        }
-
-        return null;
     }
 
     /// <summary>Asynchronously closes the socket and releases the turn gate. Preferred over <see cref="Dispose"/>.</summary>

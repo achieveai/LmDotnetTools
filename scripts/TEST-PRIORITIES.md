@@ -105,9 +105,10 @@ Inventory-to-policy checks reject missing, duplicate, unreviewed and stale decla
 these checks and the frozen coverage safeguards; adding a test does not require editing global
 count literals. `sourceHash` still requires review whenever the recorded test method changes.
 
-The frozen measured corpus starts at 9,393 identities. The policy regression names seven reviewed
-old identities retired by #828: six removed host-path helper tests and the replaced cache-timing
-family. Only an identity absent from the actual inventory reduces the expected measured count;
+The frozen measured corpus starts at 9,393 identities. The policy regression names the reviewed
+old identities that may retire: seven from #828 (six removed host-path helper tests and the
+replaced cache-timing family), one from #792, and two Copilot WebSocket tests whose names stated
+the removed `previous_response_id` auto-chaining. Only an identity absent from the actual inventory reduces the expected measured count;
 one still present must retain its measured classification. The replacement cache scenario is
 unmeasured. Any other corpus change still requires explicit review; coverage is never relabeled
 to make a total pass.
