@@ -896,6 +896,10 @@ public sealed class SlotReaperTests
     [InlineData("quiet", false)] // the watchdog keeps beating: renewed, the step runs to its end
     [InlineData("active", true)] // an agent is active: never asked, renewed
     [InlineData("unknown", true)] // the agent read fails: counts as active
+    // An HttpClient timeout (a TaskCanceledException) in the agent read and the mark counts as active too: it never
+    // ends the renewals, and never replaces the step's result.
+    [InlineData("timeout", true)]
+    [InlineData("unrenewable", true)] // every renewal fails: logged and retried; the step still ends with its result
     [InlineData("hung", true)] // step-stop never answers: each check gives up in time, renewed, the step ends promptly
     public async Task A_step_whose_watchdog_is_stuck_is_stopped_only_while_no_agent_is_active(string agents, bool stale)
     {
@@ -920,6 +924,7 @@ public sealed class SlotReaperTests
             Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token) =>
                 phase switch
                 {
+                    "step-activity" when agents == "timeout" => throw HostTimeout(),
                     "step-activity" => Task.FromResult(new JsonObject()),
                     "step-stop" when agents == "hung" => HangAsync(token),
                     "step-stop" => Task.FromResult(new JsonObject { ["stopped"] = Check() }),
@@ -950,18 +955,28 @@ public sealed class SlotReaperTests
                         throw new TimeoutException("The step never ended.");
                 }
             }
+            static TaskCanceledException HostTimeout() =>
+                new(
+                    "The request was canceled due to the configured HttpClient.Timeout of 120 seconds elapsing.",
+                    new TimeoutException()
+                );
+            // Never opened, so every renewal throws.
+            using var unopened = new Microsoft.Data.Sqlite.SqliteConnection(connection.ConnectionString);
             var step = () =>
                 ReviewRunner.RunLeasedStepAsync(
-                    connection,
+                    agents == "unrenewable" ? unopened : connection,
                     ownerKey,
                     owner["claimToken"]!.GetValue<string>(),
                     cancellationToken =>
                     {
                         reads++;
                         _ = progressed.Release();
-                        return agents == "unknown"
-                            ? throw new HttpRequestException("host unreachable")
-                            : Task.FromResult(agents == "active");
+                        return agents switch
+                        {
+                            "unknown" => throw new HttpRequestException("host unreachable"),
+                            "timeout" => throw HostTimeout(),
+                            _ => Task.FromResult(agents is "active" or "unrenewable"),
+                        };
                     },
                     Sandbox,
                     "verify",
@@ -989,7 +1004,10 @@ public sealed class SlotReaperTests
                 checks
                     .Should()
                     .Be(agents is "quiet" or "hung" ? reads : 0, "only a quiet tick asks the sandbox to stop the step");
-                lease.Should().BeAfter(DateTimeOffset.UtcNow);
+                if (agents == "unrenewable")
+                    lease.Should().Be(lapsed, "no renewal could write");
+                else
+                    lease.Should().BeAfter(DateTimeOffset.UtcNow);
             }
         }
         finally
