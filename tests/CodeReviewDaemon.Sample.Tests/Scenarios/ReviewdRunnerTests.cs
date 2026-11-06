@@ -4257,6 +4257,45 @@ public sealed class ReviewdRunnerTests
     }
 
     [Fact]
+    public void Commit_response_lost_is_only_an_ambiguous_transport_failure_never_a_settled_or_caller_one()
+    {
+        // Lost: the commit may or may not have run, so its id is replayed. Everything else either settled, can never
+        // succeed on a resubmit (424), or is the caller's own cancellation.
+        var settled = FluentActions
+            .Invoking(() => ReviewRunner.Settle("commit", 1, "", "review_common.ReviewError: boom", "op"))
+            .Should()
+            .Throw<ReviewRunner.SettledSandboxException>()
+            .Which;
+        var lost = new Exception[]
+        {
+            new SandboxException(SandboxErrorKind.TransportTimeout, "transport timeout (00:00:30)."),
+            new SandboxException(SandboxErrorKind.Unavailable, "bad gateway", 502),
+            new TaskCanceledException("HttpClient.Timeout of 120 seconds elapsing.", new TimeoutException()),
+        };
+        var notLost = new Exception[]
+        {
+            new SandboxException(SandboxErrorKind.Unavailable, "no operation api", 424)
+            {
+                ErrorCode = "operation_api_unavailable",
+            },
+            new SandboxException(SandboxErrorKind.Unavailable, "no operation api", 503)
+            {
+                ErrorCode = "operation_api_unavailable",
+            },
+            new SandboxException(SandboxErrorKind.Unavailable, "refused", 503)
+            {
+                ErrorCode = "operation_capacity_exhausted",
+            },
+            new SandboxException(SandboxErrorKind.Authorization, "denied", 401),
+            new OperationCanceledException(),
+            new TaskCanceledException("caller cancelled"),
+            settled,
+        };
+        lost.Should().OnlyContain(failure => ReviewRunner.CommitResponseLost(failure));
+        notLost.Should().NotContain(failure => ReviewRunner.CommitResponseLost(failure));
+    }
+
+    [Fact]
     public async Task Runner_prepares_before_sending_reuses_thread_and_preserves_success_on_publication_failure()
     {
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-run-{Guid.NewGuid():N}.db");
@@ -4345,6 +4384,8 @@ public sealed class ReviewdRunnerTests
         var failPublication = false;
         var refuseCommit = false;
         string? retryableCommit = null;
+        Exception? lostCommit = null;
+        var commitOperations = new List<string>();
         try
         {
             using var connection = PrThreadBindings.Connection(database);
@@ -4508,6 +4549,46 @@ public sealed class ReviewdRunnerTests
                     .Should()
                     .Be("verify-pending", "the commit stopped short of a verified archive, and a rerun is safe");
             }
+            // A commit whose response was lost (the live NScript #148 and ADO !11452 failures) also resumes at
+            // verification; held at commit-pending, its slot was reaped and pick never offered the PR again.
+            // The lost commit may still be running, so every later commit resubmits its operation id: the gateway
+            // then replays that operation instead of starting a second commit beside it.
+            async Task<string?> ReplayIdAsync()
+            {
+                var attempt = (await store.GetAsync<JsonObject>(attemptKey))!;
+                attempt["stage"]!
+                    .GetValue<string>()
+                    .Should()
+                    .Be("verify-pending", "the commit's response was lost, so a rerun after re-verifying is safe");
+                return attempt[ReviewRunner.CommitReplay]?.GetValue<string>();
+            }
+            (await ReplayIdAsync()).Should().BeNull("no commit response has been lost yet");
+            commitOperations.Clear();
+            lostCommit = new SandboxException(
+                SandboxErrorKind.TransportTimeout,
+                "Sandbox gateway request to 'api/v1/sandboxes/s/operations/o' did not complete within the "
+                    + "configured transport timeout (00:00:30)."
+            );
+            await refusedCommit
+                .Should()
+                .ThrowAsync<SandboxException>()
+                .Where(failure => failure.Kind == SandboxErrorKind.TransportTimeout);
+            var lostOperation = commitOperations.Should().ContainSingle().Subject;
+            (await ReplayIdAsync()).Should().Be(lostOperation);
+            lostCommit = new TaskCanceledException(
+                "The request was canceled due to the configured HttpClient.Timeout of 120 seconds elapsing.",
+                new TimeoutException()
+            );
+            await refusedCommit.Should().ThrowAsync<TaskCanceledException>();
+            lostCommit = null;
+            (await ReplayIdAsync()).Should().Be(lostOperation);
+            refuseCommit = true;
+            await refusedCommit.Should().ThrowAsync<SandboxException>();
+            refuseCommit = false;
+            (await ReplayIdAsync())
+                .Should()
+                .Be(lostOperation, "a refusal at capacity says nothing about the lost commit");
+            commitOperations.Should().Equal(lostOperation, lostOperation, lostOperation);
             // The first verification found the confirmation lost (the host never ran it); a retry must not
             // wait on it again, or every retry stalls the lane for the whole lost-input bound.
             var lost = (await store.GetAsync<JsonObject>(attemptKey))!;
@@ -4538,6 +4619,8 @@ public sealed class ReviewdRunnerTests
             phases.Should().Equal("inspect-prepared", "verify", "commit", "cleanup");
             var recovered = (await store.GetAsync<JsonObject>(attemptKey))!;
             recovered["stage"]!.GetValue<string>().Should().Be("completed-verified");
+            commitOperations.Should().HaveCount(4).And.OnlyContain(operation => operation == lostOperation);
+            recovered.ContainsKey(ReviewRunner.CommitReplay).Should().BeFalse("the replayed commit settled");
             foreach (var input in new[] { "reviewInputId", "confirmationInputId" })
                 recovered[input]!.GetValue<string>().Should().Be(verificationPending[input]!.GetValue<string>());
             foreach (var refusal in new[] { "missing-confirmation", "commit-pending", "changed-head" })
@@ -4684,6 +4767,7 @@ public sealed class ReviewdRunnerTests
             if (phase == "commit")
             {
                 polls.Should().BeGreaterThanOrEqualTo(3, "input completion alone must not allow commits");
+                commitOperations.Add(operation);
                 if (refuseCommit)
                     throw new SandboxException(SandboxErrorKind.Unavailable, "refused", 503)
                     {
@@ -4691,6 +4775,8 @@ public sealed class ReviewdRunnerTests
                     };
                 if (retryableCommit is not null)
                     ReviewRunner.Settle("commit", 1, "", "review_common.ReviewError: " + retryableCommit, operation);
+                if (lostCommit is not null)
+                    throw lostCommit;
             }
             var json = phase switch
             {

@@ -379,6 +379,31 @@ internal static class ReviewRunner
             || failure.Message.Contains("Git push failed (exit ", StringComparison.Ordinal)
         );
 
+    // The commit's response was lost, so it may or may not have run, and may still be running: the gateway transport
+    // timed out or was unreachable, or an HttpClient timeout elapsed (never the caller's own cancellation). Unlike the
+    // settled failures above this is not a rerun: the resume resubmits the same operation id (CommitReplay), and the
+    // gateway answers with that operation's own status instead of running the commit twice. Held instead, the slot
+    // was reaped at commit-pending, which pick never offers again, so the archive of a review already on the PR was
+    // never written (seen live: NScript #148, ADO !11452). A 424 operation_api_unavailable cannot succeed on a
+    // resubmit, and a refusal at capacity answered (the operation never ran), so neither is a lost response.
+    internal static bool CommitResponseLost(Exception failure) =>
+        !RefusedAtCapacity(failure)
+        && failure
+            is SandboxException { Kind: SandboxErrorKind.TransportTimeout }
+                or SandboxException
+                {
+                    Kind: SandboxErrorKind.Unavailable,
+                    StatusCode: not 424,
+                    ErrorCode: not "operation_api_unavailable",
+                }
+                or TaskCanceledException { InnerException: TimeoutException };
+
+    // Set on the attempt while its commit's outcome is unknown; the next commit resubmits that operation id. The
+    // gateway prunes only terminal records (after an hour), so a resubmit past that runs the commit afresh after the
+    // original finished: the settled-rerun case above. A gateway restart also drops its records; a commit it left
+    // running is then fenced only by the kit's slot and index locks, as before this replay existed.
+    internal const string CommitReplay = "commitReplayOperationId";
+
     // The gateway refused to admit the operation at its record or concurrency limit, so it never ran.
     internal static bool RefusedAtCapacity(Exception failure) =>
         failure
@@ -1319,7 +1344,12 @@ internal static class ReviewRunner
         }
         async Task<JsonObject> StepAsync(string phase)
         {
-            var operation = Guid.NewGuid().ToString("N");
+            // A commit whose response was lost is resubmitted under its own id, so the gateway reports its outcome
+            // rather than starting a second commit beside one that may still be running.
+            var operation =
+                phase == "commit" && receipt[CommitReplay]?.GetValue<string>() is { Length: > 0 } lost
+                    ? lost
+                    : Guid.NewGuid().ToString("N");
             receipt["stage"] = phase + "-pending";
             receipt[phase + "OperationId"] = operation;
             await SaveAsync();
@@ -1342,13 +1372,28 @@ internal static class ReviewRunner
                 );
             }
             catch (Exception refused)
-                when (phase == "commit" && (RefusedAtCapacity(refused) || CommitRetryable(refused)))
+                when (phase == "commit"
+                    && (RefusedAtCapacity(refused) || CommitRetryable(refused) || CommitResponseLost(refused))
+                )
             {
-                // Verify-pending resumes by re-verifying (read-only) and then committing again.
+                // Verify-pending resumes by re-verifying (read-only) and then committing again. Only a settled
+                // outcome ends a replay; a refusal at capacity says nothing about the original operation.
+                if (CommitResponseLost(refused))
+                    receipt[CommitReplay] = operation;
+                else if (refused is SettledSandboxException)
+                    receipt.Remove(CommitReplay);
                 receipt["stage"] = "verify-pending";
                 await SaveAsync();
                 throw;
             }
+            catch (SettledSandboxException) when (phase == "commit")
+            {
+                // A replayed commit that settled as a failure is not retried under its id again.
+                receipt.Remove(CommitReplay);
+                throw;
+            }
+            if (phase == "commit")
+                receipt.Remove(CommitReplay);
             receipt["stage"] = phase + "-completed";
             await SaveAsync();
             return result;
