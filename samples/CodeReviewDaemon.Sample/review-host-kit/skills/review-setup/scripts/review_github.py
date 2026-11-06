@@ -214,11 +214,12 @@ def _linked_issues(client: GitHubClient, snapshot: dict) -> dict:
         # A link to another repository's issue is that repository's #N, not this one's (seen live: AgentWorkBench
         # #106 linked eighteen NScript issues this way and every one read 404 here). It is kept as a reference and
         # not read, since the reader is scoped to this repository; a link to this repository stays in the text.
+        # The link becomes a space, not "", so the text on each side cannot join into a new #N ("#1[#3](...)2").
         url, owner, name, number = link.groups()
         if (owner.lower(), name.lower()) == here:
             return link.group(0)
         external.append({"repository": f"{owner}/{name}", "id": int(number), "url": url})
-        return ""
+        return " "
 
     text = _LINKED_REFERENCE.sub(set_aside, text)
     numbers = sorted({int(n) for n in re.findall(r"(?<![\w/])#(\d{1,7})\b", text)} - {snapshot["pr_number"]})
