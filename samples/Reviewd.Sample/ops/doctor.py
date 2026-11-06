@@ -58,6 +58,11 @@ ACTIVE = ("still active", "in progress", "did not quiesce")
 LOW_MEMORY_GB = 5
 CRITICAL_MEMORY_GB = 3
 LOW_DISK_GB = 150
+# On 11-05 every model call failed for 10 hours ("exceeded your monthly quota"). Every batch kept admitting and
+# requeueing, so no per-store check fired; only the fleet-wide lack of finished reviews showed it.
+NO_REVIEWS = datetime.timedelta(hours=1)
+STALL_KEY = "fleet:no-reviews:"
+HOST_LOG_TAIL = 2 * 2**20
 
 
 def ts(value):
@@ -139,6 +144,19 @@ class Probe:
                 continue  # gone since the listing, or a kernel thread or zombie with no VmRSS
         return sorted(rows, key=lambda row: -row[2])[:count]
 
+    def quota_errors(self):
+        """HTTP 402 answers in the end of the review host's log: the model quota or budget is used up."""
+        path = HOME / "logs" / "host-console.log"
+        try:
+            with open(path, "rb") as source:
+                source.seek(max(0, path.stat().st_size - HOST_LOG_TAIL))
+                return source.read().count(b"PaymentRequired")
+        except OSError:
+            return 0
+
+
+ATTEMPTS = ("reviewd/review-run/", "reviewd/review-attempt/", "reviewd/attempt-history/")
+
 
 def read_db(install):
     if not install.db.exists():
@@ -212,6 +230,12 @@ def facts(install, now, probe):
         "in_flight": in_flight,
         "failures": [m.group(1) for m in map(FAILURE.match, lines) if m],
         "rows": rows,
+        "posted": [ts(row["finishedAt"]) for key, row in rows if row.get("stage") == "completed-verified"
+                   and ts(row.get("finishedAt"))],
+        # A resumed attempt has an archived copy and a live row for the same claim: count it once, as the digest does.
+        "started": list({(row.get("repository"), str(row.get("prId")), row.get("claimToken") or row["startedAt"]):
+                         ts(row["startedAt"]) for key, row in rows
+                         if key.startswith(ATTEMPTS) and ts(row.get("startedAt"))}.values()),
     }
 
 
@@ -261,15 +285,50 @@ def problems(f, now, memory):
 
 
 def inspect(install, now, probe, memory):
-    """Problems and failure lines for one install. Not being able to read it (a locked database, a hung probe) is a
-    problem of its own, so one bad install never stops the tick for the others."""
+    """Problems, failure lines and review activity (finish and start times) for one install. Not being able to read it
+    (a locked database, a hung probe) is a problem of its own, so one bad install never stops the tick for the others;
+    its activity is then None, not known."""
     try:
         f = facts(install, now, probe)
-        return problems(f, now, memory), f["failures"]
+        return problems(f, now, memory), f["failures"], (f["posted"], f["started"])
     except Exception as error:
         return [{"key": f"{install.name}:doctor-error:", "install": install.name, "kind": "doctor-error",
                  "detail": f"could not check this store: {type(error).__name__}: {str(error)[:200]}",
-                 "fix": None}], []
+                 "fix": None}], [], None
+
+
+def survey(now, probe, memory, root=None):
+    """Every install's problems and (install, failure line) pairs, and the fleet stall check. The stall is None when a
+    store could not be read: its latest finish may be the one that shows the fleet is working."""
+    found, failures, posted, started, complete = [], [], [], [], True
+    for install in installs(root):
+        install_found, install_failures, activity = inspect(install, now, probe, memory)
+        found += install_found
+        failures += [(install.name, reason) for reason in install_failures]
+        if activity is None:
+            complete = False
+        else:
+            posted += activity[0]
+            started += activity[1]
+    return found, failures, stall_problems(now, posted, started, probe) if complete else None
+
+
+def stall_problems(now, posted, started, probe):
+    """Reviews keep starting but none has finished in any store for NO_REVIEWS. A fleet that never finished one counts
+    from its first start."""
+    last = max(posted) if posted else None
+    tried = [at for at in started if last is None or at > last]
+    if not tried or now - (last or min(tried)) < NO_REVIEWS:
+        return []
+    if last:
+        stalled = (f"no review finished in any store since {last:%Y-%m-%d %H:%M}Z, though {len(tried)} attempt(s) "
+                   "started after it")
+    else:
+        stalled = (f"no review has finished in any store yet, though {len(tried)} attempt(s) started since "
+                   f"{min(tried):%Y-%m-%d %H:%M}Z")
+    quota = probe.quota_errors()
+    cause = f"; the host log ends with {quota} HTTP 402 errors (model quota or budget used up)" if quota else ""
+    return [{"key": STALL_KEY, "install": "fleet", "kind": "no-reviews", "detail": stalled + cause, "fix": None}]
 
 
 def fleet_problems(probe):
@@ -413,11 +472,9 @@ def tick(now, probe, dry_run=False, root=None, state_path=None, notifier=None, f
     fixer = fixer or (lambda problem: apply_fix(problem, root))
     state = load_state(state_path)
     found = fleet_problems(probe)
-    seen_failures = []
-    for install in installs(root):
-        install_found, failures = inspect(install, now, probe, state["memory"])
-        found += install_found
-        seen_failures += [(install.name, signature(reason)) for reason in failures]
+    install_found, failures, stall = survey(now, probe, state["memory"], root)
+    found += install_found + (stall or [])
+    seen_failures = [(name, signature(reason)) for name, reason in failures]
     # New kinds of failure: the first tick only learns what exists; later ticks alert once per new signature. A
     # signature is learned only once its alert went out, so a failed Notify is tried again next tick.
     if state["signatures"] is None:
@@ -432,7 +489,10 @@ def tick(now, probe, dry_run=False, root=None, state_path=None, notifier=None, f
     # An install this tick could not inspect may still have its problems: unknown is not clear, so they and their attempt
     # counts are kept. Otherwise ticks alternating with a probe error would restart it forever without an alert.
     unknown = {p["install"] for p in found if p["kind"] == "doctor-error"}
-    for key in [k for k in state["problems"] if k not in current and k.split(":", 1)[0] not in unknown]:
+    # The same for the fleet stall: a tick that could not read every store neither finds it nor clears it.
+    kept = {STALL_KEY} if stall is None else set()
+    for key in [k for k in state["problems"]
+                if k not in current and k.split(":", 1)[0] not in unknown and k not in kept]:
         record({"key": key, "result": "cleared"}, dry_run)
         del state["problems"][key]
     for p in found:
@@ -490,8 +550,7 @@ def digest(now, probe, root=None):
             lines.append(f"- **{install.name}**: could not read its database ({type(error).__name__})")
             continue
         for key, row in rows:
-            if key.startswith(("reviewd/review-run/", "reviewd/review-attempt/", "reviewd/attempt-history/")) \
-                    and row.get("startedAt"):
+            if key.startswith(ATTEMPTS) and row.get("startedAt"):
                 k = (row.get("repository"), str(row.get("prId")), row.get("claimToken") or row.get("startedAt"))
                 rank = (bool(row.get("finishedAt")), row.get("cleanupState") == "released")
                 if k not in best or rank > best[k][0]:
@@ -549,6 +608,16 @@ def unquarantine(store, pr, root=None):
     return keys
 
 
+def check(now, probe, root=None):
+    """Read-only: prints every problem; exit 1 if any."""
+    install_found, _, stall = survey(now, probe, load_state()["memory"], root)
+    found = fleet_problems(probe) + install_found + (stall or [])
+    for p in found:
+        print(f"{p['install']:34} {p['kind']:16} {p['detail']}")
+    print(f"problems: {len(found)}")
+    return 1 if found else 0
+
+
 def main(argv):
     command = argv[1] if len(argv) > 1 else "check"
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -560,12 +629,7 @@ def main(argv):
         print(f"{len(keys)} failure record(s) deleted" + ("; the next pick includes the PR again" if keys else ""))
         return 0 if keys else 1
     if command == "check":
-        memory = load_state()["memory"]
-        found = fleet_problems(probe) + [p for i in installs() for p in inspect(i, now, probe, memory)[0]]
-        for p in found:
-            print(f"{p['install']:34} {p['kind']:16} {p['detail']}")
-        print(f"problems: {len(found)}")
-        return 1 if found else 0
+        return check(now, probe)
     if command == "tick":
         return tick(now, probe, dry_run="--dry-run" in argv)
     if command == "digest":
