@@ -58,6 +58,10 @@ ACTIVE = ("still active", "in progress", "did not quiesce")
 LOW_MEMORY_GB = 5
 CRITICAL_MEMORY_GB = 3
 LOW_DISK_GB = 150
+# On 11-05 every model call failed for 10 hours ("exceeded your monthly quota"). Every batch kept admitting and
+# requeueing, so no per-store check fired; only the fleet-wide lack of finished reviews showed it.
+NO_REVIEWS = datetime.timedelta(hours=1)
+HOST_LOG_TAIL = 2 * 2**20
 
 
 def ts(value):
@@ -139,6 +143,19 @@ class Probe:
                 continue  # gone since the listing, or a kernel thread or zombie with no VmRSS
         return sorted(rows, key=lambda row: -row[2])[:count]
 
+    def quota_errors(self):
+        """HTTP 402 answers in the end of the review host's log: the model quota or budget is used up."""
+        path = HOME / "logs" / "host-console.log"
+        try:
+            with open(path, "rb") as source:
+                source.seek(max(0, path.stat().st_size - HOST_LOG_TAIL))
+                return source.read().count(b"PaymentRequired")
+        except OSError:
+            return 0
+
+
+ATTEMPTS = ("reviewd/review-run/", "reviewd/review-attempt/", "reviewd/attempt-history/")
+
 
 def read_db(install):
     if not install.db.exists():
@@ -212,6 +229,9 @@ def facts(install, now, probe):
         "in_flight": in_flight,
         "failures": [m.group(1) for m in map(FAILURE.match, lines) if m],
         "rows": rows,
+        "posted": [ts(row["finishedAt"]) for key, row in rows if row.get("stage") == "completed-verified"
+                   and ts(row.get("finishedAt"))],
+        "started": [ts(row["startedAt"]) for key, row in rows if key.startswith(ATTEMPTS) and ts(row.get("startedAt"))],
     }
 
 
@@ -265,11 +285,26 @@ def inspect(install, now, probe, memory):
     problem of its own, so one bad install never stops the tick for the others."""
     try:
         f = facts(install, now, probe)
-        return problems(f, now, memory), f["failures"]
+        return problems(f, now, memory), f["failures"], (f["posted"], f["started"])
     except Exception as error:
         return [{"key": f"{install.name}:doctor-error:", "install": install.name, "kind": "doctor-error",
                  "detail": f"could not check this store: {type(error).__name__}: {str(error)[:200]}",
-                 "fix": None}], []
+                 "fix": None}], [], ([], [])
+
+
+def stall_problems(now, posted, started, probe):
+    """Reviews keep starting but none has finished in any store for NO_REVIEWS."""
+    if not posted:
+        return []
+    last = max(posted)
+    tried = sum(1 for at in started if at > last)
+    if now - last < NO_REVIEWS or not tried:
+        return []
+    quota = probe.quota_errors()
+    cause = f"; the host log ends with {quota} HTTP 402 errors (model quota or budget used up)" if quota else ""
+    return [{"key": "fleet:no-reviews:", "install": "fleet", "kind": "no-reviews",
+             "detail": f"no review finished in any store since {last:%Y-%m-%d %H:%M}Z, though {tried} attempt(s) "
+                       f"started since{cause}", "fix": None}]
 
 
 def fleet_problems(probe):
@@ -413,11 +448,14 @@ def tick(now, probe, dry_run=False, root=None, state_path=None, notifier=None, f
     fixer = fixer or (lambda problem: apply_fix(problem, root))
     state = load_state(state_path)
     found = fleet_problems(probe)
-    seen_failures = []
+    seen_failures, posted, started = [], [], []
     for install in installs(root):
-        install_found, failures = inspect(install, now, probe, state["memory"])
+        install_found, failures, (install_posted, install_started) = inspect(install, now, probe, state["memory"])
         found += install_found
         seen_failures += [(install.name, signature(reason)) for reason in failures]
+        posted += install_posted
+        started += install_started
+    found += stall_problems(now, posted, started, probe)
     # New kinds of failure: the first tick only learns what exists; later ticks alert once per new signature. A
     # signature is learned only once its alert went out, so a failed Notify is tried again next tick.
     if state["signatures"] is None:
@@ -490,8 +528,7 @@ def digest(now, probe, root=None):
             lines.append(f"- **{install.name}**: could not read its database ({type(error).__name__})")
             continue
         for key, row in rows:
-            if key.startswith(("reviewd/review-run/", "reviewd/review-attempt/", "reviewd/attempt-history/")) \
-                    and row.get("startedAt"):
+            if key.startswith(ATTEMPTS) and row.get("startedAt"):
                 k = (row.get("repository"), str(row.get("prId")), row.get("claimToken") or row.get("startedAt"))
                 rank = (bool(row.get("finishedAt")), row.get("cleanupState") == "released")
                 if k not in best or rank > best[k][0]:
@@ -561,7 +598,11 @@ def main(argv):
         return 0 if keys else 1
     if command == "check":
         memory = load_state()["memory"]
-        found = fleet_problems(probe) + [p for i in installs() for p in inspect(i, now, probe, memory)[0]]
+        found, posted, started = fleet_problems(probe), [], []
+        for install in installs():
+            install_found, _, (install_posted, install_started) = inspect(install, now, probe, memory)
+            found, posted, started = found + install_found, posted + install_posted, started + install_started
+        found += stall_problems(now, posted, started, probe)
         for p in found:
             print(f"{p['install']:34} {p['kind']:16} {p['detail']}")
         print(f"problems: {len(found)}")

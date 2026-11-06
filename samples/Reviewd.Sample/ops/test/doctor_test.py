@@ -26,6 +26,7 @@ class FakeProbe(doctor.Probe):
         self.pids, self.release, self.linked, self.timers, self.status = ["42"], "r2", "r2", True, {}
         self.hung = set()
         self.memory, self.disk, self.biggest = 20.0, 500.0, [("claude", 64709, 16.5), ("dotnet", 811, 2.3)]
+        self.quota = 0
 
     def batch_pids(self, install):
         if install.name in self.hung:
@@ -52,6 +53,9 @@ class FakeProbe(doctor.Probe):
 
     def top_memory(self, count=3):
         return self.biggest[:count]
+
+    def quota_errors(self):
+        return self.quota
 
 
 def make_install(root, name="reviewd-alpha", rows=(), batch_log="", keepalive_log=""):
@@ -215,6 +219,19 @@ class Checks(unittest.TestCase):
         self.probe.memory = 2.9
         self.assertEqual([p["kind"] for p in doctor.fleet_problems(self.probe)], ["memory-critical"])
 
+    def test_reviews_that_start_but_never_finish_for_an_hour_are_a_fleet_problem_naming_quota_errors(self):
+        self.probe.quota = 3
+        found = doctor.stall_problems(NOW, [NOW - minutes(70)], [NOW - minutes(10), NOW - minutes(90)], self.probe)
+        self.assertEqual([(p["kind"], p["fix"]) for p in found], [("no-reviews", None)])
+        self.assertIn("since 2026-10-21 10:50Z, though 1 attempt(s) started since", found[0]["detail"])
+        self.assertIn("3 HTTP 402 errors", found[0]["detail"])
+
+    def test_a_short_gap_or_an_idle_fleet_is_not_a_stall(self):
+        self.assertEqual(doctor.stall_problems(NOW, [NOW - minutes(50)], [NOW - minutes(10)], self.probe), [])
+        self.assertEqual(doctor.stall_problems(NOW, [NOW - minutes(70)], [NOW - minutes(80)], self.probe), [],
+                         "nothing started since the last finished review: there is no work, not a stall")
+        self.assertEqual(doctor.stall_problems(NOW, [], [NOW - minutes(10)], self.probe), [])
+
     def test_enough_memory_and_disk_raise_nothing(self):
         self.probe.memory, self.probe.disk = 5.0, 150.0
         self.assertEqual(doctor.fleet_problems(self.probe), [])
@@ -287,6 +304,20 @@ class Ticks(unittest.TestCase):
         self.assertIn("memory-critical", self.sent[0][1])
         self.assertIn("claude pid 64709", self.sent[0][1])
         self.assertEqual(self.fixed, [], "the doctor never kills a process to free memory")
+
+    def test_a_fleet_wide_stall_alerts_after_thirty_minutes(self):
+        early = NOW.replace(hour=1)
+        make_install(self.root, "reviewd", batch_log=FINISHED, keepalive_log=picked(NOW), rows=[
+            ("reviewd/attempt-history/x/1", {"repository": "R", "prId": "1", "stage": "completed-verified",
+                                             "startedAt": (early - minutes(150)).isoformat(),
+                                             "finishedAt": (early - minutes(120)).isoformat()}),
+            ("reviewd/attempt-history/x/2", {"repository": "R", "prId": "2", "stage": "failed-released",
+                                             "startedAt": (early - minutes(20)).isoformat()})])
+        self.tick(early)
+        self.assertEqual(self.sent, [])
+        self.tick(early + minutes(30))
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("no-reviews", self.sent[0][1])
 
     def test_a_cleared_problem_is_forgotten(self):
         self.probe.timers = False
