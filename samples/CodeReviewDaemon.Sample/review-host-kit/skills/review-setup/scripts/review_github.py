@@ -197,9 +197,30 @@ def _snapshot(payload: dict, owner: str, repository: str) -> dict:
             "web_url": payload.get("html_url"), "snapshot_fingerprint": fingerprint}
 
 
+# "[#129](https://github.com/achieveai/NScript/issues/129)": a reference whose link names its own repository.
+_LINKED_REFERENCE = re.compile(
+    r"\[#\d{1,7}\]\(\s*(https://github\.com/([A-Za-z0-9][\w.-]*)/([A-Za-z0-9][\w.-]*)/(?:issues|pull)/(\d{1,7})"
+    r"(?!\d)[^)\s]*)\s*\)", re.IGNORECASE)
+
+
 def _linked_issues(client: GitHubClient, snapshot: dict) -> dict:
     """Issues the PR text names with GitHub closing keywords or a bare #N, fetched read-only."""
     text = snapshot["title"] + "\n" + snapshot["description"]
+    repository = snapshot["repository"]
+    here = (repository["owner"].lower(), repository["name"].lower())
+    external = []
+
+    def set_aside(link: re.Match) -> str:
+        # A link to another repository's issue is that repository's #N, not this one's (seen live: AgentWorkBench
+        # #106 linked eighteen NScript issues this way and every one read 404 here). It is kept as a reference and
+        # not read, since the reader is scoped to this repository; a link to this repository stays in the text.
+        url, owner, name, number = link.groups()
+        if (owner.lower(), name.lower()) == here:
+            return link.group(0)
+        external.append({"repository": f"{owner}/{name}", "id": int(number), "url": url})
+        return ""
+
+    text = _LINKED_REFERENCE.sub(set_aside, text)
     numbers = sorted({int(n) for n in re.findall(r"(?<![\w/])#(\d{1,7})\b", text)} - {snapshot["pr_number"]})
     issues, warnings, not_found = {}, [], []
     for number in numbers[:50]:
@@ -217,7 +238,8 @@ def _linked_issues(client: GitHubClient, snapshot: dict) -> dict:
             warnings.append(f"Linked issue {number} is unavailable.")
     if len(numbers) > 50:
         warnings.append("More than 50 linked issue references; only the first 50 were read.")
-    return {"items": issues, "not_found": not_found, "warnings": warnings, "complete": not warnings}
+    return {"items": issues, "external": external, "not_found": not_found, "warnings": warnings,
+            "complete": not warnings}
 
 
 def _discussion(client: GitHubClient, pr: int) -> dict:

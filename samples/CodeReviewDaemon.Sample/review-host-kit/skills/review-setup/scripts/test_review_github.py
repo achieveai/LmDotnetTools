@@ -120,8 +120,12 @@ class OriginPrTests(unittest.TestCase):
 
 class FakeIssues:
     """issues/N reads: 3 exists, 914 is not in this repository (404), 5 fails for another reason."""
+    def __init__(self):
+        self.read = []
+
     def request(self, path):
         number = int(path.rsplit("/", 1)[1])
+        self.read.append(number)
         if number == 914:
             raise review_github.GitHubNotFound("GitHub query failed (HTTP 404); the resource may be inaccessible.")
         if number == 5:
@@ -132,7 +136,31 @@ class FakeIssues:
 class LinkedIssueTests(unittest.TestCase):
     @staticmethod
     def snapshot(body):
-        return {"pr_number": 7, "title": "t", "description": body}
+        return {"pr_number": 7, "title": "t", "description": body,
+                "repository": {"provider": "github", "owner": "achieveai", "name": "AgentWorkBench"}}
+
+    def test_a_link_to_another_repositorys_issue_is_kept_as_external_and_never_read_here(self):
+        # Live 2026-11: AgentWorkBench #106 linked eighteen NScript issues as "[#129](.../NScript/issues/129)";
+        # each was read as AgentWorkBench#129 and the 18 warnings stopped setup with exit 2.
+        client = FakeIssues()
+        result = review_github._linked_issues(client, self.snapshot(
+            "Fixes #3.\n- [#129](https://github.com/achieveai/NScript/issues/129) TrimEnd\n"
+            "- [#5](https://github.com/achieveai/NScript/pull/5#discussion_r1) a pull request elsewhere"))
+        self.assertEqual(client.read, [3])
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["warnings"], [])
+        self.assertEqual(result["external"], [
+            {"repository": "achieveai/NScript", "id": 129, "url": "https://github.com/achieveai/NScript/issues/129"},
+            {"repository": "achieveai/NScript", "id": 5,
+             "url": "https://github.com/achieveai/NScript/pull/5#discussion_r1"}])
+
+    def test_a_link_to_this_repository_is_still_read_whatever_its_case(self):
+        client = FakeIssues()
+        result = review_github._linked_issues(
+            client, self.snapshot("[#3](https://github.com/AchieveAI/agentworkbench/issues/3)"))
+        self.assertEqual(client.read, [3])
+        self.assertEqual(list(result["items"]), ["3"])
+        self.assertEqual(result["external"], [])
 
     def test_a_bare_reference_to_another_repositorys_issue_is_noted_not_a_warning(self):
         # Live 2026-11: "until #914 is merged" (meaning LmDotnetTools#914) in an AgentWorkBench PR stopped setup
