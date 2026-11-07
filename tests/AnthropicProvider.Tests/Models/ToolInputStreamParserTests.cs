@@ -114,10 +114,12 @@ public class ToolInputStreamParserTests
 
     private static List<string> Chunk(string text, int size)
     {
-        return Enumerable
-            .Range(0, (text.Length + size - 1) / size)
-            .Select(i => text.Substring(i * size, Math.Min(size, text.Length - (i * size))))
-            .ToList();
+        return
+        [
+            .. Enumerable
+                .Range(0, (text.Length + size - 1) / size)
+                .Select(i => text.Substring(i * size, Math.Min(size, text.Length - (i * size)))),
+        ];
     }
 
     private static string BuildInputDelta(string partialJson)
