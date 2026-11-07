@@ -1729,6 +1729,196 @@ public class CompactionLoopTests
     }
 
     [Fact]
+    public async Task CompactMode_AfterATooSmallCut_TheHistoryIsReloadedOncePerCooldown_WhileNothingChanges()
+    {
+        // Run 1 leaves five big tool results; run 2 adds a small one per turn. Each turn of run 2 over the compact line
+        // plans the same cut over run 1, which frees ~1.0k of the ~2.5k the gate asks for, and the turns grow the
+        // request by ~0.4k in all.
+        var store = new CountingStore(new InMemoryConversationStore());
+        await using var h = await TooSmallCutAsync(store, gainRatio: 0.9, holdGenerations: 3, smallCalls: [14]);
+
+        _ = await h.RunAsync("second");
+
+        var skips = h.Decisions.Count(d => d.Reason == CompactionSkipReasons.InsufficientGain);
+        skips.Should().BeGreaterThanOrEqualTo(10, "every turn over the line still records the skip");
+        store.Loads.Should().Be((skips + 2) / 3, "the refused cut is planned again only every third turn");
+    }
+
+    [Fact]
+    public async Task CompactMode_AfterATooSmallCut_TheCutIsPlannedAgain_OnceTheRequestGrowsByTheShortfall()
+    {
+        // As above with a shortfall of ~0.15k: six small turns close it, long before the cooldown ends.
+        var store = new CountingStore(new InMemoryConversationStore());
+        await using var h = await TooSmallCutAsync(store, gainRatio: 0.42, holdGenerations: 100, smallCalls: [14]);
+
+        _ = await h.RunAsync("second");
+
+        var skips = h.Decisions.Count(d => d.Reason == CompactionSkipReasons.InsufficientGain);
+        store.Loads.Should().BeGreaterThan(1, "the request grew past the shortfall, so the cut is planned again");
+        store.Loads.Should().BeLessThan(skips, "the turns before that do not load the history");
+        (await h.StateAsync())!.ActiveCheckpointId.Should().NotBeNull("the cut planned again frees enough");
+    }
+
+    [Fact]
+    public async Task CompactMode_AfterATooSmallCut_ANewRunPlansTheCutAgain()
+    {
+        var store = new CountingStore(new InMemoryConversationStore());
+        await using var h = await TooSmallCutAsync(store, gainRatio: 0.9, holdGenerations: 100, smallCalls: [8, 4]);
+        _ = await h.RunAsync("second");
+        var before = store.Loads;
+
+        _ = await h.RunAsync("third");
+
+        (store.Loads - before).Should().Be(1, "the new run's first turn plans the cut again; the rest hold it");
+    }
+
+    [Fact]
+    public async Task CompactMode_WhileATooSmallCutIsHeld_ARequestOverTheWindowIsStillCut()
+    {
+        await using var h = await TooSmallCutAsync(
+            new CountingStore(new InMemoryConversationStore()),
+            gainRatio: 0.9,
+            holdGenerations: 100,
+            smallCalls: [30]
+        );
+
+        (await h.RunAsync("second")).IsError.Should().BeFalse();
+
+        h.Decisions.Should().Contain(d => d.Reason == CompactionSkipReasons.InsufficientGain);
+        (await h.StateAsync())!
+            .ActiveCheckpointId.Should()
+            .NotBeNull("the fit check cuts once the request outgrows the window");
+        h.Agent.Requests.Should().OnlyContain(r => Estimate(r) <= Usable, "no request over the window is sent");
+    }
+
+    /// <summary>
+    ///     A harness whose first run (five big tool results) is done, with history loads counted from then on. Each
+    ///     later run makes the next <paramref name="smallCalls"/> count of small tool calls.
+    /// </summary>
+    private static async Task<Harness> TooSmallCutAsync(
+        CountingStore store,
+        double gainRatio,
+        int holdGenerations,
+        int[] smallCalls
+    )
+    {
+        var h = new Harness(
+            Runs(bigCalls: 5, smallCalls),
+            Options(CompactionMode.Compact) with
+            {
+                MinCompactionGainRatio = gainRatio,
+                CooldownGenerations = holdGenerations,
+            },
+            _ => Window,
+            store: store,
+            echo: args => args.Contains("big", StringComparison.Ordinal) ? Padding : "ok"
+        );
+        _ = await h.RunAsync("first");
+        store.Counting = true;
+        return h;
+    }
+
+    /// <summary>
+    ///     Run 1 makes <paramref name="bigCalls"/> Echo calls with big results; each later run makes the next count of
+    ///     <paramref name="smallCalls"/> with small ones. Every run ends with a text reply.
+    /// </summary>
+    private static Func<int, IReadOnlyList<IMessage>> Runs(int bigCalls, int[] smallCalls) =>
+        call =>
+        {
+            var first = 1;
+            foreach (var calls in (int[])[bigCalls, .. smallCalls])
+            {
+                if (call < first + calls)
+                {
+                    return
+                    [
+                        new ToolCallMessage
+                        {
+                            ToolCallId = $"tc-{call}",
+                            FunctionName = "Echo",
+                            FunctionArgs = first == 1 ? """{"size":"big"}""" : "{}",
+                            Role = Role.Assistant,
+                        },
+                    ];
+                }
+
+                if (call == first + calls)
+                {
+                    break;
+                }
+
+                first += calls + 1;
+            }
+
+            return [new TextMessage { Text = "done", Role = Role.Assistant }];
+        };
+
+    /// <summary>Counts full history loads once <see cref="Counting"/> is set.</summary>
+    private sealed class CountingStore(IConversationStore inner) : IConversationStore
+    {
+        private int _loads;
+
+        public bool Counting { get; set; }
+
+        public int Loads => Volatile.Read(ref _loads);
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(string threadId, CancellationToken ct = default)
+        {
+            if (Counting)
+            {
+                _ = Interlocked.Increment(ref _loads);
+            }
+
+            return inner.LoadMessagesAsync(threadId, ct);
+        }
+
+        public Task<long> GetMessageWatermarkAsync(string threadId, CancellationToken ct = default) =>
+            inner.GetMessageWatermarkAsync(threadId, ct);
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessageRangeAsync(
+            string threadId,
+            long fromSeq,
+            long toSeq,
+            int limit,
+            CancellationToken ct = default
+        ) => inner.LoadMessageRangeAsync(threadId, fromSeq, toSeq, limit, ct);
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default
+        ) => inner.UpdateMetadataAsync(threadId, update, ct);
+
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            inner.LoadMetadataAsync(threadId, ct);
+
+        public Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default
+        ) => inner.AppendMessagesAsync(threadId, messages, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            ConversationListOptions? options = null,
+            CancellationToken ct = default
+        ) => inner.ListThreadsAsync(limit, offset, options, ct);
+    }
+
+    [Fact]
     public async Task CompactMode_AFailedSummary_CountsAgainstTheThread_AndBacksOffTheNextGenerations()
     {
         await using var h = new Harness(
