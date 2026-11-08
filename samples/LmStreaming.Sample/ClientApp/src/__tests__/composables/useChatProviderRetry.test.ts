@@ -138,6 +138,58 @@ describe('useChat — provider_retry frames (#930)', () => {
     expect(chat.providerRetry.value?.delayMs).toBe(7000);
   });
 
+  // A `replay_truncated` advisory holds incoming frames until its history fill lands, and the fill can
+  // land after the run has ended. A notice drained then would raise a banner nothing clears.
+  describe('when the retry is held behind an in-place history fill', () => {
+    async function startRunWithRetryHeld() {
+      const chat = useChat({ getModeId: () => 'default', provisionThreadId });
+      chat.setThreadId('thread-1');
+      await chat.sendMessage('hi');
+      let resolveHistory!: (v: unknown) => void;
+      convMocks.loadConversationMessages.mockImplementation(
+        () => new Promise((resolve) => { resolveHistory = resolve; })
+      );
+      captured[0].onStreamRecovery?.({
+        reason: 'replay_truncated',
+        threadId: 'thread-1',
+        runId: 'run-1',
+        generationId: 'gen-1',
+      });
+      await vi.waitFor(() => expect(convMocks.loadConversationMessages).toHaveBeenCalledTimes(1));
+      captured[0].onMessage(retryFrame());
+      expect(chat.providerRetry.value, 'the frame is held, not applied').toBeNull();
+
+      const finishFill = async () => {
+        resolveHistory([]);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      };
+      return { chat, finishFill };
+    }
+
+    it('shows it once the fill lands on a run that is still live', async () => {
+      const { chat, finishFill } = await startRunWithRetryHeld();
+
+      await finishFill();
+
+      expect(chat.providerRetry.value?.delayMs).toBe(7000);
+    });
+
+    it.each([
+      ['the user stopped the run', (chat: ReturnType<typeof useChat>) => chat.cancelStream()],
+      [
+        'the server ended the run with an error',
+        (_chat: ReturnType<typeof useChat>) => captured[0].onError('boom', 'provider_error'),
+      ],
+    ])('drops it when %s during the fill', async (_name, end) => {
+      const { chat, finishFill } = await startRunWithRetryHeld();
+
+      await end(chat);
+      await finishFill();
+
+      expect(chat.providerRetry.value).toBeNull();
+    });
+  });
+
   it('ignores a retry frame stamped for another conversation', async () => {
     const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     chat.setThreadId('thread-1');

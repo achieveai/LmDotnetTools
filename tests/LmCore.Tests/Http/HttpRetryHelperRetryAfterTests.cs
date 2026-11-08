@@ -282,6 +282,15 @@ public class HttpRetryHelperRetryAfterTests
     }
 
     [Fact]
+    public void Read_AStandardWaitPastTheIntRange_IsReadAtFullLength()
+    {
+        // The typed .NET parser drops this value, so without the raw read it would escape the cap check.
+        using var response = RateLimited(("Retry-After", "3000000000"));
+
+        RetryAfterHeader.Read(response, new FakeTimeProvider()).Should().Be(TimeSpan.FromSeconds(3000000000));
+    }
+
+    [Fact]
     public void Read_PrefersTheMillisecondHeader_WhenBothAreSent()
     {
         using var response = RateLimited(("retry-after-ms", "1500"), ("Retry-After", "7"));
@@ -292,6 +301,7 @@ public class HttpRetryHelperRetryAfterTests
     [Theory]
     [InlineData("Sat, 07 Nov 2026 11:59:00 GMT", 0)] // a date already past
     [InlineData("soon", null)] // unreadable
+    [InlineData("99999999999999999999", null)] // too large for a 64-bit integer
     public void Read_ADateInThePast_IsZero_AndAnUnreadableValueIsNull(string value, int? expectedMs)
     {
         var time = new FakeTimeProvider(new DateTimeOffset(2026, 11, 7, 12, 0, 0, TimeSpan.Zero));

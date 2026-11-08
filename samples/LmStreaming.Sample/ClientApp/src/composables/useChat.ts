@@ -1604,7 +1604,13 @@ export function useChat(options: UseChatOptions = {}) {
       // Overrides the spread above. Every message kind reaches the transcript through here — text,
       // reasoning, tool calls and their results, run lifecycle, usage — so ONE gate covers them all
       // while an in-place `replay_truncated` fill is rewriting the index underneath us.
-      onMessage: (msg: Message) => applyOrDefer(socketState, () => callbacks.onMessage(msg)),
+      onMessage: (msg: Message) =>
+        applyOrDefer(socketState, () => {
+          // A retry notice held by that fill can drain after the run ended. Stop or a server error has
+          // already cleared the banner, and nothing later on this socket would clear it again.
+          if (isProviderRetryMessage(msg) && (socketState.closedByClient || socketState.terminalError)) return;
+          callbacks.onMessage(msg);
+        }),
       onAuthEvent: handleAuthEvent,
       onGenerationAbandoned: handleGenerationAbandoned,
       onSandboxSessionRefresh: async (deferred) => {

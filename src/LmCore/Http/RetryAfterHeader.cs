@@ -9,8 +9,9 @@ namespace AchieveAi.LmDotnetTools.LmCore.Http;
 ///     Shared by two callers that honor the header the same way: the provider retry loop
 ///     (<see cref="HttpRetryHelper" />) and the lifecycle webhook sender
 ///     (<c>HttpLifecycleDeliverySender</c> in LmAgentInfra). A cap on the result is the caller's
-///     decision, not this reader's — the two callers answer an over-long wait differently — so the
-///     wait is returned at full length, however long, for the caller to compare.
+///     decision, not this reader's — the two callers answer an over-long wait differently — so a
+///     readable wait is returned at full length for the caller to compare, within the limits stated
+///     on <see cref="Read" />.
 /// </remarks>
 public static class RetryAfterHeader
 {
@@ -25,7 +26,9 @@ public static class RetryAfterHeader
     /// <summary>
     ///     The wait the response asks for, or <see langword="null" /> when it asks for none or the
     ///     header cannot be read. A wait in the past, or a negative one, is <see cref="TimeSpan.Zero" />.
-    ///     A wait too long for <see cref="TimeSpan" /> is <see cref="TimeSpan.MaxValue" />.
+    ///     A wait too long for <see cref="TimeSpan" /> is <see cref="TimeSpan.MaxValue" />. A number too
+    ///     large to parse — seconds past a 64-bit integer, or milliseconds past a <see cref="double" /> —
+    ///     is unreadable.
     /// </summary>
     /// <param name="response">The response whose headers are read.</param>
     /// <param name="timeProvider">Clock used to turn an absolute HTTP-date into a wait.</param>
