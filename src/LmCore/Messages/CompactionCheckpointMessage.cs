@@ -159,6 +159,26 @@ public sealed record IndexEntry
 }
 
 /// <summary>
+///     How many items of each unbounded section the envelope budget left out, newest kept, so the envelope fits its hard
+///     cap (spec 679 §3.4). The envelope shows each count as one line; the board, the roster and the rows still hold every
+///     item.
+/// </summary>
+public sealed record ManifestOmissions
+{
+    /// <summary>Tasks of <see cref="ContextManifest.Tasks" /> left out, oldest first.</summary>
+    [JsonPropertyName("tasks")]
+    public int Tasks { get; init; }
+
+    /// <summary>Artifacts of <see cref="ContextManifest.Artifacts" /> left out, oldest first.</summary>
+    [JsonPropertyName("artifacts")]
+    public int Artifacts { get; init; }
+
+    /// <summary>Agents of <see cref="ContextManifest.Agents" /> left out, oldest first.</summary>
+    [JsonPropertyName("agents")]
+    public int Agents { get; init; }
+}
+
+/// <summary>
 ///     Counts of cut-blocking state observed at the cut (spec 679 §2.6, R6). All zero for a legal cut;
 ///     recorded for audit so a rejected checkpoint can say what blocked it.
 /// </summary>
@@ -290,6 +310,14 @@ public sealed record ContextManifest
     /// <summary>Cut-blocking state observed at the cut; all zero by R6.</summary>
     [JsonPropertyName("recovery")]
     public RecoveryStateAtCut Recovery { get; init; } = new();
+
+    /// <summary>
+    ///     What the envelope budget left out of the unbounded sections, as counts; null when nothing was. Only a schema 3
+    ///     row carries it.
+    /// </summary>
+    [JsonPropertyName("omitted")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ManifestOmissions? Omitted { get; init; }
 }
 
 /// <summary>
@@ -336,6 +364,9 @@ public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
     /// <summary>The <c>$type</c> a schema 2 row carries — the manifest with <c>open_exchanges</c>.</summary>
     public const string TypeDiscriminatorV2 = "compaction_checkpoint@2";
 
+    /// <summary>The <c>$type</c> a schema 3 row carries — the manifest with <c>omitted</c> counts.</summary>
+    public const string TypeDiscriminatorV3 = "compaction_checkpoint@3";
+
     /// <summary>
     ///     The <c>$type</c> a row of <paramref name="schemaVersion" /> is written with. Every version
     ///     whose manifest gained a section gets its own, which is what makes an older reader SKIP the
@@ -352,16 +383,29 @@ public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
         {
             <= 1 => TypeDiscriminator,
             2 => TypeDiscriminatorV2,
+            3 => TypeDiscriminatorV3,
             _ => throw new ArgumentOutOfRangeException(
                 nameof(schemaVersion),
                 schemaVersion,
-                "A checkpoint schema version needs its own $type before it can be written; see TypeDiscriminatorV2."
+                "A checkpoint schema version needs its own $type before it can be written; see TypeDiscriminatorV3."
             ),
         };
 
     /// <summary>
-    ///     The persisted schema version this build writes. 2 adds <c>open_exchanges</c> to the manifest; a
-    ///     version 1 row still deserializes, with that section empty.
+    ///     The lowest schema version that holds <paramref name="manifest" /> whole: 3 when it carries
+    ///     <see cref="ContextManifest.Omitted" />, else 2. A row is written at this version, so a manifest with nothing
+    ///     omitted stays readable by a binary that knows only schema 2.
+    /// </summary>
+    public static int SchemaVersionFor(ContextManifest manifest)
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
+        return manifest.Omitted is null ? 2 : 3;
+    }
+
+    /// <summary>
+    ///     The newest persisted schema version this build reads and writes. 2 adds <c>open_exchanges</c> to the
+    ///     manifest, and 3 adds <c>omitted</c>; a version 1 row still deserializes, with those sections empty. A row is
+    ///     written at <see cref="SchemaVersionFor" /> its manifest, not always at this.
     /// </summary>
     /// <remarks>
     ///     Reading is asymmetric on purpose. A row at or below this number is readable in full, so it is
@@ -370,15 +414,24 @@ public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
     ///     because its <c>$type</c> is one this build does not map; this is the second line of defence
     ///     for a row that reaches here anyway.
     /// </remarks>
-    public const int CurrentSchemaVersion = 2;
+    public const int CurrentSchemaVersion = 3;
+
+    private readonly int? _schemaVersion;
 
     /// <summary>Checkpoint id, <c>cp-{thread-short}-{n}</c>. The key of the state machine entry.</summary>
     [JsonPropertyName("checkpoint_id")]
     public required string CheckpointId { get; init; }
 
-    /// <summary>Schema version of this row.</summary>
+    /// <summary>
+    ///     Schema version of this row: the version it was read with, or, when never set,
+    ///     <see cref="SchemaVersionFor" /> its manifest.
+    /// </summary>
     [JsonPropertyName("schema_version")]
-    public int SchemaVersion { get; init; } = CurrentSchemaVersion;
+    public int SchemaVersion
+    {
+        get => _schemaVersion ?? SchemaVersionFor(Manifest);
+        init => _schemaVersion = value;
+    }
 
     /// <summary>The last canonical row this checkpoint covers.</summary>
     [JsonPropertyName("boundary")]
@@ -496,27 +549,39 @@ public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
         AppendQuoted(sb, "Standing instructions (verbatim, oldest first)", Manifest.Instructions);
         AppendLines(sb, "Goal and acceptance criteria", Manifest.Goals);
         AppendQuoted(sb, "Decisions and approvals", Manifest.Decisions);
+        var omitted = Manifest.Omitted ?? new ManifestOmissions();
         AppendLines(
             sb,
             "Open work",
-            Manifest.Tasks.Select(t => t.Id is null ? $"[{t.Status}] {t.Title}" : $"[{t.Status}] {t.Id}: {t.Title}")
+            Omitted(omitted.Tasks, "older tasks are on the board but not listed here")
+                .Concat(
+                    Manifest.Tasks.Select(t =>
+                        t.Id is null ? $"[{t.Status}] {t.Title}" : $"[{t.Status}] {t.Id}: {t.Title}"
+                    )
+                )
         );
         AppendLines(
             sb,
             "Artifacts and evidence",
-            Manifest.Artifacts.Select(a =>
-                a.Path
-                + (a.Hash is null ? string.Empty : $" ({a.Hash})")
-                + (a.OriginSeq is null ? string.Empty : $" [seq {a.OriginSeq.Value}]")
-            )
+            Omitted(omitted.Artifacts, "older artifacts are in the compacted rows but not listed here")
+                .Concat(
+                    Manifest.Artifacts.Select(a =>
+                        a.Path
+                        + (a.Hash is null ? string.Empty : $" ({a.Hash})")
+                        + (a.OriginSeq is null ? string.Empty : $" [seq {a.OriginSeq.Value}]")
+                    )
+                )
         );
         AppendLines(
             sb,
             "Agents",
-            Manifest.Agents.Select(a =>
-                $"{a.AgentId}: {a.Template ?? "-"}; {a.Task ?? "-"}; {a.Status}"
-                + (a.Outcome is null ? string.Empty : $"; {a.Outcome}")
-            )
+            Omitted(omitted.Agents, "older agents are in the roster but not listed here")
+                .Concat(
+                    Manifest.Agents.Select(a =>
+                        $"{a.AgentId}: {a.Template ?? "-"}; {a.Task ?? "-"}; {a.Status}"
+                        + (a.Outcome is null ? string.Empty : $"; {a.Outcome}")
+                    )
+                )
         );
 
         AppendLines(
@@ -547,6 +612,10 @@ public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
 
         return sb.Append("</context-checkpoint>").ToString();
     }
+
+    /// <summary>The count line of a section the envelope budget shortened, listed before the newest items it kept.</summary>
+    private static IEnumerable<string> Omitted(int count, string what) =>
+        count > 0 ? [string.Create(CultureInfo.InvariantCulture, $"[{count} omitted] {what}")] : [];
 
     private static void AppendQuoted(StringBuilder sb, string heading, IReadOnlyList<QuotedItem> items) =>
         AppendLines(

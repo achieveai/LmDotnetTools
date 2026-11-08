@@ -36,10 +36,12 @@ export const MessageType = {
   ContextPressure: 'context_pressure',
   // Persisted compaction checkpoint row, rendered as a transcript divider (#721, spec 679 §7.2).
   // The server gives each checkpoint SCHEMA VERSION its own $type, so that a .NET reader predating a
-  // version skips the row instead of adopting the half of it it understands (spec 679 §8.3). Both
-  // names below are live on the wire: v1 rows are already on disk and v2 is what this server writes.
+  // version skips the row instead of adopting the half of it it understands (spec 679 §8.3). All
+  // names below are live on the wire: v1 rows are already on disk, and this server writes v2, or v3
+  // when the envelope budget left items out of the manifest.
   CompactionCheckpoint: 'compaction_checkpoint',
   CompactionCheckpointV2: 'compaction_checkpoint@2',
+  CompactionCheckpointV3: 'compaction_checkpoint@3',
   // Live-only compaction progress frame (manual and automatic): requested → running → applied | refused | failed
   CompactionStatus: 'compaction_status',
 } as const;
@@ -456,7 +458,10 @@ export interface CheckpointQuote {
  * BEFORE it branches on role. Only the fields the divider renders are typed.
  */
 export interface CompactionCheckpointMessage extends IMessage {
-  $type: typeof MessageType.CompactionCheckpoint | typeof MessageType.CompactionCheckpointV2;
+  $type:
+    | typeof MessageType.CompactionCheckpoint
+    | typeof MessageType.CompactionCheckpointV2
+    | typeof MessageType.CompactionCheckpointV3;
   /** `cp-{thread-short}-{n}`; unique per checkpoint, so it is the merge key on both live and reload. */
   checkpoint_id: string;
   boundary: { seq: number; message_id: string };

@@ -15,6 +15,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmMultiTurn.TodoBoard;
 using FluentAssertions;
 using LmMultiTurn.Tests.Lifecycle;
 using Microsoft.Extensions.Logging;
@@ -1700,6 +1701,69 @@ public class CompactionLoopTests
         (await h.StateAsync())!.ConsecutiveFailures.Should().Be(0);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ABoardLargerThanTheEnvelope_NoLongerRefusesEveryTurn_TheCheckpointCountsTheOldestOpenTasks(
+        bool summarizerHealthy
+    )
+    {
+        // #812: the whole board was copied into every checkpoint, so a big enough board broke V9 on the summarised build
+        // and the fallback alike. Nothing activated, the fit check refused the turn with overflow_after_compaction, and
+        // the next turn did the same. Now the checkpoint lists the newest open tasks and counts the rest.
+        const long window = 16_000;
+        const long usable = window - 100;
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(Thread, new ThreadMetadata { ThreadId = Thread, LastUpdated = 1 }); // a board needs its conversation
+        await ConversationTodoProjection.SaveAsync(
+            store,
+            new TodoBoardSnapshot
+            {
+                ThreadId = Thread,
+                Tasks =
+                [
+                    .. Enumerable
+                        .Range(1, 400)
+                        .Select(n => new TodoTaskNode
+                        {
+                            Id = $"t{n}",
+                            Title = $"open task {n} " + new string('x', 40),
+                            Status = TodoTaskStatus.NotStarted,
+                        }),
+                ],
+            }
+        );
+        await using var h = new Harness(EchoThenDone(60), Options(CompactionMode.Compact), _ => window, store: store);
+        if (!summarizerHealthy)
+        {
+            h.Summarizer.Fail = _ => new InvalidOperationException("summary model down");
+        }
+
+        var completed = await h.RunAsync("start");
+
+        completed.IsError.Should().BeFalse(Describe(h, completed));
+        var reasons = h
+            .Decisions.Concat(h.Publisher.Payloads<CompactionPayload>(LifecycleEventTypes.CompactionFailed))
+            .Select(p => p.Reason)
+            .ToList();
+        reasons.Should().NotContain(CompactionFailureReasons.OverflowAfterCompaction);
+        reasons.Should().NotContain(r => r != null && r.StartsWith("validation_failed:V9", StringComparison.Ordinal));
+        h.Agent.Requests.Should().OnlyContain(r => Estimate(r) <= usable);
+        var hardCap = Options(CompactionMode.Compact).EffectiveCheckpointTokenHardCap(usable);
+        var checkpoints = (await h.StoredRowsAsync()).OfType<CompactionCheckpointMessage>().ToList();
+        checkpoints.Should().NotBeEmpty(Describe(h, completed));
+        foreach (var checkpoint in checkpoints)
+        {
+            var manifest = checkpoint.Manifest;
+            manifest.Omitted.Should().NotBeNull("400 open tasks do not fit the hard cap");
+            (manifest.Tasks.Count + manifest.Omitted!.Tasks).Should().Be(400, "every open task is listed or counted");
+            CompactionTokenEstimate
+                .EstimateText(checkpoint.RenderEnvelope(CheckpointRenderOptions.Default))
+                .Should()
+                .BeLessThanOrEqualTo(hardCap);
+        }
+    }
+
     [Fact]
     public async Task CompactMode_ACutThatNewlyCoversTooLittle_IsSkippedInsufficientGain_WithoutASummaryCall()
     {
@@ -2145,10 +2209,11 @@ public class CompactionLoopTests
         var row = rows.Last(r =>
             string.Equals(r.MessageType, nameof(CompactionCheckpointMessage), StringComparison.Ordinal)
         );
-        var rewritten = row.MessageJson.Replace(
-            $"\"schema_version\":{CompactionCheckpointMessage.CurrentSchemaVersion}",
-            $"\"schema_version\":{schemaVersion}",
-            StringComparison.Ordinal
+        // Whatever version the row was written at: a row is written at the lowest version its manifest needs.
+        var rewritten = System.Text.RegularExpressions.Regex.Replace(
+            row.MessageJson,
+            "\"schema_version\":\\d+",
+            $"\"schema_version\":{schemaVersion}"
         );
         rewritten.Should().NotBe(row.MessageJson, "the row must actually carry the version this rewrites");
 

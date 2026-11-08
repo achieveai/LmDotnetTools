@@ -122,7 +122,42 @@ public class CompactionCheckpointEnvelopeTests
     }
 
     [Fact]
-    public void CurrentSchemaVersion_IsTwo() => Assert.Equal(2, CompactionCheckpointMessage.CurrentSchemaVersion);
+    public void CurrentSchemaVersion_IsThree() => Assert.Equal(3, CompactionCheckpointMessage.CurrentSchemaVersion);
+
+    [Fact]
+    public void Omitted_ListsACountLineFirstInEachShortenedSection_AndNothingWhenNoneIsShortened()
+    {
+        // #812: past its hard cap the envelope keeps only the newest open tasks, live agents and artifacts. The model must
+        // still see that there are more, and where: one count line at the top of each section.
+        var full = Checkpoint(FullManifest()).RenderEnvelope(CheckpointRenderOptions.Default);
+        var text = Checkpoint(
+                FullManifest() with
+                {
+                    Omitted = new ManifestOmissions { Tasks = 12, Agents = 3 },
+                }
+            )
+            .RenderEnvelope(CheckpointRenderOptions.Default);
+
+        Assert.Contains("## Open work\n- [12 omitted] older tasks are on the board but not listed here\n- [", text);
+        Assert.Contains("## Agents\n- [3 omitted] older agents are in the roster but not listed here\n- agent-", text);
+        Assert.DoesNotContain("older artifacts", text);
+        Assert.DoesNotContain("omitted] older", full);
+    }
+
+    [Fact]
+    public void Omitted_ShowsTheSection_EvenWhenEveryItemOfItIsCounted()
+    {
+        var text = Checkpoint(
+                FullManifest() with
+                {
+                    Tasks = [],
+                    Omitted = new ManifestOmissions { Tasks = 2_000 },
+                }
+            )
+            .RenderEnvelope(CheckpointRenderOptions.Default);
+
+        Assert.Contains("## Open work\n- [2000 omitted] older tasks are on the board but not listed here\n## ", text);
+    }
 
     [Fact]
     public void CurrentInstruction_QuotesTheWholeRowVerbatim_WithItsSeq()

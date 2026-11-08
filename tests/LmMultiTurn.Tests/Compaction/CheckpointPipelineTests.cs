@@ -864,10 +864,11 @@ public sealed class CheckpointPipelineTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Build_WhenOnlyTheNewestUserInstructionCouldStillShrink_KeepsIt_AndReportsTheOverflowAsV9()
+    public async Task Build_WhenOnlyTheNewestUserInstructionCouldStillShrink_KeepsIt_AndCountsTheOldestArtifactsInstead()
     {
         // This build's own sections (a trimmed pasted current instruction and three file artifacts) leave no room for the
-        // newest user instruction even at its trim. It is kept anyway: the checkpoint fails V9 and the warning says why.
+        // newest user instruction even at its trim. It used to be kept and the checkpoint failed V9 on every turn (#812).
+        // It is still kept; the last rung lists the newest artifacts and counts the rest, so the checkpoint fits.
         var thread = new ThreadFixture()
             .Human("USER-NEW " + new string('v', 900))
             .ToolTurns(1)
@@ -902,14 +903,32 @@ public sealed class CheckpointPipelineTests : IAsyncLifetime
             )
             .BuildAsync(Request(thread.Rows, cut) with { SummaryFallback = true });
 
-        build.Validation!.Rule.Should().Be("V9");
-        build.Checkpoint!.Manifest.Instructions.Should().ContainSingle().Which.Quote.Should().StartWith("USER-NEW");
+        build.IsValid.Should().BeTrue(build.Validation?.Detail);
+        var manifest = build.Checkpoint!.Manifest;
+        manifest.Instructions.Should().ContainSingle().Which.Quote.Should().StartWith("USER-NEW");
+        manifest.Omitted.Should().NotBeNull();
+        manifest.Omitted!.Artifacts.Should().BePositive();
+        (manifest.Artifacts.Count + manifest.Omitted.Artifacts).Should().Be(3, "every artifact is listed or counted");
+        manifest.Artifacts.Select(a => a.OriginSeq).Should().BeInAscendingOrder().And.NotContainNulls();
+        if (manifest.Artifacts.Count > 0)
+        {
+            manifest.Artifacts[^1].Path.Should().StartWith("src/3/", "the newest are the ones kept");
+        }
+
+        build
+            .Checkpoint.RenderEnvelope(CheckpointRenderOptions.Default)
+            .Should()
+            .Contain($"[{manifest.Omitted.Artifacts} omitted] older artifacts");
+        build.Checkpoint.SchemaVersion.Should().Be(3, "a manifest with omissions is a schema 3 row");
         logger
             .Entries.Should()
-            .ContainSingle(e => e.Level == LogLevel.Warning && e.Properties.ContainsKey("SectionTokens"))
-            .Which.Message.Should()
-            .Contain("CurrentInstruction")
-            .And.NotContain("USER-NEW");
+            .NotContain(e => e.Properties.ContainsKey("SectionTokens"), "nothing is left over the cap");
+        logger
+            .Entries.Should()
+            .ContainSingle(e => e.Level == LogLevel.Information && e.Properties.ContainsKey("ArtifactsOmitted"))
+            .Which.Properties["ArtifactsOmitted"]
+            .Should()
+            .Be(manifest.Omitted.Artifacts);
     }
 
     /// <summary>
@@ -1091,6 +1110,229 @@ public sealed class CheckpointPipelineTests : IAsyncLifetime
         shrank.Properties["InstructionsTrimmed"].Should().Be(0);
         shrank.Properties["NarrativeCharsTrimmed"].Should().Be(0);
         shrank.Message.Should().NotContain("RESULT-").And.NotContain("TASK-", "counts only, never text");
+    }
+
+    /// <summary>
+    ///     A long-lived conversation in the shape that wedged Reviewd (#812), scaled up: earlier runs of standing
+    ///     instructions, a current run of many human rows (some writing files), and a board and a roster where every
+    ///     second task is completed and every second agent finished.
+    /// </summary>
+    private static (ThreadFixture Thread, TodoBoardSnapshot Board, IReadOnlyList<AgentRef> Roster) LongLived(
+        int standingRows,
+        int currentRows,
+        int files,
+        int tasks,
+        int agents,
+        int standingChars = 900
+    )
+    {
+        var thread = new ThreadFixture();
+        for (var n = 1; n <= standingRows; n++)
+        {
+            _ = thread.Human($"STANDING-{n} " + new string('s', standingChars)).ToolTurns(1);
+        }
+
+        _ = thread.Run("run-2");
+        for (var n = 1; n <= currentRows; n++)
+        {
+            _ = thread.Human($"CURRENT-{n} " + new string('c', 900));
+            _ =
+                n <= files
+                    ? thread.ToolTurn(tool: "Write", args: $$"""{"file_path":"src/file-{{n}}.cs"}""")
+                    : thread.ToolTurns(1);
+        }
+
+        _ = thread.ToolTurns(3);
+        var board = new TodoBoardSnapshot
+        {
+            ThreadId = Thread,
+            Tasks =
+            [
+                .. Enumerable
+                    .Range(1, tasks)
+                    .Select(n => new TodoTaskNode
+                    {
+                        Id = $"t{n}",
+                        Title = $"task {n} " + new string('x', 40),
+                        Status = n % 2 == 0 ? TodoTaskStatus.Completed : TodoTaskStatus.InProgress,
+                    }),
+            ],
+        };
+        var roster = Enumerable
+            .Range(1, agents)
+            .Select(n => new AgentRef
+            {
+                AgentId = $"agent-{n}",
+                Template = "reviewer",
+                Task = $"review module {n} for regressions and style",
+                Status = n % 2 == 0 ? "completed" : "running",
+                Outcome = n % 2 == 0 ? $"module {n} is fine" : null,
+            })
+            .ToList();
+        return (thread, board, roster);
+    }
+
+    private static CutDecision.Cut LateCut(ThreadFixture thread) =>
+        CutSelector
+            .Select(
+                new CutRequest(
+                    thread.Rows,
+                    thread.LastSeq - 2,
+                    CutBlockingState.Clean,
+                    [],
+                    null,
+                    // Every human row of the current run is a mid-run injection: R4 would keep the cut out of it.
+                    ThreadFixture.Options(minTail: 10, lookback: 0)
+                )
+            )
+            .Should()
+            .BeOfType<CutDecision.Cut>()
+            .Subject;
+
+    [Theory]
+    [InlineData(1_000)]
+    [InlineData(3_000)]
+    [InlineData(6_000)]
+    public async Task Build_AFallbackOverAnyBoardRosterOrInstructionSize_FitsTheHardCap_KeepingTheNewestOfEverySection(
+        long target
+    )
+    {
+        // #812: tasks, agents and the current instruction had no bound tied to the cap, so a long conversation's fallback
+        // failed V9 and the fit check refused every turn. With no hard cap set the hard cap is the target, the tightest
+        // case: the fallback must still fit, and what it leaves out it counts.
+        var (thread, board, roster) = LongLived(
+            standingRows: 40,
+            currentRows: 300,
+            files: 200,
+            tasks: 2_000,
+            agents: 500
+        );
+        var cut = LateCut(thread);
+
+        var build = await Pipeline(
+                new ScriptedSummarizer(_ => throw new HttpRequestException("provider down")),
+                validation: new CheckpointValidationOptions { CheckpointTokenCap = target }
+            )
+            .BuildAsync(Request(thread.Rows, cut) with { Board = board, Roster = roster, SummaryFallback = true });
+
+        build.IsValid.Should().BeTrue(build.Validation?.Detail);
+        var checkpoint = build.Checkpoint!;
+        CompactionTokenEstimate
+            .EstimateText(checkpoint.RenderEnvelope(CheckpointRenderOptions.Default))
+            .Should()
+            .BeLessThanOrEqualTo(target);
+        var manifest = checkpoint.Manifest;
+
+        var current = cut.CurrentInstruction;
+        current.Should().HaveCount(300);
+        manifest.CurrentInstruction[^1].Seq.Should().Be(current[^1].Seq, "the newest row keeps its own quote");
+        manifest.CurrentInstruction[^1].Quote.Should().StartWith("CURRENT-300 ");
+        CurrentInstructionQuotes
+            .CollapsedRange(manifest.CurrentInstruction[0])
+            .Should()
+            .Be((current[0].Seq, current[current.Count - manifest.CurrentInstruction.Count].Seq));
+        manifest.Instructions.Should().Contain(q => q.Quote.StartsWith("STANDING-40 ", StringComparison.Ordinal));
+
+        manifest.Omitted.Should().NotBeNull();
+        var omitted = manifest.Omitted!;
+        (manifest.Tasks.Count + omitted.Tasks).Should().Be(1_000, "every open task is listed or counted");
+        manifest.Tasks.Should().OnlyContain(t => t.Status == nameof(TodoTaskStatus.InProgress));
+        (manifest.Agents.Count + omitted.Agents).Should().Be(250, "every live agent is listed or counted");
+        manifest.Agents.Should().OnlyContain(a => a.Status == "running");
+        (manifest.Artifacts.Count + omitted.Artifacts).Should().Be(200, "every artifact is listed or counted");
+        if (manifest.Tasks.Count > 0)
+        {
+            manifest.Tasks[^1].Id.Should().Be("t1999", "the newest open tasks are the ones kept");
+        }
+
+        if (manifest.Agents.Count > 0)
+        {
+            manifest.Agents[^1].AgentId.Should().Be("agent-499", "the newest live agents are the ones kept");
+        }
+
+        var envelope = checkpoint.RenderEnvelope(CheckpointRenderOptions.Default);
+        envelope.Should().Contain($"[{omitted.Tasks} omitted] older tasks");
+        envelope.Should().Contain($"[{omitted.Agents} omitted] older agents");
+        checkpoint.SchemaVersion.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task Build_AnEnvelopeOverItsTargetButWithinTheHardCap_ShedsOnlyCompletedTasksAndFinishedAgents()
+    {
+        // Best effort: past the target, only what the board and the roster still hold goes. Every standing instruction
+        // and the narrative stay whole, and nothing is counted, because the envelope is within its hard cap.
+        var (thread, board, roster) = LongLived(
+            standingRows: 6,
+            currentRows: 1,
+            files: 0,
+            tasks: 60,
+            agents: 20,
+            standingChars: 250
+        );
+        var cut = LateCut(thread);
+        var logger = new ListLogger();
+
+        var build = await Pipeline(
+                new ScriptedSummarizer(_ => throw new HttpRequestException("provider down")),
+                logger,
+                new CheckpointValidationOptions { CheckpointTokenCap = 1_000, CheckpointTokenHardCap = 4_000 }
+            )
+            .BuildAsync(Request(thread.Rows, cut) with { Board = board, Roster = roster, SummaryFallback = true });
+
+        build.IsValid.Should().BeTrue(build.Validation?.Detail);
+        var checkpoint = build.Checkpoint!;
+        CompactionTokenEstimate
+            .EstimateText(checkpoint.RenderEnvelope(CheckpointRenderOptions.Default))
+            .Should()
+            .BeGreaterThan(1_000, "over the target")
+            .And.BeLessThanOrEqualTo(4_000);
+        var manifest = checkpoint.Manifest;
+        var bySeq = thread.Rows.ToDictionary(r => r.Seq);
+        manifest.Instructions.Should().HaveCount(6).And.OnlyContain(q => q.Quote == bySeq[q.Seq].Text, "whole");
+        checkpoint.Narrative.Should().Be(CheckpointPipeline.FallbackNarrative);
+        manifest.Tasks.Should().HaveCount(30).And.OnlyContain(t => t.Status == nameof(TodoTaskStatus.InProgress));
+        manifest.Agents.Should().HaveCount(10).And.OnlyContain(a => a.Status == "running");
+        manifest.Omitted.Should().BeNull();
+        checkpoint.SchemaVersion.Should().Be(2, "a manifest with nothing omitted stays readable by schema 2 binaries");
+
+        var shrank = logger
+            .Entries.Should()
+            .ContainSingle(e => e.Level == LogLevel.Information && e.Properties.ContainsKey("CompletedTasksDropped"))
+            .Subject;
+        shrank.Properties["CompletedTasksDropped"].Should().Be(30);
+        shrank.Properties["FinishedAgentsDropped"].Should().Be(10);
+        shrank.Properties["EnvelopeMeetsTarget"].Should().Be(false);
+        shrank.Properties["InstructionsTrimmed"].Should().Be(0);
+        shrank.Properties["NarrativeCharsTrimmed"].Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Build_OnAChainWhosePreviousCurrentInstructionWasCollapsed_CarriesEveryRowItStoodFor()
+    {
+        // R5 across a chain: a collapsed item stands for many human rows under one seq. When the next checkpoint moves on
+        // to a new run, each of those rows is carried as a standing instruction, not just the one the item is filed under.
+        var (thread, _, _) = LongLived(standingRows: 0, currentRows: 40, files: 0, tasks: 0, agents: 0);
+        var firstCut = LateCut(thread);
+        var pipeline = Pipeline(
+            new ScriptedSummarizer(_ => throw new HttpRequestException("provider down")),
+            validation: new CheckpointValidationOptions { CheckpointTokenCap = 1_000, CheckpointTokenHardCap = 50_000 }
+        );
+        var first = await pipeline.BuildAsync(Request(thread.Rows, firstCut) with { SummaryFallback = true });
+        first.IsValid.Should().BeTrue(first.Validation?.Detail);
+        var collapsed = CurrentInstructionQuotes.CollapsedRange(first.Checkpoint!.Manifest.CurrentInstruction[0]);
+        collapsed.Should().NotBeNull("forty rows at their floor are over half a 1,000-token target");
+
+        _ = thread.Run("run-3").Human("next task").ToolTurns(4);
+        var second = await pipeline.BuildAsync(
+            Request(thread.Rows, LateCut(thread), "cp-2", first.Checkpoint) with
+            {
+                SummaryFallback = true,
+            }
+        );
+
+        second.IsValid.Should().BeTrue(second.Validation?.Detail);
+        var carried = second.Checkpoint!.Manifest.Instructions.Select(q => q.Seq).ToHashSet();
+        firstCut.CurrentInstruction.Select(r => r.Seq).Should().OnlyContain(seq => carried.Contains(seq));
     }
 
     [Fact]

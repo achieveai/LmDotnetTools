@@ -6,14 +6,15 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 
 /// <summary>
 ///     <c>CurrentInstruction</c> as a manifest quotes it (spec 679 §2.3, §3.4): each row whole while the rows fit half of
-///     the V9 envelope cap; past that, the largest rows first become a head and tail around a marker naming the seq that
+///     the envelope target; past that, the largest rows first become a head and tail around a marker naming the seq that
 ///     <see cref="RecallConversationToolProvider" /> reads in full, until the rows fit. A pasted prompt larger than the
-///     envelope would otherwise fail V9 on every checkpoint, the fallback included. Pure: the assembler writes this and
-///     the validator recomputes it, so a trim nobody can reproduce fails V3.
+///     envelope would otherwise fail V9 on every checkpoint, the fallback included. Many rows still over it shrink further
+///     (see the <c>collapseOlder</c> parameter of <see cref="Quote" />). Pure: the assembler writes this and the validator
+///     recomputes it, so a trim nobody can reproduce fails V3.
 /// </summary>
 internal static partial class CurrentInstructionQuotes
 {
-    /// <summary>The share of the V9 envelope cap the current instruction may take before it is trimmed.</summary>
+    /// <summary>The share of the envelope target the current instruction may take before it is trimmed.</summary>
     public const double EnvelopeCapShare = 0.5;
 
     /// <summary>The least of a trimmed row that is kept, however tight the budget.</summary>
@@ -31,10 +32,20 @@ internal static partial class CurrentInstructionQuotes
     ///     <see cref="SequencedMessage.IsHumanRow" />, which both callers filter on, so rows the loop wrote itself —
     ///     notifications, tool results, elapsed-time notices — never arrive here in the first place.
     /// </summary>
+    /// <param name="rows">The human rows to quote, oldest first.</param>
+    /// <param name="budgetTokens">The tokens the quotes may take together.</param>
+    /// <param name="estimate">How a quote is sized.</param>
+    /// <param name="collapseOlder">
+    ///     For <c>CurrentInstruction</c> only (§2.3): when the rows are still over the budget with each at
+    ///     <see cref="MinKeptChars" />, the older rows shrink to their marker, oldest first, and then the oldest collapse
+    ///     into one counted item (<see cref="Collapse" />), so many rows cannot outgrow the envelope. The newest row
+    ///     always keeps its own quote. Standing instructions never collapse: V3 checks each against its row.
+    /// </param>
     public static IReadOnlyList<QuotedItem> Quote(
         IReadOnlyList<SequencedMessage> rows,
         long budgetTokens,
-        Func<string?, long> estimate
+        Func<string?, long> estimate,
+        bool collapseOlder = false
     )
     {
         ArgumentNullException.ThrowIfNull(rows);
@@ -65,7 +76,92 @@ internal static partial class CurrentInstructionQuotes
             total = others + estimate(trimmed);
         }
 
-        return quotes;
+        return collapseOlder && total > budgetTokens
+            ? CollapseOlder(quotes, rows, total, budgetTokens, estimate)
+            : quotes;
+    }
+
+    /// <summary>
+    ///     Past the trims: the older quotes become their marker alone, oldest first, while over the budget; then the
+    ///     fewest oldest quotes that bring it under become one <see cref="Collapse" /> item. Still over with every older
+    ///     row collapsed, that is the result: one counted item and the newest row.
+    /// </summary>
+    private static IReadOnlyList<QuotedItem> CollapseOlder(
+        QuotedItem[] quotes,
+        IReadOnlyList<SequencedMessage> rows,
+        long total,
+        long budgetTokens,
+        Func<string?, long> estimate
+    )
+    {
+        var older = quotes.Length - 1;
+        for (var i = 0; i < older && total > budgetTokens; i++)
+        {
+            var marker = Build(rows[i].Text ?? string.Empty, quotes[i].Seq, 0);
+            if (marker.Length < quotes[i].Quote.Length)
+            {
+                total += estimate(marker) - estimate(quotes[i].Quote);
+                quotes[i] = quotes[i] with { Quote = marker };
+            }
+        }
+
+        if (total <= budgetTokens || older < 2)
+        {
+            return quotes;
+        }
+
+        // The fewest oldest quotes whose collapse fits; every older one when none does.
+        var prefix = 0L;
+        var collapsed = older;
+        for (var count = 1; count <= older; count++)
+        {
+            prefix += estimate(quotes[count - 1].Quote);
+            var item = Collapse(count, quotes[0].Seq, quotes[count - 1].Seq);
+            if (count >= 2 && total - prefix + estimate(item) <= budgetTokens)
+            {
+                collapsed = count;
+                break;
+            }
+        }
+
+        return
+        [
+            new QuotedItem
+            {
+                Seq = quotes[0].Seq,
+                Quote = Collapse(collapsed, quotes[0].Seq, quotes[collapsed - 1].Seq),
+            },
+            .. quotes.Skip(collapsed),
+        ];
+    }
+
+    /// <summary>
+    ///     The one item <paramref name="count" /> older rows of the current instruction collapse into, quoted under the
+    ///     first one's seq: how many, and the seq range RecallConversation reads them from.
+    /// </summary>
+    internal static string Collapse(int count, long fromSeq, long toSeq) =>
+        string.Create(
+            CultureInfo.InvariantCulture,
+            $"[… {count} earlier rows of this instruction omitted; full text: {RecallConversationToolProvider.ToolName} from_seq {fromSeq} to_seq {toSeq}]"
+        );
+
+    /// <summary>The seq range a <see cref="Collapse" /> quote names, or null when <paramref name="quote" /> is not one.</summary>
+    public static (long FromSeq, long ToSeq)? CollapsedRange(QuotedItem quote)
+    {
+        ArgumentNullException.ThrowIfNull(quote);
+        var match = CollapsePattern().Match(quote.Quote);
+        return
+            match.Success
+            && long.TryParse(
+                match.Groups["from"].ValueSpan,
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out var from
+            )
+            && long.TryParse(match.Groups["to"].ValueSpan, NumberStyles.None, CultureInfo.InvariantCulture, out var to)
+            && from == quote.Seq
+            ? (from, to)
+            : null;
     }
 
     /// <summary>The longest head/tail form of <paramref name="text" /> within <paramref name="allowance" />, or null when none is shorter.</summary>
@@ -239,6 +335,14 @@ internal static partial class CurrentInstructionQuotes
             CultureInfo.InvariantCulture,
             $"\n[… {omitted} chars omitted; full text: {RecallConversationToolProvider.ToolName} seq {seq}]\n"
         );
+
+    [GeneratedRegex(
+        @"^\[… \d+ earlier rows of this instruction omitted; full text: "
+            + RecallConversationToolProvider.ToolName
+            + @" from_seq (?<from>\d+) to_seq (?<to>\d+)\]$",
+        RegexOptions.CultureInvariant
+    )]
+    private static partial Regex CollapsePattern();
 
     [GeneratedRegex(
         @"\n\[… (?<omitted>\d+) chars omitted; full text: "

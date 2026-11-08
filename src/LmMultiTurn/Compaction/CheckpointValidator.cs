@@ -9,8 +9,20 @@ internal sealed record CheckpointValidationOptions
     /// <summary>V7: the most the narrative may be, in estimated tokens.</summary>
     public long NarrativeTokenCap { get; init; } = 2_000;
 
-    /// <summary>V9: the most the rendered envelope may be, in estimated tokens.</summary>
+    /// <summary>
+    ///     The envelope size the budget aims at, in estimated tokens; also what the current instruction is bounded by
+    ///     (half of it, §2.3). Best effort: V9 enforces <see cref="EffectiveHardCap" />.
+    /// </summary>
     public long CheckpointTokenCap { get; init; } = 6_000;
+
+    /// <summary>
+    ///     V9: the most the rendered envelope may be, in estimated tokens. Null means <see cref="CheckpointTokenCap" />;
+    ///     a value below it counts as it.
+    /// </summary>
+    public long? CheckpointTokenHardCap { get; init; }
+
+    /// <summary>The cap V9 enforces: <see cref="CheckpointTokenHardCap" />, never below <see cref="CheckpointTokenCap" />.</summary>
+    public long EffectiveHardCap => Math.Max(CheckpointTokenCap, CheckpointTokenHardCap ?? CheckpointTokenCap);
 
     /// <summary>How text is sized for V7 and V9.</summary>
     public Func<string?, long> TextEstimator { get; init; } = CompactionTokenEstimate.EstimateText;
@@ -80,10 +92,15 @@ internal static class CheckpointValidator
         var manifest = checkpoint.Manifest;
         var bySeq = context.Rows.ToDictionary(r => r.Seq);
 
-        // V1: schema version known.
-        if (checkpoint.SchemaVersion != CompactionCheckpointMessage.CurrentSchemaVersion)
+        // V1: schema version known, and the one the manifest needs: a manifest with omissions written as schema 2
+        // would be adopted by a schema 2 reader with its counts silently dropped.
+        var expectedVersion = CompactionCheckpointMessage.SchemaVersionFor(manifest);
+        if (checkpoint.SchemaVersion != expectedVersion)
         {
-            return CheckpointValidationResult.Fail("V1", $"schema version {checkpoint.SchemaVersion} is unknown");
+            return CheckpointValidationResult.Fail(
+                "V1",
+                $"schema version {checkpoint.SchemaVersion} is not the {expectedVersion} this manifest needs"
+            );
         }
 
         // V2: the boundary names the row that is there.
@@ -124,7 +141,8 @@ internal static class CheckpointValidator
         var bounded = CurrentInstructionQuotes.Quote(
             CutSelector.CurrentInstructionRows(context.Rows, boundary),
             CurrentInstructionQuotes.Budget(options.CheckpointTokenCap),
-            options.TextEstimator
+            options.TextEstimator,
+            collapseOlder: true
         );
         if (manifest.CurrentInstruction.Count != bounded.Count)
         {
@@ -206,13 +224,13 @@ internal static class CheckpointValidator
             return CheckpointValidationResult.Fail("V8", "recovery state reports cut-blocking items");
         }
 
-        // V9: the envelope within its cap.
+        // V9: the envelope within its hard cap. The target is best effort; only the hard cap rejects.
         var envelopeTokens = options.TextEstimator(checkpoint.RenderEnvelope(options.Render));
-        if (envelopeTokens > options.CheckpointTokenCap)
+        if (envelopeTokens > options.EffectiveHardCap)
         {
             return CheckpointValidationResult.Fail(
                 "V9",
-                $"envelope is {envelopeTokens} tokens; cap is {options.CheckpointTokenCap}"
+                $"envelope is {envelopeTokens} tokens; hard cap is {options.EffectiveHardCap}"
             );
         }
 

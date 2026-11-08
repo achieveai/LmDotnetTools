@@ -170,8 +170,17 @@ public sealed record CompactionOptions
     /// <summary>Narrative cap the validator enforces (V6).</summary>
     public long NarrativeTokenCap { get; init; } = 2_000;
 
-    /// <summary>Whole-envelope cap the validator enforces (V6).</summary>
+    /// <summary>
+    ///     The envelope size the budget aims at (spec 679 §3.4, §5.4): best effort, and half of it bounds the current
+    ///     instruction (§2.3). The validator enforces <see cref="EffectiveCheckpointTokenHardCap"/> instead (V9).
+    /// </summary>
     public long CheckpointTokenCap { get; init; } = 6_000;
+
+    /// <summary>
+    ///     An absolute ceiling on the envelope hard cap; null leaves the hard cap to
+    ///     <see cref="CheckpointTokenHardCapRatio"/> alone. Never lowers the hard cap below the target.
+    /// </summary>
+    public long? CheckpointTokenHardCap { get; init; }
 
     /// <summary>
     ///     Generations after a checkpoint during which no economic compaction runs; also the longest an automatic cut
@@ -263,6 +272,13 @@ public sealed record CompactionOptions
 
     /// <summary>The least envelope cap window scaling produces; a smaller envelope cannot hold a manifest.</summary>
     public const long ScaledCheckpointTokenCapFloor = 1_000;
+
+    /// <summary>
+    ///     The envelope hard cap V9 enforces, as a fraction of the usable window, scaled the way the target is (see
+    ///     <see cref="EffectiveCheckpointTokenHardCap"/>). Past the target the budget sheds only what other sources hold;
+    ///     only past this does it trim instructions, the narrative and the open work.
+    /// </summary>
+    public double CheckpointTokenHardCapRatio { get; init; } = 0.20;
 
     /// <summary>
     ///     An automatic cut must newly cover at least this fraction of the usable window, or it is skipped with
@@ -390,6 +406,24 @@ public sealed record CompactionOptions
                 Math.Max(ScaledCheckpointTokenCapFloor, (long)(CheckpointTokenCapRatio * usableTokens.Value))
             );
 
+    /// <summary>
+    ///     V9's envelope hard cap for a usable window: <c>min(CheckpointTokenHardCap, max(1k, CheckpointTokenHardCapRatio ×
+    ///     usable))</c>, never below the target <see cref="EffectiveCheckpointTokenCap"/>. With no window it is
+    ///     <see cref="CheckpointTokenHardCap"/>, else the target scaled by the two ratios.
+    /// </summary>
+    public long EffectiveCheckpointTokenHardCap(long? usableTokens)
+    {
+        var target = EffectiveCheckpointTokenCap(usableTokens);
+        var hard = usableTokens is { } usable
+            ? Math.Min(
+                CheckpointTokenHardCap ?? long.MaxValue,
+                Math.Max(ScaledCheckpointTokenCapFloor, (long)(CheckpointTokenHardCapRatio * usable))
+            )
+            : CheckpointTokenHardCap
+                ?? (long)Math.Round(target * CheckpointTokenHardCapRatio / CheckpointTokenCapRatio);
+        return Math.Max(target, hard);
+    }
+
     /// <summary>Throws <see cref="ArgumentOutOfRangeException"/> naming the first out-of-range fit knob.</summary>
     public void Validate()
     {
@@ -424,6 +458,13 @@ public sealed record CompactionOptions
         RequireRatio(MinTailRatio, nameof(MinTailRatio));
         RequireRatio(MaxTailRatio, nameof(MaxTailRatio));
         RequireRatio(CheckpointTokenCapRatio, nameof(CheckpointTokenCapRatio));
+        RequireRatio(CheckpointTokenHardCapRatio, nameof(CheckpointTokenHardCapRatio));
+        Require(
+            CheckpointTokenHardCap is null or >= 1,
+            CheckpointTokenHardCap ?? 0,
+            nameof(CheckpointTokenHardCap),
+            "must be positive, or null for no absolute ceiling"
+        );
         Require(
             MinCompactionGainRatio is >= 0 and < 1,
             MinCompactionGainRatio,

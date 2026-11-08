@@ -847,8 +847,10 @@ internal sealed class CompactionRuntime
                 Validation = new CheckpointValidationOptions
                 {
                     NarrativeTokenCap = options.NarrativeTokenCap,
-                    // V9 scales with the window so a small window can still hold envelope + tail + prefix.
+                    // The target and V9's hard cap scale with the window so a small window can still hold envelope +
+                    // tail + prefix.
                     CheckpointTokenCap = options.EffectiveCheckpointTokenCap(UsableTokens),
+                    CheckpointTokenHardCap = options.EffectiveCheckpointTokenHardCap(UsableTokens),
                     OpenExchanges = options.Checks.Rc3OpenExchanges,
                     TextEstimator = _text,
                 },
