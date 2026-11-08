@@ -1626,6 +1626,42 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             SandboxInfo info;
             try
             {
+                if (_options.OfferSearchTools)
+                {
+                    Version? gatewayVersion = null;
+                    try
+                    {
+                        gatewayVersion = await client.GetGatewayVersionAsync(ct).ConfigureAwait(false);
+                    }
+                    catch (SandboxException ex) when (!ct.IsCancellationRequested)
+                    {
+                        // The version only decides whether to ask for the search tools. A gateway that is really down
+                        // fails the create below, which reports it with the right error.
+                        _logger.LogWarning(
+                            ex,
+                            "Sandbox gateway version probe failed for workspace {WorkspaceId}",
+                            workspaceId
+                        );
+                    }
+
+                    if (SandboxClient.SupportsSearchTools(gatewayVersion))
+                    {
+                        createRequest = createRequest.WithSkills(
+                            new SandboxSkillsPolicy(searchTool: true, agentsSearchTool: false)
+                        );
+                    }
+                    else
+                    {
+                        _logger.LogWarning(
+                            "Sandbox gateway version {GatewayVersion} is older than {MinimumVersion} or unknown: "
+                                + "workspace {WorkspaceId} gets no gateway search tools and keeps the host's own search",
+                            gatewayVersion,
+                            SandboxClient.SearchToolsMinimumVersion,
+                            workspaceId
+                        );
+                    }
+                }
+
                 info = await client.CreateAsync(createRequest, ct).ConfigureAwait(false);
             }
             catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.TransportTimeout)

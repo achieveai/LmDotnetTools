@@ -40,10 +40,25 @@ public sealed class SandboxSkillsPolicy
     /// </summary>
     public string? UnlistedHint { get; }
 
+    /// <summary>
+    /// Lists the gateway's <c>SearchSkills</c> tool for this sandbox (gateway 0.1.21, ADR 0047). Fixed at create.
+    /// <c>null</c> on a request omits the field, which a gateway older than 0.1.21 requires: it rejects a <c>skills</c>
+    /// block with fields it does not know (see <see cref="SandboxClient.SupportsSearchTools"/>).
+    /// </summary>
+    public bool? SearchTool { get; }
+
+    /// <summary>
+    /// Lists the gateway's <c>SearchAgents</c> tool for this sandbox. Fixed at create; <c>null</c> as for
+    /// <see cref="SearchTool"/>.
+    /// </summary>
+    public bool? AgentsSearchTool { get; }
+
     public SandboxSkillsPolicy(
         SandboxSkillTier? defaultTier = null,
         IReadOnlyList<string>? included = null,
-        string? unlistedHint = null
+        string? unlistedHint = null,
+        bool? searchTool = null,
+        bool? agentsSearchTool = null
     )
     {
         if (defaultTier is SandboxSkillTier.Unavailable)
@@ -66,5 +81,7 @@ public sealed class SandboxSkillsPolicy
         DefaultTier = defaultTier;
         Included = included is null ? [] : [.. included];
         UnlistedHint = unlistedHint;
+        SearchTool = searchTool;
+        AgentsSearchTool = agentsSearchTool;
     }
 }

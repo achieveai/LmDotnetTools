@@ -24,6 +24,96 @@ public sealed class SandboxClientSkillTiersTests
         """;
 
     [Fact]
+    public async Task CreateAsync_SearchToolFlags_AreSentWhenSet_AndEchoed()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            """
+            {"session_id":"s-1","properties":{},
+             "skills":{"default_tier":"included","included":[],"search_tool":true,"agents_search_tool":false}}
+            """,
+            HttpStatusCode.Created
+        );
+
+        var info = await client.CreateAsync(
+            new SandboxCreateRequest("ws", skills: new SandboxSkillsPolicy(searchTool: true, agentsSearchTool: false))
+        );
+
+        using var sent = JsonDocument.Parse(handler.Requests.Single().Body!);
+        var skills = sent.RootElement.GetProperty("skills");
+        skills.GetProperty("search_tool").GetBoolean().Should().BeTrue();
+        skills.GetProperty("agents_search_tool").GetBoolean().Should().BeFalse();
+        info.SkillsPolicy!.SearchTool.Should().BeTrue();
+        info.SkillsPolicy.AgentsSearchTool.Should().BeFalse();
+    }
+
+    // Gateway 0.1.20 and older reject a skills block with a field they do not know (deny_unknown_fields).
+    [Fact]
+    public async Task CreateAsync_SearchToolFlagsUnset_AreNotOnTheWire()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", """{"session_id":"s-1"}""", HttpStatusCode.Created);
+
+        _ = await client.CreateAsync(
+            new SandboxCreateRequest("ws", skills: new SandboxSkillsPolicy(SandboxSkillTier.Available))
+        );
+
+        var body = handler.Requests.Single().Body!;
+        body.Should().NotContain("search_tool");
+    }
+
+    [Fact]
+    public void WithSkills_ReplacesOnlyTheSkills_AndLeavesTheOriginalAlone()
+    {
+        var original = new SandboxCreateRequest("ws", marketplaces: ["m"], image: "img");
+
+        var copy = original.WithSkills(new SandboxSkillsPolicy(searchTool: true));
+
+        original.Skills.Should().BeNull();
+        copy.Skills!.SearchTool.Should().BeTrue();
+        copy.Workspace.Should().Be("ws");
+        copy.Marketplaces.Should().Equal("m");
+        copy.Image.Should().Be("img");
+    }
+
+    [Theory]
+    [InlineData("""{"version":"0.1.21"}""", "0.1.21", true)]
+    [InlineData("""{"version":"0.1.22"}""", "0.1.22", true)]
+    [InlineData("""{"version":"0.2.0"}""", "0.2.0", true)]
+    [InlineData("""{"version":"0.1.20-fsfix"}""", "0.1.20", false)]
+    [InlineData("""{"version":"0.1.21+build7"}""", "0.1.21", true)]
+    [InlineData("""{"version":"dev"}""", null, false)]
+    [InlineData("""{"version":7}""", null, false)]
+    [InlineData("""{"name":"gateway"}""", null, false)]
+    [InlineData("[]", null, false)]
+    [InlineData("not json", null, false)]
+    public async Task GetGatewayVersionAsync_ReadsTheVersion_AndUnknownCountsAsOlder(
+        string body,
+        string? expected,
+        bool supported
+    )
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Get, "/", body);
+
+        var version = await client.GetGatewayVersionAsync();
+
+        version.Should().Be(expected is null ? null : Version.Parse(expected));
+        SandboxClient.SupportsSearchTools(version).Should().Be(supported);
+    }
+
+    [Fact]
+    public async Task GetGatewayVersionAsync_ErrorStatus_IsUnknown()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnStatus(HttpMethod.Get, "/", HttpStatusCode.InternalServerError);
+
+        (await client.GetGatewayVersionAsync()).Should().BeNull();
+    }
+
+    [Fact]
     public async Task CreateAsync_SkillsPolicy_IsSentAndTheResolvedPolicyIsSurfaced()
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();

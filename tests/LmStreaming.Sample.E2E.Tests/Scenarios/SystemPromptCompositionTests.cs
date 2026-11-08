@@ -478,6 +478,12 @@ public sealed class SystemPromptCompositionTests
                 promptTheModelReceived = copilotClient.StartOptions!.DeveloperInstructions;
                 var tools = copilotClient.StartOptions.Tools!.Select(t => t.Name).ToList();
                 tools.Should().Contain("Read");
+                tools
+                    .Should()
+                    .NotContain(
+                        ["SearchSkills", "SearchAgents"],
+                        "this path has no tiers, so a gateway search tool would be a new tool for the model"
+                    );
                 rawBrowserReceived = tools.Contains("Browser");
                 copilotClient
                     .StartOptions.McpServers.Should()
@@ -599,7 +605,7 @@ public sealed class SystemPromptCompositionTests
         public int Priority => 100;
 
         public IEnumerable<FunctionDescriptor> GetFunctions() =>
-            new[] { "Read", "Browser" }.Select(name => new FunctionDescriptor
+            new[] { "Read", "Browser", "SearchSkills", "SearchAgents" }.Select(name => new FunctionDescriptor
             {
                 Contract = new FunctionContract
                 {

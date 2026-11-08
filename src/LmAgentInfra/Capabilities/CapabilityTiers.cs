@@ -149,6 +149,20 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
     /// <summary>The tool name of the sub-agent search tool; offered to the root only, with agents tiered.</summary>
     public const string SearchAgentToolName = "SearchAgent";
 
+    /// <summary>
+    /// The gateway's skill search (<c>skills.search_tool</c>). A session whose gateway offers it replaces
+    /// <see cref="SearchSkillToolName"/>; a session whose gateway does not keeps LMDT's.
+    /// </summary>
+    public const string GatewaySearchSkillsToolName = "SearchSkills";
+
+    /// <summary>
+    /// The gateway's sub-agent search (<c>skills.agents_search_tool</c>). The host never offers it to a model: it finds
+    /// nothing for a named agent (gateway issue #246), every LMDT session names one, and
+    /// <see cref="SearchAgentToolName"/> works. A session can list it unasked (a gateway env default, or a sandbox
+    /// created before the host stopped asking), so it is dropped by name.
+    /// </summary>
+    public const string GatewaySearchAgentsToolName = "SearchAgents";
+
     /// <summary>The tool name of the plugin search tool; offered to the root only, with agents tiered.</summary>
     public const string SearchPluginToolName = "SearchPlugin";
 
@@ -265,6 +279,9 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
     private volatile CapabilityCatalog? _catalog;
     private volatile SkillTierGateway? _gateway;
     private volatile TierSettings? _settings;
+
+    // The last committed build's sandbox listing offered the gateway's own skill search.
+    private volatile bool _gatewaySearchesSkills;
 
     // The live build's tier-managed sandbox tools by registered name; null = none (not tiered, inert, or no attach).
     // Swapped only at a commit, like the root view, so IsAdvertised answers the same between two rotations.
@@ -619,6 +636,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
             // Every build lists and attaches its own Skill tool; one from an earlier build must not survive it.
             var liveSkill = root.Skill;
             root.Skill = stage.Skill;
+            _gatewaySearchesSkills = stage.GatewaySearchesSkills;
             if (stage.RootId is not { } rootId || stage.View is not { } view || stage.Settings is not { } settings)
             {
                 ReleaseCandidate(stage);
@@ -626,6 +644,12 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
                 return;
             }
 
+            // A session without the gateway's skill search keeps LMDT's; this line says which one this conversation got.
+            _logger.LogInformation(
+                "Capabilities search {RootThreadId} {SkillSearch}",
+                _rootThreadId,
+                stage.GatewaySearchesSkills ? "gateway" : "lmdt"
+            );
             AdoptCatalog(stage);
             // A rotation that ran between stage and commit left the gateway on its own view.
             var raced = !ReferenceEquals(root.View, stage.LiveViewAtStage);
@@ -750,6 +774,22 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
 
     private AgentState RootState() => _agents.GetOrAdd(_rootThreadId, _ => new AgentState(RootAgentKey, _rootThreadId));
 
+    /// <summary>
+    /// True for the two tools a gateway lists for its own skill and sub-agent search. A host surface with no tiers has
+    /// no use for either, and drops both.
+    /// </summary>
+    public static bool IsGatewaySearchTool(string toolName) =>
+        toolName is GatewaySearchSkillsToolName or GatewaySearchAgentsToolName;
+
+    /// <summary>
+    /// A mode's explicit sandbox-tool allow-list with the gateway's skill search added where it allows <c>Skill</c>, so
+    /// the listing reaches <see cref="Stage.TryDropGatewaySearchTool"/>. Null stays null: the mode takes every tool.
+    /// </summary>
+    public static IReadOnlySet<string>? WithGatewaySearchTools(IReadOnlySet<string>? allowList) =>
+        allowList is null || !allowList.Contains(SkillToolName)
+            ? allowList
+            : new HashSet<string>(allowList, StringComparer.Ordinal) { GatewaySearchSkillsToolName };
+
     /// <summary>The work of <see cref="Stage.AttachTools"/>; see there.</summary>
     private void AttachTools(Stage stage, IReadOnlyList<FunctionContract> sandboxTools)
     {
@@ -766,7 +806,8 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
         }
 
         var tools = new Dictionary<string, FunctionContract>(StringComparer.Ordinal);
-        foreach (var contract in sandboxTools.Where(c => c.Name != SkillToolName))
+        // The gateway's search tools are how an agent finds what is not listed, so tiering must not hide them.
+        foreach (var contract in sandboxTools.Where(c => c.Name != SkillToolName && !IsGatewaySearchTool(c.Name)))
         {
             tools[contract.Name] = contract;
         }
@@ -2069,7 +2110,13 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
                 CapabilityCatalog.SkillKind => FormatSkillHits(query, hits, listed),
                 CapabilityCatalog.AgentKind => FormatAgentHits(query, hits, listed, NamesOf(catalog, kind)),
                 CapabilityCatalog.ToolKind => FormatToolHits(query, hits, listed, subAgentTools ?? _tools),
-                _ => FormatPluginHits(query, hits, listed, catalog),
+                _ => FormatPluginHits(
+                    query,
+                    hits,
+                    listed,
+                    catalog,
+                    _gatewaySearchesSkills ? GatewaySearchSkillsToolName : SearchSkillToolName
+                ),
             }
         );
     }
@@ -2363,13 +2410,14 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
         string query,
         IReadOnlyList<(CapabilityItem Item, double Score)> hits,
         IReadOnlySet<string> listed,
-        CapabilityCatalog catalog
+        CapabilityCatalog catalog,
+        string skillSearchTool
     )
     {
         if (hits.Count == 0)
         {
             return $"No plugins matched \"{query}\". Try different words for the area (for example \"debugging\" or "
-                + "\"code review\"), or search skills and sub-agents directly with SearchSkill and SearchAgent.";
+                + $"\"code review\"), or search skills and sub-agents directly with {skillSearchTool} and SearchAgent.";
         }
 
         var text = new StringBuilder();
@@ -2419,7 +2467,7 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
                 continue;
             }
 
-            AppendPluginItems(text, "Skills", skills, listed, "Skill(skill=", SearchSkillToolName);
+            AppendPluginItems(text, "Skills", skills, listed, "Skill(skill=", skillSearchTool);
             AppendPluginItems(text, "Sub-agents", agents, listed, "Agent(subagent_type=", SearchAgentToolName);
         }
 
@@ -2864,11 +2912,16 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// The root's tier tools: its <c>Skill</c> once a handler is attached, <c>SearchSkill</c>, while
-    /// <paramref name="agentsTiered"/> <c>SearchAgent</c> and <c>SearchPlugin</c>, and while
-    /// <paramref name="toolsTiered"/> <c>SearchTool</c> and <c>ExecuteTool</c>.
+    /// The root's tier tools: its <c>Skill</c> once a handler is attached, <c>SearchSkill</c> unless
+    /// <paramref name="gatewaySearchesSkills"/>, while <paramref name="agentsTiered"/> <c>SearchAgent</c> and
+    /// <c>SearchPlugin</c>, and while <paramref name="toolsTiered"/> <c>SearchTool</c> and <c>ExecuteTool</c>.
     /// </summary>
-    private IEnumerable<FunctionDescriptor> RootFunctions(SkillSlot? skill, bool agentsTiered, bool toolsTiered)
+    private IEnumerable<FunctionDescriptor> RootFunctions(
+        SkillSlot? skill,
+        bool agentsTiered,
+        bool toolsTiered,
+        bool gatewaySearchesSkills
+    )
     {
         if (skill is { Handler: { } handler })
         {
@@ -2880,12 +2933,16 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
             };
         }
 
-        yield return new FunctionDescriptor
+        if (!gatewaySearchesSkills)
         {
-            Contract = SearchSkillContract,
-            Handler = (args, _, _) => SearchSkillAsync(_rootThreadId, args),
-            ProviderName = TierProviderName,
-        };
+            yield return new FunctionDescriptor
+            {
+                Contract = SearchSkillContract,
+                Handler = (args, _, _) => SearchSkillAsync(_rootThreadId, args),
+                ProviderName = TierProviderName,
+            };
+        }
+
         if (agentsTiered)
         {
             yield return new FunctionDescriptor
@@ -2930,7 +2987,8 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
                 ? owner.RootFunctions(
                     owner._agents.TryGetValue(owner._rootThreadId, out var root) ? root.Skill : null,
                     owner._settings is { AgentCap: not null },
-                    owner._settings is { ToolCap: not null }
+                    owner._settings is { ToolCap: not null },
+                    owner._gatewaySearchesSkills
                 )
                 : [];
 
@@ -3199,6 +3257,28 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
             return true;
         }
 
+        /// <summary>The build's sandbox listing offered <see cref="GatewaySearchSkillsToolName"/> and it is kept.</summary>
+        internal bool GatewaySearchesSkills { get; private set; }
+
+        /// <summary>
+        /// Decides one tool of the build's sandbox listing. True drops it: <c>SearchAgents</c> always, and
+        /// <c>SearchSkills</c> on an untiered or inert build, which has no search tools. False registers it as usual,
+        /// and a kept <c>SearchSkills</c> also retires <c>SearchSkill</c> for this build. It reads what the session
+        /// lists, not what the host asked for, so a gateway env default that turned the tool on counts too.
+        /// </summary>
+        public bool TryDropGatewaySearchTool(string toolName)
+        {
+            ArgumentNullException.ThrowIfNull(toolName);
+            switch (toolName)
+            {
+                case GatewaySearchSkillsToolName when IsActive:
+                    GatewaySearchesSkills = true;
+                    return false;
+                default:
+                    return IsGatewaySearchTool(toolName);
+            }
+        }
+
         /// <summary>
         /// Hands the stage the tools this build's root sandbox connect registered (their handlers are already in the
         /// registry). With <see cref="TierSettings.ToolCap"/> set, every one but <c>Skill</c> becomes tier-managed: the
@@ -3276,7 +3356,8 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
                     Pending when stage.IsActive => stage._owner.RootFunctions(
                         stage.Skill,
                         stage.Settings is { AgentCap: not null },
-                        stage.Settings is { ToolCap: not null }
+                        stage.Settings is { ToolCap: not null },
+                        stage.GatewaySearchesSkills
                     ),
                     _ => [],
                 };

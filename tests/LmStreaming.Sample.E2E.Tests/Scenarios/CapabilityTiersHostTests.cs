@@ -806,6 +806,55 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
     }
 
     /// <summary>
+    /// Issue #931: on a session whose gateway lists <c>SearchSkills</c> and <c>SearchAgents</c>, a tiered root sends
+    /// <c>SearchSkills</c> and no LMDT <c>SearchSkill</c>, keeps its <c>SearchAgent</c> as it was, and never sends
+    /// <c>SearchAgents</c>, which finds nothing for a named agent. Its child gets <c>SearchSkills</c> too, and an untiered
+    /// mode's tools[] gains neither.
+    /// </summary>
+    [Fact]
+    public async Task GatewaySearchTools_ReplaceLmdtSearchWhenTiered_UntieredDropsThem()
+    {
+        _host.OfferGatewaySearch = true;
+        try
+        {
+            var threadId = await _host.ProvisionAsync(_host.AgentTieredModeId);
+            var before = _host.Llm.Count;
+
+            var root = await TurnAsync(threadId, SpawnOpenPrefix + threadId, _host.AgentTieredModeId);
+
+            _host
+                .Gateway.LastCreateBody.Should()
+                .Contain("\"search_tool\":true", "the sample opts in and this gateway is new enough")
+                .And.Contain("\"agents_search_tool\":false");
+            root.ToolNames.Should()
+                .Contain([CapabilityTiers.GatewaySearchSkillsToolName, CapabilityTiers.SearchAgentToolName]);
+            root.ToolNames.Should()
+                .NotContain([CapabilityTiers.SearchSkillToolName, CapabilityTiers.GatewaySearchAgentsToolName]);
+            DescriptionOf(root, CapabilityTiers.SearchAgentToolName)
+                .Should()
+                .NotContain(CapabilityTiers.GatewaySearchAgentsToolName);
+            var child = _host
+                .Llm.Skip(before)
+                .Should()
+                .ContainSingle(r => r.SystemPrompt.Contains(OpenWorkerPrompt, StringComparison.Ordinal))
+                .Subject;
+            child.ToolNames.Should().Contain(CapabilityTiers.GatewaySearchSkillsToolName);
+            child.ToolNames.Should().NotContain(CapabilityTiers.GatewaySearchAgentsToolName);
+
+            var untieredThread = await _host.ProvisionAsync(_host.UntieredModeId);
+            var untiered = await _host.FirstRequestAsync(untieredThread, _host.UntieredModeId);
+            untiered.ToolNames.Should().Contain("Read", "guard: the sandbox tools are connected");
+            untiered
+                .ToolNames.Should()
+                .NotContain([CapabilityTiers.GatewaySearchSkillsToolName, CapabilityTiers.GatewaySearchAgentsToolName]);
+        }
+        finally
+        {
+            _host.OfferGatewaySearch = false;
+        }
+    }
+
+    /// <summary>
     /// The root's agent searches answer from the root's own view, so a sub-agent never inherits them, even from a
     /// template that inherits every other tool.
     /// </summary>
@@ -1323,6 +1372,19 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                         !ctx.HasToolResult
                         && (ctx.LatestUserMessage?.Contains(SpawnOpenPrefix, StringComparison.Ordinal) ?? false)
                 )
+                // One turn per open-worker spawn in the class: the plain agent-tiered root and the gateway-search one.
+                .Turn(t =>
+                    t.ToolCall(
+                        "Agent",
+                        new
+                        {
+                            subagent_type = OpenTemplate,
+                            prompt = "list your tools",
+                            role = "open worker",
+                            description = "Lists the tools it inherited.",
+                        }
+                    )
+                )
                 .Turn(t =>
                     t.ToolCall(
                         "Agent",
@@ -1418,6 +1480,7 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                 BaseUrl = "http://127.0.0.1:39919",
                 WorkspaceBasePath = null,
                 Workspace = "default-leaf",
+                OfferSearchTools = true,
             };
             var gatewayLifetime = new SandboxGatewayLifetime(
                 gatewayOptions,
@@ -1511,14 +1574,25 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
             };
             // The gateway lists Skill per agent: an agent it holds tiers for sees its included skills.
             Mcp.RewriteToolsList = (call, body) =>
-                call is { SessionId: { } session, AgentId: { } agent }
-                && Gateway.IncludedNames(session, agent) is { } names
+            {
+                // A gateway created with the search-tool flags lists them, as 0.1.21 does.
+                var served = OfferGatewaySearch
                     ? body.Replace(
+                        "\"tools\":[",
+                        "\"tools\":[" + GatewaySearchToolsJson + ",",
+                        StringComparison.Ordinal
+                    )
+                    : body;
+                return
+                    call is { SessionId: { } session, AgentId: { } agent }
+                    && Gateway.IncludedNames(session, agent) is { } names
+                    ? served.Replace(
                         SandboxToolsProvider.SkillListing("alpha:a", "alpha:p"),
                         SandboxToolsProvider.SkillListing([.. names]),
                         StringComparison.Ordinal
                     )
-                    : body;
+                    : served;
+            };
 
             // The first build and turn on a fresh host pays its one-time start-up; the reference pays it here.
             ReferenceThread = await ProvisionAsync(SystemChatModes.WorkspaceAgentModeId);
@@ -1575,6 +1649,14 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                 // Best-effort temp cleanup.
             }
         }
+
+        // One line: the answer may be an SSE frame, where a newline would cut the JSON.
+        private const string GatewaySearchToolsJson =
+            """{"name":"SearchSkills","description":"Gateway skill search.","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}},"""
+            + """{"name":"SearchAgents","description":"Gateway agent search.","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}""";
+
+        /// <summary>While set, every <c>tools/list</c> answer also lists the gateway's search tools.</summary>
+        public volatile bool OfferGatewaySearch;
 
         /// <summary>A fresh conversation on the named workspace, else on its own (and so its own sandbox session).</summary>
         public async Task<string> ProvisionAsync(string modeId, string? workspaceId = null)
@@ -1877,6 +1959,9 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
             }
         }
 
+        /// <summary>The body of the last sandbox create this gateway took.</summary>
+        public string? LastCreateBody { get; private set; }
+
         public IReadOnlyList<SkillPatch> Patches
         {
             get
@@ -1929,8 +2014,17 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                     return new HttpResponseMessage(HttpStatusCode.OK);
                 }
 
+                if (request.Method == HttpMethod.Get && path == "/")
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""{"version":"0.1.21"}"""),
+                    };
+                }
+
                 if (request.Method == HttpMethod.Post && path.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal))
                 {
+                    LastCreateBody = body;
                     var created = "sess-" + Guid.NewGuid().ToString("N");
                     _sessions.Add(created);
                     if (_mcpServersForNewSessions is { } rows)

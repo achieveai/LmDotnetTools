@@ -210,7 +210,9 @@ public sealed partial class SandboxClient
                     skills.Included.Count > 0
                         ? [.. skills.Included]
                         : null,
-                    skills.UnlistedHint
+                    skills.UnlistedHint,
+                    skills.SearchTool,
+                    skills.AgentsSearchTool
                 )
                 : null,
             Mcp: request.Mcp is { } mcp
@@ -360,7 +362,7 @@ public sealed partial class SandboxClient
             );
         }
 
-        return new SandboxSkillsPolicy(tier, included, dto.UnlistedHint);
+        return new SandboxSkillsPolicy(tier, included, dto.UnlistedHint, dto.SearchTool, dto.AgentsSearchTool);
     }
 
     /// <summary>The gateway's lowercase spelling of a tier (<c>skills/tiers.rs</c>, <c>SkillTier::as_str</c>).</summary>

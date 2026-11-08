@@ -12,6 +12,51 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 /// </remarks>
 public sealed partial class SandboxClient
 {
+    /// <summary>The first gateway release whose create request accepts the search-tool fields of a skills block.</summary>
+    public static Version SearchToolsMinimumVersion { get; } = new(0, 1, 21);
+
+    /// <summary>
+    /// Whether a gateway of this version accepts <see cref="SandboxSkillsPolicy.SearchTool"/> and
+    /// <see cref="SandboxSkillsPolicy.AgentsSearchTool"/>. An older one rejects the whole create; an unknown version
+    /// (<c>null</c>) counts as older, so a create is never risked on a guess.
+    /// </summary>
+    public static bool SupportsSearchTools(Version? gatewayVersion) =>
+        gatewayVersion is not null && gatewayVersion >= SearchToolsMinimumVersion;
+
+    /// <summary>
+    /// The version the gateway reports on <c>GET /</c>, without a pre-release or build suffix (<c>0.1.20-fsfix</c> is
+    /// 0.1.20). <c>null</c> when it answers with an error or no readable version; a gateway that cannot be reached
+    /// throws, as every other call does.
+    /// </summary>
+    public async Task<Version?> GetGatewayVersionAsync(CancellationToken ct = default)
+    {
+        using var response = await SendRestAsync(HttpMethod.Get, string.Empty, body: null, sessionId: null, ct)
+            .ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        try
+        {
+            var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            using var document = JsonDocument.Parse(body);
+            return
+                document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("version", out var version)
+                && version.ValueKind == JsonValueKind.String
+                ? ParseGatewayVersion(version.GetString())
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static Version? ParseGatewayVersion(string? text) =>
+        Version.TryParse(text?.Split('-', '+')[0], out var version) ? version : null;
+
     /// <summary>
     /// Reads one agent's skill catalog: every skill the sandbox admits with the agent's tier and load state.
     /// </summary>
