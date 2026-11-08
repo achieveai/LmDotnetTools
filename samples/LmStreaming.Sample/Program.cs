@@ -1604,7 +1604,12 @@ try
                 // them, and disposing them there would break a switch that was correctly refused.
                 var carriedOver = new HashSet<object>(ReferenceEqualityComparer.Instance);
 
-                var providerAgent = agentFactory(normalizedProviderId);
+                var providerAgent = WithConfiguredModelFallback(
+                    sp,
+                    normalizedProviderId,
+                    agentFactory(normalizedProviderId),
+                    agentFactory
+                );
 
                 // Per-conversation tool registry: clone the shared (stateless) sample tools and
                 // layer a FRESH TaskManager on top so every chat gets its own isolated todo list
@@ -4573,6 +4578,100 @@ public partial class Program
             "anthropic" or "test-anthropic" => [new AnthropicWebSearchTool()],
             _ => null,
         };
+    }
+
+    /// <summary>
+    ///     Opt-in model fallback for a conversation's provider (#930 P1 item 8). The array
+    ///     <c>LmStreaming:ModelFallback:{providerId}</c> lists provider ids to try, in order, when this one is
+    ///     down; no entry returns <paramref name="primary" /> unchanged. Which failures fall back is
+    ///     <see cref="ModelFallbackMiddleware.IsProviderOutage" />: 408, 429, 5xx, transport errors and
+    ///     timeouts, never another 4xx, the caller's cancellation, or a reply that already started.
+    /// </summary>
+    /// <remarks>
+    ///     Each fallback runs its own model id, keeps only the built-in tools its provider offers out of the
+    ///     ones the mode already allowed, and gets its provider's default reasoning shape: a provisioned root
+    ///     reasoning effort is not carried over. A fallback provider that cannot be built (no key) is skipped
+    ///     with a warning rather than failing the conversation, which never needed it to start.
+    /// </remarks>
+    private static IStreamingAgent WithConfiguredModelFallback(
+        IServiceProvider sp,
+        string providerId,
+        IStreamingAgent primary,
+        Func<string, IStreamingAgent> agentFactory
+    )
+    {
+        var fallbackIds = sp.GetRequiredService<IConfiguration>()
+            .GetSection($"LmStreaming:ModelFallback:{providerId}")
+            .Get<string[]>();
+        if (fallbackIds is not { Length: > 0 })
+        {
+            return primary;
+        }
+
+        string[] reasoningKeys = ["Thinking", "Reasoning", "OutputConfig", "reasoning_effort"];
+        var registry = sp.GetRequiredService<ProviderRegistry>();
+        var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("LmStreaming.Sample.ModelFallback");
+        var targets = new List<FallbackTarget>();
+        foreach (
+            var targetId in fallbackIds
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Select(id => id.Trim().ToLowerInvariant())
+                .Where(id => id != providerId)
+                .Distinct()
+        )
+        {
+            IStreamingAgent targetAgent;
+            try
+            {
+                targetAgent = agentFactory(targetId);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(
+                    ex,
+                    "Model fallback target {ToProvider} for {FromProvider} is unavailable and is skipped",
+                    targetId,
+                    providerId
+                );
+                continue;
+            }
+
+            var modelId =
+                registry.TryGetCopilotModel(targetId, out var copilotModel) ? copilotModel.Id
+                : registry.TryGetAnthropicCompatModel(targetId, out var compatModel) ? compatModel.ModelName
+                : GetModelIdForProvider(targetId);
+            var targetBuiltIns = GetBuiltInToolsForProvider(targetId);
+            var targetReasoning = BuildConversationReasoningExtraProperties(
+                registry,
+                targetId,
+                targetId,
+                requestedEffort: null
+            );
+            targets.Add(
+                new FallbackTarget(
+                    modelId,
+                    targetAgent,
+                    options =>
+                        options with
+                        {
+                            BuiltInTools =
+                                targetBuiltIns is null || options.BuiltInTools is null
+                                    ? null
+                                    :
+                                    [
+                                        .. targetBuiltIns.Where(tool =>
+                                            options.BuiltInTools.Any(allowed => allowed.GetType() == tool.GetType())
+                                        ),
+                                    ],
+                            ExtraProperties = options
+                                .ExtraProperties.RemoveRange(reasoningKeys)
+                                .SetItems(targetReasoning),
+                        }
+                )
+            );
+        }
+
+        return targets.Count == 0 ? primary : new ModelFallbackAgent(primary, targets, logger);
     }
 
     /// <summary>
