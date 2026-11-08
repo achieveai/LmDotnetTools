@@ -105,3 +105,46 @@ describe('checkpointToDisplayData — manual compaction focus', () => {
     expect(checkpointToDisplayData(checkpoint(null)).detail).not.toContain('## Focus');
   });
 });
+
+describe('checkpointToDisplayData — items the envelope budget left out (#812)', () => {
+  function checkpoint(manifest: CompactionCheckpointMessage['manifest']) {
+    return {
+      $type: MessageType.CompactionCheckpointV3,
+      role: 'user',
+      checkpoint_id: 'cp-t1-2',
+      boundary: { seq: 40, message_id: 'm-40' },
+      trigger: 'Preemptive',
+      manifest,
+      narrative: 'Work went on.',
+    } as CompactionCheckpointMessage;
+  }
+
+  it('puts the count before the newest items it kept', () => {
+    const detail =
+      checkpointToDisplayData(
+        checkpoint({
+          tasks: [{ id: 't9', title: 'Ship it', status: 'InProgress' }],
+          agents: [{ agent_id: 'agent-9', status: 'Running' }],
+          omitted: { tasks: 8, agents: 3 },
+        }),
+      ).detail ?? '';
+
+    expect(detail).toContain('## Open work\n- [8 omitted] more tasks are not listed here\n- [InProgress] Ship it');
+    expect(detail).toContain('## Agents\n- [3 omitted] older agents are in the roster but not listed here\n- agent-9: Running');
+  });
+
+  it('keeps the heading when every item was counted instead of listed', () => {
+    const detail =
+      checkpointToDisplayData(checkpoint({ tasks: [], agents: [], omitted: { tasks: 5, agents: 2 } })).detail ?? '';
+
+    expect(detail).toContain('## Open work\n- [5 omitted] more tasks are not listed here');
+    expect(detail).toContain('## Agents\n- [2 omitted] older agents are in the roster but not listed here');
+  });
+
+  it('shows no section and no count when nothing was listed or left out', () => {
+    const detail = checkpointToDisplayData(checkpoint({ omitted: { tasks: 0 } })).detail ?? '';
+
+    expect(detail).not.toContain('## Open work');
+    expect(detail).not.toContain('## Agents');
+  });
+});

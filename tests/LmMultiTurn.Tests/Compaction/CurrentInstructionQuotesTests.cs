@@ -99,4 +99,74 @@ public sealed class CurrentInstructionQuotesTests
             .Should()
             .Equal(CurrentInstructionQuotes.Quote(rows, 1_500, Estimate));
     }
+
+    private static IReadOnlyList<SequencedMessage> LongRows(int count)
+    {
+        var thread = new ThreadFixture();
+        foreach (var n in Enumerable.Range(1, count))
+        {
+            _ = thread.Human($"ROW-{n} ".PadRight(2_000, 'x'));
+        }
+
+        return thread.Rows;
+    }
+
+    private static IReadOnlyList<SequencedMessage> FiveLongRows() => LongRows(5);
+
+    [Fact]
+    public void CollapseOlder_FoldsTheFewestOldestRowsThatFit_AndOneFewerWouldBeOverTheBudget()
+    {
+        const long budget = 200;
+        var rows = LongRows(10);
+
+        var quotes = CurrentInstructionQuotes.Quote(rows, budget, Estimate, collapseOlder: true);
+
+        var range = CurrentInstructionQuotes.CollapsedRange(quotes[0]);
+        range.Should().NotBeNull();
+        var folded = rows.Count(r => r.Seq >= range!.Value.FromSeq && r.Seq <= range.Value.ToSeq);
+        folded.Should().BeInRange(3, 8, "this budget needs some rows folded, and not every older one");
+        quotes.Should().HaveCount(rows.Count - folded + 1);
+        quotes.Sum(q => Estimate(q.Quote)).Should().BeLessThanOrEqualTo(budget);
+
+        var last = rows[folded - 1];
+        var oneFewer =
+            quotes.Skip(1).Sum(q => Estimate(q.Quote))
+            + Estimate(CurrentInstructionQuotes.Collapse(folded - 1, rows[0].Seq, rows[folded - 2].Seq))
+            + Estimate(CurrentInstructionQuotes.Bound(last.Text!, last.Seq, 0));
+        oneFewer.Should().BeGreaterThan(budget, "folding one row fewer must not have fit");
+    }
+
+    [Fact]
+    public void CollapseOlder_WhenTheOlderRowsFitAsMarkers_LeavesEachAsItsOwnMarker_WithNoCountedRange()
+    {
+        var rows = FiveLongRows();
+
+        var quotes = CurrentInstructionQuotes.Quote(rows, budgetTokens: 200, Estimate, collapseOlder: true);
+
+        quotes.Select(q => q.Seq).Should().Equal(rows.Select(r => r.Seq));
+        quotes.Should().OnlyContain(q => CurrentInstructionQuotes.CollapsedRange(q) == null);
+        foreach (var older in quotes.SkipLast(1))
+        {
+            older.Quote.Trim().Should().Be($"[… 2000 chars omitted; full text: RecallConversation seq {older.Seq}]");
+        }
+
+        CurrentInstructionQuotes.IsTrimOf(quotes[^1].Quote, rows[^1].Seq, rows[^1].Text!).Should().BeTrue();
+        quotes[^1].Quote.Should().StartWith("ROW-5 ", "the newest row keeps its own quote");
+        quotes.Sum(q => Estimate(q.Quote)).Should().BeLessThanOrEqualTo(200);
+    }
+
+    [Fact]
+    public void CollapseOlder_WhenNoCollapseFits_FoldsEveryOlderRowIntoOneRange_AndTheNewestKeepsItsQuote()
+    {
+        var rows = FiveLongRows();
+
+        var quotes = CurrentInstructionQuotes.Quote(rows, budgetTokens: 1, Estimate, collapseOlder: true);
+
+        quotes.Should().HaveCount(2);
+        CurrentInstructionQuotes.CollapsedRange(quotes[0]).Should().Be((rows[0].Seq, rows[3].Seq));
+        quotes[0].Quote.Should().StartWith("[… 4 earlier rows of this instruction omitted");
+        quotes[1].Seq.Should().Be(rows[4].Seq);
+        quotes[1].Quote.Should().StartWith("ROW-5 ");
+        quotes.Sum(q => Estimate(q.Quote)).Should().BeGreaterThan(1, "the result stands even over the budget");
+    }
 }

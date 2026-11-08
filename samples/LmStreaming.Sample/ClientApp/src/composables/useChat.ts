@@ -13,6 +13,7 @@ import type {
   ConversationTodoMessage,
   ContextPressureMessage,
   CompactionStatusMessage,
+  ProviderRetryMessage,
 } from '@/types';
 import {
   MessageType,
@@ -38,6 +39,7 @@ import {
   isConversationTodoMessage,
   isContextPressureMessage,
   isCompactionStatusMessage,
+  isProviderRetryMessage,
   normalizeReasoningVisibility,
 } from '@/types';
 import { sendChatMessage } from '@/api/chatClient';
@@ -254,6 +256,14 @@ export function useChat(options: UseChatOptions = {}) {
    * state and watches this ref. Progress metadata, never transcript content — no display item.
    */
   const compactionStatus = ref<CompactionStatusMessage | null>(null);
+
+  /**
+   * The retry the server is waiting out right now, from the newest `provider_retry` frame (#930), or
+   * null. Cleared by the run's next frame (model output, or run completion), and when the stream ends,
+   * fails or is stopped. Notify and agent messages do not clear it: they can arrive mid-wait from
+   * outside the provider call. Status metadata, never transcript content — no display item.
+   */
+  const providerRetry = ref<ProviderRetryMessage | null>(null);
   /**
    * Bumped each time a WebSocket is installed (first open, reconnect, resync). Transient frames sent
    * while no socket was listening are gone, so consumers of such frames re-read state on a change.
@@ -1077,6 +1087,20 @@ export function useChat(options: UseChatOptions = {}) {
       return;
     }
 
+    // Live provider retry frame (#930). SET on a retry for the open conversation. A later frame from
+    // the run (model output, or the run ending) clears it. Notify and agent messages do not: they
+    // come from outside the provider call (another agent, a notification) and can arrive while the
+    // provider wait is still running.
+    if (isProviderRetryMessage(msg)) {
+      if (!msg.threadId || !threadId.value || msg.threadId === threadId.value) {
+        providerRetry.value = msg;
+      }
+      return;
+    }
+    if (!isNotifyMessage(msg) && !isAgentMessage(msg)) {
+      providerRetry.value = null;
+    }
+
     // Handle lifecycle messages
     if (isRunAssignmentMessage(msg)) {
       handleRunAssignment(msg);
@@ -1456,11 +1480,13 @@ export function useChat(options: UseChatOptions = {}) {
         }
 
         finalize();
+        providerRetry.value = null;
         isLoading.value = false;
       },
       onError: (err: string) => {
         log.error('Stream error', { error: err, transport: transport.value });
         error.value = err;
+        providerRetry.value = null;
         isLoading.value = false;
       },
     };
@@ -1578,7 +1604,13 @@ export function useChat(options: UseChatOptions = {}) {
       // Overrides the spread above. Every message kind reaches the transcript through here — text,
       // reasoning, tool calls and their results, run lifecycle, usage — so ONE gate covers them all
       // while an in-place `replay_truncated` fill is rewriting the index underneath us.
-      onMessage: (msg: Message) => applyOrDefer(socketState, () => callbacks.onMessage(msg)),
+      onMessage: (msg: Message) =>
+        applyOrDefer(socketState, () => {
+          // A retry notice held by that fill can drain after the run ended. Stop or a server error has
+          // already cleared the banner, and nothing later on this socket would clear it again.
+          if (isProviderRetryMessage(msg) && (socketState.closedByClient || socketState.terminalError)) return;
+          callbacks.onMessage(msg);
+        }),
       onAuthEvent: handleAuthEvent,
       onGenerationAbandoned: handleGenerationAbandoned,
       onSandboxSessionRefresh: async (deferred) => {
@@ -2097,6 +2129,7 @@ export function useChat(options: UseChatOptions = {}) {
     cumulativeCost.value = { estimatedCostMicros: null, providerReportedCostMicros: null, currency: 'USD' };
     contextPressure.value = null;
     compactionStatus.value = null;
+    providerRetry.value = null;
     error.value = null;
     threadId.value = null;
     currentRunId.value = null;
@@ -2151,6 +2184,7 @@ export function useChat(options: UseChatOptions = {}) {
     }
 
     finalize();
+    providerRetry.value = null;
     isLoading.value = false;
     isSending.value = false;
   }
@@ -2360,6 +2394,7 @@ export function useChat(options: UseChatOptions = {}) {
     conversationTodo,
     contextPressure,
     compactionStatus,
+    providerRetry,
     connectionEpoch,
     transport,
     threadId,

@@ -23,6 +23,7 @@ using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -818,16 +819,21 @@ try
     // Provider id → IStreamingAgent. Receives the per-conversation provider id resolved
     // by the pool (request → persisted → default), so this factory does not know about
     // LM_PROVIDER_MODE — it just dispatches by id.
+    // Provider HTTP retry policy (#930 P1 item 1): one instance from LmStreaming:ProviderRetry, handed to
+    // every provider client below. No section keeps RetryOptions.Default.
+    builder.Services.TryAddSingleton(sp => ProviderRetrySettings.Bind(sp.GetRequiredService<IConfiguration>()));
+
     _ = builder.Services.AddSingleton<Func<string, IStreamingAgent>>(sp =>
         providerId =>
         {
             var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+            var retryOptions = sp.GetRequiredService<RetryOptions>();
 
             // Discovered Copilot models route by their transport (Anthropic Messages vs OpenAI
             // Responses); everything else is a fixed provider handled by the switch below.
             if (sp.GetRequiredService<ProviderRegistry>().TryGetCopilotModel(providerId, out var copilotModel))
             {
-                return CreateCopilotModelAgent(copilotModel, loggerFactory);
+                return CreateCopilotModelAgent(copilotModel, loggerFactory, retryOptions);
             }
 
             // Discovered Anthropic-compatible provider-family models (e.g. DeepSeek) route through the
@@ -835,15 +841,19 @@ try
             // family's own base URL/API key instead of fixed env vars.
             if (sp.GetRequiredService<ProviderRegistry>().TryGetAnthropicCompatModel(providerId, out var compatModel))
             {
-                return CreateAnthropicCompatAgent(compatModel, loggerFactory);
+                return CreateAnthropicCompatAgent(compatModel, loggerFactory, retryOptions);
             }
 
             return providerId.ToLowerInvariant() switch
             {
-                "openai" => CreateOpenAiAgent(loggerFactory),
-                "anthropic" => CreateAnthropicAgent(loggerFactory),
-                "test-anthropic" => CreateAnthropicTestAgent(loggerFactory, sp.GetRequiredService<ITestAgentBuilder>()),
-                "test" => CreateTestAgent(loggerFactory, sp.GetRequiredService<ITestAgentBuilder>()),
+                "openai" => CreateOpenAiAgent(loggerFactory, retryOptions),
+                "anthropic" => CreateAnthropicAgent(loggerFactory, retryOptions),
+                "test-anthropic" => CreateAnthropicTestAgent(
+                    loggerFactory,
+                    sp.GetRequiredService<ITestAgentBuilder>(),
+                    retryOptions
+                ),
+                "test" => CreateTestAgent(loggerFactory, sp.GetRequiredService<ITestAgentBuilder>(), retryOptions),
                 _ => throw new ProviderUnavailableException(
                     providerId,
                     "no IStreamingAgent factory is registered for this provider"
@@ -2254,7 +2264,7 @@ try
                     var characteristicsAgentFactory = new CharacteristicsAgentFactory(
                         providerRegistry,
                         providerAgent,
-                        model => CreateCopilotModelAgent(model, loggerFactory),
+                        model => CreateCopilotModelAgent(model, loggerFactory, sp.GetRequiredService<RetryOptions>()),
                         loggerFactory.CreateLogger<CharacteristicsAgentFactory>(),
                         parentCopilotModel: isCopilotBackedModel ? copilotModelInfo : null,
                         // Parent-model-reuse fallback: a classic Copilot Anthropic parent (advertises no
@@ -4043,7 +4053,11 @@ public partial class Program
         return BuildReasoningExtraProperties(fallbackProviderId);
     }
 
-    private static IStreamingAgent CreateTestAgent(ILoggerFactory loggerFactory, ITestAgentBuilder testAgentBuilder)
+    private static IStreamingAgent CreateTestAgent(
+        ILoggerFactory loggerFactory,
+        ITestAgentBuilder testAgentBuilder,
+        RetryOptions retryOptions
+    )
     {
         var testHandler = testAgentBuilder.CreateHandler("test", loggerFactory);
 
@@ -4052,7 +4066,8 @@ public partial class Program
         var openClient = new OpenClient(
             httpClient,
             "http://test-mode/v1",
-            logger: loggerFactory.CreateLogger<OpenClient>()
+            logger: loggerFactory.CreateLogger<OpenClient>(),
+            retryOptions: retryOptions
         );
 
         return new OpenClientAgent("MockLLM", openClient, loggerFactory.CreateLogger<OpenClientAgent>());
@@ -4062,7 +4077,7 @@ public partial class Program
     ///     Creates an OpenAI-compatible agent (works with OpenAI, Kimi 2.5 OpenAI mode, etc.).
     ///     Reads OPENAI_API_KEY, OPENAI_BASE_URL from env vars.
     /// </summary>
-    private static IStreamingAgent CreateOpenAiAgent(ILoggerFactory loggerFactory)
+    private static IStreamingAgent CreateOpenAiAgent(ILoggerFactory loggerFactory, RetryOptions retryOptions)
     {
         var apiKey = EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY");
         var baseUrl = EnvironmentHelper.GetApiBaseUrlFromEnv(
@@ -4072,7 +4087,12 @@ public partial class Program
 
         Log.Information("Creating OpenAI agent with base URL: {BaseUrl}", baseUrl);
 
-        var openClient = new OpenClient(apiKey, baseUrl, logger: loggerFactory.CreateLogger<OpenClient>());
+        var openClient = new OpenClient(
+            apiKey,
+            baseUrl,
+            logger: loggerFactory.CreateLogger<OpenClient>(),
+            retryOptions: retryOptions
+        );
 
         return new OpenClientAgent("OpenAI", openClient, loggerFactory.CreateLogger<OpenClientAgent>());
     }
@@ -4081,7 +4101,7 @@ public partial class Program
     ///     Creates an Anthropic-compatible agent (works with Anthropic, Kimi 2.5 Anthropic mode, etc.).
     ///     Reads ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL from env vars.
     /// </summary>
-    private static IStreamingAgent CreateAnthropicAgent(ILoggerFactory loggerFactory)
+    private static IStreamingAgent CreateAnthropicAgent(ILoggerFactory loggerFactory, RetryOptions retryOptions)
     {
         var apiKey = EnvironmentHelper.GetApiKeyFromEnv("ANTHROPIC_API_KEY");
         var baseUrl = EnvironmentHelper.GetApiBaseUrlFromEnv(
@@ -4094,7 +4114,8 @@ public partial class Program
         var anthropicClient = new AnthropicClient(
             apiKey,
             baseUrl: baseUrl,
-            logger: loggerFactory.CreateLogger<AnthropicClient>()
+            logger: loggerFactory.CreateLogger<AnthropicClient>(),
+            retryOptions: retryOptions
         );
 
         return new AnthropicAgent("Anthropic", anthropicClient, loggerFactory.CreateLogger<AnthropicAgent>());
@@ -4105,7 +4126,11 @@ public partial class Program
     ///     using that model's own base URL/API key rather than fixed env vars — see
     ///     <see cref="AnthropicCompatProviders.DiscoverFromEnv"/>.
     /// </summary>
-    private static IStreamingAgent CreateAnthropicCompatAgent(AnthropicCompatModel model, ILoggerFactory loggerFactory)
+    private static IStreamingAgent CreateAnthropicCompatAgent(
+        AnthropicCompatModel model,
+        ILoggerFactory loggerFactory,
+        RetryOptions retryOptions
+    )
     {
         // BaseUrl is operator-controlled (the family's {KEY}_ANTHROPIC_URL env var) and could carry
         // credentials in its user-info (user:pass@host) or query (?token=...) components. Log ONLY the
@@ -4122,7 +4147,8 @@ public partial class Program
         var anthropicClient = new AnthropicClient(
             model.ApiKey,
             baseUrl: model.BaseUrl,
-            logger: loggerFactory.CreateLogger<AnthropicClient>()
+            logger: loggerFactory.CreateLogger<AnthropicClient>(),
+            retryOptions: retryOptions
         );
 
         return new AnthropicAgent(model.FamilyKey, anthropicClient, loggerFactory.CreateLogger<AnthropicAgent>());
@@ -4180,15 +4206,28 @@ public partial class Program
     ///     Copilot Responses backend; Chat-Completions-only models (Gemini) through Copilot's
     ///     <c>/chat/completions</c>.
     /// </summary>
-    internal static IStreamingAgent CreateCopilotModelAgent(CopilotModelInfo model, ILoggerFactory loggerFactory)
+    internal static IStreamingAgent CreateCopilotModelAgent(
+        CopilotModelInfo model,
+        ILoggerFactory loggerFactory,
+        RetryOptions? retryOptions = null
+    )
     {
         return model.Transport switch
         {
-            CopilotModelTransport.Anthropic => CreateCopilotAnthropicAgent(model.DisplayName, loggerFactory),
-            CopilotModelTransport.Responses => CreateCopilotResponsesAgent(model.DisplayName, loggerFactory),
+            CopilotModelTransport.Anthropic => CreateCopilotAnthropicAgent(
+                model.DisplayName,
+                loggerFactory,
+                retryOptions
+            ),
+            CopilotModelTransport.Responses => CreateCopilotResponsesAgent(
+                model.DisplayName,
+                loggerFactory,
+                retryOptions
+            ),
             CopilotModelTransport.ChatCompletions => CreateCopilotChatCompletionsAgent(
                 model.DisplayName,
-                loggerFactory
+                loggerFactory,
+                retryOptions
             ),
             _ => throw new ProviderUnavailableException(model.Id, $"unsupported Copilot transport {model.Transport}"),
         };
@@ -4198,7 +4237,11 @@ public partial class Program
     ///     Creates an Anthropic Messages agent (Sonnet/Haiku) routed through the GitHub Copilot
     ///     backend. The model id is supplied per-thread by <see cref="GetModelIdForProvider"/>.
     /// </summary>
-    private static IStreamingAgent CreateCopilotAnthropicAgent(string name, ILoggerFactory loggerFactory)
+    private static IStreamingAgent CreateCopilotAnthropicAgent(
+        string name,
+        ILoggerFactory loggerFactory,
+        RetryOptions? retryOptions
+    )
     {
         Log.Information("Creating Copilot-backed Anthropic agent: {Name}", name);
         return CopilotAnthropicAgentFactory.Create(
@@ -4206,7 +4249,8 @@ public partial class Program
             s_copilotTokenProvider.Value,
             timeout: CopilotResponseTimeout,
             session: s_copilotSession.Value,
-            logger: loggerFactory.CreateLogger<AnthropicAgent>()
+            logger: loggerFactory.CreateLogger<AnthropicAgent>(),
+            retryOptions: retryOptions
         );
     }
 
@@ -4228,7 +4272,11 @@ public partial class Program
     ///     Creates an OpenAI Responses agent (GPT-5.5 / GPT-5.5 mini) routed through the GitHub Copilot
     ///     backend over SSE (stateless per turn — the multi-turn loop resends full history each turn).
     /// </summary>
-    private static IStreamingAgent CreateCopilotResponsesAgent(string name, ILoggerFactory loggerFactory)
+    private static IStreamingAgent CreateCopilotResponsesAgent(
+        string name,
+        ILoggerFactory loggerFactory,
+        RetryOptions? retryOptions
+    )
     {
         Log.Information("Creating Copilot-backed OpenAI Responses agent: {Name}", name);
         return CopilotResponsesAgentFactory.Create(
@@ -4236,14 +4284,19 @@ public partial class Program
             s_copilotTokenProvider.Value,
             CopilotResponsesTransport.Sse,
             s_copilotSession.Value,
-            logger: loggerFactory.CreateLogger<OpenAiResponsesAgent>()
+            logger: loggerFactory.CreateLogger<OpenAiResponsesAgent>(),
+            retryOptions: retryOptions
         );
     }
 
     /// <summary>
     ///     Creates an OpenAI Chat Completions agent (Gemini) routed through the GitHub Copilot backend.
     /// </summary>
-    private static IStreamingAgent CreateCopilotChatCompletionsAgent(string name, ILoggerFactory loggerFactory)
+    private static IStreamingAgent CreateCopilotChatCompletionsAgent(
+        string name,
+        ILoggerFactory loggerFactory,
+        RetryOptions? retryOptions
+    )
     {
         Log.Information("Creating Copilot-backed Chat Completions agent: {Name}", name);
         return CopilotChatCompletionsAgentFactory.Create(
@@ -4251,7 +4304,8 @@ public partial class Program
             s_copilotTokenProvider.Value,
             timeout: CopilotResponseTimeout,
             session: s_copilotSession.Value,
-            logger: loggerFactory.CreateLogger<OpenClientAgent>()
+            logger: loggerFactory.CreateLogger<OpenClientAgent>(),
+            retryOptions: retryOptions
         );
     }
 
@@ -4264,7 +4318,8 @@ public partial class Program
     /// </summary>
     private static IStreamingAgent CreateAnthropicTestAgent(
         ILoggerFactory loggerFactory,
-        ITestAgentBuilder testAgentBuilder
+        ITestAgentBuilder testAgentBuilder,
+        RetryOptions retryOptions
     )
     {
         var testHandler = testAgentBuilder.CreateHandler("test-anthropic", loggerFactory);
@@ -4274,7 +4329,8 @@ public partial class Program
         var anthropicClient = new AnthropicClient(
             httpClient,
             baseUrl: "http://test-mode/v1",
-            logger: loggerFactory.CreateLogger<AnthropicClient>()
+            logger: loggerFactory.CreateLogger<AnthropicClient>(),
+            retryOptions: retryOptions
         );
 
         return new AnthropicAgent("MockAnthropic", anthropicClient, loggerFactory.CreateLogger<AnthropicAgent>());

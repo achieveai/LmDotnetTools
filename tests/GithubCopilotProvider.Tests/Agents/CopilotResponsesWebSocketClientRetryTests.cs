@@ -223,6 +223,52 @@ public sealed class CopilotResponsesWebSocketClientRetryTests
         created.Should().OnlyContain(s => s.Sent.Count == 0, "no response.create is sent before a successful connect");
     }
 
+    [Theory]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(null)] // a transport failure (refused socket) has no status
+    public async Task Connect_retry_is_reported_to_the_retry_scope_with_the_upgrade_status(HttpStatusCode? status)
+    {
+        // #930: the connect retry is announced like an HTTP one. A rejected upgrade's status sits on the
+        // WebSocketException's INNER HttpRequestException; reading the outer exception would report a 429
+        // as an unreachable provider.
+        var created = new List<FakeSocket>();
+        var notices = new List<HttpRetryNotice>();
+        await using var client = NewClient(() =>
+        {
+            var socket = new FakeSocket();
+            if (created.Count == 0)
+            {
+                socket.ConnectError = status is { } code
+                    ? new WebSocketException("upgrade rejected", new HttpRequestException("rejected", null, code))
+                    : RetryableConnect();
+            }
+            else
+            {
+                socket.Respond = _ => ScriptedTurn(0);
+            }
+
+            created.Add(socket);
+            return socket;
+        });
+
+        using (HttpRetryScope.Begin(notices.Add))
+        {
+            _ = await CollectAsync(client.StreamResponseAsync(Request()));
+        }
+
+        notices
+            .Should()
+            .Equal(
+                new HttpRetryNotice(
+                    Attempt: 1,
+                    MaxAttempts: RetryOptions.FastForTests.MaxAttempts,
+                    StatusCode: status,
+                    Delay: RetryOptions.FastForTests.CalculateDelay(1),
+                    FromRetryAfter: false
+                )
+            );
+    }
+
     [Fact]
     public async Task Connect_retries_404_upgrade_when_the_status_is_configured_as_retryable()
     {

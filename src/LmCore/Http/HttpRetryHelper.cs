@@ -45,16 +45,7 @@ public static class HttpRetryHelper
             catch (HttpRequestException ex) when (attempt < options.MaxRetries && IsRetryableError(ex, options))
             {
                 attempt++;
-                var delay = options.CalculateDelay(attempt);
-                logger.LogWarning(
-                    "Request failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms: {Error}",
-                    attempt,
-                    options.MaxRetries + 1,
-                    delay.TotalMilliseconds,
-                    ex.Message
-                );
-
-                await Task.Delay(delay, cancellationToken);
+                await WaitBeforeRetryAsync(ex, attempt, options, logger, cancellationToken);
             }
         }
     }
@@ -107,6 +98,9 @@ public static class HttpRetryHelper
         var attempt = 0;
         while (true)
         {
+            // Set when the server asked for a longer wait than this client honors. The failure thrown
+            // for it must then not be retried by the transport catch below either.
+            var retryRefused = false;
             try
             {
                 var response = await httpOperation();
@@ -116,73 +110,150 @@ public static class HttpRetryHelper
                     return await responseProcessor(response);
                 }
 
-                // Check if this is a retryable status code under THESE options (the global 429/5xx set,
-                // widened by any opt-in AdditionalRetryableStatusCodes this caller configured).
-                if (attempt < options.MaxRetries && options.IsRetryableStatusCode(response.StatusCode))
+                // Retryable under THESE options: the global 429/5xx set, widened by any opt-in
+                // AdditionalRetryableStatusCodes this caller configured.
+                if (attempt >= options.MaxRetries || !options.IsRetryableStatusCode(response.StatusCode))
                 {
-                    attempt++;
-                    var delay = options.CalculateDelay(attempt);
-                    logger.LogWarning(
-                        "HTTP request failed with status {StatusCode} (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms",
-                        response.StatusCode,
-                        attempt,
-                        options.MaxRetries + 1,
-                        delay.TotalMilliseconds
-                    );
-
-                    response.Dispose(); // Clean up the failed response
-                    await Task.Delay(delay, cancellationToken);
-                    continue;
+                    throw await FailedResponseExceptionAsync(response, cancellationToken).ConfigureAwait(false);
                 }
 
-                // Not retryable or max retries exceeded. Capture the diagnostics BEFORE disposing, read
-                // the body in a try, dispose the failed response in the finally (so the connection is
-                // not leaked — the success path at :116 keeps the response alive for the caller, and the
-                // retryable branch at :132 already disposes), then throw with the captured values.
-                var statusCode = response.StatusCode;
-                var reasonPhrase = response.ReasonPhrase;
-                string responseBody;
-                try
+                // The server's own Retry-After wins over backoff, up to the honored cap.
+                var retryAfter = RetryAfterHeader.Read(response, options.TimeProvider);
+                var cap = HonoredRetryAfterCap(options);
+                if (retryAfter > cap)
                 {
-                    responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    // A failed body read is diagnostic-only: fall back to status-only diagnostics and throw
-                    // with the ALREADY-CAPTURED original status below. This deliberately also swallows an
-                    // HttpRequestException raised by the body read itself — otherwise it would escape to the
-                    // outer retry catch and could retry a non-retryable status (or mask the real status).
-                    // Deliberate cancellation is NOT swallowed — it must surface as cancellation.
-                    responseBody = string.Empty;
-                }
-                finally
-                {
-                    response.Dispose();
+                    retryRefused = true;
+                    throw RefusedRetryException(response, retryAfter.Value, cap, logger);
                 }
 
-                var errorMessage = $"HTTP request failed with status {statusCode} ({reasonPhrase})";
-                if (!string.IsNullOrWhiteSpace(responseBody))
-                {
-                    errorMessage += $". Response body: {responseBody}";
-                }
+                attempt++;
+                var delay = retryAfter ?? options.CalculateDelay(attempt);
+                logger.LogWarning(
+                    "HTTP request failed with status {StatusCode} (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms (Retry-After honored: {FromRetryAfter})",
+                    response.StatusCode,
+                    attempt,
+                    options.MaxAttempts,
+                    delay.TotalMilliseconds,
+                    retryAfter is not null
+                );
+                HttpRetryScope.NotifyRetry(options, attempt, response.StatusCode, delay, retryAfter is not null);
 
-                throw new HttpRequestException(errorMessage, null, statusCode);
+                response.Dispose(); // Clean up the failed response
+                await Task.Delay(delay, options.TimeProvider, cancellationToken);
             }
-            catch (HttpRequestException ex) when (attempt < options.MaxRetries && IsRetryableError(ex, options))
+            catch (HttpRequestException ex)
+                when (!retryRefused && attempt < options.MaxRetries && IsRetryableError(ex, options))
             {
                 attempt++;
-                var delay = options.CalculateDelay(attempt);
-                logger.LogWarning(
-                    "Request failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms: {Error}",
-                    attempt,
-                    options.MaxRetries + 1,
-                    delay.TotalMilliseconds,
-                    ex.Message
-                );
-
-                await Task.Delay(delay, cancellationToken);
+                await WaitBeforeRetryAsync(ex, attempt, options, logger, cancellationToken);
             }
         }
+    }
+
+    /// <summary>
+    ///     The longest server-requested wait this client will sit out: <see cref="RetryOptions.MaxRetryAfter" />,
+    ///     but never longer than a timer can wait (<see cref="Task.Delay(TimeSpan, TimeProvider, CancellationToken)" />
+    ///     rejects anything past about 49.7 days), so an accepted wait can always be waited.
+    /// </summary>
+    private static TimeSpan HonoredRetryAfterCap(RetryOptions options)
+    {
+        var timerLimit = TimeSpan.FromMilliseconds(uint.MaxValue - 1);
+        return options.MaxRetryAfter < timerLimit ? options.MaxRetryAfter : timerLimit;
+    }
+
+    /// <summary>
+    ///     The failure for a response whose requested wait exceeds <paramref name="cap" />. It fails at once:
+    ///     the error body is NOT read, because a server that stalls the body would otherwise hold up the
+    ///     fast failure this refusal exists to give.
+    /// </summary>
+    private static HttpRequestException RefusedRetryException(
+        HttpResponseMessage response,
+        TimeSpan retryAfter,
+        TimeSpan cap,
+        ILogger logger
+    )
+    {
+        var statusCode = response.StatusCode;
+        var reasonPhrase = response.ReasonPhrase;
+        response.Dispose();
+
+        logger.LogWarning(
+            "HTTP request failed with status {StatusCode}; Retry-After {RetryAfter}ms exceeds the {MaxRetryAfter}ms cap, failing without retry",
+            statusCode,
+            retryAfter.TotalMilliseconds,
+            cap.TotalMilliseconds
+        );
+
+        return new HttpRequestException(
+            $"HTTP request failed with status {statusCode} ({reasonPhrase}). Retry-After of {retryAfter.TotalSeconds:0.###}s exceeds the {cap.TotalSeconds:0.###}s cap",
+            null,
+            statusCode
+        );
+    }
+
+    /// <summary>
+    ///     The failure for a response that is not retried: a non-retryable status, or the retry budget is
+    ///     spent. Captures the diagnostics, reads the body for the message, and disposes the response so the
+    ///     connection is not leaked. (Only the success path keeps a response alive, for the caller.)
+    /// </summary>
+    private static async Task<HttpRequestException> FailedResponseExceptionAsync(
+        HttpResponseMessage response,
+        CancellationToken cancellationToken
+    )
+    {
+        var statusCode = response.StatusCode;
+        var reasonPhrase = response.ReasonPhrase;
+        string responseBody;
+        try
+        {
+            responseBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // A failed body read is diagnostic-only: fall back to status-only diagnostics and throw
+            // with the ALREADY-CAPTURED original status below. This deliberately also swallows an
+            // HttpRequestException raised by the body read itself — otherwise it would escape to the
+            // outer retry catch and could retry a non-retryable status (or mask the real status).
+            // Deliberate cancellation is NOT swallowed — it must surface as cancellation.
+            responseBody = string.Empty;
+        }
+        finally
+        {
+            response.Dispose();
+        }
+
+        var errorMessage = $"HTTP request failed with status {statusCode} ({reasonPhrase})";
+        if (!string.IsNullOrWhiteSpace(responseBody))
+        {
+            errorMessage += $". Response body: {responseBody}";
+        }
+
+        return new HttpRequestException(errorMessage, null, statusCode);
+    }
+
+    /// <summary>
+    ///     Backoff wait for a failure with no response to read a Retry-After from: a transport failure,
+    ///     or an exception the operation threw itself.
+    /// </summary>
+    private static async Task WaitBeforeRetryAsync(
+        HttpRequestException ex,
+        int attempt,
+        RetryOptions options,
+        ILogger logger,
+        CancellationToken cancellationToken
+    )
+    {
+        var delay = options.CalculateDelay(attempt);
+        logger.LogWarning(
+            "Request failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms: {Error}",
+            attempt,
+            options.MaxAttempts,
+            delay.TotalMilliseconds,
+            ex.Message
+        );
+        HttpRetryScope.NotifyRetry(options, attempt, ex.StatusCode, delay, fromRetryAfter: false);
+
+        await Task.Delay(delay, options.TimeProvider, cancellationToken);
     }
 
     /// <summary>
