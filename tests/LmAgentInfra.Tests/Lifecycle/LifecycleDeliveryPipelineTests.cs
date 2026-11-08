@@ -1121,6 +1121,23 @@ public sealed class HttpLifecycleDeliverySenderTests
         result.RetryAfter.Should().Be(TimeSpan.FromHours(1));
     }
 
+    [Fact]
+    public async Task A_millisecond_retry_after_header_is_surfaced_too()
+    {
+        // The sender shares the provider loop's reader (#930), so the non-standard retry-after-ms form
+        // a subscriber behind an OpenAI-style gateway may send is honored here as well.
+        var handler = new RecordingHandler(HttpStatusCode.TooManyRequests) { RetryAfterMs = "1500" };
+        using var sender = new HttpLifecycleDeliverySender(
+            new HttpClient(handler),
+            new ManualTimeProvider(Now),
+            NullLogger<HttpLifecycleDeliverySender>.Instance
+        );
+
+        var result = await sender.SendAsync(Subscription(), "delivery-1", Body, CancellationToken.None);
+
+        result.RetryAfter.Should().Be(TimeSpan.FromMilliseconds(1500));
+    }
+
     private static LifecycleSubscription Subscription() =>
         new(
             "sub-a",
@@ -1145,6 +1162,8 @@ public sealed class HttpLifecycleDeliverySenderTests
 
         internal int? RetryAfterSeconds { get; set; }
 
+        internal string? RetryAfterMs { get; set; }
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken
@@ -1163,6 +1182,11 @@ public sealed class HttpLifecycleDeliverySenderTests
                 response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(
                     TimeSpan.FromSeconds(seconds)
                 );
+            }
+
+            if (RetryAfterMs is { } milliseconds)
+            {
+                _ = response.Headers.TryAddWithoutValidation("retry-after-ms", milliseconds);
             }
 
             return response;
