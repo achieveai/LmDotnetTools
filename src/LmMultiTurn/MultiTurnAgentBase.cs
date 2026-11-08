@@ -1805,6 +1805,82 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         return inputs.Count > 0;
     }
 
+    // A batch taken from the channel but not yet in history. Kept across Stop/Run so a stop between
+    // the drain and the append (the awaits in StartRunAsync) cannot drop it (#856, #877-#879). The
+    // loop task owns the batch; observers only read the atomically published reference.
+    private QueuedInput[] _retainedInputs = [];
+
+    /// <summary>Inputs taken from the queue that have not reached history yet.</summary>
+    protected IReadOnlyList<QueuedInput> RetainedInputs => Volatile.Read(ref _retainedInputs);
+
+    /// <summary>How many taken inputs are still waiting to reach history.</summary>
+    protected int RetainedInputCount => RetainedInputs.Count;
+
+    /// <summary>
+    /// Holds <paramref name="inputs"/> until <see cref="ReleaseRetainedInputs"/>, so a stop before they
+    /// reach history leaves them for the next run.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">A held batch has not reached history yet.</exception>
+    protected void RetainInputs(IReadOnlyList<QueuedInput> inputs)
+    {
+        // Overwriting a held batch would drop it, which is the loss this field exists to prevent.
+        if (RetainedInputCount > 0)
+        {
+            throw new InvalidOperationException("A taken input batch is still waiting to reach history");
+        }
+
+        Volatile.Write(ref _retainedInputs, [.. inputs]);
+    }
+
+    /// <summary>Ends the hold once the held inputs are in history.</summary>
+    protected void ReleaseRetainedInputs() => Volatile.Write(ref _retainedInputs, []);
+
+    /// <summary>
+    /// The next batch a run should take: a batch a stop left held, or else whatever the channel has once
+    /// it has something, now held. Null when the channel is completed.
+    /// </summary>
+    /// <remarks>
+    /// The held batch comes first and without waiting: after a restart the channel may be empty, and the
+    /// held batch is older than anything on it.
+    /// </remarks>
+    protected async Task<List<QueuedInput>?> TakeNextInputBatchAsync(CancellationToken ct)
+    {
+        if (RetainedInputCount > 0)
+        {
+            return [.. RetainedInputs];
+        }
+
+        if (!await InputReader.WaitToReadAsync(ct))
+        {
+            return null;
+        }
+
+        _ = TryDrainInputs(out var batch);
+        if (batch.Count > 0)
+        {
+            RetainInputs(batch);
+        }
+
+        return batch;
+    }
+
+    /// <summary>
+    /// Adds every held input's messages to history, then ends the hold. Synchronous, so a stop cannot
+    /// land part-way and append the first messages twice on restart.
+    /// </summary>
+    protected void AppendRetainedInputsToHistory()
+    {
+        foreach (var input in RetainedInputs)
+        {
+            foreach (var message in input.Input.Messages)
+            {
+                AddToHistory(message);
+            }
+        }
+
+        ReleaseRetainedInputs();
+    }
+
     /// <inheritdoc />
     public virtual ValueTask<SendReceipt> SendAsync(
         List<IMessage> messages,
