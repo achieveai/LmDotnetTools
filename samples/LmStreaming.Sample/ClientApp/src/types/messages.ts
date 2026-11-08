@@ -36,10 +36,12 @@ export const MessageType = {
   ContextPressure: 'context_pressure',
   // Persisted compaction checkpoint row, rendered as a transcript divider (#721, spec 679 §7.2).
   // The server gives each checkpoint SCHEMA VERSION its own $type, so that a .NET reader predating a
-  // version skips the row instead of adopting the half of it it understands (spec 679 §8.3). Both
-  // names below are live on the wire: v1 rows are already on disk and v2 is what this server writes.
+  // version skips the row instead of adopting the half of it it understands (spec 679 §8.3). All
+  // names below are live on the wire: v1 rows are already on disk, and this server writes v2, or v3
+  // when the envelope budget left items out of the manifest.
   CompactionCheckpoint: 'compaction_checkpoint',
   CompactionCheckpointV2: 'compaction_checkpoint@2',
+  CompactionCheckpointV3: 'compaction_checkpoint@3',
   // Live-only compaction progress frame (manual and automatic): requested → running → applied | refused | failed
   CompactionStatus: 'compaction_status',
   // Live-only provider retry frame: the model call failed (429/5xx/transport) and is being retried (#930)
@@ -458,7 +460,10 @@ export interface CheckpointQuote {
  * BEFORE it branches on role. Only the fields the divider renders are typed.
  */
 export interface CompactionCheckpointMessage extends IMessage {
-  $type: typeof MessageType.CompactionCheckpoint | typeof MessageType.CompactionCheckpointV2;
+  $type:
+    | typeof MessageType.CompactionCheckpoint
+    | typeof MessageType.CompactionCheckpointV2
+    | typeof MessageType.CompactionCheckpointV3;
   /** `cp-{thread-short}-{n}`; unique per checkpoint, so it is the merge key on both live and reload. */
   checkpoint_id: string;
   boundary: { seq: number; message_id: string };
@@ -471,6 +476,11 @@ export interface CompactionCheckpointMessage extends IMessage {
     tasks?: Array<{ id?: string | null; title: string; status: string }>;
     artifacts?: Array<{ path: string; hash?: string | null; origin_seq?: number | null }>;
     agents?: Array<{ agent_id: string; status: string; outcome?: string | null }>;
+    /**
+     * Schema 3 only: how many tasks, artifacts and agents the envelope budget left out of the lists
+     * above (#812). The retained items are the newest; a count can be non-zero with its list empty.
+     */
+    omitted?: { tasks?: number; artifacts?: number; agents?: number } | null;
   };
   narrative: string;
   stats?: { rows_covered?: number; estimated_tokens_before?: number; estimated_tokens_after?: number };
@@ -759,7 +769,8 @@ export function isAgentMessage(msg: IMessage): msg is AgentMessage {
  * .NET reader older than a row skips it rather than adopting a manifest with sections missing. The
  * client is not a reader in that sense: it renders a divider out of `checkpoint_id` and `narrative`,
  * which every version carries, and a version it does not know costs it at most a field it was not
- * going to draw. Failing the match instead would DELETE the divider from the transcript, which is the
+ * going to draw. (It does draw v3's `manifest.omitted` counts; an older client simply shows the
+ * retained items without them.) Failing the match instead would DELETE the divider from the transcript, which is the
  * worse answer — so this accepts the family rather than an exact name.
  */
 export function isCompactionCheckpointMessage(msg: IMessage): msg is CompactionCheckpointMessage {

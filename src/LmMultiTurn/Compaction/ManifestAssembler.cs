@@ -71,37 +71,58 @@ internal static class ManifestAssembler
         var bySeq = rows.ToDictionary(r => r.Seq);
         var dropped = new List<QuotedItem>();
 
-        // Whole, or trimmed to half the V9 envelope cap exactly as the validator recomputes it.
-        IReadOnlyList<QuotedItem> Bounded(IReadOnlyList<SequencedMessage> humanRows) =>
+        // Whole, or trimmed to half the envelope target exactly as the validator recomputes it. Only the current
+        // instruction collapses its older rows; a standing quote must stay checkable against its own row (V3).
+        IReadOnlyList<QuotedItem> Bounded(IReadOnlyList<SequencedMessage> humanRows, bool collapseOlder) =>
             CurrentInstructionQuotes.Quote(
                 humanRows,
                 CurrentInstructionQuotes.Budget(validation.CheckpointTokenCap),
-                validation.TextEstimator
+                validation.TextEstimator,
+                collapseOlder
             );
 
-        var currentInstruction = Bounded(cut.CurrentInstruction);
+        var currentInstruction = Bounded(cut.CurrentInstruction, collapseOlder: true);
 
         // Human instructions are never silently lost (R5): the previous current instruction and every human row of the
         // newly covered runs that the new current instruction does not quote are carried as standing instructions,
-        // deterministically, so a summary that skips them (or a fallback with no summary) cannot drop them.
-        var carried = Bounded([
-            .. (previous?.CurrentInstruction ?? [])
-                .Select(q => q.Seq)
-                .Concat(covered.Where(r => r.IsHumanRow).Select(r => r.Seq))
-                .Except(currentInstruction.Select(q => q.Seq))
-                .Order()
-                .Select(seq => bySeq.GetValueOrDefault(seq))
-                .OfType<SequencedMessage>()
-                .Where(r => r.Seq <= cut.Seq && !string.IsNullOrEmpty(r.Text)),
-        ]);
+        // deterministically, so a summary that skips them (or a fallback with no summary) cannot drop them. A collapsed
+        // previous item stands for every human row of its range; a row whose own text is the collapse wording is quoted
+        // whole, so it stands for itself only. Its own seq is carried either way.
+        var carried = Bounded(
+            [
+                .. (previous?.CurrentInstruction ?? [])
+                    .SelectMany(q =>
+                        !string.Equals(q.Quote, bySeq.GetValueOrDefault(q.Seq)?.Text, StringComparison.Ordinal)
+                        && CurrentInstructionQuotes.CollapsedRange(q) is var (from, to)
+                            ? rows.Where(r => r.Seq >= from && r.Seq <= to && r.IsHumanRow)
+                                .Select(r => r.Seq)
+                                .Append(q.Seq)
+                            : [q.Seq]
+                    )
+                    .Concat(covered.Where(r => r.IsHumanRow).Select(r => r.Seq))
+                    // Every row the current instruction stands for, a collapsed one included.
+                    .Except(cut.CurrentInstruction.Select(r => r.Seq))
+                    .Order()
+                    .Select(seq => bySeq.GetValueOrDefault(seq))
+                    .OfType<SequencedMessage>()
+                    .Where(r => r.Seq <= cut.Seq && !string.IsNullOrEmpty(r.Text)),
+            ],
+            collapseOlder: false
+        );
         var carriedSeqs = carried.Select(q => q.Seq).ToHashSet();
 
         // A row quoted trimmed is too large to quote again: the model's copy of a pasted prompt alone would break V9, and
         // RecallConversation reads it whole. A row quoted whole keeps its standing quotes.
-        var trimmedSeqs = currentInstruction
+        // A row inside a collapsed current-instruction item counts as trimmed too: no item quotes it whole.
+        var quotedWhole = currentInstruction
             .Concat(carried)
-            .Where(q => !string.Equals(q.Quote, bySeq.GetValueOrDefault(q.Seq)?.Text, StringComparison.Ordinal))
+            .Where(q => string.Equals(q.Quote, bySeq.GetValueOrDefault(q.Seq)?.Text, StringComparison.Ordinal))
             .Select(q => q.Seq)
+            .ToHashSet();
+        var trimmedSeqs = cut
+            .CurrentInstruction.Select(r => r.Seq)
+            .Concat(carried.Select(q => q.Seq))
+            .Where(seq => !quotedWhole.Contains(seq))
             .ToHashSet();
 
         // A model's quote that is not verbatim (a tool call row has no text; a "user: " prefix; reflowed whitespace)
@@ -147,6 +168,11 @@ internal static class ManifestAssembler
             OpenExchanges = options.OpenExchanges ? Compaction.OpenExchanges.Find(rows, cut.Seq) : [],
             Index = BuildIndex(previous?.Index, previousBoundary, covered, cut.Seq, summary.Headlines, options),
             Recovery = cut.Recovery,
+            // Artifacts carry from checkpoint to checkpoint, so the ones a previous checkpoint counted away stay counted.
+            // Tasks and agents are rebuilt whole from the board and the roster each time.
+            Omitted = previous?.Omitted is { Artifacts: > 0 } inherited
+                ? new ManifestOmissions { Artifacts = inherited.Artifacts }
+                : null,
         };
 
         if (dropped.Count > 0)

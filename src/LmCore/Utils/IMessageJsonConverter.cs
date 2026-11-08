@@ -491,6 +491,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             // what makes THIS build read it; omitting an older one would orphan rows already on disk.
             CompactionCheckpointMessage.TypeDiscriminator => typeof(CompactionCheckpointMessage),
             CompactionCheckpointMessage.TypeDiscriminatorV2 => typeof(CompactionCheckpointMessage),
+            CompactionCheckpointMessage.TypeDiscriminatorV3 => typeof(CompactionCheckpointMessage),
             _ => null,
         };
     }
