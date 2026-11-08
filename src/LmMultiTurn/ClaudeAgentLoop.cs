@@ -619,7 +619,11 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             {
                 // Before waiting for new input, send any queued messages from previous run
                 // This ensures queued messages are fully processed before new input arrives.
-                // A batch a stop left held is older than the local queue, so it goes first.
+                // A batch a stop left held goes first: it is already out of the queue, and the merge
+                // would have to hold a second batch, which RetainInputs refuses. It is not always the
+                // oldest input. Input queued locally during a merged run waits behind the next channel
+                // batch, because the loop takes from the channel straight after a merged run. That
+                // order (later channel input before earlier locally queued input) predates the hold.
                 if (RetainedInputCount == 0)
                 {
                     await SendQueuedMessagesBeforeNewInputAsync(ct);

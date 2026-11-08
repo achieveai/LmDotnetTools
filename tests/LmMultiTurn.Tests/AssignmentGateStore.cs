@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
 namespace LmMultiTurn.Tests;
@@ -15,12 +16,20 @@ internal sealed class AssignmentGateStore(
     private readonly InMemoryConversationStore _inner = new();
     private int _gated;
     private int _metadataGated;
+    private readonly ConcurrentDictionary<string, TaskCompletionSource> _persisted = new(StringComparer.Ordinal);
 
     public TaskCompletionSource<RunLedgerEntry> AssignmentEntered { get; } =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource MetadataEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource NoticeAPersisted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource MessageBPersisted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>
+    /// Completes when a message containing <paramref name="marker"/> is persisted. Ask before that message can
+    /// be written: a write that came first is not replayed.
+    /// </summary>
+    public Task Persisted(string marker) =>
+        _persisted.GetOrAdd(marker, _ => new(TaskCreationOptions.RunContinuationsAsynchronously)).Task;
 
     public async Task UpsertRunLedgerAsync(RunLedgerEntry entry, CancellationToken ct = default)
     {
@@ -43,6 +52,11 @@ internal sealed class AssignmentGateStore(
             NoticeAPersisted.TrySetResult();
         if (messages.Any(message => message.MessageJson.Contains("message-B", StringComparison.Ordinal)))
             MessageBPersisted.TrySetResult();
+        foreach (var (marker, persisted) in _persisted)
+        {
+            if (messages.Any(message => message.MessageJson.Contains(marker, StringComparison.Ordinal)))
+                persisted.TrySetResult();
+        }
     }
 
     public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(string threadId, CancellationToken ct = default) =>

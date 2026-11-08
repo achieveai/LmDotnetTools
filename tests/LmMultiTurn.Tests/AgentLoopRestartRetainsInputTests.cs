@@ -126,6 +126,91 @@ public class AgentLoopRestartRetainsInputTests : LoggingTestBase
         await AssertConsumedOnceInOrderAsync(loop, store, first.ReceiptId, second.ReceiptId, cts.Token);
     }
 
+    [Fact]
+    public async Task Claude_HeldInputWithInputStillQueuedLocally_DeliversBothOnceAfterRestart()
+    {
+        // C is queued locally during a merged run. The loop takes D from the channel straight after that run, so
+        // C waits behind D (an order that predates the hold). A stop at D's first ledger write leaves D held and C
+        // still queued. The restart must run the held D before merging C: merging first would try to hold a second
+        // batch, which throws and ends the loop with neither delivered.
+        var mergedRunCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new AssignmentGateStore(entry =>
+        {
+            if (entry.Status == RunStatus.Completed && entry.InputIds.Contains("input-A"))
+            {
+                _ = mergedRunCompleted.TrySetResult();
+            }
+
+            return entry.Status == RunStatus.Queued && entry.InputIds.Contains("input-D");
+        });
+        var cPersisted = store.Persisted("message-C");
+        var client = new InteractiveClaudeClient(heldTurns: 2);
+        using var queuedLocally = new SemaphoreSlim(0);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await using var loop = new ClaudeAgentLoop(
+            new ClaudeAgentSdkOptions { Mode = ClaudeAgentSdkMode.Interactive, MaxTurnsPerRun = 5 },
+            mcpServers: null,
+            threadId: "claude-restart-held-and-queued",
+            clientFactory: (_, _) => client,
+            store: store,
+            logger: new QueuedLocallyLogger(
+                () => queuedLocally.Release(),
+                LoggerFactory.CreateLogger<ClaudeAgentLoop>()
+            ),
+            persistRunLedger: true
+        );
+
+        var running = loop.RunAsync(cts.Token);
+        await loop.WaitUntilReadyAsync(cts.Token);
+        _ = await loop.SendAsync([new TextMessage { Text = "start", Role = Role.User }], inputId: "input-start");
+        await client.TurnSent(1).WaitAsync(cts.Token);
+        _ = await loop.SendAsync([MessageA()], inputId: "input-A");
+        await queuedLocally.WaitAsync(cts.Token);
+        client.FinishTurn();
+        await client.TurnSent(2).WaitAsync(cts.Token);
+        _ = await loop.SendAsync([new TextMessage { Text = "message-C", Role = Role.User }], inputId: "input-C");
+        await queuedLocally.WaitAsync(cts.Token);
+        client.FinishTurn();
+        await mergedRunCompleted.Task.WaitAsync(cts.Token);
+        _ = await loop.SendAsync([new TextMessage { Text = "message-D", Role = Role.User }], inputId: "input-D");
+        (await store.AssignmentEntered.Task.WaitAsync(cts.Token)).InputIds.Should().Equal("input-D");
+        UserTexts(loop).Should().NotContain("message-C");
+        UserTexts(loop).Should().NotContain("message-D");
+        await loop.StopAsync(TimeSpan.FromSeconds(5));
+        await StoppedAsync(running);
+
+        var restarted = loop.RunAsync(cts.Token);
+        await loop.WaitUntilReadyAsync(cts.Token);
+        var finished = await Task.WhenAny(cPersisted, restarted).WaitAsync(cts.Token);
+        if (finished == restarted)
+        {
+            await restarted; // surfaces the error that ended the loop
+        }
+
+        finished.Should().BeSameAs(cPersisted, "the restarted loop must stay alive until it delivers C");
+        await loop.StopAsync(TimeSpan.FromSeconds(5));
+        await StoppedAsync(restarted);
+
+        UserTexts(loop)
+            .Where(text => text is "message-A" or "message-C" or "message-D")
+            .Should()
+            .Equal(["message-A", "message-D", "message-C"], "the held batch runs before the local queue is merged");
+        var persisted = (await store.LoadMessagesAsync(loop.ThreadId, cts.Token))
+            .Select(row =>
+                row.MessageJson.Contains("message-A", StringComparison.Ordinal) ? "A"
+                : row.MessageJson.Contains("message-C", StringComparison.Ordinal) ? "C"
+                : row.MessageJson.Contains("message-D", StringComparison.Ordinal) ? "D"
+                : null
+            )
+            .OfType<string>();
+        persisted.Should().Equal("A", "D", "C");
+        var assigned = (await store.ListRunLedgerAsync(loop.ThreadId, cts.Token)).SelectMany(entry => entry.InputIds);
+        foreach (var inputId in new[] { "input-A", "input-C", "input-D" })
+        {
+            assigned.Count(id => id == inputId).Should().Be(1, "{0} is assigned to one run", inputId);
+        }
+    }
+
     private static AssignmentGateStore NewStoreGatingFirstQueuedWrite() =>
         new(entry => entry.Status == RunStatus.Queued);
 
@@ -211,9 +296,12 @@ public class AgentLoopRestartRetainsInputTests : LoggingTestBase
     /// <summary>
     /// Forwards to the test log and signals when the Interactive loop's input watcher has queued a batch locally.
     /// </summary>
-    private sealed class QueuedLocallyLogger(TaskCompletionSource queuedLocally, ILogger<ClaudeAgentLoop> inner)
+    private sealed class QueuedLocallyLogger(Action queuedLocally, ILogger<ClaudeAgentLoop> inner)
         : ILogger<ClaudeAgentLoop>
     {
+        public QueuedLocallyLogger(TaskCompletionSource queuedLocally, ILogger<ClaudeAgentLoop> inner)
+            : this(() => queuedLocally.TrySetResult(), inner) { }
+
         public IDisposable? BeginScope<TState>(TState state)
             where TState : notnull => inner.BeginScope(state);
 
@@ -230,7 +318,7 @@ public class AgentLoopRestartRetainsInputTests : LoggingTestBase
             inner.Log(logLevel, eventId, state, exception, formatter);
             if (formatter(state, exception).StartsWith("Queued ", StringComparison.Ordinal))
             {
-                _ = queuedLocally.TrySetResult();
+                queuedLocally();
             }
         }
     }
@@ -291,15 +379,24 @@ public class AgentLoopRestartRetainsInputTests : LoggingTestBase
     }
 
     /// <summary>
-    /// Interactive Claude CLI stand-in. The first turn stays open until <see cref="FinishFirstTurn"/>, so
-    /// input can arrive mid-run; every later send answers at once.
+    /// Interactive Claude CLI stand-in. The first <paramref name="heldTurns"/> turns stay open until
+    /// <see cref="FinishTurn"/>, so input can arrive mid-run; every later send answers at once.
     /// </summary>
-    private sealed class InteractiveClaudeClient : IClaudeAgentSdkClient
+    private sealed class InteractiveClaudeClient(int heldTurns = 1) : IClaudeAgentSdkClient
     {
         private readonly Channel<IMessage> _stream = Channel.CreateUnbounded<IMessage>();
+        private readonly TaskCompletionSource[] _turnSent =
+        [
+            .. Enumerable
+                .Range(0, heldTurns)
+                .Select(_ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)),
+        ];
         private int _sends;
 
-        public TaskCompletionSource FirstTurnSent { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource FirstTurnSent => _turnSent[0];
+
+        /// <summary>Completes when held turn <paramref name="turn"/> (1-based) has been sent.</summary>
+        public Task TurnSent(int turn) => _turnSent[turn - 1].Task;
 
         public bool IsRunning { get; private set; }
 
@@ -307,7 +404,10 @@ public class AgentLoopRestartRetainsInputTests : LoggingTestBase
 
         public ClaudeAgentSdkRequest? LastRequest { get; private set; }
 
-        public void FinishFirstTurn() => Answer();
+        public void FinishFirstTurn() => FinishTurn();
+
+        /// <summary>Answers the open held turn.</summary>
+        public void FinishTurn() => Answer();
 
         public Task StartAsync(ClaudeAgentSdkRequest request, CancellationToken cancellationToken = default)
         {
@@ -328,9 +428,10 @@ public class AgentLoopRestartRetainsInputTests : LoggingTestBase
 
         public Task SendAsync(IEnumerable<IMessage> messages, CancellationToken cancellationToken = default)
         {
-            if (Interlocked.Increment(ref _sends) == 1)
+            var send = Interlocked.Increment(ref _sends);
+            if (send <= heldTurns)
             {
-                _ = FirstTurnSent.TrySetResult();
+                _ = _turnSent[send - 1].TrySetResult();
             }
             else
             {
