@@ -80,11 +80,17 @@ env:
   # secret-free manifests and Docker-shipped sbx-mcp first ship there (upstream ADR 0046).
   # Gateway and agent remote tag manifests were verified before this bump.
   #
+  # 0.1.21 replaces 0.1.18 after retention deleted 0.1.18 (leaving 0.1.19-0.1.21) and this
+  # job failed at `docker pull` again (#773). It also carries gateway skill and agent search
+  # (upstream ADR 0047, #239), which #931 measures. Gateway, agent and proxy 0.1.21 tags
+  # were verified in GHCR before this bump.
+  # GHCR keeps only about the newest 3 tags: bump before this pin becomes the oldest retained tag.
+  #
   # The external/SandboxedOstoolsMcpServer submodule is pinned to a gateway master commit for
   # development (advance it with `git submodule update --remote`), so it may run ahead of this
   # tag. This tag is the released contract CI verifies; CI pulls these images and never builds
   # from the submodule.
-  IMAGE_TAG: '0.1.18'
+  IMAGE_TAG: '0.1.21'
   GATEWAY_IMAGE: ghcr.io/achieveai/mcp-gateway
   AGENT_IMAGE: ghcr.io/achieveai/llm-sandbox-agent
   PROXY_IMAGE: ghcr.io/achieveai/egress-proxy
