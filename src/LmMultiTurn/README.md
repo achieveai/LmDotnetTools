@@ -65,7 +65,13 @@ await foreach (var msg in agent.SubscribeAsync(ct))
 
 ### Implementation Patterns
 
-The base class provides two consumption patterns for implementations:
+The base class provides two consumption patterns for implementations.
+
+Both take input through the base class's hold. TakeNextInputBatchAsync returns a batch a stop left
+held, or else waits, drains the channel and holds what it took. AppendRetainedInputsToHistory adds
+the held batch to history and releases it. The batch stays held across the StartRunAsync awaits, so a
+Stop/Run between taking input and appending it cannot drop it. Do not drain into a local and then
+wait StartRunAsync: that is the window #877-#879 fixed.
 
 #### Poll-Based (MultiTurnAgentLoop)
 Implementations call `TryDrainInputs()` between LLM turns to check for new input:
@@ -75,15 +81,17 @@ protected override async Task RunLoopAsync(CancellationToken ct)
 {
     while (!ct.IsCancellationRequested)
     {
-        // Wait for input
-        await InputReader.WaitToReadAsync(ct);
-        TryDrainInputs(out var batch);
+        // A held batch first, else wait and drain; held until it reaches history
+        var batch = await TakeNextInputBatchAsync(ct);
+        if (batch == null) break;        // channel completed
+        if (batch.Count == 0) continue;
 
         // ResolveBatchParent surfaces caller fork intent (UserInput.ParentRunId).
         // Resolve BEFORE StartRunAsync so the assignment's ParentRunId reflects the caller fork.
         var (parent, isForked) = ResolveBatchParent(batch);
         var assignment = await StartRunAsync(batch, parent, ct);
         await PublishToAllAsync(new RunAssignmentMessage { Assignment = assignment, ThreadId = ThreadId }, ct);
+        AppendRetainedInputsToHistory();
 
         try
         {
@@ -122,13 +130,15 @@ protected override async Task RunLoopAsync(CancellationToken ct)
 {
     while (!ct.IsCancellationRequested)
     {
-        await InputReader.WaitToReadAsync(ct);
-        TryDrainInputs(out var batch);
+        var batch = await TakeNextInputBatchAsync(ct);
+        if (batch == null) break;
+        if (batch.Count == 0) continue;
 
         // Resolve caller fork intent BEFORE StartRunAsync so RunAssignment.ParentRunId reflects it.
         var (parent, isForked) = ResolveBatchParent(batch);
         var assignment = await StartRunAsync(batch, parent, ct);
         await PublishToAllAsync(new RunAssignmentMessage { ... }, ct);
+        AppendRetainedInputsToHistory();
 
         // Watch for new inputs concurrently while agent processes
         var watchTask = WatchAndInjectInputsAsync(ct);
