@@ -92,6 +92,52 @@ describe('useChat — provider_retry frames (#930)', () => {
     expect(chat.providerRetry.value).toBeNull();
   });
 
+  // Each terminal path, with no content after the retry frame: only the terminal event can clear it.
+  it.each([
+    ['the stream completes', (_chat: ReturnType<typeof useChat>) => captured[0].onDone()],
+    ['the server sends an error frame', (_chat: ReturnType<typeof useChat>) => captured[0].onError('boom', 'provider_error')],
+    ['the user stops the run', (chat: ReturnType<typeof useChat>) => chat.cancelStream()],
+  ])('clears the retry when %s', async (_name, end) => {
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
+    chat.setThreadId('thread-1');
+    await chat.sendMessage('hi');
+    captured[0].onMessage(retryFrame());
+    expect(chat.providerRetry.value).not.toBeNull();
+
+    await end(chat);
+
+    expect(chat.providerRetry.value).toBeNull();
+  });
+
+  // Out-of-band frames: another agent or a notification can speak while the provider wait runs.
+  it.each([
+    [
+      'a notification',
+      { $type: MessageType.Notify, role: 'user', text: 'sub-agent done', notify_kind: 'subagent-completion' },
+    ],
+    [
+      'an agent message',
+      {
+        $type: MessageType.Agent,
+        role: 'user',
+        text: 'from helper',
+        message_id: 'm-1',
+        agent_message_type: 'TaskUpdate',
+        from_agent_id: 'agent-2',
+        from_name: 'helper',
+      },
+    ],
+  ])('keeps the retry when %s arrives mid-wait', async (_name, frame) => {
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
+    chat.setThreadId('thread-1');
+    await chat.sendMessage('hi');
+    captured[0].onMessage(retryFrame());
+
+    captured[0].onMessage(frame);
+
+    expect(chat.providerRetry.value?.delayMs).toBe(7000);
+  });
+
   it('ignores a retry frame stamped for another conversation', async () => {
     const chat = useChat({ getModeId: () => 'default', provisionThreadId });
     chat.setThreadId('thread-1');

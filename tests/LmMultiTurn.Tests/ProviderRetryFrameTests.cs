@@ -23,6 +23,34 @@ namespace LmMultiTurn.Tests;
 /// </summary>
 public sealed class ProviderRetryFrameTests
 {
+    /// <summary>Sends its HTTP request through the shared retry helper on the first fetch.</summary>
+    private sealed class LazyHttpAgent(HttpClient client) : IStreamingAgent
+    {
+        public Task<IEnumerable<IMessage>> GenerateReplyAsync(
+            IEnumerable<IMessage> messages,
+            GenerateReplyOptions? options = null,
+            CancellationToken cancellationToken = default
+        ) => throw new NotSupportedException();
+
+        public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
+            IEnumerable<IMessage> messages,
+            GenerateReplyOptions? options = null,
+            CancellationToken cancellationToken = default
+        ) => Task.FromResult(StreamAsync(cancellationToken));
+
+        private async IAsyncEnumerable<IMessage> StreamAsync([EnumeratorCancellation] CancellationToken ct)
+        {
+            _ = await HttpRetryHelper.ExecuteHttpWithRetryAsync(
+                () => client.GetAsync("http://provider.test/v1/messages", ct),
+                response => response.Content.ReadAsStringAsync(ct),
+                NullLogger.Instance,
+                RetryOptions.Default,
+                ct
+            );
+            yield return new TextMessage { Text = "after retry", Role = Role.Assistant };
+        }
+    }
+
     [Fact]
     public async Task ARateLimitedTurn_PublishesOneProviderRetryFrame_AndStillCompletes()
     {
@@ -72,33 +100,5 @@ public sealed class ProviderRetryFrameTests
 
         json.Should().Contain("\"$type\":\"provider_retry\"").And.Contain("\"delayMs\":7000");
         back.Should().BeOfType<ProviderRetryMessage>().Which.Should().Be(frame);
-    }
-
-    /// <summary>Sends its HTTP request through the shared retry helper on the first fetch.</summary>
-    private sealed class LazyHttpAgent(HttpClient client) : IStreamingAgent
-    {
-        public Task<IEnumerable<IMessage>> GenerateReplyAsync(
-            IEnumerable<IMessage> messages,
-            GenerateReplyOptions? options = null,
-            CancellationToken cancellationToken = default
-        ) => throw new NotSupportedException();
-
-        public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
-            IEnumerable<IMessage> messages,
-            GenerateReplyOptions? options = null,
-            CancellationToken cancellationToken = default
-        ) => Task.FromResult(StreamAsync(cancellationToken));
-
-        private async IAsyncEnumerable<IMessage> StreamAsync([EnumeratorCancellation] CancellationToken ct)
-        {
-            _ = await HttpRetryHelper.ExecuteHttpWithRetryAsync(
-                () => client.GetAsync("http://provider.test/v1/messages", ct),
-                response => response.Content.ReadAsStringAsync(ct),
-                NullLogger.Instance,
-                RetryOptions.Default,
-                ct
-            );
-            yield return new TextMessage { Text = "after retry", Role = Role.Assistant };
-        }
     }
 }

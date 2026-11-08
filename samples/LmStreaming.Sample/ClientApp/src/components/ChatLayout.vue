@@ -2164,20 +2164,23 @@ onBeforeUnmount(() => {
   border-top: 1px solid #f5c6cb;
 }
 
-.retry-banner {
+/* Status lines under the transcript share size; each keeps its own colours. */
+.retry-banner,
+.usage-banner {
   padding: 8px 16px;
-  background: #fff3cd;
-  color: #664d03;
-  border-top: 1px solid #ffe69c;
   font-size: 13px;
 }
 
+.retry-banner {
+  background: #fff3cd;
+  color: #664d03;
+  border-top: 1px solid #ffe69c;
+}
+
 .usage-banner {
-  padding: 8px 16px;
   background: #d4edda;
   color: #155724;
   border-top: 1px solid #c3e6cb;
-  font-size: 13px;
 }
 
 .not-found-view {

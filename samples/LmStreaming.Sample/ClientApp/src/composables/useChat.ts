@@ -259,8 +259,9 @@ export function useChat(options: UseChatOptions = {}) {
 
   /**
    * The retry the server is waiting out right now, from the newest `provider_retry` frame (#930), or
-   * null. Cleared by the next message of any other kind: once anything else arrives the wait is over
-   * (the retry succeeded, or the run ended). Status metadata, never transcript content — no display item.
+   * null. Cleared by the run's next frame (model output, or run completion), and when the stream ends,
+   * fails or is stopped. Notify and agent messages do not clear it: they can arrive mid-wait from
+   * outside the provider call. Status metadata, never transcript content — no display item.
    */
   const providerRetry = ref<ProviderRetryMessage | null>(null);
   /**
@@ -1086,15 +1087,19 @@ export function useChat(options: UseChatOptions = {}) {
       return;
     }
 
-    // Live provider retry frame (#930). SET on a retry for the open conversation; anything else that
-    // arrives afterwards means the wait is over, so it clears the line.
+    // Live provider retry frame (#930). SET on a retry for the open conversation. A later frame from
+    // the run (model output, or the run ending) clears it. Notify and agent messages do not: they
+    // come from outside the provider call (another agent, a notification) and can arrive while the
+    // provider wait is still running.
     if (isProviderRetryMessage(msg)) {
       if (!msg.threadId || !threadId.value || msg.threadId === threadId.value) {
         providerRetry.value = msg;
       }
       return;
     }
-    providerRetry.value = null;
+    if (!isNotifyMessage(msg) && !isAgentMessage(msg)) {
+      providerRetry.value = null;
+    }
 
     // Handle lifecycle messages
     if (isRunAssignmentMessage(msg)) {
@@ -1475,11 +1480,13 @@ export function useChat(options: UseChatOptions = {}) {
         }
 
         finalize();
+        providerRetry.value = null;
         isLoading.value = false;
       },
       onError: (err: string) => {
         log.error('Stream error', { error: err, transport: transport.value });
         error.value = err;
+        providerRetry.value = null;
         isLoading.value = false;
       },
     };
@@ -2171,6 +2178,7 @@ export function useChat(options: UseChatOptions = {}) {
     }
 
     finalize();
+    providerRetry.value = null;
     isLoading.value = false;
     isSending.value = false;
   }

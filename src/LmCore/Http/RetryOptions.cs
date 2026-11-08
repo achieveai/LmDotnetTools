@@ -37,8 +37,21 @@ public record RetryOptions
     public int InitialDelayMs { get; init; } = 1000;
 
     /// <summary>
-    ///     Maximum delay in milliseconds between retries.
-    ///     Default: 30000ms (30 seconds)
+    ///     Total attempts allowed, the first request included: <see cref="MaxRetries" /> + 1. Saturates at
+    ///     <see cref="int.MaxValue" /> instead of overflowing, and is never below one.
+    /// </summary>
+    public int MaxAttempts =>
+        MaxRetries switch
+        {
+            < 0 => 1,
+            int.MaxValue => int.MaxValue,
+            _ => MaxRetries + 1,
+        };
+
+    /// <summary>
+    ///     Upper bound in milliseconds on the client's OWN exponential backoff between retries.
+    ///     It does not bound a wait the server asked for: an honored <c>Retry-After</c> is bounded by
+    ///     <see cref="MaxRetryAfter" /> instead. Default: 30000ms (30 seconds)
     /// </summary>
     public int MaxDelayMs { get; init; } = 30000;
 
@@ -53,7 +66,8 @@ public record RetryOptions
     ///     Longest server-requested wait (<c>Retry-After</c>) this client will honor.
     ///     A response asking for longer is not retried: it fails at once with its status. Retrying early
     ///     would only earn a second rejection, and failing fast lets a caller switch model or tell the
-    ///     user. Default: 60 seconds.
+    ///     user. A wait longer than a timer can represent (about 49.7 days) is refused the same way,
+    ///     whatever this is set to. Default: 60 seconds.
     /// </summary>
     public TimeSpan MaxRetryAfter { get; init; } = TimeSpan.FromSeconds(60);
 

@@ -1,3 +1,4 @@
+using System.Globalization;
 using AchieveAi.LmDotnetTools.LmCore.Http;
 
 namespace LmStreaming.Sample.Services;
@@ -25,16 +26,22 @@ public static class ProviderRetrySettings
         var section = configuration.GetSection(SectionName);
         var options = RetryOptions.Default;
 
-        if (int.TryParse(section["MaxRetries"], out var maxRetries) && maxRetries >= 0)
+        if (ReadNonNegative(section, "MaxRetries") is { } maxRetries)
         {
             options = options with { MaxRetries = maxRetries };
         }
 
-        if (int.TryParse(section["MaxRetryAfterSeconds"], out var maxRetryAfter) && maxRetryAfter >= 0)
+        if (ReadNonNegative(section, "MaxRetryAfterSeconds") is { } maxRetryAfter)
         {
             options = options with { MaxRetryAfter = TimeSpan.FromSeconds(maxRetryAfter) };
         }
 
         return options;
     }
+
+    /// <summary>The knob's value when it is a whole number of zero or more; otherwise null.</summary>
+    private static int? ReadNonNegative(IConfigurationSection section, string key) =>
+        int.TryParse(section[key], NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) && value >= 0
+            ? value
+            : null;
 }

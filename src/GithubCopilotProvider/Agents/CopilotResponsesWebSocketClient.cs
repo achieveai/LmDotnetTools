@@ -198,18 +198,18 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
                 _logger.LogWarning(
                     "WebSocket connect failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms: {Error}",
                     attempt,
-                    _retryOptions.MaxRetries + 1,
+                    _retryOptions.MaxAttempts,
                     delay.TotalMilliseconds,
                     ex.Message
                 );
-                HttpRetryScope.Notify(
-                    new HttpRetryNotice(
-                        attempt,
-                        _retryOptions.MaxRetries + 1,
-                        (ex as HttpRequestException)?.StatusCode,
-                        delay,
-                        FromRetryAfter: false
-                    )
+                // IsRetryableConnect admits only a WebSocketException, so a rejected upgrade's status is on
+                // its inner HttpRequestException. A transport failure (inner SocketException) has none.
+                HttpRetryScope.NotifyRetry(
+                    _retryOptions,
+                    attempt,
+                    (ex.InnerException as HttpRequestException)?.StatusCode,
+                    delay,
+                    fromRetryAfter: false
                 );
 
                 await DisposeSocketSafelyAsync(socket).ConfigureAwait(false);
