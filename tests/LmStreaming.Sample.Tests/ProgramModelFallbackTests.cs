@@ -6,12 +6,14 @@ using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Reasoning;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace LmStreaming.Sample.Tests;
 
@@ -20,7 +22,7 @@ namespace LmStreaming.Sample.Tests;
 ///     request (#930 P1 item 8). The primary is always down here, so what the target agent receives is
 ///     what a real fallback would send.
 /// </summary>
-public sealed class ProgramModelFallbackTests
+public sealed class ProgramModelFallbackTests : LoggingTestBase
 {
     private const string PrimaryId = "primary-x";
     private const string SettingKey = $"LmStreaming:ModelFallback:{PrimaryId}";
@@ -31,7 +33,13 @@ public sealed class ProgramModelFallbackTests
     private readonly Dictionary<string, RecordingAgent> _agents = new(StringComparer.Ordinal);
     private readonly List<string> _built = [];
     private readonly RecordingLoggerFactory _loggers = new();
-    private readonly RecordingAgent _primary = new(answers: false);
+    private readonly RecordingAgent _primary;
+
+    public ProgramModelFallbackTests(ITestOutputHelper output)
+        : base(output)
+    {
+        _primary = new RecordingAgent(answers: false, PrimaryId, Logger);
+    }
 
     [Fact]
     public async Task AnAnthropicFallback_GetsTheWebSearchTheModeAllows_EvenWhenThePrimaryHasNoBuiltIns()
@@ -227,7 +235,7 @@ public sealed class ProgramModelFallbackTests
 
     private RecordingAgent Agent(string providerId)
     {
-        var agent = new RecordingAgent(answers: true);
+        var agent = new RecordingAgent(answers: true, providerId, Logger);
         _agents[providerId] = agent;
         return agent;
     }
@@ -302,7 +310,7 @@ public sealed class ProgramModelFallbackTests
         await foreach (var _ in stream) { }
     }
 
-    private sealed class RecordingAgent(bool answers) : IStreamingAgent
+    private sealed class RecordingAgent(bool answers, string providerId, ILogger logger) : IStreamingAgent
     {
         public int Calls { get; private set; }
 
@@ -316,6 +324,12 @@ public sealed class ProgramModelFallbackTests
         {
             Calls++;
             LastOptions = options;
+            logger.LogDebug(
+                "Agent {ProviderId} called for model {ModelId} with {BuiltInToolCount} built-in tools",
+                providerId,
+                options?.ModelId,
+                options?.BuiltInTools?.Count ?? 0
+            );
             return Task.FromResult(ReadAsync(answers, cancellationToken));
         }
 

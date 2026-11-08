@@ -113,8 +113,8 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
     /// </summary>
     /// <remarks>
     ///     Falls back on: HTTP 408, 429 and every 5xx; a transport failure with no status (connection
-    ///     refused or reset, DNS); a response body that breaks while it is read
-    ///     (<see cref="IOException" />, which includes <see cref="HttpIOException" />); a timeout
+    ///     refused or reset, DNS); any <see cref="IOException" />, which includes
+    ///     <see cref="HttpIOException" /> and is how a response body that breaks while it is read surfaces; a timeout
     ///     (<see cref="TimeoutException" />, or any <see cref="OperationCanceledException" />, which is how an
     ///     <see cref="HttpClient" /> timeout surfaces). The caller's own cancellation never reaches this
     ///     rule: the chain stops on it first. Does not fall back on any other 4xx (a bad request, auth or a

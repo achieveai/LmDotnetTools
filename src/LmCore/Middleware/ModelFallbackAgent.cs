@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
@@ -12,8 +13,9 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 ///     owns its provider agent releases the fallbacks with it.
 /// </summary>
 /// <remarks>
-///     A streamed reply is returned exactly as the middleware made it. A deferred wrapper would never reach
-///     the provider stream the middleware has already opened if the reply were disposed before its first read.
+///     A streamed reply opens nothing until its first read. A host wraps this agent in deferred middleware,
+///     and a wrapper disposed before its first read would never reach a stream that was already open. Each
+///     enumeration is a new request, as it is for a provider agent's own lazy stream.
 /// </remarks>
 public sealed class ModelFallbackAgent : IStreamingAgent, IAsyncDisposable
 {
@@ -50,7 +52,21 @@ public sealed class ModelFallbackAgent : IStreamingAgent, IAsyncDisposable
         IEnumerable<IMessage> messages,
         GenerateReplyOptions? options = null,
         CancellationToken cancellationToken = default
-    ) => _middleware.InvokeStreamingAsync(new MiddlewareContext(messages, options), _primary, cancellationToken);
+    ) => Task.FromResult(ReadAsync(new MiddlewareContext(messages, options), cancellationToken));
+
+    private async IAsyncEnumerable<IMessage> ReadAsync(
+        MiddlewareContext context,
+        CancellationToken callToken,
+        [EnumeratorCancellation] CancellationToken readToken = default
+    )
+    {
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(callToken, readToken);
+        var reply = await _middleware.InvokeStreamingAsync(context, _primary, stop.Token);
+        await foreach (var message in reply)
+        {
+            yield return message;
+        }
+    }
 
     /// <summary>
     ///     Disposes every distinct agent once. One that fails to dispose does not stop the rest; the first

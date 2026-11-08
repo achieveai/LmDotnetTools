@@ -2130,10 +2130,7 @@ try
                 );
                 // Same resolution for a discovered Anthropic-compatible provider-family model (e.g.
                 // DeepSeek); whether there is one drives the web-tool wiring below.
-                var isAnthropicCompatModel = providerRegistry.TryGetAnthropicCompatModel(
-                    normalizedProviderId,
-                    out var anthropicCompatModelInfo
-                );
+                var isAnthropicCompatModel = providerRegistry.TryGetAnthropicCompatModel(normalizedProviderId, out _);
 
                 var enabledWebTools = WebToolRegistrationPolicy.ResolveEnabledTools(
                     mode.EnabledTools,
@@ -4690,9 +4687,8 @@ public partial class Program
     /// <summary>
     ///     Opt-in model fallback for a conversation's provider (#930 P1 item 8). The array
     ///     <c>LmStreaming:ModelFallback:{providerId}</c> lists provider ids to try, in order, when this one is
-    ///     down; no entry returns <paramref name="primary" /> unchanged. Which failures fall back is
-    ///     <see cref="ModelFallbackMiddleware.IsProviderOutage" />: 408, 429, 5xx, transport errors and
-    ///     timeouts, never another 4xx, the caller's cancellation, or a reply that already started.
+    ///     down; no entry returns <paramref name="primary" /> unchanged.
+    ///     <see cref="ModelFallbackMiddleware.IsProviderOutage" /> decides which failures fall back.
     /// </summary>
     /// <remarks>
     ///     Each fallback runs its own model id, gets the built-in tools its own provider offers that the mode

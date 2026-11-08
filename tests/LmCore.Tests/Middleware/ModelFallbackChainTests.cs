@@ -452,19 +452,109 @@ public class ModelFallbackChainTests
     }
 
     [Theory]
-    [InlineData("primary")]
-    [InlineData("fallback")]
-    public async Task DisposingTheAgentsReplyBeforeReadingIt_ReleasesTheProviderStream(string answeredBy)
+    [InlineData("primary", false)]
+    [InlineData("fallback", false)]
+    [InlineData("primary", true)]
+    [InlineData("fallback", true)]
+    public async Task DisposingTheAgentsReplyBeforeReadingIt_OpensNoProviderStream(
+        string answeredBy,
+        bool throughTheHostsWrapper
+    )
     {
         var probe = new StreamProbe();
         var answer = new ScriptedAgent(Tracked(probe, messages: Text("answer")));
         var primary = answeredBy == "fallback" ? new ScriptedAgent(Outage(503)) : answer;
-        await using var agent = new ModelFallbackAgent(primary, [new FallbackTarget("backup-model", answer)]);
+        await using var fallback = new ModelFallbackAgent(primary, [new FallbackTarget("backup-model", answer)]);
+        IStreamingAgent agent = throughTheHostsWrapper ? fallback.WithMessageTransformation() : fallback;
 
         var reply = await agent.GenerateReplyStreamingAsync(Prompt, new GenerateReplyOptions { ModelId = "m" });
         await reply.GetAsyncEnumerator().DisposeAsync();
 
-        probe.Ended.Should().Be(1, "the agent's reply owns the stream it opened to find the first message");
+        primary.Calls.Should().Be(0, "an unread reply must not have opened a stream that no wrapper could release");
+        probe.Ended.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReadingTheAgentsReply_CallsTheProviderOnce_AndReleasesItsStream(bool throughTheHostsWrapper)
+    {
+        var probe = new StreamProbe();
+        var primary = new ScriptedAgent(Tracked(probe, messages: Text("answer")));
+        await using var fallback = new ModelFallbackAgent(
+            primary,
+            [new FallbackTarget("backup-model", new ScriptedAgent(Reply("from the backup")))]
+        );
+        IStreamingAgent agent = throughTheHostsWrapper ? fallback.WithMessageTransformation() : fallback;
+
+        var replies = await ReadAllAsync(
+            await agent.GenerateReplyStreamingAsync(Prompt, new GenerateReplyOptions { ModelId = "m" })
+        );
+
+        replies.OfType<TextMessage>().Should().ContainSingle().Which.Text.Should().Be("answer");
+        primary.Calls.Should().Be(1);
+        probe.Ended.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ACancelledReadOfTheAgentsReply_StopsWithoutFallingBack(bool throughTheEnumerationToken)
+    {
+        using var stop = new CancellationTokenSource();
+        var backup = new ScriptedAgent(Reply("from the backup"));
+        await using var agent = new ModelFallbackAgent(
+            new ScriptedAgent(Reply("first")),
+            [new FallbackTarget("backup-model", backup)]
+        );
+        var reply = await agent.GenerateReplyStreamingAsync(
+            Prompt,
+            new GenerateReplyOptions { ModelId = "m" },
+            throughTheEnumerationToken ? CancellationToken.None : stop.Token
+        );
+        await stop.CancelAsync();
+
+        var read = async () =>
+        {
+            await foreach (
+                var _ in reply.WithCancellation(throughTheEnumerationToken ? stop.Token : CancellationToken.None)
+            ) { }
+        };
+
+        _ = await read.Should().ThrowAsync<OperationCanceledException>();
+        backup.Calls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ASecondEnumerationOfTheReply_IsRejected_WithoutASecondProviderCall()
+    {
+        var primary = new ScriptedAgent(Reply("answer"));
+        var middleware = new ModelFallbackMiddleware([
+            new FallbackTarget("backup-model", new ScriptedAgent(Reply("from the backup"))),
+        ]);
+        var reply = await middleware.InvokeStreamingAsync(Context("primary-model"), primary);
+        await using var first = reply.GetAsyncEnumerator();
+
+        var second = () => reply.GetAsyncEnumerator();
+
+        second.Should().Throw<InvalidOperationException>();
+        primary.Calls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task DisposingTheReplyTwice_ReleasesTheProviderStreamOnce()
+    {
+        var stream = new DisposeCountingStream();
+        var middleware = new ModelFallbackMiddleware([
+            new FallbackTarget("backup-model", new ScriptedAgent(Reply("from the backup"))),
+        ]);
+        var reply = await middleware.InvokeStreamingAsync(Context("primary-model"), new ScriptedAgent(_ => stream));
+        var enumerator = reply.GetAsyncEnumerator();
+
+        await enumerator.DisposeAsync();
+        await enumerator.DisposeAsync();
+
+        stream.Disposals.Should().Be(1);
     }
 
     [Theory]
@@ -879,6 +969,31 @@ public class ModelFallbackChainTests
         public ValueTask DisposeAsync()
         {
             onDispose();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    /// <summary>A one-message provider stream that counts every dispose; an iterator would hide a second one.</summary>
+    private sealed class DisposeCountingStream : IAsyncEnumerable<IMessage>, IAsyncEnumerator<IMessage>
+    {
+        private bool _read;
+
+        public int Disposals { get; private set; }
+
+        public IMessage Current { get; } = new TextMessage { Text = "answer", Role = Role.Assistant };
+
+        public IAsyncEnumerator<IMessage> GetAsyncEnumerator(CancellationToken cancellationToken = default) => this;
+
+        public ValueTask<bool> MoveNextAsync()
+        {
+            var moved = !_read;
+            _read = true;
+            return ValueTask.FromResult(moved);
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Disposals++;
             return ValueTask.CompletedTask;
         }
     }
