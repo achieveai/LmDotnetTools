@@ -970,6 +970,25 @@ try
             }
         }
 
+        // Best-effort disposal of a provider agent built for a configuration that no loop took over.
+        static void DisposeUnadoptedProviderAgent(IStreamingAgent? providerAgent)
+        {
+            try
+            {
+                if (providerAgent is IAsyncDisposable asyncDisposable)
+                {
+                    asyncDisposable.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                }
+                else if (providerAgent is IDisposable disposable)
+                {
+                    disposable.Dispose();
+                }
+            }
+            catch
+            { /* ignore cleanup errors */
+            }
+        }
+
         // Start mirroring every conversation's messages into its workspace (#251).
         //
         // THIS WRAPPER IS THE ATTACH POINT, and it is a wrapper rather than a call inside the factory
@@ -1604,12 +1623,11 @@ try
                 // them, and disposing them there would break a switch that was correctly refused.
                 var carriedOver = new HashSet<object>(ReferenceEqualityComparer.Instance);
 
-                var providerAgent = WithConfiguredModelFallback(
-                    sp,
-                    normalizedProviderId,
-                    agentFactory(normalizedProviderId),
-                    agentFactory
-                );
+                // Built inside the try below and owned by this attempt until a loop takes it: the
+                // construction-failure path disposes it, with any fallback agents it holds, unless
+                // `providerAgentAdopted` says a loop already owns it.
+                IStreamingAgent? providerAgent = null;
+                var providerAgentAdopted = false;
 
                 // Per-conversation tool registry: clone the shared (stateless) sample tools and
                 // layer a FRESH TaskManager on top so every chat gets its own isolated todo list
@@ -2162,13 +2180,7 @@ try
                         }
                     }
 
-                    // Discovered Copilot models use their raw model id verbatim; discovered
-                    // Anthropic-compatible models likewise use their configured model name verbatim;
-                    // fixed providers keep the curated per-provider id map.
-                    var modelId =
-                        isCopilotBackedModel ? copilotModelInfo.Id
-                        : isAnthropicCompatModel ? anthropicCompatModelInfo.ModelName
-                        : GetModelIdForProvider(normalizedProviderId);
+                    var modelId = ResolveModelIdForProvider(providerRegistry, normalizedProviderId);
 
                     // Built-in (server-side) tools are selected by the MODE — never injected per
                     // provider or via a per-mode override. A mode declares its server-side built-ins in
@@ -2181,6 +2193,13 @@ try
                     var allBuiltInTools = GetBuiltInToolsForProvider(normalizedProviderId);
                     var modeBuiltInAllowList = mode.EnabledBuiltInTools ?? mode.EnabledTools;
                     var filteredBuiltInTools = ModeToolFilter.FilterBuiltInTools(allBuiltInTools, modeBuiltInAllowList);
+                    providerAgent = WithConfiguredModelFallback(
+                        sp,
+                        normalizedProviderId,
+                        agentFactory(normalizedProviderId),
+                        agentFactory,
+                        modeBuiltInAllowList
+                    );
 
                     // Surface model reasoning (provider→Thinking/Reasoning mapping). A provisioned root
                     // effort is read from durable conversation metadata here, at the request-options build
@@ -2872,6 +2891,8 @@ try
                             throw new AgentBusyException(threadId);
                         }
 
+                        providerAgentAdopted = true;
+
                         // The live loop runs on this build from here, so its tiers do too.
                         tierStage.CommitAsync(CancellationToken.None).GetAwaiter().GetResult();
                     }
@@ -2948,6 +2969,7 @@ try
                             // in-place switch, or the loop's teardown if there is none, disposes it once.
                             OwnsProviderAgent = true,
                         };
+                        providerAgentAdopted = true;
                     }
 
                     // EVERYTHING BELOW RUNS ONCE PER CONVERSATION, NOT ONCE PER SWITCH. It wires the
@@ -3198,6 +3220,13 @@ try
                     // Dispose owned resources (MCP clients) if agent construction fails — but never the
                     // ones this attempt only borrowed from the live conversation (see `carriedOver`).
                     DisposeOwnedResources([.. ownedResources.Where(resource => !carriedOver.Contains(resource))]);
+
+                    // A provider agent no loop took (a switch refused as busy, or a failure before the
+                    // loop existed) belongs to nobody else, and with fallback it holds several agents.
+                    if (!providerAgentAdopted)
+                    {
+                        DisposeUnadoptedProviderAgent(providerAgent);
+                    }
 
                     throw;
                 }
@@ -3859,6 +3888,19 @@ public partial class Program
     ///     specific one, via <see cref="CopilotReasoningShaper" /> on the paths that shape it.
     ///     </para>
     /// </summary>
+    /// <summary>
+    ///     Every request extra-property key this host's reasoning shapes write: <see cref="BuildReasoningExtraProperties" />
+    ///     and <c>CopilotReasoningShaper.Shape</c>. A request moved to another model drops all of them before
+    ///     taking that model's own shape, so a key added to either shaper belongs here too.
+    /// </summary>
+    internal static readonly string[] ReasoningExtraPropertyKeys =
+    [
+        "Thinking",
+        "Reasoning",
+        "OutputConfig",
+        "reasoning_effort",
+    ];
+
     internal static ImmutableDictionary<string, object?> BuildReasoningExtraProperties(
         string normalizedProviderId,
         CopilotModelTransport? copilotTransport = null,
@@ -4581,6 +4623,15 @@ public partial class Program
     }
 
     /// <summary>
+    ///     The model id a provider id runs: a discovered Copilot model's raw id and a discovered
+    ///     Anthropic-compatible model's configured name, both verbatim; a fixed provider's curated id otherwise.
+    /// </summary>
+    internal static string ResolveModelIdForProvider(ProviderRegistry registry, string providerId) =>
+        registry.TryGetCopilotModel(providerId, out var copilotModel) ? copilotModel.Id
+        : registry.TryGetAnthropicCompatModel(providerId, out var compatModel) ? compatModel.ModelName
+        : GetModelIdForProvider(providerId);
+
+    /// <summary>
     ///     Opt-in model fallback for a conversation's provider (#930 P1 item 8). The array
     ///     <c>LmStreaming:ModelFallback:{providerId}</c> lists provider ids to try, in order, when this one is
     ///     down; no entry returns <paramref name="primary" /> unchanged. Which failures fall back is
@@ -4588,27 +4639,30 @@ public partial class Program
     ///     timeouts, never another 4xx, the caller's cancellation, or a reply that already started.
     /// </summary>
     /// <remarks>
-    ///     Each fallback runs its own model id, keeps only the built-in tools its provider offers out of the
-    ///     ones the mode already allowed, and gets its provider's default reasoning shape: a provisioned root
-    ///     reasoning effort is not carried over. A fallback provider that cannot be built (no key) is skipped
-    ///     with a warning rather than failing the conversation, which never needed it to start.
+    ///     Each fallback runs its own model id, gets the built-in tools its own provider offers that the mode
+    ///     allows (<paramref name="modeBuiltInAllowList" />, the same filter the primary's built-ins went
+    ///     through), and gets its provider's default reasoning shape: a provisioned root reasoning effort is
+    ///     not carried over. A single provider id written as a plain string is a one-entry list. A fallback
+    ///     provider that is not available (no key or login) or cannot be built is skipped with a warning rather
+    ///     than failing the conversation, which never needed it to start: left in the chain, its 401 would end
+    ///     the chain before a later target that works.
     /// </remarks>
-    private static IStreamingAgent WithConfiguredModelFallback(
+    internal static IStreamingAgent WithConfiguredModelFallback(
         IServiceProvider sp,
         string providerId,
         IStreamingAgent primary,
-        Func<string, IStreamingAgent> agentFactory
+        Func<string, IStreamingAgent> agentFactory,
+        IReadOnlyList<string>? modeBuiltInAllowList
     )
     {
-        var fallbackIds = sp.GetRequiredService<IConfiguration>()
-            .GetSection($"LmStreaming:ModelFallback:{providerId}")
-            .Get<string[]>();
+        var section = sp.GetRequiredService<IConfiguration>().GetSection($"LmStreaming:ModelFallback:{providerId}");
+        // Blank, not null, is how a list's parent key reads when the setting comes through host settings.
+        string[]? fallbackIds = string.IsNullOrWhiteSpace(section.Value) ? section.Get<string[]>() : [section.Value];
         if (fallbackIds is not { Length: > 0 })
         {
             return primary;
         }
 
-        string[] reasoningKeys = ["Thinking", "Reasoning", "OutputConfig", "reasoning_effort"];
         var registry = sp.GetRequiredService<ProviderRegistry>();
         var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("LmStreaming.Sample.ModelFallback");
         var targets = new List<FallbackTarget>();
@@ -4620,6 +4674,16 @@ public partial class Program
                 .Distinct()
         )
         {
+            if (!registry.IsAvailable(targetId))
+            {
+                logger.LogWarning(
+                    "Model fallback target {ToProvider} for {FromProvider} is unavailable and is skipped",
+                    targetId,
+                    providerId
+                );
+                continue;
+            }
+
             IStreamingAgent targetAgent;
             try
             {
@@ -4636,11 +4700,10 @@ public partial class Program
                 continue;
             }
 
-            var modelId =
-                registry.TryGetCopilotModel(targetId, out var copilotModel) ? copilotModel.Id
-                : registry.TryGetAnthropicCompatModel(targetId, out var compatModel) ? compatModel.ModelName
-                : GetModelIdForProvider(targetId);
-            var targetBuiltIns = GetBuiltInToolsForProvider(targetId);
+            var targetBuiltIns = ModeToolFilter.FilterBuiltInTools(
+                GetBuiltInToolsForProvider(targetId),
+                modeBuiltInAllowList
+            );
             var targetReasoning = BuildConversationReasoningExtraProperties(
                 registry,
                 targetId,
@@ -4649,22 +4712,14 @@ public partial class Program
             );
             targets.Add(
                 new FallbackTarget(
-                    modelId,
+                    ResolveModelIdForProvider(registry, targetId),
                     targetAgent,
                     options =>
                         options with
                         {
-                            BuiltInTools =
-                                targetBuiltIns is null || options.BuiltInTools is null
-                                    ? null
-                                    :
-                                    [
-                                        .. targetBuiltIns.Where(tool =>
-                                            options.BuiltInTools.Any(allowed => allowed.GetType() == tool.GetType())
-                                        ),
-                                    ],
+                            BuiltInTools = targetBuiltIns,
                             ExtraProperties = options
-                                .ExtraProperties.RemoveRange(reasoningKeys)
+                                .ExtraProperties.RemoveRange(ReasoningExtraPropertyKeys)
                                 .SetItems(targetReasoning),
                         }
                 )

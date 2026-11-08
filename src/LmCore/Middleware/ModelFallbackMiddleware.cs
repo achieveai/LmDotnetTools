@@ -5,6 +5,7 @@ using System.Runtime.ExceptionServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -47,12 +48,6 @@ public sealed record FallbackTarget(
 /// </remarks>
 public class ModelFallbackMiddleware : IStreamingMiddleware
 {
-    /// <summary>
-    ///     The usage extra property the usage ledger reads as the model that actually ran
-    ///     (<c>UsageRecordMapper.ProviderReportedModel</c> in LmMultiTurn).
-    /// </summary>
-    public const string UsageModelProperty = "model";
-
     private readonly IAgent? _defaultAgent;
     private readonly IReadOnlyList<FallbackTarget>? _fallbacks;
     private readonly ILogger _logger;
@@ -182,6 +177,12 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
     /// <summary>
     ///     Invokes the middleware for streaming scenarios, attempting agents based on the model name in the options.
     /// </summary>
+    /// <remarks>
+    ///     The returned stream is already open: its first message has been read. Disposing its enumerator
+    ///     releases the provider stream even before the first read, and a token passed to the enumeration
+    ///     (<c>WithCancellation</c>) cancels the provider's reads just as <paramref name="cancellationToken" />
+    ///     does.
+    /// </remarks>
     public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
         MiddlewareContext context,
         IStreamingAgent agent,
@@ -190,46 +191,61 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
     {
         ArgumentNullException.ThrowIfNull(agent);
         var attempts = BuildAttempts(context, agent);
-        Exception? earlier = null;
-        for (var i = 0; ; i++)
-        {
-            var attempt = attempts[i];
-            IAsyncEnumerator<IMessage>? reply = null;
-            try
-            {
-                var stream = attempt.Agent is IStreamingAgent streamingAgent
-                    ? await streamingAgent.GenerateReplyStreamingAsync(
-                        context.Messages,
-                        attempt.Options,
-                        cancellationToken
-                    )
-                    : ToAsyncEnumerableInternal(
-                        await attempt.Agent.GenerateReplyAsync(context.Messages, attempt.Options, cancellationToken),
-                        cancellationToken
-                    );
 
-                // The request goes out on this first read, so this is where an outage shows.
-                reply = stream.GetAsyncEnumerator(cancellationToken);
-                var started = await reply.MoveNextAsync();
-                return ContinueReply(reply, started, attempt.FallbackModelId);
-            }
-            catch (Exception ex) when (CanFallBack(ex, i, attempts.Count, cancellationToken))
+        // Every provider call and read runs on this token, so the enumeration's own token can be linked to
+        // it once the caller starts reading.
+        var reads = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        try
+        {
+            Exception? earlier = null;
+            for (var i = 0; ; i++)
             {
-                await DisposeQuietlyAsync(reply);
-                LogHop(attempt, attempts[i + 1], ex);
-                earlier = ex;
+                var attempt = attempts[i];
+                IAsyncEnumerator<IMessage>? reply = null;
+                try
+                {
+                    var stream = attempt.Agent is IStreamingAgent streamingAgent
+                        ? await streamingAgent.GenerateReplyStreamingAsync(
+                            context.Messages,
+                            attempt.Options,
+                            reads.Token
+                        )
+                        : ToAsyncEnumerableInternal(
+                            await attempt.Agent.GenerateReplyAsync(context.Messages, attempt.Options, reads.Token),
+                            reads.Token
+                        );
+
+                    // The request goes out on this first read, so this is where an outage shows.
+                    reply = stream.GetAsyncEnumerator(reads.Token);
+                    var started = await reply.MoveNextAsync();
+                    return new StartedReply(reply, started, attempt.FallbackModelId, reads);
+                }
+                catch (Exception ex) when (CanFallBack(ex, i, attempts.Count, cancellationToken))
+                {
+                    await DisposeQuietlyAsync(reply);
+
+                    // The caller may have stopped the turn while the failed attempt was being cleaned up.
+                    cancellationToken.ThrowIfCancellationRequested();
+                    LogHop(attempt, attempts[i + 1], ex);
+                    earlier = ex;
+                }
+                catch (Exception ex) when (ReportsEarlierFailure(attempt, earlier, ex, cancellationToken))
+                {
+                    await DisposeQuietlyAsync(reply);
+                    ExceptionDispatchInfo.Capture(earlier!).Throw();
+                    throw;
+                }
+                catch
+                {
+                    await DisposeQuietlyAsync(reply);
+                    throw;
+                }
             }
-            catch (Exception ex) when (ReportsEarlierFailure(attempt, earlier, ex, cancellationToken))
-            {
-                await DisposeQuietlyAsync(reply);
-                ExceptionDispatchInfo.Capture(earlier!).Throw();
-                throw;
-            }
-            catch
-            {
-                await DisposeQuietlyAsync(reply);
-                throw;
-            }
+        }
+        catch
+        {
+            reads.Dispose();
+            throw;
         }
     }
 
@@ -323,7 +339,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
         }
 
         var usage = usageMessage.Usage;
-        if (!string.IsNullOrEmpty(usage.GetExtraProperty<string>(UsageModelProperty)))
+        if (!string.IsNullOrEmpty(usage.GetExtraProperty<string>(Usage.ModelExtraProperty)))
         {
             return message;
         }
@@ -331,28 +347,8 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
         var extras = usage.ExtraProperties ?? ImmutableDictionary<string, object?>.Empty;
         return usageMessage with
         {
-            Usage = usage with { ExtraProperties = extras.SetItem(UsageModelProperty, ranModel) },
+            Usage = usage with { ExtraProperties = extras.SetItem(Usage.ModelExtraProperty, ranModel) },
         };
-    }
-
-    private static async IAsyncEnumerable<IMessage> ContinueReply(
-        IAsyncEnumerator<IMessage> reply,
-        bool started,
-        string? fallbackModelId
-    )
-    {
-        await using (reply)
-        {
-            if (!started)
-            {
-                yield break;
-            }
-
-            do
-            {
-                yield return fallbackModelId is null ? reply.Current : CreditUsage(reply.Current, fallbackModelId);
-            } while (await reply.MoveNextAsync());
-        }
     }
 
     private static async ValueTask DisposeQuietlyAsync(IAsyncEnumerator<IMessage>? reply)
@@ -388,6 +384,98 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
         }
     }
 
+    /// <summary>
+    ///     A provider reply whose first message has already been read. It owns the provider's enumerator and
+    ///     the read token: disposing its enumerator releases both, whether or not anything was read, and the
+    ///     enumeration's own token cancels the provider's reads. It can be enumerated once.
+    /// </summary>
+    private sealed class StartedReply(
+        IAsyncEnumerator<IMessage> reply,
+        bool started,
+        string? fallbackModelId,
+        CancellationTokenSource reads
+    ) : IAsyncEnumerable<IMessage>
+    {
+        private int _enumerated;
+
+        public IAsyncEnumerator<IMessage> GetAsyncEnumerator(CancellationToken cancellationToken = default) =>
+            Interlocked.Exchange(ref _enumerated, 1) == 0
+                ? new Enumerator(reply, started, fallbackModelId, reads, cancellationToken)
+                : throw new InvalidOperationException("A model fallback reply can be enumerated only once.");
+
+        private sealed class Enumerator : IAsyncEnumerator<IMessage>
+        {
+            private readonly string? _fallbackModelId;
+            private readonly CancellationTokenRegistration _linked;
+            private readonly CancellationTokenSource _reads;
+            private readonly IAsyncEnumerator<IMessage> _reply;
+            private bool _disposed;
+            private bool _finished;
+            private bool _firstPending;
+
+            public Enumerator(
+                IAsyncEnumerator<IMessage> reply,
+                bool started,
+                string? fallbackModelId,
+                CancellationTokenSource reads,
+                CancellationToken enumerationToken
+            )
+            {
+                _reply = reply;
+                _firstPending = started;
+                _finished = !started;
+                _fallbackModelId = fallbackModelId;
+                _reads = reads;
+                _linked = enumerationToken.CanBeCanceled
+                    ? enumerationToken.Register(static state => ((CancellationTokenSource)state!).Cancel(), reads)
+                    : default;
+            }
+
+            public IMessage Current { get; private set; } = null!;
+
+            public async ValueTask<bool> MoveNextAsync()
+            {
+                if (_firstPending)
+                {
+                    _firstPending = false;
+                    Current = Credit(_reply.Current);
+                    return true;
+                }
+
+                if (_finished || !await _reply.MoveNextAsync())
+                {
+                    _finished = true;
+                    return false;
+                }
+
+                Current = Credit(_reply.Current);
+                return true;
+            }
+
+            public async ValueTask DisposeAsync()
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                _disposed = true;
+                await _linked.DisposeAsync();
+                try
+                {
+                    await _reply.DisposeAsync();
+                }
+                finally
+                {
+                    _reads.Dispose();
+                }
+            }
+
+            private IMessage Credit(IMessage message) =>
+                _fallbackModelId is null ? message : CreditUsage(message, _fallbackModelId);
+        }
+    }
+
     /// <param name="Agent">The agent to call.</param>
     /// <param name="Options">The request it gets.</param>
     /// <param name="ModelId">The model it runs, for the hop log.</param>
@@ -400,50 +488,4 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
         string? FallbackModelId,
         bool ReportsEarlierFailure = false
     );
-}
-
-/// <summary>
-///     A provider agent with model fallback: the primary agent first, then each fallback, through
-///     <see cref="ModelFallbackMiddleware" />. Disposing it disposes every agent it holds, so a host that
-///     owns its provider agent releases the fallbacks with it.
-/// </summary>
-public sealed class ModelFallbackAgent : MiddlewareWrappingStreamingAgent, IAsyncDisposable
-{
-    private readonly IReadOnlyList<object> _owned;
-
-    /// <param name="primary">The agent tried first, with the request as given.</param>
-    /// <param name="fallbacks">The models to try after it, in order.</param>
-    /// <param name="logger">Receives one warning per fallback hop.</param>
-    /// <param name="shouldFallBack">Which failures fall back; defaults to <see cref="ModelFallbackMiddleware.IsProviderOutage" />.</param>
-    public ModelFallbackAgent(
-        IStreamingAgent primary,
-        IReadOnlyList<FallbackTarget> fallbacks,
-        ILogger? logger = null,
-        Func<Exception, bool>? shouldFallBack = null
-    )
-        : base(primary, new ModelFallbackMiddleware(fallbacks, logger, shouldFallBack))
-    {
-        _owned = [primary, .. fallbacks.Select(f => (object)f.Agent)];
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        var owned = new HashSet<object>(ReferenceEqualityComparer.Instance);
-        foreach (var agent in _owned)
-        {
-            if (!owned.Add(agent))
-            {
-                continue;
-            }
-
-            if (agent is IAsyncDisposable asyncDisposable)
-            {
-                await asyncDisposable.DisposeAsync();
-            }
-            else if (agent is IDisposable disposable)
-            {
-                disposable.Dispose();
-            }
-        }
-    }
 }

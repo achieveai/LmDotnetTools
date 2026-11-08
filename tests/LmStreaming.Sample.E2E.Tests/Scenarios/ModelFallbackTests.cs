@@ -69,6 +69,15 @@ public sealed class ModelFallbackTests
 
         frames.ConcatText().Should().NotContain("fallback model");
         responder.RemainingTurns["fallback"].Should().Be(1, "fallback is opt-in; nothing else was asked");
+        builder.PrimaryRequests.Should().BeGreaterThan(0, "the conversation's own provider was asked and was down");
+        frames
+            .OfMessageType("run_completed")
+            .Should()
+            .ContainSingle()
+            .Which.GetProperty("IsError")
+            .GetBoolean()
+            .Should()
+            .BeTrue("the outage ended the turn with an error");
     }
 
     /// <summary>Polls the conversation usage aggregate (persisted after the turn) for its model ids.</summary>
