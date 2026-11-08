@@ -500,16 +500,18 @@ internal static class ReviewRunner
             ? snapshot?[pr] ?? new JsonObject()
             : snapshot?[pr]
                 ?? throw new InvalidOperationException("PR is absent from the saved pending snapshot; refresh first.");
-        if (
-            !options.Has("cleanup-only")
-            && options.Get("head") is { } expectedHead
-            && current["HeadSha"]?.GetValue<string>() != expectedHead
-        )
-            throw new InvalidOperationException("Selected PR head changed; no action allowed.");
         var successful = await ReadAsync(key);
         var attempt = await ReadAsync(attemptKey);
         var resume = options.Has("resume");
         var cleanupOnly = options.Has("cleanup-only");
+        // A finished review is posted, verified and archived on the head it reviewed, even after a new push.
+        var finishedResume = resume && !cleanupOnly && ReviewFinished(attempt);
+        if (
+            !cleanupOnly
+            && options.Get("head") is { } expectedHead
+            && (finishedResume ? attempt!["headSha"] : current["HeadSha"])?.GetValue<string>() != expectedHead
+        )
+            throw new InvalidOperationException("Selected PR head changed; no action allowed.");
         if (resume && !cleanupOnly && attempt?["reasoningEffort"]?.GetValue<string>() != reasoningEffort)
             throw new InvalidOperationException(
                 "Requested reasoning effort differs from the retained attempt; no resume allowed."
@@ -811,7 +813,7 @@ internal static class ReviewRunner
                 || attempt["providerId"]?.GetValue<string>() != provider
                 || attempt["threadId"]?.GetValue<string>() != thread
                 || thread is null
-                || attempt["headSha"]?.GetValue<string>() != current["HeadSha"]?.GetValue<string>()
+                || (!finishedResume && attempt["headSha"]?.GetValue<string>() != current["HeadSha"]?.GetValue<string>())
                 || current["Lifecycle"]?.GetValue<string>() != "Open"
                 || current["IsDraft"]?.GetValue<bool>() != false
                 || attempt["reviewInputId"]?.GetValue<string>() is not { Length: > 0 }
@@ -869,7 +871,11 @@ internal static class ReviewRunner
             ["repo"] = repo.RepoName,
             ["pr"] = pr,
             ["slot"] = slot,
-            ["head"] = cleanupOnly ? attempt!["headSha"]!.GetValue<string>() : current["HeadSha"]!.GetValue<string>(),
+            ["head"] =
+                cleanupOnly || finishedResume
+                    ? attempt!["headSha"]!.GetValue<string>()
+                    : current["HeadSha"]!.GetValue<string>(),
+            ["reviewFinished"] = finishedResume,
         };
         if (!options.Has("execute"))
         {
@@ -1136,7 +1142,15 @@ internal static class ReviewRunner
                 Read latest discussions, post appropriate feedback inline where possible, reply to existing finding threads instead of duplicating them, and post a summary (including when no findings).
                 {ReviewQualityRules}
                 {publishing}
-                Immediately before publication, verify active/non-draft status and unchanged source/merge; stop if stale. Never bypass tool, auth, publication or network denials.
+                Immediately before publication, verify the PR is still active and non-draft; stop if it was closed, abandoned or made a draft. If the target branch moved or the PR got a new push since setup, still post your findings on the head you reviewed, {args[
+                    "head"
+                ]}: on GitHub use it as commit_id; on Azure DevOps anchor inline threads to the iteration whose source commit is {args[
+                    "head"
+                ]} (pullRequestThreadContext.iterationContext). Then add one summary line naming the reviewed commit: "Reviewed commit {args[
+                    "head"
+                ]!.GetValue<string>()[
+                    ..8
+                ]}; newer pushes get their own review." Never bypass tool, auth, publication or network denials.
                 Save {directory}/publication_receipts.json with this schema:
                 {publicationSchema}
                 Record every posted comment/reply. Record this round's summary as kind summary, even when posted as a reply in an existing summary thread. Do not edit source, commit, push, merge, or complete the PR. Coordinator retains artifacts afterward.
@@ -1153,6 +1167,8 @@ internal static class ReviewRunner
                 if (receipt["confirmationInputId"] is null)
                     receipt["stage"] = "review-completed";
             }
+            // From here the review is finished: a moved target branch or a new push no longer stops it.
+            args["reviewFinished"] = true;
             receipt["reviewCompletedAt"] ??= JsonValue.Create(DateTimeOffset.UtcNow);
             await SaveAsync();
             if (resume && receipt["confirmationInputId"]?.GetValue<string>() is { Length: > 0 } confirmation)
@@ -1457,6 +1473,18 @@ internal static class ReviewRunner
         }
         return false;
     }
+
+    /// <summary>
+    ///     True for a retained attempt whose review turn is over, so only its confirmation, verify and archive remain.
+    ///     Those stay on the head and merge it reviewed: a target branch that moved or a new push does not stop them,
+    ///     and a new head is reviewed afresh afterwards.
+    /// </summary>
+    internal static bool ReviewFinished(JsonNode? attempt) =>
+        attempt?["stage"]?.GetValue<string>()
+            is "review-completed"
+                or "confirmation-running"
+                or "confirmation-completed"
+                or "verify-pending";
 
     internal static bool CanRetryPreparation(JsonNode attempt, string session) =>
         attempt["stage"]?.GetValue<string>() == "prepare-failed-before-reset"
