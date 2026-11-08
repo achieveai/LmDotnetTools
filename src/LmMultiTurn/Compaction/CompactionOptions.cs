@@ -173,7 +173,10 @@ public sealed record CompactionOptions
     /// <summary>Whole-envelope cap the validator enforces (V6).</summary>
     public long CheckpointTokenCap { get; init; } = 6_000;
 
-    /// <summary>Generations after a checkpoint during which no economic compaction runs.</summary>
+    /// <summary>
+    ///     Generations after a checkpoint during which no economic compaction runs; also the longest an automatic cut
+    ///     refused for too little gain waits before it is planned again.
+    /// </summary>
     public int CooldownGenerations { get; init; } = 3;
 
     /// <summary>New tail tokens required after a checkpoint before another economic compaction.</summary>

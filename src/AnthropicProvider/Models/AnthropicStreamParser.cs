@@ -692,12 +692,6 @@ public class AnthropicStreamParser
         // If we have a tool_use block, generate an update message
         if (block.Type == "tool_use" && !string.IsNullOrEmpty(block.Id))
         {
-            // Try to update the block's Input when JSON is complete
-            if (block.JsonAccumulator.IsComplete && block.Input == null)
-            {
-                block.Input = block.JsonAccumulator.GetParsedInput();
-            }
-
             // Create a tool call update with the current partial JSON
             var toolUpdate = new ToolsCallUpdateMessage
             {
@@ -722,18 +716,8 @@ public class AnthropicStreamParser
             return [toolUpdate];
         }
 
-        // For server_tool_use blocks, accumulate input but don't emit updates
-        // (the final ToolCallMessage with input will be emitted at content_block_stop)
-        if (block.Type == "server_tool_use")
-        {
-            if (block.JsonAccumulator.IsComplete && block.Input == null)
-            {
-                block.Input = block.JsonAccumulator.GetParsedInput();
-            }
-
-            return [];
-        }
-
+        // server_tool_use blocks only accumulate input; the final ToolCallMessage with the
+        // parsed input is emitted at content_block_stop.
         return [];
     }
 
@@ -1453,27 +1437,33 @@ public class AnthropicStreamParser
     {
         private readonly StringBuilder _jsonBuffer = new();
         private JsonNode? _parsedInput;
+        private int _parsedLength;
 
-        public bool IsComplete => _parsedInput != null;
+        public bool IsComplete => GetParsedInput() != null;
 
         public void AddDelta(string partialJson)
         {
+            // Parsing here would re-parse the whole buffer on every delta and throw on each
+            // unfinished prefix (#928). The input is parsed on first read, at content_block_stop.
             _ = _jsonBuffer.Append(partialJson);
-
-            try
-            {
-                // Try to parse the accumulated JSON with each new delta
-                _parsedInput = JsonNode.Parse(_jsonBuffer.ToString());
-            }
-            catch (JsonException)
-            {
-                // Parsing will fail until we have complete, valid JSON
-                // That's expected and we continue accumulation
-            }
         }
 
         public JsonNode? GetParsedInput()
         {
+            if (_parsedLength != _jsonBuffer.Length)
+            {
+                _parsedLength = _jsonBuffer.Length;
+                try
+                {
+                    _parsedInput = JsonNode.Parse(_jsonBuffer.ToString());
+                }
+                catch (JsonException)
+                {
+                    // The stream ended before the input was complete, valid JSON
+                    _parsedInput = null;
+                }
+            }
+
             return _parsedInput;
         }
 
