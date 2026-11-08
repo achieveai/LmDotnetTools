@@ -1278,12 +1278,14 @@ internal class RetryScenarioResponseProvider : IResponseProvider
 {
     private readonly int _failureCount;
     private readonly HttpStatusCode _failureStatus;
+    private readonly string? _retryAfter;
     private int _requestCount;
 
-    public RetryScenarioResponseProvider(int failureCount, HttpStatusCode failureStatus)
+    public RetryScenarioResponseProvider(int failureCount, HttpStatusCode failureStatus, string? retryAfter = null)
     {
         _failureCount = failureCount;
         _failureStatus = failureStatus;
+        _retryAfter = retryAfter;
     }
 
     public bool CanHandle(HttpRequestMessage request, int requestIndex)
@@ -1302,7 +1304,13 @@ internal class RetryScenarioResponseProvider : IResponseProvider
         if (currentCount <= _failureCount)
         {
             // Return failure response
-            return Task.FromResult(new HttpResponseMessage(_failureStatus));
+            var failure = new HttpResponseMessage(_failureStatus);
+            if (_retryAfter is not null)
+            {
+                _ = failure.Headers.TryAddWithoutValidation("Retry-After", _retryAfter);
+            }
+
+            return Task.FromResult(failure);
         }
 
         // Return success response after failures
@@ -2307,6 +2315,27 @@ public class MockHttpHandlerBuilder
     )
     {
         var provider = new RetryScenarioResponseProvider(failureCount, failureStatus);
+        _middlewares.Add(new ResponseProviderMiddleware(provider));
+        return this;
+    }
+
+    /// <summary>
+    ///     Simulates a server that rejects the first <paramref name="failureCount" /> requests with
+    ///     <paramref name="failureStatus" /> and a <c>Retry-After</c> header, then succeeds.
+    /// </summary>
+    /// <param name="failureCount">How many requests fail before the first success.</param>
+    /// <param name="retryAfter">
+    ///     The raw header value: delta seconds (<c>"7"</c>) or an HTTP-date (<c>"Wed, 21 Oct 2026 07:28:00 GMT"</c>).
+    /// </param>
+    /// <param name="failureStatus">The failure status. Default: 429 Too Many Requests.</param>
+    public MockHttpHandlerBuilder RetryScenarioWithRetryAfter(
+        int failureCount,
+        string retryAfter,
+        HttpStatusCode failureStatus = HttpStatusCode.TooManyRequests
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(retryAfter);
+        var provider = new RetryScenarioResponseProvider(failureCount, failureStatus, retryAfter);
         _middlewares.Add(new ResponseProviderMiddleware(provider));
         return this;
     }

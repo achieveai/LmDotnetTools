@@ -202,9 +202,18 @@ public sealed class CopilotResponsesWebSocketClient : IOpenAiResponsesClient, IA
                     delay.TotalMilliseconds,
                     ex.Message
                 );
+                HttpRetryScope.Notify(
+                    new HttpRetryNotice(
+                        attempt,
+                        _retryOptions.MaxRetries + 1,
+                        (ex as HttpRequestException)?.StatusCode,
+                        delay,
+                        FromRetryAfter: false
+                    )
+                );
 
                 await DisposeSocketSafelyAsync(socket).ConfigureAwait(false);
-                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(delay, _retryOptions.TimeProvider, cancellationToken).ConfigureAwait(false);
             }
             catch
             {

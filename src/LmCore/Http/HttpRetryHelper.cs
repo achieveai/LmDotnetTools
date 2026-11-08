@@ -45,16 +45,7 @@ public static class HttpRetryHelper
             catch (HttpRequestException ex) when (attempt < options.MaxRetries && IsRetryableError(ex, options))
             {
                 attempt++;
-                var delay = options.CalculateDelay(attempt);
-                logger.LogWarning(
-                    "Request failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms: {Error}",
-                    attempt,
-                    options.MaxRetries + 1,
-                    delay.TotalMilliseconds,
-                    ex.Message
-                );
-
-                await Task.Delay(delay, cancellationToken);
+                await WaitBeforeRetryAsync(ex, attempt, options, logger, cancellationToken);
             }
         }
     }
@@ -107,6 +98,9 @@ public static class HttpRetryHelper
         var attempt = 0;
         while (true)
         {
+            // Set when the server asked for a longer wait than options.MaxRetryAfter allows. The failure
+            // thrown below must then not be retried by the transport catch at the bottom either.
+            var retryRefused = false;
             try
             {
                 var response = await httpOperation();
@@ -118,21 +112,45 @@ public static class HttpRetryHelper
 
                 // Check if this is a retryable status code under THESE options (the global 429/5xx set,
                 // widened by any opt-in AdditionalRetryableStatusCodes this caller configured).
+                // The server's own Retry-After wins over backoff, up to options.MaxRetryAfter.
+                TimeSpan? retryAfter = null;
                 if (attempt < options.MaxRetries && options.IsRetryableStatusCode(response.StatusCode))
                 {
-                    attempt++;
-                    var delay = options.CalculateDelay(attempt);
-                    logger.LogWarning(
-                        "HTTP request failed with status {StatusCode} (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms",
-                        response.StatusCode,
-                        attempt,
-                        options.MaxRetries + 1,
-                        delay.TotalMilliseconds
-                    );
+                    retryAfter = RetryAfterHeader.Read(response, options.TimeProvider);
+                    retryRefused = retryAfter > options.MaxRetryAfter;
+                    if (!retryRefused)
+                    {
+                        attempt++;
+                        var delay = retryAfter ?? options.CalculateDelay(attempt);
+                        logger.LogWarning(
+                            "HTTP request failed with status {StatusCode} (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms (Retry-After honored: {FromRetryAfter})",
+                            response.StatusCode,
+                            attempt,
+                            options.MaxRetries + 1,
+                            delay.TotalMilliseconds,
+                            retryAfter is not null
+                        );
+                        HttpRetryScope.Notify(
+                            new HttpRetryNotice(
+                                attempt,
+                                options.MaxRetries + 1,
+                                response.StatusCode,
+                                delay,
+                                retryAfter is not null
+                            )
+                        );
 
-                    response.Dispose(); // Clean up the failed response
-                    await Task.Delay(delay, cancellationToken);
-                    continue;
+                        response.Dispose(); // Clean up the failed response
+                        await Task.Delay(delay, options.TimeProvider, cancellationToken);
+                        continue;
+                    }
+
+                    logger.LogWarning(
+                        "HTTP request failed with status {StatusCode}; Retry-After {RetryAfter}ms exceeds the {MaxRetryAfter}ms cap, failing without retry",
+                        response.StatusCode,
+                        retryAfter!.Value.TotalMilliseconds,
+                        options.MaxRetryAfter.TotalMilliseconds
+                    );
                 }
 
                 // Not retryable or max retries exceeded. Capture the diagnostics BEFORE disposing, read
@@ -161,6 +179,12 @@ public static class HttpRetryHelper
                 }
 
                 var errorMessage = $"HTTP request failed with status {statusCode} ({reasonPhrase})";
+                if (retryRefused)
+                {
+                    errorMessage +=
+                        $". Retry-After of {retryAfter!.Value.TotalSeconds:0.###}s exceeds the {options.MaxRetryAfter.TotalSeconds:0.###}s cap";
+                }
+
                 if (!string.IsNullOrWhiteSpace(responseBody))
                 {
                     errorMessage += $". Response body: {responseBody}";
@@ -168,21 +192,38 @@ public static class HttpRetryHelper
 
                 throw new HttpRequestException(errorMessage, null, statusCode);
             }
-            catch (HttpRequestException ex) when (attempt < options.MaxRetries && IsRetryableError(ex, options))
+            catch (HttpRequestException ex)
+                when (!retryRefused && attempt < options.MaxRetries && IsRetryableError(ex, options))
             {
                 attempt++;
-                var delay = options.CalculateDelay(attempt);
-                logger.LogWarning(
-                    "Request failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms: {Error}",
-                    attempt,
-                    options.MaxRetries + 1,
-                    delay.TotalMilliseconds,
-                    ex.Message
-                );
-
-                await Task.Delay(delay, cancellationToken);
+                await WaitBeforeRetryAsync(ex, attempt, options, logger, cancellationToken);
             }
         }
+    }
+
+    /// <summary>
+    ///     Backoff wait for a failure with no response to read a Retry-After from: a transport failure,
+    ///     or an exception the operation threw itself.
+    /// </summary>
+    private static async Task WaitBeforeRetryAsync(
+        HttpRequestException ex,
+        int attempt,
+        RetryOptions options,
+        ILogger logger,
+        CancellationToken cancellationToken
+    )
+    {
+        var delay = options.CalculateDelay(attempt);
+        logger.LogWarning(
+            "Request failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms: {Error}",
+            attempt,
+            options.MaxRetries + 1,
+            delay.TotalMilliseconds,
+            ex.Message
+        );
+        HttpRetryScope.Notify(new HttpRetryNotice(attempt, options.MaxRetries + 1, ex.StatusCode, delay, false));
+
+        await Task.Delay(delay, options.TimeProvider, cancellationToken);
     }
 
     /// <summary>

@@ -13,6 +13,7 @@ import type {
   ConversationTodoMessage,
   ContextPressureMessage,
   CompactionStatusMessage,
+  ProviderRetryMessage,
 } from '@/types';
 import {
   MessageType,
@@ -38,6 +39,7 @@ import {
   isConversationTodoMessage,
   isContextPressureMessage,
   isCompactionStatusMessage,
+  isProviderRetryMessage,
   normalizeReasoningVisibility,
 } from '@/types';
 import { sendChatMessage } from '@/api/chatClient';
@@ -254,6 +256,13 @@ export function useChat(options: UseChatOptions = {}) {
    * state and watches this ref. Progress metadata, never transcript content — no display item.
    */
   const compactionStatus = ref<CompactionStatusMessage | null>(null);
+
+  /**
+   * The retry the server is waiting out right now, from the newest `provider_retry` frame (#930), or
+   * null. Cleared by the next message of any other kind: once anything else arrives the wait is over
+   * (the retry succeeded, or the run ended). Status metadata, never transcript content — no display item.
+   */
+  const providerRetry = ref<ProviderRetryMessage | null>(null);
   /**
    * Bumped each time a WebSocket is installed (first open, reconnect, resync). Transient frames sent
    * while no socket was listening are gone, so consumers of such frames re-read state on a change.
@@ -1076,6 +1085,16 @@ export function useChat(options: UseChatOptions = {}) {
       compactionStatus.value = msg;
       return;
     }
+
+    // Live provider retry frame (#930). SET on a retry for the open conversation; anything else that
+    // arrives afterwards means the wait is over, so it clears the line.
+    if (isProviderRetryMessage(msg)) {
+      if (!msg.threadId || !threadId.value || msg.threadId === threadId.value) {
+        providerRetry.value = msg;
+      }
+      return;
+    }
+    providerRetry.value = null;
 
     // Handle lifecycle messages
     if (isRunAssignmentMessage(msg)) {
@@ -2097,6 +2116,7 @@ export function useChat(options: UseChatOptions = {}) {
     cumulativeCost.value = { estimatedCostMicros: null, providerReportedCostMicros: null, currency: 'USD' };
     contextPressure.value = null;
     compactionStatus.value = null;
+    providerRetry.value = null;
     error.value = null;
     threadId.value = null;
     currentRunId.value = null;
@@ -2360,6 +2380,7 @@ export function useChat(options: UseChatOptions = {}) {
     conversationTodo,
     contextPressure,
     compactionStatus,
+    providerRetry,
     connectionEpoch,
     transport,
     threadId,

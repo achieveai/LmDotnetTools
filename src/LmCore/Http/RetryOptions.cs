@@ -50,6 +50,20 @@ public record RetryOptions
     public double BackoffMultiplier { get; init; } = 2.0;
 
     /// <summary>
+    ///     Longest server-requested wait (<c>Retry-After</c>) this client will honor.
+    ///     A response asking for longer is not retried: it fails at once with its status. Retrying early
+    ///     would only earn a second rejection, and failing fast lets a caller switch model or tell the
+    ///     user. Default: 60 seconds.
+    /// </summary>
+    public TimeSpan MaxRetryAfter { get; init; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    ///     Clock used to wait between attempts and to read an absolute <c>Retry-After</c> date.
+    ///     Default: <see cref="TimeProvider.System" />. Tests substitute a fake clock.
+    /// </summary>
+    public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
+
+    /// <summary>
     ///     Status codes this configuration treats as retryable IN ADDITION to the global set
     ///     (429 and 5xx, see <see cref="HttpRetryHelper.IsRetryableStatusCode(HttpStatusCode)" />).
     ///     Empty by default, so the global classification is unchanged for every caller that does not

@@ -42,6 +42,8 @@ export const MessageType = {
   CompactionCheckpointV2: 'compaction_checkpoint@2',
   // Live-only compaction progress frame (manual and automatic): requested → running → applied | refused | failed
   CompactionStatus: 'compaction_status',
+  // Live-only provider retry frame: the model call failed (429/5xx/transport) and is being retried (#930)
+  ProviderRetry: 'provider_retry',
 } as const;
 
 export type MessageTypeValue = (typeof MessageType)[keyof typeof MessageType];
@@ -618,6 +620,27 @@ export interface CompactionStatusMessage extends IMessage {
 }
 
 /**
+ * ProviderRetryMessage matching C# ProviderRetryMessage.cs (#930 P1 item 1): the model call failed with
+ * a retryable status (a rate limit, an overload) or a transport error, and the server is waiting before
+ * it tries again. Transient: never persisted — a retry is over by the time anyone reloads. Content-free.
+ */
+export interface ProviderRetryMessage extends IMessage {
+  $type: typeof MessageType.ProviderRetry;
+  /** The thread whose model call is retried. Optional on the wire. */
+  threadId?: string | null;
+  /** The retry number, 1-based: retry 1 is the second attempt. */
+  attempt: number;
+  /** Total attempts allowed, the first request included. */
+  maxAttempts: number;
+  /** The failing HTTP status; absent for a transport failure. */
+  statusCode?: number | null;
+  /** How long the server waits before the retry, in milliseconds. */
+  delayMs: number;
+  /** True when the wait is the provider's own Retry-After. */
+  fromRetryAfter: boolean;
+}
+
+/**
  * Union type for all message types
  */
 export type Message =
@@ -644,7 +667,8 @@ export type Message =
   | ConversationTodoMessage
   | ContextPressureMessage
   | CompactionCheckpointMessage
-  | CompactionStatusMessage;
+  | CompactionStatusMessage
+  | ProviderRetryMessage;
 
 // Type guard functions
 
@@ -755,6 +779,10 @@ export function isConversationTodoMessage(msg: IMessage): msg is ConversationTod
 
 export function isContextPressureMessage(msg: IMessage): msg is ContextPressureMessage {
   return msg.$type === MessageType.ContextPressure;
+}
+
+export function isProviderRetryMessage(msg: IMessage): msg is ProviderRetryMessage {
+  return msg.$type === MessageType.ProviderRetry;
 }
 
 export function isCompactionStatusMessage(msg: IMessage): msg is CompactionStatusMessage {
