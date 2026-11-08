@@ -44,6 +44,7 @@ import {
 import { SUBMIT_CLIENT_TOOL_RESULT } from '@/composables/useClientToolSubmit';
 import { IS_QUESTION_ANSWERED } from '@/composables/useToolResult';
 import { isQuestionAwaitingAnswer } from '@/utils/pendingQuestions';
+import { formatProviderRetry } from '@/utils/providerRetry';
 import { WORKSPACE_FILE_LINKS, type WorkspaceFileLinksContext } from '@/utils/workspaceLinks';
 import { MINI_WEB_APP_LINKS, type MiniWebAppLinksContext } from '@/utils/miniWebAppLinks';
 import { resolveMiniWebApp } from '@/api/sandboxAppsApi';
@@ -158,6 +159,7 @@ const {
   conversationTodo,
   contextPressure,
   compactionStatus,
+  providerRetry,
   connectionEpoch,
   pendingMessages,
   pendingAuthRequests,
@@ -1706,6 +1708,10 @@ onBeforeUnmount(() => {
             {{ error }}
           </div>
 
+          <div v-if="providerRetry" class="retry-banner" role="status" data-testid="provider-retry-banner">
+            {{ formatProviderRetry(providerRetry) }}
+          </div>
+
           <div v-if="forkError" class="error-banner" role="alert" data-testid="fork-error">
             {{ forkError }}
           </div>
@@ -2158,12 +2164,23 @@ onBeforeUnmount(() => {
   border-top: 1px solid #f5c6cb;
 }
 
+/* Status lines under the transcript share size; each keeps its own colours. */
+.retry-banner,
 .usage-banner {
   padding: 8px 16px;
+  font-size: 13px;
+}
+
+.retry-banner {
+  background: #fff3cd;
+  color: #664d03;
+  border-top: 1px solid #ffe69c;
+}
+
+.usage-banner {
   background: #d4edda;
   color: #155724;
   border-top: 1px solid #c3e6cb;
-  font-size: 13px;
 }
 
 .not-found-view {

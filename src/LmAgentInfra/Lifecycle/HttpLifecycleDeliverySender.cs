@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Webhooks;
+using AchieveAi.LmDotnetTools.LmCore.Http;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Lifecycle;
 
@@ -191,32 +192,15 @@ public sealed class HttpLifecycleDeliverySender : ILifecycleDeliverySender, IDis
 
         if (response.StatusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests || status >= 500)
         {
-            return LifecycleDeliveryResult.Retryable("http_status", status, ReadRetryAfter(response));
+            return LifecycleDeliveryResult.Retryable(
+                "http_status",
+                status,
+                RetryAfterHeader.Read(response, _timeProvider)
+            );
         }
 
         // Everything else — including a redirect this client deliberately does not chase — is the
         // subscriber rejecting the request itself. Repeating it would only repeat the rejection.
         return LifecycleDeliveryResult.Permanent("http_status", status);
-    }
-
-    private TimeSpan? ReadRetryAfter(HttpResponseMessage response)
-    {
-        if (response.Headers.RetryAfter is not { } retryAfter)
-        {
-            return null;
-        }
-
-        if (retryAfter.Delta is { } delta)
-        {
-            return delta < TimeSpan.Zero ? TimeSpan.Zero : delta;
-        }
-
-        if (retryAfter.Date is { } date)
-        {
-            var wait = date - _timeProvider.GetUtcNow();
-            return wait < TimeSpan.Zero ? TimeSpan.Zero : wait;
-        }
-
-        return null;
     }
 }
