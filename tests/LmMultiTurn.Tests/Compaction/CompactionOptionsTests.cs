@@ -185,6 +185,48 @@ public class CompactionOptionsTests
     }
 
     [Theory]
+    [InlineData(4_000L)]
+    [InlineData(20_000L)]
+    [InlineData(169_600L)]
+    [InlineData(null)]
+    public void EnvelopeHardCap_OfOne_MakesV9EnforceTheTarget_AtEveryWindow(long? usable)
+    {
+        // The documented way back to the pre-#812 V9 limit. A ceiling of 6,000 is not it: below 30k usable the hard cap
+        // would still be 20%, above the 15% target.
+        var o = new CompactionOptions { CheckpointTokenHardCap = 1 };
+
+        o.EffectiveCheckpointTokenHardCap(usable).Should().Be(o.EffectiveCheckpointTokenCap(usable));
+    }
+
+    [Fact]
+    public void EnvelopeHardCap_Is20PercentOfUsable_ScaledLikeTheTarget_AndNeverBelowIt()
+    {
+        // #812: the target stays best effort; V9 enforces the hard cap. Reviewd's 169k usable window gets a 6k target and
+        // a 33.9k hard cap, since by default nothing caps the hard cap absolutely.
+        var o = new CompactionOptions();
+        o.CheckpointTokenHardCapRatio.Should().Be(0.20);
+        o.CheckpointTokenHardCap.Should().BeNull();
+
+        o.EffectiveCheckpointTokenCap(169_600).Should().Be(6_000);
+        o.EffectiveCheckpointTokenHardCap(169_600).Should().Be(33_920);
+        o.EffectiveCheckpointTokenHardCap(27_904).Should().Be(5_580);
+        o.EffectiveCheckpointTokenHardCap(2_300).Should().Be(1_000, "the floor is the target's floor");
+        o.EffectiveCheckpointTokenHardCap(null).Should().Be(8_000, "an unknown window scales the target by the ratios");
+
+        var ceiling = o with { CheckpointTokenHardCap = 9_000 };
+        ceiling.EffectiveCheckpointTokenHardCap(169_600).Should().Be(9_000);
+        ceiling.EffectiveCheckpointTokenHardCap(null).Should().Be(9_000);
+        (o with { CheckpointTokenHardCap = 2_000 })
+            .EffectiveCheckpointTokenHardCap(169_600)
+            .Should()
+            .Be(6_000, "the hard cap never falls below the target");
+        (o with { CheckpointTokenHardCapRatio = 0.10 })
+            .EffectiveCheckpointTokenHardCap(27_904)
+            .Should()
+            .Be(4_185, "a hard-cap ratio below the target's ratio means the target");
+    }
+
+    [Theory]
     [InlineData(nameof(CompactionOptions.ToolResultViewCapRatio))]
     [InlineData(nameof(CompactionOptions.ToolResultViewCapMinChars))]
     [InlineData(nameof(CompactionOptions.ToolResultViewCapMaxChars))]
@@ -192,6 +234,8 @@ public class CompactionOptionsTests
     [InlineData(nameof(CompactionOptions.MinTailRatio))]
     [InlineData(nameof(CompactionOptions.MaxTailRatio))]
     [InlineData(nameof(CompactionOptions.CheckpointTokenCapRatio))]
+    [InlineData(nameof(CompactionOptions.CheckpointTokenHardCapRatio))]
+    [InlineData(nameof(CompactionOptions.CheckpointTokenHardCap))]
     [InlineData(nameof(CompactionOptions.MinCompactionGainRatio))]
     [InlineData(nameof(CompactionOptions.MaxCompactionsPerThreadWindow))]
     [InlineData(nameof(CompactionOptions.ThreadCompactionWindow))]
@@ -201,6 +245,7 @@ public class CompactionOptionsTests
     [InlineData(nameof(CompactionOptions.SummaryMaxOutputTokens))]
     [InlineData(nameof(CompactionOptions.SummaryRowCharCap))]
     [InlineData(nameof(CompactionOptions.SummaryPromptMaxChars))]
+    [InlineData(nameof(CompactionOptions.CheckpointListFloor))]
     public void Validate_NamesTheOutOfRangeFitKnob(string option)
     {
         var invalid = option switch
@@ -238,6 +283,12 @@ public class CompactionOptionsTests
             nameof(CompactionOptions.SummaryMaxOutputTokens) => new CompactionOptions { SummaryMaxOutputTokens = 0 },
             nameof(CompactionOptions.SummaryRowCharCap) => new CompactionOptions { SummaryRowCharCap = 10 },
             nameof(CompactionOptions.SummaryPromptMaxChars) => new CompactionOptions { SummaryPromptMaxChars = 1_000 },
+            nameof(CompactionOptions.CheckpointTokenHardCapRatio) => new CompactionOptions
+            {
+                CheckpointTokenHardCapRatio = 0,
+            },
+            nameof(CompactionOptions.CheckpointTokenHardCap) => new CompactionOptions { CheckpointTokenHardCap = 0 },
+            nameof(CompactionOptions.CheckpointListFloor) => new CompactionOptions { CheckpointListFloor = -1 },
             _ => new CompactionOptions { CheckpointTokenCapRatio = 0 },
         };
 

@@ -48,6 +48,9 @@ $reviewedRetiredMeasuredIds = @(
     "dotnet|tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj|LmStreaming.Sample.Tests.Services.Discovery.WorkspaceSubAgentLoaderTests.TryResolveContainedPath_EmptyInput_Rejected()",
     "dotnet|tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj|LmStreaming.Sample.Tests.Services.Discovery.WorkspaceSubAgentLoaderTests.TryResolveContainedPath_RelativeUnderBase_Accepted()",
     "dotnet|tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj|LmStreaming.Sample.Tests.Services.Discovery.WorkspaceSubAgentLoaderTests.TryResolveContainedPath_SiblingPrefixAttack_Rejected()",
+    # #812 makes V1 require the schema the manifest needs, so schema 3 is known and "unknown version"
+    # is no longer what this test pins. It is renamed for the mismatch it does pin.
+    "dotnet|tests/LmMultiTurn.Tests/LmMultiTurn.Tests.csproj|LmMultiTurn.Tests.Compaction.CheckpointValidatorTests.V1_UnknownSchemaVersion_IsRejected()",
     # #792 replaces "a live CLI agent never scans the store" with "scans once per hydration" so a
     # recreate's stopped children stay listed. The old name now states a false rule, so it retires.
     "dotnet|tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj|LmStreaming.Sample.Tests.Services.AgentHierarchyServiceTests.BuildAsync_ForALiveNonMultiTurnAgentLoop_NeverCallsListThreadsAsync()",

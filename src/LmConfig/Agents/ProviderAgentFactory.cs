@@ -2,6 +2,7 @@ using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Http;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Configuration;
@@ -265,7 +266,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
         // ignoring the HttpClient.BaseAddress set above. Without this, every
         // Anthropic-compatible provider with a custom endpoint (DeepSeek, Kimi,
         // etc.) is silently routed to Anthropic and fails auth.
-        return new AnthropicClient(httpClient, baseUrl: endpointUrl);
+        return new AnthropicClient(httpClient, baseUrl: endpointUrl, retryOptions: ResolveRetryOptions());
     }
 
     private IOpenClient CreateOpenAIClient(ProviderResolution resolution)
@@ -280,8 +281,14 @@ public class ProviderAgentFactory : IProviderAgentFactory
             resolution.Connection.Headers,
             _logger
         );
-        return new OpenClient(httpClient, endpointUrl);
+        return new OpenClient(httpClient, endpointUrl, retryOptions: ResolveRetryOptions());
     }
+
+    /// <summary>
+    ///     The host's provider retry policy, when it registered a <see cref="RetryOptions" /> in DI. Null keeps
+    ///     each client's <see cref="RetryOptions.Default" />, which is what every host got before (#930 P1 item 1).
+    /// </summary>
+    private RetryOptions? ResolveRetryOptions() => _serviceProvider.GetService<RetryOptions>();
 
     private IAgent CreateClaudeAgentSdkAgent(ProviderResolution resolution)
     {

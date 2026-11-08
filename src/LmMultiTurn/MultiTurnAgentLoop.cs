@@ -11,6 +11,7 @@ using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Approval;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
@@ -282,11 +283,7 @@ public sealed class MultiTurnAgentLoop
     // checkpoint hook that changed a tool can have ToolSchemaTokens re-estimated. Replaced with the stack.
     private Func<IEnumerable<FunctionContract>> _toolContracts = () => [];
 
-    // Keep drained input across Stop/Run until the synchronous append sequence finishes. The
-    // single loop task owns the batch; observers only read the atomically published reference.
-    private QueuedInput[] _retainedInputs = [];
-
-    private int RetainedInputCount => Volatile.Read(ref _retainedInputs).Length;
+    // Drained input held across Stop/Run until it reaches history: MultiTurnAgentBase.RetainInputs.
     private int PendingWorkInputCount => PendingInputCount + RetainedInputCount;
 
     // What a run that took no turn reports as queued: real input only. Its completion can find the
@@ -1326,7 +1323,7 @@ public sealed class MultiTurnAgentLoop
                 List<QueuedInput> realInputs;
                 if (RetainedInputCount > 0)
                 {
-                    realInputs = [.. Volatile.Read(ref _retainedInputs)];
+                    realInputs = [.. RetainedInputs];
                 }
                 else
                 {
@@ -2145,7 +2142,7 @@ public sealed class MultiTurnAgentLoop
             IAsyncEnumerable<IMessage> stream;
             try
             {
-                stream = await _agent.GenerateReplyStreamingAsync(messagesToSend, options, ct);
+                stream = await GenerateObservingRetriesAsync(messagesToSend, options, runId, wrapUpGenerationId, ct);
             }
             catch (Exception ex) when (!IsRunCancellation(ex, ct))
             {
@@ -2326,22 +2323,11 @@ public sealed class MultiTurnAgentLoop
         }
     }
 
-    private void RetainInputs(List<QueuedInput> inputs)
-    {
-        // Overwriting a held batch would drop it, which is the loss this field exists to prevent.
-        if (RetainedInputCount > 0)
-        {
-            throw new InvalidOperationException("A taken input batch is still waiting to reach history");
-        }
-
-        Volatile.Write(ref _retainedInputs, [.. inputs]);
-    }
-
     private async Task AppendRetainedInputsAsync(string? runId, bool folded, CancellationToken ct)
     {
         // AddToHistory and Notify publication both complete synchronously: there is no
         // cancellation checkpoint inside this sequence. Clear ownership only after it finishes.
-        foreach (var input in Volatile.Read(ref _retainedInputs))
+        foreach (var input in RetainedInputs)
         {
             foreach (var message in input.Input.Messages)
             {
@@ -2360,7 +2346,7 @@ public sealed class MultiTurnAgentLoop
                 }
             }
         }
-        Volatile.Write(ref _retainedInputs, []);
+        ReleaseRetainedInputs();
     }
 
     /// <summary>
@@ -2792,7 +2778,7 @@ public sealed class MultiTurnAgentLoop
 
         try
         {
-            var stream = await _agent.GenerateReplyStreamingAsync(messagesToSend, options, ct);
+            var stream = await GenerateObservingRetriesAsync(messagesToSend, options, runId, generationId, ct);
 
             await foreach (var msg in stream.WithCancellation(ct))
             {
@@ -2933,6 +2919,58 @@ public sealed class MultiTurnAgentLoop
         }
 
         return new TurnExecutionResult(attempt);
+    }
+
+    /// <summary>
+    /// Calls the provider and returns its stream, broadcasting a transient <c>provider_retry</c> frame for
+    /// every HTTP retry the call makes (#930 P1 item 1) — so a turn stuck behind a rate limit reads as
+    /// "waiting 7 s, retry 1 of 3" instead of as a hang.
+    /// </summary>
+    /// <remarks>
+    /// The listener reaches the client's retry loop through <see cref="HttpRetryScope"/>, not through a
+    /// parameter, so no provider signature changes. It is in scope for the call itself (an agent may send
+    /// eagerly) and for each fetch from the stream (most send lazily, on the first fetch), and out of scope
+    /// while this loop handles a message — a tool's own HTTP retries are not the provider's.
+    /// </remarks>
+    private async Task<IAsyncEnumerable<IMessage>> GenerateObservingRetriesAsync(
+        IEnumerable<IMessage> messagesToSend,
+        GenerateReplyOptions options,
+        string runId,
+        string generationId,
+        CancellationToken ct
+    )
+    {
+        void OnRetry(HttpRetryNotice notice) => PublishProviderRetryFrame(notice, runId, generationId);
+
+        IAsyncEnumerable<IMessage> stream;
+        using (HttpRetryScope.Begin(OnRetry))
+        {
+            stream = await _agent.GenerateReplyStreamingAsync(messagesToSend, options, ct);
+        }
+
+        return HttpRetryScope.Observe(stream, OnRetry, ct);
+    }
+
+    /// <summary>
+    /// Best-effort and non-blocking, like the usage frame: a publish fault must never fault the retry.
+    /// </summary>
+    private void PublishProviderRetryFrame(HttpRetryNotice notice, string runId, string generationId)
+    {
+        try
+        {
+            var frame = ProviderRetryMessage.FromNotice(notice) with
+            {
+                ThreadId = ThreadId,
+                RunId = runId,
+                GenerationId = generationId,
+                FromAgent = ObservationAgentId(),
+            };
+            _ = PublishToAllAsync(frame, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "Failed to publish provider retry frame for run {RunId}", runId);
+        }
     }
 
     /// <summary>

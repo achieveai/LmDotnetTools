@@ -112,9 +112,37 @@ public sealed class CheckpointValidatorTests
     }
 
     [Fact]
-    public void V1_UnknownSchemaVersion_IsRejected()
+    public void V1_SchemaThreeOnAManifestWithNothingOmitted_IsRejected()
     {
         ExpectRule(CheckpointValidator.Validate(Checkpoint() with { SchemaVersion = 3 }, Context()), "V1");
+    }
+
+    [Fact]
+    public void V1_SchemaTwoOnAManifestThatOmitsItems_IsRejected_AndTheDerivedSchemaThreePasses()
+    {
+        var manifest = ValidManifest() with { Omitted = new ManifestOmissions { Tasks = 1 } };
+
+        ExpectRule(CheckpointValidator.Validate(Checkpoint(manifest) with { SchemaVersion = 2 }, Context()), "V1");
+
+        var derived = Checkpoint(manifest) with
+        {
+            SchemaVersion = CompactionCheckpointMessage.SchemaVersionFor(manifest),
+        };
+        derived.SchemaVersion.Should().Be(3);
+        var result = CheckpointValidator.Validate(derived, Context());
+        result.IsValid.Should().BeTrue(result.Detail);
+    }
+
+    [Fact]
+    public void V1_SchemaTwoOnAManifestWithACollapsedInstruction_IsRejected_BecauseAReaderWouldLoseTheRange()
+    {
+        var manifest = ValidManifest() with
+        {
+            CurrentInstruction = [new QuotedItem { Seq = 1, Quote = CurrentInstructionQuotes.Collapse(4, 1, 7) }],
+        };
+
+        CompactionCheckpointMessage.SchemaVersionFor(manifest).Should().Be(3);
+        ExpectRule(CheckpointValidator.Validate(Checkpoint(manifest) with { SchemaVersion = 2 }, Context()), "V1");
     }
 
     [Fact]
@@ -584,6 +612,21 @@ public sealed class CheckpointValidatorTests
         var options = new CheckpointValidationOptions { CheckpointTokenCap = 20 };
 
         ExpectRule(CheckpointValidator.Validate(Checkpoint(), Context(), options), "V9");
+    }
+
+    [Fact]
+    public void V9_AnEnvelopeOverItsTarget_PassesExactlyAtTheHardCap_AndFailsOneTokenOver()
+    {
+        var size = CompactionTokenEstimate.EstimateText(Checkpoint().RenderEnvelope(CheckpointRenderOptions.Default));
+        var options = new CheckpointValidationOptions { CheckpointTokenCap = size / 2, CheckpointTokenHardCap = size };
+
+        var result = CheckpointValidator.Validate(Checkpoint(), Context(), options);
+
+        result.IsValid.Should().BeTrue(result.Detail);
+        ExpectRule(
+            CheckpointValidator.Validate(Checkpoint(), Context(), options with { CheckpointTokenHardCap = size - 1 }),
+            "V9"
+        );
     }
 
     [Fact]

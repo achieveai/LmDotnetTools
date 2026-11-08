@@ -138,6 +138,7 @@ internal sealed class CompactionRuntime
     private string? _lastRecutGenerationId;
     private int _fitRecutsThisRun;
     private (string GenerationId, long Ordinal)? _evaluatedGeneration;
+    private TooSmallCut? _tooSmallCut;
     private Task? _reconciled;
 
     /// <summary>
@@ -717,6 +718,31 @@ internal sealed class CompactionRuntime
         ToolResultTightening? Tightened
     );
 
+    /// <summary>
+    ///     What an automatic cut is planned under besides the rows: the run, the target and the tool definitions that
+    ///     size the tail, the boundary, the window, the view's shaping and the loop state the cut rules read. A change
+    ///     to any of them can move the cut.
+    /// </summary>
+    private sealed record CutConditions(
+        string RunId,
+        long TargetTokens,
+        long ToolSchemaTokens,
+        bool InterruptedTurn,
+        long? ActiveBoundarySeq,
+        long? UsableTokens,
+        long ClearedThroughSeq,
+        ToolResultTightening? Tightened,
+        int OwedContinuations,
+        int LiveDeferredCount,
+        int SizeRefusedRunCount
+    );
+
+    /// <summary>
+    ///     The last automatic cut refused for too little gain: what it was planned under, at which generation, the
+    ///     request's character estimate then, and how far it fell short of the minimum gain.
+    /// </summary>
+    private sealed record TooSmallCut(CutConditions Conditions, long Ordinal, long RequestTokens, long Shortfall);
+
     public CompactionRuntime(CompactionSetup setup, CompactionRuntimeHost host, IAgent providerAgent)
     {
         ArgumentNullException.ThrowIfNull(setup);
@@ -821,12 +847,15 @@ internal sealed class CompactionRuntime
                 Validation = new CheckpointValidationOptions
                 {
                     NarrativeTokenCap = options.NarrativeTokenCap,
-                    // V9 scales with the window so a small window can still hold envelope + tail + prefix.
+                    // The target and V9's hard cap scale with the window so a small window can still hold envelope +
+                    // tail + prefix.
                     CheckpointTokenCap = options.EffectiveCheckpointTokenCap(UsableTokens),
+                    CheckpointTokenHardCap = options.EffectiveCheckpointTokenHardCap(UsableTokens),
                     OpenExchanges = options.Checks.Rc3OpenExchanges,
                     TextEstimator = _text,
                 },
                 Assembler = new ManifestAssemblerOptions { OpenExchanges = options.Checks.Rc3OpenExchanges },
+                EnvelopeListFloor = options.CheckpointListFloor,
                 Render = RenderOptions,
                 SummaryTimeout = options.SummaryTimeout,
                 SummaryAttempts = options.SummaryAttempts,
@@ -1037,10 +1066,19 @@ internal sealed class CompactionRuntime
         IReadOnlyList<IMessage> request,
         IReadOnlyList<IMessage>? ephemeral,
         ToolResultTightening? tightened
+    ) => EstimateRequestTokens(request, ephemeral, tightened, out _);
+
+    /// <summary>As above; <paramref name="characterEstimate"/> is <see cref="CharacterEstimate"/> from the same sweep.</summary>
+    private long EstimateRequestTokens(
+        IReadOnlyList<IMessage> request,
+        IReadOnlyList<IMessage>? ephemeral,
+        ToolResultTightening? tightened,
+        out long characterEstimate
     )
     {
         var messages = Estimate(request) + (ephemeral is null ? 0 : Estimate(ephemeral));
-        var estimate = CharacterEstimate(request, ephemeral);
+        characterEstimate = messages + _host.ToolSchemaTokens();
+        var estimate = characterEstimate;
         var count = request.Count + (ephemeral?.Count ?? 0);
         if (
             Volatile.Read(ref _measurement) is { } measured
@@ -1062,6 +1100,21 @@ internal sealed class CompactionRuntime
     /// </summary>
     private long CharacterEstimate(IReadOnlyList<IMessage> request, IReadOnlyList<IMessage>? ephemeral = null) =>
         Estimate(request) + (ephemeral is null ? 0 : Estimate(ephemeral)) + _host.ToolSchemaTokens();
+
+    private CutConditions ConditionsFor(string runId, long targetTokens, bool interruptedTurn) =>
+        new(
+            runId,
+            targetTokens,
+            _host.ToolSchemaTokens(),
+            interruptedTurn,
+            ActiveBoundarySeq,
+            UsableTokens,
+            _clearedThroughSeq,
+            _tightened,
+            _host.OwedContinuations(),
+            _host.LiveDeferredCount(),
+            _sizeRefusedRunIds.Count
+        );
 
     /// <summary>Remembers the provider's input-token count for a request the loop sent, to calibrate the next estimate.</summary>
     public void ObserveMeasuredUsage(IReadOnlyList<IMessage> sent, long measuredTokens)
@@ -1147,7 +1200,7 @@ internal sealed class CompactionRuntime
         }
 
         var view = replacement ?? request;
-        var tokens = EstimateRequestTokens(view, ephemeral);
+        var tokens = EstimateRequestTokens(view, ephemeral, _tightened, out var characterTokens);
         var window = WindowTokens;
         var cachingEnabled = _host.DefaultOptions.PromptCaching != PromptCachingMode.Off;
         var now = _clock.GetUtcNow();
@@ -1189,7 +1242,7 @@ internal sealed class CompactionRuntime
                         interruptedTurn,
                         killed,
                         input.ProviderOwnedSession,
-                        CharacterEstimate(view, ephemeral),
+                        characterTokens,
                         ct
                     )
                     .ConfigureAwait(false)
@@ -1240,20 +1293,47 @@ internal sealed class CompactionRuntime
                 }
             }
 
-            if (outcome is null)
+            var trigger =
+                decision.Decision == CompactionDecisionKinds.Shadow
+                    ? CompactionTrigger.Shadow
+                    : CompactionTrigger.Preemptive;
+            if (
+                outcome is null
+                && _tooSmallCut is { } refused
+                && ordinal < refused.Ordinal + Options.CooldownGenerations
+                && characterTokens - refused.RequestTokens < refused.Shortfall
+                && refused.Conditions == ConditionsFor(runId, target, interruptedTurn)
+            )
             {
+                // A refused cut cools down like an activated one (#928): planning it again loads and estimates the
+                // whole history, and while nothing the cut rules read has changed and the request has not grown by the
+                // shortfall, the same cut is usually refused again. A little growth can still carry the cut past a
+                // generation boundary, so the hold lasts CooldownGenerations at most. The fit check below still runs.
+                outcome = new CompactionOutcome(
+                    CompactionDecisionKinds.Skipped,
+                    CompactionSkipReasons.InsufficientGain,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    0,
+                    trigger
+                );
+            }
+            else if (outcome is null)
+            {
+                _tooSmallCut = null;
                 outcome = await CompactAsync(
                         runId,
                         generationId,
-                        decision.Decision == CompactionDecisionKinds.Shadow
-                            ? CompactionTrigger.Shadow
-                            : CompactionTrigger.Preemptive,
+                        trigger,
                         target,
                         ordinal,
                         interruptedTurn,
                         ct,
                         requireGain: true,
-                        requestTokens: CharacterEstimate(view, ephemeral)
+                        requestTokens: characterTokens
                     )
                     .ConfigureAwait(false);
                 acted |= outcome.View is not null;
@@ -2387,6 +2467,16 @@ internal sealed class CompactionRuntime
                     freed,
                     needed
                 );
+                if (requestTokens is { } sent)
+                {
+                    _tooSmallCut = new TooSmallCut(
+                        ConditionsFor(runId, targetTokens, interruptedTurn),
+                        ordinal,
+                        sent,
+                        needed - freed
+                    );
+                }
+
                 return await Skipped(CompactionSkipReasons.InsufficientGain).ConfigureAwait(false);
             }
         }
@@ -2421,6 +2511,7 @@ internal sealed class CompactionRuntime
             RequestTokensBefore = requestTokens,
             ViewFixedTokens = fixedTokens,
             ViewEstimator = estimator,
+            ViewUsableTokens = usable,
             SummaryFallback = summaryFallback,
             KnownSummaryFailure = knownSummaryFailure,
         };
