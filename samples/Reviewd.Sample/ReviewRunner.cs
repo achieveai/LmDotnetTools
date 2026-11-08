@@ -1366,10 +1366,16 @@ internal static class ReviewRunner
                 || live["status"]?.GetValue<string>() != "active"
                 || live["isDraft"]?.GetValue<bool>() != false
                 || live["headSha"]?.GetValue<string>() != args["head"]!.GetValue<string>()
-                || !PrSelection.IsWithinCreationAge(live["createdAt"], hours, now())
+                || !PrSelection.IsWithinAge(
+                    live["createdAt"],
+                    current,
+                    live["headSha"]?.GetValue<string>(),
+                    hours,
+                    now()
+                )
             )
                 throw new InvalidOperationException(
-                    "PR creation age is outside the configured limit or unavailable; no fresh admission allowed."
+                    "PR age (creation or last push) is outside the configured limit or unavailable; no fresh admission allowed."
                 );
         }
 

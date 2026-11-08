@@ -687,14 +687,25 @@ internal static class ReviewBatch
                     if (
                         freshAdmission
                         && maxAgeHours is { } limit
-                        && !PrSelection.IsWithinCreationAge(live["createdAt"], limit, now())
+                        && !PrSelection.IsWithinAge(
+                            live["createdAt"],
+                            (
+                                await ReadAsync(
+                                    database,
+                                    "reviewd/pr-snapshot/" + PrCommands.ParseRepo(repo).NormalizedKey
+                                )
+                            )?[pr],
+                            live["headSha"]?.GetValue<string>(),
+                            limit,
+                            now()
+                        )
                     )
                     {
                         await SaveAsync(() =>
                         {
                             entry["status"] = "age-excluded";
                             entry["reason"] =
-                                "PR creation age is outside the configured limit or unavailable; no admission performed.";
+                                "PR age (creation or last push) is outside the configured limit or unavailable; no admission performed.";
                             entry["ageCheckedAt"] = now();
                         });
                         continue;

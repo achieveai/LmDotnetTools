@@ -1572,6 +1572,45 @@ public sealed class ReviewdRunnerTests
         batch.RunAges.Should().NotContain(age => age != "72");
     }
 
+    [Theory]
+    [InlineData("pushed-recently", "verified", true)]
+    [InlineData("pushed-long-ago", "age-excluded", false)]
+    [InlineData("push-was-for-an-earlier-head", "age-excluded", false)]
+    public async Task Batch_admits_an_old_pr_only_when_its_current_head_was_pushed_recently(
+        string scenario,
+        string status,
+        bool runs
+    )
+    {
+        using var batch = new BatchFixture(0) { MaxAgeHours = "72" };
+        batch.SetManifestAge(JsonValue.Create(72));
+        batch.Put(
+            "reviewd/pr-snapshot/" + PrCommands.ParseRepo(BatchFixture.Repo).NormalizedKey,
+            new JsonObject
+            {
+                ["1"] = new JsonObject
+                {
+                    ["PrId"] = "1",
+                    ["HeadSha"] =
+                        scenario == "push-was-for-an-earlier-head" ? new string('e', 40) : new string('a', 40),
+                    ["SourceUpdatedAt"] = batch.Now.AddHours(scenario == "pushed-long-ago" ? -73 : -1).ToString("O"),
+                },
+            }
+        );
+        batch.Eligibility = pr =>
+        {
+            var live = BatchFixture.Live(pr);
+            live["createdAt"] = batch.Now.AddHours(pr == "1" ? -500 : -1).ToString("O");
+            return live;
+        };
+        await batch.ExecuteAsync();
+        batch.Entries().First()["status"]!.GetValue<string>().Should().Be(status);
+        if (runs)
+            batch.Runs.Should().Contain("1:fresh");
+        else
+            batch.Runs.Should().NotContain("1:fresh");
+    }
+
     [Fact]
     public async Task Batch_resumes_an_owner_whose_verification_did_not_finish()
     {
@@ -2755,10 +2794,13 @@ public sealed class ReviewdRunnerTests
     [InlineData("missing")]
     [InlineData("no-offset")]
     [InlineData("wrong-head")]
+    [InlineData("old-pushed-recently")]
     public async Task Runner_creation_age_checks_live_before_claim_and_initial_send_without_releasing_prepared_owner(
         string scenario
     )
     {
+        // An old PR whose current head was pushed within the limit is admitted like a recent one.
+        var admitted = scenario is "recent" or "old-pushed-recently";
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-age-{Guid.NewGuid():N}.db");
         var repo = PrCommands.ParseRepo("org/project/Nova");
         var now = DateTimeOffset.Parse("2026-10-07T22:00:00Z");
@@ -2796,7 +2838,7 @@ public sealed class ReviewdRunnerTests
                 reads++;
                 var created = scenario switch
                 {
-                    "old" => now.AddHours(-73).ToString("O"),
+                    "old" or "old-pushed-recently" => now.AddHours(-73).ToString("O"),
                     "future" => now.AddSeconds(1).ToString("O"),
                     "missing" => null,
                     "no-offset" => "2026-10-07T21:00:00",
@@ -2842,6 +2884,7 @@ public sealed class ReviewdRunnerTests
                         ["Lifecycle"] = "Open",
                         ["IsDraft"] = false,
                         ["HeadSha"] = new string('a', 40),
+                        ["SourceUpdatedAt"] = scenario == "old-pushed-recently" ? now.AddHours(-1).ToString("O") : null,
                     },
                 }
             );
@@ -2880,11 +2923,11 @@ public sealed class ReviewdRunnerTests
             var messages = handler.Requests.Count(r =>
                 r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal)
             );
-            messages.Should().Be(scenario == "recent" ? 1 : 0);
+            messages.Should().Be(admitted ? 1 : 0);
             phases.Should().NotContain("cleanup");
             var owner = await store.GetAsync<JsonObject>(ownerKey);
             var attempt = await store.GetAsync<JsonObject>(attemptKey);
-            if (scenario is "recent" or "setup-expired")
+            if (admitted || scenario == "setup-expired")
             {
                 reads.Should().Be(2);
                 owner!["state"]!.GetValue<string>().Should().Be("owned");

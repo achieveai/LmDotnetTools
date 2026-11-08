@@ -34,6 +34,39 @@ public sealed class ReviewdPrTrackingTests
             .BeFalse();
     }
 
+    [Theory]
+    [InlineData("2026-10-01T00:00:00Z", "2026-10-07T21:00:00Z", "head", "head", true)]
+    [InlineData("2026-10-07T21:00:00Z", null, null, "head", true)]
+    [InlineData("2026-10-01T00:00:00Z", "2026-10-07T21:00:00Z", "older", "head", false)]
+    [InlineData("2026-10-01T00:00:00Z", "2026-10-01T00:00:00Z", "head", "head", false)]
+    [InlineData("2026-10-01T00:00:00Z", "2026-10-07T21:00:00", "head", "head", false)]
+    [InlineData("2026-10-01T00:00:00Z", "2026-10-07T21:00:00Z", "head", null, false)]
+    [InlineData("2026-10-01T00:00:00Z", "2026-10-07T21:00:00Z", null, "head", false)]
+    public void Age_counts_a_recent_push_only_for_the_head_it_produced(
+        string created,
+        string? pushed,
+        string? snapshotHead,
+        string? liveHead,
+        bool eligible
+    )
+    {
+        var snapshot = new System.Text.Json.Nodes.JsonObject
+        {
+            ["HeadSha"] = snapshotHead,
+            ["SourceUpdatedAt"] = pushed,
+        };
+        PrSelection
+            .IsWithinAge(
+                System.Text.Json.Nodes.JsonValue.Create(created),
+                snapshot,
+                liveHead,
+                72,
+                DateTimeOffset.Parse("2026-10-07T22:00:00Z")
+            )
+            .Should()
+            .Be(eligible);
+    }
+
     [Fact]
     public void Two_segment_repo_is_github_and_its_display_name_parses_back_to_the_same_key()
     {
@@ -502,6 +535,65 @@ public sealed class ReviewdPrTrackingTests
                         ["signature"] = "Sandbox prepare failed",
                         ["count"] = ReviewBatch.QuarantineAfter,
                         ["reason"] = "Sandbox prepare failed",
+                    }
+                );
+            }
+            var options = CliOptions.Parse([
+                "pr",
+                "pick",
+                "--repo",
+                repo.DisplayName,
+                "--db",
+                database,
+                "--max-age-hours",
+                "72",
+                "--selection-out",
+                selection,
+            ]);
+
+            await PrSelection.RunAsync(options, CancellationToken.None, now);
+
+            var queued = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(selection))![
+                "repositories"
+            ]!.AsObject();
+            queued.Count.Should().Be(picked ? 1 : 0);
+        }
+        finally
+        {
+            ReviewdSqlitePools.Clear(database);
+            File.Delete(database);
+            File.Delete(selection);
+        }
+    }
+
+    [Theory]
+    [InlineData(-1, true)]
+    [InlineData(-73, false)]
+    public async Task Pick_takes_an_old_pr_whose_head_was_pushed_within_the_limit(int pushedHours, bool picked)
+    {
+        // 2026-11-08: ADO PR 11452 was created 10 days ago but pushed today; creation age alone kept it out.
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-pushed-{Guid.NewGuid():N}.db");
+        var selection = database + ".selection.json";
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var now = DateTimeOffset.Parse("2026-10-20T12:00:00Z");
+        try
+        {
+            using (var connection = PrThreadBindings.Connection(database))
+            {
+                var store = new SqliteKvStore(connection);
+                await store.SetAsync(
+                    $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                    new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["17"] = new System.Text.Json.Nodes.JsonObject
+                        {
+                            ["PrId"] = 17,
+                            ["Lifecycle"] = "Open",
+                            ["IsDraft"] = false,
+                            ["HeadSha"] = new string('a', 40),
+                            ["CreatedAt"] = now.AddHours(-240).ToString("O"),
+                            ["SourceUpdatedAt"] = now.AddHours(pushedHours).ToString("O"),
+                        },
                     }
                 );
             }
