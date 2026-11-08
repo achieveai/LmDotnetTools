@@ -283,11 +283,7 @@ public sealed class MultiTurnAgentLoop
     // checkpoint hook that changed a tool can have ToolSchemaTokens re-estimated. Replaced with the stack.
     private Func<IEnumerable<FunctionContract>> _toolContracts = () => [];
 
-    // Keep drained input across Stop/Run until the synchronous append sequence finishes. The
-    // single loop task owns the batch; observers only read the atomically published reference.
-    private QueuedInput[] _retainedInputs = [];
-
-    private int RetainedInputCount => Volatile.Read(ref _retainedInputs).Length;
+    // Drained input held across Stop/Run until it reaches history: MultiTurnAgentBase.RetainInputs.
     private int PendingWorkInputCount => PendingInputCount + RetainedInputCount;
 
     // What a run that took no turn reports as queued: real input only. Its completion can find the
@@ -1327,7 +1323,7 @@ public sealed class MultiTurnAgentLoop
                 List<QueuedInput> realInputs;
                 if (RetainedInputCount > 0)
                 {
-                    realInputs = [.. Volatile.Read(ref _retainedInputs)];
+                    realInputs = [.. RetainedInputs];
                 }
                 else
                 {
@@ -2327,22 +2323,11 @@ public sealed class MultiTurnAgentLoop
         }
     }
 
-    private void RetainInputs(List<QueuedInput> inputs)
-    {
-        // Overwriting a held batch would drop it, which is the loss this field exists to prevent.
-        if (RetainedInputCount > 0)
-        {
-            throw new InvalidOperationException("A taken input batch is still waiting to reach history");
-        }
-
-        Volatile.Write(ref _retainedInputs, [.. inputs]);
-    }
-
     private async Task AppendRetainedInputsAsync(string? runId, bool folded, CancellationToken ct)
     {
         // AddToHistory and Notify publication both complete synchronously: there is no
         // cancellation checkpoint inside this sequence. Clear ownership only after it finishes.
-        foreach (var input in Volatile.Read(ref _retainedInputs))
+        foreach (var input in RetainedInputs)
         {
             foreach (var message in input.Input.Messages)
             {
@@ -2361,7 +2346,7 @@ public sealed class MultiTurnAgentLoop
                 }
             }
         }
-        Volatile.Write(ref _retainedInputs, []);
+        ReleaseRetainedInputs();
     }
 
     /// <summary>
