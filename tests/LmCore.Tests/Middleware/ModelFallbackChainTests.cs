@@ -1,10 +1,15 @@
 using System.Collections.Immutable;
 using System.Net;
+using System.Net.Sockets;
 using System.Runtime.CompilerServices;
+using System.Text;
+using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
+using ChatCompletionRequest = AchieveAi.LmDotnetTools.OpenAIProvider.Models.ChatCompletionRequest;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -70,6 +75,8 @@ public class ModelFallbackChainTests
             .Should()
             .Be("backup-model", "the spend belongs to the model that ran, not the one that was asked for");
         usage.GetExtraProperty<string>("billing_note").Should().Be("kept", "crediting adds a key, it drops none");
+        usage.PromptTokens.Should().Be(10, "crediting the model keeps the provider's counts");
+        usage.CompletionTokens.Should().Be(3, "crediting the model keeps the provider's counts");
         logger
             .Hops.Should()
             .ContainSingle()
@@ -376,8 +383,88 @@ public class ModelFallbackChainTests
         ModelFallbackMiddleware.IsProviderOutage(new HttpRequestException("connection refused")).Should().BeTrue();
         ModelFallbackMiddleware.IsProviderOutage(new TaskCanceledException("HttpClient.Timeout")).Should().BeTrue();
         ModelFallbackMiddleware.IsProviderOutage(new TimeoutException()).Should().BeTrue();
+        ModelFallbackMiddleware.IsProviderOutage(new IOException("connection reset")).Should().BeTrue();
+        ModelFallbackMiddleware.IsProviderOutage(new HttpIOException(HttpRequestError.ResponseEnded)).Should().BeTrue();
         ModelFallbackMiddleware.IsProviderOutage(new InvalidOperationException()).Should().BeFalse();
         ModelFallbackMiddleware.IsProviderOutage(new ArgumentException()).Should().BeFalse();
+    }
+
+    /// <summary>The real OpenAI client over a real socket: what a provider stream throws when its body breaks.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ABodyThatBreaksBeforeAnyOutput_SurfacesAnIOException_ThatIsAnOutage(bool connectionReset)
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var headersArrived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var server = BreakTheBodyAsync(listener, connectionReset, headersArrived.Task);
+        using var http = new HttpClient(
+            new HeadersArrivedSignal(new SocketsHttpHandler { UseProxy = false }, headersArrived)
+        );
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        using var client = new OpenClient(http, $"http://127.0.0.1:{port}/v1");
+
+        var failure = await Record.ExceptionAsync(async () =>
+        {
+            await foreach (var _ in client.StreamingChatCompletionsAsync(new ChatCompletionRequest("m", []))) { }
+        });
+        await server;
+
+        TestContextLogger.LogDebug(
+            "A broken body surfaced as {ExceptionType} (connection reset: {ConnectionReset})",
+            failure?.GetType().FullName,
+            connectionReset
+        );
+        failure.Should().BeAssignableTo<IOException>();
+        ModelFallbackMiddleware.IsProviderOutage(failure!).Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ACancellationBeforeTheFirstRead_HandsOnNoBufferedMessage(bool throughTheEnumerationToken)
+    {
+        using var stop = new CancellationTokenSource();
+        var middleware = new ModelFallbackMiddleware([
+            new FallbackTarget("backup-model", new ScriptedAgent(Reply("from the backup"))),
+        ]);
+        var reply = await middleware.InvokeStreamingAsync(
+            Context("primary-model"),
+            new ScriptedAgent(Reply("first")),
+            throughTheEnumerationToken ? CancellationToken.None : stop.Token
+        );
+        await stop.CancelAsync();
+        var seen = new List<IMessage>();
+
+        var read = async () =>
+        {
+            await foreach (
+                var message in reply.WithCancellation(throughTheEnumerationToken ? stop.Token : CancellationToken.None)
+            )
+            {
+                seen.Add(message);
+            }
+        };
+
+        _ = await read.Should().ThrowAsync<OperationCanceledException>();
+        seen.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("primary")]
+    [InlineData("fallback")]
+    public async Task DisposingTheAgentsReplyBeforeReadingIt_ReleasesTheProviderStream(string answeredBy)
+    {
+        var probe = new StreamProbe();
+        var answer = new ScriptedAgent(Tracked(probe, messages: Text("answer")));
+        var primary = answeredBy == "fallback" ? new ScriptedAgent(Outage(503)) : answer;
+        await using var agent = new ModelFallbackAgent(primary, [new FallbackTarget("backup-model", answer)]);
+
+        var reply = await agent.GenerateReplyStreamingAsync(Prompt, new GenerateReplyOptions { ModelId = "m" });
+        await reply.GetAsyncEnumerator().DisposeAsync();
+
+        probe.Ended.Should().Be(1, "the agent's reply owns the stream it opened to find the first message");
     }
 
     [Theory]
@@ -448,21 +535,23 @@ public class ModelFallbackChainTests
         var middleware = new ModelFallbackMiddleware([
             new FallbackTarget("backup-model", new ScriptedAgent(Reply("from the backup"))),
         ]);
+        var secondReadStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var reply = await middleware.InvokeStreamingAsync(
             Context("primary-model"),
-            new ScriptedAgent(BlocksAfterFirstMessage)
+            new ScriptedAgent(ct => BlocksAfterFirstMessage(secondReadStarted, ct))
         );
         using var stop = new CancellationTokenSource();
+        await using var reading = reply.GetAsyncEnumerator(stop.Token);
+        (await reading.MoveNextAsync()).Should().BeTrue();
 
-        var read = async () =>
-        {
-            await foreach (var _ in reply.WithCancellation(stop.Token))
-            {
-                await stop.CancelAsync();
-            }
-        };
+        var secondRead = reading.MoveNextAsync().AsTask();
+        await secondReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        secondRead.IsCompleted.Should().BeFalse("the provider read is still pending when the token is cancelled");
+        await stop.CancelAsync();
 
-        _ = await read.Should()
+        _ = await FluentActions
+            .Awaiting(() => secondRead)
+            .Should()
             .ThrowAsync<OperationCanceledException>()
             .WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
     }
@@ -709,12 +798,71 @@ public class ModelFallbackChainTests
 
     /// <summary>A reply that sends its first message, then waits on its read token for the next one.</summary>
     private static async IAsyncEnumerable<IMessage> BlocksAfterFirstMessage(
+        TaskCompletionSource secondReadStarted,
         [EnumeratorCancellation] CancellationToken ct
     )
     {
         await Task.Yield();
         yield return new TextMessage { Text = "first", Role = Role.Assistant };
+        secondReadStarted.TrySetResult();
         await Task.Delay(Timeout.Infinite, ct);
+    }
+
+    /// <summary>Accepts one request, answers with headers and half an SSE line, then breaks the connection.</summary>
+    private static async Task BreakTheBodyAsync(TcpListener listener, bool connectionReset, Task headersArrived)
+    {
+        using var socket = await listener.AcceptSocketAsync();
+        await ReadWholeRequestAsync(socket);
+        await socket.SendAsync(
+            Encoding.ASCII.GetBytes(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n5\r\n: par\r\n"
+            )
+        );
+        await headersArrived.WaitAsync(TimeSpan.FromSeconds(5));
+        if (connectionReset)
+        {
+            socket.LingerState = new LingerOption(true, 0);
+        }
+
+        socket.Close();
+    }
+
+    private static async Task ReadWholeRequestAsync(Socket socket)
+    {
+        var buffer = new byte[8192];
+        var request = new StringBuilder();
+        while (true)
+        {
+            var read = await socket.ReceiveAsync(buffer);
+            _ = request.Append(Encoding.ASCII.GetString(buffer, 0, read));
+            var text = request.ToString();
+            var headersEnd = text.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+            if (headersEnd < 0)
+            {
+                continue;
+            }
+
+            var length = Regex.Match(text, @"Content-Length: (\d+)", RegexOptions.IgnoreCase).Groups[1].Value;
+            if (text.Length >= headersEnd + 4 + int.Parse(length))
+            {
+                return;
+            }
+        }
+    }
+
+    /// <summary>Lets the server break the connection only once the client has the response headers.</summary>
+    private sealed class HeadersArrivedSignal(HttpMessageHandler inner, TaskCompletionSource arrived)
+        : DelegatingHandler(inner)
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
+        {
+            var response = await base.SendAsync(request, cancellationToken);
+            arrived.TrySetResult();
+            return response;
+        }
     }
 
     /// <summary>A provider stream that fails its first read and runs <paramref name="onDispose" /> on cleanup.</summary>
@@ -795,6 +943,7 @@ public class ModelFallbackChainTests
         {
             Calls++;
             LastOptions = options;
+            TestContextLogger.LogDebug("Agent {AgentName} called for model {ModelId}", Name, options?.ModelId);
             CallLog?.Add(Name);
             OnCall?.Invoke();
         }

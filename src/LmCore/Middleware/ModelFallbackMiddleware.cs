@@ -18,7 +18,8 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 /// <param name="ModelId">The model this target runs; it replaces the request's model id.</param>
 /// <param name="Agent">The agent that serves <paramref name="ModelId" />.</param>
 /// <param name="ShapeOptions">
-///     Reshapes the request for this target after its model id is set. Null sends the request as is.
+///     Reshapes the request for this target after its model id is set. Null sends the request as is. It runs
+///     for every target before the primary is called, so it must not throw.
 /// </param>
 public sealed record FallbackTarget(
     string ModelId,
@@ -27,9 +28,8 @@ public sealed record FallbackTarget(
 );
 
 /// <summary>
-///     Middleware that implements model fallback functionality.
-///     It will attempt to use agents based on a model name mapping,
-///     with fallback to other agents in the array if the first agent fails.
+///     Middleware that tries another model when one fails: either a chain of <see cref="FallbackTarget" />s
+///     after the wrapped agent, or the agents a model name maps to, then a default.
 /// </summary>
 /// <remarks>
 ///     <para>
@@ -113,11 +113,14 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
     /// </summary>
     /// <remarks>
     ///     Falls back on: HTTP 408, 429 and every 5xx; a transport failure with no status (connection
-    ///     refused or reset, DNS); a timeout (<see cref="TimeoutException" />, or a cancellation the
-    ///     caller did not ask for, which is how an <see cref="HttpClient" /> timeout surfaces). Does not
-    ///     fall back on any other 4xx (a bad request, auth or a missing model fails the same way on the
-    ///     next model, or should not be retried), or on any other exception (a bug or a bad response
-    ///     body). By the time this runs, the provider's own retry policy has already been spent.
+    ///     refused or reset, DNS); a response body that breaks while it is read
+    ///     (<see cref="IOException" />, which includes <see cref="HttpIOException" />); a timeout
+    ///     (<see cref="TimeoutException" />, or any <see cref="OperationCanceledException" />, which is how an
+    ///     <see cref="HttpClient" /> timeout surfaces). The caller's own cancellation never reaches this
+    ///     rule: the chain stops on it first. Does not fall back on any other 4xx (a bad request, auth or a
+    ///     missing model fails the same way on the next model, or should not be retried), or on any other
+    ///     exception (a bug or a malformed response). By the time this runs, the provider's own retry
+    ///     policy has already been spent.
     /// </remarks>
     public static bool IsProviderOutage(Exception exception)
     {
@@ -129,6 +132,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
                     or HttpStatusCode.TooManyRequests
                 || (int)status >= 500,
             HttpRequestException => true,
+            IOException => true,
             TimeoutException => true,
             OperationCanceledException => true,
             _ => false,
@@ -136,7 +140,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    ///     Invokes the middleware, attempting agents based on the model name in the options.
+    ///     Tries each agent the constructor's shape selects, in order, until one replies.
     /// </summary>
     public async Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
@@ -175,7 +179,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    ///     Invokes the middleware for streaming scenarios, attempting agents based on the model name in the options.
+    ///     Tries each agent the constructor's shape selects, in order, until one starts a reply.
     /// </summary>
     /// <remarks>
     ///     The returned stream is already open: its first message has been read. Disposing its enumerator
@@ -437,6 +441,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
             {
                 if (_firstPending)
                 {
+                    _reads.Token.ThrowIfCancellationRequested();
                     _firstPending = false;
                     Current = Credit(_reply.Current);
                     return true;

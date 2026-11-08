@@ -2112,14 +2112,14 @@ try
                 // tool set. Gated by the provider allow-list and the mode's EnabledTools (function-tool
                 // list); the native built-in path (modeBuiltInAllowList, below) is governed separately
                 // and left untouched.
-                // Resolve the discovered Copilot model (if any) backing this provider once; its
-                // transport and raw id drive the model-id, reasoning, and web-tool wiring below.
+                // Resolve the discovered Copilot model (if any) backing this provider once; it drives
+                // the reasoning and web-tool wiring below. ResolveModelIdForProvider sets the model id.
                 var isCopilotBackedModel = providerRegistry.TryGetCopilotModel(
                     normalizedProviderId,
                     out var copilotModelInfo
                 );
                 // Same resolution for a discovered Anthropic-compatible provider-family model (e.g.
-                // DeepSeek); its raw model id drives the model-id and web-tool wiring below.
+                // DeepSeek); whether there is one drives the web-tool wiring below.
                 var isAnthropicCompatModel = providerRegistry.TryGetAnthropicCompatModel(
                     normalizedProviderId,
                     out var anthropicCompatModelInfo
@@ -3868,6 +3868,19 @@ public partial class Program
     }
 
     /// <summary>
+    ///     Every request extra-property key this host's reasoning shapes write: <see cref="BuildReasoningExtraProperties" />
+    ///     and <c>CopilotReasoningShaper.Shape</c>. A request moved to another model drops all of them before
+    ///     taking that model's own shape, so a key added to either shaper belongs here too.
+    /// </summary>
+    internal static readonly string[] ReasoningExtraPropertyKeys =
+    [
+        "Thinking",
+        "Reasoning",
+        "OutputConfig",
+        "reasoning_effort",
+    ];
+
+    /// <summary>
     ///     Maps a normalized provider id (plus, for discovered Copilot models, its transport) to the
     ///     reasoning/thinking request options that surface a model's reasoning. Anthropic-format
     ///     providers — the direct <c>anthropic</c>/<c>test-anthropic</c> providers and any Copilot model
@@ -3888,19 +3901,6 @@ public partial class Program
     ///     specific one, via <see cref="CopilotReasoningShaper" /> on the paths that shape it.
     ///     </para>
     /// </summary>
-    /// <summary>
-    ///     Every request extra-property key this host's reasoning shapes write: <see cref="BuildReasoningExtraProperties" />
-    ///     and <c>CopilotReasoningShaper.Shape</c>. A request moved to another model drops all of them before
-    ///     taking that model's own shape, so a key added to either shaper belongs here too.
-    /// </summary>
-    internal static readonly string[] ReasoningExtraPropertyKeys =
-    [
-        "Thinking",
-        "Reasoning",
-        "OutputConfig",
-        "reasoning_effort",
-    ];
-
     internal static ImmutableDictionary<string, object?> BuildReasoningExtraProperties(
         string normalizedProviderId,
         CopilotModelTransport? copilotTransport = null,
@@ -4645,7 +4645,8 @@ public partial class Program
     ///     not carried over. A single provider id written as a plain string is a one-entry list. A fallback
     ///     provider that is not available (no key or login) or cannot be built is skipped with a warning rather
     ///     than failing the conversation, which never needed it to start: left in the chain, its 401 would end
-    ///     the chain before a later target that works.
+    ///     the chain before a later target that works. A target gets its own provider's built-in tools only:
+    ///     the function web tools are registered once, for the primary, so a target without native search has none.
     /// </remarks>
     internal static IStreamingAgent WithConfiguredModelFallback(
         IServiceProvider sp,
