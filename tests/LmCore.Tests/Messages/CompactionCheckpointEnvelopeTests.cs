@@ -138,7 +138,7 @@ public class CompactionCheckpointEnvelopeTests
             )
             .RenderEnvelope(CheckpointRenderOptions.Default);
 
-        Assert.Contains("## Open work\n- [12 omitted] older tasks are on the board but not listed here\n- [", text);
+        Assert.Contains("## Open work\n- [12 omitted] more tasks are not listed here\n- [", text);
         Assert.Contains("## Agents\n- [3 omitted] older agents are in the roster but not listed here\n- agent-", text);
         Assert.DoesNotContain("older artifacts", text);
         Assert.DoesNotContain("omitted] older", full);
@@ -156,7 +156,24 @@ public class CompactionCheckpointEnvelopeTests
             )
             .RenderEnvelope(CheckpointRenderOptions.Default);
 
-        Assert.Contains("## Open work\n- [2000 omitted] older tasks are on the board but not listed here\n## ", text);
+        Assert.Contains("## Open work\n- [2000 omitted] more tasks are not listed here\n## ", text);
+    }
+
+    [Fact]
+    public void Omitted_TaskCount_DoesNotClaimABoard_ForTasksTheModelExtracted()
+    {
+        // A build with no board has tasks with no id. The count line must not send the model to a board that is not there.
+        var text = Checkpoint(
+                FullManifest() with
+                {
+                    Tasks = [new TaskRef { Title = "extracted by the model", Status = "NotStarted" }],
+                    Omitted = new ManifestOmissions { Tasks = 2 },
+                }
+            )
+            .RenderEnvelope(CheckpointRenderOptions.Default);
+
+        Assert.Contains("- [2 omitted] more tasks are not listed here\n- [NotStarted] extracted by the model", text);
+        Assert.DoesNotContain("on the board", text);
     }
 
     [Fact]

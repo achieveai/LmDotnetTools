@@ -393,18 +393,29 @@ public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
 
     /// <summary>
     ///     The lowest schema version that holds <paramref name="manifest" /> whole: 3 when it carries
-    ///     <see cref="ContextManifest.Omitted" />, else 2. A row is written at this version, so a manifest with nothing
-    ///     omitted stays readable by a binary that knows only schema 2.
+    ///     <see cref="ContextManifest.Omitted" /> or a collapsed <c>CurrentInstruction</c> item, else 2. A row is written
+    ///     at this version, so a manifest with neither stays readable by a binary that knows only schema 2. Such a binary
+    ///     would carry just the seq a collapsed item is filed under and lose the rest of its range.
     /// </summary>
     public static int SchemaVersionFor(ContextManifest manifest)
     {
         ArgumentNullException.ThrowIfNull(manifest);
-        return manifest.Omitted is null ? 2 : 3;
+        return manifest.Omitted is null && !manifest.CurrentInstruction.Any(IsCollapsedInstruction) ? 2 : 3;
     }
 
     /// <summary>
+    ///     The words of a <c>CurrentInstruction</c> item that stands for several older rows, after its count. A row that
+    ///     merely quotes these words is written as schema 3 too, which costs only its readability by a schema 2 binary.
+    /// </summary>
+    public const string CollapsedInstructionWords = " earlier rows of this instruction omitted; ";
+
+    private static bool IsCollapsedInstruction(QuotedItem quote) =>
+        quote.Quote.StartsWith("[… ", StringComparison.Ordinal)
+        && quote.Quote.Contains(CollapsedInstructionWords, StringComparison.Ordinal);
+
+    /// <summary>
     ///     The newest persisted schema version this build reads and writes. 2 adds <c>open_exchanges</c> to the
-    ///     manifest, and 3 adds <c>omitted</c>; a version 1 row still deserializes, with those sections empty. A row is
+    ///     manifest, and 3 adds <c>omitted</c> and collapsed instruction items; a version 1 row still deserializes, with those sections empty. A row is
     ///     written at <see cref="SchemaVersionFor" /> its manifest, not always at this.
     /// </summary>
     /// <remarks>
@@ -553,7 +564,7 @@ public sealed record CompactionCheckpointMessage : IMessage, ICanGetText
         AppendLines(
             sb,
             "Open work",
-            Omitted(omitted.Tasks, "older tasks are on the board but not listed here")
+            Omitted(omitted.Tasks, "more tasks are not listed here")
                 .Concat(
                     Manifest.Tasks.Select(t =>
                         t.Id is null ? $"[{t.Status}] {t.Title}" : $"[{t.Status}] {t.Id}: {t.Title}"

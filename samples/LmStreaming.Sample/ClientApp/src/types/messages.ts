@@ -474,6 +474,11 @@ export interface CompactionCheckpointMessage extends IMessage {
     tasks?: Array<{ id?: string | null; title: string; status: string }>;
     artifacts?: Array<{ path: string; hash?: string | null; origin_seq?: number | null }>;
     agents?: Array<{ agent_id: string; status: string; outcome?: string | null }>;
+    /**
+     * Schema 3 only: how many tasks, artifacts and agents the envelope budget left out of the lists
+     * above (#812). The retained items are the newest; a count can be non-zero with its list empty.
+     */
+    omitted?: { tasks?: number; artifacts?: number; agents?: number } | null;
   };
   narrative: string;
   stats?: { rows_covered?: number; estimated_tokens_before?: number; estimated_tokens_after?: number };
@@ -740,7 +745,8 @@ export function isAgentMessage(msg: IMessage): msg is AgentMessage {
  * .NET reader older than a row skips it rather than adopting a manifest with sections missing. The
  * client is not a reader in that sense: it renders a divider out of `checkpoint_id` and `narrative`,
  * which every version carries, and a version it does not know costs it at most a field it was not
- * going to draw. Failing the match instead would DELETE the divider from the transcript, which is the
+ * going to draw. (It does draw v3's `manifest.omitted` counts; an older client simply shows the
+ * retained items without them.) Failing the match instead would DELETE the divider from the transcript, which is the
  * worse answer — so this accepts the family rather than an exact name.
  */
 export function isCompactionCheckpointMessage(msg: IMessage): msg is CompactionCheckpointMessage {

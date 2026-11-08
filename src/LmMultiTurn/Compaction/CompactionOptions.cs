@@ -178,9 +178,21 @@ public sealed record CompactionOptions
 
     /// <summary>
     ///     An absolute ceiling on the envelope hard cap; null leaves the hard cap to
-    ///     <see cref="CheckpointTokenHardCapRatio"/> alone. Never lowers the hard cap below the target.
+    ///     <see cref="CheckpointTokenHardCapRatio"/> alone. Never lowers the hard cap below the target, so any value at
+    ///     or below the target (1 is the simplest) makes V9 enforce the target, as before #812. 6,000 does not do that
+    ///     below 30k usable, where 20% of the window is under it and over the 15% target.
     /// </summary>
     public long? CheckpointTokenHardCap { get; init; }
+
+    /// <summary>The default of <see cref="CheckpointListFloor"/>.</summary>
+    public const int DefaultCheckpointListFloor = 20;
+
+    /// <summary>
+    ///     Past the envelope hard cap, the open tasks, live agents and artifacts each keep this many before the narrative
+    ///     and the standing instructions pay (spec 679 §3.4); the rest become count lines. A last step still goes below it
+    ///     when nothing else is left.
+    /// </summary>
+    public int CheckpointListFloor { get; init; } = DefaultCheckpointListFloor;
 
     /// <summary>
     ///     Generations after a checkpoint during which no economic compaction runs; also the longest an automatic cut
@@ -274,9 +286,11 @@ public sealed record CompactionOptions
     public const long ScaledCheckpointTokenCapFloor = 1_000;
 
     /// <summary>
-    ///     The envelope hard cap V9 enforces, as a fraction of the usable window, scaled the way the target is (see
-    ///     <see cref="EffectiveCheckpointTokenHardCap"/>). Past the target the budget sheds only what other sources hold;
-    ///     only past this does it trim instructions, the narrative and the open work.
+    ///     The envelope hard cap V9 enforces, as a fraction of the usable window, with the same 1k floor as the target
+    ///     (see <see cref="EffectiveCheckpointTokenHardCap"/>). Unlike the target, which <see cref="CheckpointTokenCap"/>
+    ///     caps at 6k by default, the hard cap has no absolute ceiling unless <see cref="CheckpointTokenHardCap"/> sets
+    ///     one, so it grows with the window (33.9k on a 169.6k usable window). Past the target the budget sheds only what
+    ///     other sources hold; only past this does it trim instructions, the narrative and the open work.
     /// </summary>
     public double CheckpointTokenHardCapRatio { get; init; } = 0.20;
 
@@ -397,7 +411,10 @@ public sealed record CompactionOptions
     /// <summary>R7's preference for a usable window: <c>min(MaxTailTokens, MaxTailRatio × usable)</c>.</summary>
     public long EffectiveMaxTailTokens(long? usableTokens) => Scaled(MaxTailTokens, MaxTailRatio, usableTokens);
 
-    /// <summary>V9's envelope cap for a usable window, never scaled below <see cref="ScaledCheckpointTokenCapFloor"/>.</summary>
+    /// <summary>
+    ///     The envelope target for a usable window, never scaled below <see cref="ScaledCheckpointTokenCapFloor"/>. The
+    ///     envelope budget aims at it, best effort; V9 enforces <see cref="EffectiveCheckpointTokenHardCap"/>.
+    /// </summary>
     public long EffectiveCheckpointTokenCap(long? usableTokens) =>
         usableTokens is null
             ? CheckpointTokenCap
@@ -465,6 +482,7 @@ public sealed record CompactionOptions
             nameof(CheckpointTokenHardCap),
             "must be positive, or null for no absolute ceiling"
         );
+        Require(CheckpointListFloor >= 0, CheckpointListFloor, nameof(CheckpointListFloor), "must not be negative");
         Require(
             MinCompactionGainRatio is >= 0 and < 1,
             MinCompactionGainRatio,

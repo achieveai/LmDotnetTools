@@ -855,6 +855,7 @@ internal sealed class CompactionRuntime
                     TextEstimator = _text,
                 },
                 Assembler = new ManifestAssemblerOptions { OpenExchanges = options.Checks.Rc3OpenExchanges },
+                EnvelopeListFloor = options.CheckpointListFloor,
                 Render = RenderOptions,
                 SummaryTimeout = options.SummaryTimeout,
                 SummaryAttempts = options.SummaryAttempts,
@@ -2510,6 +2511,7 @@ internal sealed class CompactionRuntime
             RequestTokensBefore = requestTokens,
             ViewFixedTokens = fixedTokens,
             ViewEstimator = estimator,
+            ViewUsableTokens = usable,
             SummaryFallback = summaryFallback,
             KnownSummaryFailure = knownSummaryFailure,
         };

@@ -92,8 +92,8 @@ internal static class CheckpointValidator
         var manifest = checkpoint.Manifest;
         var bySeq = context.Rows.ToDictionary(r => r.Seq);
 
-        // V1: schema version known, and the one the manifest needs: a manifest with omissions written as schema 2
-        // would be adopted by a schema 2 reader with its counts silently dropped.
+        // V1: schema version known, and the one the manifest needs: a manifest with omissions or a collapsed instruction
+        // written as schema 2 would be adopted by a schema 2 reader, which loses the counts or the collapsed range.
         var expectedVersion = CompactionCheckpointMessage.SchemaVersionFor(manifest);
         if (checkpoint.SchemaVersion != expectedVersion)
         {

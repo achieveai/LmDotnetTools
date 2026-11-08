@@ -38,8 +38,10 @@ internal static partial class CurrentInstructionQuotes
     /// <param name="collapseOlder">
     ///     For <c>CurrentInstruction</c> only (§2.3): when the rows are still over the budget with each at
     ///     <see cref="MinKeptChars" />, the older rows shrink to their marker, oldest first, and then the oldest collapse
-    ///     into one counted item (<see cref="Collapse" />), so many rows cannot outgrow the envelope. The newest row
-    ///     always keeps its own quote. Standing instructions never collapse: V3 checks each against its row.
+    ///     into one counted item (<see cref="Collapse" />), so many long rows cannot outgrow the budget. The budget sizes
+    ///     quote bodies only: the seq list and framing the rendered section adds per quote are not counted, so many rows
+    ///     each shorter than its own marker are left as they are and can still render past it. The newest row always
+    ///     keeps its own quote. Standing instructions never collapse: V3 checks each against its row.
     /// </param>
     public static IReadOnlyList<QuotedItem> Quote(
         IReadOnlyList<SequencedMessage> rows,
@@ -142,7 +144,7 @@ internal static partial class CurrentInstructionQuotes
     internal static string Collapse(int count, long fromSeq, long toSeq) =>
         string.Create(
             CultureInfo.InvariantCulture,
-            $"[… {count} earlier rows of this instruction omitted; full text: {RecallConversationToolProvider.ToolName} from_seq {fromSeq} to_seq {toSeq}]"
+            $"[… {count}{CompactionCheckpointMessage.CollapsedInstructionWords}full text: {RecallConversationToolProvider.ToolName} from_seq {fromSeq} to_seq {toSeq}]"
         );
 
     /// <summary>The seq range a <see cref="Collapse" /> quote names, or null when <paramref name="quote" /> is not one.</summary>
@@ -160,6 +162,7 @@ internal static partial class CurrentInstructionQuotes
             )
             && long.TryParse(match.Groups["to"].ValueSpan, NumberStyles.None, CultureInfo.InvariantCulture, out var to)
             && from == quote.Seq
+            && to >= from
             ? (from, to)
             : null;
     }
@@ -337,7 +340,9 @@ internal static partial class CurrentInstructionQuotes
         );
 
     [GeneratedRegex(
-        @"^\[… \d+ earlier rows of this instruction omitted; full text: "
+        @"^\[… \d+"
+            + CompactionCheckpointMessage.CollapsedInstructionWords
+            + "full text: "
             + RecallConversationToolProvider.ToolName
             + @" from_seq (?<from>\d+) to_seq (?<to>\d+)\]$",
         RegexOptions.CultureInvariant

@@ -184,6 +184,20 @@ public class CompactionOptionsTests
         o.EffectiveMinTailTokens(null).Should().Be(8_000, "an unknown window keeps the absolute values");
     }
 
+    [Theory]
+    [InlineData(4_000L)]
+    [InlineData(20_000L)]
+    [InlineData(169_600L)]
+    [InlineData(null)]
+    public void EnvelopeHardCap_OfOne_MakesV9EnforceTheTarget_AtEveryWindow(long? usable)
+    {
+        // The documented way back to the pre-#812 V9 limit. A ceiling of 6,000 is not it: below 30k usable the hard cap
+        // would still be 20%, above the 15% target.
+        var o = new CompactionOptions { CheckpointTokenHardCap = 1 };
+
+        o.EffectiveCheckpointTokenHardCap(usable).Should().Be(o.EffectiveCheckpointTokenCap(usable));
+    }
+
     [Fact]
     public void EnvelopeHardCap_Is20PercentOfUsable_ScaledLikeTheTarget_AndNeverBelowIt()
     {
@@ -231,6 +245,7 @@ public class CompactionOptionsTests
     [InlineData(nameof(CompactionOptions.SummaryMaxOutputTokens))]
     [InlineData(nameof(CompactionOptions.SummaryRowCharCap))]
     [InlineData(nameof(CompactionOptions.SummaryPromptMaxChars))]
+    [InlineData(nameof(CompactionOptions.CheckpointListFloor))]
     public void Validate_NamesTheOutOfRangeFitKnob(string option)
     {
         var invalid = option switch
@@ -273,6 +288,7 @@ public class CompactionOptionsTests
                 CheckpointTokenHardCapRatio = 0,
             },
             nameof(CompactionOptions.CheckpointTokenHardCap) => new CompactionOptions { CheckpointTokenHardCap = 0 },
+            nameof(CompactionOptions.CheckpointListFloor) => new CompactionOptions { CheckpointListFloor = -1 },
             _ => new CompactionOptions { CheckpointTokenCapRatio = 0 },
         };
 

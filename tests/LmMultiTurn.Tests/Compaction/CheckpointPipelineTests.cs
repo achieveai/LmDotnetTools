@@ -1251,9 +1251,93 @@ public sealed class CheckpointPipelineTests : IAsyncLifetime
         }
 
         var envelope = checkpoint.RenderEnvelope(CheckpointRenderOptions.Default);
-        envelope.Should().Contain($"[{omitted.Tasks} omitted] older tasks");
+        envelope.Should().Contain($"[{omitted.Tasks} omitted] more tasks");
         envelope.Should().Contain($"[{omitted.Agents} omitted] older agents");
         checkpoint.SchemaVersion.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task Build_AnEnvelopeWithinTheHardCap_IsStillLimitedByTheRoomLeftInTheWindow_ListsFirst()
+    {
+        // V9 would pass this envelope, but the view around it would be refused. The lists pay; the instructions do not.
+        var (thread, board, roster) = LongLived(
+            standingRows: 6,
+            currentRows: 1,
+            files: 0,
+            tasks: 60,
+            agents: 20,
+            standingChars: 250
+        );
+        var cut = LateCut(thread);
+
+        Task<CheckpointBuildResult> BuildAsync(long? usable) =>
+            Pipeline(
+                    new ScriptedSummarizer(_ => throw new HttpRequestException("provider down")),
+                    validation: new CheckpointValidationOptions
+                    {
+                        CheckpointTokenCap = 1_000,
+                        CheckpointTokenHardCap = 4_000,
+                    }
+                )
+                .BuildAsync(
+                    Request(thread.Rows, cut) with
+                    {
+                        Board = board,
+                        Roster = roster,
+                        SummaryFallback = true,
+                        ViewUsableTokens = usable,
+                    }
+                );
+
+        static long Tokens(CheckpointBuildResult build) =>
+            CompactionTokenEstimate.EstimateText(build.Checkpoint!.RenderEnvelope(CheckpointRenderOptions.Default));
+
+        var unlimited = await BuildAsync(usable: null);
+        var after = unlimited.Checkpoint!.Stats.EstimatedTokensAfter;
+        (await BuildAsync(after))
+            .Checkpoint!.Manifest.Omitted.Should()
+            .BeNull("the whole envelope has exactly the room");
+
+        var limited = await BuildAsync(after - 100);
+
+        limited.IsValid.Should().BeTrue(limited.Validation?.Detail);
+        limited.Checkpoint!.Stats.EstimatedTokensAfter.Should().BeLessThanOrEqualTo(after - 100);
+        Tokens(limited).Should().BeGreaterThan(1_000, "the limit never goes below what the budget needs");
+        limited.Checkpoint.Manifest.Omitted!.Tasks.Should().BeGreaterThan(0);
+        limited.Checkpoint.Manifest.Tasks.Count.Should().BeGreaterThanOrEqualTo(20, "the list floor");
+        limited.Checkpoint.Manifest.Instructions.Should().HaveCount(6, "the instructions do not pay for the lists");
+    }
+
+    [Fact]
+    public async Task Build_RoomBelowTheTarget_DoesNotShrinkTheEnvelopeBelowTheTarget()
+    {
+        // A window with less room than the target is refused either way; emptying the envelope would only lose content.
+        var (thread, board, roster) = LongLived(
+            standingRows: 6,
+            currentRows: 1,
+            files: 0,
+            tasks: 10,
+            agents: 0,
+            standingChars: 250
+        );
+
+        var build = await Pipeline(
+                new ScriptedSummarizer(_ => throw new HttpRequestException("provider down")),
+                validation: new CheckpointValidationOptions { CheckpointTokenCap = 4_000 }
+            )
+            .BuildAsync(
+                Request(thread.Rows, LateCut(thread)) with
+                {
+                    Board = board,
+                    Roster = roster,
+                    SummaryFallback = true,
+                    ViewUsableTokens = 1,
+                }
+            );
+
+        build.IsValid.Should().BeTrue(build.Validation?.Detail);
+        build.Checkpoint!.Manifest.Instructions.Should().HaveCount(6);
+        build.Checkpoint.Manifest.Omitted.Should().BeNull();
     }
 
     [Fact]
@@ -1333,6 +1417,65 @@ public sealed class CheckpointPipelineTests : IAsyncLifetime
         second.IsValid.Should().BeTrue(second.Validation?.Detail);
         var carried = second.Checkpoint!.Manifest.Instructions.Select(q => q.Seq).ToHashSet();
         firstCut.CurrentInstruction.Select(r => r.Seq).Should().OnlyContain(seq => carried.Contains(seq));
+    }
+
+    [Fact]
+    public async Task Build_AFallbackOnAChainWithNoNewWrite_KeepsTheArtifactCountThePreviousCheckpointHeld()
+    {
+        // Nothing rebuilds the artifact list: a count the next build forgets is an artifact nobody can tell was left out.
+        var (thread, _, _) = LongLived(standingRows: 0, currentRows: 60, files: 60, tasks: 0, agents: 0);
+        var pipeline = Pipeline(
+            new ScriptedSummarizer(_ => throw new HttpRequestException("provider down")),
+            validation: new CheckpointValidationOptions { CheckpointTokenCap = 1_000 }
+        );
+        var first = await pipeline.BuildAsync(Request(thread.Rows, LateCut(thread)) with { SummaryFallback = true });
+        first.IsValid.Should().BeTrue(first.Validation?.Detail);
+        var inherited = first.Checkpoint!.Manifest.Omitted!.Artifacts;
+        inherited.Should().BePositive();
+
+        _ = thread.Run("run-3").Human("next task").ToolTurns(4);
+        var second = await pipeline.BuildAsync(
+            Request(thread.Rows, LateCut(thread), "cp-2", first.Checkpoint) with
+            {
+                SummaryFallback = true,
+            }
+        );
+
+        second.IsValid.Should().BeTrue(second.Validation?.Detail);
+        var carried = second.Checkpoint!;
+        carried.Manifest.Omitted.Should().NotBeNull();
+        carried.Manifest.Omitted!.Artifacts.Should().BeGreaterThanOrEqualTo(inherited);
+        carried.SchemaVersion.Should().Be(3);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public async Task Build_AHumanRowThatIsLiterallyTheCollapseWording_IsCarriedAsItself(long toSeq)
+    {
+        // Syntax alone is not provenance: a user can paste the marker. Read as metadata, a 1..0 range carried nothing and
+        // the instruction was lost from the chain.
+        var literal = CurrentInstructionQuotes.Collapse(3, 1, toSeq);
+        var thread = new ThreadFixture().Human(literal).ToolTurns(6);
+        var pipeline = Pipeline(new ScriptedSummarizer(_ => throw new HttpRequestException("provider down")));
+        var first = await pipeline.BuildAsync(Request(thread.Rows, LateCut(thread)) with { SummaryFallback = true });
+        first.IsValid.Should().BeTrue(first.Validation?.Detail);
+        first.Checkpoint!.Manifest.CurrentInstruction.Should().ContainSingle().Which.Quote.Should().Be(literal);
+
+        _ = thread.Run("run-2").Human("next task").ToolTurns(4);
+        var second = await pipeline.BuildAsync(
+            Request(thread.Rows, LateCut(thread), "cp-2", first.Checkpoint) with
+            {
+                SummaryFallback = true,
+            }
+        );
+
+        second.IsValid.Should().BeTrue(second.Validation?.Detail);
+        second
+            .Checkpoint!.Manifest.Instructions.Should()
+            .ContainSingle(q => q.Seq == 1)
+            .Which.Quote.Should()
+            .Be(literal);
     }
 
     [Fact]

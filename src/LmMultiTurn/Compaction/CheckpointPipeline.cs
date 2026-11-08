@@ -63,6 +63,9 @@ internal sealed record CheckpointBuildRequest
     /// <summary>How the view sizes a tail row (cleared and trimmed results); null uses the pipeline's estimator.</summary>
     public Func<IMessage, long>? ViewEstimator { get; init; }
 
+    /// <summary>The usable window the view must fit; null when unknown. With the prefix and tail it limits the envelope.</summary>
+    public long? ViewUsableTokens { get; init; }
+
     /// <summary>
     ///     When the summary fails (no answer, a timeout, or a checkpoint that fails validation), build the checkpoint
     ///     without it: the deterministic sections, no model sections, and <see cref="CheckpointPipeline.FallbackNarrative" />
@@ -134,6 +137,9 @@ internal sealed record CheckpointPipelineOptions
     public CheckpointValidationOptions Validation { get; init; } = new();
 
     public ManifestAssemblerOptions Assembler { get; init; } = new();
+
+    /// <summary>The open tasks, live agents and artifacts each section keeps before the narrative pays (spec 679 §3.4).</summary>
+    public int EnvelopeListFloor { get; init; } = CompactionOptions.DefaultCheckpointListFloor;
 
     public Func<IMessage, long> Estimator { get; init; } = CompactionTokenEstimate.Default;
 
@@ -351,7 +357,7 @@ internal sealed class CheckpointPipeline(
                 SummaryFallback = summaryFallback,
             },
         };
-        checkpoint = FitEnvelope(checkpoint, request, summary, summaryFallback is not null);
+        checkpoint = FitEnvelope(checkpoint, request, summary, summaryFallback is not null, tail);
 
         // After is the request the new view sends: the fixed prefix, the envelope and the kept tail. Before and after
         // are then the same kind of number, which is what a "before -> after" display implies.
@@ -403,18 +409,28 @@ internal sealed class CheckpointPipeline(
     }
 
     /// <summary>
-    ///     Shrinks what the chain carries toward the envelope target, and always to the V9 hard cap
-    ///     (<see cref="EnvelopeBudget" />), for the summarised build and the fallback alike. Logs what shrank as counts,
-    ///     never text.
+    ///     Shrinks what the chain carries toward the envelope target, and past it toward the V9 hard cap or the room left
+    ///     in the window, whichever is less and never below the target (<see cref="EnvelopeBudget" />), for the summarised
+    ///     build and the fallback alike. An envelope within the hard cap is still refused if the view around it does not
+    ///     fit, so the room counts. Best effort: what the budget may not shrink can still be over the limit, and over the
+    ///     hard cap V9 then rejects it. Logs what shrank as counts, never text.
     /// </summary>
     private CompactionCheckpointMessage FitEnvelope(
         CompactionCheckpointMessage checkpoint,
         CheckpointBuildRequest request,
         CheckpointSummary summary,
-        bool isFallback
+        bool isFallback,
+        long tailTokens
     )
     {
         var validation = _options.Validation;
+        var limit = validation.EffectiveHardCap;
+        if (request.ViewUsableTokens is { } usable)
+        {
+            var room =
+                usable - (request.ViewFixedTokens ?? 0) - CompactionTokenEstimate.PerMessageOverhead - tailTokens;
+            limit = Math.Max(validation.CheckpointTokenCap, Math.Min(limit, room));
+        }
 
         // V7 is checked before V9 and says the summary model misbehaved: shrinking its narrative would hide that.
         if (validation.TextEstimator(checkpoint.Narrative) > validation.NarrativeTokenCap)
@@ -441,7 +457,8 @@ internal sealed class CheckpointPipeline(
             isFallback ? FallbackNarrative : null,
             seq => bySeq.GetValueOrDefault(seq)?.Text,
             keep => ManifestAssembler.BoundAgents(request.Rows, request.Cut.Seq, request.Roster, summary, keep),
-            validation.EffectiveHardCap
+            limit,
+            _options.EnvelopeListFloor
         );
         if (fit.Shrunk)
         {
@@ -451,7 +468,7 @@ internal sealed class CheckpointPipeline(
                 request.ThreadId,
                 request.RunId,
                 validation.CheckpointTokenCap,
-                validation.EffectiveHardCap,
+                limit,
                 fit.IndexEntriesCoalesced,
                 fit.DecisionsDropped,
                 fit.GoalsDropped,
@@ -479,7 +496,7 @@ internal sealed class CheckpointPipeline(
                 request.ThreadId,
                 request.RunId,
                 fit.InstructionsDropped,
-                validation.EffectiveHardCap,
+                limit,
                 Dropped(InstructionRank.Other).Count,
                 Dropped(InstructionRank.Other),
                 Dropped(InstructionRank.Directive).Count,
@@ -492,14 +509,15 @@ internal sealed class CheckpointPipeline(
         if (!fit.Fits)
         {
             // Only what the budget may not shrink is left: the current instruction, the newest user instruction, what
-            // the model wrote this build, count lines and a one-entry index. V9 rejects the checkpoint next. A fallback
-            // (no model sections) cannot get here for any target the options accept.
+            // the model wrote this build, open exchanges, count lines and a one-entry index. Over the hard cap, V9 rejects
+            // the checkpoint next; within it, only the room in the window was missed. A fallback has no model sections, so it gets here only when the current instruction renders past its
+            // bound (many short rows: the bound sizes quote bodies, not their framing) or open exchanges are large.
             _options.Logger.LogWarning(
                 "Checkpoint {CheckpointId} for thread {ThreadId} run {RunId} is over its {CheckpointTokenHardCap}-token envelope hard cap with every carried section shrunk; tokens by section: {SectionTokens}",
                 request.CheckpointId,
                 request.ThreadId,
                 request.RunId,
-                validation.EffectiveHardCap,
+                limit,
                 EnvelopeBudget.SectionTokens(manifest, narrative, Measure)
             );
         }

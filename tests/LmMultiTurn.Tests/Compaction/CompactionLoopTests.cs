@@ -1701,6 +1701,158 @@ public class CompactionLoopTests
         (await h.StateAsync())!.ConsecutiveFailures.Should().Be(0);
     }
 
+    /// <summary>A store whose conversation has a board of 400 open tasks: more than a 16k window's envelope can list.</summary>
+    private static async Task<InMemoryConversationStore> StoreWithALargeBoardAsync(int tasks = 400)
+    {
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(Thread, new ThreadMetadata { ThreadId = Thread, LastUpdated = 1 }); // a board needs its conversation
+        await ConversationTodoProjection.SaveAsync(
+            store,
+            new TodoBoardSnapshot
+            {
+                ThreadId = Thread,
+                Tasks =
+                [
+                    .. Enumerable
+                        .Range(1, tasks)
+                        .Select(n => new TodoTaskNode
+                        {
+                            Id = $"t{n}",
+                            Title = $"open task {n} " + new string('x', 40),
+                            Status = TodoTaskStatus.NotStarted,
+                        }),
+                ],
+            }
+        );
+        return store;
+    }
+
+    [Fact]
+    public async Task AnEnvelopeBetweenTargetAndHardCap_IsKeptWhole_BecauseTheRuntimeEnforcesTheHardCapNotTheTarget()
+    {
+        // An upper bound cannot tell the two caps apart: an envelope fitted to the smaller target passes it too. A 16k
+        // window has a target of 2,385 and a hard cap of 3,180, and 150 open tasks land between them.
+        const long window = 16_000;
+        const long usable = window - 100;
+        var options = Options(CompactionMode.Compact);
+        var store = await StoreWithALargeBoardAsync(tasks: 150);
+        await using var h = new Harness(EchoThenDone(60), options, _ => window, store: store);
+
+        var completed = await h.RunAsync("start");
+
+        completed.IsError.Should().BeFalse(Describe(h, completed));
+        var target = options.EffectiveCheckpointTokenCap(usable);
+        var hardCap = options.EffectiveCheckpointTokenHardCap(usable);
+        var sizes = (await h.StoredRowsAsync())
+            .OfType<CompactionCheckpointMessage>()
+            .Select(c =>
+                (
+                    Checkpoint: c,
+                    Tokens: CompactionTokenEstimate.EstimateText(c.RenderEnvelope(CheckpointRenderOptions.Default))
+                )
+            )
+            .ToList();
+        sizes.Should().NotBeEmpty(Describe(h, completed));
+        sizes
+            .Should()
+            .Contain(
+                s => s.Tokens > target && s.Tokens <= hardCap && s.Checkpoint.Manifest.Omitted == null,
+                "sizes were {0}",
+                string.Join(", ", sizes.Select(s => s.Tokens))
+            );
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(1L)]
+    public async Task AFixedPrefixNearTheWindow_WithAnEnvelopeBetweenTargetAndHardCap_Fits(long? hardCapCeiling)
+    {
+        // A 32k usable window has a target of 4,800 and a hard cap of 6,400. The pasted instruction is about 26.3k tokens
+        // and cannot be cut or trimmed, and the board lands the envelope between the two caps. An envelope that used all
+        // of the hard cap passed V9 and the view was then refused: the limit is also the room left in the window. Null is
+        // the default; 1 makes V9 enforce the target.
+        const long window = 32_100;
+        var options = Options(CompactionMode.Compact) with { CheckpointTokenHardCap = hardCapCeiling };
+        var store = await StoreWithALargeBoardAsync(tasks: 340);
+        await using var h = new Harness(
+            EchoThenDone(8),
+            options,
+            _ => window,
+            store: store,
+            echo: _ => new string('e', 4_000)
+        );
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+
+        var completed = await h.RunAsync(new string('p', 105_200));
+
+        var sizes = (await h.StoredRowsAsync())
+            .OfType<CompactionCheckpointMessage>()
+            .Select(c => CompactionTokenEstimate.EstimateText(c.RenderEnvelope(CheckpointRenderOptions.Default)));
+        completed.IsError.Should().BeFalse("{0}; envelopes {1}", Describe(h, completed), string.Join(", ", sizes));
+    }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData(1_000, true)]
+    public async Task ABoardOverTheHardCap_ListsDownToTheConfiguredFloorBeforeTheNarrativePays(
+        int? listFloor,
+        bool narrativeTrimmed
+    )
+    {
+        // 1,000 is past the length of every list here, so no list comes down first and the narrative pays, as it did.
+        const long window = 16_000;
+        var options = Options(CompactionMode.Compact);
+        options = listFloor is { } floor ? options with { CheckpointListFloor = floor } : options;
+        var store = await StoreWithALargeBoardAsync();
+        await using var h = new Harness(EchoThenDone(60), options, _ => window, store: store);
+
+        var completed = await h.RunAsync("start");
+
+        completed.IsError.Should().BeFalse(Describe(h, completed));
+        var checkpoint = (await h.StoredRowsAsync()).OfType<CompactionCheckpointMessage>().First();
+        checkpoint.Manifest.Omitted.Should().NotBeNull();
+        checkpoint
+            .Narrative.StartsWith('…')
+            .Should()
+            .Be(narrativeTrimmed, "the narrative was: {0}", checkpoint.Narrative);
+    }
+
+    [Fact]
+    public async Task ASchemaThreeCheckpoint_IsAdoptedAfterARestart_AndTheFirstRequestStillCountsTheOmittedTasks()
+    {
+        const long window = 16_000;
+        var options = Options(CompactionMode.Compact);
+        var store = await StoreWithALargeBoardAsync();
+        string? activeBeforeRestart;
+        var first = new Harness(EchoThenDone(60), options, _ => window, store: store);
+        try
+        {
+            var completed = await first.RunAsync("start");
+            completed.IsError.Should().BeFalse(Describe(first, completed));
+            activeBeforeRestart = (await first.StateAsync())!.ActiveCheckpointId;
+            activeBeforeRestart.Should().NotBeNull();
+            (await first.StoredRowsAsync())
+                .OfType<CompactionCheckpointMessage>()
+                .Single(c => c.CheckpointId == activeBeforeRestart)
+                .SchemaVersion.Should()
+                .Be(3);
+        }
+        finally
+        {
+            await first.DisposeAsync();
+        }
+
+        await using var second = new Harness(EchoThenDone(0), options, _ => window, store: store);
+        (await second.RunAsync("continue")).IsError.Should().BeFalse();
+
+        (await second.StateAsync())!.ActiveCheckpointId.Should().Be(activeBeforeRestart);
+        second
+            .Agent.Requests[0]
+            .OfType<TextMessage>()
+            .Should()
+            .Contain(m => m.Text.Contains("omitted] more tasks are not listed here", StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -1713,26 +1865,7 @@ public class CompactionLoopTests
         // the next turn did the same. Now the checkpoint lists the newest open tasks and counts the rest.
         const long window = 16_000;
         const long usable = window - 100;
-        var store = new InMemoryConversationStore();
-        await store.SaveMetadataAsync(Thread, new ThreadMetadata { ThreadId = Thread, LastUpdated = 1 }); // a board needs its conversation
-        await ConversationTodoProjection.SaveAsync(
-            store,
-            new TodoBoardSnapshot
-            {
-                ThreadId = Thread,
-                Tasks =
-                [
-                    .. Enumerable
-                        .Range(1, 400)
-                        .Select(n => new TodoTaskNode
-                        {
-                            Id = $"t{n}",
-                            Title = $"open task {n} " + new string('x', 40),
-                            Status = TodoTaskStatus.NotStarted,
-                        }),
-                ],
-            }
-        );
+        var store = await StoreWithALargeBoardAsync();
         await using var h = new Harness(EchoThenDone(60), Options(CompactionMode.Compact), _ => window, store: store);
         if (!summarizerHealthy)
         {

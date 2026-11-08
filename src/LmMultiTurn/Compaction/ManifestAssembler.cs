@@ -86,13 +86,17 @@ internal static class ManifestAssembler
         // Human instructions are never silently lost (R5): the previous current instruction and every human row of the
         // newly covered runs that the new current instruction does not quote are carried as standing instructions,
         // deterministically, so a summary that skips them (or a fallback with no summary) cannot drop them. A collapsed
-        // previous item stands for every human row of its range.
+        // previous item stands for every human row of its range; a row whose own text is the collapse wording is quoted
+        // whole, so it stands for itself only. Its own seq is carried either way.
         var carried = Bounded(
             [
                 .. (previous?.CurrentInstruction ?? [])
                     .SelectMany(q =>
-                        CurrentInstructionQuotes.CollapsedRange(q) is var (from, to)
-                            ? rows.Where(r => r.Seq >= from && r.Seq <= to && r.IsHumanRow).Select(r => r.Seq)
+                        !string.Equals(q.Quote, bySeq.GetValueOrDefault(q.Seq)?.Text, StringComparison.Ordinal)
+                        && CurrentInstructionQuotes.CollapsedRange(q) is var (from, to)
+                            ? rows.Where(r => r.Seq >= from && r.Seq <= to && r.IsHumanRow)
+                                .Select(r => r.Seq)
+                                .Append(q.Seq)
                             : [q.Seq]
                     )
                     .Concat(covered.Where(r => r.IsHumanRow).Select(r => r.Seq))
@@ -164,6 +168,11 @@ internal static class ManifestAssembler
             OpenExchanges = options.OpenExchanges ? Compaction.OpenExchanges.Find(rows, cut.Seq) : [],
             Index = BuildIndex(previous?.Index, previousBoundary, covered, cut.Seq, summary.Headlines, options),
             Recovery = cut.Recovery,
+            // Artifacts carry from checkpoint to checkpoint, so the ones a previous checkpoint counted away stay counted.
+            // Tasks and agents are rebuilt whole from the board and the roster each time.
+            Omitted = previous?.Omitted is { Artifacts: > 0 } inherited
+                ? new ManifestOmissions { Artifacts = inherited.Artifacts }
+                : null,
         };
 
         if (dropped.Count > 0)
