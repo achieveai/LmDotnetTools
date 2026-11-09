@@ -5109,22 +5109,18 @@ public sealed class MultiTurnAgentLoop
             return Task.CompletedTask;
         }
 
-        var append = AppendPersistedAsync(persisted, ct);
-        _compaction.TrackPersisted(message, persisted.Id, append);
-        return append;
+        _compaction.TrackPersisted(message, persisted.Id);
+        return _compaction.Saver!.Enqueue(persisted);
     }
 
-    private async Task AppendPersistedAsync(PersistedMessage persisted, CancellationToken ct)
-    {
-        try
-        {
-            await Store!.AppendMessagesAsync(ThreadId, [persisted], ct);
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(ex, "Failed to persist message");
-        }
-    }
+    /// <inheritdoc />
+    protected override Task AppendDeferredPlaceholderAsync(PersistedMessage persisted, CancellationToken ct) =>
+        _compaction?.Saver is { } saver
+            ? saver.SaveNowAsync(persisted, ct)
+            : base.AppendDeferredPlaceholderAsync(persisted, ct);
+
+    /// <inheritdoc />
+    protected override Task FlushPendingSavesAsync() => _compaction?.Saver?.FlushAsync() ?? Task.CompletedTask;
 
     private IReadOnlyList<AgentRef> RosterForCompaction() =>
         SubAgentManager is null
