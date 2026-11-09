@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -72,7 +73,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         );
 
         // DOWNSTREAM: Assign message ordering to replies
-        var orderedReplies = AssignMessageOrdering(replies, _logger);
+        var orderedReplies = AssignMessageOrdering(replies, modifiedContext.Options, _logger);
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
@@ -120,7 +121,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         );
 
         // DOWNSTREAM: Assign message ordering to streaming replies
-        return AssignMessageOrderingStreaming(streamingResponse, _logger);
+        return AssignMessageOrderingStreaming(streamingResponse, modifiedContext.Options, _logger);
     }
 
     #region Downstream: Assign Message Ordering
@@ -147,9 +148,21 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     private static IEnumerable<IMessage> ProcessMessageForOrdering(
         IMessage message,
         OrderingState state,
+        GenerateReplyOptions? options,
         ILogger logger
     )
     {
+        // A plural tool call with no id would skip the expansion below, so it would be saved but never run
+        // (#502). Only the plural forms: an id on other messages changes how the next request is grouped.
+        if (
+            message is ToolsCallMessage or ToolsCallUpdateMessage
+            && string.IsNullOrEmpty(message.GenerationId)
+            && !string.IsNullOrEmpty(options?.GenerationId)
+        )
+        {
+            message = message.WithIds(options);
+        }
+
         // Only assign ordering to messages with a GenerationId
         if (string.IsNullOrEmpty(message.GenerationId))
         {
@@ -458,13 +471,17 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     /// <summary>
     /// Assigns messageOrderIdx and chunkIdx to messages with the same GenerationId
     /// </summary>
-    private static IEnumerable<IMessage> AssignMessageOrdering(IEnumerable<IMessage> messages, ILogger logger)
+    private static IEnumerable<IMessage> AssignMessageOrdering(
+        IEnumerable<IMessage> messages,
+        GenerateReplyOptions? options,
+        ILogger logger
+    )
     {
         var state = new OrderingState();
 
         foreach (var message in messages)
         {
-            foreach (var processedMessage in ProcessMessageForOrdering(message, state, logger))
+            foreach (var processedMessage in ProcessMessageForOrdering(message, state, options, logger))
             {
                 yield return processedMessage;
             }
@@ -476,6 +493,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     /// </summary>
     private static async IAsyncEnumerable<IMessage> AssignMessageOrderingStreaming(
         IAsyncEnumerable<IMessage> messages,
+        GenerateReplyOptions? options,
         ILogger logger
     )
     {
@@ -483,7 +501,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
 
         await foreach (var message in messages)
         {
-            foreach (var processedMessage in ProcessMessageForOrdering(message, state, logger))
+            foreach (var processedMessage in ProcessMessageForOrdering(message, state, options, logger))
             {
                 yield return processedMessage;
             }

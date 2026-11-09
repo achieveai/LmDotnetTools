@@ -150,7 +150,12 @@ public sealed class InMemoryConversationStore
     /// <inheritdoc />
     public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default)
     {
-        _metadata[threadId] = metadata;
+        // Under the update's lock: a save landing between an update's read and write would be lost (#745).
+        lock (_metadataLock)
+        {
+            _metadata[threadId] = metadata;
+        }
+
         return Task.CompletedTask;
     }
 
