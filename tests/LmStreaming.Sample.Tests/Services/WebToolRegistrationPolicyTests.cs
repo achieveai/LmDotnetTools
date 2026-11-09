@@ -1,6 +1,8 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.Misc.Configuration;
+using AchieveAi.LmDotnetTools.Misc.Utils;
 using AchieveAi.LmDotnetTools.Misc.Web.Jina;
 using LmStreaming.Sample.Services;
 
@@ -424,6 +426,97 @@ public class WebToolRegistrationPolicyTests
 
         RegisteredNames(registry).Should().BeEmpty();
         statuses.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void FallbackWebTools_RegisterHidden_KeepsTheHandlers_AndLeavesThemOutOfTheRequestTools()
+    {
+        var registry = new FunctionRegistry();
+        _ = registry.AddFunction(new FunctionContract { Name = "calculate" }, (_, _, _) => null!, "Sample");
+        var (provider, options) = Backend(ApiKey);
+        var tools = new FallbackWebTools(registry, null, provider, options, NullLoggerFactory.Instance, false);
+
+        var hidden = tools.RegisterHidden();
+
+        hidden.Select(c => c.Name).Should().BeEquivalentTo(WebSearchTool.ToolName, WebFetchTool.ToolName);
+        registry.BuildContracts().Select(c => c.Name).Should().Equal("calculate");
+        registry.Build().Item2.Keys.Should().Contain([WebSearchTool.ToolName, WebFetchTool.ToolName, "calculate"]);
+    }
+
+    [Fact]
+    public void FallbackWebTools_RegisterHidden_LeavesARegisteredToolAdvertised()
+    {
+        var registry = new FunctionRegistry();
+        _ = registry.AddFunction(new FunctionContract { Name = WebSearchTool.ToolName }, (_, _, _) => null!, "Sample");
+        var (provider, options) = Backend(ApiKey);
+        var tools = new FallbackWebTools(registry, null, provider, options, NullLoggerFactory.Instance, false);
+
+        var hidden = tools.RegisterHidden();
+
+        hidden.Select(c => c.Name).Should().Equal(WebFetchTool.ToolName);
+        registry.BuildContracts().Select(c => c.Name).Should().Equal(WebSearchTool.ToolName);
+    }
+
+    [Fact]
+    public void FallbackWebTools_RegisterHidden_AddsTheToolsOnce()
+    {
+        var registry = new FunctionRegistry();
+        var (provider, options) = Backend(ApiKey);
+        var tools = new FallbackWebTools(registry, null, provider, options, NullLoggerFactory.Instance, false);
+
+        _ = tools.RegisterHidden();
+        var again = tools.RegisterHidden();
+
+        again.Should().HaveCount(2);
+        registry.Build().Item2.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public void FallbackWebTools_KeepsHiddenToolsFromSubAgents_AndWhatTheyAlreadyExcluded()
+    {
+        var (provider, options) = Backend(ApiKey);
+        var tools = new FallbackWebTools(
+            new FunctionRegistry(),
+            null,
+            provider,
+            options,
+            NullLoggerFactory.Instance,
+            false
+        );
+        _ = tools.RegisterHidden();
+        var subAgents = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>(),
+            MaxConcurrentSubAgents = 1,
+            NonInheritedToolNames = ["kept"],
+        };
+
+        tools
+            .WithoutHiddenTools(subAgents)!
+            .NonInheritedToolNames.Should()
+            .BeEquivalentTo("kept", WebSearchTool.ToolName, WebFetchTool.ToolName);
+    }
+
+    [Fact]
+    public void FallbackWebTools_WithHostedSearch_HidesJinaUnderItsOwnName_AndLeavesTheHostedToolAdvertised()
+    {
+        var registry = new FunctionRegistry();
+        _ = registry.AddFunction(new FunctionContract { Name = WebSearchTool.ToolName }, (_, _, _) => null!, "hosted");
+        var (provider, options) = Backend(ApiKey);
+        var tools = new FallbackWebTools(
+            registry,
+            null,
+            provider,
+            options,
+            NullLoggerFactory.Instance,
+            searchIsHosted: true
+        );
+
+        var hidden = tools.RegisterHidden();
+
+        hidden.Select(c => c.Name).Should().BeEquivalentTo(FallbackWebTools.JinaSearchName, WebFetchTool.ToolName);
+        registry.BuildContracts().Select(c => c.Name).Should().Equal(WebSearchTool.ToolName);
+        registry.Build().Item2.Keys.Should().Contain(FallbackWebTools.JinaSearchName);
     }
 
     private static (JinaWebProvider Provider, WebToolsOptions Options) Backend(string? key)
