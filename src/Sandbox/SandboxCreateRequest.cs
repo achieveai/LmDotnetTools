@@ -89,7 +89,7 @@ public sealed class SandboxCreateRequest
     public SandboxWebhookSettings? Webhook { get; }
 
     /// <summary>Skill tiers for every agent of the sandbox (gateway ADR 0041), or <c>null</c> to omit the field.</summary>
-    public SandboxSkillsPolicy? Skills { get; }
+    public SandboxSkillsPolicy? Skills { get; private set; }
 
     /// <summary>Optional HTTP MCP library setup (gateway v0.1.18). Contains policy, never credentials.</summary>
     public SandboxMcpPolicy? Mcp { get; init; }
@@ -145,5 +145,13 @@ public sealed class SandboxCreateRequest
         Env = env is null
             ? new Dictionary<string, string>(StringComparer.Ordinal)
             : new Dictionary<string, string>(env, StringComparer.Ordinal);
+    }
+
+    /// <summary>A copy of this request with <see cref="Skills"/> replaced; this request is unchanged.</summary>
+    public SandboxCreateRequest WithSkills(SandboxSkillsPolicy? skills)
+    {
+        var copy = (SandboxCreateRequest)MemberwiseClone();
+        copy.Skills = skills;
+        return copy;
     }
 }

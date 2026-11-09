@@ -1,5 +1,3 @@
-using System.Net.Http.Json;
-using System.Text.Json;
 using FluentAssertions;
 using Xunit;
 
@@ -202,55 +200,12 @@ public sealed class SandboxAgentLiveContractTests
     }
 
     /// <summary>One raw MCP <c>tools/call</c>; the agent header is omitted for the default agent.</summary>
-    private static async Task<(bool IsError, string Text)> CallToolAsync(
+    private static Task<(bool IsError, string Text)> CallToolAsync(
         string sessionId,
         string? agentId,
         string tool,
         object arguments
-    )
-    {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-        using var request = new HttpRequestMessage(
-            HttpMethod.Post,
-            new Uri(new Uri(Environment.GetEnvironmentVariable("SANDBOX_BASE_URL")!.Trim()), "mcp")
-        )
-        {
-            Content = JsonContent.Create(
-                new
-                {
-                    jsonrpc = "2.0",
-                    id = 1,
-                    method = "tools/call",
-                    @params = new { name = tool, arguments },
-                }
-            ),
-        };
-        request.Headers.Add("X-Sbx-App-Id", Environment.GetEnvironmentVariable("SANDBOX_APP_ID")!.Trim());
-        request.Headers.Add("X-Sbx-App-Key", Environment.GetEnvironmentVariable("SANDBOX_APP_KEY")!.Trim());
-        request.Headers.Add("X-Session-ID", sessionId);
-        request.Headers.Add("Accept", "application/json, text/event-stream");
-        if (agentId is not null)
-        {
-            request.Headers.Add(SandboxAgentId.HeaderName, agentId);
-        }
-
-        using var response = await http.SendAsync(request);
-        response.EnsureSuccessStatusCode();
-        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        if (json.RootElement.TryGetProperty("error", out var error))
-        {
-            throw new InvalidOperationException($"{tool} JSON-RPC error: {error}");
-        }
-
-        var result = json.RootElement.GetProperty("result");
-        var text = string.Concat(
-            result
-                .GetProperty("content")
-                .EnumerateArray()
-                .Select(c => c.TryGetProperty("text", out var t) ? t.GetString() : "")
-        );
-        return (result.TryGetProperty("isError", out var isError) && isError.GetBoolean(), text);
-    }
+    ) => SandboxMcpRpc.CallToolAsync(sessionId, agentId, tool, arguments);
 
     private static async Task<SandboxException?> CaptureAsync(Func<Task> act)
     {

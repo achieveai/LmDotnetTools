@@ -127,9 +127,9 @@ public record ChatMode
 
     /// <summary>
     /// Loaded-vs-available skill tiers for conversations in this mode: which skills each agent's
-    /// <c>Skill</c> tool lists up front, with every other admitted skill found through
-    /// <c>SearchSkill</c>. <see langword="null"/> (every mode predating this field) turns the feature off
-    /// and keeps today's behaviour; it is not written, so an untiered mode's JSON is unchanged.
+    /// <c>Skill</c> tool lists up front, with every other admitted skill found through the gateway's
+    /// <c>SearchSkills</c> (a session without it uses <c>SearchSkill</c>). <see langword="null"/> (every mode
+    /// predating this field) turns the feature off and keeps today's behaviour; it is not written, so an untiered mode's JSON is unchanged.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ModeTiers? Tiers { get; init; }

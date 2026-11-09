@@ -77,6 +77,7 @@ Workspace Agent mode is configured through the **`SandboxGateway`** section of
 | `SkillsDir` | — | Directory whose `<skill>/SKILL.md` files become the gateway's `Skill` tool (becomes `SKILLS_DIRS`). The repo ships `sandbox-skills/repo-explorer` and `sandbox-skills/workspace-summary`. |
 | `PluginsDirs` | — | One or more comma-separated `alias=path` entries pointing at Claude-plugin **marketplace** directories (becomes `PLUGINS_DIRS`). The gateway loads each plugin's skills + `.mcp.json` MCP servers. See [Plugins](#plugins-claude-plugin-marketplaces). |
 | `MarketplaceStorePath` | `marketplace-store` | Where an auto-spawned gateway keeps the git marketplaces this app registers (becomes `MARKETPLACE_STORE_PATH`, made absolute against the app's binaries folder). Empty turns the feature off. See [Git marketplaces registered by this app](#git-marketplaces-registered-by-this-app). |
+| `OfferSearchTools` | `false` | Ask each new sandbox for the gateway's `SearchSkills` tool and explicitly not `SearchAgents`, on gateway 0.1.21 or later. This sample's `appsettings.json` sets it to `true`. `false` only stops the request: a gateway env default or an existing session can still list the tools, and what a session lists decides which skill search it uses. |
 | `LocalSandboxPython` | — | Absolute path to the Python interpreter that runs a workspace `.py` mini app on Windows (becomes `LOCAL_SANDBOX_PYTHON`). Must sit outside every sandbox-writable directory, or the gateway refuses it. Only needed for workspace `.py` apps. |
 
 Example (`appsettings.Development.json`):

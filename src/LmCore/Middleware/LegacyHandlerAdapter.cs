@@ -77,7 +77,17 @@ public static class LegacyHandlerAdapter
     public static ToolHandler ToNewHandler(Func<string, Task<string>> legacy)
     {
         ArgumentNullException.ThrowIfNull(legacy);
-        return async (args, _, _) => ToolHandlerResult.FromText(await legacy(args));
+        return ToNewHandler((args, _) => legacy(args));
+    }
+
+    /// <summary>
+    /// The text-result shape for a handler that can be cancelled: the dispatcher's token reaches
+    /// <paramref name="handler"/>. Conversion is the same as the token-less overload.
+    /// </summary>
+    public static ToolHandler ToNewHandler(Func<string, CancellationToken, Task<string>> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return async (args, _, ct) => ToolHandlerResult.FromText(await handler(args, ct));
     }
 
     /// <summary>
@@ -90,9 +100,19 @@ public static class LegacyHandlerAdapter
     public static ToolHandler ToNewHandler(Func<string, Task<ToolCallResult>> legacy)
     {
         ArgumentNullException.ThrowIfNull(legacy);
-        return async (args, _, _) =>
+        return ToNewHandler((args, _) => legacy(args));
+    }
+
+    /// <summary>
+    /// The <see cref="ToolCallResult"/> shape for a handler that can be cancelled: the dispatcher's
+    /// token reaches <paramref name="handler"/>. Conversion is the same as the token-less overload.
+    /// </summary>
+    public static ToolHandler ToNewHandler(Func<string, CancellationToken, Task<ToolCallResult>> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return async (args, _, ct) =>
         {
-            var tcr = await legacy(args);
+            var tcr = await handler(args, ct);
             return new ToolHandlerResult.Resolved(
                 new ToolHandlerResultPayload(
                     Text: tcr.Result,

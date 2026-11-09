@@ -64,6 +64,22 @@ public class LegacyHandlerAdapterTests
     }
 
     [Fact]
+    public void ToNewHandler_NullTextHandlerTakingAToken_ThrowsAtConstruction()
+    {
+        var act = () => LegacyHandlerAdapter.ToNewHandler((Func<string, CancellationToken, Task<string>>)null!);
+
+        act.Should().Throw<ArgumentNullException>().Which.ParamName.Should().Be("handler");
+    }
+
+    [Fact]
+    public void ToNewHandler_NullToolCallResultHandlerTakingAToken_ThrowsAtConstruction()
+    {
+        var act = () => LegacyHandlerAdapter.ToNewHandler((Func<string, CancellationToken, Task<ToolCallResult>>)null!);
+
+        act.Should().Throw<ArgumentNullException>().Which.ParamName.Should().Be("handler");
+    }
+
+    [Fact]
     public async Task ToNewHandler_FromToolCallResult_ProjectsPayloadFields()
     {
         // The legacy ToolCallResult shape carries text + content blocks + error fields. The

@@ -90,8 +90,8 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         // When omitting the server prefix, drive contracts and both handler maps from a single
         // naming map so their names stay consistent (the contract name doubles as the dispatch key).
         IEnumerable<FunctionContract> functionContracts;
-        IDictionary<string, Func<string, Task<string>>> functionMap;
-        IDictionary<string, Func<string, Task<ToolCallResult>>> multiModalMap;
+        IDictionary<string, Func<string, CancellationToken, Task<string>>> functionMap;
+        IDictionary<string, Func<string, CancellationToken, Task<ToolCallResult>>> multiModalMap;
         if (omitServerPrefix)
         {
             var namingMap = BuildOmitPrefixNamingMap(toolsByServer, logger);
@@ -419,13 +419,13 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     /// <summary>
     ///     Creates text-only function handlers from cached tool listings.
     /// </summary>
-    private static IDictionary<string, Func<string, Task<string>>> CreateFunctionMapFromCache(
+    private static IDictionary<string, Func<string, CancellationToken, Task<string>>> CreateFunctionMapFromCache(
         Dictionary<string, McpClient> mcpClients,
         Dictionary<string, List<McpClientTool>> toolsByServer,
         ILogger<McpClientFunctionProvider> logger
     )
     {
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>();
+        var functionMap = new Dictionary<string, Func<string, CancellationToken, Task<string>>>();
 
         foreach (var (serverId, tools) in toolsByServer)
         {
@@ -451,13 +451,16 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     ///     Creates multimodal function handlers from cached tool listings.
     ///     These handlers return ToolCallResult with ContentBlocks preserving images.
     /// </summary>
-    private static IDictionary<string, Func<string, Task<ToolCallResult>>> CreateMultiModalFunctionMapFromCache(
+    private static IDictionary<
+        string,
+        Func<string, CancellationToken, Task<ToolCallResult>>
+    > CreateMultiModalFunctionMapFromCache(
         Dictionary<string, McpClient> mcpClients,
         Dictionary<string, List<McpClientTool>> toolsByServer,
         ILogger<McpClientFunctionProvider> logger
     )
     {
-        var functionMap = new Dictionary<string, Func<string, Task<ToolCallResult>>>();
+        var functionMap = new Dictionary<string, Func<string, CancellationToken, Task<ToolCallResult>>>();
 
         foreach (var (serverId, tools) in toolsByServer)
         {
@@ -482,7 +485,10 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     /// <summary>
     ///     Creates multimodal function handlers using the naming map from collision detection.
     /// </summary>
-    private static IDictionary<string, Func<string, Task<ToolCallResult>>> CreateMultiModalFunctionMapWithNamingMap(
+    private static IDictionary<
+        string,
+        Func<string, CancellationToken, Task<ToolCallResult>>
+    > CreateMultiModalFunctionMapWithNamingMap(
         Dictionary<string, McpClient> mcpClients,
         Dictionary<string, List<McpClientTool>> toolsByServer,
         Dictionary<(string serverId, string toolName), string> namingMap,
@@ -490,7 +496,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         ILogger<McpClientFunctionProvider> logger
     )
     {
-        var functionMap = new Dictionary<string, Func<string, Task<ToolCallResult>>>();
+        var functionMap = new Dictionary<string, Func<string, CancellationToken, Task<ToolCallResult>>>();
 
         foreach (var (serverId, tools) in toolsByServer)
         {
@@ -535,14 +541,14 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     ///     Creates a text-only handler delegate for an MCP tool.
     ///     Extracts only text content from the tool response.
     /// </summary>
-    private static Func<string, Task<string>> CreateTextOnlyHandler(
+    private static Func<string, CancellationToken, Task<string>> CreateTextOnlyHandler(
         McpClient client,
         McpClientTool tool,
         string serverId,
         ILogger<McpClientFunctionProvider> logger
     )
     {
-        return async argsJson =>
+        return async (argsJson, ct) =>
         {
             var stopwatch = Stopwatch.StartNew();
             try
@@ -563,7 +569,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                     string.Join(", ", args.Keys)
                 );
 
-                var response = await client.CallToolAsync(tool.Name, args);
+                var response = await client.CallToolAsync(tool.Name, args, cancellationToken: ct);
 
                 logger.LogDebug(
                     "Tool response received: ToolName={ToolName}, ContentCount={ContentCount}",
@@ -592,6 +598,11 @@ public partial class McpClientFunctionProvider : IFunctionProvider
 
                 return result;
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // The run was stopped: this must end the run, not become a tool result for the model.
+                throw;
+            }
             catch (Exception ex)
             {
                 stopwatch.Stop();
@@ -619,21 +630,21 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     ///     Creates a multimodal handler delegate for an MCP tool.
     ///     Returns ToolCallResult preserving both text and image content blocks.
     /// </summary>
-    private static Func<string, Task<ToolCallResult>> CreateMultiModalHandler(
+    private static Func<string, CancellationToken, Task<ToolCallResult>> CreateMultiModalHandler(
         McpClient client,
         McpClientTool tool,
         string serverId,
         ILogger<McpClientFunctionProvider> logger
     )
     {
-        return async argsJson =>
+        return async (argsJson, ct) =>
         {
             var stopwatch = Stopwatch.StartNew();
             try
             {
                 var args = ParseToolArguments(argsJson, tool.Name, serverId, logger);
 
-                var response = await client.CallToolAsync(tool.Name, args);
+                var response = await client.CallToolAsync(tool.Name, args, cancellationToken: ct);
 
                 // Extract text content
                 var textResult = string.Join(
@@ -661,6 +672,11 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                     textResult,
                     imageBlocks.Count > 0 ? imageBlocks : null
                 );
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // The run was stopped: this must end the run, not become a tool result for the model.
+                throw;
             }
             catch (Exception ex)
             {
@@ -833,7 +849,11 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         );
 
         var toolsByServer = await FetchToolsByServerAsync(mcpClients, logger, cancellationToken);
-        return CreateMultiModalFunctionMapFromCache(mcpClients, toolsByServer, logger);
+        return CreateMultiModalFunctionMapFromCache(mcpClients, toolsByServer, logger)
+            .ToDictionary(
+                entry => entry.Key,
+                Func<string, Task<ToolCallResult>> (entry) => args => entry.Value(args, CancellationToken.None)
+            );
     }
 
     /// <summary>
@@ -1208,7 +1228,9 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     /// <summary>
     ///     Creates function delegates using the naming map from collision detection
     /// </summary>
-    private static Task<IDictionary<string, Func<string, Task<string>>>> CreateFunctionMapWithNamingMapAsync(
+    private static Task<
+        IDictionary<string, Func<string, CancellationToken, Task<string>>>
+    > CreateFunctionMapWithNamingMapAsync(
         Dictionary<string, McpClient> mcpClients,
         Dictionary<string, List<McpClientTool>> toolsByServer,
         Dictionary<(string serverId, string toolName), string> namingMap,
@@ -1217,7 +1239,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         CancellationToken cancellationToken = default
     )
     {
-        var functionMap = new Dictionary<string, Func<string, Task<string>>>();
+        var functionMap = new Dictionary<string, Func<string, CancellationToken, Task<string>>>();
 
         foreach (var (serverId, tools) in toolsByServer)
         {
@@ -1274,7 +1296,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             }
         }
 
-        return Task.FromResult<IDictionary<string, Func<string, Task<string>>>>(functionMap);
+        return Task.FromResult<IDictionary<string, Func<string, CancellationToken, Task<string>>>>(functionMap);
     }
 
     [GeneratedRegex(@"[^a-zA-Z0-9_-]")]

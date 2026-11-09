@@ -1563,7 +1563,10 @@ try
                                         )
                                     ),
                                 transportHandler: sp.GetKeyedService<HttpMessageHandler>(SandboxMcpTransportHandlerKey),
-                                agentIdResolver: () => SandboxSubAgentIdentity.ForCurrentFlow(threadId)
+                                agentIdResolver: () => SandboxSubAgentIdentity.ForCurrentFlow(threadId),
+                                // No tiers on this path, so a gateway search tool (which a gateway env default can
+                                // list unasked) would be a new tool for the model, and SearchAgents finds nothing.
+                                contractSink: (contract, _) => CapabilityTiers.IsGatewaySearchTool(contract.Name)
                             );
                             copilotResources.AddRange(clients.Cast<IAsyncDisposable>());
                             var (contracts, handlers) = sandboxTools.Build();
@@ -1888,7 +1891,7 @@ try
                 McpClient? tierSkillClient = null;
                 // STAGED, not configured: the conversation's live tiers move only when this build becomes the
                 // conversation's (the commits below). A refused switch or a throw disposes the stage unused, so the
-                // live loop keeps its Skill, SearchSkill, agent id and view exactly as they were.
+                // live loop keeps its Skill, its selected skill search, agent id and view exactly as they were.
                 using var tierStage = capabilityTiers
                     .StageAsync(
                         modeTiers is null ? null : ToTierSettings(modeTiers, workspaceTiers),
@@ -1996,7 +1999,7 @@ try
                         $"{sandboxLifetime.GatewayBaseUrl}/mcp",
                         sandboxMcpHeaders,
                         loggerFactory,
-                        toolNames: caps.SandboxToolAllowList,
+                        toolNames: CapabilityTiers.WithGatewaySearchTools(caps.SandboxToolAllowList),
                         omitServerPrefix: true,
                         // The tracker records which conversation started each background task, so its
                         // task_completed (which names no agent for a primary) reaches this conversation.
@@ -2022,19 +2025,28 @@ try
                             SandboxSubAgentIdentity.ForCurrentFlow(threadId) ?? capabilityTiers.RootGatewayAgentId,
                         // Tiered: the root's Skill is served by the tiers instance, which swaps its text when
                         // a rotation changes what the root lists; every other tool registers as always and is
-                        // reported to the stage. Untiered: registered as before.
-                        contractSink: tierStage.IsActive
-                            ? (contract, handler) =>
+                        // reported to the stage. Untiered: registered as before. Either way the stage decides the
+                        // gateway's search tools first, so an untiered mode and SearchAgents never reach a model.
+                        contractSink: (contract, handler) =>
+                        {
+                            if (tierStage.TryDropGatewaySearchTool(contract.Name))
                             {
-                                if (tierStage.TryAttachRootSkill(contract, handler))
-                                {
-                                    return true;
-                                }
+                                return true;
+                            }
 
-                                sandboxToolContracts.Add(contract);
+                            if (!tierStage.IsActive)
+                            {
                                 return false;
                             }
-                            : null
+
+                            if (tierStage.TryAttachRootSkill(contract, handler))
+                            {
+                                return true;
+                            }
+
+                            sandboxToolContracts.Add(contract);
+                            return false;
+                        }
                     );
 
                     if (sandboxClients.Count > 0)
@@ -2361,8 +2373,9 @@ try
                     // Skill tiers per sub-agent: a spawning child that inherits Skill/SearchSkill gets its own
                     // (its own view, gateway id and Skill text). This conversation's tiers instance answers null
                     // while inert, so an untiered child inherits exactly as before. A template whose tools list
-                    // names Skill also gets SearchSkill: its Skill lists only the Loaded skills, and SearchSkill
-                    // finds the rest. An untiered parent has no SearchSkill, so nothing is added there.
+                    // names Skill also gets a skill search (the gateway's SearchSkills, else SearchSkill): its Skill
+                    // lists only the Loaded skills, and the search finds the rest. An untiered parent has neither,
+                    // so nothing is added there.
                     // Sub-agent tiers: the root's Agent tool lists the templates the tiers name (null while
                     // untiered: every template, as before). The root's agent and plugin searches are never
                     // inherited; SearchTool and ExecuteTool are, and each child gets its own over its own view. A
@@ -2375,7 +2388,12 @@ try
                             InheritedToolOverride = capabilityTiers.ForInheritedToolAsync,
                             CompanionToolNames = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
                             {
-                                [CapabilityTiers.SkillToolName] = [CapabilityTiers.SearchSkillToolName],
+                                // Only one of the two skill searches exists in a session; the parent cannot grant the other.
+                                [CapabilityTiers.SkillToolName] =
+                                [
+                                    CapabilityTiers.SearchSkillToolName,
+                                    CapabilityTiers.GatewaySearchSkillsToolName,
+                                ],
                                 [CapabilityTiers.ExecuteToolToolName] = [CapabilityTiers.SearchToolToolName],
                             },
                             ListedTemplates = capabilityTiers.ListedTemplates,

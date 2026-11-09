@@ -1626,6 +1626,44 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             SandboxInfo info;
             try
             {
+                if (_options.OfferSearchTools)
+                {
+                    Version? gatewayVersion = null;
+                    try
+                    {
+                        gatewayVersion = await client.GetGatewayVersionAsync(ct).ConfigureAwait(false);
+                    }
+                    catch (SandboxException ex) when (!ct.IsCancellationRequested)
+                    {
+                        // The version only decides whether to ask for the search tools, and a GET that timed out does
+                        // not prove the POST would. A gateway that is really down fails the create below, which reports
+                        // it with the right error, so a stalled gateway can cost two budgets here: the probe's, then
+                        // the create's own fresh one.
+                        _logger.LogWarning(
+                            ex,
+                            "Sandbox gateway version probe failed for workspace {WorkspaceId}",
+                            workspaceId
+                        );
+                    }
+
+                    if (SandboxClient.SupportsSearchTools(gatewayVersion))
+                    {
+                        createRequest = createRequest.WithSkills(
+                            new SandboxSkillsPolicy(searchTool: true, agentsSearchTool: false)
+                        );
+                    }
+                    else
+                    {
+                        _logger.LogWarning(
+                            "Sandbox gateway version {GatewayVersion} is older than {MinimumVersion} or unknown: "
+                                + "the create for workspace {WorkspaceId} omits the search-tool request flags",
+                            gatewayVersion,
+                            SandboxClient.SearchToolsMinimumVersion,
+                            workspaceId
+                        );
+                    }
+                }
+
                 info = await client.CreateAsync(createRequest, ct).ConfigureAwait(false);
             }
             catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.TransportTimeout)
