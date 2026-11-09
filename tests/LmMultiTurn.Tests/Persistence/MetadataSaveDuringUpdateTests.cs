@@ -25,7 +25,7 @@ public class MetadataSaveDuringUpdateTests
         var saveCalled = 0;
         Exception? saveError = null;
 
-        // Warms the save path, so nothing but the store's lock can make the save below wait.
+        // Warms the save path, so a first-call pause cannot use up the check below.
         await store.SaveMetadataAsync(
             "thread-warm-up",
             new ThreadMetadata { ThreadId = "thread-warm-up", LastUpdated = 1 }
@@ -97,9 +97,10 @@ public class MetadataSaveDuringUpdateTests
                 .Should()
                 .BeTrue("the save has to reach the store");
 
-            // The save is waiting now, so a store with a lock keeps it waiting until the update is released.
+            // Slow I/O also shows as a thread wait, so this has to outlast a slow save without a lock. A locked
+            // save cannot finish before the release below, so a passing run always takes the full 2 s.
             saveFinished
-                .Wait(250)
+                .Wait(TimeSpan.FromSeconds(2))
                 .Should()
                 .BeFalse("a save must wait for an update that is between its read and its write");
         }
