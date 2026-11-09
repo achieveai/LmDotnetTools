@@ -236,7 +236,7 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
     ///     <paramref name="expression" /> for each case as <c>c</c>. <c>passes(f)</c> is true unless <c>f()</c> raises
     ///     ReviewError; the script's <c>pr</c> is 17.
     /// </summary>
-    private static async Task<bool[]> RunAsync(string python, string[] names, string expression, string cases)
+    internal static async Task<bool[]> RunAsync(string python, string[] names, string expression, string cases)
     {
         var script = Path.Combine(Path.GetTempPath(), $"reviewd-sandbox-{Guid.NewGuid():N}.py");
         using (
