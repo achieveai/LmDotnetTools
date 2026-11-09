@@ -2205,7 +2205,8 @@ try
                         enabledWebTools,
                         jinaWebProvider,
                         webToolsOptions,
-                        loggerFactory
+                        loggerFactory,
+                        hostedSearch.Registered
                     );
                     providerAgent = WithConfiguredModelFallback(
                         sp,
@@ -4710,7 +4711,8 @@ public partial class Program
     ///     tools; any other target gets <paramref name="webTools" /> in its own request, so a mode that lists
     ///     web search keeps it after a hop. If such a target could not search (no <c>JINA_API_KEY</c>), it is
     ///     skipped with a warning, because an answer that silently lost its search can read as sourced. A
-    ///     mode with no tool list promises no search, so that target still answers, with a warning.
+    ///     mode with no tool list promises no search, so that target still answers, with a warning. Copilot's
+    ///     hosted search never counts here, because the outage behind a hop takes it down too.
     /// </remarks>
     internal static IStreamingAgent WithConfiguredModelFallback(
         IServiceProvider sp,
@@ -4805,11 +4807,7 @@ public partial class Program
                         options with
                         {
                             BuiltInTools = targetBuiltIns,
-                            Functions = FallbackWebTools.ShapeFunctions(
-                                options.Functions,
-                                hasNativeSearch,
-                                hiddenWebTools
-                            ),
+                            Functions = webTools.ShapeFunctions(options.Functions, hasNativeSearch, hiddenWebTools),
                             ExtraProperties = options
                                 .ExtraProperties.RemoveRange(ReasoningExtraPropertyKeys)
                                 .SetItems(targetReasoning),

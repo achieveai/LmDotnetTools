@@ -490,6 +490,28 @@ public class WebToolRegistrationPolicyTests
             .BeEquivalentTo("kept", WebSearchTool.ToolName, WebFetchTool.ToolName);
     }
 
+    [Fact]
+    public void FallbackWebTools_WithHostedSearch_HidesJinaUnderItsOwnName_AndLeavesTheHostedToolAdvertised()
+    {
+        var registry = new FunctionRegistry();
+        _ = registry.AddFunction(new FunctionContract { Name = WebSearchTool.ToolName }, (_, _, _) => null!, "hosted");
+        var (provider, options) = Backend(ApiKey);
+        var tools = new FallbackWebTools(
+            registry,
+            null,
+            provider,
+            options,
+            NullLoggerFactory.Instance,
+            searchIsHosted: true
+        );
+
+        var hidden = tools.RegisterHidden();
+
+        hidden.Select(c => c.Name).Should().BeEquivalentTo(FallbackWebTools.JinaSearchName, WebFetchTool.ToolName);
+        registry.BuildContracts().Select(c => c.Name).Should().Equal(WebSearchTool.ToolName);
+        registry.Build().Item2.Keys.Should().Contain(FallbackWebTools.JinaSearchName);
+    }
+
     private static (JinaWebProvider Provider, WebToolsOptions Options) Backend(string? key)
     {
         var options = new WebToolsOptions { JinaApiKey = key };

@@ -43,6 +43,8 @@ public sealed class ProgramModelFallbackTests : LoggingTestBase
     private readonly RecordingLoggerFactory _loggers = new();
     private readonly RecordingAgent _primary;
     private string? _jinaKey = FakeJinaKey;
+    private bool _noSearchProvider;
+    private bool _searchIsHosted;
 
     public ProgramModelFallbackTests(ITestOutputHelper output)
         : base(output)
@@ -346,43 +348,16 @@ public sealed class ProgramModelFallbackTests : LoggingTestBase
     [Fact]
     public async Task ANativeAnthropicPrimaryDown_TheFallbackSearches_AndTheRecoveredPrimaryReadsTheResult()
     {
-        const string searchResponse =
-            """{"data":[{"title":"Found on the web","url":"https://example.test/a","description":"result text"}]}""";
-        var handler = FakeHttpMessageHandler.CreateRequestCaptureHandler(searchResponse, out var search);
-        var options = new WebToolsOptions { JinaApiKey = FakeJinaKey };
         var primary = new ScriptedProvider(null, [new TextMessage { Text = "final", Role = Role.Assistant }]);
         var fallback = new ScriptedProvider([SearchCall()]);
-        var agent = global::Program.WithConfiguredModelFallback(
-            Services(Registry(), [new KeyValuePair<string, string?>("LmStreaming:ModelFallback:anthropic:0", "test")]),
+
+        var search = await RunATurnThroughAHopAsync(
             "anthropic",
             primary,
-            _ => fallback,
-            ResearchTools,
-            new FallbackWebTools(
-                _functions,
-                ResearchTools,
-                new JinaWebProvider(new HttpClient(handler), options),
-                options,
-                _loggers
-            )
+            fallback,
+            new GenerateReplyOptions { ModelId = "claude", BuiltInTools = [new AnthropicWebSearchTool()] }
         );
-        await using var loop = new MultiTurnAgentLoop(
-            agent,
-            _functions,
-            "native-primary-down",
-            defaultOptions: new GenerateReplyOptions
-            {
-                ModelId = "claude",
-                BuiltInTools = [new AnthropicWebSearchTool()],
-            }
-        );
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        _ = loop.RunAsync(cts.Token);
 
-        var input = new UserInput([new TextMessage { Text = "search it", Role = Role.User }]);
-        await foreach (var _ in loop.ExecuteRunAsync(input, cts.Token)) { }
-
-        await cts.CancelAsync();
         fallback.Options.Should().ContainSingle();
         Names(fallback.Options[0]!.Functions).Should().Contain(WebSearchTool.ToolName);
         fallback.Options[0]!.BuiltInTools.Should().BeNull();
@@ -397,6 +372,116 @@ public sealed class ProgramModelFallbackTests : LoggingTestBase
             .ContainSingle(r => r.ToolCallId == "search-1")
             .Which.Result.Should()
             .Contain("Found on the web");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AModeWithoutSearch_GivesTheTargetNoWebFunctionOrHandler(bool listsACalculator)
+    {
+        var target = Agent("test");
+        string[] modeTools = listsACalculator ? ["calculator"] : [];
+
+        await FallBackAsync(Build(Registry(), modeTools, ("0", "test")), new GenerateReplyOptions());
+
+        target.Calls.Should().Be(1);
+        string[] webTools = [WebSearchTool.ToolName, WebFetchTool.ToolName];
+        Names(target.LastOptions!.Functions).Should().NotContain(webTools);
+        _functions.Build().Item2.Keys.Should().NotContain(webTools);
+    }
+
+    [Fact]
+    public async Task AModeListingOnlyTheBuiltInSearchName_StillGivesTheTargetSearch()
+    {
+        var target = Agent("test");
+
+        await FallBackAsync(Build(Registry(), ["web_search"], ("0", "test")), new GenerateReplyOptions());
+
+        Names(target.LastOptions!.Functions).Should().Contain(WebSearchTool.ToolName);
+    }
+
+    [Fact]
+    public async Task WithAKeyButNoSearchProvider_AModeThatListsSearch_SkipsTheTargetBeforeBuildingIt()
+    {
+        _noSearchProvider = true;
+        _ = Agent("test");
+        var later = Agent("test-anthropic");
+        var agent = Build(Registry(), ResearchTools, ("0", "test"), ("1", "test-anthropic"));
+
+        await FallBackAsync(agent, new GenerateReplyOptions());
+
+        _built.Should().Equal("test-anthropic");
+        later.Calls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task AHostedSearchPrimaryDown_TheHopSearchesThroughJina_NotTheHostedTool()
+    {
+        var hostedCalls = 0;
+        _ = _functions.AddFunction(
+            Tool(WebSearchTool.ToolName),
+            (_, _, _) =>
+            {
+                hostedCalls++;
+                return null!;
+            },
+            "hosted"
+        );
+        var primary = new ScriptedProvider(null, [new TextMessage { Text = "final", Role = Role.Assistant }]);
+        var fallback = new ScriptedProvider([SearchCall(FallbackWebTools.JinaSearchName)]);
+
+        var search = await RunATurnThroughAHopAsync(
+            "copilot-primary",
+            primary,
+            fallback,
+            new GenerateReplyOptions { ModelId = "copilot-model" },
+            searchIsHosted: true
+        );
+
+        Names(fallback.Options[0]!.Functions)
+            .Should()
+            .Contain(FallbackWebTools.JinaSearchName)
+            .And.NotContain(WebSearchTool.ToolName);
+        Names(primary.Options[0]!.Functions)
+            .Should()
+            .Contain(WebSearchTool.ToolName)
+            .And.NotContain(FallbackWebTools.JinaSearchName);
+        search.RequestBody.Should().Contain("dotnet release");
+        hostedCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task WithoutAJinaKey_AHostedSearchPrimary_SkipsTheTargetThatOnlyHadTheHostedTool()
+    {
+        _jinaKey = null;
+        _searchIsHosted = true;
+        _ = _functions.AddFunction(Tool(WebSearchTool.ToolName), (_, _, _) => null!, "hosted");
+        _ = Agent("test");
+        var later = Agent("test-anthropic");
+        var agent = Build(Registry(), ResearchTools, ("0", "test"), ("1", "test-anthropic"));
+
+        await FallBackAsync(agent, new GenerateReplyOptions());
+
+        _built.Should().Equal("test-anthropic");
+        later.Calls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task WithoutAJinaKey_AHostedSearchPrimary_AModeWithNoToolList_AnswersWithoutTheHostedTool()
+    {
+        _jinaKey = null;
+        _searchIsHosted = true;
+        _ = _functions.AddFunction(Tool(WebSearchTool.ToolName), (_, _, _) => null!, "hosted");
+        var target = Agent("test");
+
+        await FallBackAsync(
+            Build(Registry(), null, ("0", "test")),
+            new GenerateReplyOptions { Functions = [Tool(WebSearchTool.ToolName), Tool("calculate")] }
+        );
+
+        Names(target.LastOptions!.Functions).Should().Contain("calculate").And.NotContain(WebSearchTool.ToolName);
+        Names(_primary.LastOptions!.Functions).Should().Contain(WebSearchTool.ToolName);
+        _loggers.Warnings.Should().ContainSingle(w => w.Contains("without web search"));
     }
 
     [Theory]
@@ -469,8 +554,62 @@ public sealed class ProgramModelFallbackTests : LoggingTestBase
                     : throw new InvalidOperationException($"No agent can be built for {id}.");
             },
             allowList,
-            new FallbackWebTools(_functions, allowList, new JinaWebProvider(options), options, _loggers)
+            new FallbackWebTools(
+                _functions,
+                allowList,
+                _noSearchProvider ? null : new JinaWebProvider(options),
+                options,
+                _loggers,
+                _searchIsHosted
+            )
         );
+    }
+
+    /// <summary>Runs one turn through the real loop: the first scripted primary call is the outage.</summary>
+    private async Task<CapturedRequestContainer> RunATurnThroughAHopAsync(
+        string primaryId,
+        ScriptedProvider primary,
+        ScriptedProvider fallback,
+        GenerateReplyOptions defaultOptions,
+        bool searchIsHosted = false
+    )
+    {
+        const string searchResponse =
+            """{"data":[{"title":"Found on the web","url":"https://example.test/a","description":"result text"}]}""";
+        var handler = FakeHttpMessageHandler.CreateRequestCaptureHandler(searchResponse, out var search);
+        var options = new WebToolsOptions { JinaApiKey = FakeJinaKey };
+        var agent = global::Program.WithConfiguredModelFallback(
+            Services(
+                Registry(),
+                [new KeyValuePair<string, string?>($"LmStreaming:ModelFallback:{primaryId}:0", "test")]
+            ),
+            primaryId,
+            primary,
+            _ => fallback,
+            ResearchTools,
+            new FallbackWebTools(
+                _functions,
+                ResearchTools,
+                new JinaWebProvider(new HttpClient(handler), options),
+                options,
+                _loggers,
+                searchIsHosted
+            )
+        );
+        await using var loop = new MultiTurnAgentLoop(
+            agent,
+            _functions,
+            "primary-down",
+            defaultOptions: defaultOptions
+        );
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        _ = loop.RunAsync(cts.Token);
+
+        var input = new UserInput([new TextMessage { Text = "search it", Role = Role.User }]);
+        await foreach (var _ in loop.ExecuteRunAsync(input, cts.Token)) { }
+
+        await cts.CancelAsync();
+        return search;
     }
 
     private ServiceProvider Services(ProviderRegistry registry, IEnumerable<KeyValuePair<string, string?>> settings) =>
@@ -484,10 +623,10 @@ public sealed class ProgramModelFallbackTests : LoggingTestBase
 
     private static string[] Names(FunctionContract[]? functions) => [.. (functions ?? []).Select(f => f.Name)];
 
-    private static ToolCallMessage SearchCall() =>
+    private static ToolCallMessage SearchCall(string name = WebSearchTool.ToolName) =>
         new()
         {
-            FunctionName = WebSearchTool.ToolName,
+            FunctionName = name,
             FunctionArgs = """{"query":"dotnet release"}""",
             ToolCallId = "search-1",
             Role = Role.Assistant,

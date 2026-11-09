@@ -594,6 +594,70 @@ public class ModelFallbackChainTests
         probe.Ended.Should().Be(0);
     }
 
+    [Fact]
+    public async Task DisposingAnUnreadReply_ThroughTheRegisteredMiddleware_CallsNoProvider()
+    {
+        var backup = new ScriptedAgent(Reply("from the backup"));
+        var primary = new ScriptedAgent(Reply("answer"));
+        var agent = primary.WithMiddleware(new ModelFallbackMiddleware([new FallbackTarget("backup-model", backup)]));
+
+        var reply = await agent.GenerateReplyStreamingAsync(
+            Prompt,
+            new GenerateReplyOptions { ModelId = "primary-model" }
+        );
+        await reply.GetAsyncEnumerator().DisposeAsync();
+
+        primary.Calls.Should().Be(0);
+        backup.Calls.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(false, 1)]
+    [InlineData(true, 1)]
+    [InlineData(false, 2)]
+    [InlineData(true, 2)]
+    public async Task AReadThatSucceedsAfterCancellation_HandsOnNothingMore_AndDoesNotFallBack(
+        bool throughTheEnumerationToken,
+        int cancelledOnRead
+    )
+    {
+        using var stop = new CancellationTokenSource();
+        var provider = new DisposeCountingStream
+        {
+            Messages = 2,
+            OnRead = read =>
+            {
+                if (read == cancelledOnRead)
+                {
+                    stop.Cancel();
+                }
+            },
+        };
+        var backup = new ScriptedAgent(Reply("from the backup"));
+        var middleware = new ModelFallbackMiddleware([new FallbackTarget("backup-model", backup)]);
+        var reply = await middleware.InvokeStreamingAsync(
+            Context("primary-model"),
+            new ScriptedAgent(_ => provider),
+            throughTheEnumerationToken ? CancellationToken.None : stop.Token
+        );
+        var seen = new List<IMessage>();
+
+        var read = async () =>
+        {
+            await foreach (
+                var message in reply.WithCancellation(throughTheEnumerationToken ? stop.Token : CancellationToken.None)
+            )
+            {
+                seen.Add(message);
+            }
+        };
+
+        _ = await read.Should().ThrowAsync<OperationCanceledException>();
+        seen.Should().HaveCount(cancelledOnRead - 1);
+        provider.Disposals.Should().Be(1);
+        backup.Calls.Should().Be(0);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -1030,10 +1094,15 @@ public class ModelFallbackChainTests
         }
     }
 
-    /// <summary>A one-message provider stream that counts every dispose; an iterator would hide a second one.</summary>
+    /// <summary>A provider stream that counts every dispose; an iterator would hide a second one.</summary>
     private sealed class DisposeCountingStream : IAsyncEnumerable<IMessage>, IAsyncEnumerator<IMessage>
     {
-        private bool _read;
+        private int _reads;
+
+        public int Messages { get; init; } = 1;
+
+        /// <summary>Runs inside each read, and the read still succeeds, as with a provider that ignores its token.</summary>
+        public Action<int>? OnRead { get; init; }
 
         public int Disposals { get; private set; }
 
@@ -1043,9 +1112,9 @@ public class ModelFallbackChainTests
 
         public ValueTask<bool> MoveNextAsync()
         {
-            var moved = !_read;
-            _read = true;
-            return ValueTask.FromResult(moved);
+            _reads++;
+            OnRead?.Invoke(_reads);
+            return ValueTask.FromResult(_reads <= Messages);
         }
 
         public ValueTask DisposeAsync()

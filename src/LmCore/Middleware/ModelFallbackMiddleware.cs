@@ -212,6 +212,8 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
         {
             while (hasMessage)
             {
+                // A provider that ignores its token can still answer after the caller stopped the turn.
+                stop.Token.ThrowIfCancellationRequested();
                 yield return fallbackModelId is null ? reply.Current : CreditUsage(reply.Current, fallbackModelId);
                 hasMessage = await reply.MoveNextAsync();
             }
