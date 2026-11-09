@@ -944,7 +944,8 @@ internal static class ReviewBatch
                         ],
                         live["headSha"]?.GetValue<string>(),
                         limit,
-                        now()
+                        now(),
+                        attempt
                     )
                 )
                 {

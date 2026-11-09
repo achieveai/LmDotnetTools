@@ -1535,6 +1535,7 @@ public sealed class ReviewdRunnerTests
     [Theory]
     [InlineData("fresh", "age-excluded", 0)]
     [InlineData("failed-released", "age-excluded", 0)]
+    [InlineData("readmitted", "verified", 3)]
     [InlineData("admitted", "verified", 3)]
     [InlineData("prepared", "held", 0)]
     [InlineData("review-send-pending", "held", 0)]
@@ -1552,10 +1553,17 @@ public sealed class ReviewdRunnerTests
                 new JsonObject
                 {
                     ["slot"] = 0,
-                    ["stage"] = scenario == "admitted" ? "review-running" : scenario,
-                    ["cleanupState"] = scenario == "failed-released" ? "released" : "owned",
+                    ["stage"] = scenario switch
+                    {
+                        "admitted" => "review-running",
+                        "readmitted" => "failed-released",
+                        _ => scenario,
+                    },
+                    ["cleanupState"] = scenario is "failed-released" or "readmitted" ? "released" : "owned",
                     ["claimToken"] = "token",
                     ["reviewInputId"] = scenario == "admitted" ? "original" : null,
+                    ["readmittedHead"] = scenario == "readmitted" ? new string('a', 40) : null,
+                    ["readmittedAt"] = scenario == "readmitted" ? batch.Now.AddHours(-1).ToString("O") : null,
                 }
             );
         batch.Eligibility = pr =>
@@ -3149,12 +3157,13 @@ public sealed class ReviewdRunnerTests
     [InlineData("no-offset")]
     [InlineData("wrong-head")]
     [InlineData("old-pushed-recently")]
+    [InlineData("old-readmitted")]
     public async Task Runner_creation_age_checks_live_before_claim_and_initial_send_without_releasing_prepared_owner(
         string scenario
     )
     {
         // An old PR whose current head was pushed within the limit is admitted like a recent one.
-        var admitted = scenario is "recent" or "old-pushed-recently";
+        var admitted = scenario is "recent" or "old-pushed-recently" or "old-readmitted";
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-age-{Guid.NewGuid():N}.db");
         var repo = PrCommands.ParseRepo("org/project/Nova");
         var now = DateTimeOffset.Parse("2026-10-07T22:00:00Z");
@@ -3192,7 +3201,7 @@ public sealed class ReviewdRunnerTests
                 reads++;
                 var created = scenario switch
                 {
-                    "old" or "old-pushed-recently" => now.AddHours(-73).ToString("O"),
+                    "old" or "old-pushed-recently" or "old-readmitted" => now.AddHours(-73).ToString("O"),
                     "future" => now.AddSeconds(1).ToString("O"),
                     "missing" => null,
                     "no-offset" => "2026-10-07T21:00:00",
@@ -3242,6 +3251,22 @@ public sealed class ReviewdRunnerTests
                     },
                 }
             );
+            if (scenario == "old-readmitted")
+                await store.SetAsync(
+                    attemptKey,
+                    new JsonObject
+                    {
+                        ["repository"] = repo.DisplayName,
+                        ["prId"] = "17",
+                        ["slot"] = 2,
+                        ["headSha"] = new string('a', 40),
+                        ["stage"] = "failed-released",
+                        ["cleanupState"] = "released",
+                        ["claimToken"] = "earlier",
+                        ["readmittedHead"] = new string('a', 40),
+                        ["readmittedAt"] = now.AddHours(-1).ToString("O"),
+                    }
+                );
             var options = CliOptions.Parse([
                 "review",
                 "run",
@@ -3287,6 +3312,12 @@ public sealed class ReviewdRunnerTests
                 owner!["state"]!.GetValue<string>().Should().Be("owned");
                 if (scenario == "setup-expired")
                     attempt!["reviewIdempotencyKey"].Should().BeNull();
+                if (scenario == "old-readmitted")
+                {
+                    // Both halves carry over, and the readmit time is kept rather than refreshed, so it still expires.
+                    attempt!["readmittedHead"]!.GetValue<string>().Should().Be(new string('a', 40));
+                    attempt["readmittedAt"]!.GetValue<string>().Should().Be(now.AddHours(-1).ToString("O"));
+                }
             }
             else
             {
