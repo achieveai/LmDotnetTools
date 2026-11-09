@@ -25,6 +25,21 @@ public class McpClientToolCancellationTests
     private static readonly TimeSpan HangBound = TimeSpan.FromSeconds(20);
 
     [Fact]
+    public async Task ToolCall_TokenAlreadyCancelled_ThrowsAndSendsNoToolCall()
+    {
+        var gateway = new ScriptedGateway(StallBeforeHeadersAsync);
+        await using var tool = await ConnectAsync(gateway);
+        using var run = new CancellationTokenSource();
+        await run.CancelAsync();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            tool.Handler("{}", new ToolCallContext(), run.Token).WaitAsync(HangBound)
+        );
+
+        Assert.Equal(0, gateway.ToolCallCount);
+    }
+
+    [Fact]
     public async Task ToolCall_StalledBeforeResponseHeaders_EndsOnTheRunToken()
     {
         var gateway = new ScriptedGateway(StallBeforeHeadersAsync);
@@ -180,6 +195,10 @@ public class McpClientToolCancellationTests
     private sealed class ScriptedGateway(Func<string, CancellationToken, Task<HttpResponseMessage>> onToolCall)
         : HttpMessageHandler
     {
+        private int _toolCallCount;
+
+        public int ToolCallCount => Volatile.Read(ref _toolCallCount);
+
         public TaskCompletionSource ToolCallReceived { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         protected override async Task<HttpResponseMessage> SendAsync(
@@ -214,6 +233,7 @@ public class McpClientToolCancellationTests
                         $$$"""{"tools":[{"name":"{{{ToolName}}}","description":"Stalls","inputSchema":{"type":"object"}}]}"""
                     );
                 case "tools/call":
+                    _ = Interlocked.Increment(ref _toolCallCount);
                     ToolCallReceived.TrySetResult();
                     return await onToolCall(id, cancellationToken);
                 default:
