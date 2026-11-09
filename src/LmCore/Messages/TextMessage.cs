@@ -14,6 +14,13 @@ public record TextMessage : IMessage, ICanGetText
     [JsonPropertyName("isThinking")]
     public bool IsThinking { get; init; }
 
+    /// <summary>
+    /// True when a Stop cut this text short: it is what the user had already seen, not a finished reply.
+    /// </summary>
+    [JsonPropertyName("isInterrupted")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool IsInterrupted { get; init; }
+
     public string? GetText()
     {
         return Text;

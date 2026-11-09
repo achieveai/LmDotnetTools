@@ -261,12 +261,13 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
     {
         while (!ct.IsCancellationRequested)
         {
-            if (!await InputReader.WaitToReadAsync(ct))
+            // Held until it reaches history, so a stop inside StartRunAsync leaves it for the next run.
+            var batch = await TakeNextInputBatchAsync(ct);
+            if (batch == null)
             {
                 break;
             }
 
-            _ = TryDrainInputs(out var batch);
             if (batch.Count == 0)
             {
                 continue;
@@ -302,13 +303,7 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                 queueDepth
             );
 
-            foreach (var input in batch)
-            {
-                foreach (var msg in input.Input.Messages)
-                {
-                    AddToHistory(msg);
-                }
-            }
+            AppendRetainedInputsToHistory();
 
             var streamMetrics = new RunStreamMetrics();
             var runTimer = Stopwatch.StartNew();

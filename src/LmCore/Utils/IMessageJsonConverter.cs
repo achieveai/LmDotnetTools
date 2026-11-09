@@ -304,6 +304,11 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             return CompactionStatusMessage.TypeDiscriminator;
         }
 
+        if (type == typeof(ProviderRetryMessage))
+        {
+            return ProviderRetryMessage.TypeDiscriminator;
+        }
+
         if (type == typeof(AgentMessage))
         {
             return "agent";
@@ -481,10 +486,12 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             "conversation_todo" => typeof(ConversationTodoMessage),
             ContextPressureMessage.TypeDiscriminator => typeof(ContextPressureMessage),
             CompactionStatusMessage.TypeDiscriminator => typeof(CompactionStatusMessage),
+            ProviderRetryMessage.TypeDiscriminator => typeof(ProviderRetryMessage),
             // Every checkpoint discriminator this build can read in full. Adding a version here is
             // what makes THIS build read it; omitting an older one would orphan rows already on disk.
             CompactionCheckpointMessage.TypeDiscriminator => typeof(CompactionCheckpointMessage),
             CompactionCheckpointMessage.TypeDiscriminatorV2 => typeof(CompactionCheckpointMessage),
+            CompactionCheckpointMessage.TypeDiscriminatorV3 => typeof(CompactionCheckpointMessage),
             _ => null,
         };
     }

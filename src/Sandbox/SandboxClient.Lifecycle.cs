@@ -39,7 +39,12 @@ public sealed partial class SandboxClient
         }
 
         var payload = await ReadSandboxResponseOrThrowAsync(response, "sandbox creation", ct).ConfigureAwait(false);
-        var info = ToSandboxInfo(payload, "sandbox creation", (int)response.StatusCode);
+        var info = ToSandboxInfo(
+            payload,
+            "sandbox creation",
+            (int)response.StatusCode,
+            sentSearchFlags: request.Skills is { SearchTool: not null } or { AgentsSearchTool: not null }
+        );
         if (request.WorkingDir is { } workingDir)
         {
             // Before seeding the mount cache: a sandbox whose working directory was not honored is deleted, not used.
@@ -210,7 +215,9 @@ public sealed partial class SandboxClient
                     skills.Included.Count > 0
                         ? [.. skills.Included]
                         : null,
-                    skills.UnlistedHint
+                    skills.UnlistedHint,
+                    skills.SearchTool,
+                    skills.AgentsSearchTool
                 )
                 : null,
             Mcp: request.Mcp is { } mcp
@@ -259,7 +266,12 @@ public sealed partial class SandboxClient
             rule.Priority
         );
 
-    private static SandboxInfo ToSandboxInfo(CreateSandboxResponseDto dto, string operation, int statusCode) =>
+    private static SandboxInfo ToSandboxInfo(
+        CreateSandboxResponseDto dto,
+        string operation,
+        int statusCode,
+        bool sentSearchFlags = false
+    ) =>
         new(
             dto.SessionId,
             dto.ContainerId,
@@ -278,7 +290,7 @@ public sealed partial class SandboxClient
                 ? null
                 : SelectNonNullOrThrow(dto.Partition, static key => key, $"the partition of {operation}", statusCode),
             ToWebhookInfo(dto.Webhook, operation, statusCode),
-            ToSkillsPolicy(dto.Skills, operation, statusCode)
+            ToSkillsPolicy(dto.Skills, operation, statusCode, sentSearchFlags)
         )
         {
             Mcp = TryToMcpResolvedPolicy(dto.Mcp, statusCode),
@@ -332,9 +344,17 @@ public sealed partial class SandboxClient
 
     /// <summary>
     /// Maps the create response's resolved <c>skills</c> policy. A missing or unknown default tier, or
-    /// <c>unavailable</c> (which the gateway never stores), is <see cref="SandboxErrorKind.Protocol"/>.
+    /// <c>unavailable</c> (which the gateway never stores), is <see cref="SandboxErrorKind.Protocol"/>. The gateway
+    /// leaves a false search flag off its response, and an older gateway has no such field, so absent is ambiguous.
+    /// A create that sent a flag settles it: that gateway accepted the fields, so an absent one is off and reusing
+    /// the policy keeps it off. Anywhere else it stays <see langword="null"/>.
     /// </summary>
-    private static SandboxSkillsPolicy? ToSkillsPolicy(SkillsPolicyDto? dto, string operation, int statusCode)
+    private static SandboxSkillsPolicy? ToSkillsPolicy(
+        SkillsPolicyDto? dto,
+        string operation,
+        int statusCode,
+        bool sentSearchFlags
+    )
     {
         if (dto is null)
         {
@@ -360,7 +380,13 @@ public sealed partial class SandboxClient
             );
         }
 
-        return new SandboxSkillsPolicy(tier, included, dto.UnlistedHint);
+        return new SandboxSkillsPolicy(
+            tier,
+            included,
+            dto.UnlistedHint,
+            sentSearchFlags ? dto.SearchTool ?? false : dto.SearchTool,
+            sentSearchFlags ? dto.AgentsSearchTool ?? false : dto.AgentsSearchTool
+        );
     }
 
     /// <summary>The gateway's lowercase spelling of a tier (<c>skills/tiers.rs</c>, <c>SkillTier::as_str</c>).</summary>

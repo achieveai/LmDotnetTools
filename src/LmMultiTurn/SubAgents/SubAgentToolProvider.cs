@@ -1430,8 +1430,9 @@ public class SubAgentToolProvider : IFunctionProvider
     /// Deliberately does not await <see cref="AgentDispatch.Delivery"/>. Waiting for the recipient to
     /// accept would re-couple the sender's turn to the recipient's lifecycle — exactly what the
     /// asynchronous model exists to avoid — and a recipient that is busy is not a send failure. For the
-    /// same reason it takes no cancellation token: the tool call's token dies with this turn, and an
-    /// admitted message must still be delivered after the sender has moved on.
+    /// same reason it takes no cancellation token: the tool call's token can end before delivery (with
+    /// the turn on some backends, with the agent on <c>MultiTurnAgentLoop</c>), and an admitted message
+    /// must still be delivered after the sender has moved on.
     /// </remarks>
     private static ToolHandlerResult SendCollaborationMessage(
         AgentCollaborationSetup collaboration,

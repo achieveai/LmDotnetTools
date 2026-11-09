@@ -138,6 +138,16 @@ function quoteLines(heading: string, quotes: CheckpointQuote[] | undefined): str
 }
 
 /**
+ * A section whose list the envelope budget may have cut (#812, schema 3). The count line comes first,
+ * as in the envelope the agent reads, and the heading stays when every item was counted instead of
+ * listed: an empty list with a non-zero count still means there is work, not that there is none.
+ */
+function countedLines(heading: string, items: string[], omitted: number | undefined, countLine: string): string[] {
+  const count = omitted && omitted > 0 ? [`- [${omitted} omitted] ${countLine}`] : [];
+  return items.length > 0 || count.length > 0 ? [`## ${heading}`, ...count, ...items] : [];
+}
+
+/**
  * Normalize a {@link CompactionCheckpointMessage} into the divider the notification pill renders: the
  * header says how much was folded away, the body is the manifest a human can check against the rows
  * above it (current instruction, decisions, open work, agents, narrative).
@@ -157,10 +167,18 @@ export function checkpointToDisplayData(msg: CompactionCheckpointMessage): Notif
     ...quoteLines('Standing instructions', m.instructions),
     ...(m.goals && m.goals.length > 0 ? ['## Goals', ...m.goals.map((g) => `- ${g}`)] : []),
     ...quoteLines('Decisions', m.decisions),
-    ...(m.tasks && m.tasks.length > 0 ? ['## Open work', ...m.tasks.map((t) => `- [${t.status}] ${t.title}`)] : []),
-    ...(m.agents && m.agents.length > 0
-      ? ['## Agents', ...m.agents.map((a) => `- ${a.agent_id}: ${a.status}${a.outcome ? `; ${a.outcome}` : ''}`)]
-      : []),
+    ...countedLines(
+      'Open work',
+      (m.tasks ?? []).map((t) => `- [${t.status}] ${t.title}`),
+      m.omitted?.tasks,
+      'more tasks are not listed here',
+    ),
+    ...countedLines(
+      'Agents',
+      (m.agents ?? []).map((a) => `- ${a.agent_id}: ${a.status}${a.outcome ? `; ${a.outcome}` : ''}`),
+      m.omitted?.agents,
+      'older agents are in the roster but not listed here',
+    ),
     '## What happened',
     msg.narrative,
     `(checkpoint ${msg.checkpoint_id}, ${msg.trigger}, covers seq 1-${msg.boundary?.seq ?? '?'})`,

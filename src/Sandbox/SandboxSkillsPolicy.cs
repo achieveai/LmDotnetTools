@@ -40,10 +40,32 @@ public sealed class SandboxSkillsPolicy
     /// </summary>
     public string? UnlistedHint { get; }
 
+    /// <summary>
+    /// Lists the gateway's <c>SearchSkills</c> tool for this sandbox (gateway 0.1.21, ADR 0047). Fixed at create.
+    /// <c>null</c> on a request omits the field, which a gateway older than 0.1.21 requires: it rejects a <c>skills</c>
+    /// block with fields it does not know (see <see cref="SandboxClient.SupportsSearchTools"/>). On a response,
+    /// an explicit <c>true</c> or <c>false</c> is kept as sent. Only an absent flag is normalized: it reads as
+    /// <c>false</c> after a create that sent either search flag, because the gateway omits a false flag, and stays
+    /// <c>null</c> after any other create, where absent cannot be told from an older gateway.
+    /// </summary>
+    public bool? SearchTool { get; }
+
+    /// <summary>
+    /// Lists the gateway's <c>SearchAgents</c> tool for this sandbox. Fixed at create; <c>null</c> on a request, an explicit
+    /// response value and an absent one all work as for <see cref="SearchTool"/>.
+    /// </summary>
+    public bool? AgentsSearchTool { get; }
+
+    /// <summary>The constructor assemblies built before the search flags bind to; new code gets the one below.</summary>
+    public SandboxSkillsPolicy(SandboxSkillTier? defaultTier, IReadOnlyList<string>? included, string? unlistedHint)
+        : this(defaultTier, included, unlistedHint, searchTool: null, agentsSearchTool: null) { }
+
     public SandboxSkillsPolicy(
         SandboxSkillTier? defaultTier = null,
         IReadOnlyList<string>? included = null,
-        string? unlistedHint = null
+        string? unlistedHint = null,
+        bool? searchTool = null,
+        bool? agentsSearchTool = null
     )
     {
         if (defaultTier is SandboxSkillTier.Unavailable)
@@ -66,5 +88,7 @@ public sealed class SandboxSkillsPolicy
         DefaultTier = defaultTier;
         Included = included is null ? [] : [.. included];
         UnlistedHint = unlistedHint;
+        SearchTool = searchTool;
+        AgentsSearchTool = agentsSearchTool;
     }
 }

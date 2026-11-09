@@ -224,11 +224,50 @@ public class CompactionCheckpointMessageSerializationTests
     }
 
     [Fact]
+    public void AManifestWithOmissions_IsWrittenAsSchema3_AndOneWithout_StaysSchema2()
+    {
+        // #812: a schema 2 binary would adopt a row with omitted counts and silently drop them, reading a shortened
+        // board as the whole board. So only such a row takes the new $type; every other row stays readable by it.
+        var plain = Sample();
+        var omitted = new ManifestOmissions
+        {
+            Tasks = 7,
+            Agents = 2,
+            Artifacts = 1,
+        };
+        var shortened = new CompactionCheckpointMessage
+        {
+            CheckpointId = "cp-abc-2",
+            Boundary = plain.Boundary,
+            Trigger = plain.Trigger,
+            Manifest = plain.Manifest with { Omitted = omitted },
+            Narrative = plain.Narrative,
+        };
+
+        Assert.Equal(2, plain.SchemaVersion);
+        Assert.Equal(3, shortened.SchemaVersion);
+        var json = JsonSerializer.Serialize<IMessage>(shortened, Options());
+        var root = JsonDocument.Parse(json).RootElement;
+        Assert.Equal(CompactionCheckpointMessage.TypeDiscriminatorV3, root.GetProperty("$type").GetString());
+        Assert.Equal(3, root.GetProperty("schema_version").GetInt32());
+        Assert.Equal(7, root.GetProperty("manifest").GetProperty("omitted").GetProperty("tasks").GetInt32());
+        Assert.DoesNotContain(
+            "\"omitted\"",
+            JsonSerializer.Serialize<IMessage>(plain, Options()),
+            StringComparison.Ordinal
+        );
+
+        var typed = Assert.IsType<CompactionCheckpointMessage>(JsonSerializer.Deserialize<IMessage>(json, Options()));
+        Assert.Equal(3, typed.SchemaVersion);
+        Assert.Equal(omitted, typed.Manifest.Omitted);
+    }
+
+    [Fact]
     public void ThisBuildReadsEveryCheckpointDiscriminatorItHasEverWritten()
     {
         // The other half of the closure. Refusing to read version 1 would orphan every row written
         // before the bump, which is a worse failure than the one the bump prevents.
-        foreach (var version in new[] { 1, 2 })
+        foreach (var version in new[] { 1, 2, 3 })
         {
             var json = JsonSerializer.Serialize<IMessage>(Sample() with { SchemaVersion = version }, Options());
 
@@ -267,8 +306,8 @@ public class CompactionCheckpointMessageSerializationTests
     [Fact]
     public void BumpingTheSchemaWithoutADiscriminator_Fails_RatherThanReusingAnOlderOne()
     {
-        // The forcing function. Silently reusing version 2's $type for a version 3 row is the bug this
+        // The forcing function. Silently reusing version 3's $type for a version 4 row is the bug this
         // whole change replaces, so the writer refuses instead of falling back.
-        _ = Assert.Throws<ArgumentOutOfRangeException>(() => CompactionCheckpointMessage.DiscriminatorFor(3));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => CompactionCheckpointMessage.DiscriminatorFor(4));
     }
 }

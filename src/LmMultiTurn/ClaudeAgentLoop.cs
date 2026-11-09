@@ -618,17 +618,24 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             while (!ct.IsCancellationRequested)
             {
                 // Before waiting for new input, send any queued messages from previous run
-                // This ensures queued messages are fully processed before new input arrives
-                await SendQueuedMessagesBeforeNewInputAsync(ct);
+                // This ensures queued messages are fully processed before new input arrives.
+                // A batch a stop left held goes first: it is already out of the queue, and the merge
+                // would have to hold a second batch, which RetainInputs refuses. It is not always the
+                // oldest input. Input queued locally during a merged run waits behind the next channel
+                // batch, because the loop takes from the channel straight after a merged run. That
+                // order (later channel input before earlier locally queued input) predates the hold.
+                if (RetainedInputCount == 0)
+                {
+                    await SendQueuedMessagesBeforeNewInputAsync(ct);
+                }
 
-                // Wait for at least one input
-                if (!await InputReader.WaitToReadAsync(ct))
+                // The held batch, or else the drained channel, held until it reaches history
+                var batch = await TakeNextInputBatchAsync(ct);
+                if (batch == null)
                 {
                     break; // Channel completed
                 }
 
-                // Drain all available inputs
-                TryDrainInputs(out var batch);
                 if (batch.Count == 0)
                 {
                     continue;
@@ -653,13 +660,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 var messagesToSend = GetMessagesForClaudeSdk(batch).ToList();
 
                 // Add messages to history
-                foreach (var input in batch)
-                {
-                    foreach (var msg in input.Input.Messages)
-                    {
-                        AddToHistory(msg);
-                    }
-                }
+                AppendRetainedInputsToHistory();
 
                 // The CLI runs its own agentic loop behind this one generation id, so the run has
                 // exactly one turn from the lifecycle's point of view. The run's outcome is
@@ -885,67 +886,40 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     }
 
     /// <summary>
-    /// Watch for new inputs and inject them to CLI immediately (Interactive mode only).
+    /// Watch for input that arrives during a run and queue it locally (Interactive mode only).
     /// </summary>
+    /// <remarks>
+    /// Between runs the watcher leaves input on the channel and exits: the main loop takes it next and
+    /// holds it until it reaches history. Starting a run from here raced the main loop, which never
+    /// completed that run, and it took input outside the hold that keeps it across Stop/Run.
+    /// </remarks>
     private async Task WatchAndInjectInputsAsync(CancellationToken ct)
     {
         try
         {
             while (!ct.IsCancellationRequested)
             {
-                await InputReader.WaitToReadAsync(ct);
+                // _runInProgress covers the entire run (generation + tool calls) and only resets
+                // on ResultEventMessage. Once it is false the run is over and the main loop is
+                // about to take the next input itself.
+                if (!await InputReader.WaitToReadAsync(ct) || !_runInProgress)
+                {
+                    return;
+                }
 
                 if (TryDrainInputs(out var newInputs) && newInputs.Count > 0)
                 {
                     // Collect messages
                     var messagesToSend = GetMessagesForClaudeSdk(newInputs).ToList();
 
-                    // Check if we should queue locally:
-                    // _runInProgress covers the entire run (generation + tool calls) and only resets
-                    // on ResultEventMessage. When true, SDK will REMOVE messages, so we queue locally.
-                    //
-                    // Note: _awaitingDequeue is no longer needed here because _runInProgress is set
-                    // BEFORE SendAsync and only reset on ResultEventMessage, so it covers the entire
-                    // period when messages would be removed.
-                    if (_runInProgress)
-                    {
-                        // Queue locally - run is in progress (would get removed)
-                        _localMessageQueue.Enqueue((messagesToSend, newInputs));
-                        Logger.LogDebug(
-                            "Queued {MessageCount} messages locally (run in progress, tools pending: {PendingTools}). InputCount: {InputCount}",
-                            messagesToSend.Count,
-                            _pendingToolCalls,
-                            newInputs.Count
-                        );
-                    }
-                    else
-                    {
-                        // Safe to send directly
-                        // Track inputs for dequeue correlation
-                        var assignment = await StartRunAsync(newInputs, ct: ct);
-                        foreach (var input in newInputs)
-                        {
-                            _pendingCliInputs.Enqueue((input, assignment));
-                        }
-
-                        // Add to history
-                        foreach (var input in newInputs)
-                        {
-                            foreach (var msg in input.Input.Messages)
-                            {
-                                AddToHistory(msg);
-                            }
-                        }
-
-                        await ReportContextLoadedAsync(assignment.RunId, assignment.GenerationId, messagesToSend, ct);
-
-                        // Set flags BEFORE SendAsync to prevent race condition
-                        _runInProgress = true;
-                        _awaitingDequeue = true;
-                        await _client!.SendAsync(messagesToSend, ct);
-
-                        Logger.LogInformation("Injected {Count} inputs to CLI mid-run", newInputs.Count);
-                    }
+                    // Queue locally - run is in progress, and the SDK would REMOVE a message sent now
+                    _localMessageQueue.Enqueue((messagesToSend, newInputs));
+                    Logger.LogDebug(
+                        "Queued {MessageCount} messages locally (run in progress, tools pending: {PendingTools}). InputCount: {InputCount}",
+                        messagesToSend.Count,
+                        _pendingToolCalls,
+                        newInputs.Count
+                    );
                 }
             }
         }
@@ -978,6 +952,10 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             mergedInputs.AddRange(nextBatch.Inputs);
         }
 
+        // Out of the local queue now: held until it reaches history, so a stop inside StartRunAsync
+        // leaves it for the next run, which takes it through the ordinary run path.
+        RetainInputs(mergedInputs);
+
         Logger.LogInformation(
             "Merged {BatchCount} queued batches into single run. Total messages: {MessageCount}, Total inputs: {InputCount}",
             mergedInputs.Count,
@@ -997,13 +975,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         }
 
         // Add ALL messages to history
-        foreach (var input in mergedInputs)
-        {
-            foreach (var msg in input.Input.Messages)
-            {
-                AddToHistory(msg);
-            }
-        }
+        AppendRetainedInputsToHistory();
 
         // One generation id, one lifecycle turn — same shape as the ordinary run path above.
         BeginTurn(assignment.RunId, assignment.GenerationId);
@@ -1019,13 +991,17 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
 
             await CompleteTurnAsync(assignment.RunId, assignment.GenerationId, ct: ct);
 
-            // No pending messages after merge (we processed all of them)
+            // Before the completion, as on the ordinary run path: a client must be told which run took
+            // its input before it hears that run ended.
+            await FlushPendingRunAssignmentsAsync(assignment.RunId, ct);
+
+            // Input that arrived while this merged run was running is still queued locally.
             await CompleteRunAsync(
                 assignment.RunId,
                 assignment.GenerationId,
                 wasForked: isExplicitFork,
                 forkedToRunId: isExplicitFork ? assignment.RunId : null,
-                pendingMessageCount: 0,
+                pendingMessageCount: _localMessageQueue.Count,
                 ct: ct
             );
         }
@@ -1035,12 +1011,14 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             // reported as failed, so the turn swept behind it does not claim success.
             Logger.LogError(ex, "Error during merged run {RunId}", assignment.RunId);
 
+            await FlushPendingRunAssignmentsAsync(assignment.RunId, ct);
+
             await CompleteRunAsync(
                 assignment.RunId,
                 assignment.GenerationId,
                 wasForked: isExplicitFork,
                 forkedToRunId: isExplicitFork ? assignment.RunId : null,
-                pendingMessageCount: 0,
+                pendingMessageCount: _localMessageQueue.Count,
                 isError: true,
                 errorMessage: ex.Message,
                 ct: ct

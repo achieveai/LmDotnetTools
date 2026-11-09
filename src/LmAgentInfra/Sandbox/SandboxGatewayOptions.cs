@@ -218,6 +218,14 @@ public sealed class SandboxGatewayOptions
     public List<SandboxPluginMountOptions> PluginMounts { get; set; } = [];
 
     /// <summary>
+    /// Ask each NEW sandbox for the gateway's <c>SearchSkills</c> tool, and explicitly not its <c>SearchAgents</c> (it
+    /// finds nothing for a named agent, gateway issue #246), when the gateway is new enough to accept the request. Off
+    /// by default: a host opts in only if it wires the tool up. The answer is fixed at create and a gateway env default
+    /// can list either tool unasked, so the host must decide from what each session actually lists.
+    /// </summary>
+    public bool OfferSearchTools { get; set; }
+
+    /// <summary>
     /// Optional subset of marketplace aliases to activate per sandbox session, as a comma-separated
     /// list (e.g. <c>"official,claude_plugins"</c>). The aliases are the canonical names the gateway
     /// derives from <see cref="PluginsDirs"/>; the authoritative set can be read from the gateway's

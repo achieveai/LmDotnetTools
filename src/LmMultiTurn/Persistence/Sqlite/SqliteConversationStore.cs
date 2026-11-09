@@ -453,6 +453,22 @@ public sealed class SqliteConversationStore
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(metadata);
 
+        // Under the update's lock: a save landing between an update's read and write would be lost (#745).
+        await _metadataWriteLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            await SaveMetadataCoreAsync(threadId, metadata, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _ = _metadataWriteLock.Release();
+        }
+    }
+
+    /// <summary>Writes the row. The caller must hold <c>_metadataWriteLock</c>, which is not re-entrant.</summary>
+    private async Task SaveMetadataCoreAsync(string threadId, ThreadMetadata metadata, CancellationToken ct)
+    {
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
         await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
@@ -546,7 +562,7 @@ public sealed class SqliteConversationStore
             ObjectDisposedException.ThrowIf(_disposed, this);
             var existing = await LoadMetadataAsync(threadId, ct).ConfigureAwait(false);
             var updated = update(existing);
-            await SaveMetadataAsync(threadId, updated, ct).ConfigureAwait(false);
+            await SaveMetadataCoreAsync(threadId, updated, ct).ConfigureAwait(false);
         }
         finally
         {

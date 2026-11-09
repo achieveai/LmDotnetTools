@@ -154,6 +154,31 @@ class LinkedIssueTests(unittest.TestCase):
             {"repository": "achieveai/NScript", "id": 5,
              "url": "https://github.com/achieveai/NScript/pull/5#discussion_r1"}])
 
+    def test_setting_a_link_aside_cannot_join_its_neighbours_into_a_new_reference(self):
+        client = FakeIssues()
+        result = review_github._linked_issues(
+            client, self.snapshot("#1[#3](https://github.com/achieveai/NScript/issues/3)2"))
+        self.assertEqual(client.read, [1])
+        self.assertEqual(result["external"], [
+            {"repository": "achieveai/NScript", "id": 3, "url": "https://github.com/achieveai/NScript/issues/3"}])
+
+    def test_a_local_reference_is_read_even_when_a_link_elsewhere_has_the_same_number(self):
+        client = FakeIssues()
+        result = review_github._linked_issues(
+            client, self.snapshot("Fixes #3; [#3](https://github.com/achieveai/NScript/pull/3)"))
+        self.assertEqual(client.read, [3])
+        self.assertEqual(list(result["items"]), ["3"])
+        self.assertEqual(result["external"], [
+            {"repository": "achieveai/NScript", "id": 3, "url": "https://github.com/achieveai/NScript/pull/3"}])
+
+    def test_a_link_to_another_host_is_not_taken_for_a_github_repository(self):
+        # Only github.com links name a repository the reader understands; anything else stays a bare #N here.
+        client = FakeIssues()
+        result = review_github._linked_issues(
+            client, self.snapshot("[#3](https://gitlab.com/achieveai/NScript/issues/3)"))
+        self.assertEqual(client.read, [3])
+        self.assertEqual(result["external"], [])
+
     def test_a_link_to_this_repository_is_still_read_whatever_its_case(self):
         client = FakeIssues()
         result = review_github._linked_issues(

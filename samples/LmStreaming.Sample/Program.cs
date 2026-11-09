@@ -23,6 +23,7 @@ using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -818,16 +819,21 @@ try
     // Provider id → IStreamingAgent. Receives the per-conversation provider id resolved
     // by the pool (request → persisted → default), so this factory does not know about
     // LM_PROVIDER_MODE — it just dispatches by id.
+    // Provider HTTP retry policy (#930 P1 item 1): one instance from LmStreaming:ProviderRetry, handed to
+    // every provider client below. No section keeps RetryOptions.Default.
+    builder.Services.TryAddSingleton(sp => ProviderRetrySettings.Bind(sp.GetRequiredService<IConfiguration>()));
+
     _ = builder.Services.AddSingleton<Func<string, IStreamingAgent>>(sp =>
         providerId =>
         {
             var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+            var retryOptions = sp.GetRequiredService<RetryOptions>();
 
             // Discovered Copilot models route by their transport (Anthropic Messages vs OpenAI
             // Responses); everything else is a fixed provider handled by the switch below.
             if (sp.GetRequiredService<ProviderRegistry>().TryGetCopilotModel(providerId, out var copilotModel))
             {
-                return CreateCopilotModelAgent(copilotModel, loggerFactory);
+                return CreateCopilotModelAgent(copilotModel, loggerFactory, retryOptions);
             }
 
             // Discovered Anthropic-compatible provider-family models (e.g. DeepSeek) route through the
@@ -835,15 +841,19 @@ try
             // family's own base URL/API key instead of fixed env vars.
             if (sp.GetRequiredService<ProviderRegistry>().TryGetAnthropicCompatModel(providerId, out var compatModel))
             {
-                return CreateAnthropicCompatAgent(compatModel, loggerFactory);
+                return CreateAnthropicCompatAgent(compatModel, loggerFactory, retryOptions);
             }
 
             return providerId.ToLowerInvariant() switch
             {
-                "openai" => CreateOpenAiAgent(loggerFactory),
-                "anthropic" => CreateAnthropicAgent(loggerFactory),
-                "test-anthropic" => CreateAnthropicTestAgent(loggerFactory, sp.GetRequiredService<ITestAgentBuilder>()),
-                "test" => CreateTestAgent(loggerFactory, sp.GetRequiredService<ITestAgentBuilder>()),
+                "openai" => CreateOpenAiAgent(loggerFactory, retryOptions),
+                "anthropic" => CreateAnthropicAgent(loggerFactory, retryOptions),
+                "test-anthropic" => CreateAnthropicTestAgent(
+                    loggerFactory,
+                    sp.GetRequiredService<ITestAgentBuilder>(),
+                    retryOptions
+                ),
+                "test" => CreateTestAgent(loggerFactory, sp.GetRequiredService<ITestAgentBuilder>(), retryOptions),
                 _ => throw new ProviderUnavailableException(
                     providerId,
                     "no IStreamingAgent factory is registered for this provider"
@@ -967,6 +977,25 @@ try
                 catch
                 { /* ignore cleanup errors */
                 }
+            }
+        }
+
+        // Best-effort disposal of a provider agent built for a configuration that no loop took over.
+        static void DisposeUnadoptedProviderAgent(IStreamingAgent? providerAgent)
+        {
+            try
+            {
+                if (providerAgent is IAsyncDisposable asyncDisposable)
+                {
+                    asyncDisposable.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                }
+                else if (providerAgent is IDisposable disposable)
+                {
+                    disposable.Dispose();
+                }
+            }
+            catch
+            { /* ignore cleanup errors */
             }
         }
 
@@ -1534,7 +1563,10 @@ try
                                         )
                                     ),
                                 transportHandler: sp.GetKeyedService<HttpMessageHandler>(SandboxMcpTransportHandlerKey),
-                                agentIdResolver: () => SandboxSubAgentIdentity.ForCurrentFlow(threadId)
+                                agentIdResolver: () => SandboxSubAgentIdentity.ForCurrentFlow(threadId),
+                                // No tiers on this path, so a gateway search tool (which a gateway env default can
+                                // list unasked) would be a new tool for the model, and SearchAgents finds nothing.
+                                contractSink: (contract, _) => CapabilityTiers.IsGatewaySearchTool(contract.Name)
                             );
                             copilotResources.AddRange(clients.Cast<IAsyncDisposable>());
                             var (contracts, handlers) = sandboxTools.Build();
@@ -1604,7 +1636,11 @@ try
                 // them, and disposing them there would break a switch that was correctly refused.
                 var carriedOver = new HashSet<object>(ReferenceEqualityComparer.Instance);
 
-                var providerAgent = agentFactory(normalizedProviderId);
+                // Built inside the try below and owned by this attempt until a loop takes it: the
+                // construction-failure path disposes it, with any fallback agents it holds, unless
+                // `providerAgentAdopted` says a loop already owns it.
+                IStreamingAgent? providerAgent = null;
+                var providerAgentAdopted = false;
 
                 // Per-conversation tool registry: clone the shared (stateless) sample tools and
                 // layer a FRESH TaskManager on top so every chat gets its own isolated todo list
@@ -1855,7 +1891,7 @@ try
                 McpClient? tierSkillClient = null;
                 // STAGED, not configured: the conversation's live tiers move only when this build becomes the
                 // conversation's (the commits below). A refused switch or a throw disposes the stage unused, so the
-                // live loop keeps its Skill, SearchSkill, agent id and view exactly as they were.
+                // live loop keeps its Skill, its selected skill search, agent id and view exactly as they were.
                 using var tierStage = capabilityTiers
                     .StageAsync(
                         modeTiers is null ? null : ToTierSettings(modeTiers, workspaceTiers),
@@ -1963,7 +1999,7 @@ try
                         $"{sandboxLifetime.GatewayBaseUrl}/mcp",
                         sandboxMcpHeaders,
                         loggerFactory,
-                        toolNames: caps.SandboxToolAllowList,
+                        toolNames: CapabilityTiers.WithGatewaySearchTools(caps.SandboxToolAllowList),
                         omitServerPrefix: true,
                         // The tracker records which conversation started each background task, so its
                         // task_completed (which names no agent for a primary) reaches this conversation.
@@ -1989,19 +2025,28 @@ try
                             SandboxSubAgentIdentity.ForCurrentFlow(threadId) ?? capabilityTiers.RootGatewayAgentId,
                         // Tiered: the root's Skill is served by the tiers instance, which swaps its text when
                         // a rotation changes what the root lists; every other tool registers as always and is
-                        // reported to the stage. Untiered: registered as before.
-                        contractSink: tierStage.IsActive
-                            ? (contract, handler) =>
+                        // reported to the stage. Untiered: registered as before. Either way the stage decides the
+                        // gateway's search tools first, so an untiered mode and SearchAgents never reach a model.
+                        contractSink: (contract, handler) =>
+                        {
+                            if (tierStage.TryDropGatewaySearchTool(contract.Name))
                             {
-                                if (tierStage.TryAttachRootSkill(contract, handler))
-                                {
-                                    return true;
-                                }
+                                return true;
+                            }
 
-                                sandboxToolContracts.Add(contract);
+                            if (!tierStage.IsActive)
+                            {
                                 return false;
                             }
-                            : null
+
+                            if (tierStage.TryAttachRootSkill(contract, handler))
+                            {
+                                return true;
+                            }
+
+                            sandboxToolContracts.Add(contract);
+                            return false;
+                        }
                     );
 
                     if (sandboxClients.Count > 0)
@@ -2089,18 +2134,15 @@ try
                 // tool set. Gated by the provider allow-list and the mode's EnabledTools (function-tool
                 // list); the native built-in path (modeBuiltInAllowList, below) is governed separately
                 // and left untouched.
-                // Resolve the discovered Copilot model (if any) backing this provider once; its
-                // transport and raw id drive the model-id, reasoning, and web-tool wiring below.
+                // Resolve the discovered Copilot model (if any) backing this provider once; it drives
+                // the reasoning and web-tool wiring below. ResolveModelIdForProvider sets the model id.
                 var isCopilotBackedModel = providerRegistry.TryGetCopilotModel(
                     normalizedProviderId,
                     out var copilotModelInfo
                 );
                 // Same resolution for a discovered Anthropic-compatible provider-family model (e.g.
-                // DeepSeek); its raw model id drives the model-id and web-tool wiring below.
-                var isAnthropicCompatModel = providerRegistry.TryGetAnthropicCompatModel(
-                    normalizedProviderId,
-                    out var anthropicCompatModelInfo
-                );
+                // DeepSeek); whether there is one drives the web-tool wiring below.
+                var isAnthropicCompatModel = providerRegistry.TryGetAnthropicCompatModel(normalizedProviderId, out _);
 
                 var enabledWebTools = WebToolRegistrationPolicy.ResolveEnabledTools(
                     mode.EnabledTools,
@@ -2157,13 +2199,7 @@ try
                         }
                     }
 
-                    // Discovered Copilot models use their raw model id verbatim; discovered
-                    // Anthropic-compatible models likewise use their configured model name verbatim;
-                    // fixed providers keep the curated per-provider id map.
-                    var modelId =
-                        isCopilotBackedModel ? copilotModelInfo.Id
-                        : isAnthropicCompatModel ? anthropicCompatModelInfo.ModelName
-                        : GetModelIdForProvider(normalizedProviderId);
+                    var modelId = ResolveModelIdForProvider(providerRegistry, normalizedProviderId);
 
                     // Built-in (server-side) tools are selected by the MODE — never injected per
                     // provider or via a per-mode override. A mode declares its server-side built-ins in
@@ -2176,6 +2212,22 @@ try
                     var allBuiltInTools = GetBuiltInToolsForProvider(normalizedProviderId);
                     var modeBuiltInAllowList = mode.EnabledBuiltInTools ?? mode.EnabledTools;
                     var filteredBuiltInTools = ModeToolFilter.FilterBuiltInTools(allBuiltInTools, modeBuiltInAllowList);
+                    var fallbackWebTools = new FallbackWebTools(
+                        filteredRegistry,
+                        enabledWebTools,
+                        jinaWebProvider,
+                        webToolsOptions,
+                        loggerFactory,
+                        hostedSearch.Registered
+                    );
+                    providerAgent = WithConfiguredModelFallback(
+                        sp,
+                        normalizedProviderId,
+                        agentFactory(normalizedProviderId),
+                        agentFactory,
+                        modeBuiltInAllowList,
+                        fallbackWebTools
+                    );
 
                     // Surface model reasoning (provider→Thinking/Reasoning mapping). A provisioned root
                     // effort is read from durable conversation metadata here, at the request-options build
@@ -2242,7 +2294,7 @@ try
                     var characteristicsAgentFactory = new CharacteristicsAgentFactory(
                         providerRegistry,
                         providerAgent,
-                        model => CreateCopilotModelAgent(model, loggerFactory),
+                        model => CreateCopilotModelAgent(model, loggerFactory, sp.GetRequiredService<RetryOptions>()),
                         loggerFactory.CreateLogger<CharacteristicsAgentFactory>(),
                         parentCopilotModel: isCopilotBackedModel ? copilotModelInfo : null,
                         // Parent-model-reuse fallback: a classic Copilot Anthropic parent (advertises no
@@ -2302,6 +2354,7 @@ try
                     // Applied here, before the workflow/transcript blocks below add their own `with`
                     // clauses, so the narrowing cannot be lost to a later record copy.
                     subAgentOptions = ApplySubAgentToolNarrowing(subAgentOptions, caps);
+                    subAgentOptions = fallbackWebTools.WithoutHiddenTools(subAgentOptions);
 
                     // #623 warning floor — wired UNCONDITIONALLY (not gated on the mode's
                     // SubAgentRequiredTools opt-in): when a spawn's dispatch prompt orders board work,
@@ -2320,8 +2373,9 @@ try
                     // Skill tiers per sub-agent: a spawning child that inherits Skill/SearchSkill gets its own
                     // (its own view, gateway id and Skill text). This conversation's tiers instance answers null
                     // while inert, so an untiered child inherits exactly as before. A template whose tools list
-                    // names Skill also gets SearchSkill: its Skill lists only the Loaded skills, and SearchSkill
-                    // finds the rest. An untiered parent has no SearchSkill, so nothing is added there.
+                    // names Skill also gets a skill search (the gateway's SearchSkills, else SearchSkill): its Skill
+                    // lists only the Loaded skills, and the search finds the rest. An untiered parent has neither,
+                    // so nothing is added there.
                     // Sub-agent tiers: the root's Agent tool lists the templates the tiers name (null while
                     // untiered: every template, as before). The root's agent and plugin searches are never
                     // inherited; SearchTool and ExecuteTool are, and each child gets its own over its own view. A
@@ -2334,7 +2388,12 @@ try
                             InheritedToolOverride = capabilityTiers.ForInheritedToolAsync,
                             CompanionToolNames = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
                             {
-                                [CapabilityTiers.SkillToolName] = [CapabilityTiers.SearchSkillToolName],
+                                // Only one of the two skill searches exists in a session; the parent cannot grant the other.
+                                [CapabilityTiers.SkillToolName] =
+                                [
+                                    CapabilityTiers.SearchSkillToolName,
+                                    CapabilityTiers.GatewaySearchSkillsToolName,
+                                ],
                                 [CapabilityTiers.ExecuteToolToolName] = [CapabilityTiers.SearchToolToolName],
                             },
                             ListedTemplates = capabilityTiers.ListedTemplates,
@@ -2867,6 +2926,8 @@ try
                             throw new AgentBusyException(threadId);
                         }
 
+                        providerAgentAdopted = true;
+
                         // The live loop runs on this build from here, so its tiers do too.
                         tierStage.CommitAsync(CancellationToken.None).GetAwaiter().GetResult();
                     }
@@ -2943,6 +3004,7 @@ try
                             // in-place switch, or the loop's teardown if there is none, disposes it once.
                             OwnsProviderAgent = true,
                         };
+                        providerAgentAdopted = true;
                     }
 
                     // EVERYTHING BELOW RUNS ONCE PER CONVERSATION, NOT ONCE PER SWITCH. It wires the
@@ -3193,6 +3255,13 @@ try
                     // Dispose owned resources (MCP clients) if agent construction fails — but never the
                     // ones this attempt only borrowed from the live conversation (see `carriedOver`).
                     DisposeOwnedResources([.. ownedResources.Where(resource => !carriedOver.Contains(resource))]);
+
+                    // A provider agent no loop took (a switch refused as busy, or a failure before the
+                    // loop existed) belongs to nobody else, and with fallback it holds several agents.
+                    if (!providerAgentAdopted)
+                    {
+                        DisposeUnadoptedProviderAgent(providerAgent);
+                    }
 
                     throw;
                 }
@@ -3834,6 +3903,19 @@ public partial class Program
     }
 
     /// <summary>
+    ///     Every request extra-property key this host's reasoning shapes write: <see cref="BuildReasoningExtraProperties" />
+    ///     and <c>CopilotReasoningShaper.Shape</c>. A request moved to another model drops all of them before
+    ///     taking that model's own shape, so a key added to either shaper belongs here too.
+    /// </summary>
+    internal static readonly string[] ReasoningExtraPropertyKeys =
+    [
+        "Thinking",
+        "Reasoning",
+        "OutputConfig",
+        "reasoning_effort",
+    ];
+
+    /// <summary>
     ///     Maps a normalized provider id (plus, for discovered Copilot models, its transport) to the
     ///     reasoning/thinking request options that surface a model's reasoning. Anthropic-format
     ///     providers — the direct <c>anthropic</c>/<c>test-anthropic</c> providers and any Copilot model
@@ -4025,7 +4107,11 @@ public partial class Program
         return BuildReasoningExtraProperties(fallbackProviderId);
     }
 
-    private static IStreamingAgent CreateTestAgent(ILoggerFactory loggerFactory, ITestAgentBuilder testAgentBuilder)
+    private static IStreamingAgent CreateTestAgent(
+        ILoggerFactory loggerFactory,
+        ITestAgentBuilder testAgentBuilder,
+        RetryOptions retryOptions
+    )
     {
         var testHandler = testAgentBuilder.CreateHandler("test", loggerFactory);
 
@@ -4034,7 +4120,8 @@ public partial class Program
         var openClient = new OpenClient(
             httpClient,
             "http://test-mode/v1",
-            logger: loggerFactory.CreateLogger<OpenClient>()
+            logger: loggerFactory.CreateLogger<OpenClient>(),
+            retryOptions: retryOptions
         );
 
         return new OpenClientAgent("MockLLM", openClient, loggerFactory.CreateLogger<OpenClientAgent>());
@@ -4044,7 +4131,7 @@ public partial class Program
     ///     Creates an OpenAI-compatible agent (works with OpenAI, Kimi 2.5 OpenAI mode, etc.).
     ///     Reads OPENAI_API_KEY, OPENAI_BASE_URL from env vars.
     /// </summary>
-    private static IStreamingAgent CreateOpenAiAgent(ILoggerFactory loggerFactory)
+    private static IStreamingAgent CreateOpenAiAgent(ILoggerFactory loggerFactory, RetryOptions retryOptions)
     {
         var apiKey = EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY");
         var baseUrl = EnvironmentHelper.GetApiBaseUrlFromEnv(
@@ -4054,7 +4141,12 @@ public partial class Program
 
         Log.Information("Creating OpenAI agent with base URL: {BaseUrl}", baseUrl);
 
-        var openClient = new OpenClient(apiKey, baseUrl, logger: loggerFactory.CreateLogger<OpenClient>());
+        var openClient = new OpenClient(
+            apiKey,
+            baseUrl,
+            logger: loggerFactory.CreateLogger<OpenClient>(),
+            retryOptions: retryOptions
+        );
 
         return new OpenClientAgent("OpenAI", openClient, loggerFactory.CreateLogger<OpenClientAgent>());
     }
@@ -4063,7 +4155,7 @@ public partial class Program
     ///     Creates an Anthropic-compatible agent (works with Anthropic, Kimi 2.5 Anthropic mode, etc.).
     ///     Reads ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL from env vars.
     /// </summary>
-    private static IStreamingAgent CreateAnthropicAgent(ILoggerFactory loggerFactory)
+    private static IStreamingAgent CreateAnthropicAgent(ILoggerFactory loggerFactory, RetryOptions retryOptions)
     {
         var apiKey = EnvironmentHelper.GetApiKeyFromEnv("ANTHROPIC_API_KEY");
         var baseUrl = EnvironmentHelper.GetApiBaseUrlFromEnv(
@@ -4076,7 +4168,8 @@ public partial class Program
         var anthropicClient = new AnthropicClient(
             apiKey,
             baseUrl: baseUrl,
-            logger: loggerFactory.CreateLogger<AnthropicClient>()
+            logger: loggerFactory.CreateLogger<AnthropicClient>(),
+            retryOptions: retryOptions
         );
 
         return new AnthropicAgent("Anthropic", anthropicClient, loggerFactory.CreateLogger<AnthropicAgent>());
@@ -4087,7 +4180,11 @@ public partial class Program
     ///     using that model's own base URL/API key rather than fixed env vars — see
     ///     <see cref="AnthropicCompatProviders.DiscoverFromEnv"/>.
     /// </summary>
-    private static IStreamingAgent CreateAnthropicCompatAgent(AnthropicCompatModel model, ILoggerFactory loggerFactory)
+    private static IStreamingAgent CreateAnthropicCompatAgent(
+        AnthropicCompatModel model,
+        ILoggerFactory loggerFactory,
+        RetryOptions retryOptions
+    )
     {
         // BaseUrl is operator-controlled (the family's {KEY}_ANTHROPIC_URL env var) and could carry
         // credentials in its user-info (user:pass@host) or query (?token=...) components. Log ONLY the
@@ -4104,7 +4201,8 @@ public partial class Program
         var anthropicClient = new AnthropicClient(
             model.ApiKey,
             baseUrl: model.BaseUrl,
-            logger: loggerFactory.CreateLogger<AnthropicClient>()
+            logger: loggerFactory.CreateLogger<AnthropicClient>(),
+            retryOptions: retryOptions
         );
 
         return new AnthropicAgent(model.FamilyKey, anthropicClient, loggerFactory.CreateLogger<AnthropicAgent>());
@@ -4162,15 +4260,28 @@ public partial class Program
     ///     Copilot Responses backend; Chat-Completions-only models (Gemini) through Copilot's
     ///     <c>/chat/completions</c>.
     /// </summary>
-    internal static IStreamingAgent CreateCopilotModelAgent(CopilotModelInfo model, ILoggerFactory loggerFactory)
+    internal static IStreamingAgent CreateCopilotModelAgent(
+        CopilotModelInfo model,
+        ILoggerFactory loggerFactory,
+        RetryOptions? retryOptions = null
+    )
     {
         return model.Transport switch
         {
-            CopilotModelTransport.Anthropic => CreateCopilotAnthropicAgent(model.DisplayName, loggerFactory),
-            CopilotModelTransport.Responses => CreateCopilotResponsesAgent(model.DisplayName, loggerFactory),
+            CopilotModelTransport.Anthropic => CreateCopilotAnthropicAgent(
+                model.DisplayName,
+                loggerFactory,
+                retryOptions
+            ),
+            CopilotModelTransport.Responses => CreateCopilotResponsesAgent(
+                model.DisplayName,
+                loggerFactory,
+                retryOptions
+            ),
             CopilotModelTransport.ChatCompletions => CreateCopilotChatCompletionsAgent(
                 model.DisplayName,
-                loggerFactory
+                loggerFactory,
+                retryOptions
             ),
             _ => throw new ProviderUnavailableException(model.Id, $"unsupported Copilot transport {model.Transport}"),
         };
@@ -4180,7 +4291,11 @@ public partial class Program
     ///     Creates an Anthropic Messages agent (Sonnet/Haiku) routed through the GitHub Copilot
     ///     backend. The model id is supplied per-thread by <see cref="GetModelIdForProvider"/>.
     /// </summary>
-    private static IStreamingAgent CreateCopilotAnthropicAgent(string name, ILoggerFactory loggerFactory)
+    private static IStreamingAgent CreateCopilotAnthropicAgent(
+        string name,
+        ILoggerFactory loggerFactory,
+        RetryOptions? retryOptions
+    )
     {
         Log.Information("Creating Copilot-backed Anthropic agent: {Name}", name);
         return CopilotAnthropicAgentFactory.Create(
@@ -4188,7 +4303,8 @@ public partial class Program
             s_copilotTokenProvider.Value,
             timeout: CopilotResponseTimeout,
             session: s_copilotSession.Value,
-            logger: loggerFactory.CreateLogger<AnthropicAgent>()
+            logger: loggerFactory.CreateLogger<AnthropicAgent>(),
+            retryOptions: retryOptions
         );
     }
 
@@ -4210,7 +4326,11 @@ public partial class Program
     ///     Creates an OpenAI Responses agent (GPT-5.5 / GPT-5.5 mini) routed through the GitHub Copilot
     ///     backend over SSE (stateless per turn — the multi-turn loop resends full history each turn).
     /// </summary>
-    private static IStreamingAgent CreateCopilotResponsesAgent(string name, ILoggerFactory loggerFactory)
+    private static IStreamingAgent CreateCopilotResponsesAgent(
+        string name,
+        ILoggerFactory loggerFactory,
+        RetryOptions? retryOptions
+    )
     {
         Log.Information("Creating Copilot-backed OpenAI Responses agent: {Name}", name);
         return CopilotResponsesAgentFactory.Create(
@@ -4218,14 +4338,19 @@ public partial class Program
             s_copilotTokenProvider.Value,
             CopilotResponsesTransport.Sse,
             s_copilotSession.Value,
-            logger: loggerFactory.CreateLogger<OpenAiResponsesAgent>()
+            logger: loggerFactory.CreateLogger<OpenAiResponsesAgent>(),
+            retryOptions: retryOptions
         );
     }
 
     /// <summary>
     ///     Creates an OpenAI Chat Completions agent (Gemini) routed through the GitHub Copilot backend.
     /// </summary>
-    private static IStreamingAgent CreateCopilotChatCompletionsAgent(string name, ILoggerFactory loggerFactory)
+    private static IStreamingAgent CreateCopilotChatCompletionsAgent(
+        string name,
+        ILoggerFactory loggerFactory,
+        RetryOptions? retryOptions
+    )
     {
         Log.Information("Creating Copilot-backed Chat Completions agent: {Name}", name);
         return CopilotChatCompletionsAgentFactory.Create(
@@ -4233,7 +4358,8 @@ public partial class Program
             s_copilotTokenProvider.Value,
             timeout: CopilotResponseTimeout,
             session: s_copilotSession.Value,
-            logger: loggerFactory.CreateLogger<OpenClientAgent>()
+            logger: loggerFactory.CreateLogger<OpenClientAgent>(),
+            retryOptions: retryOptions
         );
     }
 
@@ -4246,7 +4372,8 @@ public partial class Program
     /// </summary>
     private static IStreamingAgent CreateAnthropicTestAgent(
         ILoggerFactory loggerFactory,
-        ITestAgentBuilder testAgentBuilder
+        ITestAgentBuilder testAgentBuilder,
+        RetryOptions retryOptions
     )
     {
         var testHandler = testAgentBuilder.CreateHandler("test-anthropic", loggerFactory);
@@ -4256,7 +4383,8 @@ public partial class Program
         var anthropicClient = new AnthropicClient(
             httpClient,
             baseUrl: "http://test-mode/v1",
-            logger: loggerFactory.CreateLogger<AnthropicClient>()
+            logger: loggerFactory.CreateLogger<AnthropicClient>(),
+            retryOptions: retryOptions
         );
 
         return new AnthropicAgent("MockAnthropic", anthropicClient, loggerFactory.CreateLogger<AnthropicAgent>());
@@ -4573,6 +4701,140 @@ public partial class Program
             "anthropic" or "test-anthropic" => [new AnthropicWebSearchTool()],
             _ => null,
         };
+    }
+
+    /// <summary>
+    ///     The model id a provider id runs: a discovered Copilot model's raw id and a discovered
+    ///     Anthropic-compatible model's configured name, both verbatim; a fixed provider's curated id otherwise.
+    /// </summary>
+    internal static string ResolveModelIdForProvider(ProviderRegistry registry, string providerId) =>
+        registry.TryGetCopilotModel(providerId, out var copilotModel) ? copilotModel.Id
+        : registry.TryGetAnthropicCompatModel(providerId, out var compatModel) ? compatModel.ModelName
+        : GetModelIdForProvider(providerId);
+
+    /// <summary>
+    ///     Opt-in model fallback for a conversation's provider (#930 P1 item 8). The array
+    ///     <c>LmStreaming:ModelFallback:{providerId}</c> lists provider ids to try, in order, when this one is
+    ///     down; no entry returns <paramref name="primary" /> unchanged.
+    ///     <see cref="ModelFallbackMiddleware.IsProviderOutage" /> decides which failures fall back.
+    /// </summary>
+    /// <remarks>
+    ///     Each fallback runs its own model id, gets the built-in tools its own provider offers that the mode
+    ///     allows (<paramref name="modeBuiltInAllowList" />, the same filter the primary's built-ins went
+    ///     through), and gets its provider's default reasoning shape: a provisioned root reasoning effort is
+    ///     not carried over. A single provider id written as a plain string is a one-entry list. A fallback
+    ///     provider that is not available (no key or login) or cannot be built is skipped with a warning rather
+    ///     than failing the conversation, which never needed it to start: left in the chain, its 401 would end
+    ///     the chain before a later target that works. A target with native search drops the function web
+    ///     tools; any other target gets <paramref name="webTools" /> in its own request, so a mode that lists
+    ///     web search keeps it after a hop. If such a target could not search (no <c>JINA_API_KEY</c>), it is
+    ///     skipped with a warning, because an answer that silently lost its search can read as sourced. A
+    ///     mode with no tool list promises no search, so that target still answers, with a warning. Copilot's
+    ///     hosted search never counts here, because the outage behind a hop takes it down too.
+    /// </remarks>
+    internal static IStreamingAgent WithConfiguredModelFallback(
+        IServiceProvider sp,
+        string providerId,
+        IStreamingAgent primary,
+        Func<string, IStreamingAgent> agentFactory,
+        IReadOnlyList<string>? modeBuiltInAllowList,
+        FallbackWebTools webTools
+    )
+    {
+        var section = sp.GetRequiredService<IConfiguration>().GetSection($"LmStreaming:ModelFallback:{providerId}");
+        // Blank, not null, is how a list's parent key reads when the setting comes through host settings.
+        string[]? fallbackIds = string.IsNullOrWhiteSpace(section.Value) ? section.Get<string[]>() : [section.Value];
+        if (fallbackIds is not { Length: > 0 })
+        {
+            return primary;
+        }
+
+        var registry = sp.GetRequiredService<ProviderRegistry>();
+        var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("LmStreaming.Sample.ModelFallback");
+        var targets = new List<FallbackTarget>();
+        foreach (
+            var targetId in fallbackIds
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Select(id => id.Trim().ToLowerInvariant())
+                .Where(id => id != providerId)
+                .Distinct()
+        )
+        {
+            if (!registry.IsAvailable(targetId))
+            {
+                logger.LogWarning(
+                    "Model fallback target {ToProvider} for {FromProvider} is unavailable and is skipped",
+                    targetId,
+                    providerId
+                );
+                continue;
+            }
+
+            var targetBuiltIns = ModeToolFilter.FilterBuiltInTools(
+                GetBuiltInToolsForProvider(targetId),
+                modeBuiltInAllowList
+            );
+            var hasNativeSearch = targetBuiltIns is { Count: > 0 };
+            if (!hasNativeSearch && webTools.ModeEnablesSearch && !webTools.CanSearch)
+            {
+                if (webTools.SearchRequired)
+                {
+                    logger.LogWarning(
+                        "Model fallback target {ToProvider} for {FromProvider} has no web search (JINA_API_KEY is not set or web tools are not configured) and is skipped",
+                        targetId,
+                        providerId
+                    );
+                    continue;
+                }
+
+                logger.LogWarning(
+                    "Model fallback target {ToProvider} for {FromProvider} will answer without web search (JINA_API_KEY is not set or web tools are not configured)",
+                    targetId,
+                    providerId
+                );
+            }
+
+            IStreamingAgent targetAgent;
+            try
+            {
+                targetAgent = agentFactory(targetId);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(
+                    ex,
+                    "Model fallback target {ToProvider} for {FromProvider} is unavailable and is skipped",
+                    targetId,
+                    providerId
+                );
+                continue;
+            }
+
+            IReadOnlyList<FunctionContract> hiddenWebTools = hasNativeSearch ? [] : webTools.RegisterHidden();
+            var targetReasoning = BuildConversationReasoningExtraProperties(
+                registry,
+                targetId,
+                targetId,
+                requestedEffort: null
+            );
+            targets.Add(
+                new FallbackTarget(
+                    ResolveModelIdForProvider(registry, targetId),
+                    targetAgent,
+                    options =>
+                        options with
+                        {
+                            BuiltInTools = targetBuiltIns,
+                            Functions = webTools.ShapeFunctions(options.Functions, hasNativeSearch, hiddenWebTools),
+                            ExtraProperties = options
+                                .ExtraProperties.RemoveRange(ReasoningExtraPropertyKeys)
+                                .SetItems(targetReasoning),
+                        }
+                )
+            );
+        }
+
+        return targets.Count == 0 ? primary : new ModelFallbackAgent(primary, targets, logger);
     }
 
     /// <summary>

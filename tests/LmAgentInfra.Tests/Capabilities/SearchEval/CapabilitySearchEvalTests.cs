@@ -117,6 +117,12 @@ public sealed record EvalQuery(string Id, string Query, string Kind, string[] Re
 /// p95 ≤ 5 ms on a quiet machine (E2, printed by the latency test, which asserts a looser bound). Labels
 /// are frozen; a red E1 is fixed in the engine, never in queries.jsonl. Agent and plugin recall, and every
 /// hit of the off-topic queries (empty expected set) with its score, are printed for precision work.
+/// <para>
+/// Issue #931: on these same queries the gateway's skill search scored 0.858 (LMDT 0.905). The owner accepted that
+/// drop. A session whose gateway offers SearchSkills now searches skills there, so this bar guards the LMDT skill search
+/// that remains as the fallback for other sessions, plus SearchAgent, SearchTool and SearchPlugin, which stay LMDT's.
+/// If the skill fallback is deleted, keep measuring those three and keep this record.
+/// </para>
 /// </summary>
 [Collection(nameof(SearchEvalCollection))]
 public class CapabilitySearchEvalTests(SearchEvalFixture fixture, ITestOutputHelper output)

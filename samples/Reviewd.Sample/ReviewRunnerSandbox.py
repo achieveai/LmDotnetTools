@@ -217,16 +217,28 @@ def eligibility():
             'mergeSha': (payload.get('lastMergeCommit') or {}).get('commitId'), 'payload': payload}
 
 
-def live():
-    current = eligibility()
+def live_merge(current, args):
+    # The merge this step works on. A finished review (the runner sets reviewFinished once the review turn is over)
+    # stays pinned to the head and merge it reviewed: a target branch that moved, or a new push, does not stop its
+    # confirmation, verify or archive (Kay9: post the findings on the update reviewed; a new head is reviewed afresh).
     if current['status'] != 'active' or current['isDraft'] is not False:
         raise ReviewError('PR is not active/non-draft in the requested repository.')
+    if args.get('reviewFinished'):
+        merge = args.get('merge')
+        if not isinstance(merge, str) or len(merge) != 40:
+            raise ReviewError('A finished review has no prepared merge to stay on.')
+        return merge
     merge = current['mergeSha']
     if current['headSha'] != args['head'] or not isinstance(merge, str) or len(merge) != 40:
         raise ReviewError('PR source changed or merge is unavailable; no submission allowed.')
     if args.get('merge') and merge != args['merge']:
         raise ReviewError('Prepared PR merge changed; inspect before continuing.')
-    return current['payload'], merge
+    return merge
+
+
+def live():
+    current = eligibility()
+    return current['payload'], live_merge(current, args)
 
 
 def ado_pr_api(payload):

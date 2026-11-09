@@ -72,7 +72,9 @@ internal sealed record WebhookSummaryDto(
 internal sealed record SkillsPolicyDto(
     [property: JsonPropertyName("default_tier")] string? DefaultTier,
     [property: JsonPropertyName("included")] IReadOnlyList<string?>? Included,
-    [property: JsonPropertyName("unlisted_hint")] string? UnlistedHint
+    [property: JsonPropertyName("unlisted_hint")] string? UnlistedHint,
+    [property: JsonPropertyName("search_tool")] bool? SearchTool = null,
+    [property: JsonPropertyName("agents_search_tool")] bool? AgentsSearchTool = null
 );
 
 internal sealed record PluginMountDto(
