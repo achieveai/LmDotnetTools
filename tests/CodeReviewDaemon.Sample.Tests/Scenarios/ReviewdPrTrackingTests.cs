@@ -67,6 +67,37 @@ public sealed class ReviewdPrTrackingTests
             .Be(eligible);
     }
 
+    [Theory]
+    [InlineData("2026-10-07T21:00:00Z", "head", "head", true)]
+    [InlineData("2026-10-04T21:00:00Z", "head", "head", false)]
+    [InlineData("2026-10-07T21:00:00Z", "older", "head", false)]
+    [InlineData("2026-10-07T21:00:00", "head", "head", false)]
+    [InlineData(null, "head", "head", false)]
+    public void Age_counts_a_readmit_like_a_push_of_the_head_it_readmitted(
+        string? readmittedAt,
+        string readmittedHead,
+        string liveHead,
+        bool eligible
+    )
+    {
+        var attempt = new System.Text.Json.Nodes.JsonObject
+        {
+            ["readmittedHead"] = readmittedHead,
+            ["readmittedAt"] = readmittedAt,
+        };
+        PrSelection
+            .IsWithinAge(
+                System.Text.Json.Nodes.JsonValue.Create("2026-10-01T00:00:00Z"),
+                null,
+                liveHead,
+                72,
+                DateTimeOffset.Parse("2026-10-07T22:00:00Z"),
+                attempt
+            )
+            .Should()
+            .Be(eligible);
+    }
+
     [Fact]
     public void Two_segment_repo_is_github_and_its_display_name_parses_back_to_the_same_key()
     {
@@ -594,6 +625,78 @@ public sealed class ReviewdPrTrackingTests
                             ["CreatedAt"] = now.AddHours(-240).ToString("O"),
                             ["SourceUpdatedAt"] = now.AddHours(pushedHours).ToString("O"),
                         },
+                    }
+                );
+            }
+            var options = CliOptions.Parse([
+                "pr",
+                "pick",
+                "--repo",
+                repo.DisplayName,
+                "--db",
+                database,
+                "--max-age-hours",
+                "72",
+                "--selection-out",
+                selection,
+            ]);
+
+            await PrSelection.RunAsync(options, CancellationToken.None, now);
+
+            var queued = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(selection))![
+                "repositories"
+            ]!.AsObject();
+            queued.Count.Should().Be(picked ? 1 : 0);
+        }
+        finally
+        {
+            ReviewdSqlitePools.Clear(database);
+            File.Delete(database);
+            File.Delete(selection);
+        }
+    }
+
+    [Theory]
+    [InlineData(-1, true)]
+    [InlineData(-73, false)]
+    public async Task Pick_takes_an_old_pr_readmitted_within_the_limit(int readmittedHours, bool picked)
+    {
+        // 2026-11-09: PRs whose reviews failed in the 11-05 quota outage were older than the limit by the time it
+        // ended, so nothing picked them again. doctor.py readmit stamps the attempt; pick counts it like a push.
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-readmit-{Guid.NewGuid():N}.db");
+        var selection = database + ".selection.json";
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var now = DateTimeOffset.Parse("2026-10-20T12:00:00Z");
+        try
+        {
+            using (var connection = PrThreadBindings.Connection(database))
+            {
+                var store = new SqliteKvStore(connection);
+                await store.SetAsync(
+                    $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                    new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["17"] = new System.Text.Json.Nodes.JsonObject
+                        {
+                            ["PrId"] = 17,
+                            ["Lifecycle"] = "Open",
+                            ["IsDraft"] = false,
+                            ["HeadSha"] = new string('a', 40),
+                            ["CreatedAt"] = now.AddHours(-240).ToString("O"),
+                            ["SourceUpdatedAt"] = now.AddHours(-200).ToString("O"),
+                        },
+                    }
+                );
+                await store.SetAsync(
+                    $"reviewd/review-attempt/{repo.NormalizedKey}/17",
+                    new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["headSha"] = new string('a', 40),
+                        ["stage"] = "failed-released",
+                        ["cleanupState"] = "released",
+                        ["claimToken"] = "token",
+                        ["readmittedHead"] = new string('a', 40),
+                        ["readmittedAt"] = now.AddHours(readmittedHours).ToString("O"),
                     }
                 );
             }

@@ -5,8 +5,9 @@ could not fix, plus one daily digest. Run by reviewd-doctor.timer every 15 minut
   doctor.py check              read-only: print every problem (exit 1 if any)
   doctor.py tick [--dry-run]   check, fix, alert, and send the daily digest when due
   doctor.py digest [--dry-run] build the digest now; send it unless --dry-run
-  doctor.py unquarantine <store, e.g. viva-glint, or NOVA> <PR id>
-                               forget a PR's repeated failures, so the next pick reviews it again
+  doctor.py readmit <store, e.g. viva-glint, or NOVA> <PR id>
+                               forget a PR's failures and resets and restart its age clock, so the next pick
+                               reviews it again (exit 3 when it had no released attempt to restart the clock on)
 
 It launches no reviews and keeps no review state. It reads each install's database and logs, and acts only through
 that install's own bin/ scripts or systemctl. It never restarts the shared review host. Its memory (what it already
@@ -586,26 +587,69 @@ def digest(now, probe, root=None):
     text += "\n".join(lines) or "- no activity"
     if quarantined:
         text += ("\n\nA PR skipped until its next push failed the same way 3 times. To review it again anyway: "
-                 "`doctor.py unquarantine <store> <PR id>`.")
+                 "`doctor.py readmit <store> <PR id>`.")
     if actions:
         text += "\n\n**Fixes the doctor made:**\n" + "\n".join(f"- {a}" for a in actions[-10:])
     return text
 
 
-def unquarantine(store, pr, root=None):
-    """Deletes the store's failure records for one PR, so its next pick admits it again. Returns the deleted keys."""
+def readmit(store, pr, now, root=None):
+    """Lets the next pick review one PR again: deletes its failure records (the quarantine), and on a released
+    attempt clears the head's reset count and stamps readmittedHead/readmittedAt, which pick and batch count like a
+    push of that head. On 11-06, deleting failure records alone released 95 PRs the 11-05 quota outage had failed,
+    and only 19 were reviewed: a head reset 3 times stays out, and so does a PR older than the age limit. An attempt
+    still owned by a review is left alone. Returns one line per change."""
     install = next((i for i in installs(root) if store in (i.name, i.path.name)), None)
     if install is None:
         raise ValueError(f"no install named {store}")
-    db = sqlite3.connect(install.db, timeout=30)
+    db = sqlite3.connect(install.db, timeout=30, isolation_level=None)
+    changes = []
     try:
-        with db:
-            keys = [key for (key,) in db.execute("select key from cache where key like 'reviewd/failure/%'")
-                    if key.rsplit("/", 1)[-1] == pr]
-            db.executemany("delete from cache where key = ?", [(key,) for key in keys])
+        db.execute("begin immediate")  # the batch writes these rows too
+        for key, value in db.execute("select key, value from cache where key like 'reviewd/failure/%' "
+                                     "or key like 'reviewd/review-attempt/%'").fetchall():
+            if key.rsplit("/", 1)[-1] != pr:
+                continue
+            if key.startswith("reviewd/failure/"):
+                db.execute("delete from cache where key = ?", (key,))
+                changes.append(f"deleted {key}")
+                continue
+            attempt = json.loads(value)
+            if attempt.get("stage") != "failed-released" or attempt.get("cleanupState") != "released":
+                changes.append(f"left {key}: stage {attempt.get('stage')}, {attempt.get('cleanupState')}")
+                continue
+            resets = attempt.pop("resetCount", 0)
+            if resets:
+                attempt["resetCountBeforeReadmit"] = resets
+            attempt["readmittedHead"] = attempt.get("headSha")
+            attempt["readmittedAt"] = now.isoformat()
+            db.execute("update cache set value = ? where key = ?", (json.dumps(attempt), key))
+            changes.append(f"readmitted {key} (head {str(attempt.get('headSha'))[:8]}, resets {resets} -> 0)")
+        db.execute("commit")
+    except BaseException:
+        if db.in_transaction:
+            db.execute("rollback")
+        raise
     finally:
         db.close()
-    return keys
+    return changes
+
+
+def report_readmit(store, pr, now, root=None):
+    """Runs readmit and prints what it did. Exits 0 only when it stamped an attempt: deleting failure records alone
+    leaves a PR older than the age limit out (what unquarantine reported as success on 11-06), so that exits 3."""
+    changes = readmit(store, pr, now, root)
+    for change in changes:
+        print(change)
+    if any(change.startswith("readmitted ") for change in changes):
+        print("the next pick includes the PR again")
+        return 0
+    if changes:
+        print("no released attempt to stamp, so its age clock was not restarted: "
+              "the next pick still leaves it out while it is older than the age limit")
+        return 3
+    print("nothing to readmit")
+    return 1
 
 
 def check(now, probe, root=None):
@@ -622,12 +666,8 @@ def main(argv):
     command = argv[1] if len(argv) > 1 else "check"
     now = datetime.datetime.now(datetime.timezone.utc)
     probe = Probe()
-    if command == "unquarantine" and len(argv) == 4:
-        keys = unquarantine(argv[2], argv[3])
-        for key in keys:
-            print(f"deleted {key}")
-        print(f"{len(keys)} failure record(s) deleted" + ("; the next pick includes the PR again" if keys else ""))
-        return 0 if keys else 1
+    if command == "readmit" and len(argv) == 4:
+        return report_readmit(argv[2], argv[3], now)
     if command == "check":
         return check(now, probe)
     if command == "tick":
