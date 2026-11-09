@@ -248,11 +248,12 @@ public class StoppedTurnTests
         var running = loop.RunAsync(cts.Token);
         await loop.WaitUntilReadyAsync(cts.Token);
         _ = await loop.SendAsync([new TextMessage { Text = "go", Role = Role.User }], inputId: "input-1");
-        await saving.Task.WaitAsync(cts.Token);
 
-        var stop = loop.StopAsync(Generous);
+        Task stop;
         try
         {
+            await saving.Task.WaitAsync(cts.Token);
+            stop = loop.StopAsync(Generous);
             (await Task.WhenAny(stop, Task.Delay(TimeSpan.FromSeconds(2.2), cts.Token)))
                 .Should()
                 .NotBeSameAs(stop, "the next request must not go out before this answer is saved");
@@ -292,10 +293,18 @@ public class StoppedTurnTests
         var running = loop.RunAsync(cts.Token);
         await loop.WaitUntilReadyAsync(cts.Token);
         _ = await loop.SendAsync([new TextMessage { Text = "go", Role = Role.User }], inputId: "input-1");
-        await saving.Task.WaitAsync(cts.Token);
 
-        var stop = loop.StopAsync(Generous);
-        failSaving.SetResult();
+        Task stop;
+        try
+        {
+            await saving.Task.WaitAsync(cts.Token);
+            stop = loop.StopAsync(Generous);
+        }
+        finally
+        {
+            failSaving.TrySetResult();
+        }
+
         await stop.WaitAsync(cts.Token);
         await running.WaitAsync(cts.Token);
 
@@ -379,10 +388,18 @@ public class StoppedTurnTests
         var running = loop.RunAsync(cts.Token);
         await loop.WaitUntilReadyAsync(cts.Token);
         _ = await loop.SendAsync([new TextMessage { Text = "go", Role = Role.User }], inputId: "input-1");
-        await Task.WhenAll(finishedSaved.Task, writing.Task, tool.Entered.Task).WaitAsync(cts.Token);
 
-        var stop = loop.StopAsync(Generous);
-        finishWriting.SetResult();
+        Task stop;
+        try
+        {
+            await Task.WhenAll(finishedSaved.Task, writing.Task, tool.Entered.Task).WaitAsync(cts.Token);
+            stop = loop.StopAsync(Generous);
+        }
+        finally
+        {
+            finishWriting.TrySetResult();
+        }
+
         await stop.WaitAsync(cts.Token);
         await running.WaitAsync(cts.Token);
         tool.Release();
