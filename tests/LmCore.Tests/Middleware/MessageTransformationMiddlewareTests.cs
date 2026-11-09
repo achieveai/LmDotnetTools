@@ -71,6 +71,37 @@ public class MessageTransformationMiddlewareTests
     }
 
     [Fact]
+    public async Task Downstream_StampsTheRunsGenerationId_WhenTheProviderLeftItEmpty()
+    {
+        // #502: without an id the plural message skipped expansion, so it was saved but never run.
+        var middleware = new MessageTransformationMiddleware();
+        var agent = new MockAgent(
+            new ToolsCallMessage
+            {
+                ToolCalls =
+                [
+                    new ToolCall
+                    {
+                        FunctionName = "probe",
+                        FunctionArgs = "{}",
+                        ToolCallId = "call-1",
+                    },
+                ],
+            }
+        );
+        var context = new MiddlewareContext(
+            Messages: [],
+            Options: new GenerateReplyOptions { GenerationId = "run-gen" }
+        );
+
+        var messages = (await middleware.InvokeAsync(context, agent)).ToList();
+
+        var call = Assert.IsType<ToolCallMessage>(Assert.Single(messages));
+        Assert.Equal("run-gen", call.GenerationId);
+        Assert.Equal(0, call.MessageOrderIdx);
+    }
+
+    [Fact]
     public async Task Downstream_AssignsOrdering_ToAllMessageTypes()
     {
         // Arrange

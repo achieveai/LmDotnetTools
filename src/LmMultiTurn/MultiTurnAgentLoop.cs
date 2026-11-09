@@ -249,6 +249,12 @@ public sealed class MultiTurnAgentLoop
     // why this is a collaborator rather than fields here.
     private readonly DelayedResultCoordinator _delayed = new();
 
+    // How long a Stop waits for a tool that claimed its result just before the Stop to finish writing it.
+    private static readonly TimeSpan StoppedTurnToolWriteWait = TimeSpan.FromSeconds(2);
+
+    // The turn being streamed, so the publishing middleware can note text the user has seen.
+    private TurnAttemptState? _activeTurnAttempt;
+
     // How each blocking tool call (AskUserQuestion, and later the waits) ended: settled early by the
     // loop so an interrupting input could run, or answered for real. Keyed by tool call id and kept
     // after the coordinator's entry is retired, because the answer that lost the race arrives later
@@ -837,7 +843,7 @@ public sealed class MultiTurnAgentLoop
 
         // Create publishing middleware that publishes to subscribers
         // Positioned BEFORE MessageUpdateJoinerMiddleware to capture streaming updates
-        var publishingMiddleware = new MessagePublishingMiddleware(PublishToAllAsync);
+        var publishingMiddleware = new MessagePublishingMiddleware(PublishAndTrackStreamedTextAsync);
 
         // Build the complete middleware stack (loop owns the pipeline)
         // Response path order: Provider -> MessageTransformation -> JsonFragment -> Publishing -> Joiner -> ToolCall
@@ -2775,7 +2781,178 @@ public sealed class MultiTurnAgentLoop
         await ObserveContextAsync(runId, generationId, messagesToSend, usage: null, ct);
 
         var attempt = new TurnAttemptState(generationId);
+        Dictionary<string, ToolCallMessage> dispatched = [];
+        Volatile.Write(ref _activeTurnAttempt, attempt);
 
+        try
+        {
+            return await StreamTurnAttemptAsync(messagesToSend, options, runId, generationId, attempt, dispatched, ct);
+        }
+        catch (Exception ex)
+            when (ct.IsCancellationRequested
+                || (ex is OperationCanceledException && LifetimeToken.IsCancellationRequested)
+            )
+        {
+            await RecordStoppedTurnAsync(attempt, dispatched, runId, generationId);
+
+            // Disposal cancels the lifetime token a moment before it stops the run, and a tool can lose
+            // that race. Wait for the stop so the run ends as cancelled, not as failed.
+            if (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(Timeout.Infinite, ct);
+            }
+
+            throw;
+        }
+        finally
+        {
+            Volatile.Write(ref _activeTurnAttempt, null);
+        }
+    }
+
+    /// <summary>
+    /// Publishes a streamed message, then notes any answer text so a Stop can keep what the user saw.
+    /// Noted after the publish on purpose: text that never reached a subscriber was never seen.
+    /// </summary>
+    private async ValueTask PublishAndTrackStreamedTextAsync(IMessage message, CancellationToken ct)
+    {
+        await PublishToAllAsync(message, ct);
+        if (message is TextUpdateMessage { IsThinking: false } update)
+        {
+            Volatile.Read(ref _activeTurnAttempt)?.ObserveStreamedText(update);
+        }
+    }
+
+    /// <summary>
+    /// Writes down where a stopped turn ended: an answer for every tool call that has none, then the text
+    /// the user had already seen, marked interrupted. Reasoning and half-built tool calls are not kept.
+    /// </summary>
+    /// <remarks>
+    /// Results go first because a tool call must be directly followed by its result in the next request.
+    /// Nothing here cancels a running tool. Its late result loses the claim and is dropped.
+    /// </remarks>
+    private async Task RecordStoppedTurnAsync(
+        TurnAttemptState attempt,
+        Dictionary<string, ToolCallMessage> dispatched,
+        string runId,
+        string generationId
+    )
+    {
+        List<Task> answeredByTheirTool = [];
+        foreach (var (toolCallId, toolCall) in dispatched)
+        {
+            var execution = attempt.PendingToolTasks[toolCallId];
+
+            // Nobody awaits this task after a Stop, so its failure would otherwise go unseen.
+            _ = execution.ContinueWith(
+                t =>
+                    Logger.LogWarning(
+                        t.Exception,
+                        "Tool call {ToolCallId} failed after run {RunId} was stopped",
+                        toolCallId,
+                        runId
+                    ),
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default
+            );
+
+            if (!attempt.TryClaimToolResult(toolCallId))
+            {
+                answeredByTheirTool.Add(execution);
+                continue;
+            }
+
+            var stopped = BuildErrorResultMessage(
+                toolCall,
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        error = "The user stopped this turn before this tool reported a result. It may still be "
+                            + "running, and its result will not be delivered.",
+                    }
+                )
+            );
+            if (toolCall.MessageOrderIdx is { } callOrderIdx)
+            {
+                stopped = stopped with { MessageOrderIdx = callOrderIdx + 1 };
+            }
+
+            await AddStoppedTurnRowAsync(stopped, runId);
+            try
+            {
+                await PublishToAllAsync(stopped, LifetimeToken);
+            }
+            catch (OperationCanceledException)
+            {
+                Logger.LogDebug("Disposal cut off the stopped result for {ToolCallId}", toolCallId);
+            }
+        }
+
+        // A tool that claimed its result just before the Stop is writing it now. Let it land first, so the
+        // partial text cannot end up between that tool call and its result.
+        try
+        {
+            await Task.WhenAll(answeredByTheirTool).WaitAsync(StoppedTurnToolWriteWait);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "A tool result of stopped run {RunId} did not finish writing", runId);
+        }
+
+        foreach (var block in attempt.OpenTextBlocks)
+        {
+            var text = block.Text.ToString();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                continue;
+            }
+
+            await AddStoppedTurnRowAsync(
+                new TextMessage
+                {
+                    Text = text,
+                    Role = Role.Assistant,
+                    FromAgent = block.FromAgent,
+                    GenerationId = block.GenerationId ?? generationId,
+                    RunId = runId,
+                    ThreadId = ThreadId,
+                    MessageOrderIdx = block.MessageOrderIdx,
+                    IsInterrupted = true,
+                },
+                runId
+            );
+        }
+    }
+
+    /// <summary>
+    /// Adds a row and waits for the store, because a Stop is often followed at once by disposal. If the
+    /// store fails the row still goes into memory: an unanswered tool call would break the next request.
+    /// </summary>
+    private async Task AddStoppedTurnRowAsync(IMessage message, string runId)
+    {
+        try
+        {
+            await AddDeferredToHistoryAsync(message, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Could not save a row of stopped run {RunId}", runId);
+            AddToHistory(message, runId);
+        }
+    }
+
+    /// <summary>Streams one provider attempt and waits for the tools it dispatched.</summary>
+    private async Task<TurnExecutionResult> StreamTurnAttemptAsync(
+        List<IMessage> messagesToSend,
+        GenerateReplyOptions options,
+        string runId,
+        string generationId,
+        TurnAttemptState attempt,
+        Dictionary<string, ToolCallMessage> dispatched,
+        CancellationToken ct
+    )
+    {
         try
         {
             var stream = await GenerateObservingRetriesAsync(messagesToSend, options, runId, generationId, ct);
@@ -2784,9 +2961,10 @@ public sealed class MultiTurnAgentLoop
             {
                 // Only canonical messages enter history (they are already published by
                 // MessagePublishingMiddleware). Fragments are deltas of a value their canonical
-                // message repeats in full, so keeping them buys nothing on a normal turn — and on an
-                // interrupted one it is the difference between an attempt that left no trace and an
-                // attempt that permanently poisoned the transcript with half a sentence. Lifecycle
+                // message repeats in full, so keeping them buys nothing on a normal turn — and on a
+                // retried one it is the difference between an attempt that left no trace and an
+                // attempt that permanently poisoned the transcript with half a sentence. A Stop is the
+                // exception: RecordStoppedTurnAsync keeps that text, marked interrupted. Lifecycle
                 // observation stays unconditional so per-turn message counts are unchanged.
                 //
                 // Defense in depth, and currently unreachable: the loop-owned MessageUpdateJoiner sits
@@ -2845,8 +3023,9 @@ public sealed class MultiTurnAgentLoop
                     // This runs in parallel with LLM streaming and other tool executions.
                     // Pass the run's generationId so deferred entries are tagged consistently —
                     // toolCall.GenerationId is set by the provider/middleware and may be missing.
-                    var executionTask = ExecuteAndPublishToolCallAsync(toolCall, runId, generationId, ct);
+                    var executionTask = ExecuteAndPublishToolCallAsync(toolCall, runId, generationId, attempt, ct);
                     attempt.TrackToolTask(toolCall.ToolCallId, executionTask);
+                    dispatched[toolCall.ToolCallId] = toolCall;
                 }
             }
         }
@@ -2860,9 +3039,9 @@ public sealed class MultiTurnAgentLoop
             // discipline as an interruption applies in case a tool did start before the failure surfaced.
             try
             {
-                await attempt.SettleToolTasksAsync();
+                await attempt.SettleToolTasksAsync().WaitAsync(ct);
             }
-            catch (Exception toolFailure)
+            catch (Exception toolFailure) when (!ct.IsCancellationRequested)
             {
                 Logger.LogWarning(
                     toolFailure,
@@ -2884,9 +3063,9 @@ public sealed class MultiTurnAgentLoop
             // cannot, and the tool's failure is already published to subscribers either way.
             try
             {
-                await attempt.SettleToolTasksAsync();
+                await attempt.SettleToolTasksAsync().WaitAsync(ct);
             }
-            catch (Exception toolFailure)
+            catch (Exception toolFailure) when (!ct.IsCancellationRequested)
             {
                 Logger.LogWarning(
                     toolFailure,
@@ -2915,7 +3094,9 @@ public sealed class MultiTurnAgentLoop
         if (attempt.PendingToolTasks.Count > 0)
         {
             Logger.LogDebug("Awaiting {Count} tool call results", attempt.PendingToolTasks.Count);
-            await attempt.SettleToolTasksAsync();
+
+            // Bound to ct because a Stop no longer cancels the tools: only the wait ends.
+            await attempt.SettleToolTasksAsync().WaitAsync(ct);
         }
 
         return new TurnExecutionResult(attempt);
@@ -3182,6 +3363,7 @@ public sealed class MultiTurnAgentLoop
         ToolCallMessage toolCall,
         string runId,
         string generationId,
+        TurnAttemptState attempt,
         CancellationToken ct
     )
     {
@@ -3189,6 +3371,19 @@ public sealed class MultiTurnAgentLoop
         (toolCall, var answered) = UnwrapToolCall(toolCall, ct);
         var result = answered ?? await ExecuteToolCallAsync(toolCall, runId, generationId, ct);
         var elapsed = Stopwatch.GetElapsedTime(startedAt);
+
+        if (!attempt.TryClaimToolResult(toolCall.ToolCallId!))
+        {
+            Logger.LogInformation(
+                "Result of tool call {ToolCallId} ({FunctionName}) arrived after the Stop answered it; dropping it",
+                toolCall.ToolCallId,
+                toolCall.FunctionName
+            );
+            return result;
+        }
+
+        // Claimed, so the Stop will not answer this call: the writes below must land even if it arrives now.
+        var writeCt = LifetimeToken;
 
         // Stamp ordering onto the result so the client merge/order logic (keyed partly on
         // messageOrderIdx) does not drop it (BUG H3b). The loop publishes tool results out-of-band,
@@ -3227,7 +3422,7 @@ public sealed class MultiTurnAgentLoop
             // up to the run loop and surfaces as a RunFailed.
             try
             {
-                await AddDeferredToHistoryAsync(result, ct);
+                await AddDeferredToHistoryAsync(result, writeCt);
             }
             catch
             {
@@ -3246,10 +3441,10 @@ public sealed class MultiTurnAgentLoop
                     GenerationId = deferredEntry.GenerationId,
                     DeferredAt = DateTimeOffset.FromUnixTimeMilliseconds(deferredAtUnixMs),
                 },
-                ct
+                writeCt
             );
 
-            await PublishToAllAsync(result, ct);
+            await PublishToAllAsync(result, writeCt);
 
             // Told AFTER history and the live publish, so a host that reacts by reading the
             // transcript finds the call it was just told about. Reported here and not from the
@@ -3267,13 +3462,13 @@ public sealed class MultiTurnAgentLoop
             return result;
         }
 
-        await PublishToolCompletedAsync(result, toolCall, runId, generationId, elapsed, wasDeferred: false, ct);
+        await PublishToolCompletedAsync(result, toolCall, runId, generationId, elapsed, wasDeferred: false, writeCt);
 
         // Keep bounded image evidence in this run's provider requests, but never history.
         RememberToolImages(result, runId);
         var historyResult = result.ContentBlocks != null ? result with { ContentBlocks = null } : result;
-        AddToHistory(historyResult);
-        await PublishToAllAsync(result, ct);
+        AddToHistory(historyResult, runId);
+        await PublishToAllAsync(result, writeCt);
 
         Logger.LogDebug(
             "Tool result for {ToolCallId}: {ResultPreview}",
@@ -3677,11 +3872,13 @@ public sealed class MultiTurnAgentLoop
                 );
             }
 
-            var result = await handler(prepared.Arguments.Json, ctx, ct);
+            // The agent's lifetime, not the run: a Stop ends the turn but leaves a running tool alone (#930
+            // item 11). Disposal is what cancels it.
+            var result = await handler(prepared.Arguments.Json, ctx, LifetimeToken);
 
             return BuildResultMessage(toolCall, result);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested || LifetimeToken.IsCancellationRequested)
         {
             // Caller-initiated cancellation (shutdown, run abort) must propagate — converting
             // it into an LLM-visible error message would silently swallow the abort and let
