@@ -71,7 +71,7 @@ Both take input through the base class's hold. TakeNextInputBatchAsync returns a
 held, or else waits, drains the channel and holds what it took. AppendRetainedInputsToHistory adds
 the held batch to history and releases it. The batch stays held across the StartRunAsync awaits, so a
 Stop/Run between taking input and appending it cannot drop it. Do not drain into a local and then
-wait StartRunAsync: that is the window #877-#879 fixed.
+await StartRunAsync: that is the window #877-#879 fixed.
 
 #### Poll-Based (MultiTurnAgentLoop)
 Implementations call `TryDrainInputs()` between LLM turns to check for new input:

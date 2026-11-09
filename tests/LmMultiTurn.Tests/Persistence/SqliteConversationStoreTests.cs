@@ -1218,6 +1218,92 @@ public class SqliteConversationStoreTests : IAsyncLifetime
 
     #endregion
 
+    #region Metadata Save Lock Tests
+
+    [Fact]
+    public async Task SaveMetadata_CancelledWhileWaitingForTheLock_Throws_AndDoesNotFreeTheHoldersLock()
+    {
+        var bound = TimeSpan.FromSeconds(10);
+        using var release = new ManualResetEventSlim(false);
+        using var cancel = new CancellationTokenSource();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var holder = Task.Run(() =>
+            _store.UpdateMetadataAsync(
+                "thread-a",
+                existing =>
+                {
+                    entered.SetResult();
+                    _ = release.Wait(bound);
+                    return CreateTestMetadata("thread-a");
+                }
+            )
+        );
+
+        try
+        {
+            await entered.Task.WaitAsync(bound);
+            var cancelled = _store.SaveMetadataAsync("thread-a", CreateTestMetadata("thread-a"), cancel.Token);
+            cancelled.IsCompleted.Should().BeFalse("the holder still has the metadata lock");
+
+            await cancel.CancelAsync();
+
+            await FluentActions
+                .Awaiting(() => cancelled.WaitAsync(bound))
+                .Should()
+                .ThrowAsync<OperationCanceledException>();
+
+            // A cancelled wait never held the lock, so it must not have released the holder's.
+            var queued = _store.SaveMetadataAsync("thread-a", CreateTestMetadata("thread-a"));
+            queued.IsCompleted.Should().BeFalse("the holder still has the metadata lock");
+
+            release.Set();
+            await queued.WaitAsync(bound);
+        }
+        finally
+        {
+            release.Set();
+            await holder.WaitAsync(bound);
+        }
+    }
+
+    [Fact]
+    public async Task SaveMetadata_WhenTheConnectionFailsAfterTheLockIsTaken_ReleasesTheLock()
+    {
+        var bound = TimeSpan.FromSeconds(10);
+        var factory = new FailNextConnectionFactory(new SqliteConnectionFactory(_databasePath));
+        await using var store = new SqliteConversationStore(factory, ownsFactory: true);
+        await store.SaveMetadataAsync("thread-a", CreateTestMetadata("thread-a"));
+
+        factory.FailNext = true;
+        await FluentActions
+            .Awaiting(() => store.SaveMetadataAsync("thread-a", CreateTestMetadata("thread-a")).WaitAsync(bound))
+            .Should()
+            .ThrowAsync<IOException>();
+
+        await store.SaveMetadataAsync("thread-a", CreateTestMetadata("thread-a")).WaitAsync(bound);
+        (await store.LoadMetadataAsync("thread-a")).Should().NotBeNull();
+    }
+
+    private sealed class FailNextConnectionFactory(ISqliteConnectionFactory inner) : ISqliteConnectionFactory
+    {
+        public bool FailNext { get; set; }
+
+        public Task<SqliteConnection> GetConnectionAsync(CancellationToken ct = default)
+        {
+            if (FailNext)
+            {
+                FailNext = false;
+                return Task.FromException<SqliteConnection>(new IOException("no connection"));
+            }
+
+            return inner.GetConnectionAsync(ct);
+        }
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
+    }
+
+    #endregion
+
     #region Test Helpers
 
     private static List<PersistedMessage> CreateTestMessages(string threadId, string runId, int count)

@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Delivery;
 
@@ -24,12 +26,18 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Recovery;
 ///     begin until every one of them has reached a terminal state, or a background execution would race
 ///     the replacement attempt.
 ///     </para>
-///     <para>Not thread-safe: a single turn is observed by exactly one loop thread.</para>
+///     <para>
+///     A single turn is observed by exactly one loop thread, so only
+///     <see cref="TryClaimToolResult" /> is safe to call concurrently: it is the one member a running
+///     tool and a Stop can race on.
+///     </para>
 /// </remarks>
 internal sealed class TurnAttemptState(string generationId)
 {
     private readonly List<IMessage> _completedMessages = [];
     private readonly Dictionary<string, Task<ToolCallResultMessage>> _pendingToolTasks = [];
+    private readonly List<OpenTextBlock> _openTextBlocks = [];
+    private readonly ConcurrentDictionary<string, byte> _claimedToolResults = new(StringComparer.Ordinal);
 
     /// <summary>
     ///     Memoized settle operation. Recovery settles the attempt and the ordinary end-of-turn await
@@ -59,6 +67,9 @@ internal sealed class TurnAttemptState(string generationId)
     /// <summary>The tool executions this attempt dispatched, keyed by tool call id.</summary>
     public IReadOnlyDictionary<string, Task<ToolCallResultMessage>> PendingToolTasks => _pendingToolTasks;
 
+    /// <summary>Text the user has seen whose finished message has not arrived, oldest first.</summary>
+    public IReadOnlyList<OpenTextBlock> OpenTextBlocks => _openTextBlocks;
+
     /// <summary>
     ///     <see langword="true" /> when the attempt emitted at least one locally executed tool call, which
     ///     is what tells the run loop another turn is owed.
@@ -82,9 +93,40 @@ internal sealed class TurnAttemptState(string generationId)
             return false;
         }
 
+        if (message is TextMessage finished)
+        {
+            _ = _openTextBlocks.RemoveAll(b =>
+                b.GenerationId == finished.GenerationId && b.MessageOrderIdx == finished.MessageOrderIdx
+            );
+        }
+
         _completedMessages.Add(message);
         return true;
     }
+
+    /// <summary>Adds one published text fragment to the block it belongs to.</summary>
+    /// <param name="update">A non-thinking fragment that has reached subscribers.</param>
+    public void ObserveStreamedText(TextUpdateMessage update)
+    {
+        var block = _openTextBlocks.Find(b =>
+            b.GenerationId == update.GenerationId && b.MessageOrderIdx == update.MessageOrderIdx
+        );
+        if (block is null)
+        {
+            block = new OpenTextBlock(update.GenerationId, update.MessageOrderIdx, update.FromAgent);
+            _openTextBlocks.Add(block);
+        }
+
+        _ = block.Text.Append(update.Text);
+    }
+
+    /// <summary>
+    ///     Takes the right to answer a tool call. Exactly one caller wins, so a call gets one result
+    ///     however a running tool and a Stop interleave.
+    /// </summary>
+    /// <param name="toolCallId">The tool call to answer.</param>
+    /// <returns><see langword="true" /> for the one caller that may write the result.</returns>
+    public bool TryClaimToolResult(string toolCallId) => _claimedToolResults.TryAdd(toolCallId, 0);
 
     /// <summary>
     ///     Whether <paramref name="message" /> put content in front of the user or ran an effect, as
@@ -124,4 +166,11 @@ internal sealed class TurnAttemptState(string generationId)
     ///     honour without breaking its own contract.
     /// </remarks>
     public Task SettleToolTasksAsync() => _settle ??= Task.WhenAll(_pendingToolTasks.Values);
+}
+
+/// <summary>Text from one block of a turn that the user has seen but that has not finished.</summary>
+internal sealed record OpenTextBlock(string? GenerationId, int? MessageOrderIdx, string? FromAgent)
+{
+    /// <summary>The text published so far.</summary>
+    public StringBuilder Text { get; } = new();
 }

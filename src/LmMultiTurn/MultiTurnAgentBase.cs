@@ -1840,8 +1840,16 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// it has something, now held. Null when the channel is completed.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The held batch comes first and without waiting: after a restart the channel may be empty, and the
     /// held batch is older than anything on it.
+    /// </para>
+    /// <para>
+    /// The caller must release the batch once it is in history: call
+    /// <c>AppendRetainedInputsToHistory</c>, or append the whole batch and then call
+    /// <see cref="ReleaseRetainedInputs"/>. Until then every call returns this same batch. On cancellation
+    /// or a failure before the append, leave it held so the next run can retry it.
+    /// </para>
     /// </remarks>
     protected async Task<List<QueuedInput>?> TakeNextInputBatchAsync(CancellationToken ct)
     {
