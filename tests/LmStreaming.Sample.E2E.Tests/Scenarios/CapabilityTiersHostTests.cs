@@ -855,6 +855,30 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
     }
 
     /// <summary>
+    /// Issue #931: a mode whose sandbox allow-list names only <c>Skill</c> and <c>Read</c> never names
+    /// <c>SearchSkills</c>, yet it needs a skill search. The allow-list has to gain it at the connect.
+    /// </summary>
+    [Fact]
+    public async Task GatewaySearchTools_SkillAndReadAllowList_StillGetsSearchSkills()
+    {
+        _host.OfferGatewaySearch = true;
+        try
+        {
+            var threadId = await _host.ProvisionAsync(_host.SkillAndReadTieredModeId);
+
+            var root = await _host.FirstRequestAsync(threadId, _host.SkillAndReadTieredModeId);
+
+            root.ToolNames.Should().Contain(["Skill", "Read", CapabilityTiers.GatewaySearchSkillsToolName]);
+            root.ToolNames.Should()
+                .NotContain([CapabilityTiers.SearchSkillToolName, CapabilityTiers.GatewaySearchAgentsToolName]);
+        }
+        finally
+        {
+            _host.OfferGatewaySearch = false;
+        }
+    }
+
+    /// <summary>
     /// The root's agent searches answer from the root's own view, so a sub-agent never inherits them, even from a
     /// template that inherits every other tool.
     /// </summary>
@@ -1237,6 +1261,9 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
         /// <summary><see cref="TieredModeId"/>'s tiers plus an <c>agent:</c> selector, without <c>caps.agent</c>.</summary>
         public string UncappedAgentSelectorModeId { get; private set; } = null!;
 
+        /// <summary><see cref="TieredModeId"/>'s tiers, with the sandbox allow-list cut down to <c>Skill</c> and <c>Read</c>.</summary>
+        public string SkillAndReadTieredModeId { get; private set; } = null!;
+
         /// <summary><see cref="TieredModeId"/>'s tiers plus <c>caps.tool</c>, pinning <c>Read</c>.</summary>
         public string ToolTieredModeId { get; private set; } = null!;
 
@@ -1259,6 +1286,22 @@ public sealed class CapabilityTiersHostTests : IClassFixture<CapabilityTiersHost
                 SubAgent = new ModeSubAgentTiers { Loaded = ["skill:beta:c"] },
             };
             TieredModeId = (await CopyAsync("Tiers host tiered", tiers)).Id;
+            var skillAndRead = await CopyAsync("Tiers host skill and read", tiers);
+            SkillAndReadTieredModeId = (
+                await Modes.UpdateModeAsync(
+                    skillAndRead.Id,
+                    new ChatModeCreateUpdate
+                    {
+                        Name = skillAndRead.Name,
+                        SystemPrompt = skillAndRead.SystemPrompt,
+                        EnabledCapabilityTools =
+                        [
+                            ToolGroups.Qualify(ToolGroups.Sandbox, "Skill"),
+                            ToolGroups.Qualify(ToolGroups.Sandbox, "Read"),
+                        ],
+                    }
+                )
+            ).Id;
             UntieredModeId = (await Modes.CopyModeAsync(SystemChatModes.WorkspaceAgentModeId, "Tiers host plain")).Id;
             var cleared = await CopyAsync("Tiers host cleared", tiers);
             cleared = await Modes.UpdateModeAsync(

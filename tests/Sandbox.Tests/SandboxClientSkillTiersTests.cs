@@ -50,6 +50,126 @@ public sealed class SandboxClientSkillTiersTests
     }
 
     // Gateway 0.1.20 and older reject a skills block with a field they do not know (deny_unknown_fields).
+    /// <summary>
+    /// The gateway leaves a false flag off its response (seen on 0.1.21 and 0.1.22). A null here would, on reuse, omit
+    /// the field and hand the choice to the gateway's env default, re-enabling the tool the caller turned off.
+    /// </summary>
+    [Fact]
+    public async Task CreateAsync_FlagSentAndFalseOmitted_ResolvesToFalse_AndAReuseKeepsItOff()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            """
+            {"session_id":"s-1","properties":{},"skills":{"default_tier":"included","included":[],"search_tool":true}}
+            """,
+            HttpStatusCode.Created
+        );
+
+        var info = await client.CreateAsync(
+            new SandboxCreateRequest("ws", skills: new SandboxSkillsPolicy(searchTool: true, agentsSearchTool: false))
+        );
+
+        info.SkillsPolicy!.SearchTool.Should().BeTrue("an explicit response value is kept as it is");
+        info.SkillsPolicy.AgentsSearchTool.Should().BeFalse("this gateway took the flag, so absent means off");
+
+        _ = await client.CreateAsync(new SandboxCreateRequest("ws", skills: info.SkillsPolicy));
+
+        using var reused = JsonDocument.Parse(handler.Requests[1].Body!);
+        var skills = reused.RootElement.GetProperty("skills");
+        skills.GetProperty("search_tool").GetBoolean().Should().BeTrue();
+        skills.GetProperty("agents_search_tool").GetBoolean().Should().BeFalse("a reuse must stay off");
+    }
+
+    /// <summary>A create that sent one flag settles both: the gateway accepted the two fields together.</summary>
+    [Fact]
+    public async Task CreateAsync_OneFlagSent_AnAbsentOtherFlagIsAlsoFalse()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            """{"session_id":"s-1","properties":{},"skills":{"default_tier":"included","included":[]}}""",
+            HttpStatusCode.Created
+        );
+
+        var info = await client.CreateAsync(
+            new SandboxCreateRequest("ws", skills: new SandboxSkillsPolicy(searchTool: true))
+        );
+
+        info.SkillsPolicy!.SearchTool.Should().BeFalse("the gateway answered without it, so it is not on");
+        info.SkillsPolicy.AgentsSearchTool.Should().BeFalse();
+    }
+
+    /// <summary>With no flag sent, absent cannot be told from a gateway older than the fields, so nothing is invented.</summary>
+    [Theory]
+    [InlineData("", null, null)]
+    [InlineData(""","search_tool":true,"agents_search_tool":false""", true, false)]
+    public async Task CreateAsync_NoFlagSent_LeavesAbsentFlagsUnknown_AndKeepsExplicitOnes(
+        string flags,
+        bool? searchTool,
+        bool? agentsSearchTool
+    )
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            $$$"""{"session_id":"s-1","properties":{},"skills":{"default_tier":"available","included":[]{{{flags}}}}}""",
+            HttpStatusCode.Created
+        );
+
+        var info = await client.CreateAsync(
+            new SandboxCreateRequest("ws", skills: new SandboxSkillsPolicy(SandboxSkillTier.Available))
+        );
+
+        info.SkillsPolicy!.SearchTool.Should().Be(searchTool);
+        info.SkillsPolicy.AgentsSearchTool.Should().Be(agentsSearchTool);
+    }
+
+    [Fact]
+    public async Task CreateAsync_FlagSentAndNoSkillsBlockAnswered_HasNoPolicy()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            """{"session_id":"s-1","properties":{}}""",
+            HttpStatusCode.Created
+        );
+
+        var info = await client.CreateAsync(
+            new SandboxCreateRequest("ws", skills: new SandboxSkillsPolicy(searchTool: false))
+        );
+
+        info.SkillsPolicy.Should().BeNull("a missing block is not a policy with both tools off");
+    }
+
+    /// <summary>
+    /// The CLR binds an already-built caller by exact signature, so the shape before the search flags must stay. The
+    /// three calls below only compile while overload resolution stays unambiguous.
+    /// </summary>
+    [Fact]
+    public void SandboxSkillsPolicy_ThreeArgumentConstructor_StaysForCallersBuiltBeforeTheSearchFlags()
+    {
+        var constructor = typeof(SandboxSkillsPolicy).GetConstructor([
+            typeof(SandboxSkillTier?),
+            typeof(IReadOnlyList<string>),
+            typeof(string),
+        ]);
+
+        constructor.Should().NotBeNull();
+        var policy = (SandboxSkillsPolicy)constructor!.Invoke([SandboxSkillTier.Available, new[] { "a" }, "hint"]);
+        policy.DefaultTier.Should().Be(SandboxSkillTier.Available);
+        policy.Included.Should().Equal("a");
+        policy.UnlistedHint.Should().Be("hint");
+        policy.SearchTool.Should().BeNull();
+        new SandboxSkillsPolicy().DefaultTier.Should().BeNull();
+        new SandboxSkillsPolicy(null, null, null).SearchTool.Should().BeNull();
+        new SandboxSkillsPolicy(SandboxSkillTier.Included).DefaultTier.Should().Be(SandboxSkillTier.Included);
+    }
+
     [Fact]
     public async Task CreateAsync_SearchToolFlagsUnset_AreNotOnTheWire()
     {

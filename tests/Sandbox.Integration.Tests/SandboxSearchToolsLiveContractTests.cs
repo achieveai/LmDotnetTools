@@ -1,5 +1,3 @@
-using System.Net.Http.Json;
-using System.Text.Json;
 using FluentAssertions;
 using Xunit;
 
@@ -55,12 +53,18 @@ public sealed class SandboxSearchToolsLiveContractTests
             info.SkillsPolicy.AgentsSearchTool.Should().BeTrue();
             (await ListToolsAsync(info.SessionId)).Should().Contain([SearchSkills, SearchAgents, "Skill"]);
 
-            var (isError, text) = await CallToolAsync(info.SessionId, SearchSkills, new { query = skill });
+            var (isError, text) = await SandboxMcpRpc.CallToolAsync(
+                info.SessionId,
+                null,
+                SearchSkills,
+                new { query = skill }
+            );
             isError.Should().BeFalse(text);
             text.Should().Contain($"{plugin.Name}:{skill}", "a hit's name is what the Skill tool loads");
 
-            var (agentsIsError, agentsText) = await CallToolAsync(
+            var (agentsIsError, agentsText) = await SandboxMcpRpc.CallToolAsync(
                 info.SessionId,
+                null,
                 SearchAgents,
                 new { query = "review" }
             );
@@ -88,7 +92,7 @@ public sealed class SandboxSearchToolsLiveContractTests
         );
         try
         {
-            info.SkillsPolicy!.AgentsSearchTool.Should().NotBe(true);
+            info.SkillsPolicy!.AgentsSearchTool.Should().BeFalse("the gateway omits false, and the SDK restores it");
             var tools = await ListToolsAsync(info.SessionId);
             tools.Should().Contain(SearchSkills);
             tools.Should().NotContain(SearchAgents);
@@ -122,7 +126,7 @@ public sealed class SandboxSearchToolsLiveContractTests
 
     private static async Task<string[]> ListToolsAsync(string sessionId)
     {
-        using var json = await RpcAsync(sessionId, "tools/list", new { });
+        using var json = await SandboxMcpRpc.SendAsync(sessionId, "tools/list", new { });
         return
         [
             .. json
@@ -131,57 +135,5 @@ public sealed class SandboxSearchToolsLiveContractTests
                 .EnumerateArray()
                 .Select(t => t.GetProperty("name").GetString()!),
         ];
-    }
-
-    private static async Task<(bool IsError, string Text)> CallToolAsync(
-        string sessionId,
-        string tool,
-        object arguments
-    )
-    {
-        using var json = await RpcAsync(sessionId, "tools/call", new { name = tool, arguments });
-        var result = json.RootElement.GetProperty("result");
-        var text = string.Concat(
-            result
-                .GetProperty("content")
-                .EnumerateArray()
-                .Select(c => c.TryGetProperty("text", out var t) ? t.GetString() : "")
-        );
-        return (result.TryGetProperty("isError", out var isError) && isError.GetBoolean(), text);
-    }
-
-    private static async Task<JsonDocument> RpcAsync(string sessionId, string method, object parameters)
-    {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-        using var request = new HttpRequestMessage(
-            HttpMethod.Post,
-            new Uri(new Uri(Environment.GetEnvironmentVariable("SANDBOX_BASE_URL")!.Trim()), "mcp")
-        )
-        {
-            Content = JsonContent.Create(
-                new
-                {
-                    jsonrpc = "2.0",
-                    id = 1,
-                    method,
-                    @params = parameters,
-                }
-            ),
-        };
-        request.Headers.Add("X-Sbx-App-Id", Environment.GetEnvironmentVariable("SANDBOX_APP_ID")!.Trim());
-        request.Headers.Add("X-Sbx-App-Key", Environment.GetEnvironmentVariable("SANDBOX_APP_KEY")!.Trim());
-        request.Headers.Add("X-Session-ID", sessionId);
-        request.Headers.Add("Accept", "application/json, text/event-stream");
-        using var response = await http.SendAsync(request);
-        response.EnsureSuccessStatusCode();
-        var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        if (json.RootElement.TryGetProperty("error", out var error))
-        {
-            var message = error.ToString();
-            json.Dispose();
-            throw new InvalidOperationException($"{method} JSON-RPC error: {message}");
-        }
-
-        return json;
     }
 }

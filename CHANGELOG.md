@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Skill search moves to the gateway when the session offers it.** A tiered session whose gateway lists `SearchSkills`
+  uses it in place of LMDT's `SearchSkill`; `SearchPlugin` and overflow advice follow the selected search. Any other
+  session keeps `SearchSkill`, and `SearchAgent` is unchanged everywhere. The gateway's `SearchAgents` is never offered to
+  a model. `SandboxGatewayOptions.OfferSearchTools` (default false) asks new sandboxes for skill search and not agent
+  search; `LmStreaming.Sample` sets it to true. The request needs gateway 0.1.21 or later, and an older or unreadable
+  version gets a create without the flags. `SandboxSkillsPolicy` gains `searchTool` and `agentsSearchTool`;
+  `SandboxCreateRequest.WithSkills` and `SandboxClient.GetGatewayVersionAsync` are new.
+
 - **Sandbox: explicit marketplace lists and the gateway's available aliases.** `SandboxCreateRequest.ExplicitMarketplaces`
   sends `Marketplaces` as given, so an empty (or omitted) list sends `"marketplaces": []` and mounts none;
   without it an empty list still omits the field and the gateway mounts its default set. `SandboxException.AvailableMarketplaces`

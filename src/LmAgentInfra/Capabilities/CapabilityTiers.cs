@@ -75,7 +75,8 @@ public sealed record SkillTierGateway(
 /// <summary>
 /// One conversation's loaded-vs-available skill tiers. The ROOT agent's <c>Skill</c> tool lists only the
 /// skills in its view (loaded plus pinned); every other admitted skill stays loadable by name and is found
-/// with <c>SearchSkill</c>. Each spawned sub-agent gets its own view the same way
+/// with the build's skill search: the gateway's <c>SearchSkills</c> when the session lists it, else
+/// <c>SearchSkill</c>. Each spawned sub-agent gets its own view the same way
 /// (<see cref="ForInheritedToolAsync"/>), seeded from the mode's <c>subAgent</c> sets and rotated at its own
 /// compactions; the root's and the sub-agents' views never touch each other.
 /// </summary>
@@ -156,10 +157,11 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
     public const string GatewaySearchSkillsToolName = "SearchSkills";
 
     /// <summary>
-    /// The gateway's sub-agent search (<c>skills.agents_search_tool</c>). The host never offers it to a model: it finds
-    /// nothing for a named agent (gateway issue #246), every LMDT session names one, and
-    /// <see cref="SearchAgentToolName"/> works. A session can list it unasked (a gateway env default, or a sandbox
-    /// created before the host stopped asking), so it is dropped by name.
+    /// The gateway's sub-agent search (<c>skills.agents_search_tool</c>). The host never offers it to a model. It finds
+    /// nothing for a named agent (gateway issue #246); tiered roots and their children are named, and
+    /// <see cref="SearchAgentToolName"/> works for them. Untiered and Copilot primaries can run as the gateway's default
+    /// agent, and drop it to keep the tool list they had. A session can list it unasked (a gateway env default, or a
+    /// sandbox created before the host stopped asking), so it is dropped by name.
     /// </summary>
     public const string GatewaySearchAgentsToolName = "SearchAgents";
 
@@ -343,7 +345,8 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
     internal TimeSpan RotationBudget { get; init; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
-    /// The root agent's <c>Skill</c> (once attached) and <c>SearchSkill</c>. The host registers it only on a
+    /// The root agent's <c>Skill</c> (once attached) and, when the session's gateway lists no <c>SearchSkills</c>,
+    /// <c>SearchSkill</c>. The host registers it only on a
     /// build that left the instance active; it also contributes nothing while inert, so a later configure that
     /// goes inert cannot leave a stale registration offering the tools.
     /// </summary>
@@ -875,9 +878,10 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
 
     /// <summary>
     /// <c>SubAgentOptions.InheritedToolOverride</c>: gives a spawning sub-agent its OWN <c>Skill</c> (the gateway's
-    /// text for its own view, served with the parent's handler) and a <c>SearchSkill</c> that marks hits from its
-    /// own view. The sub-agent's first such tool loads its view from its own thread (else seeds it from the
-    /// mode's <c>subAgent</c> sets, revision 1, persisted), PATCHes its gateway id and lists <c>Skill</c> again as
+    /// text for its own view, served with the parent's handler) and, on the fallback, a <c>SearchSkill</c> that marks
+    /// hits from its own view. The gateway's <c>SearchSkills</c> is never replaced: it keeps its inherited handler and
+    /// the gateway answers as the sub-agent. The sub-agent's first such tool loads its view from its own thread (else
+    /// seeds it from the mode's <c>subAgent</c> sets, revision 1, persisted), PATCHes its gateway id and lists <c>Skill</c> again as
     /// that sub-agent. While tools are tiered it also gives the sub-agent its own <c>SearchTool</c> and
     /// <c>ExecuteTool</c> over its own view: its request lists only the inherited managed tools that view lists
     /// (seeded once from the mode's <c>subAgent</c> <c>tool:</c> selectors), and its loop runs the rest through its
@@ -3201,8 +3205,8 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
             };
 
         /// <summary>
-        /// The build's <c>Skill</c> and <c>SearchSkill</c>: the staged ones until the commit, the conversation's live
-        /// ones after it, and nothing once discarded.
+        /// The build's <c>Skill</c> and, on the fallback only (before and after the commit), <c>SearchSkill</c>: the
+        /// staged ones until the commit, the conversation's live ones after it, and nothing once discarded.
         /// </summary>
         public IFunctionProvider RootProvider { get; }
 

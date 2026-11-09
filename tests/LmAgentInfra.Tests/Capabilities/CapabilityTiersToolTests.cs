@@ -452,6 +452,30 @@ public class CapabilityTiersToolTests
         view.Should().Contain(CapabilityCatalog.ToolKeyPrefix + "Glob");
     }
 
+    // Issue #931. Skill and the gateway's search tools are never tier-managed, so a listing of only those leaves nothing
+    // to manage. It must count as "no tools yet" and not consume the mode's seed. Red: let AttachTools take the searches.
+    [Fact]
+    public async Task ABuildListingOnlySkillAndGatewaySearches_StagesNone_SoTheNextBuildStillSeedsTheModesTools()
+    {
+        var store = await StoreAsync();
+        var log = new RecordingLogger();
+        using var tiers = new CapabilityTiers(T, store, log);
+        FunctionContract[] searchesOnly =
+        [
+            Tool(CapabilityTiers.SkillToolName, "Skill."),
+            Tool(CapabilityTiers.GatewaySearchSkillsToolName, "Search skills."),
+            Tool(CapabilityTiers.GatewaySearchAgentsToolName, "Search agents."),
+        ];
+
+        await BuildAsync(tiers, RotationSettings, new FakeSkillGateway().For(T), searchesOnly);
+
+        log.Starting("Capabilities tools not staged").Should().ContainSingle();
+        await BuildAsync(tiers, RotationSettings, new FakeSkillGateway().For(T), RotationTools);
+        ListedTools(RootRegistry(tiers, RotationTools)).Should().BeEquivalentTo("Read", "Glob");
+        var view = (await RawViewAsync(store, T)).Should().NotBeNull().And.Subject;
+        view.Should().Contain(CapabilityCatalog.ToolKeyPrefix + "Glob");
+    }
+
     // G3. A gateway that stops answering mid-spawn or mid-rotation costs one budget each, not a hang. The child then
     // inherits the parent's tools (one WARN; its ExecuteTool falls back without waiting again), and the rotation
     // reports no change with a WARN. Red: drop either CancelAfter (the 5 s wait fails), or the budget's WARN.

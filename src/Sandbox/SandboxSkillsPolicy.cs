@@ -43,15 +43,21 @@ public sealed class SandboxSkillsPolicy
     /// <summary>
     /// Lists the gateway's <c>SearchSkills</c> tool for this sandbox (gateway 0.1.21, ADR 0047). Fixed at create.
     /// <c>null</c> on a request omits the field, which a gateway older than 0.1.21 requires: it rejects a <c>skills</c>
-    /// block with fields it does not know (see <see cref="SandboxClient.SupportsSearchTools"/>).
+    /// block with fields it does not know (see <see cref="SandboxClient.SupportsSearchTools"/>). On a response,
+    /// <c>false</c> after a create that sent either search flag, even though the gateway omits a false flag; <c>null</c>
+    /// after any other create, where an absent flag cannot be told from an older gateway.
     /// </summary>
     public bool? SearchTool { get; }
 
     /// <summary>
-    /// Lists the gateway's <c>SearchAgents</c> tool for this sandbox. Fixed at create; <c>null</c> as for
-    /// <see cref="SearchTool"/>.
+    /// Lists the gateway's <c>SearchAgents</c> tool for this sandbox. Fixed at create; <c>null</c> and the response
+    /// value as for <see cref="SearchTool"/>.
     /// </summary>
     public bool? AgentsSearchTool { get; }
+
+    /// <summary>The constructor assemblies built before the search flags bind to; new code gets the one below.</summary>
+    public SandboxSkillsPolicy(SandboxSkillTier? defaultTier, IReadOnlyList<string>? included, string? unlistedHint)
+        : this(defaultTier, included, unlistedHint, searchTool: null, agentsSearchTool: null) { }
 
     public SandboxSkillsPolicy(
         SandboxSkillTier? defaultTier = null,

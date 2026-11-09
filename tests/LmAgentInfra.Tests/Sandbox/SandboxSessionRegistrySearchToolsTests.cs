@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using AchieveAi.LmDotnetTools.Sandbox;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Tests.Sandbox;
@@ -82,6 +83,40 @@ public class SandboxSessionRegistrySearchToolsTests
         sent.RootElement.TryGetProperty("skills", out _).Should().BeFalse();
     }
 
+    /// <summary>
+    /// A probe failure that arrives with the caller's token already cancelled is the caller's stop, not a reason to
+    /// carry on. The plugin-selection candidate is the path that passes a caller's token; an ordinary resolve does not.
+    /// </summary>
+    [Fact]
+    public async Task OptedIn_CandidateCancelledDuringTheProbe_TheFailureEscapesAndNoCreateIsSent()
+    {
+        var gateway = new Gateway("""{"version":"0.1.21"}""");
+        await using var registry = CreateRegistry(gateway, offerSearchTools: true);
+        _ = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1"));
+        var partition = registry.SnapshotPluginSelectionPartitions("ws-1").Single();
+        using var caller = new CancellationTokenSource();
+        var createsBefore = gateway.CreateCount;
+        // An over-limit length is the SDK's way to raise a SandboxException here, so the token is cancelled when it lands.
+        gateway.OnProbe = () =>
+        {
+            caller.Cancel();
+            var tooLong = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent([]) };
+            tooLong.Content.Headers.ContentLength = long.MaxValue;
+            return tooLong;
+        };
+
+        var act = () =>
+            registry.CreatePluginSelectionCandidateAsync(
+                new WorkspaceRef("ws-1", PluginSelection: [new SandboxPluginRef("official", "code-review")]),
+                partition,
+                caller.Token
+            );
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        gateway.ProbeCount.Should().Be(2, "guard: the candidate's own probe ran and failed");
+        gateway.CreateCount.Should().Be(createsBefore, "a cancelled caller must not get a create");
+    }
+
     private static SandboxSessionRegistry CreateRegistry(Gateway gateway, bool offerSearchTools)
     {
         var options = new SandboxGatewayOptions
@@ -111,15 +146,22 @@ public class SandboxSessionRegistrySearchToolsTests
     private sealed class Gateway(string? info) : HttpMessageHandler
     {
         private int _probeCount;
+        private int _createCount;
 
         public string? CreateBody { get; private set; }
 
         public int ProbeCount => Volatile.Read(ref _probeCount);
 
+        public int CreateCount => Volatile.Read(ref _createCount);
+
+        /// <summary>Answers <c>GET /</c> in place of the normal answer.</summary>
+        public Func<HttpResponseMessage>? OnProbe { get; set; }
+
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             if (request.Method == HttpMethod.Post)
             {
+                _ = Interlocked.Increment(ref _createCount);
                 CreateBody = await request.Content!.ReadAsStringAsync(ct);
                 return Json(HttpStatusCode.Created, Created);
             }
@@ -127,6 +169,11 @@ public class SandboxSessionRegistrySearchToolsTests
             if (request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath == "/")
             {
                 _ = Interlocked.Increment(ref _probeCount);
+                if (OnProbe is { } onProbe)
+                {
+                    return onProbe();
+                }
+
                 return info is null
                     ? throw new HttpRequestException("the probe could not connect")
                     : Json(HttpStatusCode.OK, info);

@@ -1635,8 +1635,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                     }
                     catch (SandboxException ex) when (!ct.IsCancellationRequested)
                     {
-                        // The version only decides whether to ask for the search tools. A gateway that is really down
-                        // fails the create below, which reports it with the right error.
+                        // The version only decides whether to ask for the search tools, and a GET that timed out does
+                        // not prove the POST would. A gateway that is really down fails the create below, which reports
+                        // it with the right error, so a stalled gateway can cost two budgets here: the probe's, then
+                        // the create's own fresh one.
                         _logger.LogWarning(
                             ex,
                             "Sandbox gateway version probe failed for workspace {WorkspaceId}",
@@ -1654,7 +1656,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                     {
                         _logger.LogWarning(
                             "Sandbox gateway version {GatewayVersion} is older than {MinimumVersion} or unknown: "
-                                + "workspace {WorkspaceId} gets no gateway search tools and keeps the host's own search",
+                                + "the create for workspace {WorkspaceId} omits the search-tool request flags",
                             gatewayVersion,
                             SandboxClient.SearchToolsMinimumVersion,
                             workspaceId

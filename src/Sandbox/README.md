@@ -590,8 +590,9 @@ agent's `Skill` tool description. `Available` skills are not listed but load by 
   gateway's trailer, `""` removes it. No policy sends no `skills` field, so old requests are unchanged.
   `searchTool` and `agentsSearchTool` list the gateway's `SearchSkills` and `SearchAgents` tools for that
   sandbox, and are fixed at create. Set them only on gateway 0.1.21 or later (`GetGatewayVersionAsync`,
-  `SupportsSearchTools`): an older gateway rejects the whole create. `null` leaves it to the gateway's
-  env default, and an explicit `false` overrides that default.
+  `SupportsSearchTools`): an older gateway rejects the whole create. `null` leaves it to the gateway:
+  `SearchSkills` follows the `SKILL_SEARCH_TOOL` env default from 0.1.21; `SearchAgents` is off on 0.1.21 and
+  follows the `SKILL_AGENTS_SEARCH_TOOL` env default from 0.1.22. An explicit `false` overrides either default.
   `SandboxInfo.SkillsPolicy` is the policy the gateway resolved (its `Included` holds skill paths).
 - **`GetSkillsAsync(sessionId, agentId, tier, loaded)`:** one agent's catalog: marketplaces,
   then plugins (name, version, description), then skills (name, path, description, tier, tier origin,

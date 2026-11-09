@@ -77,6 +77,94 @@ public class CapabilityTiersGatewaySearchTests
             .And.NotContain("SearchSkill and");
     }
 
+    [Fact]
+    public async Task GatewayListsSearchSkills_SearchPluginOverflow_NamesEachKindsOwnSearch()
+    {
+        var (tiers, gateway) = await BigPluginAsync();
+        using var owned = tiers;
+        await CommitBuildAsync(tiers, gateway, SearchSkills);
+
+        var lines = (await SearchPluginAsync(tiers, BigQuery)).Split('\n');
+
+        lines.Should().Contain("   Skills (10):").And.Contain($"   +2 more: use {SearchSkills}");
+        lines
+            .Should()
+            .Contain("   Sub-agents (9):")
+            .And.Contain($"   +1 more: use {CapabilityTiers.SearchAgentToolName}");
+        lines.Where(l => l.StartsWith("   - big:skill-", StringComparison.Ordinal)).Should().HaveCount(8);
+        lines.Where(l => l.StartsWith("   - big:agent-", StringComparison.Ordinal)).Should().HaveCount(8);
+    }
+
+    /// <summary>
+    /// One conversation, two builds: a session recreated on a gateway without the tool must get LMDT's search back.
+    /// Lines are compared whole because <c>SearchSkill</c> is a prefix of <c>SearchSkills</c>.
+    /// </summary>
+    [Fact]
+    public async Task TwoCommitsOnOneInstance_WithThenWithoutSearchSkills_SearchSkillAndItsAdviceReturn()
+    {
+        var (tiers, gateway) = await BigPluginAsync();
+        using var owned = tiers;
+
+        await CommitBuildAsync(tiers, gateway, SearchSkills);
+
+        Names(tiers).Should().NotContain(CapabilityTiers.SearchSkillToolName);
+        (await SearchPluginAsync(tiers, BigQuery)).Split('\n').Should().Contain($"   +2 more: use {SearchSkills}");
+        (await SearchPluginAsync(tiers, NoHitQuery)).Should().Contain(GatewayAdvice);
+
+        await CommitBuildAsync(tiers, gateway);
+
+        Names(tiers).Should().Contain(CapabilityTiers.SearchSkillToolName);
+        (await SearchPluginAsync(tiers, BigQuery))
+            .Split('\n')
+            .Should()
+            .Contain($"   +2 more: use {CapabilityTiers.SearchSkillToolName}")
+            .And.NotContain($"   +2 more: use {SearchSkills}");
+        (await SearchPluginAsync(tiers, NoHitQuery)).Should().Contain(FallbackAdvice).And.NotContain(SearchSkills);
+    }
+
+    /// <summary>A refused build says nothing about the session the live loop is on.</summary>
+    [Fact]
+    public async Task StageWithSearchSkillsDiscardedBeforeCommit_LiveToolsAndAdviceStayByteIdentical()
+    {
+        var (tiers, gateway) = await BigPluginAsync();
+        using var owned = tiers;
+        await CommitBuildAsync(tiers, gateway);
+        var names = Names(tiers);
+        var overflow = await SearchPluginAsync(tiers, BigQuery);
+        var noHit = await SearchPluginAsync(tiers, NoHitQuery);
+        noHit.Should().Contain(FallbackAdvice, "guard: the live build is on the fallback");
+
+        using (var stage = await tiers.StageAsync(AgentsTiered, gateway.For(T), default))
+        {
+            stage.TryDropGatewaySearchTool(SearchSkills).Should().BeFalse("guard: this stage did take the tool");
+        }
+
+        Names(tiers).Should().Equal(names);
+        (await SearchPluginAsync(tiers, BigQuery)).Should().Be(overflow);
+        (await SearchPluginAsync(tiers, NoHitQuery)).Should().Be(noHit);
+    }
+
+    [Fact]
+    public async Task PendingStageWithSearchSkills_OmitsSearchSkill_WhileTheLiveProviderKeepsIt()
+    {
+        var (tiers, gateway) = await BigPluginAsync();
+        using var owned = tiers;
+        await CommitBuildAsync(tiers, gateway);
+        var live = Names(tiers);
+        live.Should().Contain(CapabilityTiers.SearchSkillToolName, "guard: the live build is on the fallback");
+
+        using var stage = await tiers.StageAsync(AgentsTiered, gateway.For(T), default);
+        _ = stage.TryDropGatewaySearchTool(SearchSkills);
+
+        stage
+            .RootProvider.GetFunctions()
+            .Select(f => f.Contract.Name)
+            .Should()
+            .NotContain(CapabilityTiers.SearchSkillToolName, "the build under way uses the gateway's")
+            .And.Contain(CapabilityTiers.SearchAgentToolName, "guard: the pending provider is the staged one");
+        Names(tiers).Should().Equal(live, "nothing is committed yet");
+    }
+
     [Theory]
     [InlineData(SearchSkills)]
     [InlineData(SearchAgents)]
@@ -133,6 +221,12 @@ public class CapabilityTiersGatewaySearchTests
             .BeEquivalentTo(["Skill", "Read", SearchSkills]);
     }
 
+    private const string BigQuery = """{"query":"big"}""";
+    private const string NoHitQuery = """{"query":"zzzz-no-such-area"}""";
+    private const string GatewayAdvice = $"{SearchSkills} and {CapabilityTiers.SearchAgentToolName}.";
+    private const string FallbackAdvice =
+        $"{CapabilityTiers.SearchSkillToolName} and {CapabilityTiers.SearchAgentToolName}.";
+
     private static TierSettings AgentsTiered => new([], [], [], [], 10, 2);
 
     private static HashSet<string> Set(params string[] names) => new(names, StringComparer.Ordinal);
@@ -152,6 +246,46 @@ public class CapabilityTiersGatewaySearchTests
             .Single(f => f.Contract.Name == CapabilityTiers.SearchAgentToolName);
         var result = await search.Handler(args, new ToolCallContext(), CancellationToken.None);
         return result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject.Payload.Text;
+    }
+
+    private static async Task<string> SearchPluginAsync(CapabilityTiers tiers, string args)
+    {
+        var search = tiers
+            .RootProvider.GetFunctions()
+            .Single(f => f.Contract.Name == CapabilityTiers.SearchPluginToolName);
+        var result = await search.Handler(args, new ToolCallContext(), CancellationToken.None);
+        return result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject.Payload.Text;
+    }
+
+    /// <summary>A conversation with plugin <c>big</c>: ten skills and nine agents, past the eight SearchPlugin lists.</summary>
+    private static async Task<(CapabilityTiers Tiers, FakeSkillGateway Gateway)> BigPluginAsync()
+    {
+        var tiers = new CapabilityTiers(T, await StoreAsync(), NullLogger.Instance);
+        tiers.AttachAgents(
+            new MutableSubAgentTemplateSource(
+                Enumerable
+                    .Range(1, 9)
+                    .ToDictionary(
+                        i => $"big:agent-{i:00}",
+                        i => Template($"Big agent number {i}.", marketplace: "mk"),
+                        StringComparer.Ordinal
+                    )
+            )
+        );
+        return (tiers, new FakeSkillGateway([.. Enumerable.Range(1, 10).Select(i => ("big", $"skill-{i:00}"))]));
+    }
+
+    /// <summary>One host build on an existing conversation, with this sandbox listing.</summary>
+    private static async Task CommitBuildAsync(CapabilityTiers tiers, FakeSkillGateway gateway, params string[] listing)
+    {
+        using var stage = await tiers.StageAsync(AgentsTiered, gateway.For(T), default);
+        foreach (var tool in listing)
+        {
+            _ = stage.TryDropGatewaySearchTool(tool);
+        }
+
+        await stage.CommitAsync(default);
+        tiers.IsActive.Should().BeTrue("guard: the build applied");
     }
 
     private static async Task<InMemoryConversationStore> StoreAsync()

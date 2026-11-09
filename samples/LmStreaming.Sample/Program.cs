@@ -1868,7 +1868,7 @@ try
                 McpClient? tierSkillClient = null;
                 // STAGED, not configured: the conversation's live tiers move only when this build becomes the
                 // conversation's (the commits below). A refused switch or a throw disposes the stage unused, so the
-                // live loop keeps its Skill, SearchSkill, agent id and view exactly as they were.
+                // live loop keeps its Skill, its selected skill search, agent id and view exactly as they were.
                 using var tierStage = capabilityTiers
                     .StageAsync(
                         modeTiers is null ? null : ToTierSettings(modeTiers, workspaceTiers),
