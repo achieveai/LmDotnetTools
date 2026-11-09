@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -15,78 +16,80 @@ internal static class ReviewBatch
             ct,
             async token =>
             {
-                string? previous = null;
+                if (!options.Has("execute"))
+                    throw new InvalidOperationException("review batch requires --execute; no state was changed.");
                 // Startup sweep: reclaim any slot a prior (crashed) batch left owned — including legacy
                 // owners claimed before leasing existed — so restarting the batch always clears jams.
                 await SweepSlotsAsync(options, config, undatedExpired: true, token);
-                // Periodic sweep on its own timer: a queue can drain for hours, and a lane waiting on a
-                // lapsed owner only resumes once the reaper frees that slot. Sweeping between queues
-                // alone left such lanes waiting until they gave up.
+                // Periodic sweep on its own timer: a slot whose owner's lease lapsed stays held until the reaper
+                // frees it, and the queue keeps it out of use until then.
                 var reaper = SweepPeriodicallyAsync(
                     cancellation => SweepSlotsAsync(options, config, undatedExpired: false, cancellation),
                     (delay, cancellation) => Task.Delay(delay, cancellation),
                     token
                 );
-                string? unreadable = null;
-                while (!token.IsCancellationRequested)
+                // One batch per workspace and database. A batch that holds it is waited out, not raced.
+                FileStream? lease = null;
+                string? leaseError = null;
+                while (lease is null)
                 {
-                    var (text, error) = await TryReadSelectionAsync(options.Required("selection"), token);
-                    if (text is null)
+                    try
                     {
-                        // Logged once per distinct error, not every poll, so a long outage stays readable.
-                        if (error != unreadable)
-                            Console.Error.WriteLine($"Selection unreadable; retrying every 5 seconds: {error}");
-                        unreadable = error;
-                        await Task.Delay(TimeSpan.FromSeconds(5), token);
-                        continue;
+                        lease = ReviewRunner.AcquireLease(
+                            options.Required("db"),
+                            "batch/" + options.Required("workspace")
+                        );
                     }
-                    if (unreadable is not null)
-                        Console.Error.WriteLine("Selection readable again.");
-                    unreadable = null;
-                    var digest = SlotRelease.Digest(text);
-                    if (!options.Has("execute"))
-                        throw new InvalidOperationException("review batch requires --execute; no state was changed.");
-                    if (digest != previous)
+                    catch (IOException ex)
                     {
-                        previous = digest;
-                        try
-                        {
-                            using var lease = ReviewRunner.AcquireLease(
-                                options.Required("db"),
-                                "batch/" + options.Required("workspace")
-                            );
-                            _ = ValidateAgePolicy(options, JsonNode.Parse(text)!.AsObject());
-                            await ClaimAsync(options.Required("db"), digest, text, token);
-                            _ = config.CreateS2SClient();
-                            await ExecuteAsync(
-                                options,
-                                config,
-                                text,
-                                (repo, pr, slot, head, cancellation) =>
-                                    ReviewRunner.CheckEligibilityAsync(
-                                        options,
-                                        config,
-                                        repo,
-                                        pr,
-                                        slot,
-                                        head,
-                                        cancellation
-                                    ),
-                                run => ReviewRunner.RunAsync(run, config, CancellationToken.None),
-                                EnsureNoDaemon,
-                                (delay, cancellation) => Task.Delay(delay, cancellation),
-                                () => DateTimeOffset.UtcNow,
-                                token
-                            );
-                        }
-                        catch (Exception ex) when (!token.IsCancellationRequested)
-                        {
+                        if (ex.Message != leaseError)
                             Console.Error.WriteLine(
-                                $"Batch parked: {ex.Message}. Auth remains running; retained work was not replayed."
+                                $"Batch lease held elsewhere; retrying every 5 seconds: {ex.Message}"
                             );
-                        }
+                        leaseError = ex.Message;
+                        await Task.Delay(Tick, token);
                     }
-                    await Task.Delay(TimeSpan.FromSeconds(5), token);
+                }
+                using (lease)
+                {
+                    string? unreadable = null;
+                    await ScheduleAsync(
+                        options,
+                        config,
+                        async cancellation =>
+                        {
+                            var (text, error) = await TryReadSelectionAsync(
+                                options.Required("selection"),
+                                cancellation
+                            );
+                            if (text is null)
+                            {
+                                // Logged once per distinct error, not every poll, so a long outage stays readable.
+                                if (error != unreadable)
+                                    Console.Error.WriteLine($"Selection unreadable; retrying every 5 seconds: {error}");
+                                unreadable = error;
+                                return null;
+                            }
+                            if (unreadable is not null)
+                                Console.Error.WriteLine("Selection readable again.");
+                            unreadable = null;
+                            return text;
+                        },
+                        async (text, cancellation) =>
+                        {
+                            _ = ValidateAgePolicy(options, JsonNode.Parse(text)!.AsObject());
+                            await ClaimAsync(options.Required("db"), SlotRelease.Digest(text), text, cancellation);
+                            _ = config.CreateS2SClient();
+                        },
+                        (repo, pr, slot, head, cancellation) =>
+                            ReviewRunner.CheckEligibilityAsync(options, config, repo, pr, slot, head, cancellation),
+                        run => ReviewRunner.RunAsync(run, config, CancellationToken.None),
+                        EnsureNoDaemon,
+                        (delay, cancellation) => Task.Delay(delay, cancellation),
+                        () => DateTimeOffset.UtcNow,
+                        untilIdle: false,
+                        token
+                    );
                 }
                 await reaper;
             }
@@ -305,27 +308,42 @@ internal static class ReviewBatch
         return await command.ExecuteNonQueryAsync(ct) == 1;
     }
 
-    internal static async Task ExecuteAsync(
+    /// <summary>The saved queue of one workspace's batch: every picked PR, queued, running or settled.</summary>
+    internal static string QueueKey(string workspace) => "reviewd/batch-queue/" + workspace;
+
+    // How often a running batch rereads the selection and looks for a free slot.
+    internal static readonly TimeSpan Tick = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Runs the batch from one saved queue per workspace (<see cref="QueueKey"/>). Each pass merges the latest
+    /// selection into the queue and starts queued PRs on the lowest free slots of their repo, so a picked PR never
+    /// waits for unrelated reviews. A retained owner resumes only on its own slot, and a held slot blocks only itself.
+    /// With <paramref name="untilIdle"/> it returns once nothing runs and nothing more can start; otherwise it runs
+    /// until <paramref name="ct"/> is canceled. Either way it waits for the reviews it started before it returns.
+    /// </summary>
+    internal static async Task ScheduleAsync(
         CliOptions options,
         ReviewdConfig config,
-        string text,
+        Func<CancellationToken, Task<string?>> readSelection,
+        Func<string, CancellationToken, Task> prepare,
         Func<string, string, int, string, CancellationToken, Task<JsonObject>> eligibility,
         Func<CliOptions, Task<int>> run,
         Action checkProducer,
         Func<TimeSpan, CancellationToken, Task> delay,
         Func<DateTimeOffset> now,
+        bool untilIdle,
         CancellationToken ct
     )
     {
         if (!options.Has("execute"))
             throw new InvalidOperationException("review batch requires --execute.");
         var database = options.Required("db");
-        var stateKey = "reviewd/batch-state/" + SlotRelease.Digest(text);
-        var selection = JsonNode.Parse(text)!.AsObject();
-        var maxAgeHours = ValidateAgePolicy(options, selection);
+        var workspace = options.Required("workspace");
+        var queueKey = QueueKey(workspace);
+        var maxAgeHours = MaxAgeHours(options);
         var scope = new JsonObject
         {
-            ["workspace"] = options.Required("workspace"),
+            ["workspace"] = workspace,
             ["session"] = options.Required("session"),
             ["provider"] = options.Required("provider"),
             ["mode"] = options.Get("mode") ?? config.ModeId,
@@ -334,12 +352,171 @@ internal static class ReviewBatch
             scope["reasoningEffort"] = reasoningEffort;
         if (maxAgeHours is { } hours)
             scope["maxAgeHours"] = hours;
-        var state = await ReadAsync(database, stateKey) as JsonObject;
-        if (state is null)
+        JsonObject? state = null;
+        using var writes = new SemaphoreSlim(1, 1);
+        // Steps started here, by repo and slot. Only the loop below adds or removes them.
+        var running = new Dictionary<(string Repo, int Slot), (JsonObject Entry, string Pr, Task Step)>();
+        var launchHolds = new ConcurrentDictionary<(string Repo, int Slot), int>();
+        var stopped = new ConcurrentDictionary<(string Repo, int Slot), bool>();
+        var sessions = new List<CancellationTokenSource>();
+        var watchers = new List<Task>();
+        // Admission runs under this source. A competing producer cancels it; the next selection starts another.
+        CancellationTokenSource? admitting = null;
+        string? merged = null;
+        string? blocked = null;
+        string? admissionError = null;
+        try
         {
-            var entries = new JsonArray();
+            do
+            {
+                foreach (
+                    var done in running.Where(pair => pair.Value.Step.IsCompleted).Select(pair => pair.Key).ToList()
+                )
+                    running.Remove(done);
+                if (admitting is { IsCancellationRequested: true })
+                {
+                    if (untilIdle || ct.IsCancellationRequested)
+                        break;
+                    // Suspended: admitted reviews finish, and admission resumes with the next selection.
+                    blocked = merged;
+                    admitting = null;
+                }
+                string? text;
+                try
+                {
+                    text = await readSelection(ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break;
+                }
+                var digest = text is null ? null : SlotRelease.Digest(text);
+                if (text is not null && digest != blocked)
+                {
+                    try
+                    {
+                        if (digest != merged)
+                            await prepare(text, ct);
+                        await MergeAsync(text, digest!);
+                        merged = digest;
+                        blocked = null;
+                        if (admitting is null)
+                        {
+                            checkProducer();
+                            admitting = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                            sessions.Add(admitting);
+                            watchers.Add(WatchAsync(admitting));
+                        }
+                    }
+                    catch (Exception ex) when (!untilIdle && !ct.IsCancellationRequested)
+                    {
+                        // Parked until a new selection arrives, as a round was. Admitted reviews keep running.
+                        Console.Error.WriteLine(
+                            $"Batch parked: {ex.Message}. Auth remains running; admitted reviews continue; waiting for a new selection."
+                        );
+                        blocked = digest;
+                    }
+                }
+                if (admitting is { IsCancellationRequested: false } && blocked is null)
+                {
+                    try
+                    {
+                        await AdmitAsync(admitting);
+                        admissionError = null;
+                    }
+                    catch (Exception ex) when (!untilIdle && !ct.IsCancellationRequested)
+                    {
+                        if (ex.Message != admissionError)
+                            Console.Error.WriteLine($"Admission skipped; retrying every 5 seconds: {ex.Message}");
+                        admissionError = ex.Message;
+                    }
+                }
+                if (untilIdle)
+                {
+                    if (admitting is not { IsCancellationRequested: false })
+                        break;
+                    if (running.Count > 0)
+                    {
+                        await Task.WhenAny(running.Values.Select(value => value.Step));
+                        continue;
+                    }
+                    if (NextRetry() is not { } retryAt)
+                        break;
+                    try
+                    {
+                        await delay(TimeSpan.FromSeconds(retryAt - now().ToUnixTimeSeconds()), admitting.Token);
+                    }
+                    catch (OperationCanceledException) when (admitting.IsCancellationRequested) { }
+                    continue;
+                }
+                // A free slot is taken on the next tick, or as soon as a running step ends.
+                using var wake = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                var tick = delay(Tick, wake.Token);
+                await Task.WhenAny([tick, .. running.Values.Select(value => value.Step)]);
+                await wake.CancelAsync();
+                try
+                {
+                    await tick;
+                }
+                catch (OperationCanceledException) when (wake.IsCancellationRequested) { }
+            } while (!ct.IsCancellationRequested);
+        }
+        finally
+        {
+            // SIGTERM and suspension stop admission only; reviews already started finish first.
+            await Task.WhenAll(running.Values.Select(value => value.Step));
+            foreach (var source in sessions)
+                await source.CancelAsync();
+            await Task.WhenAll(watchers);
+            foreach (var source in sessions)
+                source.Dispose();
+        }
+        Console.WriteLine("Batch scheduling finished. OAuth callback remains running.");
+
+        async Task WatchAsync(CancellationTokenSource source)
+        {
+            try
+            {
+                while (true)
+                {
+                    await delay(Tick, source.Token);
+                    checkProducer();
+                }
+            }
+            catch (OperationCanceledException) when (source.IsCancellationRequested) { }
+            catch (Exception ex)
+            {
+                await source.CancelAsync();
+                Console.Error.WriteLine($"Scheduling suspended: {ex.Message}. Admitted work and auth retained.");
+            }
+        }
+
+        long? NextRetry()
+        {
+            var nowSeconds = now().ToUnixTimeSeconds();
+            long? next = null;
+            foreach (var entry in state?["entries"]?.AsArray() ?? [])
+                if (
+                    entry!["status"]?.GetValue<string>() == "retry"
+                    && entry["retryAt"]?.GetValue<long>() is { } at
+                    && at > nowSeconds
+                    && (next is null || at < next)
+                )
+                    next = at;
+            return next;
+        }
+
+        // Merges a selection into the queue. A new selection starts every selected PR over (fresh checks and retries),
+        // as each new round did, except a step running here, which keeps its record. A PR that left the selection
+        // leaves the queue unless it runs here or its retained owner still holds its slot.
+        async Task MergeAsync(string text, string digest)
+        {
+            var selection = JsonNode.Parse(text)!.AsObject();
+            _ = ValidateAgePolicy(options, selection);
+            var lanes = new JsonObject();
+            var rows = new List<(string Repo, string Pr, string Head)>();
             var identities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var (repo, rows) in selection["repositories"]!.AsObject())
+            foreach (var (repo, repoRows) in selection["repositories"]!.AsObject())
             {
                 _ = PrCommands.ParseRepo(repo);
                 var slots = selection["lanes"]![repo]!.AsArray().Select(value => value!.GetValue<int>()).ToArray();
@@ -349,8 +526,8 @@ internal static class ReviewBatch
                     || slots.Any(slot => slot is < 0 or > 5)
                 )
                     throw new InvalidOperationException("Invalid batch lanes.");
-                var index = 0;
-                foreach (var row in rows!.AsArray())
+                lanes[repo] = new JsonArray([.. slots.Order().Select(slot => (JsonNode)JsonValue.Create(slot))]);
+                foreach (var row in repoRows!.AsArray())
                 {
                     var pr = row!["prId"]!.GetValue<string>();
                     var head = row["headSha"]!.GetValue<string>();
@@ -363,55 +540,138 @@ internal static class ReviewBatch
                         || !head.All(Uri.IsHexDigit)
                     )
                         throw new InvalidOperationException("Invalid or duplicate selected PR.");
-                    // A PR this db already ran keeps its earlier lane, so one long-lived db can feed many
-                    // selections; only an owner retained on a lane outside this selection is a conflict.
-                    var attempt = await ReadAsync(database, AttemptKey(repo, pr));
-                    var next = slots[index++ % slots.Length];
-                    var slot =
-                        attempt?["slot"]?.GetValue<int>() is { } earlier && slots.Contains(earlier) ? earlier : next;
-                    if (attempt is not null && attempt["slot"]!.GetValue<int>() != slot && !Reusable(attempt))
-                        throw new InvalidOperationException(
-                            "Legacy batch slot assignment conflicts with retained ownership; reconcile before admission."
-                        );
-                    entries.Add(
-                        new JsonObject
-                        {
-                            ["repo"] = repo,
-                            ["pr"] = pr,
-                            ["head"] = head,
-                            ["slot"] = slot,
-                            ["status"] = "queued",
-                            ["failures"] = 0,
-                            ["order"] = (long)entries.Count,
-                        }
-                    );
+                    rows.Add((repo, pr, head));
                 }
             }
-            state = new JsonObject
+            var selected = rows.Select(row => Identity(row.Repo, row.Pr, row.Head)).ToHashSet(StringComparer.Ordinal);
+            var selectedPrs = rows.Select(row => row.Repo + "/" + row.Pr).ToHashSet(StringComparer.Ordinal);
+            await writes.WaitAsync();
+            try
             {
-                ["schemaVersion"] = 1,
-                ["scope"] = scope,
-                ["entries"] = entries,
+                var startup = state is null;
+                var queue = state ?? await LoadQueueAsync(digest);
+                var same = queue["selection"]?.GetValue<string>() == digest;
+                if (same && !JsonNode.DeepEquals(queue["scope"], scope))
+                    throw new InvalidOperationException(
+                        "Persisted batch execution scope changed; no admission allowed."
+                    );
+                var entries = queue["entries"]!.AsArray().Select(entry => entry!.AsObject()).ToList();
+                if (same && !startup && entries.All(entry => selected.Contains(Identity(entry))))
+                    return;
+                var busy = running.Values.Select(value => value.Entry).ToHashSet(ReferenceEqualityComparer.Instance);
+                var next = new List<JsonObject>();
+                var classify = new List<JsonObject>();
+                if (same)
+                {
+                    next.AddRange(entries);
+                    if (startup)
+                        classify.AddRange(entries);
+                }
+                else
+                {
+                    foreach (var (repo, pr, head) in rows)
+                    {
+                        var entry = entries.FirstOrDefault(value =>
+                            busy.Contains(value) && Identity(value) == Identity(repo, pr, head)
+                        );
+                        if (entry is null)
+                        {
+                            entry = new JsonObject
+                            {
+                                ["repo"] = repo,
+                                ["pr"] = pr,
+                                ["head"] = head,
+                                ["status"] = "queued",
+                                ["failures"] = 0,
+                                ["order"] = (long)next.Count,
+                            };
+                            classify.Add(entry);
+                        }
+                        next.Add(entry);
+                    }
+                    next.AddRange(entries.Where(entry => !selected.Contains(Identity(entry))));
+                }
+                // A replaced head is left to the selected head's entry, which shares its attempt row.
+                foreach (var entry in next.ToList())
+                {
+                    if (selected.Contains(Identity(entry)) || busy.Contains(entry))
+                        continue;
+                    if (
+                        !selectedPrs.Contains(entry["repo"]!.GetValue<string>() + "/" + entry["pr"]!.GetValue<string>())
+                        && await ReadAsync(database, AttemptKey(entry)) is { } retained
+                        && !Reusable(retained)
+                    )
+                        continue;
+                    next.Remove(entry);
+                }
+                foreach (var entry in classify)
+                    await ClassifyAsync(entry);
+                queue["scope"] = scope.DeepClone();
+                queue["selection"] = digest;
+                queue["lanes"] = lanes;
+                var array = queue["entries"]!.AsArray();
+                array.Clear();
+                foreach (var entry in next)
+                    array.Add(entry);
+                using (var connection = Connection(database, SqliteOpenMode.ReadWrite))
+                {
+                    await connection.OpenAsync();
+                    await WriteAsync(connection, null, queue);
+                }
+                state = queue;
+                if (!same)
+                {
+                    launchHolds.Clear();
+                    stopped.Clear();
+                }
+            }
+            finally
+            {
+                writes.Release();
+            }
+        }
+
+        async Task<JsonObject> LoadQueueAsync(string digest)
+        {
+            if (await ReadAsync(database, queueKey) is JsonObject saved)
+                return saved["schemaVersion"]?.GetValue<int>() == 2
+                    ? saved
+                    : throw new InvalidOperationException(
+                        "Persisted batch queue schema is unknown; no admission allowed."
+                    );
+            // Before the queue, each selection ran as one round under reviewd/batch-state/<digest>, and a restart
+            // resumed only the round of the current selection. That round becomes the queue; older rounds stay as
+            // they are, already abandoned.
+            if (
+                await ReadAsync(database, "reviewd/batch-state/" + digest) is JsonObject round
+                && round["schemaVersion"]?.GetValue<int>() == 1
+                && round["scope"]?["workspace"]?.GetValue<string>() == workspace
+            )
+                return new JsonObject
+                {
+                    ["schemaVersion"] = 2,
+                    ["scope"] = round["scope"]!.DeepClone(),
+                    ["selection"] = digest,
+                    ["lanes"] = new JsonObject(),
+                    ["entries"] = round["entries"]!.DeepClone(),
+                };
+            return new JsonObject
+            {
+                ["schemaVersion"] = 2,
+                ["scope"] = scope.DeepClone(),
+                ["selection"] = null,
+                ["lanes"] = new JsonObject(),
+                ["entries"] = new JsonArray(),
             };
         }
-        else if (state["schemaVersion"]?.GetValue<int>() != 1 || !JsonNode.DeepEquals(state["scope"], scope))
-            throw new InvalidOperationException("Persisted batch execution scope changed; no admission allowed.");
-        using var writes = new SemaphoreSlim(1, 1);
-        using var scheduling = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        using var watching = new CancellationTokenSource();
-        var entriesToRun = state["entries"]!.AsArray().Select(entry => entry!.AsObject()).ToArray();
-        foreach (var entry in entriesToRun)
+
+        async Task ClassifyAsync(JsonObject entry)
         {
             var receipt = await ReadAsync(database, ReceiptKey(entry));
             var attempt = await ReadAsync(database, AttemptKey(entry));
             if (attempt is not null)
             {
-                using var releaseConnection = Connection(database, SqliteOpenMode.ReadOnly);
-                await releaseConnection.OpenAsync(ct);
-                using var releaseQuery = releaseConnection.CreateCommand();
-                releaseQuery.CommandText = "SELECT value FROM cache WHERE key=@key";
-                releaseQuery.Parameters.AddWithValue("@key", AttemptKey(entry));
-                var raw = (string)(await releaseQuery.ExecuteScalarAsync(ct))!;
+                var raw = (await ReadRawAsync(database, AttemptKey(entry)))!;
                 var release = await ReadAsync(database, SlotRelease.Key(raw));
                 if (
                     release is not null
@@ -420,7 +680,8 @@ internal static class ReviewBatch
                 )
                 {
                     entry["status"] = "retired";
-                    continue;
+                    NormalizeSlot(entry, attempt);
+                    return;
                 }
             }
             if (entry["status"]?.GetValue<string>() == "retired")
@@ -434,450 +695,471 @@ internal static class ReviewBatch
                 entry["status"] = "held";
                 entry["reason"] = InterruptedLaunch;
             }
+            NormalizeSlot(entry, attempt);
         }
-        await SaveAsync(() => { });
-        checkProducer();
-        var watcher = WatchAsync();
-        try
-        {
-            await Task.WhenAll(
-                entriesToRun
-                    .GroupBy(entry => (Repo: entry["repo"]!.GetValue<string>(), Slot: entry["slot"]!.GetValue<int>()))
-                    .Select(lane => GuardLaneAsync(lane.Key.Repo, lane.Key.Slot, [.. lane]))
-            );
-        }
-        finally
-        {
-            watching.Cancel();
-            await watcher;
-        }
-        Console.WriteLine("Batch scheduling finished. OAuth callback remains running.");
 
-        async Task WatchAsync()
+        // Starts work on every free slot: a retained owner on its own slot, else the next queued PR on the lowest
+        // free slot. A held slot, or one claimed outside this queue, is skipped without delaying the others.
+        async Task AdmitAsync(CancellationTokenSource source)
         {
-            try
+            var nowSeconds = now().ToUnixTimeSeconds();
+            var busy = running.Values.Select(value => value.Entry).ToHashSet(ReferenceEqualityComparer.Instance);
+            var entries = state!["entries"]!
+                .AsArray()
+                .Select(entry => entry!.AsObject())
+                .Where(entry => !busy.Contains(entry))
+                .ToList();
+            foreach (var (repo, laneSlots) in state["lanes"]!.AsObject())
             {
-                while (true)
+                var slots = laneSlots!.AsArray().Select(value => value!.GetValue<int>()).ToArray();
+                var held = running.Keys.Where(key => key.Repo == repo).Select(key => key.Slot).ToHashSet();
+                var runningPrs = running
+                    .Where(pair => pair.Key.Repo == repo)
+                    .Select(pair => pair.Value.Pr)
+                    .ToHashSet(StringComparer.Ordinal);
+                var pinned = new Dictionary<int, JsonObject>();
+                var fresh = new List<JsonObject>();
+                foreach (var entry in entries.Where(value => value["repo"]!.GetValue<string>() == repo))
                 {
-                    await delay(TimeSpan.FromSeconds(5), watching.Token);
-                    checkProducer();
+                    var status = entry["status"]!.GetValue<string>();
+                    if (status is "verified" or "closed" or "stale" or "retired" or "age-excluded" or "quarantined")
+                        continue;
+                    var attempt = await ReadAsync(database, AttemptKey(entry));
+                    var owned = attempt is not null && !Reusable(attempt) ? attempt["slot"]?.GetValue<int>() : null;
+                    if (status is "held" or "closed-held")
+                    {
+                        // Held work keeps out of the slot it may still own, and only that slot.
+                        if (
+                            entry["reason"]?.GetValue<string>() == InterruptedLaunch
+                            && entry["slot"]?.GetValue<int>() is { } launchSlot
+                        )
+                            held.Add(launchSlot);
+                        else if (owned is { } heldSlot)
+                            held.Add(heldSlot);
+                        continue;
+                    }
+                    // Two heads of one PR never run at once.
+                    if (runningPrs.Contains(entry["pr"]!.GetValue<string>()))
+                        continue;
+                    if (owned is not { } ownSlot)
+                    {
+                        fresh.Add(entry);
+                        continue;
+                    }
+                    if (!slots.Contains(ownSlot) || pinned.ContainsKey(ownSlot))
+                    {
+                        var reason = slots.Contains(ownSlot)
+                            ? "Multiple retained owners in one slot."
+                            : "Retained owner's slot is not one of this repo's lanes; reconcile before admission.";
+                        await SaveAsync(() =>
+                        {
+                            entry["status"] = "held";
+                            entry["reason"] = reason;
+                            NormalizeSlot(entry, attempt);
+                        });
+                        held.Add(ownSlot);
+                        continue;
+                    }
+                    pinned[ownSlot] = entry;
+                }
+                fresh.Sort(
+                    (left, right) => left["order"]!.GetValue<long>().CompareTo(right["order"]!.GetValue<long>())
+                );
+                foreach (var slot in slots)
+                {
+                    if (held.Contains(slot) || stopped.ContainsKey((repo, slot)))
+                        continue;
+                    JsonObject? next;
+                    if (pinned.TryGetValue(slot, out var owner))
+                        // A retained owner's slot waits for it, even through its backoff.
+                        next = Due(owner) ? owner : null;
+                    else
+                    {
+                        // A slot claimed outside this queue is free only to the PR that holds it.
+                        var claim = await ReadAsync(
+                            database,
+                            SlotRelease.OwnerKey(workspace, PrCommands.ParseRepo(repo).NormalizedKey, slot)
+                        );
+                        var holder =
+                            claim is not null && claim["state"]?.GetValue<string>() != "released"
+                                ? claim["prId"]?.GetValue<string>() ?? ""
+                                : null;
+                        next = fresh.FirstOrDefault(entry =>
+                            Due(entry) && (holder is null || entry["pr"]!.GetValue<string>() == holder)
+                        );
+                    }
+                    if (next is null)
+                        continue;
+                    var pr = next["pr"]!.GetValue<string>();
+                    fresh.RemoveAll(entry => entry["pr"]!.GetValue<string>() == pr);
+                    running[(repo, slot)] = (next, pr, GuardStepAsync(repo, slot, next, source));
                 }
             }
-            catch (OperationCanceledException) when (watching.IsCancellationRequested) { }
-            catch (Exception ex)
-            {
-                scheduling.Cancel();
-                Console.Error.WriteLine($"Scheduling suspended: {ex.Message}. Admitted work and auth retained.");
-            }
+
+            bool Due(JsonObject entry) => (entry["retryAt"]?.GetValue<long>() ?? 0) <= nowSeconds;
         }
 
-        async Task GuardLaneAsync(string repo, int slot, JsonObject[] lane)
+        async Task GuardStepAsync(string repo, int slot, JsonObject entry, CancellationTokenSource source)
         {
             try
             {
-                await LaneAsync(repo, slot, lane);
+                await StepAsync(repo, slot, entry, source);
             }
-            catch (OperationCanceledException) when (scheduling.IsCancellationRequested) { }
+            catch (OperationCanceledException) when (source.IsCancellationRequested) { }
             catch (Exception ex)
             {
+                stopped[(repo, slot)] = true;
                 Console.Error.WriteLine($"Lane {repo}/{slot} held: {ex.Message}. Other safe slots continue.");
             }
+            try
+            {
+                var attempt = await ReadAsync(database, AttemptKey(entry));
+                await SaveAsync(() => NormalizeSlot(entry, attempt));
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Lane {repo}/{slot}: queue slot not recorded: {ex.Message}.");
+            }
         }
 
-        async Task LaneAsync(string repo, int slot, JsonObject[] lane)
+        // One PR on one slot: the pre-launch checks, the launch and its outcome.
+        async Task StepAsync(string repo, int slot, JsonObject entry, CancellationTokenSource source)
         {
-            DateTimeOffset? heldSince = null;
-            var launchHolds = 0;
-            while (!scheduling.IsCancellationRequested)
+            var token = source.Token;
+            JsonNode? attempt = await ReadAsync(database, AttemptKey(entry));
+            // A head that failed the same way three times is skipped until the PR is pushed again. Only a free
+            // slot is left this way: an owned attempt still goes through the resume and held rules below.
+            if (
+                (attempt is null || Reusable(attempt))
+                && IsQuarantined(await ReadAsync(database, FailureKey(entry)), entry["head"]!.GetValue<string>())
+            )
             {
-                // A held PR is skipped, never a lane stop. While its retained owner still holds the slot,
-                // wait for the reaper to reclaim it (its lease lapses once nothing runs), then move on.
-                // A slot the reaper cannot free within the wait bound stays held for an operator.
-                var slotHeld = false;
-                foreach (
-                    var held in lane.Where(value => value["status"]!.GetValue<string>() is "held" or "closed-held")
-                )
+                await SaveAsync(() =>
                 {
-                    if (
-                        held["reason"]?.GetValue<string>() == InterruptedLaunch
-                        || (await ReadAsync(database, AttemptKey(held)) is { } retainedHeld && !Reusable(retainedHeld))
-                    )
-                    {
-                        slotHeld = true;
-                        break;
-                    }
+                    entry["status"] = "quarantined";
+                    entry["reason"] = "The same failure three times on this head; skipped until a new push.";
+                });
+                return;
+            }
+            // AttemptKey is per repo/pr, not per head. A completed-verified attempt whose slot
+            // was already released belongs to an EARLIER head of this PR; once the PR advances,
+            // its new head is a fresh review, not a stuck retry. Drop the stale attempt so the
+            // new head is admitted below instead of parking it as an unresumable outcome.
+            if (
+                attempt is not null
+                && attempt["stage"]?.GetValue<string>() == "completed-verified"
+                && Reusable(attempt)
+                && attempt["reviewedHeadSha"]?.GetValue<string>() != entry["head"]!.GetValue<string>()
+            )
+                attempt = null;
+            // Likewise an attempt whose slot was released mid-review (reaper or reclaim-slot): its stage
+            // stays, but once the PR advances it can never publish, so the new head is admitted fresh.
+            if (
+                attempt is not null
+                && PrSelection.IsReleasedForEarlierHead(
+                    JsonSerializer.SerializeToElement(attempt),
+                    entry["head"]!.GetValue<string>()
+                )
+            )
+                attempt = null;
+            if (attempt is not null && !Resumable(attempt))
+            {
+                await SaveAsync(() =>
+                {
+                    entry["status"] = "held";
+                    entry["reason"] ??= "Retained outcome requires reconciliation; slot remains owned.";
+                });
+                return;
+            }
+            var launched = false;
+            var launchedFresh = false;
+            string? attemptBeforeLaunch = null;
+            try
+            {
+                try
+                {
+                    checkProducer();
                 }
-                // A slot still owned by a PR outside this lane (left by an earlier batch) refuses every
-                // launch, so the lane would burn its queue in seconds. Wait for the reaper instead.
+                catch
+                {
+                    await source.CancelAsync();
+                    throw;
+                }
+                var pr = entry["pr"]!.GetValue<string>();
+                var head = entry["head"]!.GetValue<string>();
+                var live = await eligibility(repo, pr, slot, head, token);
                 if (
-                    !slotHeld
-                    && await ReadAsync(
-                        database,
-                        SlotRelease.OwnerKey(
-                            options.Required("workspace"),
-                            PrCommands.ParseRepo(repo).NormalizedKey,
-                            slot
+                    live["prId"]?.GetValue<string>() != pr
+                    || live["status"]?.GetValue<string>() is not ("active" or "completed" or "abandoned")
+                    || live["isDraft"] is not JsonValue
+                    || live["headSha"]?.GetValue<string>() is not { Length: 40 }
+                )
+                    throw new InvalidOperationException("Live PR eligibility contract is incomplete.");
+                var cleanup = attempt?["stage"]?.GetValue<string>() == "completed-verified" && !Reusable(attempt);
+                if (!cleanup && live["status"]!.GetValue<string>() != "active")
+                {
+                    await SaveAsync(() => entry["status"] = attempt is null ? "closed" : "closed-held");
+                    return;
+                }
+                // An owner whose review turn is over finishes on the head and merge it reviewed, whatever moved
+                // since; a new head is then picked for a fresh review.
+                var reviewFinished = attempt is not null && !Reusable(attempt) && ReviewRunner.ReviewFinished(attempt);
+                if (!cleanup && !reviewFinished && live["headSha"]!.GetValue<string>() != head)
+                {
+                    await SaveAsync(() => entry["status"] = attempt is null ? "stale" : "held");
+                    return;
+                }
+                var freshAdmission =
+                    attempt is null || (attempt["stage"]?.GetValue<string>() == "failed-released" && Reusable(attempt));
+                // Only a resumed owner still reviewing must keep its prepared merge. A fresh admission prepares a
+                // new one, so a released failure's old merge must not defer it: the target branch moves on, and
+                // the PR was retried until held. A finished owner needs no live merge at all.
+                if (
+                    !cleanup
+                    && (
+                        live["isDraft"]!.GetValue<bool>()
+                        || (
+                            !reviewFinished
+                            && (
+                                live["mergeSha"]?.GetValue<string>() is not { Length: 40 }
+                                || (
+                                    !freshAdmission
+                                    && attempt?["mergeSha"]?.GetValue<string>() is { } merge
+                                    && merge != live["mergeSha"]!.GetValue<string>()
+                                )
+                            )
                         )
                     )
-                        is { } owner
-                    && owner["state"]?.GetValue<string>() != "released"
-                    && !lane.Any(value => value["pr"]!.GetValue<string>() == owner["prId"]?.GetValue<string>())
                 )
-                    slotHeld = true;
-                if (slotHeld)
-                {
-                    heldSince ??= now();
-                    if (now() - heldSince >= HeldSlotWait)
-                    {
-                        Console.Error.WriteLine(
-                            $"Lane {repo}/{slot} held: its retained owner was not reclaimed. Other safe slots continue."
-                        );
-                        return;
-                    }
-                    await delay(TimeSpan.FromMinutes(1), scheduling.Token);
-                    continue;
-                }
-                heldSince = null;
-                var candidates = lane.Where(entry =>
-                        entry["status"]!.GetValue<string>()
-                            is not (
-                                "verified"
-                                or "closed"
-                                or "stale"
-                                or "retired"
-                                or "age-excluded"
-                                or "held"
-                                or "closed-held"
-                                or "quarantined"
-                            )
-                    )
-                    .ToArray();
-                if (candidates.Length == 0)
-                    return;
-                JsonObject? entry = null;
-                JsonNode? attempt = null;
-                foreach (var candidate in candidates)
-                {
-                    var retained = await ReadAsync(database, AttemptKey(candidate));
-                    if (retained is not null && !Reusable(retained))
-                    {
-                        if (entry is not null)
-                        {
-                            await SaveAsync(() =>
-                            {
-                                candidate["status"] = "held";
-                                candidate["reason"] = "Multiple retained owners in one slot.";
-                            });
-                            break;
-                        }
-                        entry = candidate;
-                        attempt = retained;
-                    }
-                }
-                if (candidates.Any(value => value["status"]!.GetValue<string>() == "held"))
-                    continue;
-                entry ??= candidates.OrderBy(value => value["order"]!.GetValue<long>()).First();
-                attempt ??= await ReadAsync(database, AttemptKey(entry));
-                // A head that failed the same way three times is skipped until the PR is pushed again. Only a free
-                // slot is left this way: an owned attempt still goes through the resume and held rules below.
+                    throw new InvalidOperationException(
+                        "PR draft or prepared merge is unavailable/changed; retry deferred."
+                    );
                 if (
-                    (attempt is null || Reusable(attempt))
-                    && IsQuarantined(await ReadAsync(database, FailureKey(entry)), entry["head"]!.GetValue<string>())
+                    freshAdmission
+                    && maxAgeHours is { } limit
+                    && !PrSelection.IsWithinAge(
+                        live["createdAt"],
+                        (await ReadAsync(database, "reviewd/pr-snapshot/" + PrCommands.ParseRepo(repo).NormalizedKey))?[
+                            pr
+                        ],
+                        live["headSha"]?.GetValue<string>(),
+                        limit,
+                        now()
+                    )
                 )
+                {
+                    await SaveAsync(() =>
+                    {
+                        entry["status"] = "age-excluded";
+                        entry["reason"] =
+                            "PR age (creation or last push) is outside the configured limit or unavailable; no admission performed.";
+                        entry["ageCheckedAt"] = now();
+                    });
+                    return;
+                }
+                var arguments = new List<string>
+                {
+                    "review",
+                    "run",
+                    "--repo",
+                    repo,
+                    "--pr",
+                    pr,
+                    "--slot",
+                    slot.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "--db",
+                    database,
+                    "--session",
+                    options.Required("session"),
+                    "--workspace",
+                    workspace,
+                    "--provider",
+                    options.Required("provider"),
+                    "--mode",
+                    options.Get("mode") ?? config.ModeId,
+                    "--head",
+                    head,
+                    "--execute",
+                };
+                if (options.Get("reasoning-effort") is { } effort)
+                    arguments.AddRange(["--reasoning-effort", effort]);
+                if (maxAgeHours is { } maximumAge)
+                    arguments.AddRange([
+                        "--max-age-hours",
+                        maximumAge.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ]);
+                if (attempt is not null && attempt["stage"]?.GetValue<string>() != "failed-released")
+                    arguments.Add("--resume");
+                token.ThrowIfCancellationRequested();
+                if (!await ClaimSlotAsync(repo, slot, entry))
+                {
+                    Console.Error.WriteLine(
+                        $"PR {repo}/{pr} not started: slot {slot} was claimed elsewhere first. It waits for a free slot."
+                    );
+                    return;
+                }
+                if (token.IsCancellationRequested)
+                {
+                    await SaveAsync(() => entry["status"] = "queued");
+                    return;
+                }
+                attemptBeforeLaunch = (await ReadAsync(database, AttemptKey(entry)))?.ToJsonString();
+                launchedFresh = freshAdmission;
+                launched = true;
+                await run(CliOptions.Parse([.. arguments]));
+                var receipt = await ReadAsync(database, ReceiptKey(entry));
+                var finished = await ReadAsync(database, AttemptKey(entry));
+                if (!Verified(receipt, entry) || !Verified(finished, entry) || !Reusable(finished!))
+                    throw new InvalidOperationException("Batch receipt does not match the selected revision.");
+                await SaveAsync(() =>
+                {
+                    entry["status"] = "verified";
+                    entry.Remove("retryAt");
+                });
+                await ForgetFailuresAsync(entry);
+                launchHolds[(repo, slot)] = 0;
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                var retained = await ReadAsync(database, AttemptKey(entry));
+                // The claim writes the attempt row, so a host timeout or connection failure that left the row
+                // as it was before launch failed before the claim: it left nothing behind and says nothing
+                // about the PR. Retry it with backoff. Holding it parked nine PRs whose conversation lookup
+                // timed out. The row may predate this launch (an earlier head's released review). An earlier
+                // conversation still running (or a busy hierarchy read) defers the review the same way.
+                var transientBeforeClaim =
+                    retained?.ToJsonString() == attemptBeforeLaunch
+                    && ex
+                        is HttpRequestException
+                            or TimeoutException
+                            or TaskCanceledException
+                            or ReviewRunner.ReviewDeferredException;
+                // A gateway at its operation limit says nothing about the PR: a restart resumes every owner at
+                // once and briefly exceeds it. Back off without spending the PR's retries, or admitted reviews
+                // are held and their slots wait for the reaper.
+                var capacity = ex is SandboxException { Kind: SandboxErrorKind.Unavailable, StatusCode: 503 };
+                // A fresh admission that fails says something about the PR, so it is counted. One that released
+                // its slot quarantines now; one still owning its slot is held below, and once the reaper frees the
+                // slot the pre-launch check skips it, so a quarantine never strands an owned slot (seen live: a
+                // prepare that timed out three times, each time holding its slot until the reaper freed it).
+                // A resume is not counted: it repeats one admission, which only a fresh admission can replace
+                // (seen live: a lost input re-verified five times). Neither is a held slot, which says nothing
+                // about the PR.
+                var failedTimes =
+                    launchedFresh
+                    && !transientBeforeClaim
+                    && !capacity
+                    && ex is not (ReviewRunner.ReviewNotAdmittedException or ReviewRunner.SlotUnavailableException)
+                        ? await RecordFailureAsync(entry, ex.Message)
+                        : 0;
+                if (failedTimes >= QuarantineAfter && retained is not null && Reusable(retained))
                 {
                     await SaveAsync(() =>
                     {
                         entry["status"] = "quarantined";
-                        entry["reason"] = "The same failure three times on this head; skipped until a new push.";
+                        entry["reason"] = ex.Message;
                     });
-                    continue;
+                    Console.Error.WriteLine(
+                        $"PR {repo}/{entry["pr"]} quarantined after {QuarantineAfter} identical failures on head {entry["head"]}: {ex.Message}. Skipped until a new push."
+                    );
+                    HoldSlotAfterRepeatedFailures();
+                    return;
                 }
-                // AttemptKey is per repo/pr, not per head. A completed-verified attempt whose slot
-                // was already released belongs to an EARLIER head of this PR; once the PR advances,
-                // its new head is a fresh review, not a stuck retry. Drop the stale attempt so the
-                // lane admits the new head below instead of parking it as an unresumable outcome.
                 if (
-                    attempt is not null
-                    && attempt["stage"]?.GetValue<string>() == "completed-verified"
-                    && Reusable(attempt)
-                    && attempt["reviewedHeadSha"]?.GetValue<string>() != entry["head"]!.GetValue<string>()
+                    (launched && !transientBeforeClaim && (retained is null || !Resumable(retained)))
+                    || (!capacity && entry["failures"]!.GetValue<int>() + 1 >= MaxLaneRetries)
                 )
-                    attempt = null;
-                // Likewise an attempt whose slot was released mid-review (reaper or reclaim-slot): its stage
-                // stays, but once the PR advances it can never publish, so the new head is admitted fresh.
-                if (
-                    attempt is not null
-                    && PrSelection.IsReleasedForEarlierHead(
-                        JsonSerializer.SerializeToElement(attempt),
-                        entry["head"]!.GetValue<string>()
-                    )
-                )
-                    attempt = null;
-                if (attempt is not null && !Resumable(attempt))
                 {
                     await SaveAsync(() =>
                     {
                         entry["status"] = "held";
-                        entry["reason"] ??= "Retained outcome requires reconciliation; slot remains owned.";
-                    });
-                    continue;
-                }
-                var retryAt = entry["retryAt"]?.GetValue<long>() ?? 0;
-                if (retryAt > now().ToUnixTimeSeconds())
-                {
-                    await delay(TimeSpan.FromSeconds(retryAt - now().ToUnixTimeSeconds()), scheduling.Token);
-                    continue;
-                }
-                var launched = false;
-                var launchedFresh = false;
-                string? attemptBeforeLaunch = null;
-                try
-                {
-                    try
-                    {
-                        checkProducer();
-                    }
-                    catch
-                    {
-                        scheduling.Cancel();
-                        throw;
-                    }
-                    var pr = entry["pr"]!.GetValue<string>();
-                    var head = entry["head"]!.GetValue<string>();
-                    var live = await eligibility(repo, pr, slot, head, scheduling.Token);
-                    if (
-                        live["prId"]?.GetValue<string>() != pr
-                        || live["status"]?.GetValue<string>() is not ("active" or "completed" or "abandoned")
-                        || live["isDraft"] is not JsonValue
-                        || live["headSha"]?.GetValue<string>() is not { Length: 40 }
-                    )
-                        throw new InvalidOperationException("Live PR eligibility contract is incomplete.");
-                    var cleanup = attempt?["stage"]?.GetValue<string>() == "completed-verified" && !Reusable(attempt);
-                    if (!cleanup && live["status"]!.GetValue<string>() != "active")
-                    {
-                        await SaveAsync(() => entry["status"] = attempt is null ? "closed" : "closed-held");
-                        continue;
-                    }
-                    // An owner whose review turn is over finishes on the head and merge it reviewed, whatever moved
-                    // since; a new head is then picked for a fresh review.
-                    var reviewFinished =
-                        attempt is not null && !Reusable(attempt) && ReviewRunner.ReviewFinished(attempt);
-                    if (!cleanup && !reviewFinished && live["headSha"]!.GetValue<string>() != head)
-                    {
-                        await SaveAsync(() => entry["status"] = attempt is null ? "stale" : "held");
-                        continue;
-                    }
-                    var freshAdmission =
-                        attempt is null
-                        || (attempt["stage"]?.GetValue<string>() == "failed-released" && Reusable(attempt));
-                    // Only a resumed owner still reviewing must keep its prepared merge. A fresh admission prepares a
-                    // new one, so a released failure's old merge must not defer it: the target branch moves on, and
-                    // the PR was retried until held. A finished owner needs no live merge at all.
-                    if (
-                        !cleanup
-                        && (
-                            live["isDraft"]!.GetValue<bool>()
-                            || (
-                                !reviewFinished
-                                && (
-                                    live["mergeSha"]?.GetValue<string>() is not { Length: 40 }
-                                    || (
-                                        !freshAdmission
-                                        && attempt?["mergeSha"]?.GetValue<string>() is { } merge
-                                        && merge != live["mergeSha"]!.GetValue<string>()
-                                    )
-                                )
-                            )
-                        )
-                    )
-                        throw new InvalidOperationException(
-                            "PR draft or prepared merge is unavailable/changed; retry deferred."
-                        );
-                    if (
-                        freshAdmission
-                        && maxAgeHours is { } limit
-                        && !PrSelection.IsWithinAge(
-                            live["createdAt"],
-                            (
-                                await ReadAsync(
-                                    database,
-                                    "reviewd/pr-snapshot/" + PrCommands.ParseRepo(repo).NormalizedKey
-                                )
-                            )?[pr],
-                            live["headSha"]?.GetValue<string>(),
-                            limit,
-                            now()
-                        )
-                    )
-                    {
-                        await SaveAsync(() =>
-                        {
-                            entry["status"] = "age-excluded";
-                            entry["reason"] =
-                                "PR age (creation or last push) is outside the configured limit or unavailable; no admission performed.";
-                            entry["ageCheckedAt"] = now();
-                        });
-                        continue;
-                    }
-                    var arguments = new List<string>
-                    {
-                        "review",
-                        "run",
-                        "--repo",
-                        repo,
-                        "--pr",
-                        pr,
-                        "--slot",
-                        slot.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                        "--db",
-                        database,
-                        "--session",
-                        options.Required("session"),
-                        "--workspace",
-                        options.Required("workspace"),
-                        "--provider",
-                        options.Required("provider"),
-                        "--mode",
-                        options.Get("mode") ?? config.ModeId,
-                        "--head",
-                        head,
-                        "--execute",
-                    };
-                    if (options.Get("reasoning-effort") is { } effort)
-                        arguments.AddRange(["--reasoning-effort", effort]);
-                    if (maxAgeHours is { } maximumAge)
-                        arguments.AddRange([
-                            "--max-age-hours",
-                            maximumAge.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                        ]);
-                    if (attempt is not null && attempt["stage"]?.GetValue<string>() != "failed-released")
-                        arguments.Add("--resume");
-                    scheduling.Token.ThrowIfCancellationRequested();
-                    await SaveAsync(() => entry["status"] = "launching");
-                    if (scheduling.IsCancellationRequested)
-                    {
-                        await SaveAsync(() => entry["status"] = "queued");
-                        return;
-                    }
-                    attemptBeforeLaunch = (await ReadAsync(database, AttemptKey(entry)))?.ToJsonString();
-                    launchedFresh = freshAdmission;
-                    launched = true;
-                    await run(CliOptions.Parse([.. arguments]));
-                    var receipt = await ReadAsync(database, ReceiptKey(entry));
-                    var finished = await ReadAsync(database, AttemptKey(entry));
-                    if (!Verified(receipt, entry) || !Verified(finished, entry) || !Reusable(finished!))
-                        throw new InvalidOperationException("Batch receipt does not match the selected revision.");
-                    await SaveAsync(() =>
-                    {
-                        entry["status"] = "verified";
-                        entry.Remove("retryAt");
-                    });
-                    await ForgetFailuresAsync(entry);
-                    launchHolds = 0;
-                }
-                catch (OperationCanceledException) when (scheduling.IsCancellationRequested)
-                {
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    var retained = await ReadAsync(database, AttemptKey(entry));
-                    // The claim writes the attempt row, so a host timeout or connection failure that left the row
-                    // as it was before launch failed before the claim: it left nothing behind and says nothing
-                    // about the PR. Retry it with backoff. Holding it parked nine PRs whose conversation lookup
-                    // timed out. The row may predate this launch (an earlier head's released review). An earlier
-                    // conversation still running (or a busy hierarchy read) defers the review the same way.
-                    var transientBeforeClaim =
-                        retained?.ToJsonString() == attemptBeforeLaunch
-                        && ex
-                            is HttpRequestException
-                                or TimeoutException
-                                or TaskCanceledException
-                                or ReviewRunner.ReviewDeferredException;
-                    // A gateway at its operation limit says nothing about the PR: a restart resumes every owner at
-                    // once and briefly exceeds it. Back off without spending the PR's retries, or admitted reviews
-                    // are held and their slots wait for the reaper.
-                    var capacity = ex is SandboxException { Kind: SandboxErrorKind.Unavailable, StatusCode: 503 };
-                    // A fresh admission that fails says something about the PR, so it is counted. One that released
-                    // its slot quarantines now; one still owning its slot is held below, and once the reaper frees the
-                    // slot the pre-launch check skips it, so a quarantine never strands an owned slot (seen live: a
-                    // prepare that timed out three times, each time holding its slot until the reaper freed it).
-                    // A resume is not counted: it repeats one admission, which only a fresh admission can replace
-                    // (seen live: a lost input re-verified five times). Neither is a held slot, which says nothing
-                    // about the PR.
-                    var failedTimes =
-                        launchedFresh
-                        && !transientBeforeClaim
-                        && !capacity
-                        && ex is not (ReviewRunner.ReviewNotAdmittedException or ReviewRunner.SlotUnavailableException)
-                            ? await RecordFailureAsync(entry, ex.Message)
-                            : 0;
-                    if (failedTimes >= QuarantineAfter && retained is not null && Reusable(retained))
-                    {
-                        await SaveAsync(() =>
-                        {
-                            entry["status"] = "quarantined";
-                            entry["reason"] = ex.Message;
-                        });
-                        Console.Error.WriteLine(
-                            $"PR {repo}/{entry["pr"]} quarantined after {QuarantineAfter} identical failures on head {entry["head"]}: {ex.Message}. Skipped until a new push."
-                        );
-                        if (++launchHolds >= MaxLaneRetries)
-                        {
-                            Console.Error.WriteLine(
-                                $"Lane {repo}/{slot} held: {launchHolds} launches failed in a row."
-                            );
-                            return;
-                        }
-                        continue;
-                    }
-                    if (
-                        (launched && !transientBeforeClaim && (retained is null || !Resumable(retained)))
-                        || (!capacity && entry["failures"]!.GetValue<int>() + 1 >= MaxLaneRetries)
-                    )
-                    {
-                        await SaveAsync(() =>
-                        {
-                            entry["status"] = "held";
-                            entry["reason"] = ex.Message;
-                        });
-                        Console.Error.WriteLine(
-                            $"PR {repo}/{entry["pr"]} held on lane {slot}: {ex.Message}. Skipped; the lane continues once its slot is free."
-                        );
-                        // Several launches failing in a row points at the slot, not the PRs: stop the lane
-                        // rather than burn the rest of its queue.
-                        if (
-                            launched
-                            && ex
-                                is not (ReviewRunner.ReviewNotAdmittedException or ReviewRunner.ReviewDeferredException)
-                            && ++launchHolds >= MaxLaneRetries
-                        )
-                        {
-                            Console.Error.WriteLine(
-                                $"Lane {repo}/{slot} held: {launchHolds} launches failed in a row."
-                            );
-                            return;
-                        }
-                        continue;
-                    }
-                    await SaveAsync(() =>
-                    {
-                        var failures = entry["failures"]!.GetValue<int>() + (capacity ? 0 : 1);
-                        var backoff = capacity ? (entry["capacityRetries"]?.GetValue<int>() ?? 0) + 1 : failures;
-                        entry["failures"] = failures;
-                        if (capacity)
-                            entry["capacityRetries"] = backoff;
-                        entry["status"] = "retry";
                         entry["reason"] = ex.Message;
-                        entry["retryAt"] = now()
-                            .AddSeconds(Math.Min(300, 15 * Math.Pow(2, Math.Min(backoff - 1, 5))))
-                            .ToUnixTimeSeconds();
-                        entry["order"] = entriesToRun.Max(value => value["order"]!.GetValue<long>()) + 1;
                     });
                     Console.Error.WriteLine(
-                        $"PR {repo}/{entry["pr"]} requeued: {ex.Message}. Existing ownership retained."
+                        $"PR {repo}/{entry["pr"]} held on lane {slot}: {ex.Message}. Skipped; the lane continues once its slot is free."
                     );
+                    if (
+                        launched
+                        && ex is not (ReviewRunner.ReviewNotAdmittedException or ReviewRunner.ReviewDeferredException)
+                    )
+                        HoldSlotAfterRepeatedFailures();
+                    return;
                 }
+                await SaveAsync(() =>
+                {
+                    var failures = entry["failures"]!.GetValue<int>() + (capacity ? 0 : 1);
+                    var backoff = capacity ? (entry["capacityRetries"]?.GetValue<int>() ?? 0) + 1 : failures;
+                    entry["failures"] = failures;
+                    if (capacity)
+                        entry["capacityRetries"] = backoff;
+                    entry["status"] = "retry";
+                    entry["reason"] = ex.Message;
+                    entry["retryAt"] = now()
+                        .AddSeconds(Math.Min(300, 15 * Math.Pow(2, Math.Min(backoff - 1, 5))))
+                        .ToUnixTimeSeconds();
+                    entry["order"] = state!["entries"]!.AsArray().Max(value => value!["order"]!.GetValue<long>()) + 1;
+                });
+                Console.Error.WriteLine(
+                    $"PR {repo}/{entry["pr"]} requeued: {ex.Message}. Existing ownership retained."
+                );
+            }
+
+            // Several launches failing in a row on one slot points at the slot, not the PRs: stop using it until the
+            // next selection rather than burn the queue on it.
+            void HoldSlotAfterRepeatedFailures()
+            {
+                var holds = launchHolds.AddOrUpdate((repo, slot), 1, (_, count) => count + 1);
+                if (holds < MaxLaneRetries)
+                    return;
+                stopped[(repo, slot)] = true;
+                Console.Error.WriteLine($"Lane {repo}/{slot} held: {holds} launches failed in a row.");
+            }
+        }
+
+        // Claims the PR and its slot in one transaction: the slot must not be owned by another PR, and the queue
+        // records the launch before the runner starts.
+        async Task<bool> ClaimSlotAsync(string repo, int slot, JsonObject entry)
+        {
+            await writes.WaitAsync();
+            try
+            {
+                using var connection = Connection(database, SqliteOpenMode.ReadWrite);
+                await connection.OpenAsync();
+                using var transaction = connection.BeginTransaction();
+                using (var query = connection.CreateCommand())
+                {
+                    query.Transaction = transaction;
+                    query.CommandText = "SELECT value FROM cache WHERE key=@key";
+                    query.Parameters.AddWithValue(
+                        "@key",
+                        SlotRelease.OwnerKey(workspace, PrCommands.ParseRepo(repo).NormalizedKey, slot)
+                    );
+                    if (
+                        await query.ExecuteScalarAsync() is string raw
+                        && JsonNode.Parse(raw) is { } owner
+                        && owner["state"]?.GetValue<string>() != "released"
+                        && owner["prId"]?.GetValue<string>() != entry["pr"]!.GetValue<string>()
+                    )
+                        return false;
+                }
+                entry["status"] = "launching";
+                entry["slot"] = slot;
+                await WriteAsync(connection, transaction, state!);
+                await transaction.CommitAsync();
+                return true;
+            }
+            catch
+            {
+                admitting?.Cancel();
+                throw;
+            }
+            finally
+            {
+                writes.Release();
             }
         }
 
@@ -952,16 +1234,11 @@ internal static class ReviewBatch
                 update();
                 using var connection = Connection(database, SqliteOpenMode.ReadWrite);
                 await connection.OpenAsync();
-                using var command = connection.CreateCommand();
-                command.CommandText =
-                    "INSERT INTO cache(key,value) VALUES(@key,@value) ON CONFLICT(key) DO UPDATE SET value=excluded.value";
-                command.Parameters.AddWithValue("@key", stateKey);
-                command.Parameters.AddWithValue("@value", state.ToJsonString());
-                await command.ExecuteNonQueryAsync();
+                await WriteAsync(connection, null, state!);
             }
             catch
             {
-                scheduling.Cancel();
+                admitting?.Cancel();
                 throw;
             }
             finally
@@ -969,13 +1246,48 @@ internal static class ReviewBatch
                 writes.Release();
             }
         }
+
+        async Task WriteAsync(SqliteConnection connection, SqliteTransaction? transaction, JsonObject queue)
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText =
+                "INSERT INTO cache(key,value) VALUES(@key,@value) ON CONFLICT(key) DO UPDATE SET value=excluded.value";
+            command.Parameters.AddWithValue("@key", queueKey);
+            command.Parameters.AddWithValue("@value", queue.ToJsonString());
+            await command.ExecuteNonQueryAsync();
+        }
     }
+
+    private static string Identity(string repo, string pr, string head) => repo + "/" + pr + "@" + head;
+
+    private static string Identity(JsonObject entry) =>
+        Identity(entry["repo"]!.GetValue<string>(), entry["pr"]!.GetValue<string>(), entry["head"]!.GetValue<string>());
+
+    // An entry names a slot only while it may own one: launching there, its retained attempt owns it, or a launch
+    // there was interrupted. Any other entry takes the lowest free slot when it starts.
+    private static void NormalizeSlot(JsonObject entry, JsonNode? attempt)
+    {
+        if (attempt is not null && !Reusable(attempt) && attempt["slot"]?.GetValue<int>() is { } owned)
+            entry["slot"] = owned;
+        else if (
+            entry["status"]?.GetValue<string>() != "launching"
+            && !(
+                entry["status"]?.GetValue<string>() == "held"
+                && entry["reason"]?.GetValue<string>() == InterruptedLaunch
+            )
+        )
+            entry.Remove("slot");
+    }
+
+    private static int? MaxAgeHours(CliOptions options) =>
+        options.Get("max-age-hours") is { } age
+            ? int.Parse(age, System.Globalization.CultureInfo.InvariantCulture)
+            : null;
 
     private static int? ValidateAgePolicy(CliOptions options, JsonObject selection)
     {
-        var maxAgeHours = options.Get("max-age-hours") is { } age
-            ? int.Parse(age, System.Globalization.CultureInfo.InvariantCulture)
-            : (int?)null;
+        var maxAgeHours = MaxAgeHours(options);
         if (selection.ContainsKey("maxAgeHours") || maxAgeHours is not null)
         {
             if (
@@ -1025,9 +1337,6 @@ internal static class ReviewBatch
         && failure["count"]?.GetValue<int>() >= QuarantineAfter;
 
     private const string InterruptedLaunch = "Interrupted launch has no definitive non-admission evidence.";
-
-    // Long enough for a lapsed lease plus a few 5-minute reaper sweeps.
-    private static readonly TimeSpan HeldSlotWait = TimeSpan.FromHours(2);
 
     private static bool Reusable(JsonNode attempt) =>
         attempt["cleanupState"]?.GetValue<string>() == "released"
@@ -1079,13 +1388,16 @@ internal static class ReviewBatch
     private static SqliteConnection Connection(string database, SqliteOpenMode mode) =>
         new(new SqliteConnectionStringBuilder { DataSource = database, Mode = mode }.ToString());
 
-    private static async Task<JsonNode?> ReadAsync(string database, string key)
+    private static async Task<JsonNode?> ReadAsync(string database, string key) =>
+        await ReadRawAsync(database, key) is { } raw ? JsonNode.Parse(raw) : null;
+
+    private static async Task<string?> ReadRawAsync(string database, string key)
     {
         using var connection = Connection(database, SqliteOpenMode.ReadOnly);
         await connection.OpenAsync();
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT value FROM cache WHERE key=@key";
         command.Parameters.AddWithValue("@key", key);
-        return await command.ExecuteScalarAsync() is string raw ? JsonNode.Parse(raw) : null;
+        return await command.ExecuteScalarAsync() as string;
     }
 }

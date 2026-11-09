@@ -126,12 +126,18 @@ public sealed class ReviewdAutoSlotTests : IDisposable
     }
 
     [Theory]
-    [InlineData("queued", 1)]
-    [InlineData("verified", 0)]
-    public async Task A_live_batch_entry_keeps_its_slot_but_a_finished_one_does_not(string status, int expected)
+    [InlineData("reviewd/batch-queue/X", "queued", 1)]
+    [InlineData("reviewd/batch-queue/X", "verified", 0)]
+    // Rounds from before the queue (#952) are no longer read: the queue holds the live batch.
+    [InlineData("reviewd/batch-state/X", "queued", 0)]
+    public async Task A_live_batch_entry_keeps_its_slot_but_a_finished_one_does_not(
+        string key,
+        string status,
+        int expected
+    )
     {
         await PutAsync(
-            "reviewd/batch-state/X",
+            key,
             JsonNode.Parse(
                 $$"""{"schemaVersion":1,"scope":{"workspace":"workspace"},"entries":[{"repo":"org/project/Nova","pr":"40","slot":0,"status":"{{status}}"}]}"""
             )!
@@ -370,7 +376,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         await HoldAsync(9, 0);
         await VerifiedOwnerAsync(10, 1, now.AddMinutes(-1));
         await PutAsync(
-            "reviewd/batch-state/X",
+            "reviewd/batch-queue/X",
             JsonNode.Parse(
                 """{"schemaVersion":1,"scope":{"workspace":"workspace"},"entries":[{"repo":"org/project/Nova","pr":"40","slot":2,"status":"queued"}]}"""
             )!

@@ -1052,7 +1052,9 @@ public sealed class ReviewdRunnerTests
         };
         await batch.ExecuteAsync();
         batch.Runs.Should().Contain("1:resume").And.Contain("2:fresh").And.Contain("3:fresh");
-        batch.Runs.IndexOf("1:resume").Should().BeLessThan(batch.Runs.IndexOf("3:fresh"));
+        // The retried owner keeps its slot through its backoff; the others use the free slot meanwhile.
+        batch.RunSlots.Should().Contain(("1", 0));
+        batch.RunSlots.TakeWhile(run => run.Pr != "1").Should().NotContain(run => run.Slot == 0);
         batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
     }
 
@@ -1476,13 +1478,16 @@ public sealed class ReviewdRunnerTests
         batch.Restart();
         var state = batch.Read(batch.StateKey)!.AsObject();
         state["entries"]![0]!["status"] = "launching";
+        state["entries"]![0]!["slot"] = 0;
         batch.Put(batch.StateKey, state);
         if (retainedAttempt)
             batch.PutAttempt("1", new JsonObject { ["slot"] = 0, ["stage"] = "prepare-pending" });
         var execute = () => batch.ExecuteAsync();
         await execute();
-        batch.Runs.Should().Equal("2:fresh");
-        batch.LiveReads.Should().Be(1);
+        // Slot 0 stays held; PRs 2 and 3 both run on slot 1 rather than wait behind it.
+        batch.Runs.Should().Equal("2:fresh", "3:fresh");
+        batch.RunSlots.Should().OnlyContain(run => run.Slot == 1);
+        batch.LiveReads.Should().Be(2);
         batch.Entries()[0]["status"]!.GetValue<string>().Should().Be("held");
         if (retainedAttempt)
         {
@@ -1850,6 +1855,242 @@ public sealed class ReviewdRunnerTests
             .Be("72");
     }
 
+    // #952: reviews ran in rounds. A PR picked while another review ran waited for the whole round to end, though a
+    // slot was free (seen live: #946 and #951 waited 15 minutes behind AWB #127 with two slots idle).
+    [Fact]
+    public async Task Batch_starts_a_pr_picked_while_another_review_runs_on_the_next_tick()
+    {
+        using var batch = new BatchFixture(0, 1);
+        batch.WatchDelay = batch.LiveTick;
+        batch.PutSelection(1);
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        batch.OnRunPrAsync = async pr =>
+        {
+            if (pr == "1")
+            {
+                firstStarted.SetResult();
+                await release.Task;
+            }
+            else
+                secondStarted.SetResult();
+        };
+
+        var schedule = batch.RunLiveAsync();
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        batch.PutSelection(2);
+        await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        release.Task.IsCompleted.Should().BeFalse("PR 2 started while PR 1 was still running");
+        release.SetResult();
+        batch.Cancellation.Cancel();
+        await schedule;
+        batch.RunSlots.Should().Equal(("1", 0), ("2", 1));
+        batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
+    }
+
+    // #952: a PR kept the slot it ran on before, and waited up to 2 hours when another PR held that slot.
+    [Fact]
+    public async Task Batch_starts_a_pr_on_a_free_slot_when_its_earlier_slot_is_busy()
+    {
+        using var batch = new BatchFixture(0, 1);
+        batch.PutSelection(1);
+        batch.PutAttempt(
+            "1",
+            new JsonObject
+            {
+                ["slot"] = 1,
+                ["stage"] = "completed-verified",
+                ["cleanupState"] = "released",
+                ["claimToken"] = "earlier-claim",
+                ["reviewedHeadSha"] = new string('9', 40),
+                ["mergeSha"] = new string('9', 40),
+                ["artifactCommit"] = new JsonObject { ["status"] = "committed", ["commit"] = new string('c', 40) },
+            }
+        );
+        batch.Put(
+            SlotRelease.OwnerKey("workspace", PrCommands.ParseRepo(BatchFixture.Repo).NormalizedKey, 1),
+            new JsonObject
+            {
+                ["prId"] = "99",
+                ["state"] = "owned",
+                ["claimToken"] = "other-run",
+            }
+        );
+        var started = batch.Now;
+
+        await batch.ExecuteAsync();
+
+        batch.RunSlots.Should().Equal(("1", 0));
+        batch.Entries()[0]["status"]!.GetValue<string>().Should().Be("verified");
+        batch.Now.Should().Be(started, "nothing waited on the busy slot");
+    }
+
+    // #952: a held slot held every PR assigned behind it for up to 2 hours.
+    [Fact]
+    public async Task Batch_held_slot_does_not_delay_prs_on_other_slots()
+    {
+        using var batch = new BatchFixture(0, 1);
+        batch.PutAttempt(
+            "1",
+            new JsonObject
+            {
+                ["slot"] = 0,
+                ["stage"] = "prepare-pending",
+                ["cleanupState"] = "owned",
+                ["claimToken"] = "unknown-outcome",
+            }
+        );
+        var started = batch.Now;
+
+        await batch.ExecuteAsync();
+
+        batch.Runs.Should().Equal("2:fresh", "3:fresh");
+        batch.RunSlots.Should().OnlyContain(run => run.Slot == 1);
+        batch
+            .Entries()
+            .Select(entry => entry["status"]!.GetValue<string>())
+            .Should()
+            .Equal("held", "verified", "verified");
+        batch.Entries()[0]["slot"]!.GetValue<int>().Should().Be(0, "the held owner still names the slot it owns");
+        batch.Now.Should().Be(started, "nothing waited on the held slot");
+    }
+
+    [Fact]
+    public async Task Batch_restart_resumes_a_retained_attempt_on_its_own_slot()
+    {
+        using var batch = new BatchFixture(0, 1);
+        batch.Cancellation.Cancel();
+        await batch.ExecuteAsync();
+        batch.Restart();
+        // The batch stopped while PR 3 ran on slot 1.
+        var state = batch.Read(batch.StateKey)!.AsObject();
+        state["entries"]![2]!["status"] = "launching";
+        state["entries"]![2]!["slot"] = 1;
+        batch.Put(batch.StateKey, state);
+        batch.PutAttempt(
+            "3",
+            new JsonObject
+            {
+                ["slot"] = 1,
+                ["stage"] = "review-running",
+                ["claimToken"] = "running",
+                ["reviewInputId"] = "original",
+                ["mergeSha"] = new string('b', 40),
+            }
+        );
+
+        await batch.ExecuteAsync();
+
+        batch.Runs.Should().Contain("3:resume").And.Contain("1:fresh").And.Contain("2:fresh");
+        batch.RunSlots.Should().Contain(("3", 1));
+        batch.RunSlots.First(run => run.Slot == 1).Pr.Should().Be("3", "no new review takes a retained owner's slot");
+        batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
+    }
+
+    [Fact]
+    public async Task Batch_never_admits_the_same_pr_and_head_twice_across_ticks()
+    {
+        using var batch = new BatchFixture(0, 1);
+        batch.WatchDelay = batch.LiveTick;
+        batch.PutSelection(1);
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        batch.OnRunPrAsync = async pr =>
+        {
+            if (pr == "1")
+            {
+                firstStarted.TrySetResult();
+                await release.Task;
+            }
+            else
+                secondStarted.TrySetResult();
+        };
+
+        var schedule = batch.RunLiveAsync();
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await batch.AfterTicks(6);
+        release.SetResult();
+        await batch.AfterTicks(6);
+        // A new selection that still holds PR 1's head re-checks it, and finds it reviewed.
+        batch.PutSelection(2);
+        await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await batch.AfterTicks(6);
+        batch.Cancellation.Cancel();
+        await schedule;
+
+        batch.Runs.Should().Equal("1:fresh", "2:fresh");
+    }
+
+    [Fact]
+    public async Task Batch_drops_a_queued_pr_that_left_the_selection_but_never_a_running_one()
+    {
+        using var batch = new BatchFixture(0);
+        batch.WatchDelay = batch.LiveTick;
+        batch.PutSelection(2);
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thirdStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        batch.OnRunPrAsync = async pr =>
+        {
+            if (pr == "1")
+            {
+                firstStarted.TrySetResult();
+                await release.Task;
+            }
+            else if (pr == "3")
+                thirdStarted.TrySetResult();
+        };
+
+        var schedule = batch.RunLiveAsync();
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        batch.SelectOnly("3");
+        await batch.AfterTicks(6);
+        batch.Entries().Select(entry => entry["pr"]!.GetValue<string>()).Should().Equal("3", "1");
+        release.SetResult();
+        await thirdStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await batch.AfterTicks(6);
+        batch.Cancellation.Cancel();
+        await schedule;
+
+        batch.Runs.Should().Equal("1:fresh", "3:fresh");
+        batch.Entries().Select(entry => entry["pr"]!.GetValue<string>()).Should().Equal("3");
+    }
+
+    // The round of the selection a pre-queue batch was running becomes the queue, so an interrupted launch there
+    // still holds its slot.
+    [Fact]
+    public async Task Batch_adopts_the_round_of_the_current_selection_left_by_an_earlier_version()
+    {
+        using var batch = new BatchFixture(0, 1);
+        batch.Cancellation.Cancel();
+        await batch.ExecuteAsync();
+        batch.Restart();
+        var queue = batch.Read(batch.StateKey)!.AsObject();
+        batch.Delete(batch.StateKey);
+        var entries = queue["entries"]!.AsArray();
+        for (var index = 0; index < entries.Count; index++)
+            entries[index]!["slot"] = index % 2;
+        entries[0]!["status"] = "launching";
+        batch.Put(
+            batch.RoundKey,
+            new JsonObject
+            {
+                ["schemaVersion"] = 1,
+                ["scope"] = queue["scope"]!.DeepClone(),
+                ["entries"] = entries.DeepClone(),
+            }
+        );
+
+        await batch.ExecuteAsync();
+
+        batch.Runs.Should().Equal("2:fresh", "3:fresh");
+        batch.RunSlots.Should().OnlyContain(run => run.Slot == 1);
+        batch.Entries()[0]["reason"]!.GetValue<string>().Should().StartWith("Interrupted launch");
+    }
+
     private sealed class BatchFixture : IDisposable
     {
         public const string Repo = "org/project/Nova";
@@ -1882,7 +2123,36 @@ public sealed class ReviewdRunnerTests
         public Action CheckProducer { get; set; } = () => { };
         public Func<CancellationToken, Task> WatchDelay { get; set; } =
             token => Task.Delay(Timeout.InfiniteTimeSpan, token);
-        public string StateKey => "reviewd/batch-state/" + SlotRelease.Digest(_selection);
+        public string StateKey => ReviewBatch.QueueKey("workspace");
+        public List<(string Pr, int Slot)> RunSlots { get; } = [];
+        public Func<string, Task>? OnRunPrAsync { get; set; }
+        private int _ticks;
+        private readonly List<(int At, TaskCompletionSource Done)> _tickWaiters = [];
+
+        // A live tick: real time, 5 ms, so a test sees many scheduling passes quickly.
+        public async Task LiveTick(CancellationToken token)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(5), token);
+            lock (_tickWaiters)
+            {
+                _ticks++;
+                foreach (var waiter in _tickWaiters.Where(waiter => waiter.At <= _ticks).ToList())
+                {
+                    waiter.Done.TrySetResult();
+                    _ = _tickWaiters.Remove(waiter);
+                }
+            }
+        }
+
+        public Task AfterTicks(int count)
+        {
+            lock (_tickWaiters)
+            {
+                var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _tickWaiters.Add((_ticks + count, done));
+                return done.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            }
+        }
 
         public BatchFixture(params int[] slots)
         {
@@ -1918,8 +2188,12 @@ public sealed class ReviewdRunnerTests
                 ["mergeSha"] = new string('b', 40),
             };
 
-        public Task ExecuteAsync() =>
-            ReviewBatch.ExecuteAsync(
+        public Task ExecuteAsync() => ScheduleAsync(untilIdle: true);
+
+        public Task RunLiveAsync() => ScheduleAsync(untilIdle: false);
+
+        private Task ScheduleAsync(bool untilIdle) =>
+            ReviewBatch.ScheduleAsync(
                 CliOptions.Parse([
                     "review",
                     "batch",
@@ -1936,7 +2210,8 @@ public sealed class ReviewdRunnerTests
                     .. MaxAgeHours is null ? [] : new string[] { "--max-age-hours", MaxAgeHours },
                 ]),
                 _config,
-                _selection,
+                _ => Task.FromResult<string?>(_selection),
+                (_, _) => Task.CompletedTask,
                 (_, pr, _, _, token) =>
                 {
                     SchedulingToken = token;
@@ -1949,6 +2224,7 @@ public sealed class ReviewdRunnerTests
                     lock (Runs)
                     {
                         Runs.Add(pr + (options.Has("resume") ? ":resume" : ":fresh"));
+                        RunSlots.Add((pr, int.Parse(options.Required("slot"))));
                         RunEfforts.Add(options.Get("reasoning-effort"));
                         RunAges.Add(options.Get("max-age-hours"));
                     }
@@ -1956,6 +2232,8 @@ public sealed class ReviewdRunnerTests
                     OnRun?.Invoke();
                     if (OnRunAsync is not null)
                         await OnRunAsync();
+                    if (OnRunPrAsync is not null)
+                        await OnRunPrAsync(pr);
                     var receipt = new JsonObject
                     {
                         ["slot"] = int.Parse(options.Required("slot")),
@@ -1986,6 +2264,7 @@ public sealed class ReviewdRunnerTests
                     }
                 },
                 () => DateTimeOffset.FromUnixTimeSeconds(_seconds),
+                untilIdle,
                 Cancellation.Token
             );
 
@@ -2014,6 +2293,35 @@ public sealed class ReviewdRunnerTests
                     ),
             ]);
             _selection = selection.ToJsonString();
+        }
+
+        public string RoundKey => "reviewd/batch-state/" + SlotRelease.Digest(_selection);
+
+        public void SelectOnly(params string[] prs)
+        {
+            var selection = JsonNode.Parse(_selection)!.AsObject();
+            selection["repositories"]![Repo] = new JsonArray([
+                .. prs.Select(pr =>
+                    (JsonNode)
+                        new JsonObject
+                        {
+                            ["repository"] = Repo,
+                            ["prId"] = pr,
+                            ["headSha"] = new string('a', 40),
+                        }
+                ),
+            ]);
+            _selection = selection.ToJsonString();
+        }
+
+        public void Delete(string key)
+        {
+            using var connection = PrThreadBindings.Connection(_database);
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM cache WHERE key=@key";
+            command.Parameters.AddWithValue("@key", key);
+            command.ExecuteNonQuery();
         }
 
         public void PutAttempt(string pr, JsonNode value) =>

@@ -129,7 +129,7 @@ internal static class ReviewCapacity
                 }
                 foreach (
                     var record in records.Where(row =>
-                        row.Key.StartsWith("reviewd/batch-state/", StringComparison.Ordinal)
+                        row.Key.StartsWith("reviewd/batch-queue/", StringComparison.Ordinal)
                     )
                 )
                 {
