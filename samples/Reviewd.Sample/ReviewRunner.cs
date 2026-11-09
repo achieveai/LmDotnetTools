@@ -980,6 +980,15 @@ internal static class ReviewRunner
         // Resets of one head add up across its retries, whatever ended each one.
         if (resetsOfHead > 0)
             receipt["resetCount"] = resetsOfHead;
+        // A readmit stays with its head across retries too, so a retry is not refused for an age the readmit cleared.
+        if (
+            attempt?["readmittedHead"]?.GetValue<string>() is { } readmittedHead
+            && readmittedHead == args["head"]!.GetValue<string>()
+        )
+        {
+            receipt["readmittedHead"] = readmittedHead;
+            receipt["readmittedAt"] = attempt["readmittedAt"]?.DeepClone();
+        }
         // A retry of a reset keeps that mark. A retry refused or failed before it reviews is then offered again in its
         // own conversation, instead of reading as a failed submission there until a new push.
         if (retryOfReset)
@@ -1387,7 +1396,8 @@ internal static class ReviewRunner
                     current,
                     live["headSha"]?.GetValue<string>(),
                     hours,
-                    now()
+                    now(),
+                    attempt
                 )
             )
                 throw new InvalidOperationException(

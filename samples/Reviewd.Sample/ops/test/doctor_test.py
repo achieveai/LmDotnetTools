@@ -278,16 +278,37 @@ class Checks(unittest.TestCase):
         code, output = doctor.apply_fix({"install": "fleet", "fix": "start-auth"}, self.root)
         self.assertEqual((code, output), (1, "no install found for start-auth"))
 
-    def test_unquarantine_deletes_only_that_prs_failure_records(self):
+    def test_readmit_deletes_only_that_prs_failure_records(self):
         make_install(self.root, "reviewd-alpha", rows=[
             ("reviewd/failure/azure-devops/o/p/r/5", {"head": "h", "count": 3}),
             ("reviewd/failure/azure-devops/o/p/other/5", {"head": "h", "count": 1}),
             ("reviewd/failure/azure-devops/o/p/r/55", {"head": "h", "count": 3})])
-        self.assertEqual(len(doctor.unquarantine("alpha", "5", self.root)), 2)
+        self.assertEqual(len(doctor.readmit("alpha", "5", NOW, self.root)), 2)
         self.assertEqual([key for key, _ in doctor.read_db(doctor.installs(self.root)[0])],
                          ["reviewd/failure/azure-devops/o/p/r/55"])
         with self.assertRaises(ValueError):
-            doctor.unquarantine("missing", "5", self.root)
+            doctor.readmit("missing", "5", NOW, self.root)
+
+    def test_readmit_clears_the_resets_of_a_released_attempt_and_restarts_its_age_clock(self):
+        released = {"stage": "failed-released", "cleanupState": "released", "headSha": "a" * 40, "resetCount": 3}
+        install = make_install(self.root, "reviewd-alpha", rows=[
+            ("reviewd/review-attempt/azure-devops/o/p/r/5", released),
+            ("reviewd/review-attempt/azure-devops/o/p/r/55", released)])
+        changes = doctor.readmit("alpha", "5", NOW, self.root)
+        self.assertEqual(len(changes), 1)
+        rows = dict(doctor.read_db(install))
+        attempt = rows["reviewd/review-attempt/azure-devops/o/p/r/5"]
+        self.assertNotIn("resetCount", attempt)
+        self.assertEqual((attempt["resetCountBeforeReadmit"], attempt["readmittedHead"], attempt["readmittedAt"]),
+                         (3, "a" * 40, NOW.isoformat()))
+        self.assertEqual(rows["reviewd/review-attempt/azure-devops/o/p/r/55"], released, "another PR is untouched")
+
+    def test_readmit_leaves_an_attempt_a_review_still_owns(self):
+        owned = {"stage": "review-running", "cleanupState": "owned", "headSha": "a" * 40, "resetCount": 1}
+        install = make_install(self.root, "reviewd-alpha", rows=[("reviewd/review-attempt/azure-devops/o/p/r/5", owned)])
+        changes = doctor.readmit("alpha", "5", NOW, self.root)
+        self.assertEqual(changes, ["left reviewd/review-attempt/azure-devops/o/p/r/5: stage review-running, owned"])
+        self.assertEqual(dict(doctor.read_db(install))["reviewd/review-attempt/azure-devops/o/p/r/5"], owned)
 
 
 class Ticks(unittest.TestCase):
@@ -517,7 +538,7 @@ class Ticks(unittest.TestCase):
         self.assertIn("**1 reviews posted in the last 24 h**", text)
         self.assertIn("vgbackend#5787379 (head abcdef12)", text)
         self.assertNotIn("5700000", text, "a quarantine older than a week is not listed")
-        self.assertIn("doctor.py unquarantine", text)
+        self.assertIn("doctor.py readmit", text)
 
 
 if __name__ == "__main__":
