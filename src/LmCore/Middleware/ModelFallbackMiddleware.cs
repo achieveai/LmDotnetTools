@@ -182,12 +182,12 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
     ///     Tries each agent the constructor's shape selects, in order, until one starts a reply.
     /// </summary>
     /// <remarks>
-    ///     The returned stream is already open: its first message has been read. Disposing its enumerator
-    ///     releases the provider stream even before the first read, and a token passed to the enumeration
-    ///     (<c>WithCancellation</c>) cancels the provider's reads just as <paramref name="cancellationToken" />
-    ///     does.
+    ///     The returned reply opens nothing until its first read, so one disposed unread holds no provider
+    ///     stream. That first read is where the agents are tried. The reply can be enumerated once, and a
+    ///     token passed to the enumeration (<c>WithCancellation</c>) stops the provider's reads just as
+    ///     <paramref name="cancellationToken" /> does.
     /// </remarks>
-    public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
+    public Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
         MiddlewareContext context,
         IStreamingAgent agent,
         CancellationToken cancellationToken = default
@@ -195,61 +195,78 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
     {
         ArgumentNullException.ThrowIfNull(agent);
         var attempts = BuildAttempts(context, agent);
+        IAsyncEnumerable<IMessage> reply = new SingleUseReply(ReadAsync(context, attempts, cancellationToken));
+        return Task.FromResult(reply);
+    }
 
-        // Every provider call and read runs on this token, so the enumeration's own token can be linked to
-        // it once the caller starts reading.
-        var reads = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        try
+    private async IAsyncEnumerable<IMessage> ReadAsync(
+        MiddlewareContext context,
+        List<Attempt> attempts,
+        CancellationToken callToken,
+        [EnumeratorCancellation] CancellationToken readToken = default
+    )
+    {
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(callToken, readToken);
+        var (reply, hasMessage, fallbackModelId) = await StartReplyAsync(context, attempts, stop.Token);
+        await using (reply)
         {
-            Exception? earlier = null;
-            for (var i = 0; ; i++)
+            while (hasMessage)
             {
-                var attempt = attempts[i];
-                IAsyncEnumerator<IMessage>? reply = null;
-                try
-                {
-                    var stream = attempt.Agent is IStreamingAgent streamingAgent
-                        ? await streamingAgent.GenerateReplyStreamingAsync(
-                            context.Messages,
-                            attempt.Options,
-                            reads.Token
-                        )
-                        : ToAsyncEnumerableInternal(
-                            await attempt.Agent.GenerateReplyAsync(context.Messages, attempt.Options, reads.Token),
-                            reads.Token
-                        );
-
-                    // The request goes out on this first read, so this is where an outage shows.
-                    reply = stream.GetAsyncEnumerator(reads.Token);
-                    var started = await reply.MoveNextAsync();
-                    return new StartedReply(reply, started, attempt.FallbackModelId, reads);
-                }
-                catch (Exception ex) when (CanFallBack(ex, i, attempts.Count, cancellationToken))
-                {
-                    await DisposeQuietlyAsync(reply);
-
-                    // The caller may have stopped the turn while the failed attempt was being cleaned up.
-                    cancellationToken.ThrowIfCancellationRequested();
-                    LogHop(attempt, attempts[i + 1], ex);
-                    earlier = ex;
-                }
-                catch (Exception ex) when (ReportsEarlierFailure(attempt, earlier, ex, cancellationToken))
-                {
-                    await DisposeQuietlyAsync(reply);
-                    ExceptionDispatchInfo.Capture(earlier!).Throw();
-                    throw;
-                }
-                catch
-                {
-                    await DisposeQuietlyAsync(reply);
-                    throw;
-                }
+                yield return fallbackModelId is null ? reply.Current : CreditUsage(reply.Current, fallbackModelId);
+                hasMessage = await reply.MoveNextAsync();
             }
         }
-        catch
+    }
+
+    /// <summary>Tries each attempt until one's first read succeeds. The caller owns the returned stream.</summary>
+    private async Task<(IAsyncEnumerator<IMessage> Reply, bool HasMessage, string? FallbackModelId)> StartReplyAsync(
+        MiddlewareContext context,
+        List<Attempt> attempts,
+        CancellationToken cancellationToken
+    )
+    {
+        Exception? earlier = null;
+        for (var i = 0; ; i++)
         {
-            reads.Dispose();
-            throw;
+            var attempt = attempts[i];
+            IAsyncEnumerator<IMessage>? reply = null;
+            try
+            {
+                var stream = attempt.Agent is IStreamingAgent streamingAgent
+                    ? await streamingAgent.GenerateReplyStreamingAsync(
+                        context.Messages,
+                        attempt.Options,
+                        cancellationToken
+                    )
+                    : ToAsyncEnumerableInternal(
+                        await attempt.Agent.GenerateReplyAsync(context.Messages, attempt.Options, cancellationToken),
+                        cancellationToken
+                    );
+
+                // The request goes out on this first read, so this is where an outage shows.
+                reply = stream.GetAsyncEnumerator(cancellationToken);
+                return (reply, await reply.MoveNextAsync(), attempt.FallbackModelId);
+            }
+            catch (Exception ex) when (CanFallBack(ex, i, attempts.Count, cancellationToken))
+            {
+                await DisposeQuietlyAsync(reply);
+
+                // The caller may have stopped the turn while the failed attempt was being cleaned up.
+                cancellationToken.ThrowIfCancellationRequested();
+                LogHop(attempt, attempts[i + 1], ex);
+                earlier = ex;
+            }
+            catch (Exception ex) when (ReportsEarlierFailure(attempt, earlier, ex, cancellationToken))
+            {
+                await DisposeQuietlyAsync(reply);
+                ExceptionDispatchInfo.Capture(earlier!).Throw();
+                throw;
+            }
+            catch
+            {
+                await DisposeQuietlyAsync(reply);
+                throw;
+            }
         }
     }
 
@@ -388,97 +405,15 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
         }
     }
 
-    /// <summary>
-    ///     A provider reply whose first message has already been read. It owns the provider's enumerator and
-    ///     the read token: disposing its enumerator releases both, whether or not anything was read, and the
-    ///     enumeration's own token cancels the provider's reads. It can be enumerated once.
-    /// </summary>
-    private sealed class StartedReply(
-        IAsyncEnumerator<IMessage> reply,
-        bool started,
-        string? fallbackModelId,
-        CancellationTokenSource reads
-    ) : IAsyncEnumerable<IMessage>
+    /// <summary>Rejects a second enumeration, which would otherwise send the request again.</summary>
+    private sealed class SingleUseReply(IAsyncEnumerable<IMessage> reply) : IAsyncEnumerable<IMessage>
     {
         private int _enumerated;
 
         public IAsyncEnumerator<IMessage> GetAsyncEnumerator(CancellationToken cancellationToken = default) =>
             Interlocked.Exchange(ref _enumerated, 1) == 0
-                ? new Enumerator(reply, started, fallbackModelId, reads, cancellationToken)
+                ? reply.GetAsyncEnumerator(cancellationToken)
                 : throw new InvalidOperationException("A model fallback reply can be enumerated only once.");
-
-        private sealed class Enumerator : IAsyncEnumerator<IMessage>
-        {
-            private readonly string? _fallbackModelId;
-            private readonly CancellationTokenRegistration _linked;
-            private readonly CancellationTokenSource _reads;
-            private readonly IAsyncEnumerator<IMessage> _reply;
-            private bool _disposed;
-            private bool _finished;
-            private bool _firstPending;
-
-            public Enumerator(
-                IAsyncEnumerator<IMessage> reply,
-                bool started,
-                string? fallbackModelId,
-                CancellationTokenSource reads,
-                CancellationToken enumerationToken
-            )
-            {
-                _reply = reply;
-                _firstPending = started;
-                _finished = !started;
-                _fallbackModelId = fallbackModelId;
-                _reads = reads;
-                _linked = enumerationToken.CanBeCanceled
-                    ? enumerationToken.Register(static state => ((CancellationTokenSource)state!).Cancel(), reads)
-                    : default;
-            }
-
-            public IMessage Current { get; private set; } = null!;
-
-            public async ValueTask<bool> MoveNextAsync()
-            {
-                if (_firstPending)
-                {
-                    _reads.Token.ThrowIfCancellationRequested();
-                    _firstPending = false;
-                    Current = Credit(_reply.Current);
-                    return true;
-                }
-
-                if (_finished || !await _reply.MoveNextAsync())
-                {
-                    _finished = true;
-                    return false;
-                }
-
-                Current = Credit(_reply.Current);
-                return true;
-            }
-
-            public async ValueTask DisposeAsync()
-            {
-                if (_disposed)
-                {
-                    return;
-                }
-
-                _disposed = true;
-                await _linked.DisposeAsync();
-                try
-                {
-                    await _reply.DisposeAsync();
-                }
-                finally
-                {
-                    _reads.Dispose();
-                }
-            }
-
-            private IMessage Credit(IMessage message) =>
-                _fallbackModelId is null ? message : CreditUsage(message, _fallbackModelId);
-        }
     }
 
     /// <param name="Agent">The agent to call.</param>

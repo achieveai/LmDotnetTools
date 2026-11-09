@@ -80,6 +80,44 @@ public sealed class ModelFallbackTests
             .BeTrue("the outage ended the turn with an error");
     }
 
+    [Fact]
+    public async Task AFallbackWithNativeSearch_ListsItsOwnSearch_AndNoFunctionWebTools()
+    {
+        JsonElement? fallbackRequest = null;
+        var responder = ScriptedSseResponder
+            .New()
+            .ForRole(
+                "fallback",
+                ctx =>
+                {
+                    fallbackRequest = ctx.RequestBody.Clone();
+                    return ctx.RequestBody.GetProperty("model").GetString() == FallbackModel;
+                }
+            )
+            .Turn(t => t.Text("Answered by the fallback model."))
+            .Build();
+        var builder = new OutageThenFallbackBuilder(responder);
+        using var factory = new E2EWebAppFactory(
+            "test",
+            builder,
+            new Dictionary<string, string?> { ["LmStreaming:ModelFallback:test:0"] = "test-anthropic" }
+        );
+
+        var socket = await factory.ConnectWebSocketAsync(
+            $"fallback-search-{Guid.NewGuid():N}",
+            modeId: "research-assistant"
+        );
+        await using var client = new WebSocketTestClient(socket);
+        await client.SendUserMessageAsync("search for it");
+        using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(30));
+
+        frames.ConcatText().Should().Contain("Answered by the fallback model.");
+        var tools = fallbackRequest!.Value.GetProperty("tools").EnumerateArray().ToList();
+        var names = tools.Select(tool => tool.GetProperty("name").GetString()).ToList();
+        names.Should().Contain("web_search", "the fallback's own provider search is on the request");
+        names.Should().NotContain(["WebSearch", "WebFetch"], "a target with native search must not get both");
+    }
+
     /// <summary>Polls the conversation usage aggregate (persisted after the turn) for its model ids.</summary>
     private static async Task<IReadOnlyList<string>> ReadPerModelUsageAsync(HttpClient http, string threadId)
     {

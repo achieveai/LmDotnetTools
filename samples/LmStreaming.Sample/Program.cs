@@ -2200,12 +2200,20 @@ try
                     var allBuiltInTools = GetBuiltInToolsForProvider(normalizedProviderId);
                     var modeBuiltInAllowList = mode.EnabledBuiltInTools ?? mode.EnabledTools;
                     var filteredBuiltInTools = ModeToolFilter.FilterBuiltInTools(allBuiltInTools, modeBuiltInAllowList);
+                    var fallbackWebTools = new FallbackWebTools(
+                        filteredRegistry,
+                        enabledWebTools,
+                        jinaWebProvider,
+                        webToolsOptions,
+                        loggerFactory
+                    );
                     providerAgent = WithConfiguredModelFallback(
                         sp,
                         normalizedProviderId,
                         agentFactory(normalizedProviderId),
                         agentFactory,
-                        modeBuiltInAllowList
+                        modeBuiltInAllowList,
+                        fallbackWebTools
                     );
 
                     // Surface model reasoning (provider→Thinking/Reasoning mapping). A provisioned root
@@ -2333,6 +2341,7 @@ try
                     // Applied here, before the workflow/transcript blocks below add their own `with`
                     // clauses, so the narrowing cannot be lost to a later record copy.
                     subAgentOptions = ApplySubAgentToolNarrowing(subAgentOptions, caps);
+                    subAgentOptions = fallbackWebTools.WithoutHiddenTools(subAgentOptions);
 
                     // #623 warning floor — wired UNCONDITIONALLY (not gated on the mode's
                     // SubAgentRequiredTools opt-in): when a spawn's dispatch prompt orders board work,
@@ -4697,15 +4706,19 @@ public partial class Program
     ///     not carried over. A single provider id written as a plain string is a one-entry list. A fallback
     ///     provider that is not available (no key or login) or cannot be built is skipped with a warning rather
     ///     than failing the conversation, which never needed it to start: left in the chain, its 401 would end
-    ///     the chain before a later target that works. A target gets its own provider's built-in tools only:
-    ///     the function web tools are registered once, for the primary, so a target without native search has none.
+    ///     the chain before a later target that works. A target with native search drops the function web
+    ///     tools; any other target gets <paramref name="webTools" /> in its own request, so a mode that lists
+    ///     web search keeps it after a hop. If such a target could not search (no <c>JINA_API_KEY</c>), it is
+    ///     skipped with a warning, because an answer that silently lost its search can read as sourced. A
+    ///     mode with no tool list promises no search, so that target still answers, with a warning.
     /// </remarks>
     internal static IStreamingAgent WithConfiguredModelFallback(
         IServiceProvider sp,
         string providerId,
         IStreamingAgent primary,
         Func<string, IStreamingAgent> agentFactory,
-        IReadOnlyList<string>? modeBuiltInAllowList
+        IReadOnlyList<string>? modeBuiltInAllowList,
+        FallbackWebTools webTools
     )
     {
         var section = sp.GetRequiredService<IConfiguration>().GetSection($"LmStreaming:ModelFallback:{providerId}");
@@ -4737,6 +4750,30 @@ public partial class Program
                 continue;
             }
 
+            var targetBuiltIns = ModeToolFilter.FilterBuiltInTools(
+                GetBuiltInToolsForProvider(targetId),
+                modeBuiltInAllowList
+            );
+            var hasNativeSearch = targetBuiltIns is { Count: > 0 };
+            if (!hasNativeSearch && webTools.ModeEnablesSearch && !webTools.CanSearch)
+            {
+                if (webTools.SearchRequired)
+                {
+                    logger.LogWarning(
+                        "Model fallback target {ToProvider} for {FromProvider} has no web search (JINA_API_KEY is not set or web tools are not configured) and is skipped",
+                        targetId,
+                        providerId
+                    );
+                    continue;
+                }
+
+                logger.LogWarning(
+                    "Model fallback target {ToProvider} for {FromProvider} will answer without web search (JINA_API_KEY is not set or web tools are not configured)",
+                    targetId,
+                    providerId
+                );
+            }
+
             IStreamingAgent targetAgent;
             try
             {
@@ -4753,10 +4790,7 @@ public partial class Program
                 continue;
             }
 
-            var targetBuiltIns = ModeToolFilter.FilterBuiltInTools(
-                GetBuiltInToolsForProvider(targetId),
-                modeBuiltInAllowList
-            );
+            IReadOnlyList<FunctionContract> hiddenWebTools = hasNativeSearch ? [] : webTools.RegisterHidden();
             var targetReasoning = BuildConversationReasoningExtraProperties(
                 registry,
                 targetId,
@@ -4771,6 +4805,11 @@ public partial class Program
                         options with
                         {
                             BuiltInTools = targetBuiltIns,
+                            Functions = FallbackWebTools.ShapeFunctions(
+                                options.Functions,
+                                hasNativeSearch,
+                                hiddenWebTools
+                            ),
                             ExtraProperties = options
                                 .ExtraProperties.RemoveRange(ReasoningExtraPropertyKeys)
                                 .SetItems(targetReasoning),

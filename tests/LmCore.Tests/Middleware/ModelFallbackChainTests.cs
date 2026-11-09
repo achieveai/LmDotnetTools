@@ -423,7 +423,7 @@ public class ModelFallbackChainTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task ACancellationBeforeTheFirstRead_HandsOnNoBufferedMessage(bool throughTheEnumerationToken)
+    public async Task ACancellationBeforeTheFirstRead_HandsOnNoMessage(bool throughTheEnumerationToken)
     {
         using var stop = new CancellationTokenSource();
         var middleware = new ModelFallbackMiddleware([
@@ -534,6 +534,7 @@ public class ModelFallbackChainTests
         ]);
         var reply = await middleware.InvokeStreamingAsync(Context("primary-model"), primary);
         await using var first = reply.GetAsyncEnumerator();
+        (await first.MoveNextAsync()).Should().BeTrue();
 
         var second = () => reply.GetAsyncEnumerator();
 
@@ -550,6 +551,7 @@ public class ModelFallbackChainTests
         ]);
         var reply = await middleware.InvokeStreamingAsync(Context("primary-model"), new ScriptedAgent(_ => stream));
         var enumerator = reply.GetAsyncEnumerator();
+        (await enumerator.MoveNextAsync()).Should().BeTrue();
 
         await enumerator.DisposeAsync();
         await enumerator.DisposeAsync();
@@ -561,7 +563,7 @@ public class ModelFallbackChainTests
     [InlineData("primary")]
     [InlineData("fallback")]
     [InlineData("empty")]
-    public async Task DisposingTheReplyBeforeReadingIt_ReleasesTheProviderStream(string answeredBy)
+    public async Task DisposingTheReplyAfterItsFirstRead_ReleasesTheProviderStream(string answeredBy)
     {
         var probe = new StreamProbe();
         var answer = answeredBy == "empty" ? Tracked(probe) : Tracked(probe, messages: Text("answer"));
@@ -569,9 +571,64 @@ public class ModelFallbackChainTests
         var primary = new ScriptedAgent(answeredBy == "fallback" ? Outage(503) : answer);
 
         var reply = await middleware.InvokeStreamingAsync(Context("primary-model"), primary);
-        await reply.GetAsyncEnumerator().DisposeAsync();
+        var reading = reply.GetAsyncEnumerator();
+        _ = await reading.MoveNextAsync();
+        await reading.DisposeAsync();
 
         probe.Ended.Should().Be(1, "the stream opened to find the first message is the reply's to release");
+    }
+
+    [Fact]
+    public async Task DisposingTheMiddlewaresReplyBeforeReadingIt_OpensNoProviderStream()
+    {
+        var probe = new StreamProbe();
+        var backup = new ScriptedAgent(Reply("from the backup"));
+        var middleware = new ModelFallbackMiddleware([new FallbackTarget("backup-model", backup)]);
+        var primary = new ScriptedAgent(Tracked(probe, messages: Text("answer")));
+
+        var reply = await middleware.InvokeStreamingAsync(Context("primary-model"), primary);
+        await reply.GetAsyncEnumerator().DisposeAsync();
+
+        primary.Calls.Should().Be(0, "an unread reply must not hold a provider stream that nothing would release");
+        backup.Calls.Should().Be(0);
+        probe.Ended.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CancellingDuringABlockedRead_OfTheAgentsReply_StopsWithoutFallingBack(
+        bool throughTheEnumerationToken
+    )
+    {
+        using var stop = new CancellationTokenSource();
+        var backup = new ScriptedAgent(Reply("from the backup"));
+        var secondReadStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var agent = new ModelFallbackAgent(
+            new ScriptedAgent(ct => BlocksAfterFirstMessage(secondReadStarted, ct)),
+            [new FallbackTarget("backup-model", backup)]
+        );
+        var reply = await agent.GenerateReplyStreamingAsync(
+            Prompt,
+            new GenerateReplyOptions { ModelId = "m" },
+            throughTheEnumerationToken ? CancellationToken.None : stop.Token
+        );
+        await using var reading = reply.GetAsyncEnumerator(
+            throughTheEnumerationToken ? stop.Token : CancellationToken.None
+        );
+        (await reading.MoveNextAsync()).Should().BeTrue();
+
+        var secondRead = reading.MoveNextAsync().AsTask();
+        await secondReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        secondRead.IsCompleted.Should().BeFalse("the provider read is still pending when the token is cancelled");
+        await stop.CancelAsync();
+
+        _ = await FluentActions
+            .Awaiting(() => secondRead)
+            .Should()
+            .ThrowAsync<OperationCanceledException>()
+            .WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+        backup.Calls.Should().Be(0);
     }
 
     [Fact]
