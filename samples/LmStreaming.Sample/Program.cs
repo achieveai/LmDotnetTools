@@ -24,6 +24,7 @@ using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Http;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -2999,6 +3000,25 @@ try
                             // property rather than a constructor argument because LmMultiTurn ships as a
                             // package whose constructor shape is pinned.
                             PendingQuestionObserver = sp.GetRequiredService<PendingQuestionHub>(),
+                            // Only a sandbox chat has a place to save large tool output (#930 item 2).
+                            ToolOutputSpill = sandboxSession is null
+                                ? null
+                                : new ToolOutputSpillOptions
+                                {
+                                    Store = new SandboxToolOutputStore(
+                                        sp.GetRequiredService<IWorkspaceFileBrowser>(),
+                                        threadId,
+                                        string.IsNullOrWhiteSpace(workspaceId)
+                                            ? SandboxSessionRegistry.DefaultWorkspaceId
+                                            : workspaceId,
+                                        loggerFactory.CreateLogger<SandboxToolOutputStore>()
+                                    ),
+                                    MaxInlineBytes = sp.GetRequiredService<IConfiguration>()
+                                        .GetValue(
+                                            "ToolOutput:MaxInlineBytes",
+                                            ToolOutputSpillOptions.DefaultMaxInlineBytes
+                                        ),
+                                },
                             // providerAgent was built for this loop alone and no child is ever handed the
                             // instance (see ApplyCharacteristicsAgentFactory), so the loop owns it: the first
                             // in-place switch, or the loop's teardown if there is none, disposes it once.

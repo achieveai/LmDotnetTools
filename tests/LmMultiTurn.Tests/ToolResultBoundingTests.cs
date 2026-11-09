@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -7,6 +8,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -19,7 +21,7 @@ namespace LmMultiTurn.Tests;
 /// the loop's <see cref="MultiTurnAgentBase.ToolResultLimits"/> (#694): the handler-exception
 /// result, a deferred resolution, and a result the provider streams back for a server-side tool it
 /// executed itself. In each case the stored copy, the copy the next provider request carries, and
-/// (where the loop publishes it) the published copy are within the cap, end with the marker and are
+/// (where the loop publishes it) the published copy are within the cap, carry the marker and are
 /// flagged <see cref="ToolCallResultMessage.IsTruncated"/>.
 /// </summary>
 public class ToolResultBoundingTests
@@ -267,6 +269,165 @@ public class ToolResultBoundingTests
         FindOriginalBytes(requests[1], "srvtoolu_1").Should().Be(persisted.OriginalBytes);
     }
 
+    [Fact]
+    public async Task LargeToolOutput_IsSavedAndOnlyThePreviewReachesHistoryAndTheProvider()
+    {
+        var oversized = new string('w', 1_000_000);
+        var toolCall = new ToolCallMessage
+        {
+            FunctionName = "fetch",
+            FunctionArgs = "{}",
+            ToolCallId = "tc_fetch",
+            Role = Role.Assistant,
+        };
+        SetupTwoTurnResponse(toolCall, new TextMessage { Text = "done", Role = Role.Assistant }, out var requests);
+
+        ToolCallContext? seen = null;
+        var registry = new FunctionRegistry();
+        registry.AddFunction(
+            BuildContract("fetch"),
+            (_, context, _) =>
+            {
+                seen = context;
+                return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(oversized));
+            }
+        );
+
+        var saved = new CapturingOutputStore();
+        var store = new InMemoryConversationStore();
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            ThreadId,
+            store: store,
+            logger: _loggerMock.Object
+        )
+        {
+            ToolOutputSpill = new ToolOutputSpillOptions { Store = saved, MaxInlineBytes = 4_000 },
+        };
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        _ = loop.RunAsync(cts.Token);
+        await foreach (
+            var _ in loop.ExecuteRunAsync(new UserInput([new TextMessage { Text = "go", Role = Role.User }]), cts.Token)
+        ) { }
+
+        seen!.CanSaveLargeOutput.Should().BeTrue();
+        saved.Saved.Should().ContainSingle().Which.Should().Be(oversized);
+        var persisted = await WaitForPersistedToolResultAsync(store, "tc_fetch", cts.Token);
+        Encoding.UTF8.GetByteCount(persisted.Result).Should().BeLessThanOrEqualTo(4_000);
+        persisted.Result.Should().Contain(CapturingOutputStore.Path);
+        persisted.IsTruncated.Should().BeTrue();
+        persisted.OriginalBytes.Should().Be(1_000_000);
+        FindResultText(requests[1], "tc_fetch").Should().Be(persisted.Result);
+    }
+
+    [Fact]
+    public async Task SandboxReadResults_AreNotSavedSoTheModelCanActuallyReadTheFile()
+    {
+        var content = new string('r', 50_000);
+        var toolCall = new ToolCallMessage
+        {
+            FunctionName = "Read",
+            FunctionArgs = "{}",
+            ToolCallId = "tc_read",
+            Role = Role.Assistant,
+        };
+        SetupTwoTurnResponse(toolCall, new TextMessage { Text = "done", Role = Role.Assistant }, out _);
+
+        ToolCallContext? seen = null;
+        var registry = new FunctionRegistry();
+        registry.AddFunction(
+            BuildContract("Read"),
+            (_, context, _) =>
+            {
+                seen = context;
+                return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(content));
+            }
+        );
+
+        var saved = new CapturingOutputStore();
+        var store = new InMemoryConversationStore();
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            ThreadId,
+            store: store,
+            logger: _loggerMock.Object
+        )
+        {
+            ToolOutputSpill = new ToolOutputSpillOptions { Store = saved, MaxInlineBytes = 4_000 },
+        };
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        _ = loop.RunAsync(cts.Token);
+        await foreach (
+            var _ in loop.ExecuteRunAsync(new UserInput([new TextMessage { Text = "go", Role = Role.User }]), cts.Token)
+        ) { }
+
+        seen!.CanSaveLargeOutput.Should().BeFalse();
+        saved.Saved.Should().BeEmpty();
+        var persisted = await WaitForPersistedToolResultAsync(store, "tc_read", cts.Token);
+        persisted.Result.Should().Be(content);
+        persisted.IsTruncated.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SpawnedSubAgent_SavesToItsParentsStore()
+    {
+        const string TemplateName = "worker";
+        var spill = new ToolOutputSpillOptions { Store = new CapturingOutputStore() };
+        var subAgentOptions = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                [TemplateName] = new()
+                {
+                    SystemPrompt = "You are a test agent.",
+                    AgentFactory = () => _mockAgent.Object,
+                },
+            },
+        };
+        _mockAgent
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(ToAsyncEnumerable([new TextMessage { Text = "done", Role = Role.Assistant }]));
+
+        await using var parent = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            new FunctionRegistry(),
+            ThreadId,
+            logger: _loggerMock.Object,
+            subAgentOptions: subAgentOptions
+        )
+        {
+            ToolOutputSpill = spill,
+        };
+
+        _ = await parent.SubAgentManager!.SpawnAsync(TemplateName, "work", name: "worker");
+
+        parent.SubAgentManager.TryGetAgent("worker", out var child).Should().BeTrue();
+        child.Should().BeAssignableTo<MultiTurnAgentBase>().Which.ToolOutputSpill.Should().BeSameAs(spill);
+    }
+
+    private sealed class CapturingOutputStore : IToolOutputStore
+    {
+        public const string Path = "/workspace/.tool-output/abc/output.txt";
+
+        public List<string> Saved { get; } = [];
+
+        public Task<string?> SaveAsync(string content, CancellationToken ct = default)
+        {
+            Saved.Add(content);
+            return Task.FromResult<string?>(Path);
+        }
+    }
+
     private static void AssertBounded(ToolCallResultMessage message, string where)
     {
         message.IsTruncated.Should().BeTrue($"the {where} copy must be flagged");
@@ -275,7 +436,16 @@ public class ToolResultBoundingTests
             .BeGreaterThanOrEqualTo(20_000, $"the {where} copy must retain the original count");
         Encoding.UTF8.GetByteCount(message.Result).Should().BeLessThanOrEqualTo(Cap, $"the {where} copy is capped");
         message.Result.Should().Contain(ToolResultLimits.TruncationMarkerPrefix);
-        message.Result.Should().EndWith(" bytes]");
+        if (message.Result.StartsWith('{'))
+        {
+            // Cut JSON stays parseable (#713), so its marker sits inside the object.
+            using var document = JsonDocument.Parse(message.Result);
+            document.RootElement.GetProperty("error").GetString().Should().Be(ToolResultLimits.JsonTruncationError);
+        }
+        else
+        {
+            message.Result.Should().EndWith(" bytes]");
+        }
     }
 
     /// <summary>

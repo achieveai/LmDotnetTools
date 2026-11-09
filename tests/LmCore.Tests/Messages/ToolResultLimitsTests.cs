@@ -213,6 +213,69 @@ public sealed class ToolResultLimitsTests
     }
 
     [Fact]
+    public void Cut_json_becomes_a_parseable_object_with_sizes_and_preview()
+    {
+        var limits = new ToolResultLimits { MaxResultBytes = 512 };
+        var original = JsonSerializer.Serialize(Enumerable.Range(0, 2_000).Select(i => new { id = i }).ToArray());
+
+        var bounded = limits.Apply(new ToolCallResult("json-cut", original));
+
+        bounded.IsTruncated.Should().BeTrue();
+        Encoding.UTF8.GetByteCount(bounded.Result).Should().BeLessThanOrEqualTo(512);
+        using var document = JsonDocument.Parse(bounded.Result);
+        var root = document.RootElement;
+        root.GetProperty("error").GetString().Should().Be(ToolResultLimits.JsonTruncationError);
+        root.GetProperty("original_bytes").GetInt32().Should().Be(Encoding.UTF8.GetByteCount(original));
+        var preview = root.GetProperty("preview").GetString()!;
+        original.Should().StartWith(preview);
+        root.GetProperty("kept_bytes").GetInt32().Should().Be(Encoding.UTF8.GetByteCount(preview));
+        preview.Should().NotBeEmpty();
+        root.GetProperty("note").GetString().Should().Contain(ToolResultLimits.TruncationMarkerPrefix);
+    }
+
+    [Theory]
+    [InlineData(ToolResultLimits.MinResultBytes)]
+    [InlineData(257)]
+    [InlineData(300)]
+    [InlineData(1_024)]
+    [InlineData(5_000)]
+    public void Cut_json_parses_and_fits_even_when_escaping_grows_the_preview(int cap)
+    {
+        // Each \u0001 is one raw byte and six escaped ones, so a raw-byte budget alone would overrun.
+        var original = JsonSerializer.Serialize(string.Concat(Enumerable.Repeat("\u0001\"☃\U0001F600", 5_000)));
+
+        var bounded = new ToolResultLimits { MaxResultBytes = cap }.BoundText(original);
+
+        Encoding.UTF8.GetByteCount(bounded).Should().BeLessThanOrEqualTo(cap);
+        using var document = JsonDocument.Parse(bounded);
+        document.RootElement.GetProperty("error").GetString().Should().Be(ToolResultLimits.JsonTruncationError);
+    }
+
+    [Fact]
+    public void Text_that_only_starts_like_json_keeps_the_plain_marker()
+    {
+        var limits = new ToolResultLimits { MaxResultBytes = 256 };
+        var original = "{ this is a log line, not a document " + MakeAscii(1_000);
+
+        var bounded = limits.BoundText(original);
+
+        bounded.Should().StartWith("{ this is a log line");
+        bounded.Should().EndWith(" of 1,037 bytes]");
+    }
+
+    [Fact]
+    public void A_lone_surrogate_in_json_shaped_text_does_not_break_the_cut()
+    {
+        var original = "{\"text\":\"" + new string('\uD800', 500) + "\"}";
+        var limits = new ToolResultLimits { MaxResultBytes = 256 };
+
+        var bounded = limits.BoundText(original);
+
+        Encoding.UTF8.GetByteCount(bounded).Should().BeLessThanOrEqualTo(256);
+        bounded.Should().Contain(ToolResultLimits.TruncationMarkerPrefix);
+    }
+
+    [Fact]
     public void Unbounded_never_truncates()
     {
         var original = MakeAscii(ReproducedOversizedLength);

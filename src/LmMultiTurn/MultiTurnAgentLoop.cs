@@ -3644,7 +3644,11 @@ public sealed class MultiTurnAgentLoop
                 );
             }
 
-            var ctx = new ToolCallContext { ToolCallId = toolCall.ToolCallId };
+            var ctx = new ToolCallContext
+            {
+                ToolCallId = toolCall.ToolCallId,
+                CanSaveLargeOutput = ToolOutputSpill?.AppliesTo(toolCall.FunctionName) == true,
+            };
 
             // Truncation guard: when the provider hits its per-turn output ceiling it stops with
             // stop_reason=max_tokens and cuts the streaming tool_use argument JSON off mid-string (or
@@ -3679,7 +3683,7 @@ public sealed class MultiTurnAgentLoop
 
             var result = await handler(prepared.Arguments.Json, ctx, ct);
 
-            return BuildResultMessage(toolCall, result);
+            return await BuildResultMessageAsync(toolCall, result, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -3723,14 +3727,30 @@ public sealed class MultiTurnAgentLoop
         }
     }
 
-    private ToolCallResultMessage BuildResultMessage(ToolCallMessage toolCall, ToolHandlerResult result)
+    /// <remarks>
+    /// Saving happens only here, on a tool's own return. A deferred resolution is deliberately left
+    /// out: its bounded text is the fingerprint that tells a redelivery from a conflict, and a saved
+    /// path that differs per delivery would turn an identical redelivery into a conflict.
+    /// </remarks>
+    private async Task<ToolCallResultMessage> BuildResultMessageAsync(
+        ToolCallMessage toolCall,
+        ToolHandlerResult result,
+        CancellationToken ct
+    )
     {
+        // Full text first: the bound would otherwise cut it before it could be saved.
+        var spill = ToolOutputSpill?.AppliesTo(toolCall.FunctionName) == true ? ToolOutputSpill : null;
         var tcr = ToolCallResultBuilder.FromHandlerResult(
             result,
             toolCall.ToolCallId,
-            ToolResultLimits,
+            spill == null ? ToolResultLimits : ToolResultLimits.Unbounded,
             toolCall.FunctionName
         );
+        if (spill != null)
+        {
+            tcr = ToolResultLimits.Apply(await spill.ApplyAsync(tcr, Logger, ct));
+        }
+
         return ToolCallResultMessage.FromToolCallResult(
             tcr,
             role: Role.User,

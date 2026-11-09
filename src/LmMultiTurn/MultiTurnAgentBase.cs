@@ -340,6 +340,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// </summary>
     public ToolResultLimits ToolResultLimits { get; init; } = ToolResultLimits.Default;
 
+    /// <summary>
+    /// Saves oversized tool output where the model can read it and keeps only a preview in history
+    /// (#930 item 2). Null, the default, means there is nowhere to save and
+    /// <see cref="ToolResultLimits"/> is the only bound. Sub-agents use the same store as their parent.
+    /// </summary>
+    public ToolOutputSpillOptions? ToolOutputSpill { get; init; }
+
     /// <inheritdoc />
     public bool IsRunning => _runTask != null && !_runTask.IsCompleted;
 

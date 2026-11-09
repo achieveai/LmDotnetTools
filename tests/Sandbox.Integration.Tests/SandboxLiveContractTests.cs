@@ -480,6 +480,36 @@ public sealed class SandboxLiveContractTests
         }
     }
 
+    /// <summary>
+    /// Saved tool output is written through the file API and opened with the model's Read tool at
+    /// the /workspace path it is told about. The two sides only meet in the real gateway.
+    /// </summary>
+    [SkippableFact]
+    public async Task SavedToolOutput_IsReadableByTheModelsReadTool()
+    {
+        var sessionId = await CreateSandboxAsync();
+        try
+        {
+            var relativePath = $".tool-output/{Guid.NewGuid():N}/output.txt";
+            const string content = "first line\nsaved output end";
+
+            await Client.WriteTextFileAsync(sessionId, relativePath, content);
+            var (isError, text) = await SandboxMcpRpc.CallToolAsync(
+                sessionId,
+                null,
+                "Read",
+                new { file_path = "/workspace/" + relativePath }
+            );
+
+            isError.Should().BeFalse(text);
+            text.Should().Contain("saved output end");
+        }
+        finally
+        {
+            await Client.DeleteAsync(sessionId);
+        }
+    }
+
     [SkippableFact]
     public async Task ListDirectory_IncludesDotfilesAndSpacedNames()
     {

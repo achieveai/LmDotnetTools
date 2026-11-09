@@ -4030,6 +4030,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                 PendingQuestionObserver = PendingQuestionObserver is null
                     ? null
                     : new ScopedPendingQuestionObserver(PendingQuestionObserver, agentName: spawnName ?? template.Name),
+                // A child works in its parent's sandbox, so its large output is saved to the same place.
+                ToolOutputSpill = (_parentAgent as MultiTurnAgentBase)?.ToolOutputSpill,
             };
 
             // #635/#638/#644: an add_tools entry that matched no parent tool, a remove_tools entry that
