@@ -4195,7 +4195,12 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         if (inheritCaching)
         {
-            resolved = resolved with { PromptCaching = parentPromptCaching };
+            // A delegate is short-lived, so the 1-hour write premium would not be repaid: it stays on 5 minutes.
+            resolved = resolved with
+            {
+                PromptCaching =
+                    parentPromptCaching == PromptCachingMode.AutoOneHour ? PromptCachingMode.Auto : parentPromptCaching,
+            };
         }
 
         return resolved;

@@ -8,6 +8,73 @@ public class PromptCachingRequestTests
     private static readonly JsonSerializerOptions _jsonOptions =
         AnthropicJsonSerializerOptionsFactory.CreateUniversal();
 
+    private static List<JsonElement> CacheControls(JsonElement element)
+    {
+        var found = new List<JsonElement>();
+        void Walk(JsonElement e)
+        {
+            if (e.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var property in e.EnumerateObject())
+                {
+                    if (property.NameEquals("cache_control"))
+                    {
+                        found.Add(property.Value);
+                    }
+
+                    Walk(property.Value);
+                }
+            }
+            else if (e.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in e.EnumerateArray())
+                {
+                    Walk(item);
+                }
+            }
+        }
+
+        Walk(element);
+        return found;
+    }
+
+    private static JsonElement SerializedRequest(PromptCachingMode caching)
+    {
+        var messages = new IMessage[]
+        {
+            new TextMessage { Role = Role.User, Text = "Hello" },
+        };
+        var options = new GenerateReplyOptions
+        {
+            ModelId = "claude-sonnet-4-20250514",
+            PromptCaching = caching,
+            BuiltInTools = [new AnthropicWebSearchTool()],
+        };
+        var request = AnthropicRequest.FromMessages(
+            [new TextMessage { Role = Role.System, Text = "Be brief" }, .. messages],
+            options
+        );
+        return JsonDocument.Parse(JsonSerializer.Serialize(request, _jsonOptions)).RootElement;
+    }
+
+    [Fact]
+    public void FromMessages_WithOneHour_MarksToolsSystemAndLastUser_AllForOneHour()
+    {
+        var markers = CacheControls(SerializedRequest(PromptCachingMode.AutoOneHour));
+
+        Assert.Equal(3, markers.Count);
+        Assert.All(markers, marker => Assert.Equal("""{"type":"ephemeral","ttl":"1h"}""", marker.GetRawText()));
+    }
+
+    [Fact]
+    public void FromMessages_WithCachingAuto_SendsNoTtl()
+    {
+        var markers = CacheControls(SerializedRequest(PromptCachingMode.Auto));
+
+        Assert.Equal(3, markers.Count);
+        Assert.All(markers, marker => Assert.Equal("""{"type":"ephemeral"}""", marker.GetRawText()));
+    }
+
     [Fact]
     public void FromMessages_WithCachingAuto_AddsBreakpointToLastTool()
     {

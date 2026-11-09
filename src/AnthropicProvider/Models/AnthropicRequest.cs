@@ -293,9 +293,9 @@ public record AnthropicRequest
         };
 
         // Apply prompt caching if enabled
-        if (options?.PromptCaching == PromptCachingMode.Auto)
+        if (options?.PromptCaching is PromptCachingMode.Auto or PromptCachingMode.AutoOneHour)
         {
-            request = PromptCachingStrategy.Apply(request);
+            request = PromptCachingStrategy.Apply(request, options.PromptCaching == PromptCachingMode.AutoOneHour);
         }
 
         return request;

@@ -176,6 +176,14 @@ public sealed record ContextObservation
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? PromptCachingEnabled { get; init; }
 
+    /// <summary>
+    ///     The cache lifetime the loop used, in seconds. Set only for a 1-hour loop, so a reader of a row
+    ///     without it keeps its own default.
+    /// </summary>
+    [JsonPropertyName("prompt_cache_ttl_seconds")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? PromptCacheTtlSeconds { get; init; }
+
     /// <summary>The checkpoint the view was built on, when one was active.</summary>
     [JsonPropertyName("active_checkpoint_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

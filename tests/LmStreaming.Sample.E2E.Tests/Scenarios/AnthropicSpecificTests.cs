@@ -39,6 +39,54 @@ public sealed class AnthropicSpecificTests
         streamedText.Should().Contain("Final answer after reasoning");
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task The_root_loop_follows_the_per_model_cache_setting(bool oneHour)
+    {
+        JsonElement? sent = null;
+        var responder = ScriptedSseResponder
+            .New()
+            .ForRole(
+                "parent",
+                ctx =>
+                {
+                    sent = ctx.RequestBody.Clone();
+                    return true;
+                }
+            )
+            .Turn(t => t.Text("Cached reply."))
+            .Build();
+        var settings = new Dictionary<string, string?>();
+        if (oneHour)
+        {
+            settings["LmStreaming:PromptCache:claude-sonnet-4-5-20250929:Ttl"] = "1h";
+        }
+
+        using var factory = new E2EWebAppFactory(
+            "test-anthropic",
+            new ScriptedBuilder(responder.AsAnthropicHandler()),
+            settings
+        );
+        var socket = await factory.ConnectWebSocketAsync($"anthropic-ttl-{Guid.NewGuid():N}");
+        await using var client = new WebSocketTestClient(socket);
+
+        await client.SendUserMessageAsync("say hello");
+        using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(30));
+
+        frames.ConcatText().Should().Contain("Cached reply.");
+        var body = sent!.Value.GetRawText();
+        body.Should().Contain("cache_control");
+        if (oneHour)
+        {
+            body.Should().Contain("\"ttl\":\"1h\"");
+        }
+        else
+        {
+            body.Should().NotContain("\"ttl\"");
+        }
+    }
+
     [Fact]
     public async Task Cache_metrics_surface_in_usage_frame()
     {

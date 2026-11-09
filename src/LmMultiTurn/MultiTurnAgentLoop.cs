@@ -3237,6 +3237,10 @@ public sealed class MultiTurnAgentLoop
                 // ceiling stands in only when the loop set no budget of its own.
                 ReserveTokens = DefaultOptions.MaxToken ?? capacity?.MaxOutputTokens ?? 0,
                 PromptCachingEnabled = DefaultOptions.PromptCaching != PromptCachingMode.Off,
+                PromptCacheTtlSeconds =
+                    DefaultOptions.PromptCaching == PromptCachingMode.AutoOneHour
+                        ? (int)(_compaction?.EffectivePromptCacheTtl ?? TimeSpan.FromHours(1)).TotalSeconds
+                        : null,
                 // The execution view and its active checkpoint arrive with the cut (#683); until then the
                 // request is the whole canonical history.
                 RowsInView = request.Count,

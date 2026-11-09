@@ -895,6 +895,9 @@ internal sealed class CompactionRuntime
 
     public CompactionOptions Options => _setup.Options;
 
+    /// <summary>The cache lifetime this loop's own caching mode gets, or the one the host set.</summary>
+    internal TimeSpan EffectivePromptCacheTtl => Options.EffectiveCacheTtl(_host.DefaultOptions.PromptCaching);
+
     /// <summary>The checkpoint the view is built on, when one is active.</summary>
     public CompactionCheckpointMessage? Active { get; private set; }
 
@@ -1223,7 +1226,7 @@ internal sealed class CompactionRuntime
             CacheTemperature = ConversationActivity.ResolveCacheTemperature(
                 _lastActivity,
                 now,
-                Options.CacheTtl,
+                EffectivePromptCacheTtl,
                 cachingEnabled
             ),
             Economics = ResolveEconomics(cachingEnabled),
@@ -2963,7 +2966,7 @@ internal sealed class CompactionRuntime
             InputRatePerMillion = pricing.PromptPerMillion,
             OutputRatePerMillion = pricing.CompletionPerMillion,
             CacheWriteRatePerMillion =
-                Options.CacheTtl >= TimeSpan.FromHours(1)
+                EffectivePromptCacheTtl >= TimeSpan.FromHours(1)
                     ? pricing.CacheWrite1hPerMillion ?? pricing.CacheWrite5mPerMillion
                     : pricing.CacheWrite5mPerMillion,
             CachingEnabled = cachingEnabled,

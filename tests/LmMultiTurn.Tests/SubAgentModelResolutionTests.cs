@@ -113,6 +113,19 @@ public class SubAgentModelResolutionTests
     }
 
     [Fact]
+    public void ParentOnOneHourCaching_ChildGetsFiveMinuteCaching()
+    {
+        var result = SubAgentManager.ResolveSubAgentOptions(
+            templateDefaults: null,
+            modelOverride: null,
+            parentModelId: "parent-model",
+            parentPromptCaching: PromptCachingMode.AutoOneHour
+        );
+
+        result!.PromptCaching.Should().Be(PromptCachingMode.Auto);
+    }
+
+    [Fact]
     public void ParentPromptCaching_InheritedEvenWhenNothingElseIsSet()
     {
         var result = SubAgentManager.ResolveSubAgentOptions(

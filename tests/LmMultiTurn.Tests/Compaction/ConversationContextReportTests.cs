@@ -40,7 +40,8 @@ public sealed class ConversationContextReportTests : IAsyncLifetime
         string agentId,
         long ordinal,
         long? measured = null,
-        bool? caching = true
+        bool? caching = true,
+        int? cacheTtlSeconds = null
     ) =>
         new()
         {
@@ -57,6 +58,7 @@ public sealed class ConversationContextReportTests : IAsyncLifetime
             WindowTokens = 200_000,
             ReserveTokens = 8_000,
             PromptCachingEnabled = caching,
+            PromptCacheTtlSeconds = cacheTtlSeconds,
             RowsInView = 10,
         };
 
@@ -323,6 +325,31 @@ public sealed class ConversationContextReportTests : IAsyncLifetime
 
         cold.Agents[0].CacheTemperature.Should().Be(CacheTemperature.Cold);
         cold.Agents[1].CacheTemperature.Should().Be(CacheTemperature.Unknown, "that loop sends without caching");
+    }
+
+    [Theory]
+    [InlineData(3600, CacheTemperature.Hot)]
+    [InlineData(null, CacheTemperature.Cold)]
+    public async Task CacheTemperature_AfterTenIdleMinutes_UsesTheLifetimeTheLoopRecorded(
+        int? cacheTtlSeconds,
+        CacheTemperature expected
+    )
+    {
+        var store = _harness.Open("memory");
+        await SeedAsync(store);
+        await ContextObservationProjection.RecordAsync(
+            store,
+            Observation(Root, "root", 4, cacheTtlSeconds: cacheTtlSeconds)
+        );
+
+        var report = await ConversationContextReport.BuildAsync(
+            store,
+            Root,
+            Roster(),
+            new ConversationContextReportOptions { TimeProvider = new FixedClock(DateTimeOffset.UtcNow.AddMinutes(10)) }
+        );
+
+        report.Agents[0].CacheTemperature.Should().Be(expected);
     }
 
     [Fact]

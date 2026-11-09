@@ -405,7 +405,9 @@ public sealed record ConversationContextReport
             CacheTemperature = ConversationActivity.ResolveCacheTemperature(
                 lastActivity,
                 now,
-                options.CacheTtl,
+                observation?.PromptCacheTtlSeconds is { } ttlSeconds
+                    ? TimeSpan.FromSeconds(ttlSeconds)
+                    : options.CacheTtl,
                 cachingEnabled
             ),
             Compaction = CompactionStatus(state, now, options.InFlightAbandonedAfter) with

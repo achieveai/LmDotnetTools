@@ -179,6 +179,7 @@ public class CompactionLoopTests
             ILogger<MultiTurnAgentLoop>? logger = null,
             string? extraTool = null,
             bool realSummarizer = false,
+            PromptCachingMode promptCaching = PromptCachingMode.Off,
             Func<string?, long>? textTokens = null,
             Func<CheckpointActivation, CancellationToken, ValueTask<bool>>? onCheckpointActivated = null,
             IFunctionProvider? extraProvider = null
@@ -239,7 +240,12 @@ public class CompactionLoopTests
                 Thread,
                 includeAskUserQuestionTool: false,
                 includeNotifyClientTool: false,
-                defaultOptions: new GenerateReplyOptions { ModelId = Model, MaxToken = 100 },
+                defaultOptions: new GenerateReplyOptions
+                {
+                    ModelId = Model,
+                    MaxToken = 100,
+                    PromptCaching = promptCaching,
+                },
                 store: Store,
                 lifecycleServices: new MultiTurnLifecycleServices { Publisher = Publisher },
                 subAgentOptions: subAgentOptions,
@@ -2468,6 +2474,33 @@ public class CompactionLoopTests
         (await h.RunAsync("continue")).IsError.Should().BeFalse();
         h.Summarizer.Requests.Should().HaveCount(1, "the first request of the next run is where the policy runs");
         HasEnvelope(h.Agent.Requests[decisionsAfterRunOne]).Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(PromptCachingMode.AutoOneHour, null, "hot", 3600)]
+    [InlineData(PromptCachingMode.Auto, null, "cold", null)]
+    [InlineData(PromptCachingMode.AutoOneHour, 5, "cold", 300)]
+    public async Task AfterTenIdleMinutes_TheCacheReadsByTheLoopsOwnLifetime_AndAHostValueWins(
+        PromptCachingMode caching,
+        int? hostTtlMinutes,
+        string expectedTemperature,
+        int? expectedRecordedSeconds
+    )
+    {
+        var options = new CompactionOptions { Mode = CompactionMode.Warn };
+        if (hostTtlMinutes is { } minutes)
+        {
+            options = options with { CacheTtl = TimeSpan.FromMinutes(minutes) };
+        }
+
+        await using var h = new Harness(EchoThenDone(0), options, _ => Window, promptCaching: caching);
+
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+        h.Clock.Now += TimeSpan.FromMinutes(10);
+        (await h.RunAsync("continue")).IsError.Should().BeFalse();
+
+        h.Decisions[^1].CacheTemperature.Should().Be(expectedTemperature);
+        (await h.ObservationsAsync())[^1].PromptCacheTtlSeconds.Should().Be(expectedRecordedSeconds);
     }
 
     [Fact]

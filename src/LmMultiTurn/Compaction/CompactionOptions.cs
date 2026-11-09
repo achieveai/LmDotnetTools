@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.LmCore.Core;
+
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 
 /// <summary>How far the just-in-time compaction policy is allowed to go (spec §8.1).</summary>
@@ -128,6 +130,10 @@ public enum SummaryPrefixMode
 /// </remarks>
 public sealed record CompactionOptions
 {
+    private static readonly TimeSpan s_defaultCacheTtl = TimeSpan.FromMinutes(5);
+
+    private readonly TimeSpan? _cacheTtl;
+
     /// <summary>Environment variable that, when set to <c>1</c> or <c>true</c>, kills compaction in every loop.</summary>
     public const string KillSwitchEnvironmentVariable = "LMMULTITURN_COMPACTION_DISABLED";
 
@@ -218,8 +224,19 @@ public sealed record CompactionOptions
     /// <summary>Economic floor: an economic compaction needs at least this many predicted micro-dollars saved.</summary>
     public long MinPredictedSavingsMicros { get; init; }
 
-    /// <summary>How long a prompt cache stays hot after the last provider call.</summary>
-    public TimeSpan CacheTtl { get; init; } = TimeSpan.FromMinutes(5);
+    /// <summary>
+    ///     How long a prompt cache stays hot after the last provider call. Reads 5 minutes when no host set
+    ///     it. A value a host sets always wins; see <see cref="EffectiveCacheTtl" />.
+    /// </summary>
+    public TimeSpan CacheTtl
+    {
+        get => _cacheTtl ?? s_defaultCacheTtl;
+        init => _cacheTtl = value;
+    }
+
+    /// <summary>The cache lifetime for a loop sending with <paramref name="promptCaching" />.</summary>
+    public TimeSpan EffectiveCacheTtl(PromptCachingMode promptCaching) =>
+        _cacheTtl ?? (promptCaching == PromptCachingMode.AutoOneHour ? TimeSpan.FromHours(1) : s_defaultCacheTtl);
 
     /// <summary>Ring length of <c>context.observations</c> kept in thread metadata.</summary>
     public int ObservationHistoryLength { get; init; } = 50;
