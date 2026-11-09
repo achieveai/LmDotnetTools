@@ -77,10 +77,12 @@ internal static class PrSelection
                     IsEligible(pr, review, thread is not null && !earlierHead && !resetRetry, observedAt)
                     && (
                         options.Get("max-age-hours") is not { } age
-                        || IsWithinCreationAge(
+                        || IsWithinAge(
                             pr.TryGetProperty("CreatedAt", out var created)
                                 ? JsonNode.Parse(created.GetRawText())
                                 : null,
+                            JsonNode.Parse(pr.GetRawText()),
+                            pr.TryGetProperty("HeadSha", out var ageHead) ? ageHead.GetString() : null,
                             int.Parse(age, System.Globalization.CultureInfo.InvariantCulture),
                             observedAt
                         )
@@ -121,6 +123,28 @@ internal static class PrSelection
             return value is string json ? JsonSerializer.Deserialize<JsonElement>(json) : null;
         }
     }
+
+    /// <summary>
+    ///     True when the PR was created, or its source branch was last pushed, within <paramref name="hours"/>. The
+    ///     push time comes from the saved snapshot (<c>SourceUpdatedAt</c>) and counts only while that snapshot is of
+    ///     <paramref name="liveHead"/>, so an old PR that is still being worked on is reviewed (as the alarm expects)
+    ///     and a push time is never borrowed for a head it did not produce.
+    /// </summary>
+    internal static bool IsWithinAge(
+        JsonNode? createdAt,
+        JsonNode? snapshot,
+        string? liveHead,
+        int hours,
+        DateTimeOffset now
+    ) =>
+        IsWithinCreationAge(createdAt, hours, now)
+        || (
+            liveHead is { Length: > 0 }
+            && snapshot?["HeadSha"] is JsonValue head
+            && head.TryGetValue<string>(out var snapshotHead)
+            && snapshotHead == liveHead
+            && IsWithinCreationAge(snapshot["SourceUpdatedAt"], hours, now)
+        );
 
     internal static bool IsWithinCreationAge(JsonNode? createdAt, int hours, DateTimeOffset now)
     {

@@ -1572,6 +1572,45 @@ public sealed class ReviewdRunnerTests
         batch.RunAges.Should().NotContain(age => age != "72");
     }
 
+    [Theory]
+    [InlineData("pushed-recently", "verified", true)]
+    [InlineData("pushed-long-ago", "age-excluded", false)]
+    [InlineData("push-was-for-an-earlier-head", "age-excluded", false)]
+    public async Task Batch_admits_an_old_pr_only_when_its_current_head_was_pushed_recently(
+        string scenario,
+        string status,
+        bool runs
+    )
+    {
+        using var batch = new BatchFixture(0) { MaxAgeHours = "72" };
+        batch.SetManifestAge(JsonValue.Create(72));
+        batch.Put(
+            "reviewd/pr-snapshot/" + PrCommands.ParseRepo(BatchFixture.Repo).NormalizedKey,
+            new JsonObject
+            {
+                ["1"] = new JsonObject
+                {
+                    ["PrId"] = "1",
+                    ["HeadSha"] =
+                        scenario == "push-was-for-an-earlier-head" ? new string('e', 40) : new string('a', 40),
+                    ["SourceUpdatedAt"] = batch.Now.AddHours(scenario == "pushed-long-ago" ? -73 : -1).ToString("O"),
+                },
+            }
+        );
+        batch.Eligibility = pr =>
+        {
+            var live = BatchFixture.Live(pr);
+            live["createdAt"] = batch.Now.AddHours(pr == "1" ? -500 : -1).ToString("O");
+            return live;
+        };
+        await batch.ExecuteAsync();
+        batch.Entries().First()["status"]!.GetValue<string>().Should().Be(status);
+        if (runs)
+            batch.Runs.Should().Contain("1:fresh");
+        else
+            batch.Runs.Should().NotContain("1:fresh");
+    }
+
     [Fact]
     public async Task Batch_resumes_an_owner_whose_verification_did_not_finish()
     {
@@ -1697,6 +1736,52 @@ public sealed class ReviewdRunnerTests
             batch.Runs.Should().Contain(run);
             batch.Entries().First()["status"]!.GetValue<string>().Should().Be("verified");
         }
+    }
+
+    // NScript #151: master moved after the review finished, and the batch deferred the resume until the PR was held
+    // and its slot owned for good. A finished review now resumes on the head and merge it reviewed, after a moved
+    // target branch or a new push alike; one still reviewing keeps the old rule.
+    [Theory]
+    [InlineData("review-completed", "merge", "verified")]
+    [InlineData("review-completed", "head", "verified")]
+    [InlineData("verify-pending", "head", "verified")]
+    [InlineData("review-running", "head", "held")]
+    public async Task Batch_finishes_a_finished_review_on_what_it_reviewed_after_the_pr_moved(
+        string stage,
+        string moved,
+        string status
+    )
+    {
+        using var batch = new BatchFixture(0);
+        batch.PutAttempt(
+            "1",
+            new JsonObject
+            {
+                ["slot"] = 0,
+                ["stage"] = stage,
+                ["cleanupState"] = "owned",
+                ["claimToken"] = "token",
+                ["reviewInputId"] = "original",
+                ["confirmationIdempotencyKey"] = stage == "verify-pending" ? "confirm" : null,
+                ["confirmationInputId"] = stage == "verify-pending" ? "confirmation" : null,
+                ["headSha"] = new string('a', 40),
+                ["mergeSha"] = new string('b', 40),
+            }
+        );
+        batch.Eligibility = pr =>
+        {
+            var live = BatchFixture.Live(pr);
+            live["mergeSha"] = new string('e', 40);
+            if (moved == "head")
+                live["headSha"] = new string('d', 40);
+            return live;
+        };
+        await batch.ExecuteAsync();
+        batch.Entries().First()["status"]!.GetValue<string>().Should().Be(status);
+        if (status == "verified")
+            batch.Runs.Should().Contain("1:resume");
+        else
+            batch.Runs.Should().NotContain(value => value.StartsWith("1:", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -2755,10 +2840,13 @@ public sealed class ReviewdRunnerTests
     [InlineData("missing")]
     [InlineData("no-offset")]
     [InlineData("wrong-head")]
+    [InlineData("old-pushed-recently")]
     public async Task Runner_creation_age_checks_live_before_claim_and_initial_send_without_releasing_prepared_owner(
         string scenario
     )
     {
+        // An old PR whose current head was pushed within the limit is admitted like a recent one.
+        var admitted = scenario is "recent" or "old-pushed-recently";
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-age-{Guid.NewGuid():N}.db");
         var repo = PrCommands.ParseRepo("org/project/Nova");
         var now = DateTimeOffset.Parse("2026-10-07T22:00:00Z");
@@ -2796,7 +2884,7 @@ public sealed class ReviewdRunnerTests
                 reads++;
                 var created = scenario switch
                 {
-                    "old" => now.AddHours(-73).ToString("O"),
+                    "old" or "old-pushed-recently" => now.AddHours(-73).ToString("O"),
                     "future" => now.AddSeconds(1).ToString("O"),
                     "missing" => null,
                     "no-offset" => "2026-10-07T21:00:00",
@@ -2842,6 +2930,7 @@ public sealed class ReviewdRunnerTests
                         ["Lifecycle"] = "Open",
                         ["IsDraft"] = false,
                         ["HeadSha"] = new string('a', 40),
+                        ["SourceUpdatedAt"] = scenario == "old-pushed-recently" ? now.AddHours(-1).ToString("O") : null,
                     },
                 }
             );
@@ -2880,11 +2969,11 @@ public sealed class ReviewdRunnerTests
             var messages = handler.Requests.Count(r =>
                 r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal)
             );
-            messages.Should().Be(scenario == "recent" ? 1 : 0);
+            messages.Should().Be(admitted ? 1 : 0);
             phases.Should().NotContain("cleanup");
             var owner = await store.GetAsync<JsonObject>(ownerKey);
             var attempt = await store.GetAsync<JsonObject>(attemptKey);
-            if (scenario is "recent" or "setup-expired")
+            if (admitted || scenario == "setup-expired")
             {
                 reads.Should().Be(2);
                 owner!["state"]!.GetValue<string>().Should().Be("owned");
@@ -4560,7 +4649,12 @@ public sealed class ReviewdRunnerTests
                 else if (refusal == "commit-pending")
                     refused["stage"] = "commit-pending";
                 else
+                {
+                    // A finished review now resumes on the head it reviewed (see
+                    // Runner_finishes_a_finished_review_on_the_revision_it_reviewed); one still reviewing does not.
+                    refused["stage"] = "review-running";
                     refused["headSha"] = new string('f', 40);
+                }
                 await store.SetAsync(attemptKey, refused);
                 phases.Clear();
                 var requestsBeforeRefusal = handler.Requests.Count;
@@ -4717,6 +4811,272 @@ public sealed class ReviewdRunnerTests
             };
             return Task.FromResult(JsonNode.Parse(json)!.AsObject());
         }
+    }
+
+    // Kay9: a finished review is posted on the revision it reviewed, whatever moved since, and a new push is reviewed
+    // afresh afterwards. The fake sandbox refuses like the real one: a step not marked reviewFinished fails once the
+    // live head or merge differs from its own. "fresh": master moves while the review runs, and the same run goes on to
+    // confirm, verify and archive. "resume": the run stops after its review turn, a new push lands, and the batch's
+    // resume (--head of the reviewed revision) finishes it; the new head is then eligible for a fresh review.
+    [Theory]
+    [InlineData("fresh")]
+    [InlineData("resume")]
+    public async Task Runner_finishes_a_finished_review_on_the_revision_it_reviewed(string path)
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-finished-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var reviewed = new string('a', 40);
+        var prepared = new string('b', 40);
+        var (liveHead, liveMerge) = (reviewed, prepared);
+        var sends = 0;
+        var failConfirmationInspect = path == "resume";
+        var steps = new List<string>();
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .On(
+                request =>
+                    request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
+                _ => Json("""{"threadId":"thread"}""")
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/api/conversations?",
+                """[{"threadId":"thread","workspace":"workspace","provider":"test","mode":"workspace-agent","clientToolsDisabled":true}]"""
+            )
+            .On(
+                request => request.RequestUri!.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal),
+                _ =>
+                {
+                    // In "fresh", the target branch moves while the review runs.
+                    if (++sends == 1 && path == "fresh")
+                        liveMerge = new string('e', 40);
+                    return Json($$"""{"inputId":"input{{sends}}","idempotencyKeyHonored":true}""");
+                }
+            )
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .OnJson(HttpMethod.Post, "/unfreeze", """{"threadId":"thread","frozen":false}""")
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Completed","runId":"run","response":{"text":"done"}}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        CliOptions Options(params string[] extra) =>
+            CliOptions.Parse([
+                "review",
+                "run",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "test",
+                "--head",
+                reviewed,
+                "--execute",
+                .. extra,
+            ]);
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            var store = new SqliteKvStore(connection);
+            await SnapshotAsync(reviewed);
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    Options(),
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ => Task.CompletedTask
+                );
+            if (path == "fresh")
+            {
+                await run();
+                // The agent posts inside its review turn, so the prompt carries the same rule: a moved target branch
+                // or a new push is no reason to stop; post on the reviewed head and name it in the summary.
+                var prompt = JsonNode.Parse(
+                    handler
+                        .Requests.First(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                        .Body!
+                )!["text"]!.GetValue<string>();
+                prompt
+                    .Should()
+                    .Contain("stop if it was closed, abandoned or made a draft")
+                    .And.Contain(
+                        $"still post your findings on the head you reviewed, {reviewed}: on GitHub use it as commit_id"
+                    )
+                    .And.Contain(
+                        $"on Azure DevOps anchor inline threads to the iteration whose source commit is {reviewed}"
+                    )
+                    .And.Contain("\"Reviewed commit aaaaaaaa; newer pushes get their own review.\"")
+                    .And.NotContain("stop if stale");
+            }
+            else
+            {
+                await run.Should().ThrowAsync<InvalidOperationException>().WithMessage("gateway hiccup");
+                var stopped = (await store.GetAsync<JsonObject>($"reviewd/review-attempt/{repo.NormalizedKey}/17"))!;
+                stopped["stage"]!.GetValue<string>().Should().Be("review-completed");
+                // A new push lands: the PR's head and merge both move, and the saved snapshot sees the new head.
+                (liveHead, liveMerge) = (new string('d', 40), new string('e', 40));
+                await SnapshotAsync(liveHead);
+                steps.Clear();
+                await ReviewRunner.RunAsync(
+                    Options("--resume"),
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ => Task.CompletedTask
+                );
+            }
+
+            var finished = (await store.GetAsync<JsonObject>($"reviewd/review-run/{repo.NormalizedKey}/17"))!;
+            finished["stage"]!.GetValue<string>().Should().Be("completed-verified");
+            finished["reviewedHeadSha"]!.GetValue<string>().Should().Be(reviewed);
+            finished["mergeSha"]!.GetValue<string>().Should().Be(prepared);
+            var finishing =
+                path == "fresh"
+                    ? new[] { "inspect", "verify", "commit" }
+                    : ["inspect-prepared", "inspect", "verify", "commit"];
+            var expected = finishing.Select(phase => $"{phase} {reviewed} {prepared} finished").ToList();
+            if (path == "fresh")
+                expected.InsertRange(0, ["prepare " + reviewed, $"inspect {reviewed} {prepared} reviewing"]);
+            steps.Where(step => !step.StartsWith("cleanup", StringComparison.Ordinal)).Should().Equal(expected);
+            sends.Should().Be(2, "the review is sent once and its confirmation once, never again on resume");
+            if (path == "resume")
+            {
+                // The new head waits out the usual cooldown after the review it follows, then is picked fresh.
+                var snapshot = System.Text.Json.JsonSerializer.SerializeToElement(
+                    new
+                    {
+                        Lifecycle = "Open",
+                        IsDraft = false,
+                        HeadSha = liveHead,
+                    }
+                );
+                var receipt = System.Text.Json.JsonSerializer.SerializeToElement(finished);
+                var completedAt = finished["reviewCompletedAt"]!.GetValue<DateTimeOffset>();
+                PrSelection.IsEligible(snapshot, receipt, false, completedAt.AddMinutes(31)).Should().BeTrue();
+            }
+        }
+        finally
+        {
+            ReviewdSqlitePools.Clear(database);
+            File.Delete(database);
+            File.Delete(database + ".review-lock");
+        }
+
+        async Task SnapshotAsync(string head)
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await new SqliteKvStore(connection).SetAsync(
+                $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                new JsonObject
+                {
+                    ["17"] = new JsonObject
+                    {
+                        ["Lifecycle"] = "Open",
+                        ["IsDraft"] = false,
+                        ["HeadSha"] = head,
+                    },
+                }
+            );
+        }
+
+        Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken ct)
+        {
+            var finished = args["reviewFinished"]?.GetValue<bool>() == true;
+            steps.Add(
+                phase == "prepare"
+                    ? "prepare " + args["head"]
+                    : $"{phase} {args["head"]} {args["merge"]} {(finished ? "finished" : "reviewing")}"
+            );
+            if (phase is "inspect" or "inspect-prepared" or "verify" or "commit")
+            {
+                if (!finished && (liveHead != args["head"]!.GetValue<string>() || liveMerge != prepared))
+                    throw new InvalidOperationException("PR source or prepared merge changed; no submission allowed.");
+                if (phase == "inspect" && sends == 1 && failConfirmationInspect)
+                {
+                    failConfirmationInspect = false;
+                    throw new InvalidOperationException("gateway hiccup");
+                }
+            }
+            var json = phase switch
+            {
+                "prepare" =>
+                    $$"""{"mergeSha":"{{prepared}}","contextPath":"context","reviewDirectory":"reviews","baselineComments":[]}""",
+                "commit" => """{"status":"committed","commit":"cccccccccccccccccccccccccccccccccccccccc"}""",
+                "verify" => """{"comments":[{"threadId":7,"commentId":1,"kind":"summary"}]}""",
+                "cleanup" => new JsonObject
+                {
+                    ["claimToken"] = args["claimToken"]!.DeepClone(),
+                    ["cleanBaselineVerified"] = true,
+                    ["evidencePreserved"] = true,
+                }.ToJsonString(),
+                _ => "{}",
+            };
+            return Task.FromResult(JsonNode.Parse(json)!.AsObject());
+        }
+    }
+
+    // The sandbox's side of that contract, run from the embedded script: a step marked reviewFinished stays on the
+    // prepared merge whatever the live head or merge is, and still refuses a closed or draft PR; any other step refuses a
+    // moved head or merge as before. live_merge reads only the provider-neutral state, so GitHub and ADO share it.
+    [SkippableFact]
+    public async Task Sandbox_keeps_a_finished_review_on_its_prepared_merge_and_refuses_moves_before_then()
+    {
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox's live rule cannot be run");
+        string Sha(char c) => new(c, 40);
+        JsonObject Case(bool finished, string head, string merge, string status = "active", bool draft = false) =>
+            new()
+            {
+                ["current"] = new JsonObject
+                {
+                    ["status"] = status,
+                    ["isDraft"] = draft,
+                    ["headSha"] = head,
+                    ["mergeSha"] = merge,
+                },
+                ["args"] = new JsonObject
+                {
+                    ["head"] = Sha('a'),
+                    ["merge"] = Sha('b'),
+                    ["reviewFinished"] = finished,
+                },
+            };
+        var cases = new JsonArray(
+            Case(false, Sha('a'), Sha('b')),
+            Case(false, Sha('a'), Sha('e')),
+            Case(false, Sha('d'), Sha('e')),
+            Case(true, Sha('a'), Sha('e')),
+            Case(true, Sha('d'), Sha('e')),
+            Case(true, Sha('d'), "", "completed"),
+            Case(true, Sha('d'), Sha('e'), draft: true)
+        );
+
+        var results = await ReviewdSummaryReplyTests.RunAsync(
+            python!,
+            ["live_merge"],
+            "passes(lambda: live_merge(c['current'], c['args'])) and live_merge(c['current'], c['args']) == "
+                + "(c['current']['mergeSha'] if not c['args']['reviewFinished'] else c['args']['merge'])",
+            cases.ToJsonString()
+        );
+
+        results.Should().Equal(true, false, false, true, true, false, false);
     }
 
     // A conversation provisioned before DisableClientTools still has AskUserQuestion, and a question there

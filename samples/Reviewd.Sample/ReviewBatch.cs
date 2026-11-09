@@ -658,7 +658,11 @@ internal static class ReviewBatch
                         await SaveAsync(() => entry["status"] = attempt is null ? "closed" : "closed-held");
                         continue;
                     }
-                    if (!cleanup && live["headSha"]!.GetValue<string>() != head)
+                    // An owner whose review turn is over finishes on the head and merge it reviewed, whatever moved
+                    // since; a new head is then picked for a fresh review.
+                    var reviewFinished =
+                        attempt is not null && !Reusable(attempt) && ReviewRunner.ReviewFinished(attempt);
+                    if (!cleanup && !reviewFinished && live["headSha"]!.GetValue<string>() != head)
                     {
                         await SaveAsync(() => entry["status"] = attempt is null ? "stale" : "held");
                         continue;
@@ -666,18 +670,23 @@ internal static class ReviewBatch
                     var freshAdmission =
                         attempt is null
                         || (attempt["stage"]?.GetValue<string>() == "failed-released" && Reusable(attempt));
-                    // Only a resumed owner must keep its prepared merge. A fresh admission prepares a new one, so
-                    // a released failure's old merge must not defer it: the target branch moves on, and the PR was
-                    // retried until held.
+                    // Only a resumed owner still reviewing must keep its prepared merge. A fresh admission prepares a
+                    // new one, so a released failure's old merge must not defer it: the target branch moves on, and
+                    // the PR was retried until held. A finished owner needs no live merge at all.
                     if (
                         !cleanup
                         && (
                             live["isDraft"]!.GetValue<bool>()
-                            || live["mergeSha"]?.GetValue<string>() is not { Length: 40 }
                             || (
-                                !freshAdmission
-                                && attempt?["mergeSha"]?.GetValue<string>() is { } merge
-                                && merge != live["mergeSha"]!.GetValue<string>()
+                                !reviewFinished
+                                && (
+                                    live["mergeSha"]?.GetValue<string>() is not { Length: 40 }
+                                    || (
+                                        !freshAdmission
+                                        && attempt?["mergeSha"]?.GetValue<string>() is { } merge
+                                        && merge != live["mergeSha"]!.GetValue<string>()
+                                    )
+                                )
                             )
                         )
                     )
@@ -687,14 +696,25 @@ internal static class ReviewBatch
                     if (
                         freshAdmission
                         && maxAgeHours is { } limit
-                        && !PrSelection.IsWithinCreationAge(live["createdAt"], limit, now())
+                        && !PrSelection.IsWithinAge(
+                            live["createdAt"],
+                            (
+                                await ReadAsync(
+                                    database,
+                                    "reviewd/pr-snapshot/" + PrCommands.ParseRepo(repo).NormalizedKey
+                                )
+                            )?[pr],
+                            live["headSha"]?.GetValue<string>(),
+                            limit,
+                            now()
+                        )
                     )
                     {
                         await SaveAsync(() =>
                         {
                             entry["status"] = "age-excluded";
                             entry["reason"] =
-                                "PR creation age is outside the configured limit or unavailable; no admission performed.";
+                                "PR age (creation or last push) is outside the configured limit or unavailable; no admission performed.";
                             entry["ageCheckedAt"] = now();
                         });
                         continue;
