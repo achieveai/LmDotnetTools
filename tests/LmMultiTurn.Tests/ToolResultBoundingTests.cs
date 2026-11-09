@@ -373,6 +373,122 @@ public class ToolResultBoundingTests
     }
 
     [Fact]
+    public async Task OutputOverASmallerNormalLimit_IsSavedWhole_AndItsPreviewKeepsThePath()
+    {
+        var oversized = new string('w', 20_000) + "UNIQUE-TAIL";
+        var toolCall = new ToolCallMessage
+        {
+            FunctionName = "fetch",
+            FunctionArgs = "{}",
+            ToolCallId = "tc_fetch",
+            Role = Role.Assistant,
+        };
+        SetupTwoTurnResponse(toolCall, new TextMessage { Text = "done", Role = Role.Assistant }, out _);
+
+        var registry = new FunctionRegistry();
+        registry.AddFunction(
+            BuildContract("fetch"),
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(oversized))
+        );
+        registry.AddFunction(
+            BuildContract("Read"),
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("unused"))
+        );
+
+        var saved = new CapturingOutputStore();
+        var store = new InMemoryConversationStore();
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            ThreadId,
+            store: store,
+            logger: _loggerMock.Object
+        )
+        {
+            ToolResultLimits = Limits,
+            ToolOutputSpill = new ToolOutputSpillOptions { Store = saved, MaxInlineBytes = 4_000 },
+        };
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        _ = loop.RunAsync(cts.Token);
+        await foreach (
+            var _ in loop.ExecuteRunAsync(new UserInput([new TextMessage { Text = "go", Role = Role.User }]), cts.Token)
+        ) { }
+
+        saved.Saved.Should().ContainSingle().Which.Should().Be(oversized);
+        var persisted = await WaitForPersistedToolResultAsync(store, "tc_fetch", cts.Token);
+        Encoding.UTF8.GetByteCount(persisted.Result).Should().BeLessThanOrEqualTo(Cap);
+        persisted.Result.Should().Contain(CapturingOutputStore.Path);
+        persisted.IsTruncated.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task RedeliveringOversizedJson_ResolvedBeforeItBecameAnObject_IsADuplicate()
+    {
+        const string RestoredThread = "bounding-legacy-thread";
+        const string RunId = "run-legacy";
+        var json = JsonSerializer.Serialize(Enumerable.Range(0, 2_000).ToArray());
+        var store = new InMemoryConversationStore();
+        await store.AppendMessagesAsync(
+            RestoredThread,
+            [
+                MessagePersistenceConverter.ToPersistedMessage(
+                    new ToolCallMessage
+                    {
+                        ToolCallId = "tc_legacy",
+                        FunctionName = "wait",
+                        FunctionArgs = "{}",
+                        Role = Role.Assistant,
+                        GenerationId = "gen-legacy",
+                        RunId = RunId,
+                    },
+                    RestoredThread,
+                    RunId
+                ),
+                MessagePersistenceConverter.ToPersistedMessage(
+                    new ToolCallResultMessage
+                    {
+                        ToolCallId = "tc_legacy",
+                        ToolName = "wait",
+                        Result = Limits.BoundAsPlainText(json),
+                        Role = Role.User,
+                        GenerationId = "gen-legacy",
+                        RunId = RunId,
+                    },
+                    RestoredThread,
+                    RunId
+                ),
+            ]
+        );
+        await store.SaveMetadataAsync(
+            RestoredThread,
+            new ThreadMetadata
+            {
+                ThreadId = RestoredThread,
+                LatestRunId = RunId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            }
+        );
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            new FunctionRegistry(),
+            RestoredThread,
+            store: store,
+            logger: _loggerMock.Object
+        )
+        {
+            ToolResultLimits = Limits,
+        };
+        (await loop.RecoverAsync()).Should().BeTrue();
+
+        var same = await loop.TryResolveToolCallAsync("tc_legacy", json);
+        var different = await loop.TryResolveToolCallAsync("tc_legacy", json.Replace('1', '2'));
+
+        same.Should().Be(ResolveToolCallOutcome.Duplicate);
+        different.Should().Be(ResolveToolCallOutcome.Conflict);
+    }
+
+    [Fact]
     public async Task SpawnedSubAgent_SavesToItsParentsStore()
     {
         const string TemplateName = "worker";
@@ -440,7 +556,7 @@ public class ToolResultBoundingTests
         {
             // Cut JSON stays parseable (#713), so its marker sits inside the object.
             using var document = JsonDocument.Parse(message.Result);
-            document.RootElement.GetProperty("error").GetString().Should().Be(ToolResultLimits.JsonTruncationError);
+            document.RootElement.GetProperty("truncated").GetBoolean().Should().BeTrue();
         }
         else
         {

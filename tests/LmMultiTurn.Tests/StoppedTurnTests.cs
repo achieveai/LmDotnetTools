@@ -462,6 +462,94 @@ public class StoppedTurnTests
         new FunctionRegistry().AddFunction(QuestionContract, DeferQuestion);
 
     /// <summary>Restarts a stopped loop, sends new input and returns the request the provider then got.</summary>
+    [Fact]
+    public async Task StopDuringTheOutputSave_KeepsTheFinishedResult_AndAnswersTheCallOnce()
+    {
+        var saved = new HoldingOutputStore();
+        var provider = new ScriptedProvider(call => call == 1 ? [Call("big-1", "big")] : [Answer]);
+        using var cts = new CancellationTokenSource(Generous);
+        await using var loop = new MultiTurnAgentLoop(provider, BigOutputRegistry(), "stop-save")
+        {
+            ToolOutputSpill = new ToolOutputSpillOptions { Store = saved, MaxInlineBytes = 2_000 },
+        };
+        var running = loop.RunAsync(cts.Token);
+        await loop.WaitUntilReadyAsync(cts.Token);
+        _ = await loop.SendAsync([new TextMessage { Text = "go", Role = Role.User }], inputId: "input-1");
+        await saved.Entered.Task.WaitAsync(cts.Token);
+
+        // Released only once the Stop has reached the run token. A save bound to that token has been
+        // cancelled by then: the provider's callback was registered first, so it runs last.
+        var stopping = loop.StopAsync(Generous);
+        await provider.RunTokenCancelled.Task.WaitAsync(cts.Token);
+        saved.Release();
+        await stopping.WaitAsync(cts.Token);
+        await running.WaitAsync(cts.Token);
+
+        var result = ResultsFor(loop, "big-1").Should().ContainSingle().Subject;
+        result.IsError.Should().BeFalse("the tool finished before the Stop");
+        result.Result.Should().Contain(HoldingOutputStore.Path);
+        var request = await NextRequestAsync(loop, provider, cts.Token);
+        ShouldAnswerEachCallOnce(request, "big-1");
+    }
+
+    [Fact]
+    public async Task ALargeResultArrivingAfterTheStop_SavesNothing_AndIsLoggedAsDropped()
+    {
+        var tool = new HoldingTool(new string('x', 50_000));
+        _ = tool.Registry.AddFunction(
+            ReaderContract,
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("unused"))
+        );
+        var saved = new HoldingOutputStore();
+        saved.Release();
+        var lateResult = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var provider = new ScriptedProvider(_ => [HoldCall("hold-1")]);
+        using var cts = new CancellationTokenSource(Generous);
+        await using var loop = new MultiTurnAgentLoop(
+            provider,
+            tool.Registry,
+            "stop-late-large",
+            logger: new SignallingLogger("arrived after the Stop", lateResult, LogLevel.Information)
+        )
+        {
+            ToolOutputSpill = new ToolOutputSpillOptions { Store = saved, MaxInlineBytes = 2_000 },
+        };
+        var running = loop.RunAsync(cts.Token);
+        await loop.WaitUntilReadyAsync(cts.Token);
+        _ = await loop.SendAsync([new TextMessage { Text = "go", Role = Role.User }], inputId: "input-1");
+        await tool.Entered.Task.WaitAsync(cts.Token);
+
+        await loop.StopAsync(Generous).WaitAsync(cts.Token);
+        await running.WaitAsync(cts.Token);
+        tool.Release();
+        await lateResult.Task.WaitAsync(cts.Token);
+
+        saved.Saved.Should().BeEmpty("nothing will ever read this result");
+    }
+
+    private static readonly FunctionContract ReaderContract = new()
+    {
+        Name = "Read",
+        Description = "Stands in for the tool that opens a saved file",
+        Parameters = [],
+    };
+
+    private static FunctionRegistry BigOutputRegistry() =>
+        new FunctionRegistry()
+            .AddFunction(
+                new FunctionContract
+                {
+                    Name = "big",
+                    Description = "Returns more than the inline limit at once",
+                    Parameters = [],
+                },
+                (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(new string('x', 50_000)))
+            )
+            .AddFunction(
+                ReaderContract,
+                (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("unused"))
+            );
+
     private static async Task<IReadOnlyList<IMessage>> NextRequestAsync(
         MultiTurnAgentLoop loop,
         ScriptedProvider provider,
@@ -544,6 +632,9 @@ public class StoppedTurnTests
 
         public TaskCompletionSource SecondRequest { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public TaskCompletionSource RunTokenCancelled { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public IReadOnlyList<IMessage> SecondRequestMessages { get; private set; } = [];
 
         public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
@@ -553,6 +644,11 @@ public class StoppedTurnTests
         )
         {
             var call = Interlocked.Increment(ref _calls);
+            if (call == 1)
+            {
+                _ = cancellationToken.Register(() => RunTokenCancelled.TrySetResult());
+            }
+
             if (call == 2)
             {
                 SecondRequestMessages = [.. messages];
@@ -593,7 +689,7 @@ public class StoppedTurnTests
     {
         private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public HoldingTool()
+        public HoldingTool(string? output = null)
         {
             Registry = new FunctionRegistry().AddFunction(
                 new FunctionContract
@@ -615,7 +711,7 @@ public class StoppedTurnTests
                         _ = Finished.TrySetResult();
                     }
 
-                    return ToolHandlerResult.FromText(JsonSerializer.Serialize(new { result = "real" }));
+                    return ToolHandlerResult.FromText(output ?? JsonSerializer.Serialize(new { result = "real" }));
                 }
             );
         }
@@ -629,6 +725,29 @@ public class StoppedTurnTests
         public TaskCompletionSource Finished { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public void Release() => _release.TrySetResult();
+    }
+
+    /// <summary>A store that holds a save until released, and fails it if its token was cancelled by then.</summary>
+    private sealed class HoldingOutputStore : IToolOutputStore
+    {
+        public const string Path = "/workspace/.tool-output/abc/output.txt";
+
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public List<string> Saved { get; } = [];
+
+        public void Release() => _release.TrySetResult();
+
+        public async Task<string?> SaveAsync(string content, CancellationToken ct = default)
+        {
+            Saved.Add(content);
+            _ = Entered.TrySetResult();
+            await _release.Task.WaitAsync(ct);
+            ct.ThrowIfCancellationRequested();
+            return Path;
+        }
     }
 
     /// <summary>A host policy that holds a call until released, ignoring its token on purpose.</summary>
@@ -709,7 +828,11 @@ public class StoppedTurnTests
     }
 
     /// <summary>Signals when a log line containing <paramref name="fragment"/> is written.</summary>
-    private sealed class SignallingLogger(string fragment, TaskCompletionSource signal) : ILogger<MultiTurnAgentLoop>
+    private sealed class SignallingLogger(
+        string fragment,
+        TaskCompletionSource signal,
+        LogLevel minimumLevel = LogLevel.Trace
+    ) : ILogger<MultiTurnAgentLoop>
     {
         public IDisposable? BeginScope<TState>(TState state)
             where TState : notnull => NullLogger<MultiTurnAgentLoop>.Instance.BeginScope(state);
@@ -724,7 +847,7 @@ public class StoppedTurnTests
             Func<TState, Exception?, string> formatter
         )
         {
-            if (formatter(state, exception).Contains(fragment, StringComparison.Ordinal))
+            if (logLevel >= minimumLevel && formatter(state, exception).Contains(fragment, StringComparison.Ordinal))
             {
                 _ = signal.TrySetResult();
             }

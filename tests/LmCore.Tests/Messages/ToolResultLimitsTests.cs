@@ -224,7 +224,8 @@ public sealed class ToolResultLimitsTests
         Encoding.UTF8.GetByteCount(bounded.Result).Should().BeLessThanOrEqualTo(512);
         using var document = JsonDocument.Parse(bounded.Result);
         var root = document.RootElement;
-        root.GetProperty("error").GetString().Should().Be(ToolResultLimits.JsonTruncationError);
+        root.GetProperty("truncated").GetBoolean().Should().BeTrue();
+        root.TryGetProperty("error", out _).Should().BeFalse("being cut is not a failed call");
         root.GetProperty("original_bytes").GetInt32().Should().Be(Encoding.UTF8.GetByteCount(original));
         var preview = root.GetProperty("preview").GetString()!;
         original.Should().StartWith(preview);
@@ -248,7 +249,7 @@ public sealed class ToolResultLimitsTests
 
         Encoding.UTF8.GetByteCount(bounded).Should().BeLessThanOrEqualTo(cap);
         using var document = JsonDocument.Parse(bounded);
-        document.RootElement.GetProperty("error").GetString().Should().Be(ToolResultLimits.JsonTruncationError);
+        document.RootElement.GetProperty("truncated").GetBoolean().Should().BeTrue();
     }
 
     [Fact]
@@ -273,6 +274,59 @@ public sealed class ToolResultLimitsTests
 
         Encoding.UTF8.GetByteCount(bounded).Should().BeLessThanOrEqualTo(256);
         bounded.Should().Contain(ToolResultLimits.TruncationMarkerPrefix);
+    }
+
+    [Theory]
+    [InlineData("true")]
+    [InlineData("false")]
+    [InlineData("null")]
+    [InlineData("-12.5")]
+    [InlineData("42")]
+    public void An_oversized_json_scalar_becomes_the_json_object(string scalar)
+    {
+        var text = scalar + new string(' ', 2_000);
+
+        var bounded = new ToolResultLimits { MaxResultBytes = 512 }.BoundText(text);
+
+        using var document = JsonDocument.Parse(bounded);
+        document.RootElement.GetProperty("original_bytes").GetInt32().Should().Be(text.Length);
+    }
+
+    [Fact]
+    public void Json_nested_past_the_default_parser_depth_becomes_the_json_object()
+    {
+        var text = new string('[', 65) + new string(' ', 2_000) + new string(']', 65);
+
+        var bounded = new ToolResultLimits { MaxResultBytes = 512 }.BoundText(text);
+
+        using var document = JsonDocument.Parse(bounded);
+        document.RootElement.GetProperty("original_bytes").GetInt32().Should().Be(text.Length);
+    }
+
+    [Fact]
+    public void Cutting_a_very_large_json_document_takes_far_less_memory_than_the_document()
+    {
+        // Two characters per value is the costliest shape for a parser: one record per value.
+        var text = "[" + string.Concat(Enumerable.Repeat("1,", 10_000_000)) + "1]";
+        var limits = new ToolResultLimits { MaxResultBytes = 1024 };
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var bounded = limits.BoundText(text);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        allocated.Should().BeLessThan(1024 * 1024);
+        using var document = JsonDocument.Parse(bounded);
+        document.RootElement.GetProperty("original_bytes").GetInt32().Should().Be(text.Length);
+    }
+
+    [Fact]
+    public void Very_large_text_that_only_starts_like_json_keeps_the_plain_marker()
+    {
+        var text = "{" + new string('x', 5 * 1024 * 1024);
+
+        var bounded = new ToolResultLimits { MaxResultBytes = 1024 }.BoundText(text);
+
+        bounded.Should().StartWith("{xxx").And.Contain(ToolResultLimits.TruncationMarkerPrefix);
     }
 
     [Fact]

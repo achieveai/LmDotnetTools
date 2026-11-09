@@ -1,5 +1,6 @@
 using System.Text;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.Sandbox;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -73,6 +74,26 @@ public sealed class SandboxToolOutputStoreTests
         browser.Attempts.Should().ContainSingle().Which.Should().EndWith(".gitignore");
     }
 
+    [Fact]
+    public async Task A_failed_output_write_after_the_gitignore_is_not_saved_and_the_next_save_uses_a_new_folder()
+    {
+        var browser = new FakeBrowser { FailNextOutputWrite = true };
+        var options = new ToolOutputSpillOptions { Store = CreateStore(browser), MaxInlineBytes = 1024 };
+        var text = new string('x', 5_000);
+
+        var failed = await options.ApplyAsync(new ToolCallResult("c1", text), NullLogger.Instance);
+        var later = await options.ApplyAsync(new ToolCallResult("c2", text), NullLogger.Instance);
+
+        Encoding.UTF8.GetByteCount(failed.Result).Should().BeLessThanOrEqualTo(1024);
+        failed.Result.Should().Contain("could not be saved").And.NotContain(SandboxToolOutputStore.RootDirectory);
+        later.Result.Should().Contain(SandboxToolOutputStore.RootDirectory);
+        browser
+            .Attempts.Where(path => path.EndsWith(SandboxToolOutputStore.OutputFileName, StringComparison.Ordinal))
+            .Distinct()
+            .Should()
+            .HaveCount(2);
+    }
+
     private sealed class FakeBrowser : IWorkspaceFileBrowser
     {
         public const string SessionId = "session-1";
@@ -80,6 +101,8 @@ public sealed class SandboxToolOutputStoreTests
         public SandboxSessionResolutionOutcome Outcome { get; init; } = SandboxSessionResolutionOutcome.Resolved;
 
         public bool FailWrites { get; init; }
+
+        public bool FailNextOutputWrite { get; set; }
 
         public List<(string Session, string Path, byte[] Bytes)> Writes { get; } = [];
 
@@ -114,6 +137,15 @@ public sealed class SandboxToolOutputStoreTests
             Attempts.Add(relativePath);
             if (FailWrites)
             {
+                throw new IOException("write refused");
+            }
+
+            if (
+                FailNextOutputWrite
+                && relativePath.EndsWith(SandboxToolOutputStore.OutputFileName, StringComparison.Ordinal)
+            )
+            {
+                FailNextOutputWrite = false;
                 throw new IOException("write refused");
             }
 

@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using Microsoft.Extensions.Logging;
@@ -55,7 +56,15 @@ public sealed record AgentReconfiguration(
     SubAgentOptions? SubAgentOptions,
     ILoggerFactory? LoggerFactory = null,
     bool OwnsProviderAgent = false
-);
+)
+{
+    /// <summary>
+    ///     How the new mode saves oversized tool output, or null when it has nowhere to save. Like the
+    ///     rest of this record it replaces the old value, so leaving it unset turns saving off.
+    ///     An init property because LmMultiTurn ships as a package whose constructor shape is pinned.
+    /// </summary>
+    public ToolOutputSpillOptions? ToolOutputSpill { get; init; }
+}
 
 /// <summary>What <see cref="IReconfigurableAgent.Reconfigure"/> did.</summary>
 public enum ReconfigureOutcome

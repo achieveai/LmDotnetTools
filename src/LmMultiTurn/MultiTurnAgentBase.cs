@@ -107,6 +107,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     // Lifecycle
     private Task? _runTask;
     private CancellationTokenSource? _internalCts;
+    private ToolOutputSpillOptions? _toolOutputSpill;
     private TaskCompletionSource? _startupReady;
 
     // Cancelled once, at disposal. Distinct from _internalCts, which is recreated by every
@@ -344,8 +345,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// Saves oversized tool output where the model can read it and keeps only a preview in history
     /// (#930 item 2). Null, the default, means there is nowhere to save and
     /// <see cref="ToolResultLimits"/> is the only bound. Sub-agents use the same store as their parent.
+    /// A reconfiguration replaces it.
     /// </summary>
-    public ToolOutputSpillOptions? ToolOutputSpill { get; init; }
+    public ToolOutputSpillOptions? ToolOutputSpill
+    {
+        get => _toolOutputSpill;
+        init => _toolOutputSpill = value;
+    }
 
     /// <inheritdoc />
     public bool IsRunning => _runTask != null && !_runTask.IsCompleted;
@@ -477,6 +483,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// </summary>
     /// <param name="systemPrompt">The fully composed prompt, exactly as the constructor would have stored it.</param>
     /// <param name="defaultOptions">The new per-turn options template; the output-budget floor is applied here.</param>
+    /// <param name="toolOutputSpill">How the new mode saves oversized tool output, or null for nowhere to save.</param>
     /// <remarks>
     /// Assignment only, and deliberately so: the caller has already built every part that can fail, and
     /// nothing on this path is allowed to throw and leave the agent half-switched. The lifecycle bundle's
@@ -486,9 +493,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// <see cref="MultiTurnLifecycleServices.Disabled"/> singleton is left alone: copying it would break
     /// the reference checks that keep a lifecycle-free agent allocation-free.
     /// </remarks>
-    private protected void ApplyReconfiguredConfiguration(string? systemPrompt, GenerateReplyOptions? defaultOptions)
+    private protected void ApplyReconfiguredConfiguration(
+        string? systemPrompt,
+        GenerateReplyOptions? defaultOptions,
+        ToolOutputSpillOptions? toolOutputSpill
+    )
     {
         SystemPrompt = systemPrompt;
+        _toolOutputSpill = toolOutputSpill;
         DefaultOptions = WithOutputBudgetFloor(defaultOptions);
         if (!ReferenceEquals(LifecycleServices, MultiTurnLifecycleServices.Disabled))
         {

@@ -129,6 +129,17 @@ describe('deriveToolPillState', () => {
   });
 
   describe('structured status', () => {
+    it('a truncated result is a success, unless the call really failed', () => {
+      const r = JSON.stringify({ truncated: true, kept_bytes: 10, original_bytes: 99, preview: '{}', note: 'cut' });
+
+      const ok = deriveToolPillState({ functionArgs: '{}', result: r, hasResult: true, isErrorFlag: false });
+      expect(ok.isError).toBe(false);
+      expect(ok.state).not.toBe('error');
+
+      const failed = deriveToolPillState({ functionArgs: '{}', result: r, hasResult: true, isErrorFlag: true });
+      expect(failed.isError).toBe(true);
+    });
+
     it('status:"failed" with exit_code 0 and is_error false → error (consistent with the terminal renderer)', () => {
       const r = JSON.stringify({ exit_code: 0, status: 'failed', stdout: 'boom', stderr: '' });
       const v = deriveToolPillState({ functionArgs: '{}', result: r, hasResult: true, isErrorFlag: false });

@@ -874,6 +874,76 @@ public class MultiTurnAgentLoopReconfigureTests
         await cts.CancelAsync();
     }
 
+    [Fact]
+    public async Task ASwitch_TurnsSavingLargeOutputOnAndOff()
+    {
+        var turn = 0;
+        var provider = new ScriptedProvider
+        {
+            Reply = _ =>
+                ++turn % 2 == 1
+                    ?
+                    [
+                        new ToolCallMessage
+                        {
+                            FunctionName = "big",
+                            FunctionArgs = "{}",
+                            ToolCallId = $"big-{turn}",
+                            Role = Role.Assistant,
+                        },
+                    ]
+                    : [new TextMessage { Text = "done", Role = Role.Assistant }],
+        };
+        var canSave = new ConcurrentQueue<bool>();
+        var registry = new FunctionRegistry().AddFunction(
+            new FunctionContract
+            {
+                Name = "big",
+                Description = "Returns more than the inline limit",
+                Parameters = [],
+            },
+            (_, context, _) =>
+            {
+                canSave.Enqueue(context.CanSaveLargeOutput);
+                return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(new string('x', 50_000)));
+            }
+        );
+        var store = new CountingOutputStore();
+        var spill = new ToolOutputSpillOptions { Store = store, MaxInlineBytes = 2_000 };
+
+        using var cts = new CancellationTokenSource(Wait.DefaultTimeout);
+        await using var loop = new MultiTurnAgentLoop(
+            provider,
+            registry,
+            threadId: "reconfigure-spill",
+            defaultOptions: new GenerateReplyOptions { ModelId = OldModel }
+        );
+        var runs = LoopSubscription.SubscribeForRunCompletions(loop, cts.Token, expectedCount: 3);
+        _ = loop.RunAsync(cts.Token);
+        await loop.WaitUntilReadyAsync(cts.Token);
+
+        async Task RunOnceAsync(int index)
+        {
+            _ = await loop.SendAsync([new TextMessage { Text = "go", Role = Role.User }]);
+            await runs.WaitAsync(index);
+        }
+
+        await RunOnceAsync(0);
+        store.Saves.Should().Be(0, "this mode has nowhere to save");
+
+        loop.Reconfigure(NewSpec(provider, registry) with { ToolOutputSpill = spill })
+            .Should()
+            .Be(ReconfigureOutcome.Applied);
+        await RunOnceAsync(1);
+        store.Saves.Should().Be(1, "the switch brought a place to save");
+
+        loop.Reconfigure(NewSpec(provider, registry)).Should().Be(ReconfigureOutcome.Applied);
+        await RunOnceAsync(2);
+        store.Saves.Should().Be(1, "the switch took it away");
+
+        canSave.Should().Equal(false, true, false);
+    }
+
     private static AgentReconfiguration NewSpec(
         IStreamingAgent provider,
         FunctionRegistry registry,
@@ -904,6 +974,19 @@ public class MultiTurnAgentLoopReconfigureTests
 
     private static IEnumerable<string> ToolNames(GenerateReplyOptions options) =>
         options.Functions?.Select(f => f.Name) ?? [];
+
+    private sealed class CountingOutputStore : IToolOutputStore
+    {
+        private int _saves;
+
+        public int Saves => Volatile.Read(ref _saves);
+
+        public Task<string?> SaveAsync(string content, CancellationToken ct = default)
+        {
+            _ = Interlocked.Increment(ref _saves);
+            return Task.FromResult<string?>("/workspace/.tool-output/abc/output.txt");
+        }
+    }
 
     /// <summary>
     /// A provider that records every request and, by default, answers with one assistant text message.

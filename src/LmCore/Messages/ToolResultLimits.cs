@@ -27,8 +27,8 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 ///     </para>
 ///     <para>
 ///     A result that is a valid JSON document is never cut into a broken one (#713): it is replaced
-///     by a small object naming the reason, the sizes and an escaped preview, which still parses and
-///     still carries the marker in its <c>note</c> field.
+///     by a small object with <c>"truncated": true</c>, the sizes and an escaped preview. It still parses and
+///     carries the marker in its <c>note</c> field. Being cut is not a failure, so it has no <c>error</c> key.
 ///     </para>
 /// </remarks>
 public sealed record ToolResultLimits
@@ -47,10 +47,14 @@ public sealed record ToolResultLimits
     /// </summary>
     public const int MinResultBytes = 256;
 
-    /// <summary>The <c>error</c> value of the JSON object that replaces a cut JSON document.</summary>
-    public const string JsonTruncationError = "tool_result_truncated";
-
     private const string MarkerSeparator = "\n\n";
+
+    private const string JsonWhitespace = " \t\r\n";
+
+    // About 4 MiB of text, the size of the default result limit.
+    private const int MaxParsedChars = 4 * 1024 * 1024;
+
+    private static readonly JsonDocumentOptions s_anyDepth = new() { MaxDepth = int.MaxValue };
 
     // Non-ASCII and HTML characters stay readable: this text goes to a model, not into a web page.
     private static readonly JsonWriterOptions s_envelopeWriterOptions = new()
@@ -218,11 +222,24 @@ public sealed record ToolResultLimits
     internal static string Cut(string text, int maxBytes, string? savedPath, string? notice)
     {
         var total = Encoding.UTF8.GetByteCount(text);
-        if (IsJsonDocument(text))
-        {
-            return BuildJsonEnvelope(text, total, maxBytes, savedPath, notice);
-        }
+        return IsJsonDocument(text)
+            ? BuildJsonEnvelope(text, total, maxBytes, savedPath, notice)
+            : CutPlainText(text, total, maxBytes, notice);
+    }
 
+    /// <summary>
+    ///     Bounds <paramref name="text"/> the way every result was bounded before cut JSON became an
+    ///     object. A record saved back then holds this form, so a redelivery compares against it.
+    /// </summary>
+    public string BoundAsPlainText(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        var total = Encoding.UTF8.GetByteCount(text);
+        return total <= MaxResultBytes ? text : CutPlainText(text, total, MaxResultBytes, notice: null);
+    }
+
+    private static string CutPlainText(string text, int total, int maxBytes, string? notice)
+    {
         // Reserve room for the marker using the largest number it could carry (kept <= total).
         // MinResultBytes guarantees the budget stays positive.
         var suffix = notice == null ? string.Empty : "\n" + notice;
@@ -259,17 +276,33 @@ public sealed record ToolResultLimits
     ///     True when <paramref name="text"/> is one complete JSON document. Runs only on text that
     ///     is already over a limit, so ordinary results never pay for a parse.
     /// </summary>
+    /// <remarks>
+    ///     A parse needs temporary memory several times the size of its input, so past
+    ///     <see cref="MaxParsedChars"/> only the two ends are checked. That can only err towards the
+    ///     JSON object, which is valid whatever it holds, and every real document passes.
+    /// </remarks>
     private static bool IsJsonDocument(string text)
     {
-        var first = text.AsSpan().TrimStart(" \t\r\n");
-        if (first.IsEmpty || first[0] is not ('{' or '[' or '"'))
+        var trimmed = text.AsSpan().Trim(JsonWhitespace);
+        if (trimmed.IsEmpty)
+        {
+            return false;
+        }
+
+        if (text.Length > MaxParsedChars)
+        {
+            return (trimmed[0], trimmed[^1]) is ('{', '}') or ('[', ']') or ('"', '"');
+        }
+
+        if (trimmed[0] is not ('{' or '[' or '"' or 't' or 'f' or 'n' or '-' or (>= '0' and <= '9')))
         {
             return false;
         }
 
         try
         {
-            using var document = JsonDocument.Parse(text);
+            // The default limit of 64 levels would call a valid deep document malformed.
+            using var document = JsonDocument.Parse(text, s_anyDepth);
             return true;
         }
         catch (Exception ex) when (ex is JsonException or ArgumentException)
@@ -315,7 +348,7 @@ public sealed record ToolResultLimits
         using (var writer = new Utf8JsonWriter(buffer, s_envelopeWriterOptions))
         {
             writer.WriteStartObject();
-            writer.WriteString("error", JsonTruncationError);
+            writer.WriteBoolean("truncated", true);
             writer.WriteNumber("kept_bytes", keptBytes);
             writer.WriteNumber("original_bytes", total);
             writer.WriteString("preview", preview);
