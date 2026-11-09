@@ -3005,7 +3005,11 @@ public sealed class ReviewdRunnerTests
                 if (scenario == "setup-expired")
                     attempt!["reviewIdempotencyKey"].Should().BeNull();
                 if (scenario == "old-readmitted")
+                {
+                    // Both halves carry over, and the readmit time is kept rather than refreshed, so it still expires.
                     attempt!["readmittedHead"]!.GetValue<string>().Should().Be(new string('a', 40));
+                    attempt["readmittedAt"]!.GetValue<string>().Should().Be(now.AddHours(-1).ToString("O"));
+                }
             }
             else
             {

@@ -7,7 +7,7 @@ could not fix, plus one daily digest. Run by reviewd-doctor.timer every 15 minut
   doctor.py digest [--dry-run] build the digest now; send it unless --dry-run
   doctor.py readmit <store, e.g. viva-glint, or NOVA> <PR id>
                                forget a PR's failures and resets and restart its age clock, so the next pick
-                               reviews it again
+                               reviews it again (exit 3 when it had no released attempt to restart the clock on)
 
 It launches no reviews and keeps no review state. It reads each install's database and logs, and acts only through
 that install's own bin/ scripts or systemctl. It never restarts the shared review host. Its memory (what it already
@@ -635,6 +635,23 @@ def readmit(store, pr, now, root=None):
     return changes
 
 
+def report_readmit(store, pr, now, root=None):
+    """Runs readmit and prints what it did. Exits 0 only when it stamped an attempt: deleting failure records alone
+    leaves a PR older than the age limit out (what unquarantine reported as success on 11-06), so that exits 3."""
+    changes = readmit(store, pr, now, root)
+    for change in changes:
+        print(change)
+    if any(change.startswith("readmitted ") for change in changes):
+        print("the next pick includes the PR again")
+        return 0
+    if changes:
+        print("no released attempt to stamp, so its age clock was not restarted: "
+              "the next pick still leaves it out while it is older than the age limit")
+        return 3
+    print("nothing to readmit")
+    return 1
+
+
 def check(now, probe, root=None):
     """Read-only: prints every problem; exit 1 if any."""
     install_found, _, stall = survey(now, probe, load_state()["memory"], root)
@@ -650,12 +667,7 @@ def main(argv):
     now = datetime.datetime.now(datetime.timezone.utc)
     probe = Probe()
     if command == "readmit" and len(argv) == 4:
-        changes = readmit(argv[2], argv[3], now)
-        for change in changes:
-            print(change)
-        done = [c for c in changes if not c.startswith("left ")]
-        print("the next pick includes the PR again" if done else "nothing to readmit")
-        return 0 if done else 1
+        return report_readmit(argv[2], argv[3], now)
     if command == "check":
         return check(now, probe)
     if command == "tick":

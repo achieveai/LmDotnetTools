@@ -304,11 +304,36 @@ class Checks(unittest.TestCase):
         self.assertEqual(rows["reviewd/review-attempt/azure-devops/o/p/r/55"], released, "another PR is untouched")
 
     def test_readmit_leaves_an_attempt_a_review_still_owns(self):
-        owned = {"stage": "review-running", "cleanupState": "owned", "headSha": "a" * 40, "resetCount": 1}
-        install = make_install(self.root, "reviewd-alpha", rows=[("reviewd/review-attempt/azure-devops/o/p/r/5", owned)])
-        changes = doctor.readmit("alpha", "5", NOW, self.root)
-        self.assertEqual(changes, ["left reviewd/review-attempt/azure-devops/o/p/r/5: stage review-running, owned"])
-        self.assertEqual(dict(doctor.read_db(install))["reviewd/review-attempt/azure-devops/o/p/r/5"], owned)
+        # Only a released attempt is stamped: each half of the release alone is still a review's attempt.
+        for name, stage, cleanup in [("running", "review-running", "owned"), ("releasing", "failed-released", "owned"),
+                                     ("stage-only", "review-running", "released")]:
+            with self.subTest(name):
+                owned = {"stage": stage, "cleanupState": cleanup, "headSha": "a" * 40, "resetCount": 1}
+                install = make_install(self.root, f"reviewd-{name}",
+                                       rows=[("reviewd/review-attempt/azure-devops/o/p/r/5", owned)])
+                changes = doctor.readmit(name, "5", NOW, self.root)
+                self.assertEqual(changes,
+                                 [f"left reviewd/review-attempt/azure-devops/o/p/r/5: stage {stage}, {cleanup}"])
+                self.assertEqual(dict(doctor.read_db(install))["reviewd/review-attempt/azure-devops/o/p/r/5"], owned)
+
+    def test_readmit_reports_success_only_when_it_restarted_the_age_clock(self):
+        # 11-06: deleting failure records alone was reported as success, yet PRs older than the limit stayed out.
+        failure = ("reviewd/failure/azure-devops/o/p/r/5", {"head": "a" * 40, "count": 3})
+        attempt = {"stage": "failed-released", "cleanupState": "released", "headSha": "a" * 40}
+        reviewed = {"stage": "completed-verified", "cleanupState": "released", "headSha": "b" * 40}
+        for name, rows, code, said in [
+                ("released", [failure, ("reviewd/review-attempt/azure-devops/o/p/r/5", attempt)], 0,
+                 "the next pick includes the PR again"),
+                ("verified", [failure, ("reviewd/review-attempt/azure-devops/o/p/r/5", reviewed)], 3,
+                 "age clock was not restarted"),
+                ("no-attempt", [failure], 3, "age clock was not restarted"),
+                ("nothing", [], 1, "nothing to readmit")]:
+            with self.subTest(name):
+                make_install(self.root, f"reviewd-{name}", rows=rows)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.assertEqual(doctor.report_readmit(name, "5", NOW, self.root), code)
+                self.assertIn(said, out.getvalue())
 
 
 class Ticks(unittest.TestCase):
