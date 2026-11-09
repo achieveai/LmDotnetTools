@@ -406,6 +406,10 @@ public record AnthropicRequest
                 }
             );
         }
+        else if (message is ReasoningMessage { EncryptedOrigin: not null })
+        {
+            // A Responses blob is not an Anthropic signature. Sending it would be rejected.
+        }
         else if (message is ReasoningMessage reasoningMsg)
         {
             if (reasoningMsg.Visibility == ReasoningVisibility.Encrypted)

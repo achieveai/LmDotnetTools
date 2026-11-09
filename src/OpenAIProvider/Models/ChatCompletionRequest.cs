@@ -349,6 +349,9 @@ public record ChatCompletionRequest
 
             switch (m)
             {
+                case ReasoningMessage { EncryptedOrigin: not null }:
+                    // A Responses blob: Encrypted wins in the buffer, so keeping it would lose the summary.
+                    continue;
                 case ReasoningMessage r:
                     reasoningBuffer.Add(r);
                     continue;

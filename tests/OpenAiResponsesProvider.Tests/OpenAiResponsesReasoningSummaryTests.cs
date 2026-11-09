@@ -155,4 +155,71 @@ public sealed class OpenAiResponsesReasoningSummaryTests
         reasoning[0].Reasoning.Should().Be("step one");
         reasoning[0].Visibility.Should().Be(ReasoningVisibility.Summary);
     }
+
+    private const string SummaryAndBlob =
+        "{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"step one\"}],\"encrypted_content\":\"BLOB\"}";
+
+    private const string BlobOnly = "{\"type\":\"reasoning\",\"summary\":[],\"encrypted_content\":\"BLOB\"}";
+
+    private static async Task<List<ReasoningMessage>> ReasoningRowsAsync(string item, bool replay)
+    {
+        ResponseEvent[] events =
+        [
+            new ResponseLifecycleEvent { Type = ResponseEventTypes.ResponseCreated },
+            new ResponseOutputItemEvent
+            {
+                Type = ResponseEventTypes.OutputItemDone,
+                OutputIndex = 0,
+                Item = System.Text.Json.JsonDocument.Parse(item).RootElement,
+            },
+            new ResponseLifecycleEvent { Type = ResponseEventTypes.ResponseCompleted },
+        ];
+
+        using var agent = new OpenAiResponsesAgent("test", new ScriptedClient(events), replayReasoning: replay);
+        var stream = await agent.GenerateReplyStreamingAsync(
+            [new TextMessage { Role = Role.User, Text = "go" }],
+            new GenerateReplyOptions { GenerationId = "run-1", ModelId = "gpt-5.6-terra" }
+        );
+
+        var messages = new List<IMessage>();
+        await foreach (var message in stream)
+        {
+            messages.Add(message);
+        }
+
+        return [.. messages.OfType<ReasoningMessage>()];
+    }
+
+    [Fact]
+    public async Task Agent_KeepsSummaryAndEncryptedRow_WhenReplayOn()
+    {
+        var rows = await ReasoningRowsAsync(SummaryAndBlob, replay: true);
+
+        rows.Select(r => (r.Reasoning, r.Visibility, r.EncryptedOrigin))
+            .Should()
+            .Equal(
+                ("step one", ReasoningVisibility.Summary, null),
+                ("BLOB", ReasoningVisibility.Encrypted, "responses:gpt-5.6-terra")
+            );
+        rows.Should().OnlyContain(r => r.GenerationId == "run-1" && r.MessageOrderIdx == 0);
+    }
+
+    [Fact]
+    public async Task Agent_stores_one_tagged_row_for_a_blob_without_a_summary()
+    {
+        var rows = await ReasoningRowsAsync(BlobOnly, replay: true);
+
+        rows.Select(r => (r.Reasoning, r.EncryptedOrigin))
+            .Should()
+            .Equal([("BLOB", "responses:gpt-5.6-terra")], "the blob must not be stored twice");
+    }
+
+    [Fact]
+    public async Task Replay_off_stores_no_encrypted_row()
+    {
+        var rows = await ReasoningRowsAsync(SummaryAndBlob, replay: false);
+
+        rows.Should().ContainSingle().Which.Visibility.Should().Be(ReasoningVisibility.Summary);
+        rows[0].EncryptedOrigin.Should().BeNull();
+    }
 }

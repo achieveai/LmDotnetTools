@@ -28,18 +28,21 @@ internal static class MessageMapper
     internal static ResponseCreateRequest BuildRequest(
         IEnumerable<IMessage> messages,
         GenerateReplyOptions? options,
-        ILogger? logger = null
+        ILogger? logger = null,
+        bool replayReasoning = false
     )
     {
         var instructionsBuilder = new StringBuilder();
         var inputItems = new List<ResponseInputItem>();
+        var replayOrigin = ReplayOrigin(replayReasoning, options?.ModelId);
 
         foreach (var message in messages)
         {
-            MapMessage(message, instructionsBuilder, inputItems);
+            MapMessage(message, instructionsBuilder, inputItems, replayOrigin);
         }
 
         DropUnpairedFunctionCallOutputs(inputItems, logger);
+        DropReasoningWithoutOutput(inputItems);
 
         // Reasoning-capable models only return reasoning summaries when asked. Mirror the Anthropic
         // "Thinking" convention: a ResponseReasoningOptions placed in ExtraProperties["Reasoning"]
@@ -53,6 +56,8 @@ internal static class MessageMapper
         {
             reasoning = reasoningValue;
         }
+
+        var askForBlob = replayOrigin is not null && reasoning is not null;
 
         IReadOnlyList<ResponseToolSpec>? tools = null;
         if (options?.Functions is { Length: > 0 } functions)
@@ -81,7 +86,39 @@ internal static class MessageMapper
             Tools = tools,
             ToolChoice = options?.ToolChoice is null ? null : JsonValue.Create(options.ToolChoice),
             Reasoning = reasoning,
+            // The blob only comes back when asked for, and only for a response the server does not keep.
+            Include = askForBlob ? ["reasoning.encrypted_content"] : null,
+            Store = askForBlob ? false : null,
         };
+    }
+
+    /// <summary>
+    ///     The tag a replayable blob carries, or null when replay is off or the model is unknown. A blob is
+    ///     replayed only to the model that made it, so the whole model id is part of the tag.
+    /// </summary>
+    internal static string? ReplayOrigin(bool replayReasoning, string? modelId) =>
+        replayReasoning && !string.IsNullOrEmpty(modelId) ? $"responses:{modelId}" : null;
+
+    /// <summary>
+    ///     Removes a replayed reasoning item that no model output follows. A reasoning item belongs to the
+    ///     output after it, and history can lose that output: a Stop mid-turn, or a compaction cut.
+    /// </summary>
+    private static void DropReasoningWithoutOutput(List<ResponseInputItem> inputItems)
+    {
+        // Backwards, so a run of reasoning items is judged against what is left after each removal.
+        for (var i = inputItems.Count - 1; i >= 0; i--)
+        {
+            if (inputItems[i].Type != "reasoning")
+            {
+                continue;
+            }
+
+            var next = i + 1 < inputItems.Count ? inputItems[i + 1] : null;
+            if (next is not ({ Type: "function_call" or "reasoning" } or { Type: "message", Role: "assistant" }))
+            {
+                inputItems.RemoveAt(i);
+            }
+        }
     }
 
     /// <summary>
@@ -167,21 +204,40 @@ internal static class MessageMapper
     ///     Both must be unwrapped — dropping them (the original behaviour) hid the tool call + result
     ///     from the model on continuation turns, so it re-issued the same call indefinitely.
     /// </remarks>
-    private static void MapMessage(IMessage message, StringBuilder instructions, List<ResponseInputItem> inputItems)
+    private static void MapMessage(
+        IMessage message,
+        StringBuilder instructions,
+        List<ResponseInputItem> inputItems,
+        string? replayOrigin
+    )
     {
         switch (message)
         {
             case CompositeMessage composite:
                 foreach (var inner in composite.Messages)
                 {
-                    MapMessage(inner, instructions, inputItems);
+                    MapMessage(inner, instructions, inputItems, replayOrigin);
                 }
 
                 break;
 
             case ToolsCallAggregateMessage aggregate:
-                MapMessage(aggregate.ToolsCallMessage, instructions, inputItems);
-                MapMessage(aggregate.ToolsCallResult, instructions, inputItems);
+                MapMessage(aggregate.ToolsCallMessage, instructions, inputItems, replayOrigin);
+                MapMessage(aggregate.ToolsCallResult, instructions, inputItems, replayOrigin);
+                break;
+
+            case ReasoningMessage blob
+                when replayOrigin is not null
+                    && blob.Visibility == ReasoningVisibility.Encrypted
+                    && blob.EncryptedOrigin == replayOrigin:
+                inputItems.Add(
+                    new ResponseInputItem
+                    {
+                        Type = "reasoning",
+                        Summary = [],
+                        EncryptedContent = blob.Reasoning,
+                    }
+                );
                 break;
 
             case TextMessage text when text.Role == Role.System:

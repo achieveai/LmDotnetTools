@@ -2444,6 +2444,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// <param name="ct">Cancellation token</param>
     protected ValueTask PublishToAllAsync(IMessage message, CancellationToken ct)
     {
+        // A replayable reasoning blob is saved for the model. No subscriber can use it.
+        if (message is ReasoningMessage { EncryptedOrigin: not null })
+        {
+            return ValueTask.CompletedTask;
+        }
+
         _ = PublishToModeAsync(message, joinedOnly: false, ct);
         // History content is published to joined subscribers only by its append/replacement.
         // Lifecycle and transient controls have no history entry and pass through once.

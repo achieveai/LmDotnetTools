@@ -55,6 +55,9 @@ public static class CopilotResponsesAgentFactory
     ///     Whatever is passed (or not), the Copilot-specific transient statuses in
     ///     <see cref="s_transientStatusCodes"/> are merged in — caller values are never overwritten.
     /// </param>
+    /// <param name="replayReasoning">
+    ///     Keep the model's encrypted reasoning and send it back to the same model. Off by default.
+    /// </param>
     public static OpenAiResponsesAgent Create(
         string name,
         ICopilotTokenProvider tokenProvider,
@@ -62,7 +65,8 @@ public static class CopilotResponsesAgentFactory
         CopilotSessionContext? session = null,
         CopilotOptions? options = null,
         ILogger<OpenAiResponsesAgent>? logger = null,
-        RetryOptions? retryOptions = null
+        RetryOptions? retryOptions = null,
+        bool replayReasoning = false
     )
     {
         ArgumentNullException.ThrowIfNull(name);
@@ -83,7 +87,7 @@ public static class CopilotResponsesAgentFactory
                 ? CreateSseClient(host, tokenProvider, context, copilotOptions, logger, retryOptions)
                 : CreateWebSocketClient(host, tokenProvider, context, copilotOptions, logger, retryOptions);
 
-        return new OpenAiResponsesAgent(name, client, logger);
+        return new OpenAiResponsesAgent(name, client, logger, replayReasoning);
     }
 
     // internal (not private) so a test can drive the REAL SSE construction path through an injected

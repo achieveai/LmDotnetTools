@@ -78,6 +78,35 @@ public class ThinkingReplayTests
     }
 
     [Fact]
+    public void Row_with_origin_never_becomes_a_signature()
+    {
+        var messages = new IMessage[]
+        {
+            new TextMessage { Role = Role.User, Text = "What is 2+2?" },
+            new ReasoningMessage
+            {
+                Role = Role.Assistant,
+                Reasoning = "plain thinking that has no signature",
+                Visibility = ReasoningVisibility.Plain,
+            },
+            new ReasoningMessage
+            {
+                Role = Role.Assistant,
+                Reasoning = "OPENAI-BLOB",
+                Visibility = ReasoningVisibility.Encrypted,
+                EncryptedOrigin = "responses:gpt-5.6-terra",
+            },
+            new TextMessage { Role = Role.Assistant, Text = "4" },
+            new TextMessage { Role = Role.User, Text = "And 3+3?" },
+        };
+
+        var request = AnthropicRequest.FromMessages(messages, ThinkingOptions());
+        var json = JsonSerializer.Serialize(request, _jsonOptions);
+
+        Assert.DoesNotContain("OPENAI-BLOB", json);
+    }
+
+    [Fact]
     public void FromMessages_SignedThinkingBlock_IsPreserved()
     {
         // A plain thinking block immediately followed by its encrypted signature must still merge

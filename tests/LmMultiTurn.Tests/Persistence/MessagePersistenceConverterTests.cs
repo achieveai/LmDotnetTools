@@ -143,6 +143,36 @@ public class MessagePersistenceConverterTests
     #region FromPersistedMessage Tests
 
     [Fact]
+    public void Origin_round_trips_and_old_rows_load()
+    {
+        static ReasoningMessage Row(string? origin) =>
+            new()
+            {
+                Reasoning = "BLOB",
+                Visibility = ReasoningVisibility.Encrypted,
+                Role = Role.Assistant,
+                EncryptedOrigin = origin,
+            };
+
+        var tagged = MessagePersistenceConverter.ToPersistedMessage(Row("responses:m"), "t", "r", _jsonOptions);
+        var old = MessagePersistenceConverter.ToPersistedMessage(Row(null), "t", "r", _jsonOptions);
+
+        old.MessageJson.Should().NotContain("encryptedOrigin", "a row with no origin is what older rows look like");
+        MessagePersistenceConverter
+            .FromPersistedMessage(tagged, _jsonOptions)
+            .Should()
+            .BeOfType<ReasoningMessage>()
+            .Which.EncryptedOrigin.Should()
+            .Be("responses:m");
+        MessagePersistenceConverter
+            .FromPersistedMessage(old, _jsonOptions)
+            .Should()
+            .BeOfType<ReasoningMessage>()
+            .Which.EncryptedOrigin.Should()
+            .BeNull();
+    }
+
+    [Fact]
     public void FromPersistedMessage_RestoresTextMessage()
     {
         // Arrange

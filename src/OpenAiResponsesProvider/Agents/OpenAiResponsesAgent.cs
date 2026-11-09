@@ -30,16 +30,27 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
 {
     private readonly IOpenAiResponsesClient _client;
     private readonly ILogger<OpenAiResponsesAgent> _logger;
+    private readonly bool _replayReasoning;
 
+    /// <param name="name">The agent's name.</param>
+    /// <param name="client">The Responses transport.</param>
+    /// <param name="logger">Optional logger.</param>
+    /// <param name="replayReasoning">
+    ///     Ask for the model's encrypted reasoning, keep it, and send it back to the same model (#769). Off by
+    ///     default because a backend may refuse a replayed item. Off means the request and history match the
+    ///     behaviour without this feature, and rows kept earlier are simply not sent.
+    /// </param>
     public OpenAiResponsesAgent(
         string name,
         IOpenAiResponsesClient client,
-        ILogger<OpenAiResponsesAgent>? logger = null
+        ILogger<OpenAiResponsesAgent>? logger = null,
+        bool replayReasoning = false
     )
     {
         Name = name ?? throw new ArgumentNullException(nameof(name));
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _logger = logger ?? NullLogger<OpenAiResponsesAgent>.Instance;
+        _replayReasoning = replayReasoning;
     }
 
     public string Name { get; }
@@ -116,7 +127,7 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
 
         // The logger is passed so a dropped orphan is not a silent repair: the sweep is a backstop against a
         // defect upstream, and a backstop nobody can see firing is a defect that never gets found.
-        var request = MessageMapper.BuildRequest(messages, options, _logger);
+        var request = MessageMapper.BuildRequest(messages, options, _logger, _replayReasoning);
         _logger.LogDebug(
             "OpenAiResponsesAgent.GenerateReplyStreamingAsync model={Model} inputItems={Count} inputTypes=[{InputTypes}] tools={ToolCount}",
             request.Model,
@@ -136,7 +147,13 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
         dumpWriter?.WriteRequest(request with { Stream = true });
 
         var eventStream = DumpRawEvents(_client.StreamResponseAsync(request, cancellationToken), dumpWriter);
-        var mapped = EventStreamToMessages(eventStream, Name, options?.GenerationId, cancellationToken);
+        var mapped = EventStreamToMessages(
+            eventStream,
+            Name,
+            options?.GenerationId,
+            MessageMapper.ReplayOrigin(_replayReasoning, request.Model),
+            cancellationToken
+        );
         // The agent constructs messages itself, so (unlike OpenAgent/AnthropicAgent) it must stamp the
         // run's RunId/ParentRunId/ThreadId explicitly — otherwise every emitted message carries a null
         // RunId and the client merge key (kind, runId, generationId, messageOrderIdx) loses a segment.
@@ -177,6 +194,7 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
         IAsyncEnumerable<ResponseEvent> events,
         string fromAgent,
         string? runGenerationId,
+        string? replayOrigin,
         [EnumeratorCancellation] CancellationToken cancellationToken
     )
     {
@@ -234,12 +252,35 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
                     when itemEvent.Type == ResponseEventTypes.OutputItemDone
                         && TryReadString(itemEvent.Item, "type", out var reasoningItemType)
                         && reasoningItemType == "reasoning":
-                    if (TryExtractReasoning(itemEvent.Item, out var reasoning, out var visibility))
+                    // With replay on, an Encrypted result is the blob, and the tagged row below carries it.
+                    if (
+                        TryExtractReasoning(itemEvent.Item, out var reasoning, out var visibility)
+                        && (replayOrigin is null || visibility != ReasoningVisibility.Encrypted)
+                    )
                     {
                         yield return new ReasoningMessage
                         {
                             Reasoning = reasoning,
                             Visibility = visibility,
+                            Role = Role.Assistant,
+                            FromAgent = fromAgent,
+                            GenerationId = generationId,
+                            MessageOrderIdx = itemEvent.OutputIndex,
+                        };
+                    }
+
+                    // TryExtractReasoning stops at the summary, so the blob is read on its own.
+                    if (
+                        replayOrigin is not null
+                        && TryReadString(itemEvent.Item, "encrypted_content", out var blob)
+                        && !string.IsNullOrEmpty(blob)
+                    )
+                    {
+                        yield return new ReasoningMessage
+                        {
+                            Reasoning = blob,
+                            Visibility = ReasoningVisibility.Encrypted,
+                            EncryptedOrigin = replayOrigin,
                             Role = Role.Assistant,
                             FromAgent = fromAgent,
                             GenerationId = generationId,

@@ -177,6 +177,16 @@ public sealed record ResponseInputItem
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Arguments { get; init; }
 
+    /// <summary>For <c>type = "reasoning"</c>: always empty on replay, but the field must be present.</summary>
+    [JsonPropertyName("summary")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<JsonNode>? Summary { get; init; }
+
+    /// <summary>For <c>type = "reasoning"</c>: the opaque blob the model returned, sent back verbatim.</summary>
+    [JsonPropertyName("encrypted_content")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? EncryptedContent { get; init; }
+
     /// <summary>
     ///     For <c>type = "function_call_output"</c>: the textual result of the local tool
     ///     execution that the model should consume on its next turn.

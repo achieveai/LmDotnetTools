@@ -29,6 +29,15 @@ public record ReasoningMessage : IMessage, ICanGetText
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public ReasoningVisibility Visibility { get; init; } = ReasoningVisibility.Plain;
 
+    /// <summary>
+    ///     Who can read this <see cref="ReasoningVisibility.Encrypted" /> blob, as <c>responses:{modelId}</c>. Only
+    ///     the Responses agent sets it, and only with reasoning replay on. A row with this set goes back to that
+    ///     model alone: other providers cannot read it, and it never goes to a subscriber or the browser.
+    /// </summary>
+    [JsonPropertyName("encryptedOrigin")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? EncryptedOrigin { get; init; }
+
     public string? GetText()
     {
         return Visibility == ReasoningVisibility.Encrypted ? null : Reasoning;

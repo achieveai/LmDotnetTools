@@ -115,6 +115,35 @@ public class ReasoningMessageTests
     }
 
     [Fact]
+    public void Tagged_row_is_skipped_and_summary_is_kept()
+    {
+        var request = ChatCompletionRequest.FromMessages(
+            [
+                new TextMessage { Role = Role.User, Text = "q1" },
+                new ReasoningMessage
+                {
+                    Role = Role.Assistant,
+                    Reasoning = "SUMMARY",
+                    Visibility = ReasoningVisibility.Summary,
+                },
+                new ReasoningMessage
+                {
+                    Role = Role.Assistant,
+                    Reasoning = "OPENAI-BLOB",
+                    Visibility = ReasoningVisibility.Encrypted,
+                    EncryptedOrigin = "responses:gpt-5.6-terra",
+                },
+                new TextMessage { Role = Role.Assistant, Text = "a1" },
+                new TextMessage { Role = Role.User, Text = "q2" },
+            ],
+            new LmCore.Core.GenerateReplyOptions { ModelId = "m" }
+        );
+
+        var details = request.Messages.SelectMany(m => m.ReasoningDetails ?? []).ToList();
+        Assert.Equal([("reasoning.summary", "SUMMARY")], details.Select(d => (d.Type, d.Data)));
+    }
+
+    [Fact]
     public void FromMessages_ReasoningOnlyTurn_StaysOnItsOwnAssistantMessageNotTheNextUserMessage()
     {
         // Arrange: a turn that ended after thinking (interrupted, or no output), then the next question.
