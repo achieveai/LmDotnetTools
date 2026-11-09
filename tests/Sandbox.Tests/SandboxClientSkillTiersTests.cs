@@ -102,6 +102,26 @@ public sealed class SandboxClientSkillTiersTests
         info.SkillsPolicy.AgentsSearchTool.Should().BeFalse();
     }
 
+    /// <summary>The agents flag alone also makes the create flag-bearing, so an omitted pair still settles as off.</summary>
+    [Fact]
+    public async Task CreateAsync_OnlyAgentsFlagSent_BothOmittedResponseFlagsResolveToFalse()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            """{"session_id":"s-1","properties":{},"skills":{"default_tier":"included","included":[]}}""",
+            HttpStatusCode.Created
+        );
+
+        var info = await client.CreateAsync(
+            new SandboxCreateRequest("ws", skills: new SandboxSkillsPolicy(agentsSearchTool: false))
+        );
+
+        info.SkillsPolicy!.SearchTool.Should().BeFalse("a gateway that took the agents flag omits only a false flag");
+        info.SkillsPolicy.AgentsSearchTool.Should().BeFalse();
+    }
+
     /// <summary>With no flag sent, absent cannot be told from a gateway older than the fields, so nothing is invented.</summary>
     [Theory]
     [InlineData("", null, null)]

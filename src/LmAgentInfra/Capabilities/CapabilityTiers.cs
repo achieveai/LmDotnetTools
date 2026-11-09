@@ -3285,8 +3285,9 @@ public sealed class CapabilityTiers : IDisposable, IAsyncDisposable
 
         /// <summary>
         /// Hands the stage the tools this build's root sandbox connect registered (their handlers are already in the
-        /// registry). With <see cref="TierSettings.ToolCap"/> set, every one but <c>Skill</c> becomes tier-managed: the
-        /// root's view gains its <c>tool</c> keys (seeded from the mode once, then checked against these tools) and
+        /// registry). With <see cref="TierSettings.ToolCap"/> set, every sandbox tool except <c>Skill</c> and the
+        /// gateway search tools becomes tier-managed: the root's view gains its <c>tool</c> keys (seeded from the mode
+        /// once, then checked against these tools) and
         /// <see cref="RootProvider"/> hides the managed tools the view does not list. Call it once, after the connect
         /// and before the build reads its contracts, and only when the connect succeeded: a build that never calls it
         /// hides nothing. No-op while inert, once settled, without <c>ToolCap</c>, or for an empty list.
