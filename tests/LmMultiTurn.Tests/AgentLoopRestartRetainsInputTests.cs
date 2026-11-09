@@ -12,6 +12,7 @@ using AchieveAi.LmDotnetTools.CopilotSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.CopilotSdkProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using FluentAssertions;
@@ -209,6 +210,104 @@ public class AgentLoopRestartRetainsInputTests : LoggingTestBase
         {
             assigned.Count(id => id == inputId).Should().Be(1, "{0} is assigned to one run", inputId);
         }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Claude_MergedRunEnding_PublishesItsAssignmentAndReportsInputStillQueued(bool mergedRunFails)
+    {
+        // Input C is queued locally while the merged run is in flight, so "0 pending" would be wrong. When the
+        // merged run dies before the CLI's first event, the dequeue heuristic never fires and only the flush
+        // publishes the assignment a caller is waiting on.
+        var client = new InteractiveClaudeClient(heldTurns: 2);
+        using var queuedLocally = new SemaphoreSlim(0);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var loop = new ClaudeAgentLoop(
+            new ClaudeAgentSdkOptions { Mode = ClaudeAgentSdkMode.Interactive, MaxTurnsPerRun = 5 },
+            mcpServers: null,
+            threadId: "claude-merged-run-end",
+            clientFactory: (_, _) => client,
+            logger: new QueuedLocallyLogger(
+                () => queuedLocally.Release(),
+                LoggerFactory.CreateLogger<ClaudeAgentLoop>()
+            )
+        );
+        var seen = new System.Collections.Concurrent.ConcurrentQueue<IMessage>();
+        var mergedRunCompleted = new TaskCompletionSource<RunCompletedMessage>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var completions = 0;
+        var messages = loop.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        var first = messages.MoveNextAsync();
+        var watching = Task.Run(
+            async () =>
+            {
+                try
+                {
+                    for (var hasMessage = await first; hasMessage; hasMessage = await messages.MoveNextAsync())
+                    {
+                        seen.Enqueue(messages.Current);
+                        if (messages.Current is RunCompletedMessage completed && ++completions == 2)
+                        {
+                            _ = mergedRunCompleted.TrySetResult(completed);
+                        }
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    // Cancelling the token ends this subscription.
+                }
+            },
+            CancellationToken.None
+        );
+
+        var running = loop.RunAsync(cts.Token);
+        await loop.WaitUntilReadyAsync(cts.Token);
+        _ = await loop.SendAsync([new TextMessage { Text = "start", Role = Role.User }], inputId: "input-start");
+        await client.TurnSent(1).WaitAsync(cts.Token);
+        var inputA = await loop.SendAsync([MessageA()], inputId: "input-A");
+        await queuedLocally.WaitAsync(cts.Token);
+        client.FinishTurn();
+        await client.TurnSent(2).WaitAsync(cts.Token);
+        _ = await loop.SendAsync([new TextMessage { Text = "message-C", Role = Role.User }], inputId: "input-C");
+        await queuedLocally.WaitAsync(cts.Token);
+        if (mergedRunFails)
+        {
+            client.FailStream(new InvalidOperationException("CLI died"));
+        }
+        else
+        {
+            client.FinishTurn();
+        }
+
+        var merged = await mergedRunCompleted.Task.WaitAsync(cts.Token);
+
+        merged.IsError.Should().Be(mergedRunFails);
+        merged.PendingMessageCount.Should().Be(1, "input C is still queued locally");
+        seen.OfType<RunAssignmentMessage>()
+            .Should()
+            .Contain(m => m.Assignment.InputIds!.Contains(inputA.ReceiptId), "a caller is waiting on that receipt");
+
+        if (mergedRunFails)
+        {
+            // A merged run that fails still ends the loop, and the dead loop resurfaces through disposal.
+            await FluentActions.Awaiting(() => running).Should().ThrowAsync<InvalidOperationException>();
+            await FluentActions
+                .Awaiting(() => loop.DisposeAsync().AsTask())
+                .Should()
+                .ThrowAsync<InvalidOperationException>();
+        }
+        else
+        {
+            await loop.StopAsync(TimeSpan.FromSeconds(5));
+            await StoppedAsync(running);
+            await loop.DisposeAsync();
+        }
+
+        await cts.CancelAsync();
+        await watching;
+        await messages.DisposeAsync();
     }
 
     private static AssignmentGateStore NewStoreGatingFirstQueuedWrite() =>
@@ -456,6 +555,9 @@ public class AgentLoopRestartRetainsInputTests : LoggingTestBase
         }
 
         public void Dispose() => IsRunning = false;
+
+        /// <summary>Ends the stream with a failure, the way the CLI's stdout dying surfaces.</summary>
+        public void FailStream(Exception error) => _stream.Writer.TryComplete(error);
 
         private void Answer()
         {

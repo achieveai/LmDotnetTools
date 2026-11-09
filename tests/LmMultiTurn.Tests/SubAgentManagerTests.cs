@@ -1719,15 +1719,13 @@ public class SubAgentManagerTests : IAsyncLifetime
     /// earlier version of this test passed against a fix that could not have fired in production.
     ///
     /// <para>
-    /// <c>GenerationId</c> is load-bearing twice over, which is why it is echoed from the request's own
-    /// <see cref="GenerateReplyOptions"/> exactly as a real provider echoes it. First,
-    /// <c>MessageTransformationMiddleware</c> returns a message unchanged when its generation id is null
-    /// or empty, and that same pass is what converts a plural <see cref="ToolsCallUpdateMessage"/> into
-    /// the singular updates the joiner folds into a <c>ToolCallMessage</c> — without it the pipeline
-    /// yields a plural <c>ToolsCallMessage</c>, which the loop's turn body does not match, so the tool
-    /// never runs. Second, the deferred entry is stamped with the tool call's generation id, and the run
-    /// loop parks only when that matches the TURN's generation — so a fabricated id lets the tool defer
-    /// and then leaves the loop marching into the next turn, where the deferral precondition rejects it.
+    /// <c>GenerationId</c> is echoed from the request's own <see cref="GenerateReplyOptions"/> exactly as
+    /// a real provider echoes it. <c>MessageTransformationMiddleware</c> can now recover a missing id on
+    /// a plural <see cref="ToolsCallUpdateMessage"/> from the run options, so the tool would run either
+    /// way. The echo still matters because the deferred entry is stamped with the tool call's generation
+    /// id, and the run loop parks only when that matches the TURN's generation — so a fabricated id lets
+    /// the tool defer and then leaves the loop marching into the next turn, where the deferral
+    /// precondition rejects it.
     /// </para>
     /// </remarks>
     private static ToolsCallUpdateMessage StreamingAskUserQuestionCall(

@@ -71,6 +71,77 @@ public class MessageTransformationMiddlewareTests
     }
 
     [Fact]
+    public async Task Downstream_StampsTheRunsGenerationId_WhenTheProviderLeftItEmpty()
+    {
+        // #502: without an id the plural message skipped expansion, so it was saved but never run.
+        var middleware = new MessageTransformationMiddleware();
+        var agent = new MockAgent(
+            new ToolsCallMessage
+            {
+                ToolCalls =
+                [
+                    new ToolCall
+                    {
+                        FunctionName = "probe",
+                        FunctionArgs = "{}",
+                        ToolCallId = "call-1",
+                    },
+                ],
+            }
+        );
+        var context = new MiddlewareContext(
+            Messages: [],
+            Options: new GenerateReplyOptions { GenerationId = "run-gen" }
+        );
+
+        var messages = (await middleware.InvokeAsync(context, agent)).ToList();
+
+        var call = Assert.IsType<ToolCallMessage>(Assert.Single(messages));
+        Assert.Equal("run-gen", call.GenerationId);
+        Assert.Equal(0, call.MessageOrderIdx);
+    }
+
+    [Fact]
+    public async Task Downstream_Streaming_IdLessPluralUpdates_BecomeOrderedSingularUpdates()
+    {
+        var middleware = new MessageTransformationMiddleware();
+        var streamingMessages = new IMessage[]
+        {
+            new ToolsCallUpdateMessage
+            {
+                ToolCallUpdates =
+                [
+                    new ToolCallUpdate
+                    {
+                        FunctionName = "probe",
+                        FunctionArgs = "{\"a\"",
+                        ToolCallId = "call-1",
+                    },
+                ],
+            },
+            new ToolsCallUpdateMessage
+            {
+                ToolCallUpdates = [new ToolCallUpdate { FunctionArgs = ":1}", ToolCallId = "call-1" }],
+            },
+        }.ToAsyncEnumerable();
+        var agent = new MockStreamingAgent(streamingMessages);
+        var context = new MiddlewareContext(
+            Messages: [],
+            Options: new GenerateReplyOptions { GenerationId = "run-gen" }
+        );
+
+        var resultStream = await middleware.InvokeStreamingAsync(context, agent);
+        var updates = (await resultStream.ToListAsync()).Select(Assert.IsType<ToolCallUpdateMessage>).ToList();
+
+        Assert.Equal(2, updates.Count);
+        Assert.All(updates, u => Assert.Equal("run-gen", u.GenerationId));
+        Assert.NotNull(updates[0].MessageOrderIdx);
+        Assert.Equal(updates[0].MessageOrderIdx, updates[1].MessageOrderIdx);
+        Assert.Equal(0, updates[0].ChunkIdx);
+        Assert.Equal(1, updates[1].ChunkIdx);
+    }
+
+    [Fact]
     public async Task Downstream_AssignsOrdering_ToAllMessageTypes()
     {
         // Arrange

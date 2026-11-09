@@ -1380,10 +1380,11 @@ public sealed class AgentHierarchyServiceTests
     /// stylistic. The child this stamps provenance onto was spawned with <c>run_in_background</c> and is
     /// running its own turn against this same store, where
     /// <c>ContextObservationProjection.RecordAsync</c> merges <c>context.*</c> keys into this very row
-    /// through the store's atomic read-modify-write. A blind <c>SaveMetadataAsync</c> does not take the
-    /// store's metadata lock (see <see cref="InMemoryConversationStore"/>), so it can land INSIDE that
-    /// read-modify-write's window — after the projection has read the row, before it writes back — and
-    /// be written straight back out. The provenance keys vanish, and the cold-path scan that projects
+    /// through the store's atomic read-modify-write. A blind <c>SaveMetadataAsync</c> used to land INSIDE
+    /// that read-modify-write's window — after the projection had read the row, before it wrote back —
+    /// and be written straight back out. The save now waits for the store's metadata lock, but it still
+    /// writes a whole row built from an earlier read, so it would overwrite the keys merged since. Either
+    /// way the provenance keys vanish, and the cold-path scan that projects
     /// from them stops seeing the child at all. That is exactly how this test flaked on CI: not every
     /// run, and on whichever of the two children lost, so it surfaced as three different assertions
     /// failing with three different survivors.

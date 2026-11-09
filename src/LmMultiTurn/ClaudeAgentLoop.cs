@@ -991,13 +991,17 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
 
             await CompleteTurnAsync(assignment.RunId, assignment.GenerationId, ct: ct);
 
-            // No pending messages after merge (we processed all of them)
+            // Before the completion, as on the ordinary run path: a client must be told which run took
+            // its input before it hears that run ended.
+            await FlushPendingRunAssignmentsAsync(assignment.RunId, ct);
+
+            // Input that arrived while this merged run was running is still queued locally.
             await CompleteRunAsync(
                 assignment.RunId,
                 assignment.GenerationId,
                 wasForked: isExplicitFork,
                 forkedToRunId: isExplicitFork ? assignment.RunId : null,
-                pendingMessageCount: 0,
+                pendingMessageCount: _localMessageQueue.Count,
                 ct: ct
             );
         }
@@ -1007,12 +1011,14 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             // reported as failed, so the turn swept behind it does not claim success.
             Logger.LogError(ex, "Error during merged run {RunId}", assignment.RunId);
 
+            await FlushPendingRunAssignmentsAsync(assignment.RunId, ct);
+
             await CompleteRunAsync(
                 assignment.RunId,
                 assignment.GenerationId,
                 wasForked: isExplicitFork,
                 forkedToRunId: isExplicitFork ? assignment.RunId : null,
-                pendingMessageCount: 0,
+                pendingMessageCount: _localMessageQueue.Count,
                 isError: true,
                 errorMessage: ex.Message,
                 ct: ct
