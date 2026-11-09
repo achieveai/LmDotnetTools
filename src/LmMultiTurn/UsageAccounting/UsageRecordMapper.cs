@@ -15,10 +15,12 @@ public static class UsageRecordMapper
     /// <summary>
     ///     The <see cref="LmCore.Models.Usage.ExtraProperties" /> key a provider uses to report the model it
     ///     actually served. Written today only by <c>OpenRouterUsageMiddleware</c> from OpenRouter's generation
-    ///     stats, where auto-routing and fallback can serve a model other than the requested one; every other
-    ///     provider reports none, and those records keep <see cref="UsageRecord.EffectiveModel" /> null.
+    ///     stats, where auto-routing and fallback can serve a model other than the requested one, and by
+    ///     <c>ModelFallbackMiddleware</c> on a fallback model's reply; every other reply carries none, and those
+    ///     records keep <see cref="UsageRecord.EffectiveModel" /> null. The same key as
+    ///     <see cref="Usage.ModelExtraProperty" />.
     /// </summary>
-    public const string ProviderReportedModel = "model";
+    public const string ProviderReportedModel = Usage.ModelExtraProperty;
 
     /// <summary>
     ///     Builds a record from a usage message. <paramref name="ownerExecutionId" /> is the emitter's id

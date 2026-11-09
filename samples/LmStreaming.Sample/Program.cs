@@ -980,6 +980,25 @@ try
             }
         }
 
+        // Best-effort disposal of a provider agent built for a configuration that no loop took over.
+        static void DisposeUnadoptedProviderAgent(IStreamingAgent? providerAgent)
+        {
+            try
+            {
+                if (providerAgent is IAsyncDisposable asyncDisposable)
+                {
+                    asyncDisposable.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                }
+                else if (providerAgent is IDisposable disposable)
+                {
+                    disposable.Dispose();
+                }
+            }
+            catch
+            { /* ignore cleanup errors */
+            }
+        }
+
         // Start mirroring every conversation's messages into its workspace (#251).
         //
         // THIS WRAPPER IS THE ATTACH POINT, and it is a wrapper rather than a call inside the factory
@@ -1617,7 +1636,11 @@ try
                 // them, and disposing them there would break a switch that was correctly refused.
                 var carriedOver = new HashSet<object>(ReferenceEqualityComparer.Instance);
 
-                var providerAgent = agentFactory(normalizedProviderId);
+                // Built inside the try below and owned by this attempt until a loop takes it: the
+                // construction-failure path disposes it, with any fallback agents it holds, unless
+                // `providerAgentAdopted` says a loop already owns it.
+                IStreamingAgent? providerAgent = null;
+                var providerAgentAdopted = false;
 
                 // Per-conversation tool registry: clone the shared (stateless) sample tools and
                 // layer a FRESH TaskManager on top so every chat gets its own isolated todo list
@@ -2111,18 +2134,15 @@ try
                 // tool set. Gated by the provider allow-list and the mode's EnabledTools (function-tool
                 // list); the native built-in path (modeBuiltInAllowList, below) is governed separately
                 // and left untouched.
-                // Resolve the discovered Copilot model (if any) backing this provider once; its
-                // transport and raw id drive the model-id, reasoning, and web-tool wiring below.
+                // Resolve the discovered Copilot model (if any) backing this provider once; it drives
+                // the reasoning and web-tool wiring below. ResolveModelIdForProvider sets the model id.
                 var isCopilotBackedModel = providerRegistry.TryGetCopilotModel(
                     normalizedProviderId,
                     out var copilotModelInfo
                 );
                 // Same resolution for a discovered Anthropic-compatible provider-family model (e.g.
-                // DeepSeek); its raw model id drives the model-id and web-tool wiring below.
-                var isAnthropicCompatModel = providerRegistry.TryGetAnthropicCompatModel(
-                    normalizedProviderId,
-                    out var anthropicCompatModelInfo
-                );
+                // DeepSeek); whether there is one drives the web-tool wiring below.
+                var isAnthropicCompatModel = providerRegistry.TryGetAnthropicCompatModel(normalizedProviderId, out _);
 
                 var enabledWebTools = WebToolRegistrationPolicy.ResolveEnabledTools(
                     mode.EnabledTools,
@@ -2179,13 +2199,7 @@ try
                         }
                     }
 
-                    // Discovered Copilot models use their raw model id verbatim; discovered
-                    // Anthropic-compatible models likewise use their configured model name verbatim;
-                    // fixed providers keep the curated per-provider id map.
-                    var modelId =
-                        isCopilotBackedModel ? copilotModelInfo.Id
-                        : isAnthropicCompatModel ? anthropicCompatModelInfo.ModelName
-                        : GetModelIdForProvider(normalizedProviderId);
+                    var modelId = ResolveModelIdForProvider(providerRegistry, normalizedProviderId);
 
                     // Built-in (server-side) tools are selected by the MODE — never injected per
                     // provider or via a per-mode override. A mode declares its server-side built-ins in
@@ -2198,6 +2212,22 @@ try
                     var allBuiltInTools = GetBuiltInToolsForProvider(normalizedProviderId);
                     var modeBuiltInAllowList = mode.EnabledBuiltInTools ?? mode.EnabledTools;
                     var filteredBuiltInTools = ModeToolFilter.FilterBuiltInTools(allBuiltInTools, modeBuiltInAllowList);
+                    var fallbackWebTools = new FallbackWebTools(
+                        filteredRegistry,
+                        enabledWebTools,
+                        jinaWebProvider,
+                        webToolsOptions,
+                        loggerFactory,
+                        hostedSearch.Registered
+                    );
+                    providerAgent = WithConfiguredModelFallback(
+                        sp,
+                        normalizedProviderId,
+                        agentFactory(normalizedProviderId),
+                        agentFactory,
+                        modeBuiltInAllowList,
+                        fallbackWebTools
+                    );
 
                     // Surface model reasoning (provider→Thinking/Reasoning mapping). A provisioned root
                     // effort is read from durable conversation metadata here, at the request-options build
@@ -2324,6 +2354,7 @@ try
                     // Applied here, before the workflow/transcript blocks below add their own `with`
                     // clauses, so the narrowing cannot be lost to a later record copy.
                     subAgentOptions = ApplySubAgentToolNarrowing(subAgentOptions, caps);
+                    subAgentOptions = fallbackWebTools.WithoutHiddenTools(subAgentOptions);
 
                     // #623 warning floor — wired UNCONDITIONALLY (not gated on the mode's
                     // SubAgentRequiredTools opt-in): when a spawn's dispatch prompt orders board work,
@@ -2895,6 +2926,8 @@ try
                             throw new AgentBusyException(threadId);
                         }
 
+                        providerAgentAdopted = true;
+
                         // The live loop runs on this build from here, so its tiers do too.
                         tierStage.CommitAsync(CancellationToken.None).GetAwaiter().GetResult();
                     }
@@ -2971,6 +3004,7 @@ try
                             // in-place switch, or the loop's teardown if there is none, disposes it once.
                             OwnsProviderAgent = true,
                         };
+                        providerAgentAdopted = true;
                     }
 
                     // EVERYTHING BELOW RUNS ONCE PER CONVERSATION, NOT ONCE PER SWITCH. It wires the
@@ -3221,6 +3255,13 @@ try
                     // Dispose owned resources (MCP clients) if agent construction fails — but never the
                     // ones this attempt only borrowed from the live conversation (see `carriedOver`).
                     DisposeOwnedResources([.. ownedResources.Where(resource => !carriedOver.Contains(resource))]);
+
+                    // A provider agent no loop took (a switch refused as busy, or a failure before the
+                    // loop existed) belongs to nobody else, and with fallback it holds several agents.
+                    if (!providerAgentAdopted)
+                    {
+                        DisposeUnadoptedProviderAgent(providerAgent);
+                    }
 
                     throw;
                 }
@@ -3860,6 +3901,19 @@ public partial class Program
 
         return path;
     }
+
+    /// <summary>
+    ///     Every request extra-property key this host's reasoning shapes write: <see cref="BuildReasoningExtraProperties" />
+    ///     and <c>CopilotReasoningShaper.Shape</c>. A request moved to another model drops all of them before
+    ///     taking that model's own shape, so a key added to either shaper belongs here too.
+    /// </summary>
+    internal static readonly string[] ReasoningExtraPropertyKeys =
+    [
+        "Thinking",
+        "Reasoning",
+        "OutputConfig",
+        "reasoning_effort",
+    ];
 
     /// <summary>
     ///     Maps a normalized provider id (plus, for discovered Copilot models, its transport) to the
@@ -4647,6 +4701,140 @@ public partial class Program
             "anthropic" or "test-anthropic" => [new AnthropicWebSearchTool()],
             _ => null,
         };
+    }
+
+    /// <summary>
+    ///     The model id a provider id runs: a discovered Copilot model's raw id and a discovered
+    ///     Anthropic-compatible model's configured name, both verbatim; a fixed provider's curated id otherwise.
+    /// </summary>
+    internal static string ResolveModelIdForProvider(ProviderRegistry registry, string providerId) =>
+        registry.TryGetCopilotModel(providerId, out var copilotModel) ? copilotModel.Id
+        : registry.TryGetAnthropicCompatModel(providerId, out var compatModel) ? compatModel.ModelName
+        : GetModelIdForProvider(providerId);
+
+    /// <summary>
+    ///     Opt-in model fallback for a conversation's provider (#930 P1 item 8). The array
+    ///     <c>LmStreaming:ModelFallback:{providerId}</c> lists provider ids to try, in order, when this one is
+    ///     down; no entry returns <paramref name="primary" /> unchanged.
+    ///     <see cref="ModelFallbackMiddleware.IsProviderOutage" /> decides which failures fall back.
+    /// </summary>
+    /// <remarks>
+    ///     Each fallback runs its own model id, gets the built-in tools its own provider offers that the mode
+    ///     allows (<paramref name="modeBuiltInAllowList" />, the same filter the primary's built-ins went
+    ///     through), and gets its provider's default reasoning shape: a provisioned root reasoning effort is
+    ///     not carried over. A single provider id written as a plain string is a one-entry list. A fallback
+    ///     provider that is not available (no key or login) or cannot be built is skipped with a warning rather
+    ///     than failing the conversation, which never needed it to start: left in the chain, its 401 would end
+    ///     the chain before a later target that works. A target with native search drops the function web
+    ///     tools; any other target gets <paramref name="webTools" /> in its own request, so a mode that lists
+    ///     web search keeps it after a hop. If such a target could not search (no <c>JINA_API_KEY</c>), it is
+    ///     skipped with a warning, because an answer that silently lost its search can read as sourced. A
+    ///     mode with no tool list promises no search, so that target still answers, with a warning. Copilot's
+    ///     hosted search never counts here, because the outage behind a hop takes it down too.
+    /// </remarks>
+    internal static IStreamingAgent WithConfiguredModelFallback(
+        IServiceProvider sp,
+        string providerId,
+        IStreamingAgent primary,
+        Func<string, IStreamingAgent> agentFactory,
+        IReadOnlyList<string>? modeBuiltInAllowList,
+        FallbackWebTools webTools
+    )
+    {
+        var section = sp.GetRequiredService<IConfiguration>().GetSection($"LmStreaming:ModelFallback:{providerId}");
+        // Blank, not null, is how a list's parent key reads when the setting comes through host settings.
+        string[]? fallbackIds = string.IsNullOrWhiteSpace(section.Value) ? section.Get<string[]>() : [section.Value];
+        if (fallbackIds is not { Length: > 0 })
+        {
+            return primary;
+        }
+
+        var registry = sp.GetRequiredService<ProviderRegistry>();
+        var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("LmStreaming.Sample.ModelFallback");
+        var targets = new List<FallbackTarget>();
+        foreach (
+            var targetId in fallbackIds
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Select(id => id.Trim().ToLowerInvariant())
+                .Where(id => id != providerId)
+                .Distinct()
+        )
+        {
+            if (!registry.IsAvailable(targetId))
+            {
+                logger.LogWarning(
+                    "Model fallback target {ToProvider} for {FromProvider} is unavailable and is skipped",
+                    targetId,
+                    providerId
+                );
+                continue;
+            }
+
+            var targetBuiltIns = ModeToolFilter.FilterBuiltInTools(
+                GetBuiltInToolsForProvider(targetId),
+                modeBuiltInAllowList
+            );
+            var hasNativeSearch = targetBuiltIns is { Count: > 0 };
+            if (!hasNativeSearch && webTools.ModeEnablesSearch && !webTools.CanSearch)
+            {
+                if (webTools.SearchRequired)
+                {
+                    logger.LogWarning(
+                        "Model fallback target {ToProvider} for {FromProvider} has no web search (JINA_API_KEY is not set or web tools are not configured) and is skipped",
+                        targetId,
+                        providerId
+                    );
+                    continue;
+                }
+
+                logger.LogWarning(
+                    "Model fallback target {ToProvider} for {FromProvider} will answer without web search (JINA_API_KEY is not set or web tools are not configured)",
+                    targetId,
+                    providerId
+                );
+            }
+
+            IStreamingAgent targetAgent;
+            try
+            {
+                targetAgent = agentFactory(targetId);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(
+                    ex,
+                    "Model fallback target {ToProvider} for {FromProvider} is unavailable and is skipped",
+                    targetId,
+                    providerId
+                );
+                continue;
+            }
+
+            IReadOnlyList<FunctionContract> hiddenWebTools = hasNativeSearch ? [] : webTools.RegisterHidden();
+            var targetReasoning = BuildConversationReasoningExtraProperties(
+                registry,
+                targetId,
+                targetId,
+                requestedEffort: null
+            );
+            targets.Add(
+                new FallbackTarget(
+                    ResolveModelIdForProvider(registry, targetId),
+                    targetAgent,
+                    options =>
+                        options with
+                        {
+                            BuiltInTools = targetBuiltIns,
+                            Functions = webTools.ShapeFunctions(options.Functions, hasNativeSearch, hiddenWebTools),
+                            ExtraProperties = options
+                                .ExtraProperties.RemoveRange(ReasoningExtraPropertyKeys)
+                                .SetItems(targetReasoning),
+                        }
+                )
+            );
+        }
+
+        return targets.Count == 0 ? primary : new ModelFallbackAgent(primary, targets, logger);
     }
 
     /// <summary>

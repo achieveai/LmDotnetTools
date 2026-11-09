@@ -8,6 +8,12 @@ namespace AchieveAi.LmDotnetTools.LmCore.Models;
 [JsonConverter(typeof(UsageShadowPropertiesJsonConverter))]
 public record Usage
 {
+    /// <summary>
+    ///     The <see cref="ExtraProperties" /> key naming the model that actually served this usage. The usage
+    ///     ledger books spend to it when it is set; model fallback sets it on a fallback's reply.
+    /// </summary>
+    public const string ModelExtraProperty = "model";
+
     [JsonPropertyName("prompt_tokens")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int PromptTokens { get; init; }
