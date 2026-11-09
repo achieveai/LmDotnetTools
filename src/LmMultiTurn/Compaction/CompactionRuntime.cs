@@ -2965,8 +2965,9 @@ internal sealed class CompactionRuntime
         {
             InputRatePerMillion = pricing.PromptPerMillion,
             OutputRatePerMillion = pricing.CompletionPerMillion,
+            // What the request's markers cost, whatever lifetime a host told the temperature check to assume.
             CacheWriteRatePerMillion =
-                EffectivePromptCacheTtl >= TimeSpan.FromHours(1)
+                _host.DefaultOptions.PromptCaching == PromptCachingMode.AutoOneHour
                     ? pricing.CacheWrite1hPerMillion ?? pricing.CacheWrite5mPerMillion
                     : pricing.CacheWrite5mPerMillion,
             CachingEnabled = cachingEnabled,

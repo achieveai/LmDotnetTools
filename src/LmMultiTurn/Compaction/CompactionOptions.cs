@@ -132,7 +132,7 @@ public sealed record CompactionOptions
 {
     private static readonly TimeSpan s_defaultCacheTtl = TimeSpan.FromMinutes(5);
 
-    private readonly TimeSpan? _cacheTtl;
+    private TimeSpan? _cacheTtl;
 
     /// <summary>Environment variable that, when set to <c>1</c> or <c>true</c>, kills compaction in every loop.</summary>
     public const string KillSwitchEnvironmentVariable = "LMMULTITURN_COMPACTION_DISABLED";
@@ -235,8 +235,18 @@ public sealed record CompactionOptions
     }
 
     /// <summary>The cache lifetime for a loop sending with <paramref name="promptCaching" />.</summary>
-    public TimeSpan EffectiveCacheTtl(PromptCachingMode promptCaching) =>
-        _cacheTtl ?? (promptCaching == PromptCachingMode.AutoOneHour ? TimeSpan.FromHours(1) : s_defaultCacheTtl);
+    public TimeSpan EffectiveCacheTtl(PromptCachingMode promptCaching) => _cacheTtl ?? DefaultCacheTtl(promptCaching);
+
+    /// <summary>
+    ///     A copy with no host-set cache lifetime, so <see cref="EffectiveCacheTtl" /> follows the caching mode.
+    ///     For a host that binds these options from configuration: when the key is absent the binder still
+    ///     writes <see cref="CacheTtl" />'s default back through its setter, which would read as a host value.
+    /// </summary>
+    public CompactionOptions WithCacheTtlUnset() => this with { _cacheTtl = null };
+
+    /// <summary>The cache lifetime <paramref name="promptCaching" /> gives when no host set one.</summary>
+    internal static TimeSpan DefaultCacheTtl(PromptCachingMode promptCaching) =>
+        promptCaching == PromptCachingMode.AutoOneHour ? TimeSpan.FromHours(1) : s_defaultCacheTtl;
 
     /// <summary>Ring length of <c>context.observations</c> kept in thread metadata.</summary>
     public int ObservationHistoryLength { get; init; } = 50;

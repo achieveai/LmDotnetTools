@@ -67,6 +67,41 @@ public class PromptCachingRequestTests
     }
 
     [Fact]
+    public void FromMessages_WithOneHour_MarksTheLastFunctionToolForOneHour()
+    {
+        var options = new GenerateReplyOptions
+        {
+            ModelId = "claude-sonnet-4-20250514",
+            PromptCaching = PromptCachingMode.AutoOneHour,
+            Functions =
+            [
+                new FunctionContract
+                {
+                    Name = "get_weather",
+                    Description = "Get weather",
+                    Parameters =
+                    [
+                        new FunctionParameterContract
+                        {
+                            Name = "city",
+                            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
+                        },
+                    ],
+                },
+            ],
+        };
+
+        var request = AnthropicRequest.FromMessages([new TextMessage { Role = Role.User, Text = "Hello" }], options);
+        var tools = JsonDocument
+            .Parse(JsonSerializer.Serialize(request, _jsonOptions))
+            .RootElement.GetProperty("tools");
+
+        var last = tools[tools.GetArrayLength() - 1];
+        Assert.Equal("get_weather", last.GetProperty("name").GetString());
+        Assert.Equal("""{"type":"ephemeral","ttl":"1h"}""", last.GetProperty("cache_control").GetRawText());
+    }
+
+    [Fact]
     public void FromMessages_WithCachingAuto_SendsNoTtl()
     {
         var markers = CacheControls(SerializedRequest(PromptCachingMode.Auto));

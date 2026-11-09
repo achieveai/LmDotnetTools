@@ -15,6 +15,12 @@ public static class PromptCachingStrategy
     private static readonly AnthropicCacheControl s_oneHour = new() { Ttl = "1h" };
 
     /// <summary>
+    ///     Applies 5-minute cache breakpoints to the request and returns a new request with caching enabled.
+    /// </summary>
+    /// <param name="request">The request to mark.</param>
+    public static AnthropicRequest Apply(AnthropicRequest request) => Apply(request, oneHour: false);
+
+    /// <summary>
     ///     Applies cache breakpoints to the request and returns a new request with caching enabled.
     /// </summary>
     /// <param name="request">The request to mark.</param>
@@ -22,7 +28,7 @@ public static class PromptCachingStrategy
     ///     Marks every breakpoint for 1 hour. All of them, because reading a 5-minute entry only restarts its
     ///     5 minutes, so a 5-minute tail behind 1-hour markers would never become a 1-hour entry.
     /// </param>
-    public static AnthropicRequest Apply(AnthropicRequest request, bool oneHour = false)
+    public static AnthropicRequest Apply(AnthropicRequest request, bool oneHour)
     {
         ArgumentNullException.ThrowIfNull(request);
         var result = request;

@@ -550,7 +550,8 @@ public class AnthropicStreamParser
             if (_usage.CacheCreationInputTokens > 0)
             {
                 _cacheCreationTokens = _usage.CacheCreationInputTokens;
-                _cacheWrite1hTokens = _usage.CacheWrite1hTokens;
+                // Recorded Anthropic streams repeat the write count here but not its TTL split.
+                _cacheWrite1hTokens = _usage.CacheCreation?.Ephemeral1hInputTokens ?? _cacheWrite1hTokens;
             }
 
             if (_usage.CacheReadInputTokens > 0)
@@ -1382,7 +1383,8 @@ public class AnthropicStreamParser
             if (_usage.CacheCreationInputTokens > 0)
             {
                 _cacheCreationTokens = _usage.CacheCreationInputTokens;
-                _cacheWrite1hTokens = _usage.CacheWrite1hTokens;
+                // Recorded Anthropic streams repeat the write count here but not its TTL split.
+                _cacheWrite1hTokens = _usage.CacheCreation?.Ephemeral1hInputTokens ?? _cacheWrite1hTokens;
             }
 
             if (_usage.CacheReadInputTokens > 0)

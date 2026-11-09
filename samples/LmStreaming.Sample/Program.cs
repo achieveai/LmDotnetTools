@@ -2700,7 +2700,8 @@ try
                                     new GenerateReplyOptions
                                     {
                                         ModelId = controllerModelId,
-                                        // Same caching as the root loop; the controller's delegates inherit it.
+                                        // Always the 5-minute cache: only the root loop reads the per-model
+                                        // 1-hour setting. The controller's delegates inherit this.
                                         PromptCaching = PromptCachingMode.Auto,
                                         // The controller loop inherits the parent's reasoning (Option A: fixed High
                                         // floor), shaped for its OWN model so the orchestrator thinks instead of

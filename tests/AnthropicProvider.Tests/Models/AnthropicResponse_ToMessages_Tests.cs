@@ -360,7 +360,7 @@ public class AnthropicResponse_ToMessages_Tests
     public void NonStreaming_CacheWrite_ReportsTheOneHourSplit(string cacheCreation, int expectedOneHour)
     {
         // Same contract as the streaming parser: a cache write always carries its 1h share, 0 when the
-        // response has no split, because this provider only sends default (5-minute) cache_control.
+        // response has no split, so the cost estimate is complete instead of a lower bound.
         var json = $$"""
             {
               "id": "msg_ttl", "type": "message", "role": "assistant", "model": "claude-sonnet-5",

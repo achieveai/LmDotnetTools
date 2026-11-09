@@ -102,9 +102,9 @@ public record AnthropicUsage
     public int OutputTokens { get; init; }
 
     /// <summary>
-    ///     The one-hour share of the cache write. This provider only sends default-TTL <c>cache_control</c>
-    ///     (<see cref="AnthropicCacheControl" /> has no TTL), so every write it causes is a 5-minute write and
-    ///     an absent split means 0 one-hour tokens.
+    ///     The one-hour share of the cache write, as the response reports it. An absent split reads as 0, which
+    ///     is exact for a 5-minute request. A 1-hour request relies on the response carrying the split: without
+    ///     it the write would be priced at the 5-minute rate.
     /// </summary>
     internal int CacheWrite1hTokens => CacheCreation?.Ephemeral1hInputTokens ?? 0;
 }
