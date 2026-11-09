@@ -44,6 +44,13 @@ internal static class ReviewRunner
     }
 
     /// <summary>
+    ///     The run no longer owns its slot: a sweep reset it while the run's lease went unrenewed (a renewal outage
+    ///     longer than the lease window). The run stops before it sends or commits on the reset slot, and leaves the
+    ///     attempt as the reset recorded it.
+    /// </summary>
+    internal sealed class SlotClaimLostException(string message) : InvalidOperationException(message);
+
+    /// <summary>
     ///     The host accepted an input but never ran it while the conversation sat idle (see
     ///     <see cref="NeverStartedGrace"/>), so no status for it will ever arrive.
     /// </summary>
@@ -252,8 +259,8 @@ internal static class ReviewRunner
                         active = agentsActive is not null && await agentsActive(token);
                     }
                     // Only the step's own end stops the renewals. An HttpClient timeout in the host read is a
-                    // TaskCanceledException too; let through, it ended the renewals and, once the step finished,
-                    // replaced the step's result, even a successful commit's.
+                    // TaskCanceledException too; the old filter let it through, which ended the renewals and, once
+                    // the step finished, replaced the step's result, even a successful commit's.
                     catch (Exception failure)
                         when (failure is not OperationCanceledException || !token.IsCancellationRequested)
                     {
@@ -263,6 +270,8 @@ internal static class ReviewRunner
                     if (!active && await StopStuckStepAsync())
                         return;
                     // A renewal that fails (a busy database) never stopped the step either; the next one retries.
+                    // Failures that outlast the lease let a sweep reset the slot under the step, so the runner's
+                    // next save checks the claim and stops before it sends or commits (SlotClaimLostException).
                     try
                     {
                         if (await SlotRelease.RenewAsync(connection, ownerKey, claimToken, token) is { } lease)
@@ -1248,6 +1257,13 @@ internal static class ReviewRunner
             Console.WriteLine(receipt.ToJsonString());
             return 0;
         }
+        catch (SlotClaimLostException lost)
+        {
+            // The reset already released the slot and recorded the attempt (a review never verified becomes a failed
+            // admission that pick offers again), so nothing is cleaned or saved over it.
+            Console.Error.WriteLine($"{repo.DisplayName} #{pr}: {lost.Message} Stopped; the attempt is left as reset.");
+            throw;
+        }
         catch (Exception failure)
         {
             var prepareRefused =
@@ -1316,12 +1332,18 @@ internal static class ReviewRunner
             query.Parameters["@key"].Value = name;
             return await query.ExecuteScalarAsync(ct) is string json ? JsonNode.Parse(json) : null;
         }
-        async Task SaveAsync()
+        async Task SaveAsync(bool claimRequired = true)
         {
+            // Extend the slot lease on every progress checkpoint so a live review is never mistaken for a dead one
+            // by the reaper. A lost claim means a sweep reset the slot under this run (its renewals failed for longer
+            // than the lease), so the run stops here, before it sends or commits on the reset slot, and does not
+            // overwrite the attempt the reset recorded. Only the save after a successful commit goes on: that result
+            // is final, and the cleanup after it refuses the lost claim itself.
+            if (!await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, ct) && claimRequired)
+                throw new SlotClaimLostException(
+                    $"Slot claim {claimToken} was lost at {receipt["stage"]}; the slot was reset under this run."
+                );
             await store.SetAsync(attemptKey, receipt, ct);
-            // Extend the slot lease on every progress checkpoint so a live review is never mistaken for
-            // a dead one by the reaper. A lost claim (already reclaimed) is a no-op, never a failure.
-            _ = await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, ct);
         }
         async Task CleanupAsync()
         {
@@ -1418,7 +1440,7 @@ internal static class ReviewRunner
             if (phase == "commit")
                 receipt.Remove(CommitReplay);
             receipt["stage"] = phase + "-completed";
-            await SaveAsync();
+            await SaveAsync(claimRequired: phase != "commit");
             return result;
         }
         // Unknown or busy counts as active: a step is never stopped on a guess.

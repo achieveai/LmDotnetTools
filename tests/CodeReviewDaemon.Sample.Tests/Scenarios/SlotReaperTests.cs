@@ -3,6 +3,7 @@ extern alias Reviewd;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.Misc.Storage;
+using AchieveAi.LmDotnetTools.Sandbox;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Reviewd::Reviewd.Sample;
@@ -900,6 +901,9 @@ public sealed class SlotReaperTests
     // ends the renewals, and never replaces the step's result.
     [InlineData("timeout", true)]
     [InlineData("unrenewable", true)] // every renewal fails: logged and retried; the step still ends with its result
+    [InlineData("flaky", true)] // the first renewal fails, the next one extends the lease: a failure never ends them
+    // The SDK's own shape for a timed-out mark (a transport timeout), beside the host read's HttpClient timeout.
+    [InlineData("sdk-timeout", true)]
     [InlineData("hung", true)] // step-stop never answers: each check gives up in time, renewed, the step ends promptly
     public async Task A_step_whose_watchdog_is_stuck_is_stopped_only_while_no_agent_is_active(string agents, bool stale)
     {
@@ -925,6 +929,10 @@ public sealed class SlotReaperTests
                 phase switch
                 {
                     "step-activity" when agents == "timeout" => throw HostTimeout(),
+                    "step-activity" when agents == "sdk-timeout" => throw new SandboxException(
+                        SandboxErrorKind.TransportTimeout,
+                        "Sandbox gateway request did not complete within the configured transport timeout (00:00:30)."
+                    ),
                     "step-activity" => Task.FromResult(new JsonObject()),
                     "step-stop" when agents == "hung" => HangAsync(token),
                     "step-stop" => Task.FromResult(new JsonObject { ["stopped"] = Check() }),
@@ -962,20 +970,39 @@ public sealed class SlotReaperTests
                 );
             // Never opened, so every renewal throws.
             using var unopened = new Microsoft.Data.Sqlite.SqliteConnection(connection.ConnectionString);
+            // Fails every owner-row write, like a busy database, until the second agent read lifts it.
+            if (agents == "flaky")
+            {
+                using var fault = connection.CreateCommand();
+                fault.CommandText =
+                    "CREATE TRIGGER flaky_renewal BEFORE UPDATE ON cache BEGIN SELECT RAISE(ABORT, 'database is busy'); END";
+                _ = await fault.ExecuteNonQueryAsync();
+            }
+            DateTimeOffset? leaseAfterFault = null;
             var step = () =>
                 ReviewRunner.RunLeasedStepAsync(
                     agents == "unrenewable" ? unopened : connection,
                     ownerKey,
                     owner["claimToken"]!.GetValue<string>(),
-                    cancellationToken =>
+                    async cancellationToken =>
                     {
                         reads++;
+                        if (agents == "flaky" && reads == 2)
+                        {
+                            // The first renewal has run and failed: the lease is still the lapsed one.
+                            leaseAfterFault = (await store.GetAsync<JsonObject>(ownerKey))![
+                                "leaseExpiresAt"
+                            ]!.GetValue<DateTimeOffset>();
+                            using var lift = connection.CreateCommand();
+                            lift.CommandText = "DROP TRIGGER flaky_renewal";
+                            _ = await lift.ExecuteNonQueryAsync();
+                        }
                         _ = progressed.Release();
                         return agents switch
                         {
                             "unknown" => throw new HttpRequestException("host unreachable"),
-                            "timeout" => throw HostTimeout(),
-                            _ => Task.FromResult(agents is "active" or "unrenewable"),
+                            "timeout" or "sdk-timeout" => throw HostTimeout(),
+                            _ => agents is "active" or "unrenewable" or "flaky",
                         };
                     },
                     Sandbox,
@@ -1008,6 +1035,8 @@ public sealed class SlotReaperTests
                     lease.Should().Be(lapsed, "no renewal could write");
                 else
                     lease.Should().BeAfter(DateTimeOffset.UtcNow);
+                if (agents == "flaky")
+                    leaseAfterFault.Should().Be(lapsed, "the first renewal failed, and a later one renewed the lease");
             }
         }
         finally
