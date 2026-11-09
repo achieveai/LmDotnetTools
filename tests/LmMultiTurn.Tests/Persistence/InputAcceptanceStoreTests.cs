@@ -528,6 +528,10 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
                         var admission = Admission(InputId);
                         if (await store.TryReserveAcceptanceAsync(admission) is not null)
                         {
+                            // Without a pause the refused contenders spin on the record's gate, and the
+                            // gate's polling waiter can lose to them until its settle budget runs out. No
+                            // real caller retries in a tight loop, so that starvation is this test's own.
+                            await Task.Delay(1);
                             continue;
                         }
 
