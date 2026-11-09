@@ -108,6 +108,40 @@ public class ConversationStatusResolverTests
     }
 
     [Fact]
+    public async Task ResolveByRunIdAsync_RunEndingOnAReplayBlob_FallsBackToTheSummary_NotTheBlob()
+    {
+        var store = new InMemoryConversationStore();
+        await store.UpsertRunLedgerAsync(Entry(ThreadId, "run-1", RunStatus.Errored, "input-1"));
+        var summary = new ReasoningMessage
+        {
+            Role = Role.Assistant,
+            Reasoning = "SUMMARY",
+            Visibility = ReasoningVisibility.Summary,
+        };
+        var blob = new ReasoningMessage
+        {
+            Role = Role.Assistant,
+            Reasoning = "OPENAI-BLOB",
+            Visibility = ReasoningVisibility.Encrypted,
+            EncryptedOrigin = "responses:gpt-5.6-terra",
+        };
+        await store.AppendMessagesAsync(
+            ThreadId,
+            [
+                MessagePersistenceConverter.ToPersistedMessage(summary, ThreadId, "run-1"),
+                MessagePersistenceConverter.ToPersistedMessage(blob, ThreadId, "run-1"),
+            ]
+        );
+        var resolver = new ConversationStatusResolver(store, store);
+
+        var result = await resolver.ResolveByRunIdAsync(ThreadId, "run-1");
+
+        var json = JsonSerializer.Serialize(result!.Response);
+        json.Should().Contain("SUMMARY");
+        json.Should().NotContain("OPENAI-BLOB", "the replay blob is for the model, never for a client");
+    }
+
+    [Fact]
     public async Task ResolveByRunIdAsync_Errored_WithOnlyUserInput_ReturnsNullResponse_NotTheUsersOwnPrompt()
     {
         var store = new InMemoryConversationStore();

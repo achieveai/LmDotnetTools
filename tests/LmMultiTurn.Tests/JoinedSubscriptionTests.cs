@@ -781,6 +781,57 @@ public class JoinedSubscriptionTests
         agent.GetHistorySnapshot().Select(m => m.MessageOrderIdx).Should().Equal(0, 5, 1, 6);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_replay_blob_sharing_its_summarys_order_does_not_move_the_text_after_it(bool restored)
+    {
+        // The Responses agent gives a reasoning item's summary and its replay blob the same output index.
+        IMessage[] generation =
+        [
+            new ReasoningMessage
+            {
+                Reasoning = "SUMMARY",
+                Visibility = ReasoningVisibility.Summary,
+                GenerationId = "g",
+                MessageOrderIdx = 0,
+            },
+            new ReasoningMessage
+            {
+                Reasoning = "BLOB",
+                Visibility = ReasoningVisibility.Encrypted,
+                EncryptedOrigin = "responses:m",
+                GenerationId = "g",
+                MessageOrderIdx = 0,
+            },
+            new TextMessage
+            {
+                Text = "answer",
+                GenerationId = "g",
+                MessageOrderIdx = 1,
+            },
+        ];
+        await using var agent = new HistoryAgent();
+        if (restored)
+        {
+            agent.Restore(generation);
+        }
+        else
+        {
+            foreach (var message in generation)
+            {
+                agent.Append(message);
+            }
+        }
+
+        agent
+            .GetHistorySnapshot()
+            .OfType<TextMessage>()
+            .Single()
+            .MessageOrderIdx.Should()
+            .Be(1, "the text was streamed at index 1, so a reconnect must find it there");
+    }
+
     private sealed record PausingToolResult(Action BeforeDelivery) : ToolCallResultMessage, IMessage
     {
         Role IMessage.Role

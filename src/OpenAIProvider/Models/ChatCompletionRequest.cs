@@ -209,8 +209,12 @@ public record ChatCompletionRequest
                     },
                 ];
 
-                // Same selection as every other assistant message, so no reasoning block is dropped.
-                MergeReasoning([.. compositeMsg.Messages.OfType<ReasoningMessage>()], chatMessages[0]);
+                // Same selection as every other assistant message, so no reasoning block is dropped. A
+                // Responses blob is skipped as in MergeReasoningIntoAssistant: it would win over the summary.
+                MergeReasoning(
+                    [.. compositeMsg.Messages.OfType<ReasoningMessage>().Where(r => r.EncryptedOrigin is null)],
+                    chatMessages[0]
+                );
 
                 return chatMessages;
             case ImageMessage imageMessage:

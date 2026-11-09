@@ -5,8 +5,9 @@ namespace LmStreaming.Sample.Services;
 ///     <c>true</c> keeps a Responses model's encrypted reasoning and sends it back to the same model.
 /// </summary>
 /// <remarks>
-///     A missing or unreadable value is off, because a backend may refuse a replayed item. Turning it off stops
-///     all replay at once.
+///     A missing or unreadable value is off, because a backend may refuse a replayed item. The value is read when
+///     a provider agent is built, and the pool keeps reusing that agent. A change therefore reaches only agents
+///     built after it. To stop all replay, change the value and restart the host.
 /// </remarks>
 public static class ReasoningReplaySettings
 {

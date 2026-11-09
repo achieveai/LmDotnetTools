@@ -168,6 +168,22 @@ public sealed class MessageMapperReasoningTests
         ReasoningItems(request).Should().BeEmpty("only the model that made a blob can read it");
     }
 
+    [Fact]
+    public void Without_a_model_id_nothing_is_replayed()
+    {
+        // "responses:" is the tag an empty model id would build, so it is the row that could match.
+        var request = MessageMapper.BuildRequest(
+            [User(), Blob("responses:"), Call(), User("next")],
+            ReplayOptions() with
+            {
+                ModelId = "",
+            },
+            replayReasoning: true
+        );
+
+        ReasoningItems(request).Should().BeEmpty("a blob is replayed only to a model it can name");
+    }
+
     [Theory]
     [InlineData("nothing", false)]
     [InlineData("user", false)]

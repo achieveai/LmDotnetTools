@@ -30,7 +30,6 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
 {
     private readonly IOpenAiResponsesClient _client;
     private readonly ILogger<OpenAiResponsesAgent> _logger;
-    private readonly bool _replayReasoning;
 
     /// <param name="name">The agent's name.</param>
     /// <param name="client">The Responses transport.</param>
@@ -50,10 +49,13 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
         Name = name ?? throw new ArgumentNullException(nameof(name));
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _logger = logger ?? NullLogger<OpenAiResponsesAgent>.Instance;
-        _replayReasoning = replayReasoning;
+        ReplaysReasoning = replayReasoning;
     }
 
     public string Name { get; }
+
+    /// <summary>True when this agent was built to keep and replay encrypted reasoning (#769).</summary>
+    public bool ReplaysReasoning { get; }
 
     public void Dispose()
     {
@@ -127,7 +129,7 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
 
         // The logger is passed so a dropped orphan is not a silent repair: the sweep is a backstop against a
         // defect upstream, and a backstop nobody can see firing is a defect that never gets found.
-        var request = MessageMapper.BuildRequest(messages, options, _logger, _replayReasoning);
+        var request = MessageMapper.BuildRequest(messages, options, _logger, ReplaysReasoning);
         _logger.LogDebug(
             "OpenAiResponsesAgent.GenerateReplyStreamingAsync model={Model} inputItems={Count} inputTypes=[{InputTypes}] tools={ToolCount}",
             request.Model,
@@ -151,7 +153,7 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
             eventStream,
             Name,
             options?.GenerationId,
-            MessageMapper.ReplayOrigin(_replayReasoning, request.Model),
+            MessageMapper.ReplayOrigin(ReplaysReasoning, request.Model),
             cancellationToken
         );
         // The agent constructs messages itself, so (unlike OpenAgent/AnthropicAgent) it must stamp the
