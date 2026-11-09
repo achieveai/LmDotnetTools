@@ -118,9 +118,10 @@ public interface IMultiTurnAgent : IAsyncDisposable
     /// Stop the background loop gracefully.
     /// </summary>
     /// <remarks>
-    /// A stop ends the current turn. Text already streamed stays in history marked interrupted, and no
-    /// tool answer goes back to the model. <c>MultiTurnAgentLoop</c> does not cancel a tool already
-    /// running; disposing the agent does.
+    /// A stop ends the current turn, and no tool answer goes back to the model. On an ordinary
+    /// <c>MultiTurnAgentLoop</c> turn, text already streamed stays in history marked interrupted; CLI
+    /// backends and wrap-up turns do not mark it. <c>MultiTurnAgentLoop</c> does not cancel a tool
+    /// already running; disposing the agent does.
     /// </remarks>
     /// <param name="timeout">Timeout for graceful shutdown. Defaults to 30 seconds.</param>
     Task StopAsync(TimeSpan? timeout = null);

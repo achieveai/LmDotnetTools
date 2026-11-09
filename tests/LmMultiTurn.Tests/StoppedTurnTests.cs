@@ -1,10 +1,13 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Approval;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
@@ -224,10 +227,277 @@ public class StoppedTurnTests
         ResultsFor(loop, "plural-1").Should().ContainSingle();
     }
 
-    private static ToolCallMessage HoldCall(string id) =>
+    [Fact]
+    public async Task Stop_WaitsForAClaimedAnswer_ThatTakesLongerThanTwoSecondsToSave()
+    {
+        var saving = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finishSaving = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new HookedStore(async id =>
+        {
+            if (id == "ask-1")
+            {
+                _ = saving.TrySetResult();
+                await finishSaving.Task;
+            }
+        });
+        var provider = new ScriptedProvider(call =>
+            call == 1 ? [Call("ask-1", AskUserQuestionToolProvider.ToolName)] : [Answer]
+        );
+        using var cts = new CancellationTokenSource(Generous);
+        await using var loop = new MultiTurnAgentLoop(provider, DeferredQuestion(), "stop-slow-save", store: store);
+        var running = loop.RunAsync(cts.Token);
+        await loop.WaitUntilReadyAsync(cts.Token);
+        _ = await loop.SendAsync([new TextMessage { Text = "go", Role = Role.User }], inputId: "input-1");
+        await saving.Task.WaitAsync(cts.Token);
+
+        var stop = loop.StopAsync(Generous);
+        try
+        {
+            (await Task.WhenAny(stop, Task.Delay(TimeSpan.FromSeconds(2.2), cts.Token)))
+                .Should()
+                .NotBeSameAs(stop, "the next request must not go out before this answer is saved");
+        }
+        finally
+        {
+            finishSaving.TrySetResult();
+        }
+
+        await stop.WaitAsync(cts.Token);
+        await running.WaitAsync(cts.Token);
+
+        var request = await NextRequestAsync(loop, provider, cts.Token);
+        ShouldAnswerEachCallOnce(request, "ask-1");
+    }
+
+    [Fact]
+    public async Task Stop_WhenAClaimedAnswerFailsToSave_AnswersTheCallItself()
+    {
+        var saving = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failSaving = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
+        var store = new HookedStore(async id =>
+        {
+            if (id == "ask-1" && Interlocked.Increment(ref attempts) == 1)
+            {
+                _ = saving.TrySetResult();
+                await failSaving.Task;
+                throw new IOException("store down");
+            }
+        });
+        var provider = new ScriptedProvider(call =>
+            call == 1 ? [Call("ask-1", AskUserQuestionToolProvider.ToolName)] : [Answer]
+        );
+        using var cts = new CancellationTokenSource(Generous);
+        await using var loop = new MultiTurnAgentLoop(provider, DeferredQuestion(), "stop-failed-save", store: store);
+        var running = loop.RunAsync(cts.Token);
+        await loop.WaitUntilReadyAsync(cts.Token);
+        _ = await loop.SendAsync([new TextMessage { Text = "go", Role = Role.User }], inputId: "input-1");
+        await saving.Task.WaitAsync(cts.Token);
+
+        var stop = loop.StopAsync(Generous);
+        failSaving.SetResult();
+        await stop.WaitAsync(cts.Token);
+        await running.WaitAsync(cts.Token);
+
+        ResultsFor(loop, "ask-1").Should().ContainSingle().Which.IsError.Should().BeTrue();
+        var request = await NextRequestAsync(loop, provider, cts.Token);
+        ShouldAnswerEachCallOnce(request, "ask-1");
+    }
+
+    [Fact]
+    public async Task Stop_WhenItsOwnAnswerCannotBeSaved_StillAnswersTheCall()
+    {
+        var tool = new HoldingTool();
+        var store = new HookedStore(id =>
+            id == "hold-1" ? Task.FromException(new IOException("store down")) : Task.CompletedTask
+        );
+        var provider = new ScriptedProvider(call => call == 1 ? [HoldCall("hold-1")] : [Answer]);
+        using var cts = new CancellationTokenSource(Generous);
+        await using var loop = new MultiTurnAgentLoop(provider, tool.Registry, "stop-row-fails", store: store);
+        var running = loop.RunAsync(cts.Token);
+        await loop.WaitUntilReadyAsync(cts.Token);
+        _ = await loop.SendAsync([new TextMessage { Text = "go", Role = Role.User }], inputId: "input-1");
+        await tool.Entered.Task.WaitAsync(cts.Token);
+
+        await loop.StopAsync(Generous).WaitAsync(cts.Token);
+        await running.WaitAsync(cts.Token);
+
+        ResultsFor(loop, "hold-1").Should().ContainSingle().Which.IsError.Should().BeTrue();
+        var request = await NextRequestAsync(loop, provider, cts.Token);
+        ShouldAnswerEachCallOnce(request, "hold-1");
+    }
+
+    [Fact]
+    public async Task Stop_WithAFinishedAWritingAndARunningTool_AnswersEachCallOnce()
+    {
+        var tool = new HoldingTool();
+        var registry = tool
+            .Registry.AddFunction(
+                new FunctionContract
+                {
+                    Name = "finish",
+                    Description = "Finishes at once",
+                    Parameters = [],
+                },
+                (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("finished"))
+            )
+            .AddFunction(QuestionContract, DeferQuestion);
+        var finishedSaved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var writing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finishWriting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new HookedStore(async id =>
+        {
+            if (id == "finished-1")
+            {
+                _ = finishedSaved.TrySetResult();
+            }
+            else if (id == "ask-1")
+            {
+                _ = writing.TrySetResult();
+                await finishWriting.Task;
+            }
+        });
+        var lateResult = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var provider = new ScriptedProvider(call =>
+            call == 1
+                ?
+                [
+                    Call("finished-1", "finish"),
+                    Call("ask-1", AskUserQuestionToolProvider.ToolName),
+                    HoldCall("hold-1"),
+                ]
+                : [Answer]
+        );
+        using var cts = new CancellationTokenSource(Generous);
+        await using var loop = new MultiTurnAgentLoop(
+            provider,
+            registry,
+            "stop-mixed",
+            store: store,
+            logger: new SignallingLogger("arrived after the Stop", lateResult)
+        );
+        var running = loop.RunAsync(cts.Token);
+        await loop.WaitUntilReadyAsync(cts.Token);
+        _ = await loop.SendAsync([new TextMessage { Text = "go", Role = Role.User }], inputId: "input-1");
+        await Task.WhenAll(finishedSaved.Task, writing.Task, tool.Entered.Task).WaitAsync(cts.Token);
+
+        var stop = loop.StopAsync(Generous);
+        finishWriting.SetResult();
+        await stop.WaitAsync(cts.Token);
+        await running.WaitAsync(cts.Token);
+        tool.Release();
+        await lateResult.Task.WaitAsync(cts.Token);
+
+        var request = await NextRequestAsync(loop, provider, cts.Token);
+        ShouldAnswerEachCallOnce(request, "finished-1", "ask-1", "hold-1");
+    }
+
+    [Fact]
+    public async Task Stop_WhileAToolWaitsToStart_TheToolNeverRuns()
+    {
+        // A host policy that ignores its token: an approver gate is already refused after a Stop by
+        // ToolInvocationPreparer, but nothing there re-checks the token after a policy allows the call.
+        var tool = new HoldingTool();
+        var policy = new HoldingPolicy();
+        var abandoned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var provider = new ScriptedProvider(_ => [HoldCall("hold-1")]);
+        using var cts = new CancellationTokenSource(Generous);
+        await using var loop = new MultiTurnAgentLoop(
+            provider,
+            tool.Registry,
+            "stop-queued",
+            logger: new SignallingLogger("ended without a result", abandoned),
+            lifecycleServices: new MultiTurnLifecycleServices
+            {
+                Approval = new ToolInvocationPreparer(new ToolApprovalOptions { HostPolicy = policy }),
+            }
+        );
+        var running = loop.RunAsync(cts.Token);
+        await loop.WaitUntilReadyAsync(cts.Token);
+        _ = await loop.SendAsync([new TextMessage { Text = "go", Role = Role.User }], inputId: "input-1");
+        await policy.Entered.Task.WaitAsync(cts.Token);
+
+        await loop.StopAsync(Generous).WaitAsync(cts.Token);
+        await running.WaitAsync(cts.Token);
+        ResultsFor(loop, "hold-1").Should().ContainSingle().Which.IsError.Should().BeTrue();
+
+        policy.Release();
+
+        (await Task.WhenAny(abandoned.Task, tool.Entered.Task).WaitAsync(cts.Token))
+            .Should()
+            .BeSameAs(abandoned.Task, "the Stop already answered this call, so its handler must not start");
+        tool.Entered.Task.IsCompleted.Should().BeFalse();
+    }
+
+    private static readonly TextMessage Answer = new() { Text = "next answer", Role = Role.Assistant };
+
+    private static readonly FunctionContract QuestionContract = new()
+    {
+        Name = AskUserQuestionToolProvider.ToolName,
+        Description = "Defers until someone answers",
+        Parameters = [],
+    };
+
+    private static Task<ToolHandlerResult> DeferQuestion(string args, ToolCallContext context, CancellationToken ct) =>
+        Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred());
+
+    private static FunctionRegistry DeferredQuestion() =>
+        new FunctionRegistry().AddFunction(QuestionContract, DeferQuestion);
+
+    /// <summary>Restarts a stopped loop, sends new input and returns the request the provider then got.</summary>
+    private static async Task<IReadOnlyList<IMessage>> NextRequestAsync(
+        MultiTurnAgentLoop loop,
+        ScriptedProvider provider,
+        CancellationToken ct
+    )
+    {
+        var restarted = loop.RunAsync(ct);
+        await loop.WaitUntilReadyAsync(ct);
+        _ = await loop.SendAsync([new TextMessage { Text = "again", Role = Role.User }], inputId: "input-2");
+        await provider.SecondRequest.Task.WaitAsync(ct);
+        await loop.StopAsync(Generous).WaitAsync(ct);
+        await restarted.WaitAsync(ct);
+        return provider.SecondRequestMessages;
+    }
+
+    private static void ShouldAnswerEachCallOnce(IReadOnlyList<IMessage> request, params string[] toolCallIds)
+    {
+        var calls = request
+            .SelectMany(m =>
+                m switch
+                {
+                    ToolCallMessage call => [call.ToolCallId],
+                    ToolsCallMessage plural => plural.ToolCalls.Select(c => c.ToolCallId),
+                    ToolsCallAggregateMessage both => both.ToolsCallMessage.ToolCalls.Select(c => c.ToolCallId),
+                    _ => [],
+                }
+            )
+            .ToList();
+        var answers = request
+            .SelectMany(m =>
+                m switch
+                {
+                    ToolCallResultMessage result => [result.ToolCallId],
+                    ToolsCallResultMessage plural => plural.ToolCallResults.Select(r => r.ToolCallId),
+                    ToolsCallAggregateMessage both => both.ToolsCallResult.ToolCallResults.Select(r => r.ToolCallId),
+                    _ => [],
+                }
+            )
+            .ToList();
+
+        foreach (var id in toolCallIds)
+        {
+            calls.Where(c => c == id).Should().ContainSingle($"{id} must be in the next request once");
+            answers.Where(a => a == id).Should().ContainSingle($"{id} must have exactly one answer");
+        }
+    }
+
+    private static ToolCallMessage HoldCall(string id) => Call(id, "hold");
+
+    private static ToolCallMessage Call(string id, string functionName) =>
         new()
         {
-            FunctionName = "hold",
+            FunctionName = functionName,
             FunctionArgs = "{}",
             ToolCallId = id,
             Role = Role.Assistant,
@@ -257,6 +527,8 @@ public class StoppedTurnTests
 
         public TaskCompletionSource SecondRequest { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public IReadOnlyList<IMessage> SecondRequestMessages { get; private set; } = [];
+
         public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
             IEnumerable<IMessage> messages,
             GenerateReplyOptions? options = null,
@@ -266,6 +538,7 @@ public class StoppedTurnTests
             var call = Interlocked.Increment(ref _calls);
             if (call == 2)
             {
+                SecondRequestMessages = [.. messages];
                 _ = SecondRequest.TrySetResult();
             }
 
@@ -339,6 +612,83 @@ public class StoppedTurnTests
         public TaskCompletionSource Finished { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public void Release() => _release.TrySetResult();
+    }
+
+    /// <summary>A host policy that holds a call until released, ignoring its token on purpose.</summary>
+    private sealed class HoldingPolicy : IToolExecutionPolicy
+    {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Release() => _release.TrySetResult();
+
+        public async ValueTask<ToolApprovalVerdict> EvaluateAsync(
+            ToolApprovalContext context,
+            CancellationToken cancellationToken
+        )
+        {
+            _ = Entered.TrySetResult();
+            await _release.Task.WaitAsync(Generous, CancellationToken.None);
+            return ToolApprovalVerdict.Allow();
+        }
+    }
+
+    /// <summary>A store that runs a hook before saving a tool result, so a test can hold or fail that save.</summary>
+    private sealed class HookedStore(Func<string, Task> beforeResultSaved) : IConversationStore
+    {
+        private readonly InMemoryConversationStore _inner = new();
+
+        public async Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default
+        )
+        {
+            foreach (
+                var result in MessagePersistenceConverter
+                    .FromPersistedMessages(messages)
+                    .OfType<ToolCallResultMessage>()
+            )
+            {
+                await beforeResultSaved(result.ToolCallId!);
+            }
+
+            await _inner.AppendMessagesAsync(threadId, messages, ct);
+        }
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => _inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => _inner.LoadMessagesAsync(threadId, ct);
+
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            _inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            _inner.LoadMetadataAsync(threadId, ct);
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default
+        ) => _inner.UpdateMetadataAsync(threadId, update, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            _inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            ConversationListOptions? options = null,
+            CancellationToken ct = default
+        ) => _inner.ListThreadsAsync(limit, offset, options, ct);
     }
 
     /// <summary>Signals when a log line containing <paramref name="fragment"/> is written.</summary>

@@ -16,10 +16,13 @@ public class MetadataSaveDuringUpdateTests
     [MemberData(nameof(AllKinds))]
     public async Task Save_DuringAnUpdatesReadModifyWrite_IsNotLost(string kind)
     {
+        var generous = TimeSpan.FromSeconds(10);
         await using var harness = new ConversationStoreHarness();
         var store = harness.Open(kind);
         using var updateEntered = new ManualResetEventSlim();
         using var releaseUpdate = new ManualResetEventSlim();
+        var saveAttempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task? save = null;
 
         var update = Task.Run(() =>
             store.UpdateMetadataAsync(
@@ -27,7 +30,7 @@ public class MetadataSaveDuringUpdateTests
                 existing =>
                 {
                     updateEntered.Set();
-                    releaseUpdate.Wait();
+                    _ = releaseUpdate.Wait(generous);
                     return (existing ?? new ThreadMetadata { ThreadId = "thread-1", LastUpdated = 1 }) with
                     {
                         LatestRunId = "from-update",
@@ -35,28 +38,39 @@ public class MetadataSaveDuringUpdateTests
                 }
             )
         );
-        updateEntered.Wait();
 
-        var save = Task.Run(() =>
-            store.SaveMetadataAsync(
-                "thread-1",
-                new ThreadMetadata
-                {
-                    ThreadId = "thread-1",
-                    LastUpdated = 2,
-                    LatestRunId = "from-save",
-                }
-            )
-        );
+        try
+        {
+            updateEntered.Wait(generous).Should().BeTrue("the update has to reach its read-modify-write window");
 
-        // The bounded wait only matters if the save wrongly finishes while the update holds its window.
-        (await Task.WhenAny(save, Task.Delay(150)))
-            .Should()
-            .NotBeSameAs(save, "a save must wait for an update that is between its read and its write");
+            save = Task.Run(() =>
+            {
+                saveAttempted.SetResult();
+                return store.SaveMetadataAsync(
+                    "thread-1",
+                    new ThreadMetadata
+                    {
+                        ThreadId = "thread-1",
+                        LastUpdated = 2,
+                        LatestRunId = "from-save",
+                    }
+                );
+            });
+            await saveAttempted.Task.WaitAsync(generous);
 
-        releaseUpdate.Set();
-        await update;
-        await save;
+            // The window starts once the save is really under way. A save that skips the lock either ends
+            // here, or lands inside the update and is overwritten, which the last assertion catches.
+            (await Task.WhenAny(save, Task.Delay(250)))
+                .Should()
+                .NotBeSameAs(save, "a save must wait for an update that is between its read and its write");
+        }
+        finally
+        {
+            releaseUpdate.Set();
+        }
+
+        await update.WaitAsync(generous);
+        await save.WaitAsync(generous);
 
         (await store.LoadMetadataAsync("thread-1"))!
             .LatestRunId.Should()
