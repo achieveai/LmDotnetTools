@@ -31,7 +31,7 @@ internal sealed class FallbackWebTools(
     JinaWebProvider? provider,
     WebToolsOptions options,
     ILoggerFactory loggerFactory,
-    bool searchIsHosted = false
+    bool searchIsHosted
 )
 {
     /// <summary>The name Jina search takes on a hop when the hosted search already holds <c>WebSearch</c>.</summary>
@@ -78,7 +78,10 @@ internal sealed class FallbackWebTools(
         if (provider is not null && CanSearch && !taken.Contains(SearchName))
         {
             var tool = new WebSearchTool(provider, options, loggerFactory.CreateLogger<WebSearchTool>());
-            functions.Add(Describe(searchIsHosted ? RenamedToJina(tool.Contract) : tool.Contract, tool.Handler));
+
+            // Each tool builds its own contract, so renaming this one touches nothing else.
+            tool.Contract.Name = SearchName;
+            functions.Add(Describe(tool.Contract, tool.Handler));
         }
 
         if (
@@ -139,18 +142,6 @@ internal sealed class FallbackWebTools(
 
     private HashSet<string> RegisteredNames() =>
         registry.Build().Item1.Select(c => c.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-    private static FunctionContract RenamedToJina(FunctionContract contract) =>
-        new()
-        {
-            Name = JinaSearchName,
-            Description = contract.Description,
-            Namespace = contract.Namespace,
-            ClassName = contract.ClassName,
-            Parameters = contract.Parameters,
-            ReturnType = contract.ReturnType,
-            ReturnDescription = contract.ReturnDescription,
-        };
 
     private static FunctionDescriptor Describe(FunctionContract contract, ToolHandler handler) =>
         new()

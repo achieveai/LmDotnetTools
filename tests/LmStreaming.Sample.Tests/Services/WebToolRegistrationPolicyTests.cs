@@ -434,7 +434,7 @@ public class WebToolRegistrationPolicyTests
         var registry = new FunctionRegistry();
         _ = registry.AddFunction(new FunctionContract { Name = "calculate" }, (_, _, _) => null!, "Sample");
         var (provider, options) = Backend(ApiKey);
-        var tools = new FallbackWebTools(registry, null, provider, options, NullLoggerFactory.Instance);
+        var tools = new FallbackWebTools(registry, null, provider, options, NullLoggerFactory.Instance, false);
 
         var hidden = tools.RegisterHidden();
 
@@ -449,7 +449,7 @@ public class WebToolRegistrationPolicyTests
         var registry = new FunctionRegistry();
         _ = registry.AddFunction(new FunctionContract { Name = WebSearchTool.ToolName }, (_, _, _) => null!, "Sample");
         var (provider, options) = Backend(ApiKey);
-        var tools = new FallbackWebTools(registry, null, provider, options, NullLoggerFactory.Instance);
+        var tools = new FallbackWebTools(registry, null, provider, options, NullLoggerFactory.Instance, false);
 
         var hidden = tools.RegisterHidden();
 
@@ -462,7 +462,7 @@ public class WebToolRegistrationPolicyTests
     {
         var registry = new FunctionRegistry();
         var (provider, options) = Backend(ApiKey);
-        var tools = new FallbackWebTools(registry, null, provider, options, NullLoggerFactory.Instance);
+        var tools = new FallbackWebTools(registry, null, provider, options, NullLoggerFactory.Instance, false);
 
         _ = tools.RegisterHidden();
         var again = tools.RegisterHidden();
@@ -475,7 +475,14 @@ public class WebToolRegistrationPolicyTests
     public void FallbackWebTools_KeepsHiddenToolsFromSubAgents_AndWhatTheyAlreadyExcluded()
     {
         var (provider, options) = Backend(ApiKey);
-        var tools = new FallbackWebTools(new FunctionRegistry(), null, provider, options, NullLoggerFactory.Instance);
+        var tools = new FallbackWebTools(
+            new FunctionRegistry(),
+            null,
+            provider,
+            options,
+            NullLoggerFactory.Instance,
+            false
+        );
         _ = tools.RegisterHidden();
         var subAgents = new SubAgentOptions
         {
