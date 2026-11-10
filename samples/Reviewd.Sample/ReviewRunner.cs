@@ -800,7 +800,7 @@ internal static class ReviewRunner
             && !cleanupOnly
             && (
                 (successful is null && thread is not null && (await client.GetRunStateAsync(thread, ct)).IsInProgress)
-                || (questionThread is not null && await TreeInFlightAsync(client, questionThread, now(), ct))
+                || (questionThread is not null && await TreeInFlightAsync(client, questionThread, now(), abandoned, ct))
             )
         )
             throw new ReviewDeferredException("An earlier conversation for this PR is still running; retry deferred.");
@@ -1773,11 +1773,13 @@ internal static class ReviewRunner
 
     // A passed-over thread is never waited on, so its whole tree decides admission: a sub-agent still running
     // there can publish for the PR after a fresh review starts. A busy hierarchy read is not proof of
-    // settlement either. Either way the review is deferred and the batch retries the PR.
+    // settlement either. Either way the review is deferred and the batch retries the PR. Admission has no input on
+    // that thread, so under an idle root an abandoned child settles here as it does in the wait (#956).
     private static async Task<bool> TreeInFlightAsync(
         LmStreamingS2SClient client,
         string thread,
         DateTimeOffset now,
+        AbandonedChildProbe probe,
         CancellationToken ct
     )
     {
@@ -1785,7 +1787,10 @@ internal static class ReviewRunner
             return true;
         try
         {
-            return !(await client.GetSubAgentTreeAsync(thread, ct)).Nodes.All(n => IsSettledNode(n, now));
+            var unsettled = (await client.GetSubAgentTreeAsync(thread, ct))
+                .Nodes.Where(n => !IsSettledNode(n, now))
+                .ToList();
+            return unsettled.Count > 0 && !await probe.AllAbandonedAsync(client, thread, unsettled, now, ct);
         }
         catch (LmStreamingS2SClient.HierarchyBusyException)
         {

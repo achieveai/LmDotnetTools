@@ -5614,6 +5614,144 @@ public sealed class ReviewdRunnerTests
         }
     }
 
+    // #956: after the reaper freed #948's slot, its next review would still be deferred forever if the thread it passes
+    // over holds a ghost stuck at running. Admission settles an abandoned child by the same rule as the wait and the
+    // reaper: a finished turn quiet for 45 minutes admits the review; a child that wrote minutes ago still defers it.
+    [Theory]
+    [InlineData(180, true)]
+    [InlineData(2, false)]
+    public async Task Runner_admits_a_fresh_review_past_a_passed_over_thread_whose_only_live_child_was_abandoned(
+        int quietMinutes,
+        bool admits
+    )
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-legacy-ghost-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .On(
+                request =>
+                    request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
+                _ => Json("""{"threadId":"fresh"}""")
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/api/conversations?",
+                """[{"threadId":"prior","title":"Nova-17-99999999","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1}]"""
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/api/conversations/prior/subagents",
+                """{"schemaVersion":1,"nodes":[{"agentId":"ghost","threadId":"subagent-x-ghost","parentThreadId":"prior","depth":1,"template":"publisher","status":"running"}]}"""
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/api/conversations/prior/agents/ghost/transcript",
+                Transcript(DateTimeOffset.UtcNow.AddMinutes(-quietMinutes), "finished")
+            )
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .OnJson(HttpMethod.Post, "/messages", """{"inputId":"original","idempotencyKeyHonored":true}""")
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        static Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token) =>
+            Task.FromResult(
+                phase switch
+                {
+                    "eligibility" => new JsonObject
+                    {
+                        ["prId"] = "17",
+                        ["status"] = "active",
+                        ["isDraft"] = false,
+                        ["headSha"] = new string('a', 40),
+                    },
+                    "prepare" => new JsonObject
+                    {
+                        ["mergeSha"] = new string('b', 40),
+                        ["contextPath"] = "context",
+                        ["reviewDirectory"] = "reviews",
+                        ["baselineComments"] = new JsonArray(),
+                    },
+                    _ => [],
+                }
+            );
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await new SqliteKvStore(connection).SetAsync(
+                $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                new JsonObject
+                {
+                    ["17"] = new JsonObject
+                    {
+                        ["Lifecycle"] = "Open",
+                        ["IsDraft"] = false,
+                        ["HeadSha"] = new string('a', 40),
+                    },
+                }
+            );
+            var options = CliOptions.Parse([
+                "review",
+                "run",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "test",
+                "--execute",
+            ]);
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    options,
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ => Task.CompletedTask,
+                    () => DateTimeOffset.UtcNow
+                );
+
+            if (admits)
+            {
+                // Admitted: the review is sent in a fresh conversation, whose scripted input then fails.
+                (await run.Should().ThrowAsync<InvalidOperationException>())
+                    .Which.Message.Should()
+                    .Contain("Errored");
+                handler
+                    .Requests.Where(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                    .Select(r => r.Uri.AbsolutePath)
+                    .Should()
+                    .Equal("/api/conversations/fresh/messages");
+            }
+            else
+            {
+                await run.Should().ThrowAsync<ReviewRunner.ReviewDeferredException>();
+                handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "nothing is claimed or sent");
+            }
+        }
+        finally
+        {
+            ReviewdSqlitePools.Clear(database);
+            File.Delete(database);
+        }
+    }
+
     [Fact]
     public async Task Find_conversation_by_title_prefix_prefers_a_headless_match_over_a_newer_one()
     {
