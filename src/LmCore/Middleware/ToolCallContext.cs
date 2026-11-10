@@ -11,4 +11,11 @@ public sealed record ToolCallContext
     /// path doesn't carry one (e.g. natural tool use without an explicit ID).
     /// </summary>
     public string? ToolCallId { get; init; }
+
+    /// <summary>
+    /// True when the caller will save output too large to keep in the conversation, so a tool
+    /// that would otherwise drop the end of its own output can return all of it. False leaves the
+    /// tool's own limits as the only protection.
+    /// </summary>
+    public bool CanSaveLargeOutput { get; init; }
 }

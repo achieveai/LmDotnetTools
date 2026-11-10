@@ -66,6 +66,28 @@ export function parseExitCode(text: string | null | undefined): number | null {
 }
 
 /**
+ * The exit status left in a TaskOutput result that was cut to `{truncated, preview}`. The preview is
+ * the start of the original JSON, whose keys are sorted, so `exit_code` and `status` come before the
+ * long output streams. Null for any other cut result, so only a real task status can turn a pill red.
+ */
+export function readCutTaskStatus(
+  value: unknown
+): { exitCode: number | null; status: string | null } | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const { truncated, preview } = value as Record<string, unknown>;
+  if (truncated !== true || typeof preview !== 'string') return null;
+
+  const streams = preview.search(/"std(?:out|err)"\s*:/);
+  const head = streams >= 0 ? preview.slice(0, streams) : preview;
+  if (!head.includes('"shell_id"')) return null;
+
+  // The last match: the `events` list comes first and can hold the same keys.
+  const exit = [...head.matchAll(/"exit_code"\s*:\s*(-?\d+)/g)].pop();
+  const status = [...head.matchAll(/"status"\s*:\s*"([^"]*)"/g)].pop();
+  return { exitCode: exit ? Number(exit[1]) : null, status: status ? status[1] : null };
+}
+
+/**
  * Decide whether a tool result represents a failure. True when ANY of:
  *  1. the explicit `is_error` flag is true;
  *  2. the unwrapped value is an object carrying a truthy own `error` key;

@@ -41,8 +41,9 @@ public interface IWorkspaceFileBrowser
     /// (null means "the interactive UI", which is a provenance, not an absence).
     /// </para>
     /// <para>
-    /// Its one consumer is the workspace transcript mirror (#251/#253), which writes a thread's own
-    /// record into that thread's own workspace on a drain loop. Presenting <c>null</c> there was not
+    /// Its consumers are the workspace transcript mirror (#251/#253), which writes a thread's own
+    /// record into that thread's own workspace on a drain loop, and <see cref="SandboxToolOutputStore"/>,
+    /// which saves a thread's own tool output there mid-turn. Presenting <c>null</c> there was not
     /// the mirror claiming to be the UI, it was the mirror having nothing to say — and the registry
     /// read that silence as a foreign claim, so an S2S-created conversation reported
     /// <see cref="SandboxSessionResolutionOutcome.CredentialConflict"/> on every flush forever and

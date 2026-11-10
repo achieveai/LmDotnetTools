@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Security;
 using System.Security.Cryptography;
@@ -1078,7 +1079,7 @@ public sealed class MultiTurnAgentLoop
         // build-then-assign, so a rejection here leaves the loop on the old configuration as well.
         _compaction?.Rebind(systemPrompt, options, spec.ProviderAgent);
 
-        ApplyReconfiguredConfiguration(systemPrompt, options);
+        ApplyReconfiguredConfiguration(systemPrompt, options, spec.ToolOutputSpill);
         _agent = stack.Agent;
         _toolHandlers = stack.ToolHandlers;
         _functionsRequiringArgs = stack.FunctionsRequiringArgs;
@@ -3397,7 +3398,8 @@ public sealed class MultiTurnAgentLoop
     {
         var startedAt = Stopwatch.GetTimestamp();
         (toolCall, var answered) = UnwrapToolCall(toolCall, ct);
-        var result = answered ?? await ExecuteToolCallAsync(toolCall, runId, generationId, ct);
+        var pendingSave = new StrongBox<(ToolOutputSpillOptions Spill, ToolCallResult Full)?>();
+        var result = answered ?? await ExecuteToolCallAsync(toolCall, runId, generationId, pendingSave, ct);
         var elapsed = Stopwatch.GetElapsedTime(startedAt);
 
         if (!attempt.TryClaimToolResult(toolCall.ToolCallId!))
@@ -3413,6 +3415,18 @@ public sealed class MultiTurnAgentLoop
 
         // Claimed, so the Stop will not answer this call: the writes below must land even if it arrives now.
         var writeCt = LifetimeToken;
+
+        // After the claim, so a result the Stop has already answered saves nothing, and a Stop arriving
+        // during the save cannot replace a finished result.
+        if (pendingSave.Value is { } save)
+        {
+            result = ToResultMessage(
+                toolCall,
+                ToolResultLimits.Apply(
+                    await save.Spill.ApplyAsync(save.Full, Logger, writeCt, ToolResultLimits.MaxResultBytes)
+                )
+            );
+        }
 
         // Stamp ordering onto the result so the client merge/order logic (keyed partly on
         // messageOrderIdx) does not drop it (BUG H3b). The loop publishes tool results out-of-band,
@@ -3735,6 +3749,7 @@ public sealed class MultiTurnAgentLoop
         ToolCallMessage toolCall,
         string runId,
         string generationId,
+        StrongBox<(ToolOutputSpillOptions Spill, ToolCallResult Full)?> pendingSave,
         CancellationToken ct
     )
     {
@@ -3869,7 +3884,11 @@ public sealed class MultiTurnAgentLoop
                 );
             }
 
-            var ctx = new ToolCallContext { ToolCallId = toolCall.ToolCallId };
+            var ctx = new ToolCallContext
+            {
+                ToolCallId = toolCall.ToolCallId,
+                CanSaveLargeOutput = SpillFor(toolCall.FunctionName) != null,
+            };
 
             // Truncation guard: when the provider hits its per-turn output ceiling it stops with
             // stop_reason=max_tokens and cuts the streaming tool_use argument JSON off mid-string (or
@@ -3910,7 +3929,7 @@ public sealed class MultiTurnAgentLoop
             // item 11). Disposal is what cancels it.
             var result = await handler(prepared.Arguments.Json, ctx, LifetimeToken);
 
-            return BuildResultMessage(toolCall, result);
+            return BuildResultMessage(toolCall, result, pendingSave);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested || LifetimeToken.IsCancellationRequested)
         {
@@ -3954,21 +3973,49 @@ public sealed class MultiTurnAgentLoop
         }
     }
 
-    private ToolCallResultMessage BuildResultMessage(ToolCallMessage toolCall, ToolHandlerResult result)
+    /// <summary>The save settings for <paramref name="toolName"/>, or null when its results are not saved.</summary>
+    private ToolOutputSpillOptions? SpillFor(string? toolName) =>
+        ToolOutputSpill?.AppliesTo(toolName) == true ? ToolOutputSpill : null;
+
+    /// <summary>
+    /// Builds the bounded result of a tool's own return and leaves the full text in
+    /// <paramref name="pendingSave"/> for <see cref="ExecuteAndPublishToolCallAsync"/> to save once it
+    /// holds the result claim.
+    /// </summary>
+    /// <remarks>
+    /// Saving happens only for a tool's own return. A deferred resolution is deliberately left out:
+    /// its bounded text is the fingerprint that tells a redelivery from a conflict, and a saved path
+    /// that differs per delivery would turn an identical redelivery into a conflict.
+    /// </remarks>
+    private ToolCallResultMessage BuildResultMessage(
+        ToolCallMessage toolCall,
+        ToolHandlerResult result,
+        StrongBox<(ToolOutputSpillOptions Spill, ToolCallResult Full)?> pendingSave
+    )
     {
+        // Full text first: the bound would otherwise cut it before it could be saved.
+        var spill = SpillFor(toolCall.FunctionName);
         var tcr = ToolCallResultBuilder.FromHandlerResult(
             result,
             toolCall.ToolCallId,
-            ToolResultLimits,
+            spill == null ? ToolResultLimits : ToolResultLimits.Unbounded,
             toolCall.FunctionName
         );
-        return ToolCallResultMessage.FromToolCallResult(
-            tcr,
+        if (spill != null && !tcr.IsDeferred)
+        {
+            pendingSave.Value = (spill, tcr);
+        }
+
+        return ToResultMessage(toolCall, ToolResultLimits.Apply(tcr));
+    }
+
+    private static ToolCallResultMessage ToResultMessage(ToolCallMessage toolCall, ToolCallResult result) =>
+        ToolCallResultMessage.FromToolCallResult(
+            result,
             role: Role.User,
             fromAgent: toolCall.FromAgent,
             generationId: toolCall.GenerationId
         );
-    }
 
     /// <summary>
     /// The tool names the model is sent, for an error that lists what it may call. Not the handler keys: a tool a
@@ -4117,8 +4164,12 @@ public sealed class MultiTurnAgentLoop
         // Canonical form first. The bounded text is what history stores and replays, so it — not
         // the raw delivery — drives the fingerprint, the identical-redelivery check and the
         // conflict decision. A byte-equal redelivery bounds to the same text and stays idempotent.
+        var delivered = result;
         var truncated = TryBoundResolution(toolCallId, ref result, ref contentBlocks, out var originalBytes);
         var fingerprint = ComputeResolutionFingerprint(result, isError);
+
+        // A resolution saved before cut JSON became an object holds the plain cut of this same delivery.
+        var legacyResult = truncated ? ToolResultLimits.BoundAsPlainText(delivered) : null;
 
         // Claim the ending BEFORE the coordinator is asked, so the two orders are symmetric: whichever
         // caller reaches the latch first decides, and the other reads that decision instead of racing
@@ -4157,6 +4208,7 @@ public sealed class MultiTurnAgentLoop
             return await ResolveUnclaimedAsync(
                 toolCallId,
                 result,
+                legacyResult,
                 isError,
                 contentBlocks,
                 truncated,
@@ -4170,6 +4222,7 @@ public sealed class MultiTurnAgentLoop
             pending!,
             toolCallId,
             result,
+            legacyResult,
             isError,
             contentBlocks,
             truncated,
@@ -4225,6 +4278,7 @@ public sealed class MultiTurnAgentLoop
         ResolvingDeferral pending,
         string toolCallId,
         string result,
+        string? legacyResult,
         bool isError,
         IList<ToolResultContentBlock>? contentBlocks,
         bool truncated,
@@ -4242,6 +4296,18 @@ public sealed class MultiTurnAgentLoop
                 pending.ChildRunId,
                 ct
             );
+
+            // A record saved before cut JSON became an object holds the fingerprint of the plain cut.
+            // The store only compares here: a call that is already resolved is never written again.
+            if (durable == DeferredResolutionOutcome.Conflict && legacyResult != null)
+            {
+                durable = await Lifecycle.TryResolveDeferredToolCallAsync(
+                    toolCallId,
+                    ComputeResolutionFingerprint(legacyResult, isError),
+                    pending.ChildRunId,
+                    ct
+                );
+            }
         }
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
         {
@@ -4623,6 +4689,7 @@ public sealed class MultiTurnAgentLoop
     private async Task<(ResolveToolCallOutcome Outcome, Exception? Failure)> ResolveUnclaimedAsync(
         string toolCallId,
         string result,
+        string? legacyResult,
         bool isError,
         IList<ToolResultContentBlock>? contentBlocks,
         bool truncated,
@@ -4647,7 +4714,7 @@ public sealed class MultiTurnAgentLoop
                         return existing;
                     }
 
-                    if (existing.Result == result && existing.IsError == isError)
+                    if ((existing.Result == result || existing.Result == legacyResult) && existing.IsError == isError)
                     {
                         noOp = true;
                         return existing;
@@ -4727,6 +4794,7 @@ public sealed class MultiTurnAgentLoop
             pending!,
             toolCallId,
             result,
+            legacyResult,
             isError,
             contentBlocks,
             truncated,

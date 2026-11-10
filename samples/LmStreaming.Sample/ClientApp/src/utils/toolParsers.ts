@@ -14,7 +14,7 @@ import type {
   CodeBlockModel,
   CodeBlockLine,
 } from '@/utils/toolTypes';
-import { matchExitMarker } from '@/utils/toolResult';
+import { matchExitMarker, readCutTaskStatus } from '@/utils/toolResult';
 
 /**
  * Split a string into logical lines. A nullish input and a genuinely-empty `''` input both yield
@@ -139,13 +139,20 @@ export function parseTerminal(
 ): TerminalModel {
   const structured = opts?.structured;
   if (structured != null && typeof structured === 'object') {
-    const stdout = typeof structured.stdout === 'string' ? structured.stdout : '';
+    // A result too large to keep whole has only a preview, and that beats an empty terminal.
+    const stdout =
+      typeof structured.stdout === 'string'
+        ? structured.stdout
+        : typeof structured.preview === 'string'
+          ? structured.preview
+          : '';
     const stderr = typeof structured.stderr === 'string' ? structured.stderr : '';
     const envelopeExit = typeof structured.exit_code === 'number' ? structured.exit_code : null;
     // An explicit authoritative exitCode (resolved by deriveToolPillState, which also accounts for
     // a failing command captured in stdout) takes precedence over the envelope's own exit_code.
     const exitCode = opts?.exitCode ?? envelopeExit;
-    const failed = (exitCode != null && exitCode !== 0) || structured.status === 'failed';
+    const status = structured.status ?? readCutTaskStatus(structured)?.status;
+    const failed = (exitCode != null && exitCode !== 0) || status === 'failed';
     return { stdout, stderr, exitCode, failed };
   }
 
