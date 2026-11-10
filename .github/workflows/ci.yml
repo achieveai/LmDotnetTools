@@ -73,6 +73,12 @@ jobs:
           python samples/Reviewd.Sample/ops/test/test_offline_backup.py -v
           exit $LASTEXITCODE
 
+      - name: Test Windows Reviewd runner ops scripts
+        shell: pwsh
+        run: |
+          python samples/Reviewd.Sample/ops/test/test_windows_runner_ops.py -v
+          exit $LASTEXITCODE
+
       - name: Test priority policy and runner
         shell: pwsh
         run: |
