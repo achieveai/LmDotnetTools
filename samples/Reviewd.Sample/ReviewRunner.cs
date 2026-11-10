@@ -1746,7 +1746,9 @@ internal static class ReviewRunner
                 || (
                     probe is not null
                     && rootIdle
-                    && (status is null || status.Status.Equals("completed", StringComparison.OrdinalIgnoreCase))
+                    // NotStarted too, so an input that never starts beside a ghost still ends as lost after the grace;
+                    // `idle` below still needs Completed, so it can never end in success.
+                    && (status is null || status.Status.ToLowerInvariant() is "completed" or "notstarted")
                     && await probe.AllAbandonedAsync(client, thread, unsettled, now, ct)
                 );
             if (rootIdle && settled && status?.Status.Equals("notstarted", StringComparison.OrdinalIgnoreCase) == true)
