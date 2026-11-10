@@ -2123,8 +2123,8 @@ public class ConversationsController(
             )
             {
                 logger.LogWarning(
-                    "Admission for input {InputId} on thread {ThreadId} was not retracted because it is no "
-                        + "longer this request's to retract",
+                    "Admission for input {InputId} on thread {ThreadId} was not retracted: it is no longer "
+                        + "this request's to retract, or the store could not get exclusive access to it in time",
                     admission.InputId,
                     admission.ThreadId
                 );

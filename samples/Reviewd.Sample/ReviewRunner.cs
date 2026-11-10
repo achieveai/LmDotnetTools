@@ -103,7 +103,8 @@ internal static class ReviewRunner
                 config,
                 client,
                 (_, _, _, _) => throw new InvalidOperationException("Preview cannot execute sandbox actions."),
-                ct
+                ct,
+                reads: AbandonedChildProbe.ReadLog.Process
             );
         }
         using var sandbox = config.CreateSandboxClient(TimeSpan.FromMinutes(10));
@@ -119,7 +120,8 @@ internal static class ReviewRunner
             config,
             client,
             (phase, args, operation, token) => ExecuteAsync(phase, args, operation, token),
-            ct
+            ct,
+            reads: AbandonedChildProbe.ReadLog.Process
         );
 
         Task<JsonObject> ExecuteAsync(string phase, JsonObject args, string operation, CancellationToken token) =>
@@ -438,11 +440,12 @@ internal static class ReviewRunner
         Func<string, JsonObject, string, CancellationToken, Task<JsonObject>> sandbox,
         CancellationToken ct,
         Func<CancellationToken, Task>? delay = null,
-        Func<DateTimeOffset>? now = null
+        Func<DateTimeOffset>? now = null,
+        AbandonedChildProbe.ReadLog? reads = null
     ) =>
         options.Has("slot")
-            ? RunInSlotAsync(options, config, client, sandbox, null, false, null, ct, delay, now)
-            : AutoSlot.RunAsync(options, config, client, sandbox, ct, delay, now);
+            ? RunInSlotAsync(options, config, client, sandbox, null, false, null, ct, delay, now, reads)
+            : AutoSlot.RunAsync(options, config, client, sandbox, ct, delay, now, reads);
 
     /// <summary>
     ///     Runs one PR in <c>--slot</c>. An automatic run passes the slot lease (and PR lease) it already holds,
@@ -458,7 +461,8 @@ internal static class ReviewRunner
         JsonObject? selection,
         CancellationToken ct,
         Func<CancellationToken, Task>? delay = null,
-        Func<DateTimeOffset>? now = null
+        Func<DateTimeOffset>? now = null,
+        AbandonedChildProbe.ReadLog? reads = null
     )
     {
         var repo = PrCommands.ParseRepo(options.Required("repo"));
@@ -476,6 +480,9 @@ internal static class ReviewRunner
         var key = $"reviewd/review-run/{repo.NormalizedKey}/{pr}";
         var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/{pr}";
         delay ??= token => Task.Delay(PollInterval, token);
+        // One probe for every wait, admission and agent check of this review. Its read log outlives the attempt when
+        // the batch passes one, so a deferred admission retried within minutes does not reread the same transcript.
+        var abandoned = new AbandonedChildProbe($"{repo.DisplayName} #{pr}", reads);
         using var prLease =
             options.Has("execute") && !prLeaseHeld ? AcquireLease(database, PrLeaseIdentity(repo, pr)) : null;
         using var slotLease =
@@ -797,7 +804,7 @@ internal static class ReviewRunner
             && !cleanupOnly
             && (
                 (successful is null && thread is not null && (await client.GetRunStateAsync(thread, ct)).IsInProgress)
-                || (questionThread is not null && await TreeInFlightAsync(client, questionThread, now(), ct))
+                || (questionThread is not null && await TreeInFlightAsync(client, questionThread, now(), abandoned, ct))
             )
         )
             throw new ReviewDeferredException("An earlier conversation for this PR is still running; retry deferred.");
@@ -935,7 +942,8 @@ internal static class ReviewRunner
                         _ = await SlotRelease.HeartbeatAsync(connection, retainedOwner, retainedToken, token);
                     },
                 ct,
-                maxBusyReads: ReviewBusyReads
+                maxBusyReads: ReviewBusyReads,
+                probe: abandoned
             );
             // A reclaim leaves its conversation frozen. A fresh review on that thread thaws it once it is
             // idle; otherwise the host accepts the review message and the run parks behind the freeze for
@@ -950,12 +958,12 @@ internal static class ReviewRunner
                         and not "not_freezable"
                 )
                     throw new InvalidOperationException($"Host refused to unfreeze {thread}: {refusal}.");
-                await WaitAsync(client, thread, null, delay, ct, maxBusyReads: ReviewBusyReads);
+                await WaitAsync(client, thread, null, delay, ct, maxBusyReads: ReviewBusyReads, probe: abandoned);
             }
         }
         foreach (var ownerThread in ownerThreads)
         {
-            await WaitAsync(client, ownerThread, null, delay, ct, maxBusyReads: ReviewBusyReads);
+            await WaitAsync(client, ownerThread, null, delay, ct, maxBusyReads: ReviewBusyReads, probe: abandoned);
         }
         // Only validated admitted resumes and outgoing-owner cleanup bypass fresh-admission age checks.
         if (!resume && !cleanupOnly)
@@ -980,6 +988,15 @@ internal static class ReviewRunner
         // Resets of one head add up across its retries, whatever ended each one.
         if (resetsOfHead > 0)
             receipt["resetCount"] = resetsOfHead;
+        // A readmit stays with its head across retries too, so a retry is not refused for an age the readmit cleared.
+        if (
+            attempt?["readmittedHead"]?.GetValue<string>() is { } readmittedHead
+            && readmittedHead == args["head"]!.GetValue<string>()
+        )
+        {
+            receipt["readmittedHead"] = readmittedHead;
+            receipt["readmittedAt"] = attempt["readmittedAt"]?.DeepClone();
+        }
         // A retry of a reset keeps that mark. A retry refused or failed before it reviews is then offered again in its
         // own conversation, instead of reading as a failed submission there until a new push.
         if (retryOfReset)
@@ -1187,7 +1204,15 @@ internal static class ReviewRunner
                 );
             args["summaryThreads"] = await PriorSummaryThreadsAsync(connection, repo, pr, ct);
             receipt["verifiedPublication"] = await StepAsync("verify");
-            await WaitAsync(client, thread!, null, LeasedDelayAsync, ct, maxBusyReads: ReviewBusyReads);
+            await WaitAsync(
+                client,
+                thread!,
+                null,
+                LeasedDelayAsync,
+                ct,
+                maxBusyReads: ReviewBusyReads,
+                probe: abandoned
+            );
             receipt["artifactCommit"] = await StepAsync("commit");
             var commit = receipt["artifactCommit"]!;
             if (
@@ -1300,7 +1325,15 @@ internal static class ReviewRunner
                 );
             // This is outgoing-owner cleanup. Review success stays committed even if drain/reset fails.
             if (thread is not null)
-                await WaitAsync(client, thread, null, LeasedDelayAsync, ct, maxBusyReads: ReviewBusyReads);
+                await WaitAsync(
+                    client,
+                    thread,
+                    null,
+                    LeasedDelayAsync,
+                    ct,
+                    maxBusyReads: ReviewBusyReads,
+                    probe: abandoned
+                );
             await SlotRelease.AssertCurrentAsync(connection, ownerKey, claimToken, ct);
             receipt["cleanupState"] = "pending";
             var operation = Guid.NewGuid().ToString("N");
@@ -1371,7 +1404,8 @@ internal static class ReviewRunner
         }
         // Unknown or busy counts as active: a step is never stopped on a guess.
         async Task<bool> AgentsActiveAsync(CancellationToken token) =>
-            thread is not null && await SlotReaper.FindActivityAsync(client, thread, Task.Delay, token) is not null;
+            thread is not null
+            && await SlotReaper.FindActivityAsync(client, thread, Task.Delay, token, abandoned) is not null;
         async Task EnsureCreationAgeAsync()
         {
             if (maxAgeHours is not { } hours)
@@ -1387,7 +1421,8 @@ internal static class ReviewRunner
                     current,
                     live["headSha"]?.GetValue<string>(),
                     hours,
-                    now()
+                    now(),
+                    attempt
                 )
             )
                 throw new InvalidOperationException(
@@ -1450,7 +1485,8 @@ internal static class ReviewRunner
                     LeasedDelayAsync,
                     ct,
                     now,
-                    maxBusyReads: ReviewBusyReads
+                    maxBusyReads: ReviewBusyReads,
+                    probe: abandoned
                 );
             }
             catch (LostInputException ex)
@@ -1611,19 +1647,31 @@ internal static class ReviewRunner
 
     // A passed-over thread is never waited on, so its whole tree decides admission: a sub-agent still running
     // there can publish for the PR after a fresh review starts. A busy hierarchy read is not proof of
-    // settlement either. Either way the review is deferred and the batch retries the PR.
+    // settlement either. Either way the review is deferred and the batch retries the PR. Admission has no input on
+    // that thread, so under an idle root (no run in progress and no current run) an abandoned child settles here as
+    // it does in the wait (#956).
     private static async Task<bool> TreeInFlightAsync(
         LmStreamingS2SClient client,
         string thread,
         DateTimeOffset now,
+        AbandonedChildProbe probe,
         CancellationToken ct
     )
     {
-        if ((await client.GetRunStateAsync(thread, ct)).IsInProgress)
+        var root = await client.GetRunStateAsync(thread, ct);
+        if (root.IsInProgress)
             return true;
         try
         {
-            return !(await client.GetSubAgentTreeAsync(thread, ct)).Nodes.All(n => IsSettledNode(n, now));
+            var unsettled = (await client.GetSubAgentTreeAsync(thread, ct))
+                .Nodes.Where(n => !IsSettledNode(n, now))
+                .ToList();
+            // The host reports a run id it holds as stale without "in progress"; such a root is not idle enough to
+            // settle a child by time.
+            return unsettled.Count > 0
+                && (
+                    root.CurrentRunId is not null || !await probe.AllAbandonedAsync(client, thread, unsettled, now, ct)
+                );
         }
         catch (LmStreamingS2SClient.HierarchyBusyException)
         {
@@ -1641,7 +1689,9 @@ internal static class ReviewRunner
     ///     restart can read it for a moment, and the caller's check decides when the run is gone. A busy tree read
     ///     waits through <paramref name="busyDelay"/> when given, so a caller can tell a busy read from a full poll.
     ///     The wait gives up after <paramref name="maxBusyReads"/> busy tree reads in a row; a caller polling slower
-    ///     than once a second passes fewer, so the budget stays about ten minutes.
+    ///     than once a second passes fewer, so the budget stays about ten minutes. A caller that passes
+    ///     <paramref name="probe"/> lets a Running descendant it finds abandoned settle (see
+    ///     <see cref="AbandonedChildProbe"/>); without one, Running never settles.
     /// </remarks>
     internal static async Task<S2SStatusResult?> WaitAsync(
         LmStreamingS2SClient client,
@@ -1652,7 +1702,8 @@ internal static class ReviewRunner
         Func<DateTimeOffset>? clock = null,
         Func<S2SStatusResult?, S2SRunState, bool>? orphaned = null,
         Func<CancellationToken, Task>? busyDelay = null,
-        int maxBusyReads = MaxConsecutiveBusyReads
+        int maxBusyReads = MaxConsecutiveBusyReads,
+        AbandonedChildProbe? probe = null
     )
     {
         clock ??= () => DateTimeOffset.UtcNow;
@@ -1689,7 +1740,15 @@ internal static class ReviewRunner
             }
             var now = clock();
             var rootIdle = !global.IsInProgress && global.CurrentRunId is null;
-            var settled = tree.Nodes.All(n => IsSettledNode(n, now));
+            var unsettled = tree.Nodes.Where(n => !IsSettledNode(n, now)).ToList();
+            var settled =
+                unsettled.Count == 0
+                || (
+                    probe is not null
+                    && rootIdle
+                    && (status is null || status.Status.Equals("completed", StringComparison.OrdinalIgnoreCase))
+                    && await probe.AllAbandonedAsync(client, thread, unsettled, now, ct)
+                );
             if (rootIdle && settled && status?.Status.Equals("notstarted", StringComparison.OrdinalIgnoreCase) == true)
             {
                 stalledSince ??= now;

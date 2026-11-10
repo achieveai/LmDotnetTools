@@ -108,12 +108,17 @@ internal interface IReviewSubAgentCompletionSource
 /// <param name="FromAgent">The agent that authored it, when the host recorded one.</param>
 /// <param name="TimestampUtc">When it was recorded, when the host recorded one.</param>
 /// <param name="Body">The message payload, already reduced to text where the shape allowed it.</param>
+/// <param name="ToolCallId">
+/// The <c>tool_call_id</c> of a tool call or tool result, read from the payload; null when the row has none or it
+/// cannot be read. Pairs each tool call with its own result.
+/// </param>
 internal sealed record ReviewAgentTranscriptEntry(
     string MessageType,
     string Role,
     string? FromAgent,
     DateTimeOffset? TimestampUtc,
-    string Body
+    string Body,
+    string? ToolCallId = null
 );
 
 /// <summary>

@@ -118,7 +118,6 @@ internal sealed class CompactionRuntime
     private readonly Func<string?, long> _text;
     private readonly Func<IMessage, long> _estimator;
     private readonly ConditionalWeakTable<IMessage, RowIdentity> _identities = [];
-    private readonly List<Task> _inFlightPersists = [];
     private readonly object _gate = new();
 
     private long _generationOrdinal;
@@ -752,6 +751,7 @@ internal sealed class CompactionRuntime
         _text = setup.TextTokens ?? CompactionTokenEstimate.EstimateText;
         _estimator = CompactionTokenEstimate.Create(_text);
         _host = host;
+        Saver = host.Store is { } store ? new OrderedRowSaver(store, host.ThreadId, host.Logger) : null;
         _clock = setup.Clock ?? TimeProvider.System;
         var options = setup.Options;
         options.Validate();
@@ -939,14 +939,15 @@ internal sealed class CompactionRuntime
         _fitRecutsThisRun = 0;
     }
 
-    /// <summary>Remembers the persisted id of an in-memory row and the append that is still in flight.</summary>
-    public void TrackPersisted(IMessage message, string persistedId, Task append)
+    /// <summary>Writes this loop's rows in order; null when the loop has no store.</summary>
+    internal OrderedRowSaver? Saver { get; }
+
+    /// <summary>Remembers the persisted id of an in-memory row.</summary>
+    public void TrackPersisted(IMessage message, string persistedId)
     {
         lock (_gate)
         {
             _identities.AddOrUpdate(message, new RowIdentity { Id = persistedId });
-            _ = _inFlightPersists.RemoveAll(t => t.IsCompleted);
-            _inFlightPersists.Add(append);
         }
     }
 
@@ -2065,20 +2066,8 @@ internal sealed class CompactionRuntime
         CancellationToken ct
     )
     {
-        Task[] pending;
-        lock (_gate)
-        {
-            pending = [.. _inFlightPersists];
-        }
-
-        try
-        {
-            await Task.WhenAll(pending).ConfigureAwait(false);
-        }
-        catch (Exception)
-        {
-            // A failed append is a row the store does not have; reconciliation below reports it.
-        }
+        // A row that still cannot be written stays queued, and reconciliation reports it below.
+        await (Saver?.DrainAsync() ?? Task.CompletedTask).WaitAsync(ct).ConfigureAwait(false);
 
         var persisted = await store.LoadMessagesAsync(_host.ThreadId, ct).ConfigureAwait(false);
         var rows = SequencedHistory.FromPersisted(persisted);

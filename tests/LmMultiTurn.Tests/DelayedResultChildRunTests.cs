@@ -57,6 +57,27 @@ public class DelayedResultChildRunTests
     }
 
     [Fact]
+    public async Task RedeliveringALargeResult_WithSavingConfigured_SavesNothingAndIsADuplicate()
+    {
+        var saved = new FreshPathOutputStore();
+        await using var harness = await Harness.StartAsync(
+            _mockAgent,
+            "tc_1",
+            toolOutputSpill: new ToolOutputSpillOptions { Store = saved, MaxInlineBytes = 1024 }
+        );
+        var large = new string('r', 20_000);
+
+        var first = await harness.Loop.TryResolveToolCallAsync("tc_1", large);
+        var second = await harness.Loop.TryResolveToolCallAsync("tc_1", large);
+        await harness.WaitForProviderCallsAsync(2);
+
+        first.Should().Be(ResolveToolCallOutcome.Resolved);
+        second.Should().Be(ResolveToolCallOutcome.Duplicate);
+        saved.Count.Should().Be(0, "a saved path differs per delivery and would turn a redelivery into a conflict");
+        harness.ProviderCallCount.Should().Be(2);
+    }
+
+    [Fact]
     public async Task ASecondResultThatDisagrees_Conflicts_AndTheFirstStands()
     {
         await using var harness = await Harness.StartAsync(_mockAgent, "tc_1");
@@ -573,6 +594,16 @@ public class DelayedResultChildRunTests
     /// that per test buries the behaviour under arrangement and gives the run-completion race four
     /// more places to be got subtly wrong.
     /// </remarks>
+    private sealed class FreshPathOutputStore : IToolOutputStore
+    {
+        private int _count;
+
+        public int Count => Volatile.Read(ref _count);
+
+        public Task<string?> SaveAsync(string content, CancellationToken ct = default) =>
+            Task.FromResult<string?>($"/workspace/.tool-output/{Interlocked.Increment(ref _count)}/output.txt");
+    }
+
     private sealed class Harness : IAsyncDisposable
     {
         /// <summary>
@@ -638,8 +669,9 @@ public class DelayedResultChildRunTests
             string toolCallId,
             IConversationStore? store = null,
             IRunLifecycleStore? lifecycleStore = null,
-            RecordingLifecyclePublisher? publisher = null
-        ) => StartAsync(mockAgent, [toolCallId], store, lifecycleStore, publisher);
+            RecordingLifecyclePublisher? publisher = null,
+            ToolOutputSpillOptions? toolOutputSpill = null
+        ) => StartAsync(mockAgent, [toolCallId], store, lifecycleStore, publisher, toolOutputSpill: toolOutputSpill);
 
         public static async Task<Harness> StartAsync(
             Mock<IStreamingAgent> mockAgent,
@@ -647,7 +679,8 @@ public class DelayedResultChildRunTests
             IConversationStore? store = null,
             IRunLifecycleStore? lifecycleStore = null,
             RecordingLifecyclePublisher? publisher = null,
-            bool recordOpeningAfterItsDrain = false
+            bool recordOpeningAfterItsDrain = false,
+            ToolOutputSpillOptions? toolOutputSpill = null
         )
         {
             store ??= new InMemoryConversationStore();
@@ -668,7 +701,10 @@ public class DelayedResultChildRunTests
                 threadId,
                 store: store,
                 lifecycleServices: services
-            );
+            )
+            {
+                ToolOutputSpill = toolOutputSpill,
+            };
 
             var harness = new Harness(loop, store, threadId, toolCallIds.Count);
             SetupProvider(mockAgent, toolCallIds, harness);

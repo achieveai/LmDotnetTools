@@ -1430,6 +1430,7 @@ internal sealed class LmStreamingS2SClient
         var messages = new List<ReviewAgentTranscriptEntry>(root.GetArrayLength());
         foreach (var element in root.EnumerateArray())
         {
+            var messageJson = OptionalString(element, "messageJson");
             messages.Add(
                 new ReviewAgentTranscriptEntry(
                     MessageType: OptionalString(element, "messageType") ?? string.Empty,
@@ -1439,12 +1440,40 @@ internal sealed class LmStreamingS2SClient
                     && ts.ValueKind == JsonValueKind.Number
                         ? DateTimeOffset.FromUnixTimeMilliseconds(ts.GetInt64())
                         : null,
-                    Body: ExtractTranscriptBody(OptionalString(element, "messageJson"))
+                    Body: ExtractTranscriptBody(messageJson),
+                    ToolCallId: ExtractToolCallId(messageJson)
                 )
             );
         }
 
         return messages;
+    }
+
+    /// <summary>
+    /// Reads the <c>tool_call_id</c> of a tool call or tool result payload, or null when there is none or the
+    /// payload is not a JSON object. A reader that pairs calls with results treats null as unreadable.
+    /// </summary>
+    private static string? ExtractToolCallId(string? messageJson)
+    {
+        if (string.IsNullOrWhiteSpace(messageJson) || !messageJson.Contains("tool_call_id", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(messageJson);
+            return
+                doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("tool_call_id", out var id)
+                && id.ValueKind == JsonValueKind.String
+                ? id.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

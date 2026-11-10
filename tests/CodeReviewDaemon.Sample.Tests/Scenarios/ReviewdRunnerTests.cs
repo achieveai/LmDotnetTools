@@ -612,6 +612,351 @@ public sealed class ReviewdRunnerTests
         }
     }
 
+    // #956, seen live: the host left a sub-agent stamped running after its run was abandoned, and a whole round
+    // waited 13 hours on it. Its last turn had finished (text, then usage) and nothing was written after. Under an
+    // idle root with a final input, that child settles once its newest message is 45 minutes old: at once at 45 and
+    // past it, at the next due read when it starts just short of it. Anything that could still be a working child
+    // keeps the wait: a recent message, or a turn left open on a tool call (a long build writes nothing), on a tool
+    // result, on a message sent to it, on a result that answers another call, or on a call whose id cannot be read.
+    // A read that finds it abandoned is never reused, so confirming a settle reads it again. One clock minute
+    // passes per poll, for at most 20.
+    [Theory]
+    [InlineData("finished", 46, null, 1, 2)]
+    [InlineData("finished", 46, "Completed", 1, 2)]
+    [InlineData("finished", 45, null, 1, 2)]
+    [InlineData("finished", 44, null, 6, 3)]
+    [InlineData("finished", 10, null, null, 1)]
+    [InlineData("open-tool-call", 180, null, null, 5)]
+    [InlineData("tool-result", 180, null, null, 5)]
+    [InlineData("sent-to-it", 180, null, null, 5)]
+    [InlineData("result-for-another-call", 180, null, null, 5)]
+    [InlineData("unreadable-call-id", 180, null, null, 5)]
+    public async Task A_running_child_settles_the_wait_only_once_its_finished_turn_has_gone_quiet(
+        string ending,
+        int quietMinutes,
+        string? inputStatus,
+        int? settlesAfterPolls,
+        int transcriptReads
+    )
+    {
+        var start = DateTimeOffset.Parse("2026-11-09T12:00:00Z", CultureInfo.InvariantCulture);
+        var now = start;
+        var handler = GhostHandler(
+            rootInProgress: false,
+            inputStatus,
+            lastActivity: start.AddHours(-5),
+            _ => Transcript(start.AddMinutes(-quietMinutes), ending)
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var delays = 0;
+        var run = () =>
+            ReviewRunner.WaitAsync(
+                client,
+                "thread",
+                inputStatus is null ? null : "input",
+                _ =>
+                {
+                    if (++delays > 20)
+                        throw new TimeoutException("Still waiting on the child.");
+                    now = now.AddMinutes(1);
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None,
+                () => now,
+                probe: new AbandonedChildProbe("test")
+            );
+
+        if (settlesAfterPolls is { } polls)
+        {
+            await run();
+            delays.Should().Be(polls, "the settle is confirmed by the next idle read");
+        }
+        else
+        {
+            await run.Should().ThrowAsync<TimeoutException>();
+        }
+        handler
+            .CountRequests("/agents/ghost/transcript")
+            .Should()
+            .Be(
+                transcriptReads,
+                "a live child is read at most every five minutes, and not before it could be quiet enough"
+            );
+        handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get);
+    }
+
+    // A child that keeps working is never settled by the rule: here it finishes a turn every minute for 30 minutes,
+    // then stops. The wait stays open until its last message is 45 minutes old, not 45 minutes after the wait began.
+    [Fact]
+    public async Task A_child_that_keeps_writing_holds_the_wait_until_45_minutes_after_its_last_message()
+    {
+        var start = DateTimeOffset.Parse("2026-11-09T12:00:00Z", CultureInfo.InvariantCulture);
+        var now = start;
+        var lastWrite = start.AddMinutes(30);
+        var handler = GhostHandler(
+            rootInProgress: false,
+            inputStatus: null,
+            lastActivity: start.AddHours(-5),
+            _ => Transcript(now < lastWrite ? now : lastWrite, "finished")
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var delays = 0;
+
+        await ReviewRunner.WaitAsync(
+            client,
+            "thread",
+            null,
+            _ =>
+            {
+                if (++delays > 120)
+                    throw new TimeoutException("Still waiting on the child.");
+                now = now.AddMinutes(1);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None,
+            () => now,
+            probe: new AbandonedChildProbe("test")
+        );
+
+        (now - lastWrite).Should().Be(TimeSpan.FromMinutes(46), "settled at 45 quiet minutes, confirmed a poll later");
+    }
+
+    // A child judged abandoned can still be woken (a sibling messages it) before the settle is confirmed. The
+    // confirming poll reads it again, sees the new message, and the wait stays open.
+    [Fact]
+    public async Task A_child_judged_abandoned_that_writes_again_before_confirmation_keeps_the_wait()
+    {
+        var start = DateTimeOffset.Parse("2026-11-09T12:00:00Z", CultureInfo.InvariantCulture);
+        var now = start;
+        var handler = GhostHandler(
+            rootInProgress: false,
+            inputStatus: null,
+            lastActivity: start.AddHours(-5),
+            _ =>
+                now == start
+                    ? Transcript(start.AddHours(-3), "finished")
+                    : Transcript(start.AddMinutes(1), "open-tool-call")
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var delays = 0;
+
+        var run = () =>
+            ReviewRunner.WaitAsync(
+                client,
+                "thread",
+                null,
+                _ =>
+                {
+                    if (++delays > 20)
+                        throw new TimeoutException("Still waiting on the child.");
+                    now = now.AddMinutes(1);
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None,
+                () => now,
+                probe: new AbandonedChildProbe("test")
+            );
+
+        await run.Should().ThrowAsync<TimeoutException>();
+        handler.CountRequests("/agents/ghost/transcript").Should().BeGreaterThanOrEqualTo(2);
+    }
+
+    // The host client gives up a read after its own timeout, which surfaces as a cancellation the caller never asked
+    // for. That is a failed read, not a cancelled wait: the child keeps the wait, is read again five minutes later,
+    // and then settles.
+    [Fact]
+    public async Task A_transcript_read_that_times_out_keeps_the_wait_and_is_retried()
+    {
+        var start = DateTimeOffset.Parse("2026-11-09T12:00:00Z", CultureInfo.InvariantCulture);
+        var now = start;
+        var reads = 0;
+        var handler = GhostHandler(
+            rootInProgress: false,
+            inputStatus: null,
+            lastActivity: start.AddHours(-5),
+            _ =>
+                ++reads == 1
+                    ? throw new TaskCanceledException(
+                        "The request was canceled due to the configured HttpClient.Timeout."
+                    )
+                    : Transcript(start.AddHours(-3), "finished")
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var delays = 0;
+
+        await ReviewRunner.WaitAsync(
+            client,
+            "thread",
+            null,
+            _ =>
+            {
+                if (++delays > 20)
+                    throw new TimeoutException("Still waiting on the child.");
+                now = now.AddMinutes(1);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None,
+            () => now,
+            probe: new AbandonedChildProbe("test")
+        );
+
+        delays.Should().Be(6, "the failed read is retried after five minutes, and the settle confirmed a poll later");
+        reads.Should().Be(3);
+    }
+
+    // The transcript read is a full message load on the host's busy store, so it is made only when nothing else can
+    // still move the tree. A root still running, an input not yet final, a fresh activity stamp or another child
+    // that has not settled keeps the wait without reading the child at all, even when its transcript would read as
+    // abandoned. A wait given no probe (the judge and merge waits) keeps the old rule and never reads one.
+    [Theory]
+    [InlineData("root-running")]
+    [InlineData("input-running")]
+    [InlineData("recent-stamp")]
+    [InlineData("unknown-sibling")]
+    [InlineData("no-probe")]
+    public async Task The_abandoned_child_read_is_never_made_while_anything_else_can_still_move_the_tree(string blocker)
+    {
+        var start = DateTimeOffset.Parse("2026-11-09T12:00:00Z", CultureInfo.InvariantCulture);
+        var now = start;
+        var handler = GhostHandler(
+            rootInProgress: blocker == "root-running",
+            blocker == "input-running" ? "InProgress" : null,
+            lastActivity: blocker == "recent-stamp" ? start.AddMinutes(-5) : start.AddHours(-5),
+            _ => Transcript(start.AddHours(-5), "finished"),
+            unknownSibling: blocker == "unknown-sibling" ? start : null
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var delays = 0;
+
+        var run = () =>
+            ReviewRunner.WaitAsync(
+                client,
+                "thread",
+                blocker == "input-running" ? "input" : null,
+                _ =>
+                {
+                    if (++delays > 3)
+                        throw new TimeoutException("Still waiting on the child.");
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None,
+                () => now,
+                probe: blocker == "no-probe" ? null : new AbandonedChildProbe("test")
+            );
+
+        await run.Should().ThrowAsync<TimeoutException>();
+        handler.CountRequests("/transcript").Should().Be(0);
+    }
+
+    // The ghost is listed first, so a check that read before looking at every node would read it.
+    private static FakeHttpMessageHandler GhostHandler(
+        bool rootInProgress,
+        string? inputStatus,
+        DateTimeOffset lastActivity,
+        Func<HttpRequestMessage, string> transcript,
+        DateTimeOffset? unknownSibling = null
+    ) =>
+        new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/status?", $$"""{"status":"{{inputStatus}}","runId":"run","response":null}""")
+            .OnJson(
+                HttpMethod.Get,
+                "/run-state",
+                rootInProgress
+                    ? """{"threadId":"thread","isInProgress":true,"currentRunId":"run"}"""
+                    : """{"threadId":"thread","isInProgress":false,"currentRunId":null}"""
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/subagents?",
+                $$"""{"schemaVersion":1,"nodes":[{"agentId":"publisher","threadId":"publisher-thread","parentThreadId":"thread","depth":1,"template":"reviewer","status":"completed"},{"agentId":"ghost","threadId":"subagent-x-ghost","parentThreadId":"thread","depth":1,"template":"reviewer","status":"running","lastActivityUtc":"{{lastActivity:O}}"}{{(
+                    unknownSibling is { } seen
+                        ? $$""",{"agentId":"other","threadId":"subagent-x-other","parentThreadId":"thread","depth":1,"template":"reviewer","status":"mystery","lastActivityUtc":"{{seen:O}}"}"""
+                        : ""
+                )}}]}"""
+            )
+            .On(
+                request =>
+                    request.RequestUri!.AbsolutePath.EndsWith("/agents/ghost/transcript", StringComparison.Ordinal),
+                request => Json(transcript(request))
+            );
+
+    // A child transcript as the host's agent-transcript route returns it (reasoning already stripped), ending the
+    // given way, one second apart, with its newest message at newest.
+    internal static string Transcript(DateTimeOffset newest, string ending)
+    {
+        (string Type, string Role, string? CallId)[] rows = ending switch
+        {
+            "finished" =>
+            [
+                ("TextMessage", "User", null),
+                ("ToolCallMessage", "Assistant", "call-1"),
+                ("ToolCallResultMessage", "User", "call-1"),
+                ("TextMessage", "Assistant", null),
+                ("UsageMessage", "Assistant", null),
+            ],
+            "open-tool-call" =>
+            [
+                ("TextMessage", "User", null),
+                ("ToolCallMessage", "Assistant", "call-1"),
+                ("UsageMessage", "Assistant", null),
+            ],
+            "tool-result" =>
+            [
+                ("TextMessage", "User", null),
+                ("ToolCallMessage", "Assistant", "call-1"),
+                ("ToolCallResultMessage", "User", "call-1"),
+            ],
+            "sent-to-it" =>
+            [
+                ("TextMessage", "User", null),
+                ("TextMessage", "Assistant", null),
+                ("UsageMessage", "Assistant", null),
+                ("AgentMessage", "User", null),
+            ],
+            // Equal counts, but the stored result answers a call that is not here: call-2 is still open.
+            "result-for-another-call" =>
+            [
+                ("TextMessage", "User", null),
+                ("ToolCallMessage", "Assistant", "call-2"),
+                ("ToolCallResultMessage", "User", "call-1"),
+                ("TextMessage", "Assistant", null),
+                ("UsageMessage", "Assistant", null),
+            ],
+            "unreadable-call-id" =>
+            [
+                ("TextMessage", "User", null),
+                ("ToolCallMessage", "Assistant", ""),
+                ("ToolCallResultMessage", "User", ""),
+                ("TextMessage", "Assistant", null),
+                ("UsageMessage", "Assistant", null),
+            ],
+            _ => throw new ArgumentOutOfRangeException(nameof(ending), ending, null),
+        };
+        var array = new JsonArray();
+        for (var i = 0; i < rows.Length; i++)
+        {
+            var payload = new JsonObject { ["role"] = rows[i].Role.ToLowerInvariant() };
+            if (rows[i].CallId is { } id)
+                payload["tool_call_id"] = id.Length == 0 ? null : id;
+            array.Add(
+                new JsonObject
+                {
+                    ["seq"] = i + 1,
+                    ["messageType"] = rows[i].Type,
+                    ["role"] = rows[i].Role,
+                    ["timestamp"] = newest.AddSeconds(i - rows.Length + 1).ToUnixTimeMilliseconds(),
+                    ["messageJson"] = payload.ToJsonString(),
+                }
+            );
+        }
+        return array.ToJsonString();
+    }
+
     // Seen live on PR 221: the confirmation read NotStarted for four hours on an idle conversation, and the
     // batch never reached the next PR. One clock minute passes per poll.
     [Theory]
@@ -1052,7 +1397,9 @@ public sealed class ReviewdRunnerTests
         };
         await batch.ExecuteAsync();
         batch.Runs.Should().Contain("1:resume").And.Contain("2:fresh").And.Contain("3:fresh");
-        batch.Runs.IndexOf("1:resume").Should().BeLessThan(batch.Runs.IndexOf("3:fresh"));
+        // The retried owner keeps its slot through its backoff; the others use the free slot meanwhile.
+        batch.RunSlots.Should().Contain(("1", 0));
+        batch.RunSlots.TakeWhile(run => run.Pr != "1").Should().NotContain(run => run.Slot == 0);
         batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
     }
 
@@ -1476,13 +1823,16 @@ public sealed class ReviewdRunnerTests
         batch.Restart();
         var state = batch.Read(batch.StateKey)!.AsObject();
         state["entries"]![0]!["status"] = "launching";
+        state["entries"]![0]!["slot"] = 0;
         batch.Put(batch.StateKey, state);
         if (retainedAttempt)
             batch.PutAttempt("1", new JsonObject { ["slot"] = 0, ["stage"] = "prepare-pending" });
         var execute = () => batch.ExecuteAsync();
         await execute();
-        batch.Runs.Should().Equal("2:fresh");
-        batch.LiveReads.Should().Be(1);
+        // Slot 0 stays held; PRs 2 and 3 both run on slot 1 rather than wait behind it.
+        batch.Runs.Should().Equal("2:fresh", "3:fresh");
+        batch.RunSlots.Should().OnlyContain(run => run.Slot == 1);
+        batch.LiveReads.Should().Be(2);
         batch.Entries()[0]["status"]!.GetValue<string>().Should().Be("held");
         if (retainedAttempt)
         {
@@ -1530,6 +1880,7 @@ public sealed class ReviewdRunnerTests
     [Theory]
     [InlineData("fresh", "age-excluded", 0)]
     [InlineData("failed-released", "age-excluded", 0)]
+    [InlineData("readmitted", "verified", 3)]
     [InlineData("admitted", "verified", 3)]
     [InlineData("prepared", "held", 0)]
     [InlineData("review-send-pending", "held", 0)]
@@ -1547,10 +1898,17 @@ public sealed class ReviewdRunnerTests
                 new JsonObject
                 {
                     ["slot"] = 0,
-                    ["stage"] = scenario == "admitted" ? "review-running" : scenario,
-                    ["cleanupState"] = scenario == "failed-released" ? "released" : "owned",
+                    ["stage"] = scenario switch
+                    {
+                        "admitted" => "review-running",
+                        "readmitted" => "failed-released",
+                        _ => scenario,
+                    },
+                    ["cleanupState"] = scenario is "failed-released" or "readmitted" ? "released" : "owned",
                     ["claimToken"] = "token",
                     ["reviewInputId"] = scenario == "admitted" ? "original" : null,
+                    ["readmittedHead"] = scenario == "readmitted" ? new string('a', 40) : null,
+                    ["readmittedAt"] = scenario == "readmitted" ? batch.Now.AddHours(-1).ToString("O") : null,
                 }
             );
         batch.Eligibility = pr =>
@@ -1850,7 +2208,582 @@ public sealed class ReviewdRunnerTests
             .Be("72");
     }
 
-    private sealed class BatchFixture : IDisposable
+    // #952: reviews ran in rounds. A PR picked while another review ran waited for the whole round to end, though a
+    // slot was free (seen live: #946 and #951 waited 15 minutes behind AWB #127 with two slots idle).
+    [Fact]
+    public async Task Batch_starts_a_pr_picked_while_another_review_runs_on_the_next_tick()
+    {
+        using var batch = new BatchFixture(0, 1);
+        batch.WatchDelay = batch.LiveTick;
+        batch.PutSelection(1);
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        batch.OnRunPrAsync = async pr =>
+        {
+            if (pr == "1")
+            {
+                firstStarted.SetResult();
+                await release.Task;
+            }
+            else
+                secondStarted.SetResult();
+        };
+
+        var schedule = batch.RunLiveAsync();
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        batch.PutSelection(2);
+        await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        release.Task.IsCompleted.Should().BeFalse("PR 2 started while PR 1 was still running");
+        release.SetResult();
+        batch.Cancellation.Cancel();
+        await schedule;
+        batch.RunSlots.Should().Equal(("1", 0), ("2", 1));
+        batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
+    }
+
+    // #952: a PR kept the slot it ran on before, and waited up to 2 hours when another PR held that slot.
+    [Fact]
+    public async Task Batch_starts_a_pr_on_a_free_slot_when_its_earlier_slot_is_busy()
+    {
+        using var batch = new BatchFixture(0, 1);
+        batch.PutSelection(1);
+        batch.PutAttempt(
+            "1",
+            new JsonObject
+            {
+                ["slot"] = 1,
+                ["stage"] = "completed-verified",
+                ["cleanupState"] = "released",
+                ["claimToken"] = "earlier-claim",
+                ["reviewedHeadSha"] = new string('9', 40),
+                ["mergeSha"] = new string('9', 40),
+                ["artifactCommit"] = new JsonObject { ["status"] = "committed", ["commit"] = new string('c', 40) },
+            }
+        );
+        batch.Put(
+            SlotRelease.OwnerKey("workspace", PrCommands.ParseRepo(BatchFixture.Repo).NormalizedKey, 1),
+            new JsonObject
+            {
+                ["prId"] = "99",
+                ["state"] = "owned",
+                ["claimToken"] = "other-run",
+            }
+        );
+        var started = batch.Now;
+
+        await batch.ExecuteAsync();
+
+        batch.RunSlots.Should().Equal(("1", 0));
+        batch.Entries()[0]["status"]!.GetValue<string>().Should().Be("verified");
+        batch.Now.Should().Be(started, "nothing waited on the busy slot");
+    }
+
+    // #952: a held slot held every PR assigned behind it for up to 2 hours.
+    [Fact]
+    public async Task Batch_held_slot_does_not_delay_prs_on_other_slots()
+    {
+        using var batch = new BatchFixture(0, 1);
+        batch.PutAttempt(
+            "1",
+            new JsonObject
+            {
+                ["slot"] = 0,
+                ["stage"] = "prepare-pending",
+                ["cleanupState"] = "owned",
+                ["claimToken"] = "unknown-outcome",
+            }
+        );
+        var started = batch.Now;
+
+        await batch.ExecuteAsync();
+
+        batch.Runs.Should().Equal("2:fresh", "3:fresh");
+        batch.RunSlots.Should().OnlyContain(run => run.Slot == 1);
+        batch
+            .Entries()
+            .Select(entry => entry["status"]!.GetValue<string>())
+            .Should()
+            .Equal("held", "verified", "verified");
+        batch.Entries()[0]["slot"]!.GetValue<int>().Should().Be(0, "the held owner still names the slot it owns");
+        batch.Now.Should().Be(started, "nothing waited on the held slot");
+    }
+
+    [Fact]
+    public async Task Batch_restart_resumes_a_retained_attempt_on_its_own_slot()
+    {
+        using var batch = new BatchFixture(0, 1);
+        batch.Cancellation.Cancel();
+        await batch.ExecuteAsync();
+        batch.Restart();
+        // The batch stopped while PR 3 ran on slot 1.
+        var state = batch.Read(batch.StateKey)!.AsObject();
+        state["entries"]![2]!["status"] = "launching";
+        state["entries"]![2]!["slot"] = 1;
+        batch.Put(batch.StateKey, state);
+        batch.PutAttempt(
+            "3",
+            new JsonObject
+            {
+                ["slot"] = 1,
+                ["stage"] = "review-running",
+                ["claimToken"] = "running",
+                ["reviewInputId"] = "original",
+                ["mergeSha"] = new string('b', 40),
+            }
+        );
+
+        await batch.ExecuteAsync();
+
+        batch.Runs.Should().Contain("3:resume").And.Contain("1:fresh").And.Contain("2:fresh");
+        batch.RunSlots.Should().Contain(("3", 1));
+        batch.RunSlots.First(run => run.Slot == 1).Pr.Should().Be("3", "no new review takes a retained owner's slot");
+        batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
+    }
+
+    [Fact]
+    public async Task Batch_never_admits_the_same_pr_and_head_twice_across_ticks()
+    {
+        using var batch = new BatchFixture(0, 1);
+        batch.WatchDelay = batch.LiveTick;
+        batch.PutSelection(1);
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        batch.OnRunPrAsync = async pr =>
+        {
+            if (pr == "1")
+            {
+                firstStarted.TrySetResult();
+                await release.Task;
+            }
+            else
+                secondStarted.TrySetResult();
+        };
+
+        var schedule = batch.RunLiveAsync();
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await batch.AfterTicks(6);
+        release.SetResult();
+        await batch.AfterTicks(6);
+        // A new selection that still holds PR 1's head re-checks it, and finds it reviewed.
+        batch.PutSelection(2);
+        await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await batch.AfterTicks(6);
+        batch.Cancellation.Cancel();
+        await schedule;
+
+        batch.Runs.Should().Equal("1:fresh", "2:fresh");
+    }
+
+    [Fact]
+    public async Task Batch_drops_a_queued_pr_that_left_the_selection_but_never_a_running_one()
+    {
+        using var batch = new BatchFixture(0);
+        batch.WatchDelay = batch.LiveTick;
+        batch.PutSelection(2);
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thirdStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        batch.OnRunPrAsync = async pr =>
+        {
+            if (pr == "1")
+            {
+                firstStarted.TrySetResult();
+                await release.Task;
+            }
+            else if (pr == "3")
+                thirdStarted.TrySetResult();
+        };
+
+        var schedule = batch.RunLiveAsync();
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        batch.SelectOnly("3");
+        await batch.AfterTicks(6);
+        batch.Entries().Select(entry => entry["pr"]!.GetValue<string>()).Should().Equal("3", "1");
+        release.SetResult();
+        await thirdStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await batch.AfterTicks(6);
+        batch.Cancellation.Cancel();
+        await schedule;
+
+        batch.Runs.Should().Equal("1:fresh", "3:fresh");
+        batch.Entries().Select(entry => entry["pr"]!.GetValue<string>()).Should().Equal("3");
+    }
+
+    // The round of the selection a pre-queue batch was running becomes the queue, so an interrupted launch there
+    // still holds its slot.
+    [Fact]
+    public async Task Batch_adopts_the_round_of_the_current_selection_left_by_an_earlier_version()
+    {
+        using var batch = new BatchFixture(0, 1);
+        batch.Cancellation.Cancel();
+        await batch.ExecuteAsync();
+        batch.Restart();
+        var queue = batch.Read(batch.StateKey)!.AsObject();
+        batch.Delete(batch.StateKey);
+        var entries = queue["entries"]!.AsArray();
+        for (var index = 0; index < entries.Count; index++)
+            entries[index]!["slot"] = index % 2;
+        entries[0]!["status"] = "launching";
+        batch.Put(
+            batch.RoundKey,
+            new JsonObject
+            {
+                ["schemaVersion"] = 1,
+                ["scope"] = queue["scope"]!.DeepClone(),
+                ["entries"] = entries.DeepClone(),
+            }
+        );
+
+        await batch.ExecuteAsync();
+
+        batch.Runs.Should().Equal("2:fresh", "3:fresh");
+        batch.RunSlots.Should().OnlyContain(run => run.Slot == 1);
+        batch.Entries()[0]["reason"]!.GetValue<string>().Should().StartWith("Interrupted launch");
+    }
+
+    // Only the round of this selection in this workspace becomes the queue; any other is already abandoned.
+    [Theory]
+    [InlineData("another selection")]
+    [InlineData("another workspace")]
+    public async Task Batch_does_not_adopt_a_round_of_another_selection_or_workspace(string round)
+    {
+        using var batch = new BatchFixture(0, 1);
+        batch.Cancellation.Cancel();
+        await batch.ExecuteAsync();
+        batch.Restart();
+        var queue = batch.Read(batch.StateKey)!.AsObject();
+        batch.Delete(batch.StateKey);
+        var entries = queue["entries"]!.AsArray();
+        entries[0]!["status"] = "launching";
+        entries[0]!["slot"] = 0;
+        var scope = queue["scope"]!.DeepClone();
+        if (round == "another workspace")
+            scope["workspace"] = "other";
+        batch.Put(
+            round == "another selection" ? "reviewd/batch-state/" + SlotRelease.Digest("{}") : batch.RoundKey,
+            new JsonObject
+            {
+                ["schemaVersion"] = 1,
+                ["scope"] = scope,
+                ["entries"] = entries.DeepClone(),
+            }
+        );
+
+        await batch.ExecuteAsync();
+
+        batch.Runs.Should().BeEquivalentTo("1:fresh", "2:fresh", "3:fresh");
+        batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
+    }
+
+    // A restart that finds a new selection starts every PR over: a launch mark with no attempt behind it re-enters
+    // fresh, while an attempt that still owns its slot resumes there.
+    [Fact]
+    public async Task Batch_restart_with_a_new_selection_reenters_an_unproven_launch_but_resumes_a_retained_owner_in_place()
+    {
+        using var batch = new BatchFixture(0, 1);
+        batch.Cancellation.Cancel();
+        await batch.ExecuteAsync();
+        batch.Restart();
+        var state = batch.Read(batch.StateKey)!.AsObject();
+        for (var index = 0; index < 2; index++)
+        {
+            state["entries"]![index]!["status"] = "launching";
+            state["entries"]![index]!["slot"] = index;
+        }
+        batch.Put(batch.StateKey, state);
+        batch.PutAttempt("2", RetainedOwner(1, 'a'));
+        batch.PutSelection(2);
+
+        await batch.ExecuteAsync();
+
+        batch.Runs.Should().BeEquivalentTo("1:fresh", "2:resume");
+        batch.RunSlots.Should().Contain(("2", 1));
+        batch.RunSlots.First(run => run.Slot == 1).Pr.Should().Be("2", "no new review takes a retained owner's slot");
+    }
+
+    // A retained owner whose repo left the selection keeps that repo's lanes, so it still finishes on its own slot,
+    // across a restart too. Fresh work of that repo leaves the queue with the selection.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Batch_keeps_a_retained_owner_of_a_repo_that_left_the_selection_on_its_slot(bool otherRepoSelected)
+    {
+        const string other = "org/project/Other";
+        using var batch = new BatchFixture(0, 1);
+        batch.Cancellation.Cancel();
+        await batch.ExecuteAsync();
+        batch.Restart();
+        batch.PutAttempt("1", RetainedOwner(1, 'a'));
+        if (otherRepoSelected)
+            batch.Select(new JsonObject { [other] = new JsonArray(JsonValue.Create(0)) }, (other, "5", 'a'));
+        else
+            batch.Select([]);
+        // This batch merges the new selection and stops before admitting anything; the next one starts from it.
+        batch.Cancellation.Cancel();
+        await batch.ExecuteAsync();
+        batch.Restart();
+
+        await batch.ExecuteAsync();
+
+        string[] expected = otherRepoSelected ? ["1:resume", "5:fresh"] : ["1:resume"];
+        batch.Runs.Should().BeEquivalentTo(expected);
+        batch.RunSlots.Should().Contain(("1", 1));
+    }
+
+    // Two heads of one PR never run at once: a new head waits, without even an eligibility read, until the head that
+    // runs drains, while an unrelated PR takes the other slot.
+    [Fact]
+    public async Task Batch_starts_a_new_head_of_a_running_pr_only_after_the_old_head_drains()
+    {
+        using var batch = new BatchFixture(0, 1);
+        batch.WatchDelay = batch.LiveTick;
+        batch.Select(BatchFixture.Lanes(0, 1), (BatchFixture.Repo, "1", 'a'));
+        var liveHead = 'a';
+        batch.Eligibility = pr => BatchFixture.LiveAt(pr, pr == "1" ? liveHead : 'a');
+        var oldStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var otherStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var newStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        batch.OnRunHeadAsync = async (pr, head) =>
+        {
+            if (pr == "2")
+                otherStarted.TrySetResult();
+            else if (head == 'b')
+                newStarted.TrySetResult();
+            else
+            {
+                oldStarted.TrySetResult();
+                await release.Task;
+            }
+        };
+
+        var schedule = batch.RunLiveAsync();
+        await oldStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        liveHead = 'b';
+        batch.Select(BatchFixture.Lanes(0, 1), (BatchFixture.Repo, "1", 'b'), (BatchFixture.Repo, "2", 'a'));
+        await otherStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await batch.AfterTicks(6);
+        lock (batch.Runs)
+            batch.Events.Should().NotContain(e => e.Contains("1@b"), "the new head waits until the old one drains");
+        release.SetResult();
+        await newStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        batch.Cancellation.Cancel();
+        await schedule;
+
+        batch.RunSlots.Should().Contain(("2", 1));
+        batch
+            .Events.Where(e => e.StartsWith("run", StringComparison.Ordinal))
+            .Should()
+            .Equal("run 1@a:fresh", "run 2@a:fresh", "run 1@b:fresh");
+    }
+
+    // A head replaced by a new selection while it runs keeps its queue entry until it is done. When it fails after
+    // posting, it resumes as itself (its head, its slot) before the new head starts fresh.
+    [Fact]
+    public async Task Batch_finishes_a_replaced_head_as_itself_before_the_new_head_starts()
+    {
+        using var batch = new BatchFixture(0, 1);
+        batch.WatchDelay = batch.LiveTick;
+        batch.Select(BatchFixture.Lanes(0, 1), (BatchFixture.Repo, "1", 'a'));
+        var liveHead = 'a';
+        batch.Eligibility = pr => BatchFixture.LiveAt(pr, pr == "1" ? liveHead : 'a');
+        var oldStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var newStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var oldRuns = 0;
+        batch.OnRunHeadAsync = async (pr, head) =>
+        {
+            if (pr == "1" && head == 'b')
+                newStarted.TrySetResult();
+            if (pr != "1" || head != 'a' || oldRuns++ > 0)
+                return;
+            oldStarted.TrySetResult();
+            await release.Task;
+            // Posted, but its verification was lost: the attempt keeps its slot and its head.
+            batch.PutAttempt("1", RetainedOwner(0, 'a', "verify-pending"));
+            failed.TrySetResult();
+            throw new InvalidOperationException("Verification lost.");
+        };
+
+        var schedule = batch.RunLiveAsync();
+        await oldStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        liveHead = 'b';
+        batch.Select(BatchFixture.Lanes(0, 1), (BatchFixture.Repo, "1", 'b'), (BatchFixture.Repo, "2", 'a'));
+        await batch.AfterTicks(3);
+        release.SetResult();
+        await failed.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await batch.UntilAsync(() =>
+            batch
+                .Entries()
+                .Any(entry => entry["pr"]!.GetValue<string>() == "1" && entry["status"]!.GetValue<string>() == "retry")
+        );
+        await batch.AfterTicks(6);
+        batch.AdvanceSeconds(600);
+        await newStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        batch.Cancellation.Cancel();
+        await schedule;
+
+        List<string> events;
+        lock (batch.Runs)
+            events = [.. batch.Events];
+        events.Should().ContainInOrder("run 1@a:fresh", "run 1@a:resume", "check 1@b", "run 1@b:fresh");
+        events.Should().Contain("run 2@a:fresh");
+        events.IndexOf("check 1@b").Should().BeGreaterThan(events.IndexOf("run 1@a:resume"));
+    }
+
+    // PR 1 left the selection while it runs, so every tick re-merges the queue. One failed update of it is retried on
+    // the next tick, not parked until a new selection arrives.
+    [Fact]
+    public async Task Batch_retries_a_failed_queue_update_of_the_merged_selection_on_the_next_tick()
+    {
+        using var batch = new BatchFixture(0);
+        batch.WatchDelay = batch.LiveTick;
+        batch.PutSelection(1);
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        batch.OnRunPrAsync = async pr =>
+        {
+            if (pr == "1")
+            {
+                firstStarted.TrySetResult();
+                await release.Task;
+            }
+            else
+                secondStarted.TrySetResult();
+        };
+
+        var schedule = batch.RunLiveAsync();
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        batch.SelectOnly("2");
+        await batch.AfterTicks(3);
+        batch.FailQueueWrites(true);
+        await batch.AfterTicks(6);
+        batch.FailQueueWrites(false);
+        release.SetResult();
+        await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        batch.Cancellation.Cancel();
+        await schedule;
+
+        batch.Runs.Should().Equal("1:fresh", "2:fresh");
+    }
+
+    // Another run claims the slot while this batch reads eligibility for it. The claim's transaction refuses the
+    // launch, the other owner stays as it was, and the PR stays queued until a slot is free.
+    [Fact]
+    public async Task Batch_does_not_launch_on_a_slot_claimed_elsewhere_during_eligibility()
+    {
+        using var batch = new BatchFixture(0, 1);
+        batch.PutSelection(1);
+        var ownerKey = SlotRelease.OwnerKey("workspace", PrCommands.ParseRepo(BatchFixture.Repo).NormalizedKey, 0);
+        var owner = new JsonObject
+        {
+            ["prId"] = "99",
+            ["state"] = "owned",
+            ["claimToken"] = "other-run",
+        };
+        JsonObject? atRecheck = null;
+        var checks = 0;
+        batch.Eligibility = pr =>
+        {
+            if (checks++ == 0)
+                batch.Put(ownerKey, owner);
+            else
+                atRecheck = batch.Entries()[0];
+            return BatchFixture.Live(pr);
+        };
+
+        await batch.ExecuteAsync();
+
+        batch.RunSlots.Should().Equal(("1", 1));
+        JsonNode.DeepEquals(batch.Read(ownerKey), owner).Should().BeTrue("the other owner is untouched");
+        atRecheck!["status"]!.GetValue<string>().Should().Be("queued");
+        atRecheck["slot"].Should().BeNull();
+        batch.Entries()[0]["status"]!.GetValue<string>().Should().Be("verified");
+    }
+
+    // An unchanged selection whose preparation fails stays parked without retrying it; a valid new one recovers.
+    [Fact]
+    public async Task Batch_parks_a_selection_whose_preparation_fails_until_a_valid_new_one_arrives()
+    {
+        using var batch = new BatchFixture(0);
+        batch.WatchDelay = batch.LiveTick;
+        batch.PutSelection(1);
+        var rejected = batch.SelectionDigest;
+        batch.Prepare = text =>
+            SlotRelease.Digest(text) == rejected
+                ? throw new InvalidOperationException("Daemon configuration is invalid.")
+                : Task.CompletedTask;
+        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        batch.OnRunPrAsync = pr =>
+        {
+            if (pr == "2")
+                secondStarted.TrySetResult();
+            return Task.CompletedTask;
+        };
+
+        var schedule = batch.RunLiveAsync();
+        await batch.AfterTicks(8);
+        batch.Runs.Should().BeEmpty();
+        batch.LiveReads.Should().Be(0);
+        batch.Prepares.Should().Be(1, "an unchanged selection stays parked");
+        batch.Read(batch.StateKey).Should().BeNull("a rejected selection is never merged");
+        batch.PutSelection(2);
+        await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        batch.Cancellation.Cancel();
+        await schedule;
+
+        batch.Runs.Should().Equal("1:fresh", "2:fresh");
+        batch.Prepares.Should().Be(2);
+    }
+
+    // Every selection reloads the saved queue, so an unusable one is named, with the advice to repair it; nothing
+    // is admitted from it.
+    [Theory]
+    [InlineData("""{"schemaVersion":3,"entries":[],"lanes":{}}""", "schemaVersion is unknown")]
+    [InlineData("""{"schemaVersion":"2","entries":[],"lanes":{}}""", "schemaVersion is unknown")]
+    [InlineData("""{"schemaVersion":2,"lanes":{}}""", "entries or lanes are missing")]
+    [InlineData("""{"schemaVersion":2,""", "not valid JSON")]
+    public async Task Batch_names_an_unusable_saved_queue_and_admits_nothing(string saved, string problem)
+    {
+        using var batch = new BatchFixture(0, 1);
+        batch.PutRaw(batch.StateKey, saved);
+
+        var run = () => batch.ExecuteAsync();
+
+        (await run.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should()
+            .Contain(batch.StateKey)
+            .And.Contain(problem)
+            .And.Contain("A new selection alone cannot repair it");
+        batch.LiveReads.Should().Be(0);
+        batch.Runs.Should().BeEmpty();
+    }
+
+    private static JsonObject RetainedOwner(int slot, char head, string stage = "review-running")
+    {
+        var owner = new JsonObject
+        {
+            ["slot"] = slot,
+            ["stage"] = stage,
+            ["claimToken"] = "running",
+            ["reviewInputId"] = "original",
+            ["mergeSha"] = new string('b', 40),
+            ["headSha"] = new string(head, 40),
+        };
+        if (stage == "verify-pending")
+        {
+            owner["confirmationIdempotencyKey"] = "confirm";
+            owner["confirmationInputId"] = "confirmation";
+        }
+        return owner;
+    }
+
+    internal sealed class BatchFixture : IDisposable
     {
         public const string Repo = "org/project/Nova";
         private readonly ReviewdConfig _config = new(new ConfigurationBuilder().Build());
@@ -1882,7 +2815,65 @@ public sealed class ReviewdRunnerTests
         public Action CheckProducer { get; set; } = () => { };
         public Func<CancellationToken, Task> WatchDelay { get; set; } =
             token => Task.Delay(Timeout.InfiniteTimeSpan, token);
-        public string StateKey => "reviewd/batch-state/" + SlotRelease.Digest(_selection);
+        public string StateKey => ReviewBatch.QueueKey("workspace");
+        public List<(string Pr, int Slot)> RunSlots { get; } = [];
+        public Func<string, Task>? OnRunPrAsync { get; set; }
+
+        // Every eligibility read and run, in order, as "check 1@a" or "run 1@a:resume" (first letter of the head).
+        public List<string> Events { get; } = [];
+        public Func<string, Task>? Prepare { get; set; }
+        public int Prepares { get; private set; }
+        public Func<string, char, Task>? OnRunHeadAsync { get; set; }
+
+        public static JsonObject LiveAt(string pr, char head)
+        {
+            var live = Live(pr);
+            live["headSha"] = new string(head, 40);
+            return live;
+        }
+
+        public static JsonObject Lanes(params int[] slots) =>
+            new() { [Repo] = new JsonArray([.. slots.Select(slot => (JsonNode)JsonValue.Create(slot))]) };
+
+        private int _ticks;
+        private readonly List<(int At, TaskCompletionSource Done)> _tickWaiters = [];
+
+        // A live tick: real time, 5 ms, so a test sees many scheduling passes quickly.
+        public async Task LiveTick(CancellationToken token)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(5), token);
+            lock (_tickWaiters)
+            {
+                _ticks++;
+                foreach (var waiter in _tickWaiters.Where(waiter => waiter.At <= _ticks).ToList())
+                {
+                    waiter.Done.TrySetResult();
+                    _ = _tickWaiters.Remove(waiter);
+                }
+            }
+        }
+
+        public Task AfterTicks(int count)
+        {
+            lock (_tickWaiters)
+            {
+                var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _tickWaiters.Add((_ticks + count, done));
+                return done.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            }
+        }
+
+        // Waits, tick by tick, for something a running step does in its own time; a fixed tick count races it.
+        public async Task UntilAsync(Func<bool> condition)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (!condition())
+            {
+                if (DateTime.UtcNow > deadline)
+                    throw new TimeoutException("The awaited batch state never arrived.");
+                await AfterTicks(1);
+            }
+        }
 
         public BatchFixture(params int[] slots)
         {
@@ -1918,8 +2909,12 @@ public sealed class ReviewdRunnerTests
                 ["mergeSha"] = new string('b', 40),
             };
 
-        public Task ExecuteAsync() =>
-            ReviewBatch.ExecuteAsync(
+        public Task ExecuteAsync() => ScheduleAsync(untilIdle: true);
+
+        public Task RunLiveAsync() => ScheduleAsync(untilIdle: false);
+
+        private Task ScheduleAsync(bool untilIdle) =>
+            ReviewBatch.ScheduleAsync(
                 CliOptions.Parse([
                     "review",
                     "batch",
@@ -1936,41 +2931,67 @@ public sealed class ReviewdRunnerTests
                     .. MaxAgeHours is null ? [] : new string[] { "--max-age-hours", MaxAgeHours },
                 ]),
                 _config,
-                _selection,
-                (_, pr, _, _, token) =>
+                _ => Task.FromResult<string?>(_selection),
+                async (text, _) =>
+                {
+                    Prepares++;
+                    if (Prepare is not null)
+                        await Prepare(text);
+                },
+                (_, pr, _, head, token) =>
                 {
                     SchedulingToken = token;
                     LiveReads++;
+                    lock (Runs)
+                        Events.Add($"check {pr}@{head[0]}");
                     return Task.FromResult(Eligibility(pr));
                 },
                 async options =>
                 {
                     var pr = options.Required("pr");
+                    var repo = options.Required("repo");
+                    var head = options.Required("head");
+                    // As the runner does: a finished review resumes only on the head it reviewed. Older fixtures
+                    // write attempts without a head, so only a recorded head is checked.
+                    var attempt = Read(AttemptKey(repo, pr));
+                    if (
+                        options.Has("resume")
+                        && ReviewRunner.ReviewFinished(attempt)
+                        && attempt!["headSha"]?.GetValue<string>() is { } reviewedHead
+                        && reviewedHead != head
+                    )
+                        throw new InvalidOperationException("Selected PR head changed; no action allowed.");
                     lock (Runs)
                     {
                         Runs.Add(pr + (options.Has("resume") ? ":resume" : ":fresh"));
+                        RunSlots.Add((pr, int.Parse(options.Required("slot"))));
                         RunEfforts.Add(options.Get("reasoning-effort"));
                         RunAges.Add(options.Get("max-age-hours"));
+                        Events.Add($"run {pr}@{head[0]}" + (options.Has("resume") ? ":resume" : ":fresh"));
                     }
                     await Task.Yield();
                     OnRun?.Invoke();
                     if (OnRunAsync is not null)
                         await OnRunAsync();
+                    if (OnRunPrAsync is not null)
+                        await OnRunPrAsync(pr);
+                    if (OnRunHeadAsync is not null)
+                        await OnRunHeadAsync(pr, head[0]);
                     var receipt = new JsonObject
                     {
                         ["slot"] = int.Parse(options.Required("slot")),
                         ["stage"] = "completed-verified",
                         ["cleanupState"] = "released",
                         ["claimToken"] = "fixture-claim",
-                        ["reviewedHeadSha"] = new string('a', 40),
+                        ["reviewedHeadSha"] = head,
                         ["artifactCommit"] = new JsonObject
                         {
                             ["status"] = "committed",
                             ["commit"] = new string('c', 40),
                         },
                     };
-                    PutAttempt(pr, receipt);
-                    Put("reviewd/review-run/" + PrCommands.ParseRepo(Repo).NormalizedKey + "/" + pr, receipt);
+                    PutAttempt(repo, pr, receipt);
+                    Put("reviewd/review-run/" + PrCommands.ParseRepo(repo).NormalizedKey + "/" + pr, receipt);
                     return 0;
                 },
                 CheckProducer,
@@ -1986,6 +3007,7 @@ public sealed class ReviewdRunnerTests
                     }
                 },
                 () => DateTimeOffset.FromUnixTimeSeconds(_seconds),
+                untilIdle,
                 Cancellation.Token
             );
 
@@ -2016,20 +3038,92 @@ public sealed class ReviewdRunnerTests
             _selection = selection.ToJsonString();
         }
 
-        public void PutAttempt(string pr, JsonNode value) =>
-            Put("reviewd/review-attempt/" + PrCommands.ParseRepo(Repo).NormalizedKey + "/" + pr, value);
+        public string RoundKey => "reviewd/batch-state/" + SlotRelease.Digest(_selection);
 
-        public void Put(string key, JsonNode value)
+        public void SelectOnly(params string[] prs)
+        {
+            var selection = JsonNode.Parse(_selection)!.AsObject();
+            selection["repositories"]![Repo] = new JsonArray([
+                .. prs.Select(pr =>
+                    (JsonNode)
+                        new JsonObject
+                        {
+                            ["repository"] = Repo,
+                            ["prId"] = pr,
+                            ["headSha"] = new string('a', 40),
+                        }
+                ),
+            ]);
+            _selection = selection.ToJsonString();
+        }
+
+        public void Delete(string key)
         {
             using var connection = PrThreadBindings.Connection(_database);
             connection.Open();
             using var command = connection.CreateCommand();
-            command.CommandText =
-                "INSERT INTO cache(key,value) VALUES(@key,@value) ON CONFLICT(key) DO UPDATE SET value=excluded.value";
+            command.CommandText = "DELETE FROM cache WHERE key=@key";
             command.Parameters.AddWithValue("@key", key);
-            command.Parameters.AddWithValue("@value", value.ToJsonString());
             command.ExecuteNonQuery();
         }
+
+        public void PutAttempt(string pr, JsonNode value) => PutAttempt(Repo, pr, value);
+
+        public void PutAttempt(string repo, string pr, JsonNode value) => Put(AttemptKey(repo, pr), value);
+
+        private static string AttemptKey(string repo, string pr) =>
+            "reviewd/review-attempt/" + PrCommands.ParseRepo(repo).NormalizedKey + "/" + pr;
+
+        public void Put(string key, JsonNode value) => PutRaw(key, value.ToJsonString());
+
+        public void PutRaw(string key, string value) =>
+            Execute(
+                "INSERT INTO cache(key,value) VALUES(@key,@value) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                ("@key", key),
+                ("@value", value)
+            );
+
+        // While on, every write of the queue row fails the way a full disk or a locked file would.
+        public void FailQueueWrites(bool on) =>
+            Execute(
+                on
+                    ? "CREATE TRIGGER fail_queue_update BEFORE UPDATE ON cache WHEN NEW.key = '"
+                        + StateKey
+                        + "' BEGIN SELECT RAISE(ABORT, 'injected queue write failure'); END;"
+                    : "DROP TRIGGER fail_queue_update"
+            );
+
+        private void Execute(string sql, params (string Name, string Value)[] parameters)
+        {
+            using var connection = PrThreadBindings.Connection(_database);
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            foreach (var (name, value) in parameters)
+                command.Parameters.AddWithValue(name, value);
+            command.ExecuteNonQuery();
+        }
+
+        // Selects PRs by repo and head letter, each repo with its lanes. No rows at all is an empty selection.
+        public void Select(JsonObject lanes, params (string Repo, string Pr, char Head)[] rows)
+        {
+            var repositories = new JsonObject();
+            foreach (var group in rows.GroupBy(row => row.Repo))
+                repositories[group.Key] = new JsonArray([
+                    .. group.Select(row =>
+                        (JsonNode)
+                            new JsonObject
+                            {
+                                ["repository"] = row.Repo,
+                                ["prId"] = row.Pr,
+                                ["headSha"] = new string(row.Head, 40),
+                            }
+                    ),
+                ]);
+            _selection = new JsonObject { ["repositories"] = repositories, ["lanes"] = lanes }.ToJsonString();
+        }
+
+        public string SelectionDigest => SlotRelease.Digest(_selection);
 
         public JsonNode? Read(string key)
         {
@@ -2841,12 +3935,13 @@ public sealed class ReviewdRunnerTests
     [InlineData("no-offset")]
     [InlineData("wrong-head")]
     [InlineData("old-pushed-recently")]
+    [InlineData("old-readmitted")]
     public async Task Runner_creation_age_checks_live_before_claim_and_initial_send_without_releasing_prepared_owner(
         string scenario
     )
     {
         // An old PR whose current head was pushed within the limit is admitted like a recent one.
-        var admitted = scenario is "recent" or "old-pushed-recently";
+        var admitted = scenario is "recent" or "old-pushed-recently" or "old-readmitted";
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-age-{Guid.NewGuid():N}.db");
         var repo = PrCommands.ParseRepo("org/project/Nova");
         var now = DateTimeOffset.Parse("2026-10-07T22:00:00Z");
@@ -2884,7 +3979,7 @@ public sealed class ReviewdRunnerTests
                 reads++;
                 var created = scenario switch
                 {
-                    "old" or "old-pushed-recently" => now.AddHours(-73).ToString("O"),
+                    "old" or "old-pushed-recently" or "old-readmitted" => now.AddHours(-73).ToString("O"),
                     "future" => now.AddSeconds(1).ToString("O"),
                     "missing" => null,
                     "no-offset" => "2026-10-07T21:00:00",
@@ -2934,6 +4029,22 @@ public sealed class ReviewdRunnerTests
                     },
                 }
             );
+            if (scenario == "old-readmitted")
+                await store.SetAsync(
+                    attemptKey,
+                    new JsonObject
+                    {
+                        ["repository"] = repo.DisplayName,
+                        ["prId"] = "17",
+                        ["slot"] = 2,
+                        ["headSha"] = new string('a', 40),
+                        ["stage"] = "failed-released",
+                        ["cleanupState"] = "released",
+                        ["claimToken"] = "earlier",
+                        ["readmittedHead"] = new string('a', 40),
+                        ["readmittedAt"] = now.AddHours(-1).ToString("O"),
+                    }
+                );
             var options = CliOptions.Parse([
                 "review",
                 "run",
@@ -2979,6 +4090,12 @@ public sealed class ReviewdRunnerTests
                 owner!["state"]!.GetValue<string>().Should().Be("owned");
                 if (scenario == "setup-expired")
                     attempt!["reviewIdempotencyKey"].Should().BeNull();
+                if (scenario == "old-readmitted")
+                {
+                    // Both halves carry over, and the readmit time is kept rather than refreshed, so it still expires.
+                    attempt!["readmittedHead"]!.GetValue<string>().Should().Be(new string('a', 40));
+                    attempt["readmittedAt"]!.GetValue<string>().Should().Be(now.AddHours(-1).ToString("O"));
+                }
             }
             else
             {
@@ -5259,10 +6376,142 @@ public sealed class ReviewdRunnerTests
         bool earlierReceipt
     )
     {
+        var child = "running";
+        await PassedOverThreadAsync(
+            handler =>
+                handler.On(
+                    request => request.RequestUri!.AbsolutePath == "/api/conversations/prior/subagents",
+                    _ =>
+                        child == "busy"
+                            ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                            {
+                                Content = new StringContent("""{"code":"hierarchy_busy"}"""),
+                            }
+                            : Json(
+                                $$"""{"schemaVersion":1,"nodes":[{"agentId":"child","threadId":"child-thread","parentThreadId":"prior","depth":1,"template":"publisher","status":"{{child}}"}]}"""
+                            )
+                ),
+            async store =>
+            {
+                if (earlierReceipt)
+                    await store.SetAsync(
+                        $"reviewd/review-run/{PrCommands.ParseRepo("org/project/Nova").NormalizedKey}/17",
+                        new JsonObject
+                        {
+                            ["stage"] = "completed-verified",
+                            ["reviewedHeadSha"] = new string('9', 40),
+                            ["reviewCompletedAt"] = DateTimeOffset.UtcNow.AddHours(-1),
+                        }
+                    );
+            },
+            async (run, handler) =>
+            {
+                foreach (var live in new[] { "running", "busy" })
+                {
+                    child = live;
+                    await FluentActions
+                        .Awaiting(() => run(null))
+                        .Should()
+                        .ThrowAsync<ReviewRunner.ReviewDeferredException>($"a {live} child tree has not settled");
+                    handler
+                        .Requests.Should()
+                        .OnlyContain(r => r.Method == HttpMethod.Get, "nothing is claimed or sent");
+                }
+
+                child = "completed";
+                (await FluentActions.Awaiting(() => run(null)).Should().ThrowAsync<InvalidOperationException>())
+                    .Which.Message.Should()
+                    .Contain("Errored");
+                JsonNode.Parse(
+                    handler
+                        .Requests.Should()
+                        .ContainSingle(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations")
+                        .Subject.Body!
+                )!["disableClientTools"]!
+                    .GetValue<bool>()
+                    .Should()
+                    .BeTrue();
+                handler
+                    .Requests.Where(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                    .Select(r => r.Uri.AbsolutePath)
+                    .Should()
+                    .Equal("/api/conversations/fresh/messages");
+            }
+        );
+    }
+
+    // #956: after the reaper freed #948's slot, its next review would still be deferred forever if the thread it passes
+    // over holds a ghost stuck at running. Admission settles an abandoned child by the same rule as the wait and the
+    // reaper: a finished turn quiet for 45 minutes admits the review; a child that wrote minutes ago still defers it,
+    // and the batch's retry minutes later reuses that reading instead of reading the transcript again.
+    [Theory]
+    [InlineData(180, true)]
+    [InlineData(2, false)]
+    public async Task Runner_admits_a_fresh_review_past_a_passed_over_thread_whose_only_live_child_was_abandoned(
+        int quietMinutes,
+        bool admits
+    )
+    {
+        await PassedOverThreadAsync(
+            handler =>
+                handler
+                    .OnJson(
+                        HttpMethod.Get,
+                        "/api/conversations/prior/subagents",
+                        """{"schemaVersion":1,"nodes":[{"agentId":"ghost","threadId":"subagent-x-ghost","parentThreadId":"prior","depth":1,"template":"publisher","status":"running"}]}"""
+                    )
+                    .OnJson(
+                        HttpMethod.Get,
+                        "/api/conversations/prior/agents/ghost/transcript",
+                        Transcript(DateTimeOffset.UtcNow.AddMinutes(-quietMinutes), "finished")
+                    ),
+            _ => Task.CompletedTask,
+            async (run, handler) =>
+            {
+                var reads = new AbandonedChildProbe.ReadLog();
+                if (admits)
+                {
+                    // Admitted: the review is sent in a fresh conversation, whose scripted input then fails.
+                    (await FluentActions.Awaiting(() => run(reads)).Should().ThrowAsync<InvalidOperationException>())
+                        .Which.Message.Should()
+                        .Contain("Errored");
+                    handler
+                        .Requests.Where(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                        .Select(r => r.Uri.AbsolutePath)
+                        .Should()
+                        .Equal("/api/conversations/fresh/messages");
+                    return;
+                }
+
+                foreach (var attempt in new[] { "first", "retried" })
+                    await FluentActions
+                        .Awaiting(() => run(reads))
+                        .Should()
+                        .ThrowAsync<ReviewRunner.ReviewDeferredException>($"the {attempt} attempt sees a recent child");
+                handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "nothing is claimed or sent");
+                handler
+                    .Requests.Count(r => r.Uri.AbsolutePath.EndsWith("/transcript", StringComparison.Ordinal))
+                    .Should()
+                    .Be(1, "the retry minutes later reuses the first attempt's reading");
+            }
+        );
+    }
+
+    // PR 17 on slot 2 whose only conversation is the legacy thread "prior", which a review passes over. A test registers
+    // the prior thread's own routes first (the first matching route wins) and seeds the store; the shared routes then
+    // let an admitted review start in "fresh", whose scripted input fails as Errored. `act` runs the review with the
+    // read log it is given.
+    private static async Task PassedOverThreadAsync(
+        Action<FakeHttpMessageHandler> priorRoutes,
+        Func<SqliteKvStore, Task> seed,
+        Func<Func<AbandonedChildProbe.ReadLog?, Task>, FakeHttpMessageHandler, Task> act
+    )
+    {
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-legacy-child-{Guid.NewGuid():N}.db");
         var repo = PrCommands.ParseRepo("org/project/Nova");
-        var child = "running";
-        var handler = new FakeHttpMessageHandler()
+        var handler = new FakeHttpMessageHandler();
+        priorRoutes(handler);
+        handler
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
@@ -5277,18 +6526,6 @@ public sealed class ReviewdRunnerTests
                 HttpMethod.Get,
                 "/api/conversations?",
                 """[{"threadId":"prior","title":"Nova-17-99999999","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1}]"""
-            )
-            .On(
-                request => request.RequestUri!.AbsolutePath == "/api/conversations/prior/subagents",
-                _ =>
-                    child == "busy"
-                        ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
-                        {
-                            Content = new StringContent("""{"code":"hierarchy_busy"}"""),
-                        }
-                        : Json(
-                            $$"""{"schemaVersion":1,"nodes":[{"agentId":"child","threadId":"child-thread","parentThreadId":"prior","depth":1,"template":"publisher","status":"{{child}}"}]}"""
-                        )
             )
             .OnJson(HttpMethod.Put, "/metadata", "{}")
             .OnJson(HttpMethod.Post, "/messages", """{"inputId":"original","idempotencyKeyHonored":true}""")
@@ -5322,7 +6559,8 @@ public sealed class ReviewdRunnerTests
         try
         {
             using var connection = PrThreadBindings.Connection(database);
-            await new SqliteKvStore(connection).SetAsync(
+            var store = new SqliteKvStore(connection);
+            await store.SetAsync(
                 $"reviewd/pr-snapshot/{repo.NormalizedKey}",
                 new JsonObject
                 {
@@ -5334,16 +6572,7 @@ public sealed class ReviewdRunnerTests
                     },
                 }
             );
-            if (earlierReceipt)
-                await new SqliteKvStore(connection).SetAsync(
-                    $"reviewd/review-run/{repo.NormalizedKey}/17",
-                    new JsonObject
-                    {
-                        ["stage"] = "completed-verified",
-                        ["reviewedHeadSha"] = new string('9', 40),
-                        ["reviewCompletedAt"] = DateTimeOffset.UtcNow.AddHours(-1),
-                    }
-                );
+            await seed(store);
             var options = CliOptions.Parse([
                 "review",
                 "run",
@@ -5363,40 +6592,20 @@ public sealed class ReviewdRunnerTests
                 "test",
                 "--execute",
             ]);
-            var run = () =>
-                ReviewRunner.RunAsync(
-                    options,
-                    config,
-                    client,
-                    Sandbox,
-                    CancellationToken.None,
-                    _ => Task.CompletedTask,
-                    () => DateTimeOffset.UtcNow
-                );
-            foreach (var live in new[] { "running", "busy" })
-            {
-                child = live;
-                await run.Should()
-                    .ThrowAsync<ReviewRunner.ReviewDeferredException>($"a {live} child tree has not settled");
-                handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "nothing is claimed or sent");
-            }
-
-            child = "completed";
-            (await run.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("Errored");
-            JsonNode.Parse(
+            await act(
+                reads =>
+                    ReviewRunner.RunAsync(
+                        options,
+                        config,
+                        client,
+                        Sandbox,
+                        CancellationToken.None,
+                        _ => Task.CompletedTask,
+                        () => DateTimeOffset.UtcNow,
+                        reads
+                    ),
                 handler
-                    .Requests.Should()
-                    .ContainSingle(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations")
-                    .Subject.Body!
-            )!["disableClientTools"]!
-                .GetValue<bool>()
-                .Should()
-                .BeTrue();
-            handler
-                .Requests.Where(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
-                .Select(r => r.Uri.AbsolutePath)
-                .Should()
-                .Equal("/api/conversations/fresh/messages");
+            );
         }
         finally
         {

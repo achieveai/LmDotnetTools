@@ -1,0 +1,19 @@
+{
+  "session": "<gateway-session-guid>",
+  "workspace": "<gateway-workspace-guid>",
+  "provider": "claude-haiku-5.5",
+  "mode": "code-review-daemon",
+  "reasoningEffort": "xhigh",
+  "maxAgeHours": 168,
+  "lanesPerRepo": 6,
+  "excludedLanes": { "mcqdbdev/MCQdb_Development/MCQdbDEV": [3, 4, 5] },
+  "hostPort": 5310,
+  "webhookPort": 5321,
+  "batchPort": 5322,
+  "gatewayPort": 3000,
+  "repos": [
+    "mcqdbdev/MCQdb_Development/MCQdbDEV",
+    "mcqdbdev/MCQdb_Development/MLProjects",
+    "mcqdbdev/MCQdb_Development/NeoNative"
+  ]
+}

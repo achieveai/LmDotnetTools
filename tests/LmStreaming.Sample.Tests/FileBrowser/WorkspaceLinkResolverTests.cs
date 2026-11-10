@@ -14,6 +14,23 @@ public class WorkspaceLinkResolverTests
     private const string PosixHost = "/workspace";
 
     [Theory]
+    [InlineData(WindowsHost)]
+    [InlineData("/srv/ws")]
+    [InlineData(PosixHost)]
+    public void Resolve_ASavedToolOutputPath_ResolvesWhateverTheHostPathIs(string hostPath) =>
+        WorkspaceLinkResolver
+            .Resolve("/workspace/.tool-output/abc/output.txt", hostPath)
+            .Path.Should()
+            .Be(".tool-output/abc/output.txt");
+
+    [Fact]
+    public void Resolve_ASavedToolOutputPath_StillCannotClimbOutOfTheWorkspace() =>
+        WorkspaceLinkResolver
+            .Resolve("/workspace/.tool-output/../../secret", WindowsHost)
+            .FailureCode.Should()
+            .Be(WorkspaceLinkResolver.InvalidPath);
+
+    [Theory]
     [InlineData(@"B:\ws\docs\a.md", WindowsHost, "docs/a.md")]
     [InlineData(@"b:/ws/docs/a.md", WindowsHost, "docs/a.md")]
     [InlineData(@"B:\WS\docs\a.md", WindowsHost, "docs/a.md")]

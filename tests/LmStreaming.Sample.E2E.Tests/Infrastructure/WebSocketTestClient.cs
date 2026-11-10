@@ -64,7 +64,10 @@ public sealed class WebSocketTestClient : IAsyncDisposable
 
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
-                        return new FrameCollection(frames);
+                        return new FrameCollection(
+                            frames,
+                            $"the server closed the socket ({result.CloseStatus}: {result.CloseStatusDescription})"
+                        );
                     }
 
                     if (result.MessageType == WebSocketMessageType.Text && result.Count > 0)
@@ -83,7 +86,7 @@ public sealed class WebSocketTestClient : IAsyncDisposable
 
                 if (IsDoneFrame(doc))
                 {
-                    return new FrameCollection(frames);
+                    return new FrameCollection(frames, "the done frame arrived");
                 }
             }
         }
@@ -103,7 +106,13 @@ public sealed class WebSocketTestClient : IAsyncDisposable
             throw;
         }
 
-        return new FrameCollection(frames);
+        // The loop also stops on a cancellation that lands between frames, with the socket still open, so
+        // the reason is read from the tokens first and from the socket only when neither fired.
+        var reason =
+            timeoutCts.IsCancellationRequested ? $"the {overallTimeout} timeout expired between frames"
+            : ct.IsCancellationRequested ? "the caller cancelled"
+            : $"the socket left the Open state ({_socket.State})";
+        return new FrameCollection(frames, reason);
     }
 
     /// <summary>
@@ -238,9 +247,26 @@ public sealed class FrameCollection : IReadOnlyList<JsonDocument>, IDisposable
     private readonly List<JsonDocument> _frames;
     private bool _disposed;
 
-    internal FrameCollection(List<JsonDocument> frames)
+    internal FrameCollection(List<JsonDocument> frames, string endReason)
     {
         _frames = frames ?? throw new ArgumentNullException(nameof(frames));
+        EndReason = endReason;
+    }
+
+    /// <summary>Why collection stopped. A socket that closes early returns its partial frames, not an error.</summary>
+    public string EndReason { get; }
+
+    /// <summary>How the stream ended and which frame types it carried, for an assertion's failure message.</summary>
+    public string Describe()
+    {
+        var types = _frames.Select(f =>
+            f.RootElement.ValueKind == JsonValueKind.Object
+            && f.RootElement.TryGetProperty("$type", out var type)
+            && type.ValueKind == JsonValueKind.String
+                ? type.GetString()
+                : "?"
+        );
+        return $"{EndReason}; {_frames.Count} frame(s): [{string.Join(", ", types)}]";
     }
 
     public JsonDocument this[int index] => _frames[index];

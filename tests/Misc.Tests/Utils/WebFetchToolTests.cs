@@ -35,6 +35,28 @@ public class WebFetchToolTests
     }
 
     [Fact]
+    public async Task HandleAsync_WhenCallerSavesLargeOutput_KeepsThePageEndButStillRemovesSecrets()
+    {
+        var options = new WebToolsOptions { OutputCap = 1_000, JinaApiKey = "secret-key" };
+        var provider = new FakeWebFetchProvider
+        {
+            Result = new WebFetchResult { Content = "secret-key " + new string('p', 5_000) + " PAGE END" },
+        };
+        var tool = CreateTool(provider, options);
+
+        var saving = await tool.Handler(
+            Args(SampleUrl),
+            new ToolCallContext { CanSaveLargeOutput = true },
+            CancellationToken.None
+        );
+        var capped = await tool.Handler(Args(SampleUrl), new ToolCallContext(), CancellationToken.None);
+
+        saving.ResultText.Should().Contain("PAGE END").And.NotContain("secret-key");
+        capped.ResultText.Length.Should().BeLessThanOrEqualTo(1_000, "no saving means the cap still holds");
+        capped.ResultText.Should().NotContain("PAGE END");
+    }
+
+    [Fact]
     public async Task HandleAsync_HappyPath_ReturnsFramedMarkdownContent()
     {
         var provider = new FakeWebFetchProvider

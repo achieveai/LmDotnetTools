@@ -107,6 +107,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     // Lifecycle
     private Task? _runTask;
     private CancellationTokenSource? _internalCts;
+    private ToolOutputSpillOptions? _toolOutputSpill;
     private TaskCompletionSource? _startupReady;
 
     // Cancelled once, at disposal. Distinct from _internalCts, which is recreated by every
@@ -340,6 +341,18 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// </summary>
     public ToolResultLimits ToolResultLimits { get; init; } = ToolResultLimits.Default;
 
+    /// <summary>
+    /// Saves oversized tool output where the model can read it and keeps only a preview in history
+    /// (#930 item 2). Null, the default, means there is nowhere to save and
+    /// <see cref="ToolResultLimits"/> is the only bound. Sub-agents use the same store as their parent.
+    /// A reconfiguration replaces it.
+    /// </summary>
+    public ToolOutputSpillOptions? ToolOutputSpill
+    {
+        get => _toolOutputSpill;
+        init => _toolOutputSpill = value;
+    }
+
     /// <inheritdoc />
     public bool IsRunning => _runTask != null && !_runTask.IsCompleted;
 
@@ -470,6 +483,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// </summary>
     /// <param name="systemPrompt">The fully composed prompt, exactly as the constructor would have stored it.</param>
     /// <param name="defaultOptions">The new per-turn options template; the output-budget floor is applied here.</param>
+    /// <param name="toolOutputSpill">How the new mode saves oversized tool output, or null for nowhere to save.</param>
     /// <remarks>
     /// Assignment only, and deliberately so: the caller has already built every part that can fail, and
     /// nothing on this path is allowed to throw and leave the agent half-switched. The lifecycle bundle's
@@ -479,9 +493,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// <see cref="MultiTurnLifecycleServices.Disabled"/> singleton is left alone: copying it would break
     /// the reference checks that keep a lifecycle-free agent allocation-free.
     /// </remarks>
-    private protected void ApplyReconfiguredConfiguration(string? systemPrompt, GenerateReplyOptions? defaultOptions)
+    private protected void ApplyReconfiguredConfiguration(
+        string? systemPrompt,
+        GenerateReplyOptions? defaultOptions,
+        ToolOutputSpillOptions? toolOutputSpill
+    )
     {
         SystemPrompt = systemPrompt;
+        _toolOutputSpill = toolOutputSpill;
         DefaultOptions = WithOutputBudgetFloor(defaultOptions);
         if (!ReferenceEquals(LifecycleServices, MultiTurnLifecycleServices.Disabled))
         {
@@ -1068,7 +1087,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                 // in ConversationHistory. Letting the exception propagate is intentional —
                 // the deferred-tool guarantee is load-bearing for webhook resolution.
                 var persisted = MessagePersistenceConverter.ToPersistedMessage(message, ThreadId, runId);
-                await Store.AppendMessagesAsync(ThreadId, [persisted], ct);
+                await AppendDeferredPlaceholderAsync(persisted, ct);
             }
         }
 
@@ -1079,6 +1098,19 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             PublishJoinedHistory(message);
         }
     }
+
+    /// <summary>
+    /// Writes a deferred placeholder and waits for it. A failure must propagate. Override when rows
+    /// issued earlier may still be on their way to the store, so the placeholder cannot overtake its call.
+    /// </summary>
+    protected virtual Task AppendDeferredPlaceholderAsync(PersistedMessage persisted, CancellationToken ct) =>
+        Store!.AppendMessagesAsync(ThreadId, [persisted], ct);
+
+    /// <summary>
+    /// Last chance at disposal to write rows still waiting to be saved. Must not throw. Runs after every
+    /// stream has ended, whatever else disposal did, because a faulted run is when those rows matter most.
+    /// </summary>
+    protected virtual Task FlushPendingSavesAsync() => Task.CompletedTask;
 
     /// <summary>
     /// Replaces the most recent <see cref="ToolCallResultMessage"/> in history that has the
@@ -3154,6 +3186,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         finally
         {
             cleanupFailure = await CompleteChannelsOnDisposeAsync();
+
+            await FlushPendingSavesAsync();
 
             // Inside the finally so a failed disposal still suppresses finalization: the object is
             // just as disposed either way, and only the reporting differs.
