@@ -38,12 +38,14 @@ public class CompactionLoopTests
     ///     Throws from a save when <paramref name="shouldFail"/> says so, the way SQLite does when
     ///     BEGIN IMMEDIATE times out on a locked database. Its arguments are the row, that row's save
     ///     attempt (1-based) and the store-wide append count (1-based). <paramref name="hold"/> can hold a
-    ///     save open: the row is written once the task it returns completes.
+    ///     save open: the row is written once the task it returns completes. <paramref name="failAfterWrite"/>
+    ///     makes a save throw after its row was written, the way a commit can still report a failure.
     /// </summary>
     private sealed class FailSaveStore(
         IConversationStore inner,
         Func<PersistedMessage, int, int, bool> shouldFail,
-        Func<PersistedMessage, int, Task?>? hold = null
+        Func<PersistedMessage, int, Task?>? hold = null,
+        Func<PersistedMessage, int, bool>? failAfterWrite = null
     ) : IConversationStore
     {
         private readonly Dictionary<string, int> _attempts = new(StringComparer.Ordinal);
@@ -77,6 +79,10 @@ public class CompactionLoopTests
             }
 
             await inner.AppendMessagesAsync(threadId, messages, ct);
+            if (failAfterWrite?.Invoke(messages[0], attempt) == true)
+            {
+                throw new InvalidOperationException("SQLite Error 5: 'database is locked'.");
+            }
         }
 
         public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
@@ -124,10 +130,10 @@ public class CompactionLoopTests
         ) => inner.ListThreadsAsync(limit, offset, options, ct);
     }
 
-    /// <summary>Runs <paramref name="act"/> the first time the loop logs a message containing <paramref name="text"/>.</summary>
-    private sealed class ActOnLogLogger(string text, Action act) : ILogger<MultiTurnAgentLoop>
+    /// <summary>For each rule, runs its action the first time the loop logs a message containing its text.</summary>
+    private sealed class ActOnLogLogger(params (string Text, Action Act)[] rules) : ILogger<MultiTurnAgentLoop>
     {
-        private int _done;
+        private readonly int[] _done = new int[rules.Length];
 
         public IDisposable? BeginScope<TState>(TState state)
             where TState : notnull => null;
@@ -142,12 +148,16 @@ public class CompactionLoopTests
             Func<TState, Exception?, string> formatter
         )
         {
-            if (
-                formatter(state, exception).Contains(text, StringComparison.Ordinal)
-                && Interlocked.Exchange(ref _done, 1) == 0
-            )
+            var message = formatter(state, exception);
+            for (var i = 0; i < rules.Length; i++)
             {
-                act();
+                if (
+                    message.Contains(rules[i].Text, StringComparison.Ordinal)
+                    && Interlocked.Exchange(ref _done[i], 1) == 0
+                )
+                {
+                    rules[i].Act();
+                }
             }
         }
     }
@@ -2550,7 +2560,65 @@ public class CompactionLoopTests
         );
         // Disposal logs this once it has cancelled the token the placeholder's write was given, so the
         // write commits only after the caller was told to stop.
-        var logger = new ActOnLogLogger("Stopping", () => release.TrySetResult());
+        var logger = new ActOnLogLogger(("Stopping", () => release.TrySetResult()));
+        var h = new Harness(
+            EchoThenDone(1),
+            Options(CompactionMode.Compact),
+            store: store,
+            deferTools: true,
+            logger: logger
+        );
+        try
+        {
+            var run = h.RunAsync("start");
+            _ = run.ContinueWith(t => t.Exception, TaskScheduler.Default);
+            await holding.Task.WaitAsync(limit);
+
+            await h.Loop.DisposeAsync().AsTask().WaitAsync(limit);
+
+            (await store.LoadMessagesAsync(Thread)).Should().ContainSingle(r => IsResult(r, "tc-1"));
+            h.Loop.GetHistorySnapshot()
+                .SelectMany(ToolEvents)
+                .Should()
+                .Contain(("result", "tc-1"), "the placeholder is durable, so the caller records it in history");
+            h.Loop.HasPendingLoopWork.Should().BeTrue("the reservation stays for the resolution still to come");
+        }
+        finally
+        {
+            _ = release.TrySetResult();
+            await h.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task CompactMode_ADeferredPlaceholderStoredThroughAFailedAppend_StaysInHistory_WhenTheLoggerThrows()
+    {
+        var limit = TimeSpan.FromSeconds(10);
+        var holding = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // The placeholder's first append is held, then commits and still reports a failure, so the saver
+        // finds the row already stored and logs that.
+        var store = new FailSaveStore(
+            new InMemoryConversationStore(),
+            (_, _, _) => false,
+            hold: (row, attempt) =>
+            {
+                if (attempt != 1 || !IsResult(row, "tc-1"))
+                {
+                    return null;
+                }
+
+                _ = holding.TrySetResult();
+                return release.Task;
+            },
+            failAfterWrite: (row, attempt) => attempt == 1 && IsResult(row, "tc-1")
+        );
+        // Disposal cancels the placeholder's save, then logs "Stopping", which lets the append go on. The
+        // log that the row is already stored then throws.
+        var logger = new ActOnLogLogger(
+            ("Stopping", () => release.TrySetResult()),
+            ("is already stored", () => throw new InvalidOperationException("the logger failed"))
+        );
         var h = new Harness(
             EchoThenDone(1),
             Options(CompactionMode.Compact),

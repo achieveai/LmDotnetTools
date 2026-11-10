@@ -70,6 +70,12 @@ internal sealed class OrderedRowSaver(
     internal Action? RowSavedForTest { get; set; }
 
     /// <summary>
+    ///     Test seam, null outside tests: runs when a cancelled <see cref="SaveNowAsync" /> has taken hold of the
+    ///     pump writing its row and is about to wait for it.
+    /// </summary>
+    internal Action? CancelledSaveHoldsPumpForTest { get; set; }
+
+    /// <summary>
     ///     Test seam, null outside tests: runs when a cancelled <see cref="SaveNowAsync" /> found its row taken
     ///     up again by a new pump and is about to wait for that pump instead of withdrawing the row.
     /// </summary>
@@ -181,6 +187,8 @@ internal sealed class OrderedRowSaver(
 
                     writing = _pump!;
                 }
+
+                CancelledSaveHoldsPumpForTest?.Invoke();
 
                 // The pump that failed this row may already have been replaced by one writing it again, so
                 // the row is withdrawn only once no pump holds it.
@@ -315,13 +323,15 @@ internal sealed class OrderedRowSaver(
                     head = _queue[0];
                 }
 
+                var alreadyStored = false;
                 try
                 {
                     await store.AppendMessagesAsync(threadId, [head.Row], CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
-                    if (!await IsAlreadyStoredAsync(head.Row).ConfigureAwait(false))
+                    alreadyStored = await IsAlreadyStoredAsync(head.Row).ConfigureAwait(false);
+                    if (!alreadyStored)
                     {
                         int waiting;
                         lock (_gate)
@@ -341,12 +351,6 @@ internal sealed class OrderedRowSaver(
                         );
                         return;
                     }
-
-                    logger.LogInformation(
-                        "Row {RowId} for thread {ThreadId} is already stored; treating its failed save as done",
-                        head.Row.Id,
-                        threadId
-                    );
                 }
 
                 // Leaving the queue and becoming durable happen together, so no waiter sees a row that is neither.
@@ -355,6 +359,16 @@ internal sealed class OrderedRowSaver(
                     _queue.RemoveAt(0);
                     _ = head.Saved.TrySetResult();
                     RowSavedForTest?.Invoke();
+                }
+
+                // Logged only once the row is durable, so a logger that throws cannot undo a committed save.
+                if (alreadyStored)
+                {
+                    logger.LogInformation(
+                        "Row {RowId} for thread {ThreadId} is already stored; treating its failed save as done",
+                        head.Row.Id,
+                        threadId
+                    );
                 }
             }
         }

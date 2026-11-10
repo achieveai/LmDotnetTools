@@ -336,6 +336,8 @@ public class OrderedRowSaverTests
             }
         });
         saver = new OrderedRowSaver(store.Object, Thread, logger);
+        var holdsFirstPump = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        saver.CancelledSaveHoldsPumpForTest = () => holdsFirstPump.TrySetResult();
         var waitsAgain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         saver.CancelledSaveWaitsAgainForTest = () => waitsAgain.TrySetResult();
         using var cancel = new CancellationTokenSource();
@@ -344,6 +346,10 @@ public class OrderedRowSaverTests
             var save = saver.SaveNowAsync(Row("placeholder"), cancel.Token);
             await store.FirstAttemptStarted.WaitAsync(Limit);
             cancel.Cancel();
+
+            // The first append fails only once the cancelled save holds the pump writing it, so the save sees
+            // that pump replaced rather than starting out on the replacement.
+            await holdsFirstPump.Task.WaitAsync(Limit);
             firstAttempt.SetException(new InvalidOperationException("locked"));
             await secondAttemptStarted.Task.WaitAsync(Limit);
 
