@@ -22,15 +22,23 @@ namespace LmStreaming.Sample.Tests.Services;
 /// second place.
 /// </summary>
 /// <remarks>
-/// The registry is replaced, so no Copilot discovery runs. The Copilot agent factory is replaced with one
-/// that builds the real Responses agent over a client that only records the request, so no token is read
-/// and nothing leaves the process.
+/// Nothing here reads a token or opens a connection. The registry is replaced, so no Copilot discovery runs,
+/// and its token gate is forced open. The mode turns off Copilot's hosted web search. The sandbox gateway
+/// points at a closed port. The Copilot agent factory builds the real Responses agent over a client that
+/// only records the request.
 /// </remarks>
 public sealed class ReasoningReplayCompositionTests
 {
     private const string Model = "gpt-5.6-terra";
 
-    private static AgentProfile DefaultMode => SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+    // The default mode allows every tool, and on a Copilot model that includes Copilot's hosted web search,
+    // which opens an MCP session to Copilot with the machine's token while the conversation is built. An
+    // empty tool list turns that off; sub-agents come from the mode's capabilities, so they stay.
+    private static AgentProfile OfflineMode =>
+        SystemChatModes.GetById(SystemChatModes.DefaultModeId)! with
+        {
+            EnabledTools = [],
+        };
 
     private sealed class CapturingClient : IOpenAiResponsesClient
     {
@@ -70,6 +78,9 @@ public sealed class ReasoningReplayCompositionTests
         {
             // Avoids the Vite dev-server auto-spawn.
             builder.UseEnvironment("Production");
+            // The host probes the sandbox gateway at startup; without these it adopts whatever answers on :3000.
+            builder.UseSetting("SandboxGateway:BaseUrl", "http://127.0.0.1:1");
+            builder.UseSetting("SandboxGateway:AutoSpawn", "false");
 
             builder.ConfigureTestServices(services =>
             {
@@ -78,9 +89,22 @@ public sealed class ReasoningReplayCompositionTests
 
                 services.RemoveAll<ProviderRegistry>();
                 services.AddSingleton(
-                    new ProviderRegistry([
-                        new CopilotModelInfo(Model, Model, CopilotModelVendor.OpenAI, CopilotModelTransport.Responses),
-                    ])
+                    new ProviderRegistry(
+                        probe: null,
+                        mockHostIsRunning: () => false,
+                        copilotModels:
+                        [
+                            new CopilotModelInfo(
+                                Model,
+                                Model,
+                                CopilotModelVendor.OpenAI,
+                                CopilotModelTransport.Responses
+                            ),
+                        ],
+                        // The pool refuses a Copilot model unless a token resolves. Without this the test
+                        // passes only on a machine with a gh/Copilot login, and fails on CI.
+                        copilotTokenAvailable: () => true
+                    )
                 );
 
                 services.RemoveAll<Program.CopilotModelAgentFactory>();
@@ -116,7 +140,7 @@ public sealed class ReasoningReplayCompositionTests
         var loop = (MultiTurnAgentLoop)
             host
                 .Services.GetRequiredService<MultiTurnAgentPool>()
-                .GetOrCreateAgent($"replay-{Guid.NewGuid():N}", DefaultMode, Model, requestResponseDumpFileName: null);
+                .GetOrCreateAgent($"replay-{Guid.NewGuid():N}", OfflineMode, Model, requestResponseDumpFileName: null);
         var templates = loop.SubAgentManager!.ChildOptions.Templates.Values.Where(t =>
                 t.CharacteristicsAgentFactory != null
             )
