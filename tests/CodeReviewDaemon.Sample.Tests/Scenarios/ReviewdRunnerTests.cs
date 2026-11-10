@@ -612,6 +612,351 @@ public sealed class ReviewdRunnerTests
         }
     }
 
+    // #956, seen live: the host left a sub-agent stamped running after its run was abandoned, and a whole round
+    // waited 13 hours on it. Its last turn had finished (text, then usage) and nothing was written after. Under an
+    // idle root with a final input, that child settles once its newest message is 45 minutes old: at once at 45 and
+    // past it, at the next due read when it starts just short of it. Anything that could still be a working child
+    // keeps the wait: a recent message, or a turn left open on a tool call (a long build writes nothing), on a tool
+    // result, on a message sent to it, on a result that answers another call, or on a call whose id cannot be read.
+    // A read that finds it abandoned is never reused, so confirming a settle reads it again. One clock minute
+    // passes per poll, for at most 20.
+    [Theory]
+    [InlineData("finished", 46, null, 1, 2)]
+    [InlineData("finished", 46, "Completed", 1, 2)]
+    [InlineData("finished", 45, null, 1, 2)]
+    [InlineData("finished", 44, null, 6, 3)]
+    [InlineData("finished", 10, null, null, 1)]
+    [InlineData("open-tool-call", 180, null, null, 5)]
+    [InlineData("tool-result", 180, null, null, 5)]
+    [InlineData("sent-to-it", 180, null, null, 5)]
+    [InlineData("result-for-another-call", 180, null, null, 5)]
+    [InlineData("unreadable-call-id", 180, null, null, 5)]
+    public async Task A_running_child_settles_the_wait_only_once_its_finished_turn_has_gone_quiet(
+        string ending,
+        int quietMinutes,
+        string? inputStatus,
+        int? settlesAfterPolls,
+        int transcriptReads
+    )
+    {
+        var start = DateTimeOffset.Parse("2026-11-09T12:00:00Z", CultureInfo.InvariantCulture);
+        var now = start;
+        var handler = GhostHandler(
+            rootInProgress: false,
+            inputStatus,
+            lastActivity: start.AddHours(-5),
+            _ => Transcript(start.AddMinutes(-quietMinutes), ending)
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var delays = 0;
+        var run = () =>
+            ReviewRunner.WaitAsync(
+                client,
+                "thread",
+                inputStatus is null ? null : "input",
+                _ =>
+                {
+                    if (++delays > 20)
+                        throw new TimeoutException("Still waiting on the child.");
+                    now = now.AddMinutes(1);
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None,
+                () => now,
+                probe: new AbandonedChildProbe("test")
+            );
+
+        if (settlesAfterPolls is { } polls)
+        {
+            await run();
+            delays.Should().Be(polls, "the settle is confirmed by the next idle read");
+        }
+        else
+        {
+            await run.Should().ThrowAsync<TimeoutException>();
+        }
+        handler
+            .CountRequests("/agents/ghost/transcript")
+            .Should()
+            .Be(
+                transcriptReads,
+                "a live child is read at most every five minutes, and not before it could be quiet enough"
+            );
+        handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get);
+    }
+
+    // A child that keeps working is never settled by the rule: here it finishes a turn every minute for 30 minutes,
+    // then stops. The wait stays open until its last message is 45 minutes old, not 45 minutes after the wait began.
+    [Fact]
+    public async Task A_child_that_keeps_writing_holds_the_wait_until_45_minutes_after_its_last_message()
+    {
+        var start = DateTimeOffset.Parse("2026-11-09T12:00:00Z", CultureInfo.InvariantCulture);
+        var now = start;
+        var lastWrite = start.AddMinutes(30);
+        var handler = GhostHandler(
+            rootInProgress: false,
+            inputStatus: null,
+            lastActivity: start.AddHours(-5),
+            _ => Transcript(now < lastWrite ? now : lastWrite, "finished")
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var delays = 0;
+
+        await ReviewRunner.WaitAsync(
+            client,
+            "thread",
+            null,
+            _ =>
+            {
+                if (++delays > 120)
+                    throw new TimeoutException("Still waiting on the child.");
+                now = now.AddMinutes(1);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None,
+            () => now,
+            probe: new AbandonedChildProbe("test")
+        );
+
+        (now - lastWrite).Should().Be(TimeSpan.FromMinutes(46), "settled at 45 quiet minutes, confirmed a poll later");
+    }
+
+    // A child judged abandoned can still be woken (a sibling messages it) before the settle is confirmed. The
+    // confirming poll reads it again, sees the new message, and the wait stays open.
+    [Fact]
+    public async Task A_child_judged_abandoned_that_writes_again_before_confirmation_keeps_the_wait()
+    {
+        var start = DateTimeOffset.Parse("2026-11-09T12:00:00Z", CultureInfo.InvariantCulture);
+        var now = start;
+        var handler = GhostHandler(
+            rootInProgress: false,
+            inputStatus: null,
+            lastActivity: start.AddHours(-5),
+            _ =>
+                now == start
+                    ? Transcript(start.AddHours(-3), "finished")
+                    : Transcript(start.AddMinutes(1), "open-tool-call")
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var delays = 0;
+
+        var run = () =>
+            ReviewRunner.WaitAsync(
+                client,
+                "thread",
+                null,
+                _ =>
+                {
+                    if (++delays > 20)
+                        throw new TimeoutException("Still waiting on the child.");
+                    now = now.AddMinutes(1);
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None,
+                () => now,
+                probe: new AbandonedChildProbe("test")
+            );
+
+        await run.Should().ThrowAsync<TimeoutException>();
+        handler.CountRequests("/agents/ghost/transcript").Should().BeGreaterThanOrEqualTo(2);
+    }
+
+    // The host client gives up a read after its own timeout, which surfaces as a cancellation the caller never asked
+    // for. That is a failed read, not a cancelled wait: the child keeps the wait, is read again five minutes later,
+    // and then settles.
+    [Fact]
+    public async Task A_transcript_read_that_times_out_keeps_the_wait_and_is_retried()
+    {
+        var start = DateTimeOffset.Parse("2026-11-09T12:00:00Z", CultureInfo.InvariantCulture);
+        var now = start;
+        var reads = 0;
+        var handler = GhostHandler(
+            rootInProgress: false,
+            inputStatus: null,
+            lastActivity: start.AddHours(-5),
+            _ =>
+                ++reads == 1
+                    ? throw new TaskCanceledException(
+                        "The request was canceled due to the configured HttpClient.Timeout."
+                    )
+                    : Transcript(start.AddHours(-3), "finished")
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var delays = 0;
+
+        await ReviewRunner.WaitAsync(
+            client,
+            "thread",
+            null,
+            _ =>
+            {
+                if (++delays > 20)
+                    throw new TimeoutException("Still waiting on the child.");
+                now = now.AddMinutes(1);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None,
+            () => now,
+            probe: new AbandonedChildProbe("test")
+        );
+
+        delays.Should().Be(6, "the failed read is retried after five minutes, and the settle confirmed a poll later");
+        reads.Should().Be(3);
+    }
+
+    // The transcript read is a full message load on the host's busy store, so it is made only when nothing else can
+    // still move the tree. A root still running, an input not yet final, a fresh activity stamp or another child
+    // that has not settled keeps the wait without reading the child at all, even when its transcript would read as
+    // abandoned. A wait given no probe (the judge and merge waits) keeps the old rule and never reads one.
+    [Theory]
+    [InlineData("root-running")]
+    [InlineData("input-running")]
+    [InlineData("recent-stamp")]
+    [InlineData("unknown-sibling")]
+    [InlineData("no-probe")]
+    public async Task The_abandoned_child_read_is_never_made_while_anything_else_can_still_move_the_tree(string blocker)
+    {
+        var start = DateTimeOffset.Parse("2026-11-09T12:00:00Z", CultureInfo.InvariantCulture);
+        var now = start;
+        var handler = GhostHandler(
+            rootInProgress: blocker == "root-running",
+            blocker == "input-running" ? "InProgress" : null,
+            lastActivity: blocker == "recent-stamp" ? start.AddMinutes(-5) : start.AddHours(-5),
+            _ => Transcript(start.AddHours(-5), "finished"),
+            unknownSibling: blocker == "unknown-sibling" ? start : null
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var delays = 0;
+
+        var run = () =>
+            ReviewRunner.WaitAsync(
+                client,
+                "thread",
+                blocker == "input-running" ? "input" : null,
+                _ =>
+                {
+                    if (++delays > 3)
+                        throw new TimeoutException("Still waiting on the child.");
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None,
+                () => now,
+                probe: blocker == "no-probe" ? null : new AbandonedChildProbe("test")
+            );
+
+        await run.Should().ThrowAsync<TimeoutException>();
+        handler.CountRequests("/transcript").Should().Be(0);
+    }
+
+    // The ghost is listed first, so a check that read before looking at every node would read it.
+    private static FakeHttpMessageHandler GhostHandler(
+        bool rootInProgress,
+        string? inputStatus,
+        DateTimeOffset lastActivity,
+        Func<HttpRequestMessage, string> transcript,
+        DateTimeOffset? unknownSibling = null
+    ) =>
+        new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/status?", $$"""{"status":"{{inputStatus}}","runId":"run","response":null}""")
+            .OnJson(
+                HttpMethod.Get,
+                "/run-state",
+                rootInProgress
+                    ? """{"threadId":"thread","isInProgress":true,"currentRunId":"run"}"""
+                    : """{"threadId":"thread","isInProgress":false,"currentRunId":null}"""
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/subagents?",
+                $$"""{"schemaVersion":1,"nodes":[{"agentId":"publisher","threadId":"publisher-thread","parentThreadId":"thread","depth":1,"template":"reviewer","status":"completed"},{"agentId":"ghost","threadId":"subagent-x-ghost","parentThreadId":"thread","depth":1,"template":"reviewer","status":"running","lastActivityUtc":"{{lastActivity:O}}"}{{(
+                    unknownSibling is { } seen
+                        ? $$""",{"agentId":"other","threadId":"subagent-x-other","parentThreadId":"thread","depth":1,"template":"reviewer","status":"mystery","lastActivityUtc":"{{seen:O}}"}"""
+                        : ""
+                )}}]}"""
+            )
+            .On(
+                request =>
+                    request.RequestUri!.AbsolutePath.EndsWith("/agents/ghost/transcript", StringComparison.Ordinal),
+                request => Json(transcript(request))
+            );
+
+    // A child transcript as the host's agent-transcript route returns it (reasoning already stripped), ending the
+    // given way, one second apart, with its newest message at newest.
+    internal static string Transcript(DateTimeOffset newest, string ending)
+    {
+        (string Type, string Role, string? CallId)[] rows = ending switch
+        {
+            "finished" =>
+            [
+                ("TextMessage", "User", null),
+                ("ToolCallMessage", "Assistant", "call-1"),
+                ("ToolCallResultMessage", "User", "call-1"),
+                ("TextMessage", "Assistant", null),
+                ("UsageMessage", "Assistant", null),
+            ],
+            "open-tool-call" =>
+            [
+                ("TextMessage", "User", null),
+                ("ToolCallMessage", "Assistant", "call-1"),
+                ("UsageMessage", "Assistant", null),
+            ],
+            "tool-result" =>
+            [
+                ("TextMessage", "User", null),
+                ("ToolCallMessage", "Assistant", "call-1"),
+                ("ToolCallResultMessage", "User", "call-1"),
+            ],
+            "sent-to-it" =>
+            [
+                ("TextMessage", "User", null),
+                ("TextMessage", "Assistant", null),
+                ("UsageMessage", "Assistant", null),
+                ("AgentMessage", "User", null),
+            ],
+            // Equal counts, but the stored result answers a call that is not here: call-2 is still open.
+            "result-for-another-call" =>
+            [
+                ("TextMessage", "User", null),
+                ("ToolCallMessage", "Assistant", "call-2"),
+                ("ToolCallResultMessage", "User", "call-1"),
+                ("TextMessage", "Assistant", null),
+                ("UsageMessage", "Assistant", null),
+            ],
+            "unreadable-call-id" =>
+            [
+                ("TextMessage", "User", null),
+                ("ToolCallMessage", "Assistant", ""),
+                ("ToolCallResultMessage", "User", ""),
+                ("TextMessage", "Assistant", null),
+                ("UsageMessage", "Assistant", null),
+            ],
+            _ => throw new ArgumentOutOfRangeException(nameof(ending), ending, null),
+        };
+        var array = new JsonArray();
+        for (var i = 0; i < rows.Length; i++)
+        {
+            var payload = new JsonObject { ["role"] = rows[i].Role.ToLowerInvariant() };
+            if (rows[i].CallId is { } id)
+                payload["tool_call_id"] = id.Length == 0 ? null : id;
+            array.Add(
+                new JsonObject
+                {
+                    ["seq"] = i + 1,
+                    ["messageType"] = rows[i].Type,
+                    ["role"] = rows[i].Role,
+                    ["timestamp"] = newest.AddSeconds(i - rows.Length + 1).ToUnixTimeMilliseconds(),
+                    ["messageJson"] = payload.ToJsonString(),
+                }
+            );
+        }
+        return array.ToJsonString();
+    }
+
     // Seen live on PR 221: the confirmation read NotStarted for four hours on an idle conversation, and the
     // batch never reached the next PR. One clock minute passes per poll.
     [Theory]
@@ -6031,10 +6376,142 @@ public sealed class ReviewdRunnerTests
         bool earlierReceipt
     )
     {
+        var child = "running";
+        await PassedOverThreadAsync(
+            handler =>
+                handler.On(
+                    request => request.RequestUri!.AbsolutePath == "/api/conversations/prior/subagents",
+                    _ =>
+                        child == "busy"
+                            ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                            {
+                                Content = new StringContent("""{"code":"hierarchy_busy"}"""),
+                            }
+                            : Json(
+                                $$"""{"schemaVersion":1,"nodes":[{"agentId":"child","threadId":"child-thread","parentThreadId":"prior","depth":1,"template":"publisher","status":"{{child}}"}]}"""
+                            )
+                ),
+            async store =>
+            {
+                if (earlierReceipt)
+                    await store.SetAsync(
+                        $"reviewd/review-run/{PrCommands.ParseRepo("org/project/Nova").NormalizedKey}/17",
+                        new JsonObject
+                        {
+                            ["stage"] = "completed-verified",
+                            ["reviewedHeadSha"] = new string('9', 40),
+                            ["reviewCompletedAt"] = DateTimeOffset.UtcNow.AddHours(-1),
+                        }
+                    );
+            },
+            async (run, handler) =>
+            {
+                foreach (var live in new[] { "running", "busy" })
+                {
+                    child = live;
+                    await FluentActions
+                        .Awaiting(() => run(null))
+                        .Should()
+                        .ThrowAsync<ReviewRunner.ReviewDeferredException>($"a {live} child tree has not settled");
+                    handler
+                        .Requests.Should()
+                        .OnlyContain(r => r.Method == HttpMethod.Get, "nothing is claimed or sent");
+                }
+
+                child = "completed";
+                (await FluentActions.Awaiting(() => run(null)).Should().ThrowAsync<InvalidOperationException>())
+                    .Which.Message.Should()
+                    .Contain("Errored");
+                JsonNode.Parse(
+                    handler
+                        .Requests.Should()
+                        .ContainSingle(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations")
+                        .Subject.Body!
+                )!["disableClientTools"]!
+                    .GetValue<bool>()
+                    .Should()
+                    .BeTrue();
+                handler
+                    .Requests.Where(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                    .Select(r => r.Uri.AbsolutePath)
+                    .Should()
+                    .Equal("/api/conversations/fresh/messages");
+            }
+        );
+    }
+
+    // #956: after the reaper freed #948's slot, its next review would still be deferred forever if the thread it passes
+    // over holds a ghost stuck at running. Admission settles an abandoned child by the same rule as the wait and the
+    // reaper: a finished turn quiet for 45 minutes admits the review; a child that wrote minutes ago still defers it,
+    // and the batch's retry minutes later reuses that reading instead of reading the transcript again.
+    [Theory]
+    [InlineData(180, true)]
+    [InlineData(2, false)]
+    public async Task Runner_admits_a_fresh_review_past_a_passed_over_thread_whose_only_live_child_was_abandoned(
+        int quietMinutes,
+        bool admits
+    )
+    {
+        await PassedOverThreadAsync(
+            handler =>
+                handler
+                    .OnJson(
+                        HttpMethod.Get,
+                        "/api/conversations/prior/subagents",
+                        """{"schemaVersion":1,"nodes":[{"agentId":"ghost","threadId":"subagent-x-ghost","parentThreadId":"prior","depth":1,"template":"publisher","status":"running"}]}"""
+                    )
+                    .OnJson(
+                        HttpMethod.Get,
+                        "/api/conversations/prior/agents/ghost/transcript",
+                        Transcript(DateTimeOffset.UtcNow.AddMinutes(-quietMinutes), "finished")
+                    ),
+            _ => Task.CompletedTask,
+            async (run, handler) =>
+            {
+                var reads = new AbandonedChildProbe.ReadLog();
+                if (admits)
+                {
+                    // Admitted: the review is sent in a fresh conversation, whose scripted input then fails.
+                    (await FluentActions.Awaiting(() => run(reads)).Should().ThrowAsync<InvalidOperationException>())
+                        .Which.Message.Should()
+                        .Contain("Errored");
+                    handler
+                        .Requests.Where(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                        .Select(r => r.Uri.AbsolutePath)
+                        .Should()
+                        .Equal("/api/conversations/fresh/messages");
+                    return;
+                }
+
+                foreach (var attempt in new[] { "first", "retried" })
+                    await FluentActions
+                        .Awaiting(() => run(reads))
+                        .Should()
+                        .ThrowAsync<ReviewRunner.ReviewDeferredException>($"the {attempt} attempt sees a recent child");
+                handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "nothing is claimed or sent");
+                handler
+                    .Requests.Count(r => r.Uri.AbsolutePath.EndsWith("/transcript", StringComparison.Ordinal))
+                    .Should()
+                    .Be(1, "the retry minutes later reuses the first attempt's reading");
+            }
+        );
+    }
+
+    // PR 17 on slot 2 whose only conversation is the legacy thread "prior", which a review passes over. A test registers
+    // the prior thread's own routes first (the first matching route wins) and seeds the store; the shared routes then
+    // let an admitted review start in "fresh", whose scripted input fails as Errored. `act` runs the review with the
+    // read log it is given.
+    private static async Task PassedOverThreadAsync(
+        Action<FakeHttpMessageHandler> priorRoutes,
+        Func<SqliteKvStore, Task> seed,
+        Func<Func<AbandonedChildProbe.ReadLog?, Task>, FakeHttpMessageHandler, Task> act
+    )
+    {
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-legacy-child-{Guid.NewGuid():N}.db");
         var repo = PrCommands.ParseRepo("org/project/Nova");
-        var child = "running";
-        var handler = new FakeHttpMessageHandler()
+        var handler = new FakeHttpMessageHandler();
+        priorRoutes(handler);
+        handler
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
@@ -6049,18 +6526,6 @@ public sealed class ReviewdRunnerTests
                 HttpMethod.Get,
                 "/api/conversations?",
                 """[{"threadId":"prior","title":"Nova-17-99999999","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1}]"""
-            )
-            .On(
-                request => request.RequestUri!.AbsolutePath == "/api/conversations/prior/subagents",
-                _ =>
-                    child == "busy"
-                        ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
-                        {
-                            Content = new StringContent("""{"code":"hierarchy_busy"}"""),
-                        }
-                        : Json(
-                            $$"""{"schemaVersion":1,"nodes":[{"agentId":"child","threadId":"child-thread","parentThreadId":"prior","depth":1,"template":"publisher","status":"{{child}}"}]}"""
-                        )
             )
             .OnJson(HttpMethod.Put, "/metadata", "{}")
             .OnJson(HttpMethod.Post, "/messages", """{"inputId":"original","idempotencyKeyHonored":true}""")
@@ -6094,7 +6559,8 @@ public sealed class ReviewdRunnerTests
         try
         {
             using var connection = PrThreadBindings.Connection(database);
-            await new SqliteKvStore(connection).SetAsync(
+            var store = new SqliteKvStore(connection);
+            await store.SetAsync(
                 $"reviewd/pr-snapshot/{repo.NormalizedKey}",
                 new JsonObject
                 {
@@ -6106,16 +6572,7 @@ public sealed class ReviewdRunnerTests
                     },
                 }
             );
-            if (earlierReceipt)
-                await new SqliteKvStore(connection).SetAsync(
-                    $"reviewd/review-run/{repo.NormalizedKey}/17",
-                    new JsonObject
-                    {
-                        ["stage"] = "completed-verified",
-                        ["reviewedHeadSha"] = new string('9', 40),
-                        ["reviewCompletedAt"] = DateTimeOffset.UtcNow.AddHours(-1),
-                    }
-                );
+            await seed(store);
             var options = CliOptions.Parse([
                 "review",
                 "run",
@@ -6135,40 +6592,20 @@ public sealed class ReviewdRunnerTests
                 "test",
                 "--execute",
             ]);
-            var run = () =>
-                ReviewRunner.RunAsync(
-                    options,
-                    config,
-                    client,
-                    Sandbox,
-                    CancellationToken.None,
-                    _ => Task.CompletedTask,
-                    () => DateTimeOffset.UtcNow
-                );
-            foreach (var live in new[] { "running", "busy" })
-            {
-                child = live;
-                await run.Should()
-                    .ThrowAsync<ReviewRunner.ReviewDeferredException>($"a {live} child tree has not settled");
-                handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "nothing is claimed or sent");
-            }
-
-            child = "completed";
-            (await run.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("Errored");
-            JsonNode.Parse(
+            await act(
+                reads =>
+                    ReviewRunner.RunAsync(
+                        options,
+                        config,
+                        client,
+                        Sandbox,
+                        CancellationToken.None,
+                        _ => Task.CompletedTask,
+                        () => DateTimeOffset.UtcNow,
+                        reads
+                    ),
                 handler
-                    .Requests.Should()
-                    .ContainSingle(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations")
-                    .Subject.Body!
-            )!["disableClientTools"]!
-                .GetValue<bool>()
-                .Should()
-                .BeTrue();
-            handler
-                .Requests.Where(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
-                .Select(r => r.Uri.AbsolutePath)
-                .Should()
-                .Equal("/api/conversations/fresh/messages");
+            );
         }
         finally
         {

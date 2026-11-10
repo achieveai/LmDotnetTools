@@ -1,5 +1,8 @@
+using System.Buffers;
 using System.Globalization;
 using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 
@@ -22,6 +25,11 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 ///     <c>[tool result truncated: kept 4,194,304 of 15,231,668 bytes]</c>. The affected
 ///     <see cref="ToolCallResult"/> is also flagged via <see cref="ToolCallResult.IsTruncated"/>.
 ///     </para>
+///     <para>
+///     A result that is a valid JSON document is never cut into a broken one (#713): it is replaced
+///     by a small object with <c>"truncated": true</c>, the sizes and an escaped preview. It still parses and
+///     carries the marker in its <c>note</c> field. Being cut is not a failure, so it has no <c>error</c> key.
+///     </para>
 /// </remarks>
 public sealed record ToolResultLimits
 {
@@ -40,6 +48,19 @@ public sealed record ToolResultLimits
     public const int MinResultBytes = 256;
 
     private const string MarkerSeparator = "\n\n";
+
+    private const string JsonWhitespace = " \t\r\n";
+
+    // About 4 MiB of text, the size of the default result limit.
+    private const int MaxParsedChars = 4 * 1024 * 1024;
+
+    private static readonly JsonDocumentOptions s_anyDepth = new() { MaxDepth = int.MaxValue };
+
+    // Non-ASCII and HTML characters stay readable: this text goes to a model, not into a web page.
+    private static readonly JsonWriterOptions s_envelopeWriterOptions = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
 
     private readonly int _maxResultBytes = 4 * 1024 * 1024;
 
@@ -139,7 +160,7 @@ public sealed record ToolResultLimits
 
     // Count only after truncation is needed, keeping ordinary results on the existing fast path.
     // Result and text blocks are separate fields even when their contents happen to match.
-    private static int CountOriginalTextBytes(ToolCallResult result)
+    internal static int CountOriginalTextBytes(ToolCallResult result)
     {
         long total = result.Result == null ? 0 : Encoding.UTF8.GetByteCount(result.Result);
         if (result.ContentBlocks != null)
@@ -189,13 +210,51 @@ public sealed record ToolResultLimits
             return false;
         }
 
-        var total = Encoding.UTF8.GetByteCount(text);
+        bounded = Cut(text, MaxResultBytes, savedPath: null, notice: null);
+        return true;
+    }
 
+    /// <summary>
+    ///     Cuts <paramref name="text"/> to at most <paramref name="maxBytes"/> UTF-8 bytes, adding
+    ///     <paramref name="notice"/> after the truncation marker. A valid JSON document becomes the
+    ///     JSON object instead, with <paramref name="savedPath"/> in its <c>saved_to</c> field.
+    /// </summary>
+    internal static string Cut(string text, int maxBytes, string? savedPath, string? notice)
+    {
+        var total = Encoding.UTF8.GetByteCount(text);
+        return IsJsonDocument(text)
+            ? BuildJsonEnvelope(text, total, maxBytes, savedPath, notice)
+            : CutPlainText(text, total, maxBytes, notice);
+    }
+
+    /// <summary>
+    ///     Bounds <paramref name="text"/> the way every result was bounded before cut JSON became an
+    ///     object. A record saved back then holds this form, so a redelivery compares against it.
+    /// </summary>
+    public string BoundAsPlainText(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        var total = Encoding.UTF8.GetByteCount(text);
+        return total <= MaxResultBytes ? text : CutPlainText(text, total, MaxResultBytes, notice: null);
+    }
+
+    private static string CutPlainText(string text, int total, int maxBytes, string? notice)
+    {
         // Reserve room for the marker using the largest number it could carry (kept <= total).
         // MinResultBytes guarantees the budget stays positive.
-        var reserve = Encoding.UTF8.GetByteCount(FormatMarker(total, total));
-        var budget = MaxResultBytes - reserve;
+        var suffix = notice == null ? string.Empty : "\n" + notice;
+        var reserve = Encoding.UTF8.GetByteCount(FormatMarker(total, total)) + Encoding.UTF8.GetByteCount(suffix);
+        var (keptChars, keptBytes) = MeasurePrefix(text, maxBytes - reserve);
 
+        return string.Concat(text.AsSpan(0, keptChars), FormatMarker(keptBytes, total), suffix);
+    }
+
+    /// <summary>
+    ///     Finds the longest prefix within <paramref name="budget"/> UTF-8 bytes, stopping on a
+    ///     <see cref="Rune"/> boundary so a cut never splits a character.
+    /// </summary>
+    private static (int KeptChars, int KeptBytes) MeasurePrefix(string text, int budget)
+    {
         var keptBytes = 0;
         var keptChars = 0;
         foreach (var rune in text.EnumerateRunes())
@@ -210,8 +269,105 @@ public sealed record ToolResultLimits
             keptChars += rune.Utf16SequenceLength;
         }
 
-        bounded = string.Concat(text.AsSpan(0, keptChars), FormatMarker(keptBytes, total));
-        return true;
+        return (keptChars, keptBytes);
+    }
+
+    /// <summary>
+    ///     True when <paramref name="text"/> is one complete JSON document. Runs only on text that
+    ///     is already over a limit, so ordinary results never pay for a parse.
+    /// </summary>
+    /// <remarks>
+    ///     A parse needs temporary memory several times the size of its input, so past
+    ///     <see cref="MaxParsedChars"/> only its shape is checked. That can only err towards the
+    ///     JSON object, which is valid whatever it holds, and every real document passes.
+    /// </remarks>
+    private static bool IsJsonDocument(string text)
+    {
+        var trimmed = text.AsMemory().Trim(JsonWhitespace.AsSpan());
+        if (trimmed.IsEmpty)
+        {
+            return false;
+        }
+
+        var span = trimmed.Span;
+        if (span.Length > MaxParsedChars)
+        {
+            return (span[0], span[^1]) is ('{', '}') or ('[', ']') or ('"', '"') || IsNumberShaped(span);
+        }
+
+        if (span[0] is not ('{' or '[' or '"' or 't' or 'f' or 'n' or '-' or (>= '0' and <= '9')))
+        {
+            return false;
+        }
+
+        try
+        {
+            // The default limit of 64 levels would call a valid deep document malformed.
+            using var document = JsonDocument.Parse(trimmed, s_anyDepth);
+            return true;
+        }
+        catch (Exception ex) when (ex is JsonException or ArgumentException)
+        {
+            // ArgumentException: an unpaired surrogate cannot be transcoded, so this is not JSON.
+            return false;
+        }
+    }
+
+    // True, false and null are short, so past the parse limit a number is the only other scalar.
+    private static bool IsNumberShaped(ReadOnlySpan<char> text) =>
+        text[0] is '-' or (>= '0' and <= '9') && !text.ContainsAnyExcept("0123456789+-.eE");
+
+    /// <summary>
+    ///     Builds the JSON object that replaces a cut JSON document, keeping as much preview as fits.
+    /// </summary>
+    /// <remarks>
+    ///     The preview grows when escaped, so the first render can overshoot. Every byte removed from
+    ///     the raw preview removes at least one escaped byte, so taking the overshoot off the budget
+    ///     lands within the limit; the loop only guards the arithmetic.
+    /// </remarks>
+    private static string BuildJsonEnvelope(string text, int total, int maxBytes, string? savedPath, string? notice)
+    {
+        var overhead = RenderEnvelope(string.Empty, 0, total, savedPath, notice).Length;
+        var budget = Math.Max(0, maxBytes - overhead);
+
+        while (true)
+        {
+            var (keptChars, keptBytes) = MeasurePrefix(text, budget);
+
+            // A lone surrogate has no JSON form, and the encoder would refuse it. Round-tripping
+            // through UTF-8 gives U+FFFD, the same three bytes the measurement counted.
+            var preview = Encoding.UTF8.GetString(Encoding.UTF8.GetBytes(text[..keptChars]));
+            var rendered = RenderEnvelope(preview, keptBytes, total, savedPath, notice);
+            if (rendered.Length <= maxBytes || budget == 0)
+            {
+                return Encoding.UTF8.GetString(rendered);
+            }
+
+            budget = Math.Max(0, budget - (rendered.Length - maxBytes));
+        }
+    }
+
+    private static byte[] RenderEnvelope(string preview, int keptBytes, int total, string? savedPath, string? notice)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer, s_envelopeWriterOptions))
+        {
+            writer.WriteStartObject();
+            writer.WriteBoolean("truncated", true);
+            writer.WriteNumber("kept_bytes", keptBytes);
+            writer.WriteNumber("original_bytes", total);
+            writer.WriteString("preview", preview);
+            if (savedPath != null)
+            {
+                writer.WriteString("saved_to", savedPath);
+            }
+
+            var marker = FormatMarker(keptBytes, total)[MarkerSeparator.Length..];
+            writer.WriteString("note", notice == null ? marker : marker + " " + notice);
+            writer.WriteEndObject();
+        }
+
+        return buffer.WrittenSpan.ToArray();
     }
 
     private static string FormatMarker(int kept, int total) =>

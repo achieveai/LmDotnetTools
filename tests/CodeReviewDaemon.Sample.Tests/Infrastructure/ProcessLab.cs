@@ -54,6 +54,80 @@ internal sealed class ProcessLab : IDisposable
             posix: [$"sleep {Seconds(delay)}", $"echo alive > '{markerPath}'"]
         );
 
+    /// <summary>
+    /// A silent command that polls for <paramref name="releasePath"/> about once a second and only then
+    /// writes <paramref name="markerPath"/>. It cannot finish on its own schedule, so a kill that lands late
+    /// on a loaded machine still lands first. On Windows it also keeps <paramref name="heldPath"/> open for
+    /// its whole life, which is what <see cref="WaitForHolderToExitAsync"/> observes. The poll count is only
+    /// a bound, so a child that is wrongly left alive still ends by itself.
+    /// </summary>
+    public IReadOnlyList<string> RunUntilReleased(string releasePath, string markerPath, string heldPath) =>
+        Script(
+            windows:
+            [
+                $"call :body >> \"{heldPath}\"",
+                "exit /b 0",
+                ":body",
+                "set /a n=0",
+                ":loop",
+                $"if exist \"{releasePath}\" goto :released",
+                "set /a n+=1",
+                "if %n% geq 120 exit /b 1",
+                "ping -n 2 127.0.0.1 > nul",
+                "goto :loop",
+                ":released",
+                $"echo alive> \"{markerPath}\"",
+                "exit /b 0",
+            ],
+            posix:
+            [
+                "i=0",
+                "while [ $i -lt 120 ]; do",
+                $"  if [ -e '{releasePath}' ]; then echo alive > '{markerPath}'; exit 0; fi",
+                "  sleep 1",
+                "  i=$((i+1))",
+                "done",
+            ]
+        );
+
+    /// <summary>
+    /// Waits until nothing holds <paramref name="heldPath"/> open, which is the observed exit of the child
+    /// that opened it. A file that was never created counts as gone: the child was killed before reaching
+    /// the line that opens it. Windows only, because a POSIX shell redirect takes no lock to observe; there
+    /// this returns <c>true</c> at once and the caller's marker check is the only evidence.
+    /// </summary>
+    public static async Task<bool> WaitForHolderToExitAsync(string heldPath, TimeSpan timeout)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return true;
+        }
+
+        var waited = System.Diagnostics.Stopwatch.StartNew();
+        while (true)
+        {
+            try
+            {
+                using var exclusive = new FileStream(heldPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                return true;
+            }
+            catch (FileNotFoundException)
+            {
+                return true;
+            }
+            catch (IOException) when (waited.Elapsed < timeout)
+            {
+                // Still held; the kernel closes the handle as the child's process goes away.
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+
+            await Task.Delay(50);
+        }
+    }
+
     /// <summary>A command that prints <paramref name="text"/> and exits immediately.</summary>
     public IReadOnlyList<string> Echo(string text) => Script(windows: [$"echo {text}"], posix: [$"echo {text}"]);
 

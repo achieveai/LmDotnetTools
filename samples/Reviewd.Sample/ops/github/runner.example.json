@@ -1,0 +1,20 @@
+{
+  "session": "<gateway-session-guid>",
+  "workspace": "<gateway-workspace-guid>",
+  "provider": "claude-haiku-5.5",
+  "mode": "code-review-daemon",
+  "reasoningEffort": "xhigh",
+  "maxAgeHours": 168,
+  "lanesPerRepo": 6,
+  "hostPort": 5310,
+  "webhookPort": 5311,
+  "batchPort": 5312,
+  "gatewayPort": 3000,
+  "repos": [
+    "achieveai/LmDotnetTools",
+    "achieveai/SandboxedOstoolsMcpServer",
+    "achieveai/rDB",
+    "achieveai/AgentWorkBench",
+    "achieveai/NScript"
+  ]
+}

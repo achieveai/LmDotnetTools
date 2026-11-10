@@ -165,6 +165,13 @@ describe('toolParsers', () => {
       expect(model.stderr).toBe('y');
     });
 
+    it('shows the preview of a cut TaskOutput instead of an empty terminal, and its failure', () => {
+      const preview = '{"events":[],"exit_code":0,"shell_id":"s1","status":"failed","stderr":"","stdout":"out';
+      const model = parseTerminal('', { structured: { truncated: true, preview, note: 'cut' } });
+      expect(model.stdout).toBe(preview);
+      expect(model.failed).toBe(true);
+    });
+
     it('marks a non-zero structured exit_code as failed', () => {
       const model = parseTerminal('', { structured: { exit_code: 2 } });
       expect(model.exitCode).toBe(2);

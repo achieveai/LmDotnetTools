@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+
 namespace LmStreaming.Sample.FileBrowser;
 
 /// <summary>
@@ -128,7 +130,7 @@ public static class WorkspaceLinkResolver
         }
         else if (IsAbsolute(decoded))
         {
-            var stripped = StripRoot(decoded, hostPath);
+            var stripped = StripRoot(decoded, hostPath) ?? SavedToolOutputPath(decoded);
             if (stripped is null)
             {
                 return WorkspaceLinkResolution.Fail(OutsideWorkspace);
@@ -249,6 +251,16 @@ public static class WorkspaceLinkResolver
         var rest = candidate[normalizedRoot.Length..];
         return rest.Length == 0 || rest[0] == '/' ? rest : null;
     }
+
+    /// <summary>
+    /// The part below the mount root of a saved tool output's path, or null for any other path. The host gives
+    /// the model this exact path to read, whatever the session's HostPath is, so a link to it has to resolve.
+    /// Every other bare <c>/workspace</c> path keeps its meaning of a path on the host.
+    /// </summary>
+    private static string? SavedToolOutputPath(string path) =>
+        path.StartsWith($"{ContainerWorkspaceRoot}/{SandboxToolOutputStore.RootDirectory}/", StringComparison.Ordinal)
+            ? path[ContainerWorkspaceRoot.Length..]
+            : null;
 
     private static bool IsAbsolute(string path) =>
         path.StartsWith('/') || path.StartsWith('\\') || (path.Length >= 2 && IsDriveRoot(path[..2]));
