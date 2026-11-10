@@ -452,6 +452,53 @@ public sealed class SlotReaperTests
         }
     }
 
+    // #956, seen live: "Reaper waiting on lapsed-lease slot ...#948/slot0: 1 descendant(s) still active
+    // (agent-10=Running)" on every sweep, for a child whose run was abandoned hours before. A running child whose last
+    // turn finished and went quiet for 45 minutes no longer holds a lapsed slot; one that wrote minutes ago still does.
+    [Theory]
+    [InlineData(180, "reclaimed")]
+    [InlineData(2, "skipped")]
+    public async Task Reaper_reclaims_a_slot_held_only_by_an_abandoned_child(int quietMinutes, string status)
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-abandoned-{Guid.NewGuid():N}.db");
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await connection.OpenAsync();
+            var (ownerKey, store) = await SeedLapsedClaimAsync(connection, 4);
+            var handler = new FakeHttpMessageHandler()
+                .OnJson(HttpMethod.Post, "/freeze", """{"frozen":true}""")
+                .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+                .OnJson(HttpMethod.Get, "/subagents?recursive=true", Tree("completed", "running"))
+                .OnJson(
+                    HttpMethod.Get,
+                    "/agents/agent-2/transcript",
+                    ReviewdRunnerTests.Transcript(DateTimeOffset.UtcNow.AddMinutes(-quietMinutes), "finished")
+                );
+
+            var (results, discards) = await SweepAsync(connection, handler);
+
+            results.Should().ContainSingle(r => r.Status == status);
+            if (status == "reclaimed")
+            {
+                discards.Should().Be(1);
+                (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("released");
+            }
+            else
+            {
+                results.Single().Detail.Should().Contain("agent-2=Running");
+                discards.Should().Be(0, "a child that wrote minutes ago may still be working in the slot");
+                handler.CountRequests("/freeze").Should().Be(0);
+                (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("owned");
+            }
+        }
+        finally
+        {
+            ReviewdSqlitePools.Clear(database);
+            File.Delete(database);
+        }
+    }
+
     [Fact]
     public async Task Reaper_skips_when_the_host_cannot_say_whether_descendants_are_quiet()
     {

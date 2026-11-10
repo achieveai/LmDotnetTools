@@ -612,6 +612,184 @@ public sealed class ReviewdRunnerTests
         }
     }
 
+    // #956, seen live: the host left a sub-agent stamped running after its run was abandoned, and a whole round
+    // waited 13 hours on it. Its last turn had finished (text, then usage) and nothing was written after. Under an
+    // idle root with a final input, that child settles once its newest message is 45 minutes old. Anything that
+    // could still be a working child keeps the wait: a recent message, or a turn left open on a tool call (a long
+    // build writes nothing), on a tool result, or on a message sent to it. One clock minute passes per poll, for 20.
+    [Theory]
+    [InlineData("finished", 46, null, true, 1)]
+    [InlineData("finished", 46, "Completed", true, 1)]
+    [InlineData("finished", 10, null, false, 1)]
+    [InlineData("open-tool-call", 180, null, false, 5)]
+    [InlineData("tool-result", 180, null, false, 5)]
+    [InlineData("sent-to-it", 180, null, false, 5)]
+    public async Task A_running_child_settles_the_wait_only_once_its_finished_turn_has_gone_quiet(
+        string ending,
+        int quietMinutes,
+        string? inputStatus,
+        bool settles,
+        int transcriptReads
+    )
+    {
+        var start = DateTimeOffset.Parse("2026-11-09T12:00:00Z", CultureInfo.InvariantCulture);
+        var now = start;
+        var handler = GhostHandler(
+            start,
+            rootInProgress: false,
+            inputStatus,
+            lastActivity: start.AddHours(-5),
+            Transcript(start.AddMinutes(-quietMinutes), ending)
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var delays = 0;
+        var run = () =>
+            ReviewRunner.WaitAsync(
+                client,
+                "thread",
+                inputStatus is null ? null : "input",
+                _ =>
+                {
+                    if (++delays > 20)
+                        throw new TimeoutException("Still waiting on the child.");
+                    now = now.AddMinutes(1);
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None,
+                () => now
+            );
+
+        if (settles)
+        {
+            await run();
+            delays.Should().Be(1, "the second idle read confirms the settled tree");
+        }
+        else
+        {
+            await run.Should().ThrowAsync<TimeoutException>();
+        }
+        handler
+            .CountRequests("/agents/ghost/transcript")
+            .Should()
+            .Be(transcriptReads, "a child is read at most every five minutes, and not before it could be quiet enough");
+        handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get);
+    }
+
+    // The transcript read is a full message load on the host's busy store, so it is made only when nothing else can
+    // still move the tree. A root still running, an input not yet final, or a fresh activity stamp keeps the wait
+    // without reading the child at all, even when the child's transcript would read as abandoned.
+    [Theory]
+    [InlineData(true, null, 300)]
+    [InlineData(false, "InProgress", 300)]
+    [InlineData(false, null, 5)]
+    public async Task The_abandoned_child_read_is_never_made_while_anything_else_can_still_move_the_tree(
+        bool rootInProgress,
+        string? inputStatus,
+        int lastActivityMinutesAgo
+    )
+    {
+        var start = DateTimeOffset.Parse("2026-11-09T12:00:00Z", CultureInfo.InvariantCulture);
+        var now = start;
+        var handler = GhostHandler(
+            start,
+            rootInProgress,
+            inputStatus,
+            lastActivity: start.AddMinutes(-lastActivityMinutesAgo),
+            Transcript(start.AddHours(-5), "finished")
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var delays = 0;
+
+        var run = () =>
+            ReviewRunner.WaitAsync(
+                client,
+                "thread",
+                inputStatus is null ? null : "input",
+                _ =>
+                {
+                    if (++delays > 3)
+                        throw new TimeoutException("Still waiting on the child.");
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None,
+                () => now
+            );
+
+        await run.Should().ThrowAsync<TimeoutException>();
+        handler.CountRequests("/transcript").Should().Be(0);
+    }
+
+    private static FakeHttpMessageHandler GhostHandler(
+        DateTimeOffset start,
+        bool rootInProgress,
+        string? inputStatus,
+        DateTimeOffset lastActivity,
+        string transcript
+    ) =>
+        new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/status?", $$"""{"status":"{{inputStatus}}","runId":"run","response":null}""")
+            .OnJson(
+                HttpMethod.Get,
+                "/run-state",
+                rootInProgress
+                    ? """{"threadId":"thread","isInProgress":true,"currentRunId":"run"}"""
+                    : """{"threadId":"thread","isInProgress":false,"currentRunId":null}"""
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "/subagents?",
+                $$"""{"schemaVersion":1,"nodes":[{"agentId":"publisher","threadId":"publisher-thread","parentThreadId":"thread","depth":1,"template":"reviewer","status":"completed"},{"agentId":"ghost","threadId":"subagent-x-ghost","parentThreadId":"thread","depth":1,"template":"reviewer","status":"running","lastActivityUtc":"{{lastActivity:O}}"}]}"""
+            )
+            .OnJson(HttpMethod.Get, "/agents/ghost/transcript", transcript);
+
+    // A child transcript as the host's agent-transcript route returns it (reasoning already stripped), ending the
+    // given way, one second apart, with its newest message at newest.
+    internal static string Transcript(DateTimeOffset newest, string ending)
+    {
+        (string Type, string Role)[] rows = ending switch
+        {
+            "finished" =>
+            [
+                ("TextMessage", "User"),
+                ("ToolCallMessage", "Assistant"),
+                ("ToolCallResultMessage", "User"),
+                ("TextMessage", "Assistant"),
+                ("UsageMessage", "Assistant"),
+            ],
+            "open-tool-call" =>
+            [
+                ("TextMessage", "User"),
+                ("ToolCallMessage", "Assistant"),
+                ("UsageMessage", "Assistant"),
+            ],
+            "tool-result" =>
+            [
+                ("TextMessage", "User"),
+                ("ToolCallMessage", "Assistant"),
+                ("ToolCallResultMessage", "User"),
+            ],
+            "sent-to-it" =>
+            [
+                ("TextMessage", "User"),
+                ("TextMessage", "Assistant"),
+                ("UsageMessage", "Assistant"),
+                ("AgentMessage", "User"),
+            ],
+            _ => throw new ArgumentOutOfRangeException(nameof(ending), ending, null),
+        };
+        return "["
+            + string.Join(
+                ",",
+                rows.Select(
+                    (row, i) =>
+                        $$"""{"seq":{{i + 1}},"messageType":"{{row.Type}}","role":"{{row.Role}}","timestamp":{{newest.AddSeconds(i - rows.Length + 1).ToUnixTimeMilliseconds()}},"messageJson":"{}"}"""
+                )
+            )
+            + "]";
+    }
+
     // Seen live on PR 221: the confirmation read NotStarted for four hours on an idle conversation, and the
     // batch never reached the next PR. One clock minute passes per poll.
     [Theory]

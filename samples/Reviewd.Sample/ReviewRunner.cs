@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -476,6 +477,8 @@ internal static class ReviewRunner
         var key = $"reviewd/review-run/{repo.NormalizedKey}/{pr}";
         var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/{pr}";
         delay ??= token => Task.Delay(PollInterval, token);
+        // One probe for every wait and agent check of this review, so a child is read and reported once.
+        var abandoned = new AbandonedChildProbe($"{repo.DisplayName} #{pr}");
         using var prLease =
             options.Has("execute") && !prLeaseHeld ? AcquireLease(database, PrLeaseIdentity(repo, pr)) : null;
         using var slotLease =
@@ -935,7 +938,8 @@ internal static class ReviewRunner
                         _ = await SlotRelease.HeartbeatAsync(connection, retainedOwner, retainedToken, token);
                     },
                 ct,
-                maxBusyReads: ReviewBusyReads
+                maxBusyReads: ReviewBusyReads,
+                probe: abandoned
             );
             // A reclaim leaves its conversation frozen. A fresh review on that thread thaws it once it is
             // idle; otherwise the host accepts the review message and the run parks behind the freeze for
@@ -950,12 +954,12 @@ internal static class ReviewRunner
                         and not "not_freezable"
                 )
                     throw new InvalidOperationException($"Host refused to unfreeze {thread}: {refusal}.");
-                await WaitAsync(client, thread, null, delay, ct, maxBusyReads: ReviewBusyReads);
+                await WaitAsync(client, thread, null, delay, ct, maxBusyReads: ReviewBusyReads, probe: abandoned);
             }
         }
         foreach (var ownerThread in ownerThreads)
         {
-            await WaitAsync(client, ownerThread, null, delay, ct, maxBusyReads: ReviewBusyReads);
+            await WaitAsync(client, ownerThread, null, delay, ct, maxBusyReads: ReviewBusyReads, probe: abandoned);
         }
         // Only validated admitted resumes and outgoing-owner cleanup bypass fresh-admission age checks.
         if (!resume && !cleanupOnly)
@@ -1196,7 +1200,15 @@ internal static class ReviewRunner
                 );
             args["summaryThreads"] = await PriorSummaryThreadsAsync(connection, repo, pr, ct);
             receipt["verifiedPublication"] = await StepAsync("verify");
-            await WaitAsync(client, thread!, null, LeasedDelayAsync, ct, maxBusyReads: ReviewBusyReads);
+            await WaitAsync(
+                client,
+                thread!,
+                null,
+                LeasedDelayAsync,
+                ct,
+                maxBusyReads: ReviewBusyReads,
+                probe: abandoned
+            );
             receipt["artifactCommit"] = await StepAsync("commit");
             var commit = receipt["artifactCommit"]!;
             if (
@@ -1309,7 +1321,15 @@ internal static class ReviewRunner
                 );
             // This is outgoing-owner cleanup. Review success stays committed even if drain/reset fails.
             if (thread is not null)
-                await WaitAsync(client, thread, null, LeasedDelayAsync, ct, maxBusyReads: ReviewBusyReads);
+                await WaitAsync(
+                    client,
+                    thread,
+                    null,
+                    LeasedDelayAsync,
+                    ct,
+                    maxBusyReads: ReviewBusyReads,
+                    probe: abandoned
+                );
             await SlotRelease.AssertCurrentAsync(connection, ownerKey, claimToken, ct);
             receipt["cleanupState"] = "pending";
             var operation = Guid.NewGuid().ToString("N");
@@ -1380,7 +1400,8 @@ internal static class ReviewRunner
         }
         // Unknown or busy counts as active: a step is never stopped on a guess.
         async Task<bool> AgentsActiveAsync(CancellationToken token) =>
-            thread is not null && await SlotReaper.FindActivityAsync(client, thread, Task.Delay, token) is not null;
+            thread is not null
+            && await SlotReaper.FindActivityAsync(client, thread, Task.Delay, token, abandoned) is not null;
         async Task EnsureCreationAgeAsync()
         {
             if (maxAgeHours is not { } hours)
@@ -1460,7 +1481,8 @@ internal static class ReviewRunner
                     LeasedDelayAsync,
                     ct,
                     now,
-                    maxBusyReads: ReviewBusyReads
+                    maxBusyReads: ReviewBusyReads,
+                    probe: abandoned
                 );
             }
             catch (LostInputException ex)
@@ -1619,6 +1641,136 @@ internal static class ReviewRunner
             && now - lastActivity >= UnknownQuiescence
         );
 
+    /// <summary>
+    ///     Settles a sub-agent that still reads Running after its run was abandoned (#956). The host can leave a
+    ///     child stamped running for good (#957), and before this every wait and the reaper waited on it forever:
+    ///     seen live, a whole ADO round waited 13 hours on one, and a GitHub slot stayed held. The cheap rule in
+    ///     <see cref="IsSettledNode"/> stays as it is; this one is asked only when nothing else can still move the
+    ///     tree: the root is idle, its input is final or there is none, and only Running children are left.
+    /// </summary>
+    /// <remarks>
+    ///     A Running child counts as abandoned only when its last turn is finished (see <see cref="LastTurnFinished"/>)
+    ///     and its newest message is at least <see cref="QuietThreshold"/> old. Its LastActivityUtc cannot say this
+    ///     (see <see cref="IsSettledNode"/>), and its run-state never reads in progress even while it works, so the
+    ///     signal is the child's transcript, read through the parent-reader route the S2S client is allowed. That
+    ///     read loads every message on the host's busy store, so each child is read at most once per
+    ///     <see cref="ProbeInterval"/>, and not again before its newest message could be old enough. The wait and the
+    ///     reaper both use this class, so they cannot disagree about what is abandoned. It never decides success:
+    ///     that is still the root input's status and verify.
+    /// </remarks>
+    internal sealed class AbandonedChildProbe(string subject)
+    {
+        // A live child can be quiet for a long time inside one model call or between tool calls, so this is far
+        // past any normal gap. A child inside a long tool call (a build, a test run) is never settled by time:
+        // its open tool call keeps it running however long it takes. The ghosts seen live were 8 and 13 hours quiet.
+        internal static readonly TimeSpan QuietThreshold = TimeSpan.FromMinutes(45);
+
+        // The least time between two transcript reads of one child.
+        internal static readonly TimeSpan ProbeInterval = TimeSpan.FromMinutes(5);
+
+        private readonly ConcurrentDictionary<string, Reading> _readings = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, byte> _warned = new(StringComparer.Ordinal);
+
+        private sealed record Reading(DateTimeOffset NextReadAt, DateTimeOffset? NewestMessageUtc, bool TurnFinished);
+
+        /// <summary>True when every node in <paramref name="unsettled"/> is a Running child that was abandoned.</summary>
+        internal async Task<bool> AllAbandonedAsync(
+            LmStreamingS2SClient client,
+            string rootThread,
+            IEnumerable<ReviewSubAgentNode> unsettled,
+            DateTimeOffset now,
+            CancellationToken ct
+        )
+        {
+            // One live child keeps the tree unsettled, so the rest are not read.
+            foreach (var node in unsettled)
+            {
+                if (
+                    node.Status != ReviewSubAgentStatus.Running
+                    || !await IsAbandonedAsync(client, rootThread, node, now, ct)
+                )
+                    return false;
+            }
+            return true;
+        }
+
+        private async Task<bool> IsAbandonedAsync(
+            LmStreamingS2SClient client,
+            string rootThread,
+            ReviewSubAgentNode node,
+            DateTimeOffset now,
+            CancellationToken ct
+        )
+        {
+            // LastActivityUtc can be stale, but never ahead of the child: a recent one is proof enough, at no cost.
+            if (node.LastActivityUtc is { } lastActivity && now - lastActivity < QuietThreshold)
+                return false;
+            if (!_readings.TryGetValue(node.ThreadId, out var reading) || now >= reading.NextReadAt)
+            {
+                reading = await ReadAsync(client, rootThread, node, now, ct);
+                _readings[node.ThreadId] = reading;
+            }
+            if (!IsAbandoned(reading.NewestMessageUtc, reading.TurnFinished, now))
+                return false;
+            if (_warned.TryAdd(node.ThreadId, 0))
+                Console.Error.WriteLine(
+                    $"{subject}: sub-agent {node.AgentId} (thread {node.ThreadId}, under {rootThread}) still reads "
+                        + $"running, but its last turn finished and its newest message is from {reading.NewestMessageUtc:O}; "
+                        + "treating it as abandoned, so it no longer holds the wait or the slot."
+                );
+            return true;
+        }
+
+        private async Task<Reading> ReadAsync(
+            LmStreamingS2SClient client,
+            string rootThread,
+            ReviewSubAgentNode node,
+            DateTimeOffset now,
+            CancellationToken ct
+        )
+        {
+            IReadOnlyList<ReviewAgentTranscriptEntry> transcript;
+            try
+            {
+                transcript = await client.GetAgentTranscriptAsync(rootThread, node.AgentId, ct);
+            }
+            catch (Exception failure) when (failure is not OperationCanceledException)
+            {
+                // Unread is not abandoned: the child keeps the wait, as it did before #956, and is read again later.
+                Console.Error.WriteLine(
+                    $"{subject}: could not read sub-agent {node.AgentId} (thread {node.ThreadId}) to see whether it "
+                        + $"was abandoned, so it still counts as running: {failure.Message}"
+                );
+                return new Reading(now + ProbeInterval, null, false);
+            }
+            var newest = transcript.Max(entry => entry.TimestampUtc);
+            // The child cannot read as abandoned before its newest message is QuietThreshold old, so it is not
+            // read again before then.
+            var next = now + ProbeInterval;
+            if (newest is { } stamp && stamp + QuietThreshold > next)
+                next = stamp + QuietThreshold;
+            return new Reading(next, newest, LastTurnFinished(transcript));
+        }
+    }
+
+    /// <summary>The shared abandoned rule: a finished last turn, and a newest message older than the threshold.</summary>
+    internal static bool IsAbandoned(DateTimeOffset? newestMessageUtc, bool turnFinished, DateTimeOffset now) =>
+        turnFinished && newestMessageUtc is { } newest && now - newest >= AbandonedChildProbe.QuietThreshold;
+
+    /// <summary>
+    ///     Whether a child's transcript ends on a finished turn: its last message other than usage is the assistant's
+    ///     text, and no tool call is still waiting for its result. Both ghosts seen live ended that way. A child that
+    ///     ends on a tool call, a tool result, or anything sent to it is mid-turn, however quiet, so it keeps the wait.
+    /// </summary>
+    internal static bool LastTurnFinished(IReadOnlyList<ReviewAgentTranscriptEntry> transcript)
+    {
+        var last = transcript.LastOrDefault(entry => entry.MessageType is not ("UsageMessage" or "ReasoningMessage"));
+        return last is { MessageType: "TextMessage" }
+            && last.Role.Equals("assistant", StringComparison.OrdinalIgnoreCase)
+            && transcript.Count(entry => entry.MessageType == "ToolCallMessage")
+                <= transcript.Count(entry => entry.MessageType == "ToolCallResultMessage");
+    }
+
     // A passed-over thread is never waited on, so its whole tree decides admission: a sub-agent still running
     // there can publish for the PR after a fresh review starts. A busy hierarchy read is not proof of
     // settlement either. Either way the review is deferred and the batch retries the PR.
@@ -1651,7 +1803,9 @@ internal static class ReviewRunner
     ///     restart can read it for a moment, and the caller's check decides when the run is gone. A busy tree read
     ///     waits through <paramref name="busyDelay"/> when given, so a caller can tell a busy read from a full poll.
     ///     The wait gives up after <paramref name="maxBusyReads"/> busy tree reads in a row; a caller polling slower
-    ///     than once a second passes fewer, so the budget stays about ten minutes.
+    ///     than once a second passes fewer, so the budget stays about ten minutes. A Running descendant that
+    ///     <paramref name="probe"/> finds abandoned settles (see <see cref="AbandonedChildProbe"/>); a caller passes its
+    ///     own probe to name the review in the warning and to share reads across its waits.
     /// </remarks>
     internal static async Task<S2SStatusResult?> WaitAsync(
         LmStreamingS2SClient client,
@@ -1662,10 +1816,12 @@ internal static class ReviewRunner
         Func<DateTimeOffset>? clock = null,
         Func<S2SStatusResult?, S2SRunState, bool>? orphaned = null,
         Func<CancellationToken, Task>? busyDelay = null,
-        int maxBusyReads = MaxConsecutiveBusyReads
+        int maxBusyReads = MaxConsecutiveBusyReads,
+        AbandonedChildProbe? probe = null
     )
     {
         clock ??= () => DateTimeOffset.UtcNow;
+        probe ??= new AbandonedChildProbe(thread);
         string? candidate = null;
         DateTimeOffset? stalledSince = null;
         var busyReads = 0;
@@ -1699,7 +1855,14 @@ internal static class ReviewRunner
             }
             var now = clock();
             var rootIdle = !global.IsInProgress && global.CurrentRunId is null;
-            var settled = tree.Nodes.All(n => IsSettledNode(n, now));
+            var unsettled = tree.Nodes.Where(n => !IsSettledNode(n, now)).ToList();
+            var settled =
+                unsettled.Count == 0
+                || (
+                    rootIdle
+                    && (status is null || status.Status.Equals("completed", StringComparison.OrdinalIgnoreCase))
+                    && await probe.AllAbandonedAsync(client, thread, unsettled, now, ct)
+                );
             if (rootIdle && settled && status?.Status.Equals("notstarted", StringComparison.OrdinalIgnoreCase) == true)
             {
                 stalledSince ??= now;

@@ -95,6 +95,7 @@ internal static class SlotReaper
         delay ??= Task.Delay;
         var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/{pr}";
         var threadId = attempt["threadId"]?.GetValue<string>();
+        var abandoned = new ReviewRunner.AbandonedChildProbe($"Reaper {repo.DisplayName}#{pr}/slot{slot}");
         var head =
             attempt["headSha"]?.GetValue<string>()
             ?? throw new InvalidOperationException("Attempt has no head sha; refusing to reclaim.");
@@ -104,7 +105,10 @@ internal static class SlotReaper
         //    undated owner swept under --include-undated, the active session, or a background child still
         //    writing after its root went idle). Leave it wholly untouched — never freeze it — so in-flight
         //    work is not interrupted. A later sweep retries once the whole tree goes quiet.
-        if (threadId is { Length: > 0 } && await FindActivityAsync(client, threadId, delay, ct) is { } liveActivity)
+        if (
+            threadId is { Length: > 0 }
+            && await FindActivityAsync(client, threadId, delay, ct, abandoned) is { } liveActivity
+        )
             return new ReclaimResult(
                 repo.DisplayName,
                 pr,
@@ -185,7 +189,7 @@ internal static class SlotReaper
             if (frozenActive)
             {
                 var deadline = DateTimeOffset.UtcNow + QuiescenceDeadline;
-                while (await FindActivityAsync(client, threadId!, delay, ct) is { } activity)
+                while (await FindActivityAsync(client, threadId!, delay, ct, abandoned) is { } activity)
                 {
                     if (DateTimeOffset.UtcNow >= deadline)
                         throw new InvalidOperationException(
@@ -348,14 +352,16 @@ internal static class SlotReaper
     /// <summary>
     /// Describes why <paramref name="threadId"/>'s tree is not quiet, or returns null when it is: the root
     /// has no run in progress or pending, and every descendant has settled by the same rule the review
-    /// wait uses (<see cref="ReviewRunner.IsSettledNode"/>). A busy hierarchy means the descendants are
-    /// unknown, which is never quiet. A thread the host does not know at all has nothing running.
+    /// wait uses (<see cref="ReviewRunner.IsSettledNode"/>, and <see cref="ReviewRunner.AbandonedChildProbe"/> for a
+    /// Running child under an idle root). A busy hierarchy means the descendants are unknown, which is never quiet. A
+    /// thread the host does not know at all has nothing running.
     /// </summary>
     internal static async Task<string?> FindActivityAsync(
         LmStreamingS2SClient client,
         string threadId,
         Func<TimeSpan, CancellationToken, Task> delay,
-        CancellationToken ct
+        CancellationToken ct,
+        ReviewRunner.AbandonedChildProbe? probe = null
     )
     {
         var root = await client.GetRunStateAsync(threadId, ct);
@@ -392,6 +398,18 @@ internal static class SlotReaper
         }
         var now = DateTimeOffset.UtcNow;
         var active = tree.Nodes.Where(n => !ReviewRunner.IsSettledNode(n, now)).ToList();
+        // The root is idle here and the reaper has no input to wait on, so abandoned children may settle (#956).
+        if (
+            active.Count > 0
+            && await (probe ?? new ReviewRunner.AbandonedChildProbe(threadId)).AllAbandonedAsync(
+                client,
+                threadId,
+                active,
+                now,
+                ct
+            )
+        )
+            return null;
         return active.Count == 0
             ? null
             : $"{active.Count} descendant(s) still active ({string.Join(", ", active.Select(n => $"{n.AgentId}={n.Status}"))})";
