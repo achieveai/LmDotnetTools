@@ -22,7 +22,8 @@ internal static class AutoSlot
         Func<string, JsonObject, string, CancellationToken, Task<JsonObject>> sandbox,
         CancellationToken ct,
         Func<CancellationToken, Task>? delay,
-        Func<DateTimeOffset>? now
+        Func<DateTimeOffset>? now,
+        AbandonedChildProbe.ReadLog? reads = null
     )
     {
         var repo = PrCommands.ParseRepo(options.Required("repo"));
@@ -55,7 +56,8 @@ internal static class AutoSlot
                 new JsonObject { ["mode"] = "pinned", ["slot"] = pinned },
                 ct,
                 delay,
-                now
+                now,
+                reads
             );
         }
         var batchSlots = await LiveBatchSlotsAsync(database, workspace, repo, ct);
@@ -158,7 +160,8 @@ internal static class AutoSlot
                         selection,
                         ct,
                         delay,
-                        now
+                        now,
+                        reads
                     ),
                     null
                 );
@@ -203,7 +206,8 @@ internal static class AutoSlot
                     ownerAttempt!,
                     token!,
                     execute: true,
-                    ct
+                    ct,
+                    reads: reads
                 );
                 return result.Status == "reclaimed" ? null : result.Detail ?? result.Status;
             }
