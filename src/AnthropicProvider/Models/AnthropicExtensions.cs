@@ -16,7 +16,24 @@ public static class AnthropicExtensions
     /// <param name="response">The Anthropic API response.</param>
     /// <param name="agentName">The name of the agent.</param>
     /// <returns>A list of IMessage objects representing the response content.</returns>
-    public static List<IMessage> ToMessages(this AnthropicResponse response, string agentName)
+    public static List<IMessage> ToMessages(this AnthropicResponse response, string agentName) =>
+        response.ToMessages(agentName, oneHourCacheRequested: false);
+
+    /// <summary>
+    ///     Converts an Anthropic API response to LmCore messages.
+    /// </summary>
+    /// <param name="response">The Anthropic API response.</param>
+    /// <param name="agentName">The name of the agent.</param>
+    /// <param name="oneHourCacheRequested">
+    ///     True when the request carried 1-hour cache markers. A cache write with no TTL split then has an
+    ///     unknown 1-hour share, so the usage leaves it out instead of reporting 0.
+    /// </param>
+    /// <returns>A list of IMessage objects representing the response content.</returns>
+    public static List<IMessage> ToMessages(
+        this AnthropicResponse response,
+        string agentName,
+        bool oneHourCacheRequested
+    )
     {
         ArgumentNullException.ThrowIfNull(response);
         var messages = new List<IMessage>();
@@ -74,7 +91,11 @@ public static class AnthropicExtensions
             // Always stamped, 0 included — see AnthropicStreamParser.CreateUsageMessage for why a full
             // cache hit must still carry it.
             usage = usage.SetExtraProperty("cache_creation_input_tokens", response.Usage.CacheCreationInputTokens);
-            if (response.Usage.CacheCreationInputTokens > 0)
+            // Without a split, 0 is exact only for a 5-minute request; see AnthropicStreamParser.CreateUsageMessage.
+            if (
+                response.Usage.CacheCreationInputTokens > 0
+                && (response.Usage.CacheCreation is not null || !oneHourCacheRequested)
+            )
             {
                 usage = usage.SetExtraProperty("ephemeral_1h_input_tokens", response.Usage.CacheWrite1hTokens);
             }

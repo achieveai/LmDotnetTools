@@ -19,7 +19,7 @@ Rules:
 
 - Money is integer micro-units. The total is rounded once, half-to-even.
 - A category with tokens and **no rate is never priced at the base rate and never at zero**. It is left out and named in `CostEstimate.MissingCategories`; the estimate is `CostCompleteness.Partial` and its figure is a lower bound.
-- Cache writes with an unknown TTL split (`CacheWrite1hTokens == null`) are priced at the 5m rate and flagged `cache_write_ttl_unknown` (Partial). The Anthropic provider always reports the split as `ephemeral_1h_input_tokens`: the response's `cache_creation.ephemeral_1h_input_tokens`, or 0 when the response has no split, which is exact for a 5-minute request. A stream's split comes from `message_start`, because recorded `message_delta` events repeat the write count without it. `UsageRecordMapper` treats either `ephemeral_1h_input_tokens` or `ephemeral_5m_input_tokens` as a known split.
+- Cache writes with an unknown TTL split (`CacheWrite1hTokens == null`) are priced at the 5m rate and flagged `cache_write_ttl_unknown` (Partial). The Anthropic provider reports the split as `ephemeral_1h_input_tokens`: the response's `cache_creation.ephemeral_1h_input_tokens`. When the response has no split, it reports 0 for a 5-minute request, which is exact, and leaves the field out for a request sent with 1-hour markers, so that write is priced as a lower bound (Partial). A stream's split comes from `message_start`, because recorded `message_delta` events repeat the write count without it. `UsageRecordMapper` treats either `ephemeral_1h_input_tokens` or `ephemeral_5m_input_tokens` as a known split.
 - An unknown model is `CostCompleteness.Unavailable` with no figure.
 - When nothing with tokens could be priced the figure is `null`, not `0`.
 - Preferred display amount (`UsageRecord.PreferredCostMicros`) is the provider-reported figure when present, else the estimate, else null. Both remain queryable in their own fields.
@@ -139,4 +139,4 @@ These ids appear in the sample's configuration but have no entry. Their cost res
 ## Known limits
 
 - OpenAI's long-context tiers and service-tier (priority/flex/batch) variants are not derivable from a usage record; the shipped `gpt-4o` rate is the standard tier.
-- The Anthropic provider assumes 0 one-hour writes when a response has no `cache_creation` split. That is exact for a 5-minute request. A model opted in to 1-hour caching relies on the response carrying the split: a backend that omitted it would have those writes priced at the 5m rate.
+- When a response has no `cache_creation` split, the Anthropic provider assumes 0 one-hour writes only for a 5-minute request, where that is exact. For a request sent with 1-hour markers the share stays unknown, so the estimate is Partial and flagged `cache_write_ttl_unknown` instead of reading as Complete.

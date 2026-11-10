@@ -33,6 +33,7 @@ public class AnthropicStreamParser
     private AnthropicUsage? _usage;
     private int _cacheCreationTokens;
     private int _cacheWrite1hTokens;
+    private bool _cacheSplitReported;
     private int _cacheReadTokens;
     private int _initialInputTokens;
 
@@ -43,6 +44,12 @@ public class AnthropicStreamParser
     {
         _logger = logger ?? NullLogger.Instance;
     }
+
+    /// <summary>
+    ///     True when the request carried 1-hour cache markers. A cache write with no TTL split then has an
+    ///     unknown 1-hour share, so the usage leaves it out instead of reporting 0.
+    /// </summary>
+    public bool OneHourCacheRequested { get; init; }
 
     /// <summary>
     ///     Processes a raw SSE event string and returns any resulting IMessage updates
@@ -549,9 +556,7 @@ public class AnthropicStreamParser
             // Update captured cache metrics if message_delta provides them.
             if (_usage.CacheCreationInputTokens > 0)
             {
-                _cacheCreationTokens = _usage.CacheCreationInputTokens;
-                // Recorded Anthropic streams repeat the write count here but not its TTL split.
-                _cacheWrite1hTokens = _usage.CacheCreation?.Ephemeral1hInputTokens ?? _cacheWrite1hTokens;
+                CaptureDeltaCacheWrite(_usage);
             }
 
             if (_usage.CacheReadInputTokens > 0)
@@ -597,6 +602,19 @@ public class AnthropicStreamParser
     // Shared helper methods
 
     /// <summary>
+    ///     Takes the cache write a message_delta reports. Recorded streams repeat the message_start count here
+    ///     without its TTL split, so that split still holds. A different count without a split leaves the
+    ///     1-hour share unknown: a recorded web search stream grew from 517 written tokens to 11,769.
+    /// </summary>
+    private void CaptureDeltaCacheWrite(AnthropicUsage usage)
+    {
+        var sameWrite = usage.CacheCreationInputTokens == _cacheCreationTokens;
+        _cacheCreationTokens = usage.CacheCreationInputTokens;
+        _cacheWrite1hTokens = usage.CacheCreation?.Ephemeral1hInputTokens ?? (sameWrite ? _cacheWrite1hTokens : 0);
+        _cacheSplitReported = usage.CacheCreation is not null || (sameWrite && _cacheSplitReported);
+    }
+
+    /// <summary>
     ///     Captures cache metrics from the initial message_start usage before they get
     ///     overwritten by message_delta (which only contains output tokens).
     /// </summary>
@@ -609,6 +627,7 @@ public class AnthropicStreamParser
 
         _cacheCreationTokens = _usage.CacheCreationInputTokens;
         _cacheWrite1hTokens = _usage.CacheWrite1hTokens;
+        _cacheSplitReported = _usage.CacheCreation is not null;
         _cacheReadTokens = _usage.CacheReadInputTokens;
         _initialInputTokens = _usage.InputTokens;
     }
@@ -662,7 +681,9 @@ public class AnthropicStreamParser
         // write would silently turn a full cache hit — or a DeepSeek response, which never sends the
         // field — into a subset-style record that drops the whole cache read from the measured input.
         usage = usage.SetExtraProperty("cache_creation_input_tokens", _cacheCreationTokens);
-        if (_cacheCreationTokens > 0)
+        // Without a split, 0 is exact only for a 5-minute request. On a 1-hour request the share stays
+        // unknown, and the cost estimate then reads as a lower bound instead of complete.
+        if (_cacheCreationTokens > 0 && (_cacheSplitReported || !OneHourCacheRequested))
         {
             usage = usage.SetExtraProperty("ephemeral_1h_input_tokens", _cacheWrite1hTokens);
         }
@@ -1382,9 +1403,7 @@ public class AnthropicStreamParser
             // Update captured cache metrics if message_delta provides them.
             if (_usage.CacheCreationInputTokens > 0)
             {
-                _cacheCreationTokens = _usage.CacheCreationInputTokens;
-                // Recorded Anthropic streams repeat the write count here but not its TTL split.
-                _cacheWrite1hTokens = _usage.CacheCreation?.Ephemeral1hInputTokens ?? _cacheWrite1hTokens;
+                CaptureDeltaCacheWrite(_usage);
             }
 
             if (_usage.CacheReadInputTokens > 0)

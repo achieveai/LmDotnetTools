@@ -103,8 +103,8 @@ public record AnthropicUsage
 
     /// <summary>
     ///     The one-hour share of the cache write, as the response reports it. An absent split reads as 0, which
-    ///     is exact for a 5-minute request. A 1-hour request relies on the response carrying the split: without
-    ///     it the write would be priced at the 5-minute rate.
+    ///     is exact only for a 5-minute request. For a request with 1-hour markers, the usage message leaves the
+    ///     share out when <see cref="CacheCreation" /> is absent, so the cost estimate stays Partial.
     /// </summary>
     internal int CacheWrite1hTokens => CacheCreation?.Ephemeral1hInputTokens ?? 0;
 }

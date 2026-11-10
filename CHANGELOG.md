@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Anthropic: 1-hour prompt cache, `PromptCachingMode.AutoOneHour`, off by default.** It places the same breakpoints as
+  `Auto` with `ttl: "1h"`. A 1-hour write costs 2x base input against 1.25x, so it pays only when a conversation pauses for 5
+  to 60 minutes. LmStreaming.Sample turns it on per model with `LmStreaming:PromptCache:{modelId}:Ttl=1h`; every other model
+  stays on `Auto`. A sub-agent that inherits 1 hour drops to 5 minutes, and a fallback hop follows its own model's setting.
+  Usage carries `ephemeral_1h_input_tokens` from the response's `cache_creation` split. On a 1-hour request with no split
+  the field is left out, so the cost estimate is a lower bound (`cache_write_ttl_unknown`) instead of a 5-minute price. The
+  compaction cache lifetime follows the mode unless `CompactionOptions.CacheTtl` is set, and `ContextObservation` gains
+  `PromptCacheTtlSeconds`.
+
 - **Stopping a run now cancels its pending MCP tool calls.** Tools from `McpClientFunctionProvider` pass the run's token to
   `CallToolAsync`, so a stalled call no longer keeps the run alive past `StopAsync`. `LegacyHandlerAdapter.ToNewHandler` gains
   overloads for handlers that take a token.
