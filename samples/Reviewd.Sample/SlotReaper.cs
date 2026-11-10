@@ -224,6 +224,13 @@ internal static class SlotReaper
                 ["discard"] = true,
                 ["force"] = force,
             };
+            // Before anything native is touched, the row says a reset has begun: the owner's own saves fail from here,
+            // so a step of its that ends during the reset stops instead of sending into the slot being reset.
+            if (!await SlotRelease.MarkReclaimingAsync(connection, ownerKey, claimToken, operation, ct))
+            {
+                await RestoreIfFrozenAsync();
+                return Moved(freezeState);
+            }
             var result = await ReviewRunner.RunLeasedStepAsync(
                 connection,
                 ownerKey,
@@ -235,7 +242,8 @@ internal static class SlotReaper
                 "cleanup",
                 args,
                 operation,
-                ct
+                ct,
+                reclaim: operation
             );
             if (
                 result["claimToken"]?.GetValue<string>() != claimToken

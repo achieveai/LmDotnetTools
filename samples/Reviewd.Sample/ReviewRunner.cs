@@ -44,11 +44,13 @@ internal static class ReviewRunner
     }
 
     /// <summary>
-    ///     The run no longer owns its slot: a sweep reset it while the run's lease went unrenewed (a renewal outage
-    ///     longer than the lease window). The run stops before it sends or commits on the reset slot, and leaves the
-    ///     attempt as the reset recorded it.
+    ///     The run no longer owns its slot: a sweep began resetting it, or reset it, while the run's lease went
+    ///     unrenewed (a renewal outage longer than the lease window). The run stops before it sends or commits on the
+    ///     reset slot, and leaves the attempt as the reset recorded it. The failure that was being saved, if any, is
+    ///     the inner exception.
     /// </summary>
-    internal sealed class SlotClaimLostException(string message) : InvalidOperationException(message);
+    internal sealed class SlotClaimLostException(string message, Exception? cause = null)
+        : InvalidOperationException(message, cause);
 
     /// <summary>
     ///     The host accepted an input but never ran it while the conversation sat idle (see
@@ -210,13 +212,15 @@ internal static class ReviewRunner
         string phase,
         JsonObject args,
         string operation,
-        CancellationToken ct
+        CancellationToken ct,
+        string? reclaim = null
     )
     {
         // The renewal shares the connection, so it stops before the caller writes again.
         using var stepDone = CancellationTokenSource.CreateLinkedTokenSource(ct);
         (string Before, string After)? renewed = null;
         var stopped = false;
+        var lostLogged = false;
         var renewal = RenewAsync(stepDone.Token);
         try
         {
@@ -274,8 +278,20 @@ internal static class ReviewRunner
                     // next save checks the claim and stops before it sends or commits (SlotClaimLostException).
                     try
                     {
-                        if (await SlotRelease.RenewAsync(connection, ownerKey, claimToken, token) is { } lease)
+                        if (
+                            await SlotRelease.RenewAsync(connection, ownerKey, claimToken, token, reclaim: reclaim) is
+                            { } lease
+                        )
                             renewed = (renewed?.Before ?? lease.Before, lease.After);
+                        else if (!lostLogged)
+                        {
+                            // The step runs on; the caller's next save finds the claim lost and stops there.
+                            lostLogged = true;
+                            Console.Error.WriteLine(
+                                $"Step {operation} ({phase}): the slot claim is lost or a reset has begun; "
+                                    + "no longer renewed."
+                            );
+                        }
                     }
                     catch (Exception failure)
                         when (failure is not OperationCanceledException || !token.IsCancellationRequested)
@@ -1308,7 +1324,7 @@ internal static class ReviewRunner
                 catch (Exception releaseFailure)
                 {
                     pending["cleanupError"] = releaseFailure.Message;
-                    await store.SetAsync(attemptKey, pending, CancellationToken.None);
+                    await KeepOnFailureAsync(pending);
                     Console.Error.WriteLine($"Claim release held its lane: {releaseFailure.Message}");
                     throw;
                 }
@@ -1336,7 +1352,7 @@ internal static class ReviewRunner
             // Keep the pending phase and previous successful receipt so a live run can resume and finish
             // publication without redoing the review. The slot stays leased, so if this process dies the
             // lease reaper reclaims it within the lease window — retention never becomes a permanent block.
-            await store.SetAsync(attemptKey, receipt, CancellationToken.None);
+            await KeepOnFailureAsync(receipt);
             Console.Error.WriteLine(
                 $"Review stopped at {receipt["stage"]}; retained {attemptKey}. No automatic retry or cleanup."
             );
@@ -1348,18 +1364,45 @@ internal static class ReviewRunner
             query.Parameters["@key"].Value = name;
             return await query.ExecuteScalarAsync(ct) is string json ? JsonNode.Parse(json) : null;
         }
-        async Task SaveAsync(bool claimRequired = true)
+        async Task SaveAsync(bool claimRequired = true, Exception? cause = null)
         {
             // Extend the slot lease on every progress checkpoint so a live review is never mistaken for a dead one
-            // by the reaper. A lost claim means a sweep reset the slot under this run (its renewals failed for longer
-            // than the lease), so the run stops here, before it sends or commits on the reset slot, and does not
-            // overwrite the attempt the reset recorded. Only the save after a successful commit goes on: that result
-            // is final, and the cleanup after it refuses the lost claim itself.
-            if (!await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, ct) && claimRequired)
-                throw new SlotClaimLostException(
-                    $"Slot claim {claimToken} was lost at {receipt["stage"]}; the slot was reset under this run."
+            // by the reaper. The renewal and the write are one transaction on the owner row, so a lost claim, or a
+            // reset that has begun (the reaper marks the row before it touches the slot), stops the run here: before
+            // it provisions, sends or commits, and without saving over the attempt the reset records. Only the save
+            // after a successful commit goes on: that result is final and belongs in the attempt, and the cleanup
+            // after it refuses the lost claim itself.
+            if (await SlotRelease.SaveIfHeldAsync(connection, ownerKey, claimToken, attemptKey, receipt, ct))
+                return;
+            if (!claimRequired)
+            {
+                await store.SetAsync(attemptKey, receipt, ct);
+                return;
+            }
+            throw new SlotClaimLostException(
+                $"Slot claim {claimToken} was lost at {receipt["stage"]}; the slot was reset under this run.",
+                cause
+            );
+        }
+        // A failing run keeps its attempt for a resume, but only while it still holds the slot: once a reset has
+        // begun, the reset's record stands. The lease is not renewed, so a dead process still frees the slot in time.
+        async Task KeepOnFailureAsync(JsonObject attempt)
+        {
+            if (
+                !await SlotRelease.SaveIfHeldAsync(
+                    connection,
+                    ownerKey,
+                    claimToken,
+                    attemptKey,
+                    attempt,
+                    CancellationToken.None,
+                    renew: false
+                )
+            )
+                Console.Error.WriteLine(
+                    $"{repo.DisplayName} #{pr}: slot claim {claimToken} is lost; the attempt is left as the reset "
+                        + "recorded it."
                 );
-            await store.SetAsync(attemptKey, receipt, ct);
         }
         async Task CleanupAsync()
         {
@@ -1444,7 +1487,7 @@ internal static class ReviewRunner
                 else if (refused is SettledSandboxException)
                     receipt.Remove(CommitReplay);
                 receipt["stage"] = "verify-pending";
-                await SaveAsync();
+                await SaveAsync(cause: refused);
                 throw;
             }
             catch (SettledSandboxException) when (phase == "commit")

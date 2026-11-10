@@ -732,6 +732,12 @@ public sealed class SlotReaperTests
                     using var other = PrThreadBindings.Connection(database);
                     await other.OpenAsync(token);
                     var otherStore = new SqliteKvStore(other);
+                    // The reset has begun, so the lapsed owner, were it still alive, can neither renew nor save: a
+                    // step of its that ends now stops instead of sending into the slot being reset.
+                    var owned = args["claimToken"]!.GetValue<string>();
+                    (await SlotRelease.RenewAsync(other, ownerKey, owned, token)).Should().BeNull();
+                    (await SlotRelease.SaveIfHeldAsync(other, ownerKey, owned, "probe", [], token)).Should().BeFalse();
+                    (await otherStore.GetAsync<JsonObject>("probe")).Should().BeNull();
                     for (var deadline = DateTime.UtcNow.AddSeconds(5); DateTime.UtcNow < deadline; await Task.Delay(20))
                     {
                         var lease = (await otherStore.GetAsync<JsonObject>(ownerKey))!["leaseExpiresAt"]!;
