@@ -46,7 +46,7 @@ public sealed class SandboxToolOutputStore : IToolOutputStore
     /// <param name="files">The registry's workspace surface.</param>
     /// <param name="threadId">The conversation that owns the sandbox session. For a sub-agent, its root.</param>
     /// <param name="workspaceId">The conversation's workspace id.</param>
-    /// <param name="logger">Receives a line when no session can be found.</param>
+    /// <param name="logger">Receives a line when no session can be found, or a lookup given up on fails.</param>
     public SandboxToolOutputStore(IWorkspaceFileBrowser files, string threadId, string workspaceId, ILogger logger)
     {
         _files = files ?? throw new ArgumentNullException(nameof(files));
@@ -61,10 +61,19 @@ public sealed class SandboxToolOutputStore : IToolOutputStore
     {
         ArgumentNullException.ThrowIfNull(content);
 
-        var resolution = await _files
-            .ResolveThreadWorkspaceSessionForBackgroundAsync(_threadId, _workspaceId, ct)
-            .WaitAsync(ct) // Recreating a session is shared and ignores this token. Others may still want it.
-            .ConfigureAwait(false);
+        var resolving = _files.ResolveThreadWorkspaceSessionForBackgroundAsync(_threadId, _workspaceId, ct);
+        SandboxSessionResolution resolution;
+        try
+        {
+            // Recreating a session is shared and ignores this token. Others may still want it.
+            resolution = await resolving.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            LogIfLookupFailsLater(resolving);
+            throw;
+        }
+
         if (resolution is not { Outcome: SandboxSessionResolutionOutcome.Resolved, Session: { } session })
         {
             _logger.LogWarning(
@@ -87,4 +96,18 @@ public sealed class SandboxToolOutputStore : IToolOutputStore
 
         return $"{ModelWorkspaceRoot}/{file}";
     }
+
+    // A lookup given up on keeps running, and nobody else waiting on it may see how it ended.
+    private void LogIfLookupFailsLater(Task resolving) =>
+        _ = resolving.ContinueWith(
+            t =>
+                _logger.LogWarning(
+                    t.Exception,
+                    "A sandbox session lookup failed after a tool output save gave up on it: ThreadId={ThreadId}",
+                    _threadId
+                ),
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default
+        );
 }

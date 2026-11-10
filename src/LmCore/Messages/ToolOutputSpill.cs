@@ -150,7 +150,8 @@ public sealed record ToolOutputSpillOptions
         var changed = false;
         if (text != null && IsOversized(text, cap))
         {
-            text = await SaveAndCutAsync(text, cap, savedPaths, result, logger, saveBudget.Token).ConfigureAwait(false);
+            text = await SaveAndCutAsync(text, cap, savedPaths, result, logger, saveBudget.Token, ct)
+                .ConfigureAwait(false);
             changed = true;
         }
 
@@ -165,7 +166,7 @@ public sealed record ToolOutputSpillOptions
                     cutBlocks ??= [.. blocks];
                     cutBlocks[i] = block with
                     {
-                        Text = await SaveAndCutAsync(block.Text, cap, savedPaths, result, logger, saveBudget.Token)
+                        Text = await SaveAndCutAsync(block.Text, cap, savedPaths, result, logger, saveBudget.Token, ct)
                             .ConfigureAwait(false),
                     };
                 }
@@ -201,12 +202,13 @@ public sealed record ToolOutputSpillOptions
         Dictionary<string, string?> savedPaths,
         ToolCallResult result,
         ILogger logger,
-        CancellationToken saveBudget
+        CancellationToken saveBudget,
+        CancellationToken stopped
     )
     {
         if (!savedPaths.TryGetValue(text, out var path))
         {
-            path = await TrySaveAsync(text, result, logger, saveBudget).ConfigureAwait(false);
+            path = await TrySaveAsync(text, result, logger, saveBudget, stopped).ConfigureAwait(false);
             savedPaths[text] = path;
         }
 
@@ -236,7 +238,8 @@ public sealed record ToolOutputSpillOptions
         string text,
         ToolCallResult result,
         ILogger logger,
-        CancellationToken saveBudget
+        CancellationToken saveBudget,
+        CancellationToken stopped
     )
     {
         // On the thread pool and waited on with the budget, so a store that blocks or ignores its token
@@ -258,29 +261,48 @@ public sealed record ToolOutputSpillOptions
 
             return path;
         }
+        // Saving is an optimisation. The tool already ran, and its result must not be lost to a
+        // storage problem or a shutdown: the model gets the preview and is told the rest was not saved.
+        catch (OperationCanceledException) when (saveBudget.IsCancellationRequested)
+        {
+            // Giving up is expected, so no stack. How the save itself ends is logged when it does.
+            if (stopped.IsCancellationRequested)
+            {
+                logger.LogDebug(
+                    "Tool output save stopped by the caller: ToolCallId={ToolCallId}, FunctionName={FunctionName}",
+                    result.ToolCallId,
+                    result.ToolName
+                );
+            }
+            else
+            {
+                logger.LogWarning(
+                    "Tool output was not saved within {SaveTimeout}: ToolCallId={ToolCallId}, FunctionName={FunctionName}",
+                    SaveTimeout,
+                    result.ToolCallId,
+                    result.ToolName
+                );
+            }
+
+            LogIfItFailsLater(saving, result, logger);
+            return null;
+        }
         catch (Exception ex)
         {
-            // Saving is an optimisation. The tool already ran, and its result must not be lost to a
-            // storage problem or a shutdown: the model gets the preview and is told the rest was not saved.
             logger.LogWarning(
                 ex,
                 "Tool output could not be saved: ToolCallId={ToolCallId}, FunctionName={FunctionName}",
                 result.ToolCallId,
                 result.ToolName
             );
-            LogIfItFailsLater(saving, result, logger);
             return null;
         }
     }
 
-    // A save given up on keeps running in the background, and nobody else would see how it ended.
+    // A save given up on keeps running in the background, and nobody else would see how it ended. It may
+    // also have failed in the moment between the deadline and here, so a finished save is checked too.
     private static void LogIfItFailsLater(Task saving, ToolCallResult result, ILogger logger)
     {
-        if (saving.IsCompleted)
-        {
-            return;
-        }
-
         _ = saving.ContinueWith(
             t =>
                 logger.LogWarning(

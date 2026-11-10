@@ -2,6 +2,7 @@ using System.Text;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.Sandbox;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Tests.Sandbox;
@@ -78,6 +79,23 @@ public sealed class SandboxToolOutputStoreTests
     }
 
     [Fact]
+    public async Task A_session_recreate_that_fails_after_the_save_gave_up_is_logged()
+    {
+        var browser = new FakeBrowser { HoldResolve = new TaskCompletionSource() };
+        var logger = new SignallingLogger("session lookup failed");
+        using var cts = new CancellationTokenSource();
+
+        var saving = new SandboxToolOutputStore(browser, ThreadId, WorkspaceId, logger).SaveAsync("a", cts.Token);
+        await cts.CancelAsync();
+        var act = () => saving.WaitAsync(TimeSpan.FromSeconds(10));
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        browser.HoldResolve.SetException(new IOException("create failed"));
+
+        var logged = await logger.Logged.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        logged.Should().BeOfType<AggregateException>().Which.InnerException.Should().BeOfType<IOException>();
+    }
+
+    [Fact]
     public async Task A_save_during_a_session_recreate_gives_a_not_saved_preview_within_its_time()
     {
         var browser = new FakeBrowser { HoldResolve = new TaskCompletionSource() };
@@ -125,6 +143,34 @@ public sealed class SandboxToolOutputStoreTests
             .Distinct()
             .Should()
             .HaveCount(2);
+    }
+
+    private sealed class SignallingLogger(string fragment) : ILogger
+    {
+        public TaskCompletionSource<Exception?> Logged { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        )
+        {
+            if (
+                logLevel == LogLevel.Warning
+                && formatter(state, exception).Contains(fragment, StringComparison.Ordinal)
+            )
+            {
+                _ = Logged.TrySetResult(exception);
+            }
+        }
     }
 
     private sealed class FakeBrowser : IWorkspaceFileBrowser

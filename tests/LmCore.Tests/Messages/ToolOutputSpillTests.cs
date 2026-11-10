@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
@@ -236,6 +237,62 @@ public sealed class ToolOutputSpillTests
     }
 
     [Fact]
+    public async Task A_save_that_finishes_after_its_deadline_is_not_saved()
+    {
+        var store = new ManualStore();
+        // The save finishes in the moment between the deadline and the save being given up on.
+        var logger = new RecordingLogger("not saved within", () => store.Finish(SavedPath));
+        var options = Options(store) with { SaveTimeout = TimeSpan.FromMilliseconds(20) };
+
+        var result = await options
+            .ApplyAsync(new ToolCallResult("c21", Big), logger)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        store.Finished.Should().BeTrue();
+        result.Result.Should().Contain("could not be saved").And.NotContain(SavedPath);
+    }
+
+    [Fact]
+    public async Task A_save_that_fails_just_after_its_deadline_is_logged()
+    {
+        var store = new ManualStore();
+        // The save fails in the moment between the deadline and the save being given up on.
+        var logger = new RecordingLogger("not saved within", () => store.Fail(new IOException("gateway down")));
+        var options = Options(store) with { SaveTimeout = TimeSpan.FromMilliseconds(20) };
+
+        _ = await options.ApplyAsync(new ToolCallResult("c22", Big), logger).WaitAsync(TimeSpan.FromSeconds(10));
+
+        var abandoned = logger.Entries.Where(e => e.Message.Contains("abandoned", StringComparison.Ordinal));
+        abandoned
+            .Should()
+            .ContainSingle()
+            .Which.Exception.Should()
+            .BeOfType<AggregateException>()
+            .Which.InnerException.Should()
+            .BeOfType<IOException>();
+    }
+
+    [Fact]
+    public async Task A_save_stopped_by_the_caller_is_logged_at_debug_without_a_stack()
+    {
+        using var cts = new CancellationTokenSource();
+        var store = new WaitingStore();
+        var logger = new RecordingLogger();
+
+        var saving = Options(store).ApplyAsync(new ToolCallResult("c23", Big), logger, cts.Token);
+        await store.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await cts.CancelAsync();
+        _ = await saving.WaitAsync(TimeSpan.FromSeconds(10));
+
+        logger.Entries.Should().NotContain(e => e.Level >= LogLevel.Warning);
+        logger
+            .Entries.Should()
+            .ContainSingle(e => e.Message.Contains("stopped by the caller", StringComparison.Ordinal))
+            .Which.Should()
+            .Match<LogEntry>(e => e.Level == LogLevel.Debug && e.Exception == null);
+    }
+
+    [Fact]
     public async Task All_the_saves_for_one_result_share_one_deadline()
     {
         var store = new WaitingStore();
@@ -357,6 +414,23 @@ public sealed class ToolOutputSpillTests
         public Task<string?> SaveAsync(string content, CancellationToken ct = default) => _saving.Task;
     }
 
+    /// <summary>
+    ///     A store whose save ends when the test says so. Its task finishes on the caller's thread, so a
+    ///     save ended from a log line has finished before the code that wrote that line goes on.
+    /// </summary>
+    private sealed class ManualStore : IToolOutputStore
+    {
+        private readonly TaskCompletionSource<string?> _saving = new();
+
+        public bool Finished => _saving.Task.IsCompleted;
+
+        public void Finish(string path) => _saving.SetResult(path);
+
+        public void Fail(Exception ex) => _saving.SetException(ex);
+
+        public Task<string?> SaveAsync(string content, CancellationToken ct = default) => _saving.Task;
+    }
+
     /// <summary>A store that holds the calling thread instead of returning a task.</summary>
     private sealed class BlockingStore(ManualResetEventSlim release) : IToolOutputStore
     {
@@ -388,6 +462,42 @@ public sealed class ToolOutputSpillTests
             if (formatter(state, exception).Contains(fragment, StringComparison.Ordinal))
             {
                 _ = Logged.TrySetResult(exception);
+            }
+        }
+    }
+
+    private sealed record LogEntry(LogLevel Level, string Message, Exception? Exception);
+
+    /// <summary>Keeps every line, and runs <c>onLine</c> once, inside the first line holding <c>fragment</c>.</summary>
+    private sealed class RecordingLogger(string? fragment = null, Action? onLine = null) : ILogger
+    {
+        private readonly ConcurrentQueue<LogEntry> _entries = new();
+        private int _ran;
+
+        public IReadOnlyList<LogEntry> Entries => [.. _entries];
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        )
+        {
+            var message = formatter(state, exception);
+            _entries.Enqueue(new LogEntry(logLevel, message, exception));
+            if (
+                fragment != null
+                && message.Contains(fragment, StringComparison.Ordinal)
+                && Interlocked.Exchange(ref _ran, 1) == 0
+            )
+            {
+                onLine?.Invoke();
             }
         }
     }
