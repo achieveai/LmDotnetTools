@@ -686,6 +686,44 @@ public sealed class ReviewdRunnerTests
         handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get);
     }
 
+    // A confirmation prompt that never starts must still end the wait. A ghost under the idle root settles for the
+    // never-started check too, so the input is reported lost after the grace instead of being polled forever.
+    [Fact]
+    public async Task An_input_that_never_starts_beside_an_abandoned_child_is_reported_lost_after_the_grace()
+    {
+        var start = DateTimeOffset.Parse("2026-11-09T12:00:00Z", CultureInfo.InvariantCulture);
+        var now = start;
+        var handler = GhostHandler(
+            rootInProgress: false,
+            inputStatus: "NotStarted",
+            lastActivity: start.AddHours(-5),
+            _ => Transcript(start.AddHours(-3), "finished")
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var delays = 0;
+        var run = () =>
+            ReviewRunner.WaitAsync(
+                client,
+                "thread",
+                "input",
+                _ =>
+                {
+                    if (++delays > (int)ReviewRunner.NeverStartedGrace.TotalMinutes + 10)
+                        throw new TimeoutException("Still polling an input that will never start.");
+                    now = now.AddMinutes(1);
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None,
+                () => now,
+                probe: new AbandonedChildProbe("test")
+            );
+
+        await run.Should().ThrowAsync<ReviewRunner.LostInputException>().WithMessage("Input input never started*");
+        delays.Should().Be((int)ReviewRunner.NeverStartedGrace.TotalMinutes);
+        handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get);
+    }
+
     // A child that keeps working is never settled by the rule: here it finishes a turn every minute for 30 minutes,
     // then stops. The wait stays open until its last message is 45 minutes old, not 45 minutes after the wait began.
     [Fact]
@@ -827,7 +865,7 @@ public sealed class ReviewdRunnerTests
             blocker == "input-running" ? "InProgress" : null,
             lastActivity: blocker == "recent-stamp" ? start.AddMinutes(-5) : start.AddHours(-5),
             _ => Transcript(start.AddHours(-5), "finished"),
-            unknownSibling: blocker == "unknown-sibling" ? start : null
+            unknownSibling: blocker == "unknown-sibling"
         );
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
         var client = new LmStreamingS2SClient(http, null, null, null);
@@ -853,13 +891,14 @@ public sealed class ReviewdRunnerTests
         handler.CountRequests("/transcript").Should().Be(0);
     }
 
-    // The ghost is listed first, so a check that read before looking at every node would read it.
+    // The ghost is listed first, so a check that read before looking at every node would read it. The unknown
+    // sibling carries no activity stamp: it stays unsettled, and only its status (not a recent stamp) can say so.
     private static FakeHttpMessageHandler GhostHandler(
         bool rootInProgress,
         string? inputStatus,
         DateTimeOffset lastActivity,
         Func<HttpRequestMessage, string> transcript,
-        DateTimeOffset? unknownSibling = null
+        bool unknownSibling = false
     ) =>
         new FakeHttpMessageHandler()
             .OnJson(HttpMethod.Get, "/status?", $$"""{"status":"{{inputStatus}}","runId":"run","response":null}""")
@@ -874,8 +913,8 @@ public sealed class ReviewdRunnerTests
                 HttpMethod.Get,
                 "/subagents?",
                 $$"""{"schemaVersion":1,"nodes":[{"agentId":"publisher","threadId":"publisher-thread","parentThreadId":"thread","depth":1,"template":"reviewer","status":"completed"},{"agentId":"ghost","threadId":"subagent-x-ghost","parentThreadId":"thread","depth":1,"template":"reviewer","status":"running","lastActivityUtc":"{{lastActivity:O}}"}{{(
-                    unknownSibling is { } seen
-                        ? $$""",{"agentId":"other","threadId":"subagent-x-other","parentThreadId":"thread","depth":1,"template":"reviewer","status":"mystery","lastActivityUtc":"{{seen:O}}"}"""
+                    unknownSibling
+                        ? """,{"agentId":"other","threadId":"subagent-x-other","parentThreadId":"thread","depth":1,"template":"reviewer","status":"mystery"}"""
                         : ""
                 )}}]}"""
             )
@@ -5702,18 +5741,26 @@ public sealed class ReviewdRunnerTests
     // #956: after the reaper freed #948's slot, its next review would still be deferred forever if the thread it passes
     // over holds a ghost stuck at running. Admission settles an abandoned child by the same rule as the wait and the
     // reaper: a finished turn quiet for 45 minutes admits the review; a child that wrote minutes ago still defers it,
-    // and the batch's retry minutes later reuses that reading instead of reading the transcript again.
+    // and the batch's retry minutes later reuses that reading instead of reading the transcript again. A root that still
+    // holds a (stale) run id is not idle, so its child is never settled by time and not even read.
     [Theory]
-    [InlineData(180, true)]
-    [InlineData(2, false)]
+    [InlineData(180, null, true)]
+    [InlineData(2, null, false)]
+    [InlineData(180, "stale-run", false)]
     public async Task Runner_admits_a_fresh_review_past_a_passed_over_thread_whose_only_live_child_was_abandoned(
         int quietMinutes,
+        string? currentRunId,
         bool admits
     )
     {
         await PassedOverThreadAsync(
             handler =>
                 handler
+                    .OnJson(
+                        HttpMethod.Get,
+                        "/api/conversations/prior/run-state",
+                        new JsonObject { ["isInProgress"] = false, ["currentRunId"] = currentRunId }.ToJsonString()
+                    )
                     .OnJson(
                         HttpMethod.Get,
                         "/api/conversations/prior/subagents",
@@ -5751,7 +5798,10 @@ public sealed class ReviewdRunnerTests
                 handler
                     .Requests.Count(r => r.Uri.AbsolutePath.EndsWith("/transcript", StringComparison.Ordinal))
                     .Should()
-                    .Be(1, "the retry minutes later reuses the first attempt's reading");
+                    .Be(
+                        currentRunId is null ? 1 : 0,
+                        "the retry minutes later reuses the first attempt's reading, and a root with a run is never read"
+                    );
             }
         );
     }
