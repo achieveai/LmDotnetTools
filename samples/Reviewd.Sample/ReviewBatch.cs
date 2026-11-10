@@ -29,28 +29,14 @@ internal static class ReviewBatch
                     token
                 );
                 // One batch per workspace and database. A batch that holds it is waited out, not raced.
-                FileStream? lease = null;
-                string? leaseError = null;
-                while (lease is null)
-                {
-                    try
-                    {
-                        lease = ReviewRunner.AcquireLease(
-                            options.Required("db"),
-                            "batch/" + options.Required("workspace")
-                        );
-                    }
-                    catch (IOException ex)
-                    {
-                        if (ex.Message != leaseError)
-                            Console.Error.WriteLine(
-                                $"Batch lease held elsewhere; retrying every 5 seconds: {ex.Message}"
-                            );
-                        leaseError = ex.Message;
-                        await Task.Delay(Tick, token);
-                    }
-                }
-                using (lease)
+                using (
+                    var lease = await AcquireBatchLeaseAsync(
+                        () =>
+                            ReviewRunner.AcquireLease(options.Required("db"), "batch/" + options.Required("workspace")),
+                        (delay, cancellation) => Task.Delay(delay, cancellation),
+                        token
+                    )
+                )
                 {
                     string? unreadable = null;
                     await ScheduleAsync(
@@ -94,6 +80,31 @@ internal static class ReviewBatch
                 await reaper;
             }
         );
+
+    // A lease held by another batch, or a lock file this user cannot open yet, is retried like an unreadable
+    // selection: logged once per distinct error. Scheduling starts only once the lease is held.
+    internal static async Task<FileStream> AcquireBatchLeaseAsync(
+        Func<FileStream> acquire,
+        Func<TimeSpan, CancellationToken, Task> delay,
+        CancellationToken ct
+    )
+    {
+        string? leaseError = null;
+        while (true)
+        {
+            try
+            {
+                return acquire();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (ex.Message != leaseError)
+                    Console.Error.WriteLine($"Batch lease unavailable; retrying every 5 seconds: {ex.Message}");
+                leaseError = ex.Message;
+                await delay(Tick, ct);
+            }
+        }
+    }
 
     // The discovery job replaces the selection file while the batch polls it, so a read can find it locked by the
     // replace or briefly missing. That is a miss to retry on the next poll, not a reason to stop: seen live, one
@@ -365,6 +376,9 @@ internal static class ReviewBatch
         string? merged = null;
         string? blocked = null;
         string? admissionError = null;
+        string? mergeError = null;
+        // The selection this batch last reported idle; reset once anything runs.
+        string? reportedIdle = null;
         try
         {
             do
@@ -391,6 +405,7 @@ internal static class ReviewBatch
                     break;
                 }
                 var digest = text is null ? null : SlotRelease.Digest(text);
+                var queueCurrent = true;
                 if (text is not null && digest != blocked)
                 {
                     try
@@ -400,6 +415,7 @@ internal static class ReviewBatch
                         await MergeAsync(text, digest!);
                         merged = digest;
                         blocked = null;
+                        mergeError = null;
                         if (admitting is null)
                         {
                             checkProducer();
@@ -407,6 +423,17 @@ internal static class ReviewBatch
                             sessions.Add(admitting);
                             watchers.Add(WatchAsync(admitting));
                         }
+                    }
+                    catch (Exception ex) when (!untilIdle && !ct.IsCancellationRequested && digest == merged)
+                    {
+                        // The selection was already accepted; only updating its queue failed. Retried next tick,
+                        // with no admission until the queue is current again.
+                        if (ex.Message != mergeError)
+                            Console.Error.WriteLine(
+                                $"Queue {queueKey} not updated; no admission until it is, retrying every 5 seconds: {ex.Message}"
+                            );
+                        mergeError = ex.Message;
+                        queueCurrent = false;
                     }
                     catch (Exception ex) when (!untilIdle && !ct.IsCancellationRequested)
                     {
@@ -417,7 +444,7 @@ internal static class ReviewBatch
                         blocked = digest;
                     }
                 }
-                if (admitting is { IsCancellationRequested: false } && blocked is null)
+                if (admitting is { IsCancellationRequested: false } && blocked is null && queueCurrent)
                 {
                     try
                     {
@@ -429,6 +456,34 @@ internal static class ReviewBatch
                         if (ex.Message != admissionError)
                             Console.Error.WriteLine($"Admission skipped; retrying every 5 seconds: {ex.Message}");
                         admissionError = ex.Message;
+                        queueCurrent = false;
+                    }
+                }
+                if (running.Count > 0)
+                    reportedIdle = null;
+                else if (
+                    !untilIdle
+                    && admitting is { IsCancellationRequested: false }
+                    && blocked is null
+                    && queueCurrent
+                    && reportedIdle != merged
+                    && NextRetry() is null
+                )
+                {
+                    // Nothing runs and nothing more can start until the selection changes. Keep-alive picks the next
+                    // selection only once the queue says so for the selection it wrote.
+                    try
+                    {
+                        if (state!["idle"]?.GetValue<string>() != merged)
+                            await SaveAsync(() => state!["idle"] = merged);
+                        reportedIdle = merged;
+                        Console.WriteLine(
+                            "Batch scheduling finished: nothing left to start for this selection; polling for the next one. OAuth callback remains running."
+                        );
+                    }
+                    catch (Exception) when (!ct.IsCancellationRequested)
+                    {
+                        // SaveAsync suspended admission and said why.
                     }
                 }
                 if (untilIdle)
@@ -591,18 +646,38 @@ internal static class ReviewBatch
                     }
                     next.AddRange(entries.Where(entry => !selected.Contains(Identity(entry))));
                 }
-                // A replaced head is left to the selected head's entry, which shares its attempt row.
+                // An unselected entry stays while it runs here or its retained attempt still owns a slot: any retained
+                // attempt of a PR that left the selection, but for a PR selected at a new head only the attempt of
+                // this entry's head, which must finish on that head before the new head starts.
                 foreach (var entry in next.ToList())
                 {
                     if (selected.Contains(Identity(entry)) || busy.Contains(entry))
                         continue;
                     if (
-                        !selectedPrs.Contains(entry["repo"]!.GetValue<string>() + "/" + entry["pr"]!.GetValue<string>())
-                        && await ReadAsync(database, AttemptKey(entry)) is { } retained
+                        await ReadAsync(database, AttemptKey(entry)) is { } retained
                         && !Reusable(retained)
+                        && (
+                            !selectedPrs.Contains(
+                                entry["repo"]!.GetValue<string>() + "/" + entry["pr"]!.GetValue<string>()
+                            )
+                            || retained["headSha"]?.GetValue<string>() == entry["head"]!.GetValue<string>()
+                        )
                     )
                         continue;
                     next.Remove(entry);
+                }
+                // A kept entry of a repo that left the selection keeps that repo's lanes, so it can still finish.
+                foreach (var repo in next.Select(entry => entry["repo"]!.GetValue<string>()).Distinct().ToList())
+                {
+                    if (lanes.ContainsKey(repo))
+                        continue;
+                    var kept = queue["lanes"]?[repo] is JsonArray previous
+                        ? previous.Select(value => value!.GetValue<int>())
+                        : next.Where(entry => entry["repo"]!.GetValue<string>() == repo && entry["slot"] is not null)
+                            .Select(entry => entry["slot"]!.GetValue<int>());
+                    lanes[repo] = new JsonArray([
+                        .. kept.Distinct().Order().Select(slot => (JsonNode)JsonValue.Create(slot)),
+                    ]);
                 }
                 foreach (var entry in classify)
                     await ClassifyAsync(entry);
@@ -633,12 +708,38 @@ internal static class ReviewBatch
 
         async Task<JsonObject> LoadQueueAsync(string digest)
         {
-            if (await ReadAsync(database, queueKey) is JsonObject saved)
-                return saved["schemaVersion"]?.GetValue<int>() == 2
-                    ? saved
-                    : throw new InvalidOperationException(
-                        "Persisted batch queue schema is unknown; no admission allowed."
-                    );
+            if (await ReadRawAsync(database, queueKey) is { } raw)
+            {
+                // Every selection reloads this row, so a new selection cannot repair it: an operator must.
+                string problem;
+                try
+                {
+                    problem = JsonNode.Parse(raw) switch
+                    {
+                        JsonObject saved
+                            when saved["schemaVersion"] is JsonValue version
+                                && version.TryGetValue<int>(out var number)
+                                && number == 2
+                                && saved["entries"] is JsonArray
+                                && saved["lanes"] is JsonObject => "",
+                        JsonObject saved
+                            when saved["schemaVersion"] is JsonValue version
+                                && version.TryGetValue<int>(out var number)
+                                && number == 2 => "its entries or lanes are missing",
+                        JsonObject => "its schemaVersion is unknown or not a number",
+                        _ => "it is not a JSON object",
+                    };
+                }
+                catch (JsonException ex)
+                {
+                    problem = "it is not valid JSON (" + ex.Message + ")";
+                }
+                if (problem.Length == 0)
+                    return JsonNode.Parse(raw)!.AsObject();
+                throw new InvalidOperationException(
+                    $"Batch queue {queueKey} is unusable: {problem}. A new selection alone cannot repair it; repair the row or move it aside. No admission until then."
+                );
+            }
             // Before the queue, each selection ran as one round under reviewd/batch-state/<digest>, and a restart
             // resumed only the round of the current selection. That round becomes the queue; older rounds stay as
             // they are, already abandoned.
@@ -704,11 +805,8 @@ internal static class ReviewBatch
         {
             var nowSeconds = now().ToUnixTimeSeconds();
             var busy = running.Values.Select(value => value.Entry).ToHashSet(ReferenceEqualityComparer.Instance);
-            var entries = state!["entries"]!
-                .AsArray()
-                .Select(entry => entry!.AsObject())
-                .Where(entry => !busy.Contains(entry))
-                .ToList();
+            var all = state!["entries"]!.AsArray().Select(entry => entry!.AsObject()).ToList();
+            var entries = all.Where(entry => !busy.Contains(entry)).ToList();
             foreach (var (repo, laneSlots) in state["lanes"]!.AsObject())
             {
                 var slots = laneSlots!.AsArray().Select(value => value!.GetValue<int>()).ToArray();
@@ -738,8 +836,19 @@ internal static class ReviewBatch
                             held.Add(heldSlot);
                         continue;
                     }
-                    // Two heads of one PR never run at once.
+                    // Two heads of one PR never run at once, and a new head waits while an earlier head in this queue
+                    // still owns the PR's attempt: that head resumes, finishes and cleans up first.
                     if (runningPrs.Contains(entry["pr"]!.GetValue<string>()))
+                        continue;
+                    if (
+                        attempt is not null
+                        && !Reusable(attempt)
+                        && attempt["headSha"]?.GetValue<string>() is { } ownerHead
+                        && ownerHead != entry["head"]!.GetValue<string>()
+                        && all.Any(other =>
+                            Identity(other) == Identity(repo, entry["pr"]!.GetValue<string>(), ownerHead)
+                        )
+                    )
                         continue;
                     if (owned is not { } ownSlot)
                     {
@@ -809,7 +918,11 @@ internal static class ReviewBatch
             catch (Exception ex)
             {
                 stopped[(repo, slot)] = true;
-                Console.Error.WriteLine($"Lane {repo}/{slot} held: {ex.Message}. Other safe slots continue.");
+                Console.Error.WriteLine(
+                    source.IsCancellationRequested
+                        ? $"Lane {repo}/{slot} held: {ex.Message}. Admission is suspended; nothing new starts."
+                        : $"Lane {repo}/{slot} held: {ex.Message}. Other safe slots continue."
+                );
             }
             try
             {
@@ -1149,13 +1262,14 @@ internal static class ReviewBatch
                 }
                 entry["status"] = "launching";
                 entry["slot"] = slot;
-                await WriteAsync(connection, transaction, state!);
+                state!.Remove("idle");
+                await WriteAsync(connection, transaction, state);
                 await transaction.CommitAsync();
                 return true;
             }
-            catch
+            catch (Exception ex)
             {
-                admitting?.Cancel();
+                Suspend(ex);
                 throw;
             }
             finally
@@ -1237,15 +1351,27 @@ internal static class ReviewBatch
                 await connection.OpenAsync();
                 await WriteAsync(connection, null, state!);
             }
-            catch
+            catch (Exception ex)
             {
-                admitting?.Cancel();
+                Suspend(ex);
                 throw;
             }
             finally
             {
                 writes.Release();
             }
+        }
+
+        // The queue no longer matches what runs, so nothing new may start: admitted reviews finish, and admission
+        // resumes with the next selection.
+        void Suspend(Exception ex)
+        {
+            if (admitting is not { IsCancellationRequested: false } source)
+                return;
+            Console.Error.WriteLine(
+                $"Scheduling suspended: queue {queueKey} not saved: {ex.Message}. Admitted reviews finish; nothing new starts until the selection changes."
+            );
+            source.Cancel();
         }
 
         async Task WriteAsync(SqliteConnection connection, SqliteTransaction? transaction, JsonObject queue)

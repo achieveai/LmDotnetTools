@@ -139,7 +139,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         await PutAsync(
             key,
             JsonNode.Parse(
-                $$"""{"schemaVersion":1,"scope":{"workspace":"workspace"},"entries":[{"repo":"org/project/Nova","pr":"40","slot":0,"status":"{{status}}"}]}"""
+                $$"""{"schemaVersion":{{(key.StartsWith("reviewd/batch-queue/", StringComparison.Ordinal) ? 2 : 1)}},"scope":{"workspace":"workspace"},"entries":[{"repo":"org/project/Nova","pr":"40","slot":0,"status":"{{status}}"}]}"""
             )!
         );
 
@@ -378,7 +378,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         await PutAsync(
             "reviewd/batch-queue/X",
             JsonNode.Parse(
-                """{"schemaVersion":1,"scope":{"workspace":"workspace"},"entries":[{"repo":"org/project/Nova","pr":"40","slot":2,"status":"queued"}]}"""
+                """{"schemaVersion":2,"scope":{"workspace":"workspace"},"entries":[{"repo":"org/project/Nova","pr":"40","slot":2,"status":"queued"}]}"""
             )!
         );
         var released = Claim(Attempt(11, 3, "completed-verified", now.ToString("O")), now.AddMinutes(-1));
