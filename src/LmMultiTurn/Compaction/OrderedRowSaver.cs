@@ -20,8 +20,10 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 ///         There is no cap, because dropping a row is the defect this class exists to prevent. While saves keep
 ///         failing, the queue grows by one row for every row the loop accepts into its history. Compaction skips
 ///         while a row is unsaved, so a store that stays locked ends the run in a context-window refusal. That
-///         stops the run, not the queue: nothing is removed, and later inputs still add rows. The queue shrinks
-///         only when the store takes its first row again; rows still queued when the process ends are lost.
+///         stops the run, not the queue: the refusal discards no row, and later inputs still add rows. A row
+///         leaves the queue only when the store takes it, or when the caller of <see cref="SaveNowAsync" />
+///         withdraws a deferred placeholder that failed or was cancelled. Rows still queued when the process
+///         ends are lost.
 ///     </para>
 /// </remarks>
 internal sealed class OrderedRowSaver(
@@ -62,10 +64,16 @@ internal sealed class OrderedRowSaver(
     }
 
     /// <summary>
-    ///     Test seam, null outside tests: runs on the pump after a saved row leaves the queue and before its
-    ///     waiters are told, so a test can check that nobody can observe the row between the two.
+    ///     Test seam, null outside tests: runs on the pump still holding the lock, once a saved row has left the
+    ///     queue and been marked durable, so a test sees what the next reader to take the lock will see.
     /// </summary>
-    internal Action? RowLeftQueueForTest { get; set; }
+    internal Action? RowSavedForTest { get; set; }
+
+    /// <summary>
+    ///     Test seam, null outside tests: runs when a cancelled <see cref="SaveNowAsync" /> found its row taken
+    ///     up again by a new pump and is about to wait for that pump instead of withdrawing the row.
+    /// </summary>
+    internal Action? CancelledSaveWaitsAgainForTest { get; set; }
 
     /// <summary>Queues a row without waiting. The returned task completes once the row is durable; it never faults.</summary>
     public Task Enqueue(PersistedMessage row)
@@ -194,6 +202,8 @@ internal sealed class OrderedRowSaver(
 
                         writing = _pump!;
                     }
+
+                    CancelledSaveWaitsAgainForTest?.Invoke();
                 }
 
                 throw;
@@ -262,12 +272,19 @@ internal sealed class OrderedRowSaver(
 
         if (left > 0)
         {
-            logger.LogError(
-                "{Count} rows for thread {ThreadId} could not be saved before shutdown; the first is {RowId}",
-                left,
-                threadId,
-                first
-            );
+            try
+            {
+                logger.LogError(
+                    "{Count} rows for thread {ThreadId} could not be saved before shutdown; the first is {RowId}",
+                    left,
+                    threadId,
+                    first
+                );
+            }
+            catch (Exception)
+            {
+                // Disposal must not fail because its logger did; there is nowhere left to report this.
+            }
         }
     }
 
@@ -279,67 +296,88 @@ internal sealed class OrderedRowSaver(
 
     private async Task PumpAsync()
     {
-        while (true)
+        // Set to false once this pump lets go of _pump, so a fault after that cannot clear a newer pump's field.
+        var owns = true;
+        try
         {
-            Entry head;
-            lock (_gate)
+            while (true)
             {
-                if (_queue.Count == 0)
+                Entry head;
+                lock (_gate)
                 {
-                    _pump = null;
-                    return;
-                }
-
-                head = _queue[0];
-            }
-
-            try
-            {
-                await store.AppendMessagesAsync(threadId, [head.Row], CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                if (!await IsAlreadyStoredAsync(head.Row).ConfigureAwait(false))
-                {
-                    int waiting;
-                    lock (_gate)
+                    if (_queue.Count == 0)
                     {
-                        _lastFailure = ex;
                         _pump = null;
-                        waiting = _queue.Count - 1;
+                        owns = false;
+                        return;
                     }
 
-                    logger.LogWarning(
-                        ex,
-                        "Could not save row {RowId} for thread {ThreadId}; it stays first, with {Waiting} later rows behind it",
-                        head.Row.Id,
-                        threadId,
-                        waiting
-                    );
-                    return;
+                    head = _queue[0];
                 }
 
-                logger.LogInformation(
-                    "Row {RowId} for thread {ThreadId} is already stored; treating its failed save as done",
-                    head.Row.Id,
-                    threadId
-                );
-            }
+                try
+                {
+                    await store.AppendMessagesAsync(threadId, [head.Row], CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    if (!await IsAlreadyStoredAsync(head.Row).ConfigureAwait(false))
+                    {
+                        int waiting;
+                        lock (_gate)
+                        {
+                            _lastFailure = ex;
+                            _pump = null;
+                            owns = false;
+                            waiting = _queue.Count - 1;
+                        }
 
-            // Leaving the queue and becoming durable happen together, so no waiter sees a row that is neither.
+                        logger.LogWarning(
+                            ex,
+                            "Could not save row {RowId} for thread {ThreadId}; it stays first, with {Waiting} later rows behind it",
+                            head.Row.Id,
+                            threadId,
+                            waiting
+                        );
+                        return;
+                    }
+
+                    logger.LogInformation(
+                        "Row {RowId} for thread {ThreadId} is already stored; treating its failed save as done",
+                        head.Row.Id,
+                        threadId
+                    );
+                }
+
+                // Leaving the queue and becoming durable happen together, so no waiter sees a row that is neither.
+                lock (_gate)
+                {
+                    _queue.RemoveAt(0);
+                    _ = head.Saved.TrySetResult();
+                    RowSavedForTest?.Invoke();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // Only a logger or a test hook throws here. Left as it was, the field would keep naming a finished
+            // pump: no queued row would be written again, and a waiting SaveNowAsync would spin.
             lock (_gate)
             {
-                _queue.RemoveAt(0);
-                RowLeftQueueForTest?.Invoke();
-                _ = head.Saved.TrySetResult();
+                if (owns)
+                {
+                    _lastFailure = ex;
+                    _pump = null;
+                }
             }
         }
     }
 
     /// <summary>
-    ///     A tool result's row id is derived from its call id, so writing the same result twice is refused for good.
-    ///     Without this check that one row would block every row behind it forever. A stored row with the same id
-    ///     counts only when it is this row: a reused call id can leave a different row under the same id.
+    ///     An append can commit and still report a failure; every retry of that row is then refused because its
+    ///     id is taken. Without this check that one row would block every row behind it forever. A stored row
+    ///     with the same id counts only when it is this row: a deferred placeholder's id comes from its call id,
+    ///     which a provider can reuse.
     /// </summary>
     private async Task<bool> IsAlreadyStoredAsync(PersistedMessage row)
     {

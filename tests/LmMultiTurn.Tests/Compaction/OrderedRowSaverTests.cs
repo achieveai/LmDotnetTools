@@ -205,7 +205,7 @@ public class OrderedRowSaverTests
         var logger = new RecordingLogger();
         var saver = new OrderedRowSaver(store, Thread, logger);
 
-        // A tool result's id comes from its call id, so a second copy is refused by the primary key for good.
+        // An append that committed but reported a failure is refused by the primary key on every retry.
         _ = saver.Enqueue(Row("tcr:duplicate"));
         _ = saver.Enqueue(Row("later"));
         await saver.DrainAsync().WaitAsync(Limit);
@@ -336,6 +336,8 @@ public class OrderedRowSaverTests
             }
         });
         saver = new OrderedRowSaver(store.Object, Thread, logger);
+        var waitsAgain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        saver.CancelledSaveWaitsAgainForTest = () => waitsAgain.TrySetResult();
         using var cancel = new CancellationTokenSource();
         try
         {
@@ -344,6 +346,14 @@ public class OrderedRowSaverTests
             cancel.Cancel();
             firstAttempt.SetException(new InvalidOperationException("locked"));
             await secondAttemptStarted.Task.WaitAsync(Limit);
+
+            // The second append is held, so the cancelled save cannot finish yet. It must find the row taken up
+            // again and go back to waiting, not withdraw it.
+            (await Task.WhenAny(waitsAgain.Task, save).WaitAsync(Limit))
+                .Should()
+                .BeSameAs(waitsAgain.Task, "a row a new pump is writing must not be withdrawn");
+            save.IsCompleted.Should().BeFalse();
+
             secondAttempt.SetResult();
 
             // The second append committed the placeholder, so the caller must keep it, and the row behind it
@@ -367,19 +377,63 @@ public class OrderedRowSaverTests
         var store = new ScriptedStore((_, _) => release.Task);
         var saver = new OrderedRowSaver(store.Object, Thread, NullLogger.Instance);
         var saved = saver.Enqueue(Row("call"));
-        Task<bool>? reader = null;
-        saver.RowLeftQueueForTest = () =>
-        {
-            // A reader on another thread, between the row leaving the queue and its waiters being told. It
-            // must not be able to see the queue empty while the row still reads as not durable.
-            reader = Task.Run(() => saver.Waiting == 0 && saved.IsCompleted);
-            _ = reader.Wait(TimeSpan.FromMilliseconds(500));
-        };
+        (bool Durable, int Waiting)? seen = null;
+
+        // Runs on the pump before it lets go of the lock: what it records is what the next reader will see.
+        saver.RowSavedForTest = () => seen = (saved.IsCompleted, saver.Waiting);
 
         release.SetResult();
+        await saver.DrainAsync().WaitAsync(Limit);
 
-        await saved.WaitAsync(Limit);
-        (await reader!.WaitAsync(Limit)).Should().BeTrue();
+        seen.Should().Be((true, 0), "the row has left the queue and is durable before anyone else can look");
+    }
+
+    [Fact]
+    public async Task ALoggerThatThrowsOnThePump_DoesNotStopTheQueue_OnSqlite()
+    {
+        await using var stores = new ConversationStoreHarness();
+        var store = stores.Open("sqlite");
+        await store.AppendMessagesAsync(Thread, [Row("stored")]);
+        var thrown = false;
+        var logger = new RecordingLogger(level =>
+        {
+            if (level == LogLevel.Information && !thrown)
+            {
+                thrown = true;
+                throw new InvalidOperationException("the logger failed");
+            }
+        });
+        var saver = new OrderedRowSaver(store, Thread, logger);
+
+        // The pump's log for an already-stored row throws once: the pump stops, and the next one must start.
+        _ = saver.Enqueue(Row("stored"));
+        await saver.DrainAsync().WaitAsync(Limit);
+        var later = saver.Enqueue(Row("later"));
+        await saver.DrainAsync().WaitAsync(Limit);
+
+        await later.WaitAsync(Limit);
+        (await StoredIdsAsync(store)).Should().Equal("stored", "later");
+        saver.Waiting.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Flush_WhenItsLoggerThrows_StillReturns()
+    {
+        var store = new ScriptedStore((_, _) => Task.FromException(new InvalidOperationException("locked")));
+        var logger = new RecordingLogger(level =>
+        {
+            if (level == LogLevel.Error)
+            {
+                throw new InvalidOperationException("the logger failed");
+            }
+        });
+        var saver = new OrderedRowSaver(store.Object, Thread, logger, TimeSpan.FromMilliseconds(300));
+        _ = saver.Enqueue(Row("call"));
+
+        await saver.FlushAsync().WaitAsync(Limit);
+
+        saver.Waiting.Should().Be(1);
+        logger.At(LogLevel.Error).Should().ContainSingle();
     }
 
     [Fact]

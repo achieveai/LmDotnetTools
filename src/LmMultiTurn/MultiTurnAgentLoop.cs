@@ -5109,6 +5109,14 @@ public sealed class MultiTurnAgentLoop
             return Task.CompletedTask;
         }
 
+        // A provider can repeat a call id, and the store refuses a second row under an id it already holds.
+        // Rows are saved in order, so that refusal would hold back every later row (#950). Only a deferred
+        // result is addressed by its call id afterwards, so an ordinary result gets an id of its own.
+        if (message is ToolCallResultMessage { IsDeferred: false })
+        {
+            persisted = persisted with { Id = Guid.NewGuid().ToString("N") };
+        }
+
         _compaction.TrackPersisted(message, persisted.Id);
         return _compaction.Saver!.Enqueue(persisted);
     }

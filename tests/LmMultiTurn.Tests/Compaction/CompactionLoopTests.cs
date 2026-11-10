@@ -34,6 +34,124 @@ namespace LmMultiTurn.Tests.Compaction;
 /// </summary>
 public class CompactionLoopTests
 {
+    /// <summary>
+    ///     Throws from a save when <paramref name="shouldFail"/> says so, the way SQLite does when
+    ///     BEGIN IMMEDIATE times out on a locked database. Its arguments are the row, that row's save
+    ///     attempt (1-based) and the store-wide append count (1-based). <paramref name="hold"/> can hold a
+    ///     save open: the row is written once the task it returns completes.
+    /// </summary>
+    private sealed class FailSaveStore(
+        IConversationStore inner,
+        Func<PersistedMessage, int, int, bool> shouldFail,
+        Func<PersistedMessage, int, Task?>? hold = null
+    ) : IConversationStore
+    {
+        private readonly Dictionary<string, int> _attempts = new(StringComparer.Ordinal);
+        private int _appends;
+
+        public int FailedSaves { get; private set; }
+
+        public async Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default
+        )
+        {
+            int attempt;
+            lock (_attempts)
+            {
+                _appends++;
+                var row = messages[0];
+                attempt = _attempts.GetValueOrDefault(row.Id) + 1;
+                _attempts[row.Id] = attempt;
+                if (shouldFail(row, attempt, _appends))
+                {
+                    FailedSaves++;
+                    throw new InvalidOperationException("SQLite Error 5: 'database is locked'.");
+                }
+            }
+
+            if (hold?.Invoke(messages[0], attempt) is { } gate)
+            {
+                await gate;
+            }
+
+            await inner.AppendMessagesAsync(threadId, messages, ct);
+        }
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => inner.LoadMessagesAsync(threadId, ct);
+
+        public Task<long> GetMessageWatermarkAsync(string threadId, CancellationToken ct = default) =>
+            inner.GetMessageWatermarkAsync(threadId, ct);
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessageRangeAsync(
+            string threadId,
+            long fromSeq,
+            long toSeq,
+            int limit,
+            CancellationToken ct = default
+        ) => inner.LoadMessageRangeAsync(threadId, fromSeq, toSeq, limit, ct);
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default
+        ) => inner.UpdateMetadataAsync(threadId, update, ct);
+
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            inner.LoadMetadataAsync(threadId, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            ConversationListOptions? options = null,
+            CancellationToken ct = default
+        ) => inner.ListThreadsAsync(limit, offset, options, ct);
+    }
+
+    /// <summary>Runs <paramref name="act"/> the first time the loop logs a message containing <paramref name="text"/>.</summary>
+    private sealed class ActOnLogLogger(string text, Action act) : ILogger<MultiTurnAgentLoop>
+    {
+        private int _done;
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        )
+        {
+            if (
+                formatter(state, exception).Contains(text, StringComparison.Ordinal)
+                && Interlocked.Exchange(ref _done, 1) == 0
+            )
+            {
+                act();
+            }
+        }
+    }
+
     private const string Thread = "thread-compaction";
     private const string Model = "test-model";
     private const long Window = 2_400;
@@ -317,124 +435,6 @@ public class CompactionLoopTests
 
             await Loop.DisposeAsync();
             _cts.Dispose();
-        }
-    }
-
-    /// <summary>
-    ///     Throws from a save when <paramref name="shouldFail"/> says so, the way SQLite does when
-    ///     BEGIN IMMEDIATE times out on a locked database. Its arguments are the row, that row's save
-    ///     attempt (1-based) and the store-wide append count (1-based). <paramref name="hold"/> can hold a
-    ///     save open: the row is written once the task it returns completes.
-    /// </summary>
-    private sealed class FailSaveStore(
-        IConversationStore inner,
-        Func<PersistedMessage, int, int, bool> shouldFail,
-        Func<PersistedMessage, int, Task?>? hold = null
-    ) : IConversationStore
-    {
-        private readonly Dictionary<string, int> _attempts = new(StringComparer.Ordinal);
-        private int _appends;
-
-        public int FailedSaves { get; private set; }
-
-        public async Task AppendMessagesAsync(
-            string threadId,
-            IReadOnlyList<PersistedMessage> messages,
-            CancellationToken ct = default
-        )
-        {
-            int attempt;
-            lock (_attempts)
-            {
-                _appends++;
-                var row = messages[0];
-                attempt = _attempts.GetValueOrDefault(row.Id) + 1;
-                _attempts[row.Id] = attempt;
-                if (shouldFail(row, attempt, _appends))
-                {
-                    FailedSaves++;
-                    throw new InvalidOperationException("SQLite Error 5: 'database is locked'.");
-                }
-            }
-
-            if (hold?.Invoke(messages[0], attempt) is { } gate)
-            {
-                await gate;
-            }
-
-            await inner.AppendMessagesAsync(threadId, messages, ct);
-        }
-
-        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
-            string threadId,
-            CancellationToken ct = default
-        ) => inner.LoadMessagesAsync(threadId, ct);
-
-        public Task<long> GetMessageWatermarkAsync(string threadId, CancellationToken ct = default) =>
-            inner.GetMessageWatermarkAsync(threadId, ct);
-
-        public Task<IReadOnlyList<PersistedMessage>> LoadMessageRangeAsync(
-            string threadId,
-            long fromSeq,
-            long toSeq,
-            int limit,
-            CancellationToken ct = default
-        ) => inner.LoadMessageRangeAsync(threadId, fromSeq, toSeq, limit, ct);
-
-        public Task UpdateMetadataAsync(
-            string threadId,
-            Func<ThreadMetadata?, ThreadMetadata> update,
-            CancellationToken ct = default
-        ) => inner.UpdateMetadataAsync(threadId, update, ct);
-
-        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
-            inner.SaveMetadataAsync(threadId, metadata, ct);
-
-        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
-            inner.LoadMetadataAsync(threadId, ct);
-
-        public Task ReplaceMessageAsync(
-            string threadId,
-            PersistedMessage replacement,
-            CancellationToken ct = default
-        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
-
-        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
-            inner.DeleteThreadAsync(threadId, ct);
-
-        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
-            int limit = 50,
-            int offset = 0,
-            ConversationListOptions? options = null,
-            CancellationToken ct = default
-        ) => inner.ListThreadsAsync(limit, offset, options, ct);
-    }
-
-    /// <summary>Runs <paramref name="act"/> the first time the loop logs a message containing <paramref name="text"/>.</summary>
-    private sealed class ActOnLogLogger(string text, Action act) : ILogger<MultiTurnAgentLoop>
-    {
-        private int _done;
-
-        public IDisposable? BeginScope<TState>(TState state)
-            where TState : notnull => null;
-
-        public bool IsEnabled(LogLevel logLevel) => true;
-
-        public void Log<TState>(
-            LogLevel logLevel,
-            EventId eventId,
-            TState state,
-            Exception? exception,
-            Func<TState, Exception?, string> formatter
-        )
-        {
-            if (
-                formatter(state, exception).Contains(text, StringComparison.Ordinal)
-                && Interlocked.Exchange(ref _done, 1) == 0
-            )
-            {
-                act();
-            }
         }
     }
 
@@ -2448,6 +2448,46 @@ public class CompactionLoopTests
     }
 
     [Fact]
+    public async Task CompactMode_AToolCallIdTheModelReuses_DoesNotStopLaterRowsSaving_OnSqlite()
+    {
+        // Call ids come from the provider. When it repeats one, the second result is a different row that the
+        // old scheme gave the same store id, so the store refused it, and every row behind it waited forever.
+        await using var stores = new ConversationStoreHarness();
+        await using (
+            var h = new Harness(
+                call =>
+                    call <= 2
+                        ?
+                        [
+                            new ToolCallMessage
+                            {
+                                ToolCallId = "reused",
+                                FunctionName = "Echo",
+                                FunctionArgs = $$"""{"turn":{{call}}}""",
+                                Role = Role.Assistant,
+                            },
+                        ]
+                        : [new TextMessage { Text = "after the reused id", Role = Role.Assistant }],
+                Options(CompactionMode.Compact),
+                _ => 1_000_000,
+                store: stores.Open("sqlite")
+            )
+        )
+        {
+            (await h.RunAsync("start")).IsError.Should().BeFalse();
+        }
+
+        var stored = await stores.Reopen("sqlite").LoadMessagesAsync(Thread);
+        stored
+            .Should()
+            .Contain(
+                r => r.MessageType == nameof(TextMessage) && r.MessageJson.Contains("after the reused id"),
+                "rows after the second result are still saved"
+            );
+        stored.Count(r => IsResult(r, "reused")).Should().Be(2, "both results are kept");
+    }
+
+    [Fact]
     public async Task CompactMode_WhenEveryResultFailsOnce_TheRowLoadRetriesTheLastRowItself()
     {
         // A result is the last row before the next request, so it is unsaved when compaction loads rows. Nothing
@@ -2930,9 +2970,7 @@ public class CompactionLoopTests
         completed.IsError.Should().BeFalse();
         var applied = h.Publisher.Payloads<CompactionPayload>(LifecycleEventTypes.CompactionApplied).Single();
         var persisted = await h.Store.LoadMessagesAsync(Thread);
-        var answerRow = persisted.Single(p =>
-            p.Id == MessagePersistenceConverter.BuildToolResultPersistedId(Thread, "recall-1")
-        );
+        var answerRow = persisted.Single(p => IsResult(p, "recall-1"));
         answerRow.Seq.Should().BeGreaterThan(applied.BoundarySeq!.Value, "the answer is a tail row");
         var answer = (ToolCallResultMessage)MessagePersistenceConverter.FromPersistedMessage(answerRow);
         answer.Result.Should().Contain($"\"boundary_seq\":{applied.BoundarySeq}");
