@@ -5177,22 +5177,26 @@ public sealed class MultiTurnAgentLoop
             return Task.CompletedTask;
         }
 
-        var append = AppendPersistedAsync(persisted, ct);
-        _compaction.TrackPersisted(message, persisted.Id, append);
-        return append;
+        // A provider can repeat a call id, and the store refuses a second row under an id it already holds.
+        // Rows are saved in order, so that refusal would hold back every later row (#950). Only a deferred
+        // result is addressed by its call id afterwards, so an ordinary result gets an id of its own.
+        if (message is ToolCallResultMessage { IsDeferred: false })
+        {
+            persisted = persisted with { Id = Guid.NewGuid().ToString("N") };
+        }
+
+        _compaction.TrackPersisted(message, persisted.Id);
+        return _compaction.Saver!.Enqueue(persisted);
     }
 
-    private async Task AppendPersistedAsync(PersistedMessage persisted, CancellationToken ct)
-    {
-        try
-        {
-            await Store!.AppendMessagesAsync(ThreadId, [persisted], ct);
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(ex, "Failed to persist message");
-        }
-    }
+    /// <inheritdoc />
+    protected override Task AppendDeferredPlaceholderAsync(PersistedMessage persisted, CancellationToken ct) =>
+        _compaction?.Saver is { } saver
+            ? saver.SaveNowAsync(persisted, ct)
+            : base.AppendDeferredPlaceholderAsync(persisted, ct);
+
+    /// <inheritdoc />
+    protected override Task FlushPendingSavesAsync() => _compaction?.Saver?.FlushAsync() ?? Task.CompletedTask;
 
     private IReadOnlyList<AgentRef> RosterForCompaction() =>
         SubAgentManager is null

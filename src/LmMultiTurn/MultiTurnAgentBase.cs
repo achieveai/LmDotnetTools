@@ -1087,7 +1087,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
                 // in ConversationHistory. Letting the exception propagate is intentional —
                 // the deferred-tool guarantee is load-bearing for webhook resolution.
                 var persisted = MessagePersistenceConverter.ToPersistedMessage(message, ThreadId, runId);
-                await Store.AppendMessagesAsync(ThreadId, [persisted], ct);
+                await AppendDeferredPlaceholderAsync(persisted, ct);
             }
         }
 
@@ -1098,6 +1098,19 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             PublishJoinedHistory(message);
         }
     }
+
+    /// <summary>
+    /// Writes a deferred placeholder and waits for it. A failure must propagate. Override when rows
+    /// issued earlier may still be on their way to the store, so the placeholder cannot overtake its call.
+    /// </summary>
+    protected virtual Task AppendDeferredPlaceholderAsync(PersistedMessage persisted, CancellationToken ct) =>
+        Store!.AppendMessagesAsync(ThreadId, [persisted], ct);
+
+    /// <summary>
+    /// Last chance at disposal to write rows still waiting to be saved. Must not throw. Runs after every
+    /// stream has ended, whatever else disposal did, because a faulted run is when those rows matter most.
+    /// </summary>
+    protected virtual Task FlushPendingSavesAsync() => Task.CompletedTask;
 
     /// <summary>
     /// Replaces the most recent <see cref="ToolCallResultMessage"/> in history that has the
@@ -3161,6 +3174,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         finally
         {
             cleanupFailure = await CompleteChannelsOnDisposeAsync();
+
+            await FlushPendingSavesAsync();
 
             // Inside the finally so a failed disposal still suppresses finalization: the object is
             // just as disposed either way, and only the reporting differs.
