@@ -133,6 +133,11 @@ jobs:
         shell: pwsh
         run: ./scripts/ci-test.ps1 -ChangedPathFile .logs/test-impact-changed-paths.txt
 
+      - name: Print stacks from any test-host hang
+        if: ${{ failure() }}
+        shell: pwsh
+        run: ./scripts/print-hang-stacks.ps1
+
       - name: Upload test-impact shadow decision
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
