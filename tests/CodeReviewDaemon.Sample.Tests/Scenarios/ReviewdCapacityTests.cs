@@ -61,7 +61,7 @@ public sealed class ReviewdCapacityTests
             };
             await PutAsync(ownerKey, owner);
             await PutAsync(
-                "reviewd/batch-state/historical",
+                "reviewd/batch-queue/historical",
                 new JsonObject
                 {
                     ["scope"] = new JsonObject { ["workspace"] = "workspace" },
@@ -122,7 +122,7 @@ public sealed class ReviewdCapacityTests
             foreach (var status in new[] { "closed", "stale", "closed-held" })
             {
                 await PutAsync(
-                    "reviewd/batch-state/historical",
+                    "reviewd/batch-queue/historical",
                     new JsonObject
                     {
                         ["scope"] = new JsonObject { ["workspace"] = "workspace" },
@@ -166,7 +166,7 @@ public sealed class ReviewdCapacityTests
             retirement["archiveManifestPath"] = "archive.json";
             retirement["evidence"] = new JsonArray(new JsonObject());
             await PutAsync(
-                "reviewd/batch-state/historical",
+                "reviewd/batch-queue/historical",
                 new JsonObject
                 {
                     ["scope"] = new JsonObject { ["workspace"] = "workspace" },
