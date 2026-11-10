@@ -3,7 +3,10 @@
 #   "ADO Reviewd Watchdog"  - ensure-reviewd.ps1 every 5 minutes, and at logon.
 #   "ADO Reviewd Discovery" - discover.ps1 every 2 minutes.
 # Both run as the interactive user through `conhost --headless`, so no console window flashes.
-# Pause everything: Disable-ScheduledTask "ADO Reviewd Watchdog" (or create state\PAUSED).
+# Pause: create state\PAUSED; the watchdog then starts nothing (it expires, see ensure-reviewd.ps1).
+# Disable-ScheduledTask "ADO Reviewd Watchdog" only stops new watchdog runs: the host, webhook and batch it started keep
+# running, and "ADO Reviewd Discovery" keeps writing selections. Stop those yourself for a full stop.
+# This registers only these two tasks. Re-run it after changing a task here; copying the file changes nothing.
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $pwsh = (Get-Command pwsh).Source

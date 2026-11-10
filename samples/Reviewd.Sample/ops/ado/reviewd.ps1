@@ -10,12 +10,15 @@ $env:ASPNETCORE_ENVIRONMENT = 'Production'
 $env:DOTNET_ENVIRONMENT = 'Production'
 $cliArgs = @($args)
 # PowerShell drops a bare -- from a script's arguments; quote it ('--') before exec program arguments.
-if ($cliArgs -notcontains '--config') {
+# The CLI reads its own options only before --, so a child program's --config after it is not ours.
+$separator = [Array]::IndexOf([object[]] $cliArgs, '--')
+$own = if ($separator -lt 0) { $cliArgs.Count } else { $separator }
+if (-not ($cliArgs | Select-Object -First $own | Where-Object { $_ -eq '--config' })) {
     # Insert straight after the command words, so it can never land among exec program arguments.
     $words = 0
-    while ($words -lt $cliArgs.Count -and -not "$($cliArgs[$words])".StartsWith('-')) { $words++ }
+    while ($words -lt $own -and -not "$($cliArgs[$words])".StartsWith('-')) { $words++ }
     $config = @('--config', (Join-Path $root 'state\config\appsettings.reviewd.json'))
-    $cliArgs = @($cliArgs[0..($words - 1)]) + $config + @(if ($words -lt $cliArgs.Count) { $cliArgs[$words..($cliArgs.Count - 1)] })
+    $cliArgs = @($cliArgs | Select-Object -First $words) + $config + @($cliArgs | Select-Object -Skip $words)
 }
 & (Join-Path $root 'cli\Reviewd.Sample.exe') @cliArgs
 exit $LASTEXITCODE

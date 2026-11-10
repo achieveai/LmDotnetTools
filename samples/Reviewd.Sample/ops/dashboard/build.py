@@ -16,7 +16,6 @@ PUBLISHED = Path(r"B:\published")
 RUNNERS = [("GitHub", PUBLISHED / "Reviewd"), ("ADO", PUBLISHED / "ADO-Reviewd")]
 OUT = PUBLISHED / "_dashboard" / "reviewd.html"
 RECENT = 50
-MAX_AGE_HOURS = 168
 MAX_RESETS = 3  # PrSelection.MaxResetRetries: a head the reaper reset this often waits for a new push
 TERMINAL = {"completed-verified", "failed-released", "released"}
 STAGE_ORDER = {s: i for i, s in enumerate([
@@ -168,6 +167,9 @@ def short_reason(text):
 
 def build_runner(name, path):
     status = json.loads((path / "state" / "status.json").read_text(encoding="utf-8-sig"))
+    # The runner's own age limit, as discover.ps1 passes it to pr pick: a PR past it is never reviewed.
+    runner = json.loads((path / "state" / "config" / "runner.json").read_text(encoding="utf-8-sig"))
+    max_age = dt.timedelta(hours=runner["maxAgeHours"])
     source = {}
     if (path / "SOURCE.json").exists():
         source = json.loads((path / "SOURCE.json").read_text(encoding="utf-8-sig"))
@@ -227,8 +229,7 @@ def build_runner(name, path):
             continue
         f = failures.get(k)
         created, updated = ts(snap.get("CreatedAt")), ts(snap.get("SourceUpdatedAt"))
-        limit = dt.timedelta(hours=MAX_AGE_HOURS)
-        in_age = (created and NOW - created <= limit) or (updated and NOW - updated <= limit)
+        in_age = (created and NOW - created <= max_age) or (updated and NOW - updated <= max_age)
         if f and f.get("head") == head and int(f.get("count", 0)) >= 3:
             why = f"skipped until a new push: failed {f.get('count')}x. {short_reason(f.get('reason'))}"
         elif (ca := current_attempt.get(k)) and ca.get("headSha") == head and int(ca.get("resetCount") or 0) >= MAX_RESETS:
@@ -241,7 +242,7 @@ def build_runner(name, path):
         elif selection.get(k) == head:
             why = "picked for the next round; starts after the current round finishes"
         else:
-            why = "not in the latest pick yet (discovery runs every 5 min)"
+            why = "not in the latest pick yet (discovery runs every 2 min)"
         pending += 1
         repo, pr = k.rsplit("/", 1)
         pend_rows.append((updated or created, f"<tr><td>{e(repo.split('/')[-1])} #{e(pr)}</td><td>{e(snap.get('Title'))}</td>"

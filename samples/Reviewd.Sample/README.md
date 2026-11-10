@@ -130,6 +130,8 @@ As of 2026-10-09, requested PR review runs are authorized to post appropriate in
 
 Restarting the review process means starting fresh: stop or verify quiescence of its writers, reset **every PR review slot** in the configured Gateway workspace/pool through supported cleanup mechanisms, retire stale attempt/ownership state, verify fresh slots, then refill. Do not retain old slot assignments or resume interrupted PR attempts across that restart. Repository roots, shared knowledge, credentials, unrelated data and already-posted comments are outside the reset scope. Historical completed-review records outside slots may remain; they do not reserve slots, and existing posted feedback must not be duplicated.
 
+Exception (operator-approved 2026-11-10): automatic restarts by the Windows runners' watchdog (`ops/github/ensure-reviewd.ps1`, `ops/ado/ensure-reviewd.ps1`) and alarm (`ops/github/alarm.py`) reuse slots and do not run the all-slot reset. The batch's slot reaper frees lapsed leases. The all-slot reset above still applies to every operator-initiated restart.
+
 This is operator policy, not a claim that `review batch` automatically resets its pool on startup. The retained-state and `--resume` contracts below describe existing implementation mechanics. Do not use them to bypass the restart policy; if the supported cleanup path cannot establish quiescence or fresh slots, report that concrete blocker rather than silently resuming retained attempts.
 
 ## Run one PR review

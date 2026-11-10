@@ -6,8 +6,10 @@
 # Any batch failure latches STOPPED with the reason, like the Linux tick.
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot; $state = Join-Path $root 'state'; $jh = Join-Path $state 'judge'
-$stop = Join-Path $jh 'STOPPED'; $log = Join-Path $jh 'judge-tick.log'
+$stop = Join-Path $jh 'STOPPED'; $log = Join-Path $jh 'judge-tick.log'; $pendingFailed = $false
 function Log([string] $m) { Add-Content -LiteralPath $log -Value "$([DateTime]::UtcNow.ToString('o')) $m" -Encoding utf8 }
+# The task action keeps no stderr, so anything that stops this script must reach the log first.
+trap { try { Log "FAILED: $($_.Exception)`n$($_.ScriptStackTrace)" } catch { }; exit 1 }
 $cfg = Get-Content -Raw (Join-Path $jh 'judge.json') | ConvertFrom-Json
 $run = Get-Content -Raw (Join-Path $state 'config\runner.json') | ConvertFrom-Json
 $db = Join-Path $state 'reviews.db'
@@ -29,7 +31,12 @@ if ($rc -ne 0 -and -not (Test-Path $stop)) {
 }
 if ($cfg.close -and -not (Test-Path $stop)) {
     $closed = Join-Path $jh 'closed.tsv'; $failed = Join-Path $jh 'close-failed.tsv'
-    $pending = @(& python3 -I (Join-Path $root 'judge-pending-closes.py') $db $jh)
+    # A failed read must not look like "nothing to close": keep its stderr, log it, close nothing this tick.
+    $pending = @(& python3 -I (Join-Path $root 'judge-pending-closes.py') $db $jh 2>> (Join-Path $jh 'pending-closes.err.log'))
+    if ($LASTEXITCODE -ne 0) {
+        Log "pending-close read FAILED (exit $LASTEXITCODE); see pending-closes.err.log. No closes this tick."
+        $pending = @(); $pendingFailed = $true
+    }
     $n = 0
     foreach ($line in $pending) {
         if ((Test-Path $stop) -or $n -ge $cfg.closeLimit) { break }
@@ -43,4 +50,4 @@ if ($cfg.close -and -not (Test-Path $stop)) {
     }
 }
 Log 'tick end'
-exit $rc
+exit $(if ($rc -ne 0) { $rc } elseif ($pendingFailed) { 1 } else { 0 })

@@ -1,4 +1,4 @@
-"""Reviewd alarm: tells Gautam (HITL Notify) when a Reviewd runner on this machine has silently stopped reviewing.
+"""Reviewd alarm: tells the operator (HITL Notify) when a Reviewd runner on this machine has silently stopped reviewing.
 
 Scheduled every 15 minutes by the "Reviewd Alarm" task. The watchdogs (ensure-reviewd.ps1) fix what they can and this
 reports what is still wrong; its one action is stopping a wedged batch (see "restarted"). It reads each install's reviews.db (read-only), its PAUSED file
@@ -17,6 +17,11 @@ Problems, per install:
   down          gateway, host, webhook or batch reported down by the watchdog for 15 min
   restarted     it stopped a wedged batch: a PR waited 2 h, no slot lease was live, the batch was up 2 h, and no
                 restart in the last 2 h. The watchdog starts a fresh batch. The one thing this script changes.
+                This restart reuses slots and does not run the all-slot reset: an operator-approved exception to
+                the restart policy (CLAUDE.md, samples/Reviewd.Sample/README.md). The slot reaper frees lapsed leases.
+  restart-failed  that stop failed; nothing is recorded as restarted, so the next run tries again.
+
+Exit code: 0, or 1 when a due alert could not be sent (it is retried next run).
 """
 import datetime
 import json
@@ -27,6 +32,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import traceback
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -118,7 +124,8 @@ def pr_problems(name, rows, max_age, now):
 def working(install, now):
     """Asks Reviewd itself (review slots, read-only) whether any slot is owned under a live lease. A lane renews its
     lease every 5 minutes while it works, even through a long silent review. Unknown counts as working: a batch is
-    never stopped on a guess."""
+    never stopped on a guess. That includes an owned slot with no readable lease expiry (an owner from before leases):
+    only a lease known to have lapsed counts as idle."""
     cfg = json.loads((install / "state" / "config" / "runner.json").read_text(encoding="utf-8-sig"))
     result = subprocess.run(["pwsh", "-NoProfile", "-File", str(install / "reviewd.ps1"), "review", "slots",
                              "--repos", ",".join(cfg["repos"]), "--db", str(install / "state" / "reviews.db"),
@@ -132,19 +139,37 @@ def working(install, now):
             pass
     if result.returncode != 0 or not slots:
         return True
-    return any(s.get("state") == "owned" and (ts(s.get("leaseExpiresAt")) or now) > now for s in slots)
+    return any(s.get("state") == "owned" and ((expiry := ts(s.get("leaseExpiresAt"))) is None or expiry > now)
+               for s in slots)
 
 
 def batch_processes(install):
     """(pid, parent pid, started) of this install's Reviewd.Sample.exe review batch."""
-    script = ("Get-CimInstance Win32_Process -Filter \"Name = 'Reviewd.Sample.exe'\" | Where-Object { "
-              "$_.CommandLine -match ' review batch ' -and $_.CommandLine -like '*" + str(install) + "\\*' } | "
+    # The install path goes in through the environment, never into the script text: an apostrophe or a wildcard
+    # character in it would otherwise change the query.
+    script = ("$install = $env:REVIEWD_ALARM_INSTALL + '\\'; "
+              "Get-CimInstance Win32_Process -Filter \"Name = 'Reviewd.Sample.exe'\" | Where-Object { "
+              "$_.CommandLine -match ' review batch ' -and "
+              "$_.CommandLine.IndexOf($install, [StringComparison]::OrdinalIgnoreCase) -ge 0 } | "
               "ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, "
               "$_.CreationDate.ToUniversalTime().ToString('o') }")
     out = subprocess.run(["pwsh", "-NoProfile", "-Command", script], capture_output=True, text=True, timeout=120,
+                         env=dict(os.environ, REVIEWD_ALARM_INSTALL=str(install)),
                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
     return [(int(pid), int(parent), ts(started)) for pid, parent, started in (line.split() for line in out.splitlines()
                                                                              if len(line.split()) == 3)]
+
+
+TASKKILL_NOT_FOUND = 128  # the process had already exited, which is what the stop wanted
+
+
+def kill(pid, what):
+    """Force-stops one process. Raises when taskkill fails for any reason but "already gone", so a failed stop is
+    reported and never recorded as a restart."""
+    result = subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, text=True)
+    if result.returncode not in (0, TASKKILL_NOT_FOUND):
+        raise RuntimeError(f"taskkill of {what} pid {pid} exited {result.returncode}: "
+                           f"{(result.stderr or result.stdout).strip()[:200]}")
 
 
 def restart_stalled(install, name, rows, waiting, now, memory, dry):
@@ -165,12 +190,12 @@ def restart_stalled(install, name, rows, waiting, now, memory, dry):
             f"working. The watchdog starts a fresh batch within 5 min.")
     if dry:
         return "WOULD HAVE " + line
-    subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
     wrapper = subprocess.run(["pwsh", "-NoProfile", "-Command", f"(Get-CimInstance Win32_Process -Filter 'ProcessId = "
                               f"{parent}').CommandLine"], capture_output=True, text=True, timeout=60,
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+    kill(pid, "batch")
     if "reviewd.ps1" in wrapper and str(install) in wrapper:
-        subprocess.run(["taskkill", "/F", "/PID", str(parent)], capture_output=True)
+        kill(parent, "batch wrapper")
     memory["restarted"][name] = now.isoformat()
     log({"restarted": name, "pid": pid, "line": line})
     with open(install / "state" / "logs" / "ensure.log", "a", encoding="utf-8") as out:
@@ -199,17 +224,25 @@ def install_problems(install, now, memory, dry=False):
     elif not status.get("paused"):
         for part in ("gateway", "host", "webhook", "batch"):
             key = f"{name}:down:{part}"
-            if status.get(part) is False:
+            # Only a part seen up counts as up. An older watchdog wrote "started" for a launch it never saw live,
+            # so a batch failing at every start never reached this alert.
+            if status.get(part) is not True:
                 first = ts(memory.setdefault("down", {}).setdefault(key, now.isoformat()))
                 if now - first >= DOWN_LIMIT:
                     found.append((key, name, "down", f"{part} down since {first:%H:%M}Z"
                                   + (" (start Docker / the gateway compose)" if part == "gateway" else "")))
             else:
                 memory.setdefault("down", {}).pop(key, None)
+    config = state / "config" / "runner.json"
     try:
-        cfg = json.loads((state / "config" / "runner.json").read_text(encoding="utf-8-sig"))
+        cfg = json.loads(config.read_text(encoding="utf-8-sig"))
+        max_age = datetime.timedelta(hours=cfg["maxAgeHours"])
+    except Exception as error:  # name the file that needs repair, not the database
+        return found + [(f"{name}:unreadable-config", name, "unreadable", f"could not read {config}: "
+                         f"{type(error).__name__}: {str(error)[:160]}")]
+    try:
         rows = read_rows(install)
-        prs = pr_problems(name, rows, datetime.timedelta(hours=cfg.get("maxAgeHours", 168)), now)
+        prs = pr_problems(name, rows, max_age, now)
     except Exception as error:  # a locked or missing database is a problem of its own, not a crash
         return found + [(f"{name}:unreadable", name, "unreadable", f"could not read reviews.db: "
                          f"{type(error).__name__}: {str(error)[:160]}")]
@@ -218,7 +251,11 @@ def install_problems(install, now, memory, dry=False):
     try:
         restarted = restart_stalled(install, name, rows, waiting, now, memory, dry)
     except Exception as error:
-        restarted = f"stall restart FAILED: {type(error).__name__}: {str(error)[:160]}"
+        if not dry:
+            log({"restart_failed": name, "error": traceback.format_exc()})
+        # A stable key: a stop that keeps failing alerts once a day (REALERT), not at every run.
+        return found + [(f"{name}:restart-failed", name, "restart-failed",
+                         f"stall restart FAILED: {type(error).__name__}: {str(error)[:160]} (traceback in alarm.log)")]
     if restarted:
         found.append((f"{name}:restarted:{now:%Y%m%dT%H%M}", name, "restarted", restarted))
     return found
@@ -260,7 +297,7 @@ def notify(title, body):
             raise RuntimeError("HITL server did not initialize")
         send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         send({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "NameSession", "arguments": {
-            "name": "Reviewd alarm", "objective": "Tell Gautam when a Reviewd runner has silently stopped reviewing."}}})
+            "name": "Reviewd alarm", "objective": "Tell the operator when a Reviewd runner has silently stopped reviewing."}}})
         reply(2)
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "Notify", "arguments": {
             "title": title, "body": body, "context": "Reviewd alarm (automatic, every 15 min, B:\\published\\Reviewd)"}}})
@@ -284,8 +321,13 @@ def main(argv):
     now = datetime.datetime.now(datetime.timezone.utc)
     try:
         memory = json.loads(STATE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:  # the first run
         memory = {}
+    except (OSError, ValueError) as error:  # cooldowns and down timers start over: say so
+        memory = {}
+        if not dry:
+            log({"state_unreadable": f"{type(error).__name__}: {str(error)[:300]}",
+                 "effect": "alert cooldowns, down timers and restart history start over"})
     alerted = memory.setdefault("alerted", {})
     found = []
     for install in INSTALLS:
@@ -304,6 +346,7 @@ def main(argv):
             print(f"{'DUE ' if (key, name, kind, detail) in due else 'seen'} {name} {kind}: {detail}")
         return 0
     log({"run": True, "problems": len(found), "due": len(due)})
+    sent = True
     if due:
         body = "\n".join(f"- **{name}** {kind}: {detail}" for _, name, kind, detail in due)
         body += "\n\nCheck: `py B:\\published\\Reviewd\\alarm.py --dry-run`. Watchdog logs: `state\\logs\\ensure.log`."
@@ -316,8 +359,11 @@ def main(argv):
             for key, *_ in due:
                 alerted[key] = now.isoformat()
             log({"alerted": [key for key, *_ in due]})
-    STATE.write_text(json.dumps(memory, indent=1), encoding="utf-8")
-    return 0
+    # Write beside the state and replace it in one step, so an interrupted run cannot leave a truncated file.
+    temporary = STATE.with_suffix(".tmp")
+    temporary.write_text(json.dumps(memory, indent=1), encoding="utf-8")
+    temporary.replace(STATE)
+    return 0 if sent else 1
 
 
 if __name__ == "__main__":
