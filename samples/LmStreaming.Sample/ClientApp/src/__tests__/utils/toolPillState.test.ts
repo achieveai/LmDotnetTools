@@ -129,6 +129,63 @@ describe('deriveToolPillState', () => {
   });
 
   describe('structured status', () => {
+    it('a truncated result is a success, unless the call really failed', () => {
+      const r = JSON.stringify({ truncated: true, kept_bytes: 10, original_bytes: 99, preview: '{}', note: 'cut' });
+
+      const ok = deriveToolPillState({ functionArgs: '{}', result: r, hasResult: true, isErrorFlag: false });
+      expect(ok.isError).toBe(false);
+      expect(ok.state).not.toBe('error');
+
+      const failed = deriveToolPillState({ functionArgs: '{}', result: r, hasResult: true, isErrorFlag: true });
+      expect(failed.isError).toBe(true);
+    });
+
+    /** A TaskOutput cut at the size limit: only the start of its JSON survives, in `preview`. */
+    function cutTask(head: string): string {
+      return JSON.stringify({
+        truncated: true,
+        kept_bytes: 100,
+        original_bytes: 9_000_000,
+        preview: `{"events":[],${head},"stderr":"","stdout":"lots of out`,
+        note: 'cut',
+      });
+    }
+
+    it('a cut TaskOutput shows its non-zero exit code', () => {
+      const r = cutTask('"exit_code":3,"output_file":null,"shell_id":"s1","status":"completed"');
+      const v = deriveToolPillState({ functionArgs: '{}', result: r, hasResult: true, isErrorFlag: false });
+      expect(v.exitCode).toBe(3);
+      expect(v.state).toBe('error');
+      expect(v.errorText).toBe('Exited with code 3');
+    });
+
+    it('a cut TaskOutput with status failed is an error', () => {
+      const r = cutTask('"exit_code":0,"output_file":null,"shell_id":"s1","status":"failed"');
+      const v = deriveToolPillState({ functionArgs: '{}', result: r, hasResult: true, isErrorFlag: false });
+      expect(v.state).toBe('error');
+      expect(v.errorText).toBe('Task failed');
+    });
+
+    it('a cut TaskOutput that succeeded stays a success', () => {
+      const r = cutTask('"exit_code":0,"output_file":null,"shell_id":"s1","status":"completed"');
+      const v = deriveToolPillState({ functionArgs: '{}', result: r, hasResult: true, isErrorFlag: false });
+      expect(v.exitCode).toBe(0);
+      expect(v.state).toBe('success');
+    });
+
+    it('a cut result from another tool is not read as a task, whatever its preview holds', () => {
+      const r = JSON.stringify({
+        truncated: true,
+        kept_bytes: 10,
+        original_bytes: 99,
+        preview: '{"exit_code":9,"status":"failed","items":[',
+        note: 'cut',
+      });
+      const v = deriveToolPillState({ functionArgs: '{}', result: r, hasResult: true, isErrorFlag: false });
+      expect(v.state).toBe('success');
+      expect(v.exitCode).toBeNull();
+    });
+
     it('status:"failed" with exit_code 0 and is_error false → error (consistent with the terminal renderer)', () => {
       const r = JSON.stringify({ exit_code: 0, status: 'failed', stdout: 'boom', stderr: '' });
       const v = deriveToolPillState({ functionArgs: '{}', result: r, hasResult: true, isErrorFlag: false });

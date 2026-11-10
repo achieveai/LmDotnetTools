@@ -173,6 +173,16 @@ describe('isErrorResult', () => {
       expect(isErrorResult(enc, false)).toBe(true);
     });
 
+    it('is false for a truncated result that succeeded', () => {
+      const enc = JSON.stringify({ truncated: true, kept_bytes: 10, original_bytes: 99, preview: '{}', note: 'cut' });
+      expect(isErrorResult(enc, false)).toBe(false);
+    });
+
+    it('is true for a truncated result of a call that really failed', () => {
+      const enc = JSON.stringify({ truncated: true, kept_bytes: 10, original_bytes: 99, preview: '{}', note: 'cut' });
+      expect(isErrorResult(enc, true)).toBe(true);
+    });
+
     it('is false for an object with a falsy error key', () => {
       const enc = JSON.stringify({ error: '', ok: true });
       expect(isErrorResult(enc, false)).toBe(false);

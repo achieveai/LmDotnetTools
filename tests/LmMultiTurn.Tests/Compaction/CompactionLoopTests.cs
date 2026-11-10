@@ -18,6 +18,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.TodoBoard;
 using FluentAssertions;
 using LmMultiTurn.Tests.Lifecycle;
+using LmMultiTurn.Tests.Persistence;
 using Microsoft.Extensions.Logging;
 using Xunit;
 
@@ -33,6 +34,134 @@ namespace LmMultiTurn.Tests.Compaction;
 /// </summary>
 public class CompactionLoopTests
 {
+    /// <summary>
+    ///     Throws from a save when <paramref name="shouldFail"/> says so, the way SQLite does when
+    ///     BEGIN IMMEDIATE times out on a locked database. Its arguments are the row, that row's save
+    ///     attempt (1-based) and the store-wide append count (1-based). <paramref name="hold"/> can hold a
+    ///     save open: the row is written once the task it returns completes. <paramref name="failAfterWrite"/>
+    ///     makes a save throw after its row was written, the way a commit can still report a failure.
+    /// </summary>
+    private sealed class FailSaveStore(
+        IConversationStore inner,
+        Func<PersistedMessage, int, int, bool> shouldFail,
+        Func<PersistedMessage, int, Task?>? hold = null,
+        Func<PersistedMessage, int, bool>? failAfterWrite = null
+    ) : IConversationStore
+    {
+        private readonly Dictionary<string, int> _attempts = new(StringComparer.Ordinal);
+        private int _appends;
+
+        public int FailedSaves { get; private set; }
+
+        public async Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default
+        )
+        {
+            int attempt;
+            lock (_attempts)
+            {
+                _appends++;
+                var row = messages[0];
+                attempt = _attempts.GetValueOrDefault(row.Id) + 1;
+                _attempts[row.Id] = attempt;
+                if (shouldFail(row, attempt, _appends))
+                {
+                    FailedSaves++;
+                    throw new InvalidOperationException("SQLite Error 5: 'database is locked'.");
+                }
+            }
+
+            if (hold?.Invoke(messages[0], attempt) is { } gate)
+            {
+                await gate;
+            }
+
+            await inner.AppendMessagesAsync(threadId, messages, ct);
+            if (failAfterWrite?.Invoke(messages[0], attempt) == true)
+            {
+                throw new InvalidOperationException("SQLite Error 5: 'database is locked'.");
+            }
+        }
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => inner.LoadMessagesAsync(threadId, ct);
+
+        public Task<long> GetMessageWatermarkAsync(string threadId, CancellationToken ct = default) =>
+            inner.GetMessageWatermarkAsync(threadId, ct);
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessageRangeAsync(
+            string threadId,
+            long fromSeq,
+            long toSeq,
+            int limit,
+            CancellationToken ct = default
+        ) => inner.LoadMessageRangeAsync(threadId, fromSeq, toSeq, limit, ct);
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default
+        ) => inner.UpdateMetadataAsync(threadId, update, ct);
+
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            inner.LoadMetadataAsync(threadId, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            ConversationListOptions? options = null,
+            CancellationToken ct = default
+        ) => inner.ListThreadsAsync(limit, offset, options, ct);
+    }
+
+    /// <summary>For each rule, runs its action the first time the loop logs a message containing its text.</summary>
+    private sealed class ActOnLogLogger(params (string Text, Action Act)[] rules) : ILogger<MultiTurnAgentLoop>
+    {
+        private readonly int[] _done = new int[rules.Length];
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        )
+        {
+            var message = formatter(state, exception);
+            for (var i = 0; i < rules.Length; i++)
+            {
+                if (
+                    message.Contains(rules[i].Text, StringComparison.Ordinal)
+                    && Interlocked.Exchange(ref _done[i], 1) == 0
+                )
+                {
+                    rules[i].Act();
+                }
+            }
+        }
+    }
+
     private const string Thread = "thread-compaction";
     private const string Model = "test-model";
     private const long Window = 2_400;
@@ -184,13 +313,18 @@ public class CompactionLoopTests
             Func<CheckpointActivation, CancellationToken, ValueTask<bool>>? onCheckpointActivated = null,
             IFunctionProvider? extraProvider = null,
             Func<IStreamingAgent, IStreamingAgent>? wrapAgent = null,
-            IPricingResolver? pricing = null
+            IPricingResolver? pricing = null,
+            bool deferTools = false
         )
         {
             Agent = new ScriptedAgent(script);
             Store = store ?? new InMemoryConversationStore();
             Task<ToolHandlerResult> Handle(string args, ToolCallContext _, CancellationToken __) =>
-                Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(echo?.Invoke(args) ?? Padding));
+                Task.FromResult<ToolHandlerResult>(
+                    deferTools
+                        ? new ToolHandlerResult.Deferred()
+                        : ToolHandlerResult.FromText(echo?.Invoke(args) ?? Padding)
+                );
 
             var registry = new FunctionRegistry().AddFunction(
                 new FunctionContract
@@ -2212,6 +2346,360 @@ public class CompactionLoopTests
         (await h.StateAsync())!.ActiveCheckpointId.Should().NotBeNull();
     }
 
+    // Live on 2026-11-09 one "database is locked" lost a row, and the thread then refused every request.
+    // Null is the control: no save fails.
+    [Theory]
+    [InlineData(null)]
+    [InlineData(6)]
+    public async Task CompactMode_OneFailedSave_DoesNotBlockCompactionForTheRestOfTheLoop(int? failingAppend)
+    {
+        var store = new FailSaveStore(
+            new InMemoryConversationStore(),
+            (_, attempt, append) => attempt == 1 && append == failingAppend
+        );
+        await using var h = new Harness(EchoThenDone(9), Options(CompactionMode.Compact), _ => Window, store: store);
+
+        var completed = await h.RunAsync("start");
+
+        var decisions = string.Join(", ", h.Decisions.Select(d => $"{d.Decision}/{d.Reason}"));
+        store.FailedSaves.Should().Be(failingAppend is null ? 0 : 1);
+        completed
+            .IsError.Should()
+            .BeFalse($"one lost save must not end the run. error='{completed.ErrorMessage}' decisions=[{decisions}]");
+        h.Decisions.Should().NotContain(d => d.Reason == CompactionReasons.WatermarkDrift, decisions);
+        (await h.StateAsync())!.ActiveCheckpointId.Should().NotBeNull(decisions);
+    }
+
+    [Fact]
+    public async Task CompactMode_ALostToolCall_IsStoredBeforeItsResult_AndTheThreadStillCompacts()
+    {
+        // The live shape: the call's save fails. Its result must wait, so the store never holds the result alone.
+        var store = new FailSaveStore(
+            new InMemoryConversationStore(),
+            (row, attempt, _) => attempt == 1 && IsCall(row, "tc-3")
+        );
+        await using var h = new Harness(EchoThenDone(9), Options(CompactionMode.Compact), _ => Window, store: store);
+
+        var completed = await h.RunAsync("start");
+
+        var decisions = string.Join(", ", h.Decisions.Select(d => $"{d.Decision}/{d.Reason}"));
+        store.FailedSaves.Should().Be(1);
+        completed.IsError.Should().BeFalse($"error='{completed.ErrorMessage}' decisions=[{decisions}]");
+        var rows = await store.LoadMessagesAsync(Thread);
+        var callSeq = rows.Single(r => IsCall(r, "tc-3")).Seq!.Value;
+        var resultSeq = rows.Single(r => IsResult(r, "tc-3")).Seq!.Value;
+        callSeq.Should().BeLessThan(resultSeq, "a result waits behind its failed call");
+        (await h.StateAsync())!.ActiveCheckpointId.Should().NotBeNull(decisions);
+    }
+
+    [Fact]
+    public async Task CompactMode_ASaveThatFailsAgain_StaysQueued_AndIsSavedOnTheNextPass()
+    {
+        // The row stays unsaveable until a compaction has had to skip because of it.
+        Harness? running = null;
+        var store = new FailSaveStore(
+            new InMemoryConversationStore(),
+            (row, _, _) =>
+                IsCall(row, "tc-3") && running?.Decisions.Any(d => d.Reason == CompactionReasons.WatermarkDrift) != true
+        );
+        await using var h = running = new Harness(
+            EchoThenDone(9),
+            Options(CompactionMode.Compact),
+            _ => Window,
+            store: store
+        );
+
+        var completed = await h.RunAsync("start");
+
+        var decisions = string.Join(", ", h.Decisions.Select(d => $"{d.Decision}/{d.Reason}"));
+        h.Decisions.Should().Contain(d => d.Reason == CompactionReasons.WatermarkDrift, decisions);
+        store.FailedSaves.Should().BeGreaterThan(1, "the row is tried again, not given up on");
+        var rows = await store.LoadMessagesAsync(Thread);
+        rows.Single(r => IsCall(r, "tc-3"))
+            .Seq!.Value.Should()
+            .BeLessThan(rows.Single(r => IsResult(r, "tc-3")).Seq!.Value);
+        completed.IsError.Should().BeFalse($"error='{completed.ErrorMessage}' decisions=[{decisions}]");
+        (await h.StateAsync())!.ActiveCheckpointId.Should().NotBeNull(decisions);
+    }
+
+    [Fact]
+    public async Task CompactMode_AFailedSaveOnSqlite_AfterARestart_SendsTheCallBeforeItsResult()
+    {
+        await using var stores = new ConversationStoreHarness();
+        var failing = new FailSaveStore(
+            stores.Open("sqlite"),
+            (row, attempt, _) => attempt == 1 && IsCall(row, "tc-8")
+        );
+        await using (
+            var first = new Harness(EchoThenDone(9), Options(CompactionMode.Compact), _ => Window, store: failing)
+        )
+        {
+            (await first.RunAsync("start")).IsError.Should().BeFalse();
+            failing.FailedSaves.Should().Be(1);
+        }
+
+        var stored = await stores.Reopen("sqlite").LoadMessagesAsync(Thread);
+        stored
+            .Single(r => IsCall(r, "tc-8"))
+            .Seq.Should()
+            .BeLessThan(stored.Single(r => IsResult(r, "tc-8")).Seq!.Value, "a result waits behind its failed call");
+
+        await using var restarted = new Harness(
+            EchoThenDone(0),
+            Options(CompactionMode.Compact),
+            _ => 1_000_000,
+            store: stores.Reopen("sqlite")
+        );
+        (await restarted.RunAsync("continue")).IsError.Should().BeFalse();
+
+        var sent = restarted.Agent.Requests[0].SelectMany(ToolEvents).ToList();
+        var callAt = sent.IndexOf(("call", "tc-8"));
+        var resultAt = sent.IndexOf(("result", "tc-8"));
+        callAt
+            .Should()
+            .BeGreaterThanOrEqualTo(0, $"the call must reach the provider. sent=[{string.Join(", ", sent)}]");
+        resultAt
+            .Should()
+            .BeGreaterThan(
+                callAt,
+                $"a provider rejects a result sent before its call. sent=[{string.Join(", ", sent)}]"
+            );
+    }
+
+    [Fact]
+    public async Task CompactMode_AToolCallIdTheModelReuses_DoesNotStopLaterRowsSaving_OnSqlite()
+    {
+        // Call ids come from the provider. When it repeats one, the second result is a different row that the
+        // old scheme gave the same store id, so the store refused it, and every row behind it waited forever.
+        await using var stores = new ConversationStoreHarness();
+        await using (
+            var h = new Harness(
+                call =>
+                    call <= 2
+                        ?
+                        [
+                            new ToolCallMessage
+                            {
+                                ToolCallId = "reused",
+                                FunctionName = "Echo",
+                                FunctionArgs = $$"""{"turn":{{call}}}""",
+                                Role = Role.Assistant,
+                            },
+                        ]
+                        : [new TextMessage { Text = "after the reused id", Role = Role.Assistant }],
+                Options(CompactionMode.Compact),
+                _ => 1_000_000,
+                store: stores.Open("sqlite")
+            )
+        )
+        {
+            (await h.RunAsync("start")).IsError.Should().BeFalse();
+        }
+
+        var stored = await stores.Reopen("sqlite").LoadMessagesAsync(Thread);
+        stored
+            .Should()
+            .Contain(
+                r => r.MessageType == nameof(TextMessage) && r.MessageJson.Contains("after the reused id"),
+                "rows after the second result are still saved"
+            );
+        stored.Count(r => IsResult(r, "reused")).Should().Be(2, "both results are kept");
+    }
+
+    [Fact]
+    public async Task CompactMode_WhenEveryResultFailsOnce_TheRowLoadRetriesTheLastRowItself()
+    {
+        // A result is the last row before the next request, so it is unsaved when compaction loads rows. Nothing
+        // issued later can retry it: only the load can.
+        var store = new FailSaveStore(
+            new InMemoryConversationStore(),
+            (row, attempt, _) => attempt == 1 && row.MessageType == nameof(ToolCallResultMessage)
+        );
+        await using var h = new Harness(EchoThenDone(9), Options(CompactionMode.Compact), _ => Window, store: store);
+
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+
+        var decisions = string.Join(", ", h.Decisions.Select(d => $"{d.Decision}/{d.Reason}"));
+        h.Decisions.Should().NotContain(d => d.Reason == CompactionReasons.WatermarkDrift, decisions);
+        (await h.StateAsync())!.ActiveCheckpointId.Should().NotBeNull(decisions);
+    }
+
+    [Fact]
+    public async Task CompactMode_ADeferredPlaceholder_WaitsBehindAFailedCall_AndIsStoredAfterIt()
+    {
+        var store = new FailSaveStore(
+            new InMemoryConversationStore(),
+            (row, attempt, _) => attempt == 1 && IsCall(row, "tc-1")
+        );
+        await using var h = new Harness(
+            EchoThenDone(1),
+            Options(CompactionMode.Compact),
+            store: store,
+            deferTools: true
+        );
+
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+
+        store.FailedSaves.Should().Be(1);
+        var rows = await store.LoadMessagesAsync(Thread);
+        rows.Single(r => IsCall(r, "tc-1"))
+            .Seq!.Value.Should()
+            .BeLessThan(rows.Single(r => IsResult(r, "tc-1")).Seq!.Value);
+    }
+
+    [Fact]
+    public async Task CompactMode_ADeferredPlaceholderThatCommitsAfterDisposalCancelsItsWrite_StaysInHistoryAndReserved()
+    {
+        var limit = TimeSpan.FromSeconds(10);
+        var holding = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new FailSaveStore(
+            new InMemoryConversationStore(),
+            (_, _, _) => false,
+            hold: (row, attempt) =>
+            {
+                if (attempt != 1 || !IsResult(row, "tc-1"))
+                {
+                    return null;
+                }
+
+                _ = holding.TrySetResult();
+                return release.Task;
+            }
+        );
+        // Disposal logs this once it has cancelled the token the placeholder's write was given, so the
+        // write commits only after the caller was told to stop.
+        var logger = new ActOnLogLogger(("Stopping", () => release.TrySetResult()));
+        var h = new Harness(
+            EchoThenDone(1),
+            Options(CompactionMode.Compact),
+            store: store,
+            deferTools: true,
+            logger: logger
+        );
+        try
+        {
+            var run = h.RunAsync("start");
+            _ = run.ContinueWith(t => t.Exception, TaskScheduler.Default);
+            await holding.Task.WaitAsync(limit);
+
+            await h.Loop.DisposeAsync().AsTask().WaitAsync(limit);
+
+            (await store.LoadMessagesAsync(Thread)).Should().ContainSingle(r => IsResult(r, "tc-1"));
+            h.Loop.GetHistorySnapshot()
+                .SelectMany(ToolEvents)
+                .Should()
+                .Contain(("result", "tc-1"), "the placeholder is durable, so the caller records it in history");
+            h.Loop.HasPendingLoopWork.Should().BeTrue("the reservation stays for the resolution still to come");
+        }
+        finally
+        {
+            _ = release.TrySetResult();
+            await h.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task CompactMode_ADeferredPlaceholderStoredThroughAFailedAppend_StaysInHistory_WhenTheLoggerThrows()
+    {
+        var limit = TimeSpan.FromSeconds(10);
+        var holding = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // The placeholder's first append is held, then commits and still reports a failure, so the saver
+        // finds the row already stored and logs that.
+        var store = new FailSaveStore(
+            new InMemoryConversationStore(),
+            (_, _, _) => false,
+            hold: (row, attempt) =>
+            {
+                if (attempt != 1 || !IsResult(row, "tc-1"))
+                {
+                    return null;
+                }
+
+                _ = holding.TrySetResult();
+                return release.Task;
+            },
+            failAfterWrite: (row, attempt) => attempt == 1 && IsResult(row, "tc-1")
+        );
+        // Disposal cancels the placeholder's save, then logs "Stopping", which lets the append go on. The
+        // log that the row is already stored then throws.
+        var logger = new ActOnLogLogger(
+            ("Stopping", () => release.TrySetResult()),
+            ("is already stored", () => throw new InvalidOperationException("the logger failed"))
+        );
+        var h = new Harness(
+            EchoThenDone(1),
+            Options(CompactionMode.Compact),
+            store: store,
+            deferTools: true,
+            logger: logger
+        );
+        try
+        {
+            var run = h.RunAsync("start");
+            _ = run.ContinueWith(t => t.Exception, TaskScheduler.Default);
+            await holding.Task.WaitAsync(limit);
+
+            await h.Loop.DisposeAsync().AsTask().WaitAsync(limit);
+
+            (await store.LoadMessagesAsync(Thread)).Should().ContainSingle(r => IsResult(r, "tc-1"));
+            h.Loop.GetHistorySnapshot()
+                .SelectMany(ToolEvents)
+                .Should()
+                .Contain(("result", "tc-1"), "the placeholder is durable, so the caller records it in history");
+            h.Loop.HasPendingLoopWork.Should().BeTrue("the reservation stays for the resolution still to come");
+        }
+        finally
+        {
+            _ = release.TrySetResult();
+            await h.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task CompactMode_ARowStillQueuedAtDispose_IsSavedWhenTheStoreRecovers()
+    {
+        // The last row of the run: nothing issued after it can retry it, so only disposal can keep it.
+        var store = new FailSaveStore(
+            new InMemoryConversationStore(),
+            (row, attempt, _) => attempt == 1 && IsLastReply(row)
+        );
+        var h = new Harness(EchoThenDone(1), Options(CompactionMode.Compact), store: store);
+        await using (h)
+        {
+            (await h.RunAsync("start")).IsError.Should().BeFalse();
+        }
+
+        store.FailedSaves.Should().Be(1);
+        (await store.LoadMessagesAsync(Thread)).Should().ContainSingle(r => IsLastReply(r));
+    }
+
+    private static bool IsLastReply(PersistedMessage row) =>
+        row.MessageType == nameof(TextMessage) && row.Role == nameof(Role.Assistant);
+
+    private static bool IsCall(PersistedMessage row, string toolCallId) =>
+        row.MessageType == nameof(ToolCallMessage) && row.MessageJson.Contains(toolCallId, StringComparison.Ordinal);
+
+    private static bool IsResult(PersistedMessage row, string toolCallId) =>
+        row.MessageType == nameof(ToolCallResultMessage)
+        && row.MessageJson.Contains(toolCallId, StringComparison.Ordinal);
+
+    private static IEnumerable<(string Kind, string Id)> ToolEvents(IMessage message) =>
+        message switch
+        {
+            ToolsCallAggregateMessage aggregate => ToolEvents(aggregate.ToolsCallMessage)
+                .Concat(ToolEvents(aggregate.ToolsCallResult)),
+            CompositeMessage composite => composite.Messages.SelectMany(ToolEvents),
+            ToolCallMessage call => [("call", call.ToolCallId ?? string.Empty)],
+            ToolsCallMessage many => many.ToolCalls.Select(c => ("call", c.ToolCallId ?? string.Empty)),
+            ToolCallResultMessage result => [("result", result.ToolCallId ?? string.Empty)],
+            ToolsCallResultMessage results => results.ToolCallResults.Select(r =>
+                ("result", r.ToolCallId ?? string.Empty)
+            ),
+            _ => [],
+        };
+
     /// <summary>
     ///     Appends a row from another writer on the <paramref name="onWatermarkRead"/>th watermark read. The loop
     ///     reads it once to seed activity, then the pipeline reads it right before it prepares: read 2 lands
@@ -2724,9 +3212,7 @@ public class CompactionLoopTests
         completed.IsError.Should().BeFalse();
         var applied = h.Publisher.Payloads<CompactionPayload>(LifecycleEventTypes.CompactionApplied).Single();
         var persisted = await h.Store.LoadMessagesAsync(Thread);
-        var answerRow = persisted.Single(p =>
-            p.Id == MessagePersistenceConverter.BuildToolResultPersistedId(Thread, "recall-1")
-        );
+        var answerRow = persisted.Single(p => IsResult(p, "recall-1"));
         answerRow.Seq.Should().BeGreaterThan(applied.BoundarySeq!.Value, "the answer is a tail row");
         var answer = (ToolCallResultMessage)MessagePersistenceConverter.FromPersistedMessage(answerRow);
         answer.Result.Should().Contain($"\"boundary_seq\":{applied.BoundarySeq}");

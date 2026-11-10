@@ -84,7 +84,8 @@ internal static class PrSelection
                             JsonNode.Parse(pr.GetRawText()),
                             pr.TryGetProperty("HeadSha", out var ageHead) ? ageHead.GetString() : null,
                             int.Parse(age, System.Globalization.CultureInfo.InvariantCulture),
-                            observedAt
+                            observedAt,
+                            attempt is { } readmitted ? JsonNode.Parse(readmitted.GetRawText()) : null
                         )
                     )
                 )
@@ -128,23 +129,30 @@ internal static class PrSelection
     ///     True when the PR was created, or its source branch was last pushed, within <paramref name="hours"/>. The
     ///     push time comes from the saved snapshot (<c>SourceUpdatedAt</c>) and counts only while that snapshot is of
     ///     <paramref name="liveHead"/>, so an old PR that is still being worked on is reviewed (as the alarm expects)
-    ///     and a push time is never borrowed for a head it did not produce.
+    ///     and a push time is never borrowed for a head it did not produce. An operator readmit
+    ///     (<c>doctor.py readmit</c>) counts like a push of the head it readmitted, so a PR whose reviews failed for
+    ///     reasons of ours (seen live: the 2026-11-05 quota outage) is not kept out once it is older than the limit.
     /// </summary>
     internal static bool IsWithinAge(
         JsonNode? createdAt,
         JsonNode? snapshot,
         string? liveHead,
         int hours,
-        DateTimeOffset now
+        DateTimeOffset now,
+        JsonNode? attempt = null
     ) =>
         IsWithinCreationAge(createdAt, hours, now)
-        || (
-            liveHead is { Length: > 0 }
-            && snapshot?["HeadSha"] is JsonValue head
-            && head.TryGetValue<string>(out var snapshotHead)
-            && snapshotHead == liveHead
-            && IsWithinCreationAge(snapshot["SourceUpdatedAt"], hours, now)
-        );
+        || IsWithinCreationAge(TimeOfHead(snapshot, "HeadSha", "SourceUpdatedAt", liveHead), hours, now)
+        || IsWithinCreationAge(TimeOfHead(attempt, "readmittedHead", "readmittedAt", liveHead), hours, now);
+
+    // The time field of a record, only while the record names liveHead.
+    static JsonNode? TimeOfHead(JsonNode? record, string headField, string timeField, string? liveHead) =>
+        liveHead is { Length: > 0 }
+        && record?[headField] is JsonValue head
+        && head.TryGetValue<string>(out var recordHead)
+        && recordHead == liveHead
+            ? record[timeField]
+            : null;
 
     internal static bool IsWithinCreationAge(JsonNode? createdAt, int hours, DateTimeOffset now)
     {

@@ -1,4 +1,4 @@
-import { unwrapResult, isErrorResult, parseExitCode } from './toolResult';
+import { unwrapResult, isErrorResult, parseExitCode, readCutTaskStatus } from './toolResult';
 import type { ToolCallState, ToolPillInput, ToolPillView } from './toolTypes';
 
 /** Narrow to a plain (non-array) object. */
@@ -26,6 +26,9 @@ function resolveExitCode(value: unknown, text: string): number | null {
     }
     return value.exit_code; // genuinely 0
   }
+  // A task result too large to keep whole: its status survives in the preview.
+  const cut = readCutTaskStatus(value);
+  if (cut) return cut.exitCode;
   // Plain string result (e.g. Bash): trailing `[Exit code: N]` marker.
   return parseExitCode(text);
 }
@@ -71,7 +74,9 @@ export function deriveToolPillState(input: ToolPillInput): ToolPillView {
 
     // A non-zero exit OR a structured `status:"failed"` is a failure regardless of the (unreliable)
     // is_error flag / envelope exit_code — keeps pill state consistent with the terminal renderer.
-    const statusFailed = isRecord(resultValue) && resultValue.status === 'failed';
+    const statusFailed =
+      isRecord(resultValue) &&
+      (resultValue.status === 'failed' || readCutTaskStatus(resultValue)?.status === 'failed');
     isError = isErrorResult(result, isErrorFlag) || (exitCode !== null && exitCode !== 0) || statusFailed;
 
     if (isError) {

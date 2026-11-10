@@ -135,7 +135,7 @@ public sealed class SystemPromptCompositionTests
 
         // Guard the instrument before trusting it: if the turn never reached the provider there would be
         // no captured prompt, and every assertion below would be vacuous rather than failing.
-        frames.ConcatText().Should().Contain("ack");
+        frames.ConcatText().Should().Contain("ack", "the stream ended with: {0}", frames.Describe());
         promptTheModelReceived
             .Should()
             .NotBeNull("the scripted provider must have received a request to capture a prompt from");
@@ -237,7 +237,7 @@ public sealed class SystemPromptCompositionTests
         await client.SendUserMessageAsync("begin the review");
         using var frames = await client.CollectUntilDoneAsync(TimeSpan.FromSeconds(120));
 
-        frames.ConcatText().Should().Contain("ack");
+        frames.ConcatText().Should().Contain("ack", "the stream ended with: {0}", frames.Describe());
         promptTheModelReceived
             .Should()
             .NotBeNull("the scripted provider must have received a request to capture a prompt from");
@@ -471,7 +471,7 @@ public sealed class SystemPromptCompositionTests
             // stubbed, a completed turn ending in "ack" is a genuine full-turn witness, not a
             // vacuously-satisfied assertion — if any real dependency were still live and unreachable,
             // the run would error out before the model ever replied.
-            frames.ConcatText().Should().Contain("ack");
+            frames.ConcatText().Should().Contain("ack", "the stream ended with: {0}", frames.Describe());
             if (useCopilot)
             {
                 copilotClient.StartOptions.Should().NotBeNull();
@@ -558,9 +558,10 @@ public sealed class SystemPromptCompositionTests
                         Directory.Delete(dir, recursive: true);
                     }
                 }
-                catch (IOException)
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
-                    // A leftover temp directory is not worth failing a test over.
+                    // A leftover temp directory is not worth failing a test over. Windows reports a file
+                    // that is still being released as access denied, not as an I/O error.
                 }
             }
         }

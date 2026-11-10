@@ -47,9 +47,10 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
     /// A clock that also reports WHEN the code under test has parked on its next wait. The barrier polls
     /// and then awaits <c>Task.Delay(interval, clock)</c>, whose continuation resumes on the thread pool —
     /// so a pump that advances blindly can move the clock before the barrier has registered the timer it is
-    /// about to wait on, and under a busy pool it can burn every step that way. Registration is the one
-    /// observable moment that says "the barrier is now waiting", which turns that race into a handshake
-    /// with no real sleeping anywhere.
+    /// about to wait on, and under a busy pool it can burn every step that way. A registration is the
+    /// observable moment that says the barrier reached a timer, which narrows that race with no real
+    /// sleeping anywhere. It does not close it: each poll registers two timers, the deadline token's and
+    /// then the delay's, so one registration can arrive while the barrier has yet to park on the delay.
     /// </summary>
     private sealed class ObservableFakeClock(DateTimeOffset start) : FakeTimeProvider(start)
     {
@@ -689,8 +690,10 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         // Ten minutes of polling — twice the quiescence window, a third of the deadline.
         await PumpAndStayClosedAsync(task, clock, TimeSpan.FromMinutes(1), steps: 10);
 
-        clock.Advance(TimeSpan.FromMinutes(30));
-        await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        await FluentActions
+            .Awaiting(() => PumpUntilSettledAsync(task, clock, TimeSpan.FromMinutes(30)))
+            .Should()
+            .ThrowAsync<ReviewBarrierDeadlineException>();
     }
 
     [Fact]
@@ -724,8 +727,10 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
 
         await PumpAndStayClosedAsync(task, clock, TimeSpan.FromMinutes(1), steps: 10);
 
-        clock.Advance(TimeSpan.FromMinutes(30));
-        await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        await FluentActions
+            .Awaiting(() => PumpUntilSettledAsync(task, clock, TimeSpan.FromMinutes(30)))
+            .Should()
+            .ThrowAsync<ReviewBarrierDeadlineException>();
     }
 
     [Fact]
@@ -749,8 +754,10 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
 
         await PumpAndStayClosedAsync(task, clock, TimeSpan.FromMinutes(1), steps: 10);
 
-        clock.Advance(TimeSpan.FromMinutes(30));
-        await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        await FluentActions
+            .Awaiting(() => PumpUntilSettledAsync(task, clock, TimeSpan.FromMinutes(30)))
+            .Should()
+            .ThrowAsync<ReviewBarrierDeadlineException>();
         logger
             .CountAtLevel(LogLevel.Error, "agent-unstamped")
             .Should()
@@ -789,8 +796,10 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
 
         await PumpAndStayClosedAsync(task, clock, TimeSpan.FromMinutes(1), steps: 10);
 
-        clock.Advance(TimeSpan.FromMinutes(30));
-        await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        await FluentActions
+            .Awaiting(() => PumpUntilSettledAsync(task, clock, TimeSpan.FromMinutes(30)))
+            .Should()
+            .ThrowAsync<ReviewBarrierDeadlineException>();
     }
 
     [Fact]
@@ -824,8 +833,10 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
 
         await PumpAndStayClosedAsync(task, clock, TimeSpan.FromMinutes(1), steps: 10);
 
-        clock.Advance(TimeSpan.FromMinutes(30));
-        await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        await FluentActions
+            .Awaiting(() => PumpUntilSettledAsync(task, clock, TimeSpan.FromMinutes(30)))
+            .Should()
+            .ThrowAsync<ReviewBarrierDeadlineException>();
     }
 
     [Fact]
@@ -884,8 +895,10 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
 
         await PumpAndStayClosedAsync(task, clock, TimeSpan.FromMinutes(1), steps: 10);
 
-        clock.Advance(TimeSpan.FromMinutes(30));
-        await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        await FluentActions
+            .Awaiting(() => PumpUntilSettledAsync(task, clock, TimeSpan.FromMinutes(30)))
+            .Should()
+            .ThrowAsync<ReviewBarrierDeadlineException>();
     }
 
     /// <summary>
@@ -967,8 +980,10 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
 
         await PumpAndStayClosedAsync(task, clock, TimeSpan.FromMinutes(1), steps: 10);
 
-        clock.Advance(TimeSpan.FromMinutes(30));
-        await FluentActions.Awaiting(() => task).Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        await FluentActions
+            .Awaiting(() => PumpUntilSettledAsync(task, clock, TimeSpan.FromMinutes(30)))
+            .Should()
+            .ThrowAsync<ReviewBarrierDeadlineException>();
         handler.CountRequests("subagents").Should().BeGreaterThan(1, "the barrier really did keep polling");
     }
 

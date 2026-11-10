@@ -24,6 +24,7 @@ using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Http;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -888,6 +889,9 @@ try
     // #721: the Compaction section, bound once for the process and shared by the pool's loops and the
     // conversations controller's manual-compaction capability.
     _ = builder.Services.AddSingleton(sp => CompactionHostSetup.BindOptions(sp.GetRequiredService<IConfiguration>()));
+
+    // Read here so a bad value stops the host at startup, not each new sandbox chat.
+    var toolOutputMaxInlineBytes = ToolOutputHostSetup.ReadMaxInlineBytes(builder.Configuration);
 
     // Experimental elapsed-time notice: bound once, handed to every root loop the pool builds. On by
     // default in this sample; see ElapsedTimeNoticeHostSetup.
@@ -2894,6 +2898,23 @@ try
                         useDelegatedFallback: normalizedProviderId is "openai"
                     );
 
+                    // Only a sandbox chat has a place to save large tool output (#930 item 2). Built once
+                    // so a new loop and an in-place switch cannot disagree.
+                    var toolOutputSpill = sandboxSession is null
+                        ? null
+                        : new ToolOutputSpillOptions
+                        {
+                            Store = new SandboxToolOutputStore(
+                                sp.GetRequiredService<IWorkspaceFileBrowser>(),
+                                threadId,
+                                string.IsNullOrWhiteSpace(workspaceId)
+                                    ? SandboxSessionRegistry.DefaultWorkspaceId
+                                    : workspaceId,
+                                loggerFactory.CreateLogger<SandboxToolOutputStore>()
+                            ),
+                            MaxInlineBytes = toolOutputMaxInlineBytes,
+                        };
+
                     if (liveLoop is not null)
                     {
                         // THE IN-PLACE SWITCH. Everything the conversation owns — the SubAgentManager and
@@ -2921,6 +2942,9 @@ try
                                     // loop may dispose the provider this switch supersedes.
                                     OwnsProviderAgent: true
                                 )
+                                {
+                                    ToolOutputSpill = toolOutputSpill,
+                                }
                             ) == ReconfigureOutcome.RefusedBusy
                         )
                         {
@@ -3003,6 +3027,7 @@ try
                             // property rather than a constructor argument because LmMultiTurn ships as a
                             // package whose constructor shape is pinned.
                             PendingQuestionObserver = sp.GetRequiredService<PendingQuestionHub>(),
+                            ToolOutputSpill = toolOutputSpill,
                             // providerAgent was built for this loop alone and no child is ever handed the
                             // instance (see ApplyCharacteristicsAgentFactory), so the loop owns it: the first
                             // in-place switch, or the loop's teardown if there is none, disposes it once.
