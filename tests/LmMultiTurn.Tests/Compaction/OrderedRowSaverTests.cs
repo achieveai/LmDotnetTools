@@ -20,6 +20,12 @@ public class OrderedRowSaverTests
         private readonly Dictionary<string, int> _attempts = new(StringComparer.Ordinal);
         private int _running;
 
+        public IConversationStore Object { get; }
+
+        public Task FirstAttemptStarted => _firstAttempt.Task;
+
+        public int MaxConcurrent { get; private set; }
+
         public ScriptedStore(Func<PersistedMessage, int, Task?> script)
         {
             _script = script;
@@ -36,12 +42,6 @@ public class OrderedRowSaverTests
                 .Returns<string, CancellationToken>((thread, ct) => _inner.LoadMessagesAsync(thread, ct));
             Object = mock.Object;
         }
-
-        public IConversationStore Object { get; }
-
-        public Task FirstAttemptStarted => _firstAttempt.Task;
-
-        public int MaxConcurrent { get; private set; }
 
         public int Attempts(string id)
         {
@@ -82,8 +82,8 @@ public class OrderedRowSaverTests
         }
     }
 
-    /// <summary>Keeps every log entry with its level and rendered text.</summary>
-    private sealed class RecordingLogger : ILogger
+    /// <summary>Keeps every log entry with its level and rendered text, and can act on one as it is logged.</summary>
+    private sealed class RecordingLogger(Action<LogLevel>? onLog = null) : ILogger
     {
         private readonly List<(LogLevel Level, string Text)> _entries = [];
 
@@ -118,6 +118,8 @@ public class OrderedRowSaverTests
             {
                 _entries.Add((logLevel, formatter(state, exception)));
             }
+
+            onLog?.Invoke(logLevel);
         }
     }
 
@@ -296,6 +298,88 @@ public class OrderedRowSaverTests
         await save.WaitAsync(Limit);
         (await StoredIdsAsync(store.Object)).Should().Equal("placeholder");
         saver.Waiting.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task SaveNow_CancelledWhileItsAppendFails_WaitsForTheReplacementPumpWritingItAgain()
+    {
+        var firstAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondAttempt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondAttemptStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new ScriptedStore(
+            (row, attempt) =>
+            {
+                if (row.Id != "placeholder")
+                {
+                    return null;
+                }
+
+                if (attempt == 1)
+                {
+                    return firstAttempt.Task;
+                }
+
+                _ = secondAttemptStarted.TrySetResult();
+                return secondAttempt.Task;
+            }
+        );
+        OrderedRowSaver? saver = null;
+        Task? laterSaved = null;
+        var logger = new RecordingLogger(level =>
+        {
+            // Runs on the failing pump after it let go of the queue: a row issued now starts a new pump, and
+            // that pump takes the placeholder again before the cancelled caller looks at the queue.
+            if (level == LogLevel.Warning && laterSaved is null)
+            {
+                laterSaved = saver!.Enqueue(Row("later"));
+                secondAttemptStarted.Task.Wait(Limit);
+            }
+        });
+        saver = new OrderedRowSaver(store.Object, Thread, logger);
+        using var cancel = new CancellationTokenSource();
+        try
+        {
+            var save = saver.SaveNowAsync(Row("placeholder"), cancel.Token);
+            await store.FirstAttemptStarted.WaitAsync(Limit);
+            cancel.Cancel();
+            firstAttempt.SetException(new InvalidOperationException("locked"));
+            await secondAttemptStarted.Task.WaitAsync(Limit);
+            secondAttempt.SetResult();
+
+            // The second append committed the placeholder, so the caller must keep it, and the row behind it
+            // must not be taken off the queue in its place.
+            await save.WaitAsync(Limit);
+            await laterSaved!.WaitAsync(Limit);
+            (await StoredIdsAsync(store.Object)).Should().Equal("placeholder", "later");
+            saver.Waiting.Should().Be(0);
+        }
+        finally
+        {
+            firstAttempt.TrySetResult();
+            secondAttempt.TrySetResult();
+        }
+    }
+
+    [Fact]
+    public async Task ARowLeavingTheQueue_IsAlreadyDurable_ForAnyoneWhoSeesItGone()
+    {
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new ScriptedStore((_, _) => release.Task);
+        var saver = new OrderedRowSaver(store.Object, Thread, NullLogger.Instance);
+        var saved = saver.Enqueue(Row("call"));
+        Task<bool>? reader = null;
+        saver.RowLeftQueueForTest = () =>
+        {
+            // A reader on another thread, between the row leaving the queue and its waiters being told. It
+            // must not be able to see the queue empty while the row still reads as not durable.
+            reader = Task.Run(() => saver.Waiting == 0 && saved.IsCompleted);
+            _ = reader.Wait(TimeSpan.FromMilliseconds(500));
+        };
+
+        release.SetResult();
+
+        await saved.WaitAsync(Limit);
+        (await reader!.WaitAsync(Limit)).Should().BeTrue();
     }
 
     [Fact]

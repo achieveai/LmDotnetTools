@@ -1414,6 +1414,8 @@ public sealed class MultiTurnAgentReplayTests
     private sealed class ThrowingDisposeAgent(Exception failure)
         : MultiTurnAgentBase("thread-1", systemPrompt: null, store: null)
     {
+        public int FlushCount { get; private set; }
+
         protected override Task RunLoopAsync(CancellationToken ct) => Task.CompletedTask;
 
         protected override Task OnDisposeAsync() => Task.FromException(failure);
@@ -1423,8 +1425,6 @@ public sealed class MultiTurnAgentReplayTests
             FlushCount++;
             return Task.CompletedTask;
         }
-
-        public int FlushCount { get; private set; }
 
         public ValueTask PublishForTest(IMessage message) => PublishToAllAsync(message, CancellationToken.None);
     }

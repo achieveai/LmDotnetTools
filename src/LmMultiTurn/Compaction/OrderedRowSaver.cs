@@ -11,15 +11,17 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 /// </summary>
 /// <remarks>
 ///     <para>
-///         A failed row stays first in the queue and every later row waits behind it. There is no timer: the row
-///         is tried again when the next row is issued, when compaction loads rows, and at disposal. One attempt
-///         runs at a time, so a locked store cannot pile up writers.
+///         A failed row stays first in the queue and every later row waits behind it. Nothing retries on its own
+///         schedule: the row is tried again when the next row is issued, when compaction loads rows, and at
+///         disposal, where <see cref="FlushAsync" /> makes up to three attempts 200 ms apart within its budget.
+///         One attempt runs at a time, so a locked store cannot pile up writers.
 ///     </para>
 ///     <para>
 ///         There is no cap, because dropping a row is the defect this class exists to prevent. While saves keep
 ///         failing, the queue grows by one row for every row the loop accepts into its history. Compaction skips
-///         while a row is unsaved, so a store that stays locked ends in the context-window refusal, but rows
-///         accepted before that refusal still join the queue.
+///         while a row is unsaved, so a store that stays locked ends the run in a context-window refusal. That
+///         stops the run, not the queue: nothing is removed, and later inputs still add rows. The queue shrinks
+///         only when the store takes its first row again; rows still queued when the process ends are lost.
 ///     </para>
 /// </remarks>
 internal sealed class OrderedRowSaver(
@@ -58,6 +60,12 @@ internal sealed class OrderedRowSaver(
             }
         }
     }
+
+    /// <summary>
+    ///     Test seam, null outside tests: runs on the pump after a saved row leaves the queue and before its
+    ///     waiters are told, so a test can check that nobody can observe the row between the two.
+    /// </summary>
+    internal Action? RowLeftQueueForTest { get; set; }
 
     /// <summary>Queues a row without waiting. The returned task completes once the row is durable; it never faults.</summary>
     public Task Enqueue(PersistedMessage row)
@@ -166,15 +174,26 @@ internal sealed class OrderedRowSaver(
                     writing = _pump!;
                 }
 
-                _ = await Task.WhenAny(entry.Saved.Task, writing).ConfigureAwait(false);
-                lock (_gate)
+                // The pump that failed this row may already have been replaced by one writing it again, so
+                // the row is withdrawn only once no pump holds it.
+                while (true)
                 {
-                    if (entry.Saved.Task.IsCompleted)
+                    _ = await Task.WhenAny(entry.Saved.Task, writing).ConfigureAwait(false);
+                    lock (_gate)
                     {
-                        return;
-                    }
+                        if (entry.Saved.Task.IsCompleted)
+                        {
+                            return;
+                        }
 
-                    _ = _queue.Remove(entry);
+                        if (!IsBeingWritten(entry))
+                        {
+                            _ = _queue.Remove(entry);
+                            break;
+                        }
+
+                        writing = _pump!;
+                    }
                 }
 
                 throw;
@@ -311,6 +330,7 @@ internal sealed class OrderedRowSaver(
             lock (_gate)
             {
                 _queue.RemoveAt(0);
+                RowLeftQueueForTest?.Invoke();
                 _ = head.Saved.TrySetResult();
             }
         }

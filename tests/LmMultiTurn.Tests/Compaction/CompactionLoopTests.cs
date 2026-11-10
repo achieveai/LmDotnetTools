@@ -320,6 +320,124 @@ public class CompactionLoopTests
         }
     }
 
+    /// <summary>
+    ///     Throws from a save when <paramref name="shouldFail"/> says so, the way SQLite does when
+    ///     BEGIN IMMEDIATE times out on a locked database. Its arguments are the row, that row's save
+    ///     attempt (1-based) and the store-wide append count (1-based). <paramref name="hold"/> can hold a
+    ///     save open: the row is written once the task it returns completes.
+    /// </summary>
+    private sealed class FailSaveStore(
+        IConversationStore inner,
+        Func<PersistedMessage, int, int, bool> shouldFail,
+        Func<PersistedMessage, int, Task?>? hold = null
+    ) : IConversationStore
+    {
+        private readonly Dictionary<string, int> _attempts = new(StringComparer.Ordinal);
+        private int _appends;
+
+        public int FailedSaves { get; private set; }
+
+        public async Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default
+        )
+        {
+            int attempt;
+            lock (_attempts)
+            {
+                _appends++;
+                var row = messages[0];
+                attempt = _attempts.GetValueOrDefault(row.Id) + 1;
+                _attempts[row.Id] = attempt;
+                if (shouldFail(row, attempt, _appends))
+                {
+                    FailedSaves++;
+                    throw new InvalidOperationException("SQLite Error 5: 'database is locked'.");
+                }
+            }
+
+            if (hold?.Invoke(messages[0], attempt) is { } gate)
+            {
+                await gate;
+            }
+
+            await inner.AppendMessagesAsync(threadId, messages, ct);
+        }
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => inner.LoadMessagesAsync(threadId, ct);
+
+        public Task<long> GetMessageWatermarkAsync(string threadId, CancellationToken ct = default) =>
+            inner.GetMessageWatermarkAsync(threadId, ct);
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessageRangeAsync(
+            string threadId,
+            long fromSeq,
+            long toSeq,
+            int limit,
+            CancellationToken ct = default
+        ) => inner.LoadMessageRangeAsync(threadId, fromSeq, toSeq, limit, ct);
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default
+        ) => inner.UpdateMetadataAsync(threadId, update, ct);
+
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            inner.LoadMetadataAsync(threadId, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            ConversationListOptions? options = null,
+            CancellationToken ct = default
+        ) => inner.ListThreadsAsync(limit, offset, options, ct);
+    }
+
+    /// <summary>Runs <paramref name="act"/> the first time the loop logs a message containing <paramref name="text"/>.</summary>
+    private sealed class ActOnLogLogger(string text, Action act) : ILogger<MultiTurnAgentLoop>
+    {
+        private int _done;
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        )
+        {
+            if (
+                formatter(state, exception).Contains(text, StringComparison.Ordinal)
+                && Interlocked.Exchange(ref _done, 1) == 0
+            )
+            {
+                act();
+            }
+        }
+    }
+
     private static CompactionOptions Options(CompactionMode mode) =>
         new()
         {
@@ -2371,6 +2489,58 @@ public class CompactionLoopTests
     }
 
     [Fact]
+    public async Task CompactMode_ADeferredPlaceholderThatCommitsAfterDisposalCancelsItsWrite_StaysInHistoryAndReserved()
+    {
+        var limit = TimeSpan.FromSeconds(10);
+        var holding = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new FailSaveStore(
+            new InMemoryConversationStore(),
+            (_, _, _) => false,
+            hold: (row, attempt) =>
+            {
+                if (attempt != 1 || !IsResult(row, "tc-1"))
+                {
+                    return null;
+                }
+
+                _ = holding.TrySetResult();
+                return release.Task;
+            }
+        );
+        // Disposal logs this once it has cancelled the token the placeholder's write was given, so the
+        // write commits only after the caller was told to stop.
+        var logger = new ActOnLogLogger("Stopping", () => release.TrySetResult());
+        var h = new Harness(
+            EchoThenDone(1),
+            Options(CompactionMode.Compact),
+            store: store,
+            deferTools: true,
+            logger: logger
+        );
+        try
+        {
+            var run = h.RunAsync("start");
+            _ = run.ContinueWith(t => t.Exception, TaskScheduler.Default);
+            await holding.Task.WaitAsync(limit);
+
+            await h.Loop.DisposeAsync().AsTask().WaitAsync(limit);
+
+            (await store.LoadMessagesAsync(Thread)).Should().ContainSingle(r => IsResult(r, "tc-1"));
+            h.Loop.GetHistorySnapshot()
+                .SelectMany(ToolEvents)
+                .Should()
+                .Contain(("result", "tc-1"), "the placeholder is durable, so the caller records it in history");
+            h.Loop.HasPendingLoopWork.Should().BeTrue("the reservation stays for the resolution still to come");
+        }
+        finally
+        {
+            _ = release.TrySetResult();
+            await h.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task CompactMode_ARowStillQueuedAtDispose_IsSavedWhenTheStoreRecovers()
     {
         // The last row of the run: nothing issued after it can retry it, so only disposal can keep it.
@@ -2412,86 +2582,6 @@ public class CompactionLoopTests
             ),
             _ => [],
         };
-
-    /// <summary>
-    ///     Throws from a save when <paramref name="shouldFail"/> says so, the way SQLite does when
-    ///     BEGIN IMMEDIATE times out on a locked database. Its arguments are the row, that row's save
-    ///     attempt (1-based) and the store-wide append count (1-based).
-    /// </summary>
-    private sealed class FailSaveStore(IConversationStore inner, Func<PersistedMessage, int, int, bool> shouldFail)
-        : IConversationStore
-    {
-        private readonly Dictionary<string, int> _attempts = new(StringComparer.Ordinal);
-        private int _appends;
-
-        public int FailedSaves { get; private set; }
-
-        public Task AppendMessagesAsync(
-            string threadId,
-            IReadOnlyList<PersistedMessage> messages,
-            CancellationToken ct = default
-        )
-        {
-            lock (_attempts)
-            {
-                _appends++;
-                var row = messages[0];
-                var attempt = _attempts.GetValueOrDefault(row.Id) + 1;
-                _attempts[row.Id] = attempt;
-                if (shouldFail(row, attempt, _appends))
-                {
-                    FailedSaves++;
-                    throw new InvalidOperationException("SQLite Error 5: 'database is locked'.");
-                }
-            }
-
-            return inner.AppendMessagesAsync(threadId, messages, ct);
-        }
-
-        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
-            string threadId,
-            CancellationToken ct = default
-        ) => inner.LoadMessagesAsync(threadId, ct);
-
-        public Task<long> GetMessageWatermarkAsync(string threadId, CancellationToken ct = default) =>
-            inner.GetMessageWatermarkAsync(threadId, ct);
-
-        public Task<IReadOnlyList<PersistedMessage>> LoadMessageRangeAsync(
-            string threadId,
-            long fromSeq,
-            long toSeq,
-            int limit,
-            CancellationToken ct = default
-        ) => inner.LoadMessageRangeAsync(threadId, fromSeq, toSeq, limit, ct);
-
-        public Task UpdateMetadataAsync(
-            string threadId,
-            Func<ThreadMetadata?, ThreadMetadata> update,
-            CancellationToken ct = default
-        ) => inner.UpdateMetadataAsync(threadId, update, ct);
-
-        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
-            inner.SaveMetadataAsync(threadId, metadata, ct);
-
-        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
-            inner.LoadMetadataAsync(threadId, ct);
-
-        public Task ReplaceMessageAsync(
-            string threadId,
-            PersistedMessage replacement,
-            CancellationToken ct = default
-        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
-
-        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
-            inner.DeleteThreadAsync(threadId, ct);
-
-        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
-            int limit = 50,
-            int offset = 0,
-            ConversationListOptions? options = null,
-            CancellationToken ct = default
-        ) => inner.ListThreadsAsync(limit, offset, options, ct);
-    }
 
     /// <summary>
     ///     Appends a row from another writer on the <paramref name="onWatermarkRead"/>th watermark read. The loop
