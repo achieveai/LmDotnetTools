@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Keep-alive for this install, run by the reviewd-keepalive user timer. Starts a missing host, auth serve or
-# batch, and writes a fresh selection (pick.sh) once the current one has nothing launching, queued or retrying.
+# batch, and writes a fresh selection (pick.sh) once the batch reports the current one idle: nothing running
+# and nothing more it can start.
 # It never reclaims slots: the batch's reaper frees a slot once its lease lapses. Log: $LOGS/keepalive.log.
 set -uo pipefail
 OPS=$(dirname "$(readlink -f "$0")")
@@ -39,15 +40,15 @@ if [ -z "$(install_batch_pids)" ]; then
 fi
 exec 8>&-
 
-# Prints "finished" only when the batch itself says so and the current selection has nothing left to launch.
-# Per-PR statuses alone are not enough: a lane still waits (up to two hours) for the reaper to free a held
-# PR's slot, and the batch reads a new selection only after the current one returns. So the batch log's last
-# scheduling line must be "Batch scheduling finished" (the newest rotated log is read too, since a daily
-# copytruncate empties the live one). A selection the batch has not adopted yet (no batch-state with its PRs)
-# counts as running; an empty one as finished. Once that line is last, entries still queued are left over (a
-# lane gave up on a held slot), not pending: the batch never returns to them, so they must not block the pick.
+# Prints "finished" only when the batch itself says so for the selection on disk. The batch keeps running and
+# polls the selection; once nothing runs and nothing more can start, it logs "Batch scheduling finished" and
+# stamps its queue (reviewd/batch-queue/<workspace>) with idle = the selection's digest (SHA-256 of the file,
+# upper-case hex, as the batch computes it). Starting any review clears the stamp. So the batch log's last
+# scheduling line must say finished (the newest rotated log is read too, since a daily copytruncate empties the
+# live one), and a queue must be idle on this very selection: one the batch has not merged yet counts as
+# running. An empty selection counts as finished.
 state=$(python3 -I - "$DB" "$SEL" "$LOGS" << 'PY'
-import glob, json, os, re, sqlite3, sys
+import glob, hashlib, json, os, re, sqlite3, sys
 try:
     activity = re.compile(r"^(Batch scheduling finished|\S.* #\d+: (prepare|verify|commit|owner cleanup)|PR \S.* (requeued|held on lane)|Lane \S.* held|Review stopped)")
     rotated = sorted((p for p in glob.glob(os.path.join(sys.argv[3], "review-batch.log-*")) if not p.endswith(".gz")), key=os.path.getmtime)
@@ -63,15 +64,16 @@ try:
     if not last.startswith("Batch scheduling finished"):
         print("running")
         sys.exit()
-    selection = json.load(open(sys.argv[2]))
-    wanted = {(entry["prId"], entry["headSha"]) for queue in selection.get("repositories", {}).values() for entry in queue}
-    if not wanted:
+    with open(sys.argv[2], encoding="utf-8-sig", newline="") as file:
+        text = file.read()
+    selection = json.loads(text)
+    if not any(selection.get("repositories", {}).values()):
         print("finished")
         sys.exit()
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest().upper()
     db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True, timeout=5)
-    for (value,) in db.execute("select value from cache where key like 'reviewd/batch-state/%'"):
-        entries = json.loads(value).get("entries", [])
-        if entries and {(entry["pr"], entry["head"]) for entry in entries} == wanted:
+    for (value,) in db.execute("select value from cache where key like 'reviewd/batch-queue/%'"):
+        if json.loads(value).get("idle") == digest:
             print("finished")
             sys.exit()
     print("running")

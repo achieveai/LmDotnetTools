@@ -250,7 +250,7 @@ internal static class AutoSlot
         using var connection = Open(database);
         await connection.OpenAsync(ct);
         using var query = connection.CreateCommand();
-        query.CommandText = "SELECT value FROM cache WHERE key LIKE 'reviewd/batch-state/%'";
+        query.CommandText = "SELECT value FROM cache WHERE key LIKE 'reviewd/batch-queue/%'";
         using var reader = await query.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {

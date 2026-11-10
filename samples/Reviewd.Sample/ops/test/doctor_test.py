@@ -123,6 +123,18 @@ class Checks(unittest.TestCase):
         self.assertEqual(self.check(install, memory), [])
         self.assertEqual(kinds(self.check(install, memory, NOW + minutes(15))), ["no-pick"])
 
+    def test_an_idle_queue_counts_as_finished_while_the_batch_keeps_running(self):
+        # The batch never exits between selections: its idle line, not a shutdown, ends the selection. Hours of it
+        # are never "no progress", so the doctor asks keep-alive to pick instead of restarting idle work.
+        idle = ("Org/P/R #1: prepare, operation abc\n"
+                "Batch scheduling finished: nothing left to start for this selection; polling for the next one. "
+                "OAuth callback remains running.\n")
+        install = make_install(self.root, batch_log=idle, keepalive_log=picked(NOW - minutes(10)))
+        memory = {}
+        self.assertEqual(self.check(install, memory, NOW), [])
+        self.assertEqual(self.check(install, memory, NOW + minutes(30)), [])
+        self.assertEqual(kinds(self.check(install, memory, NOW + minutes(180))), ["no-pick"])
+
     def test_no_progress_needs_two_hours_on_the_same_line_while_unfinished(self):
         install = make_install(self.root, batch_log="Org/P/R #1: prepare, operation abc\n")
         memory = {}
