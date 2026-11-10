@@ -702,6 +702,56 @@ public sealed class SlotReaperTests
     }
 
     [Fact]
+    public async Task A_save_whose_attempt_write_fails_leaves_the_owner_row_unchanged()
+    {
+        // The claim check, the lease renewal and the attempt write are one transaction. If they were not, a write that
+        // failed after the renewal would leave a fresh lease on a run that saved nothing, and a reaper release could
+        // land between the check and the write.
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-save-atomic-{Guid.NewGuid():N}.db");
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await connection.OpenAsync();
+            var (ownerKey, store) = await SeedLapsedClaimAsync(connection, 4);
+            var token = (await store.GetAsync<JsonObject>(ownerKey))!["claimToken"]!.GetValue<string>();
+            async Task<string> RawAsync(string key)
+            {
+                using var read = connection.CreateCommand();
+                read.CommandText = "SELECT value FROM cache WHERE key=@key";
+                read.Parameters.AddWithValue("@key", key);
+                return (string)(await read.ExecuteScalarAsync())!;
+            }
+            var before = await RawAsync(ownerKey);
+            using (var trigger = connection.CreateCommand())
+            {
+                trigger.CommandText = """
+                    CREATE TRIGGER refuse_attempt_insert BEFORE INSERT ON cache WHEN NEW.key = 'attempt'
+                    BEGIN SELECT RAISE(ABORT, 'attempt write refused'); END;
+                    """;
+                await trigger.ExecuteNonQueryAsync();
+            }
+
+            var save = () =>
+                SlotRelease.SaveIfHeldAsync(
+                    connection,
+                    ownerKey,
+                    token,
+                    "attempt",
+                    new JsonObject { ["stage"] = "prepare-completed" },
+                    CancellationToken.None
+                );
+
+            await save.Should().ThrowAsync<Microsoft.Data.Sqlite.SqliteException>();
+            (await RawAsync(ownerKey)).Should().Be(before, "the renewal rolled back with the refused write");
+        }
+        finally
+        {
+            ReviewdSqlitePools.Clear(database);
+            File.Delete(database);
+        }
+    }
+
+    [Fact]
     public async Task A_long_reaper_reset_keeps_the_slot_leased_so_a_second_reaper_leaves_it_alone()
     {
         // The reaper's own reset renews the lease while it runs, like every other step. Otherwise a second reaper (the
@@ -1186,6 +1236,7 @@ public sealed class SlotReaperTests
 
     [Theory]
     [InlineData("renewed", "skipped")]
+    [InlineData("renewed-after-check", "skipped")] // renewed just after the last recheck read the row, before the mark
     [InlineData("unchanged", "reclaimed")]
     public async Task Reclaim_slot_leaves_a_slot_whose_owner_changed_while_it_waited(string change, string status)
     {
@@ -1230,6 +1281,7 @@ public sealed class SlotReaperTests
                 token,
                 CancellationToken.None
             );
+            var rechecks = 0;
 
             var result = await SlotReaper.ReclaimOneAsync(
                 connection,
@@ -1252,12 +1304,23 @@ public sealed class SlotReaperTests
                     owner["leaseExpiresAt"] = DateTimeOffset.UtcNow + SlotRelease.DefaultLeaseWindow;
                     await store.SetAsync(ownerKey, owner, CancellationToken.None);
                 },
-                recheck: recheck
+                recheck: async cancel =>
+                {
+                    var force = await recheck(cancel);
+                    // The lane renews its lease after the recheck before the reset has read the row.
+                    if (change == "renewed-after-check" && ++rechecks == 2)
+                        (await SlotRelease.RenewAsync(connection, ownerKey, token, cancel)).Should().NotBeNull();
+                    return force;
+                }
             );
 
             result.Status.Should().Be(status);
             discards.Should().Be(status == "reclaimed" ? 1 : 0);
-            handler.CountRequests("/freeze").Should().Be(status == "reclaimed" ? 1 : 0);
+            handler.CountRequests("/freeze").Should().Be(change == "renewed" ? 0 : 1);
+            var left = (await store.GetAsync<JsonObject>(ownerKey))!;
+            left["state"]!.GetValue<string>().Should().Be(status == "reclaimed" ? "released" : "owned");
+            if (status == "skipped")
+                left[SlotRelease.Reclaiming].Should().BeNull("no reset began on a live lane");
         }
         finally
         {

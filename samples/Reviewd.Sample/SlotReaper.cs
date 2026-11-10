@@ -114,6 +114,8 @@ internal static class SlotReaper
                 "skipped",
                 Detail: $"{liveActivity}; left untouched (not frozen)."
             );
+        var ownerKey = SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot);
+        string? checkedOwner = null;
         if (!await StillOursAsync())
             return Moved("not-frozen");
 
@@ -141,8 +143,11 @@ internal static class SlotReaper
         // re-read before the conversation is frozen and again before the slot is reset. A lane that renewed or
         // re-claimed the slot meanwhile, or another PR that claimed it, is left alone, and force is recomputed from
         // the row as it is now.
+        // The row is read before the recheck, and the reset's mark is a CAS on it: a lane that renews its lease after
+        // the recheck has read the row is left alone too.
         async Task<bool> StillOursAsync()
         {
+            checkedOwner = await ReadRawAsync(connection, ownerKey, ct);
             if (recheck is null)
                 return true;
             if (await recheck(ct) is not { } forceNow)
@@ -210,7 +215,6 @@ internal static class SlotReaper
 
             // 3) Discard-reset the native slot (release the owner marker, discard the prepared slot/pool run). The reset
             //    renews the lease while it runs, so another reaper reading the same lapsed lease leaves the slot alone.
-            var ownerKey = SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot);
             var operation = Guid.NewGuid().ToString("N");
             var args = new JsonObject
             {
@@ -226,7 +230,7 @@ internal static class SlotReaper
             };
             // Before anything native is touched, the row says a reset has begun: the owner's own saves fail from here,
             // so a step of its that ends during the reset stops instead of sending into the slot being reset.
-            if (!await SlotRelease.MarkReclaimingAsync(connection, ownerKey, claimToken, operation, ct))
+            if (!await SlotRelease.MarkReclaimingAsync(connection, ownerKey, claimToken, operation, checkedOwner, ct))
             {
                 await RestoreIfFrozenAsync();
                 return Moved(freezeState);
@@ -277,7 +281,15 @@ internal static class SlotReaper
                 attempt["stage"] = "failed-released";
                 attempt["resetCount"] = (attempt["resetCount"]?.GetValue<int>() ?? 0) + 1;
             }
-            await SlotRelease.ReleaseAsync(connection, ownerKey, claimToken, attemptKey, attempt, ct);
+            await SlotRelease.ReleaseAsync(
+                connection,
+                ownerKey,
+                claimToken,
+                attemptKey,
+                attempt,
+                ct,
+                reclaim: operation
+            );
 
             var forced = overrides is not null
                 ? "forced: " + string.Join("; ", overrides.Select(o => o!.GetValue<string>()))
@@ -553,11 +565,14 @@ internal static class SlotReaper
         return 0;
     }
 
-    private static async Task<JsonObject?> ReadAsync(SqliteConnection connection, string key, CancellationToken ct)
+    private static async Task<JsonObject?> ReadAsync(SqliteConnection connection, string key, CancellationToken ct) =>
+        await ReadRawAsync(connection, key, ct) is { } raw ? JsonNode.Parse(raw)?.AsObject() : null;
+
+    private static async Task<string?> ReadRawAsync(SqliteConnection connection, string key, CancellationToken ct)
     {
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT value FROM cache WHERE key=@key";
         _ = command.Parameters.AddWithValue("@key", key);
-        return await command.ExecuteScalarAsync(ct) is string raw ? JsonNode.Parse(raw)?.AsObject() : null;
+        return await command.ExecuteScalarAsync(ct) as string;
     }
 }

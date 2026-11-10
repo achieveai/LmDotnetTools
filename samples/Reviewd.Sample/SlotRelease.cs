@@ -45,13 +45,16 @@ internal static class SlotRelease
         && claim[Reclaiming]?.GetValue<string>() == reclaim;
 
     /// <summary>
-    /// Marks an owned slot as being reset (a CAS on the claim token). False when the row changed hands first.
+    /// Marks an owned slot as being reset: a CAS on <paramref name="expected"/>, the exact row the reaper last checked
+    /// (a lapsed lease on this claim). False when the row changed since, so a lane that renewed its lease after that
+    /// check is never reset.
     /// </summary>
     internal static async Task<bool> MarkReclaimingAsync(
         SqliteConnection connection,
         string key,
         string token,
         string operation,
+        string? expected,
         CancellationToken ct
     )
     {
@@ -62,7 +65,11 @@ internal static class SlotRelease
         read.Parameters.AddWithValue("@key", key);
         var raw = await read.ExecuteScalarAsync(ct) as string;
         var claim = raw is null ? null : JsonNode.Parse(raw)!.AsObject();
-        if (claim?["claimToken"]?.GetValue<string>() != token || claim["state"]?.GetValue<string>() != "owned")
+        if (
+            raw != expected
+            || claim?["claimToken"]?.GetValue<string>() != token
+            || claim["state"]?.GetValue<string>() != "owned"
+        )
             return false;
         claim[Reclaiming] = operation;
         using var write = connection.CreateCommand();
@@ -307,7 +314,8 @@ internal static class SlotRelease
         string attemptKey,
         JsonObject attempt,
         CancellationToken ct,
-        IReadOnlyList<string>? adoptedHistory = null
+        IReadOnlyList<string>? adoptedHistory = null,
+        string? reclaim = null
     )
     {
         using var transaction = connection.BeginTransaction();
@@ -317,9 +325,11 @@ internal static class SlotRelease
         read.Parameters.AddWithValue("@key", key);
         var raw = await read.ExecuteScalarAsync(ct) as string;
         var claim = raw is null ? null : JsonNode.Parse(raw)!.AsObject();
-        if (claim?["claimToken"]?.GetValue<string>() != token || claim["state"]?.GetValue<string>() != "owned")
+        // Once a reset has begun only the reset itself releases (it names its operation in reclaim): an owner's own
+        // release would record its stage over the reset's.
+        if (!Holds(claim, token, reclaim))
             throw new InvalidOperationException("Slot claim changed; exact-token release refused.");
-        claim["state"] = "released";
+        claim!["state"] = "released";
         // Stage the released receipt; the caller's object changes only after the commit below.
         var released = attempt.DeepClone().AsObject();
         released["cleanupState"] = "released";

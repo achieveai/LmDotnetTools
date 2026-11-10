@@ -1293,7 +1293,10 @@ internal static class ReviewRunner
         {
             // The reset already released the slot and recorded the attempt (a review never verified becomes a failed
             // admission that pick offers again), so nothing is cleaned or saved over it.
-            Console.Error.WriteLine($"{repo.DisplayName} #{pr}: {lost.Message} Stopped; the attempt is left as reset.");
+            Console.Error.WriteLine(
+                $"{repo.DisplayName} #{pr}: {lost.Message} Stopped; the attempt is left as reset."
+                    + (lost.InnerException is { } cause ? $" It stopped on: {cause.Message}" : "")
+            );
             throw;
         }
         catch (Exception failure)
@@ -1352,10 +1355,10 @@ internal static class ReviewRunner
             // Keep the pending phase and previous successful receipt so a live run can resume and finish
             // publication without redoing the review. The slot stays leased, so if this process dies the
             // lease reaper reclaims it within the lease window — retention never becomes a permanent block.
-            await KeepOnFailureAsync(receipt);
-            Console.Error.WriteLine(
-                $"Review stopped at {receipt["stage"]}; retained {attemptKey}. No automatic retry or cleanup."
-            );
+            if (await KeepOnFailureAsync(receipt))
+                Console.Error.WriteLine(
+                    $"Review stopped at {receipt["stage"]}; retained {attemptKey}. No automatic retry or cleanup."
+                );
             throw;
         }
 
@@ -1386,10 +1389,10 @@ internal static class ReviewRunner
         }
         // A failing run keeps its attempt for a resume, but only while it still holds the slot: once a reset has
         // begun, the reset's record stands. The lease is not renewed, so a dead process still frees the slot in time.
-        async Task KeepOnFailureAsync(JsonObject attempt)
+        async Task<bool> KeepOnFailureAsync(JsonObject attempt)
         {
             if (
-                !await SlotRelease.SaveIfHeldAsync(
+                await SlotRelease.SaveIfHeldAsync(
                     connection,
                     ownerKey,
                     claimToken,
@@ -1399,10 +1402,12 @@ internal static class ReviewRunner
                     renew: false
                 )
             )
-                Console.Error.WriteLine(
-                    $"{repo.DisplayName} #{pr}: slot claim {claimToken} is lost; the attempt is left as the reset "
-                        + "recorded it."
-                );
+                return true;
+            Console.Error.WriteLine(
+                $"{repo.DisplayName} #{pr}: stopped at {attempt["stage"]}, but slot claim {claimToken} is lost; nothing "
+                    + "was saved, and the attempt is left as the reset recorded it."
+            );
+            return false;
         }
         async Task CleanupAsync()
         {
@@ -1555,6 +1560,9 @@ internal static class ReviewRunner
                     );
                     for (var poll = 0; poll < SendRetryPolls; poll++)
                         await LeasedDelayAsync(ct);
+                    // The wait's heartbeats do not check the claim, so the resend does: a slot reset during the backoff
+                    // stops the run here instead of sending the turn into the reset slot.
+                    await SaveAsync();
                 }
             }
             receipt[phase + "InputId"] = input;
