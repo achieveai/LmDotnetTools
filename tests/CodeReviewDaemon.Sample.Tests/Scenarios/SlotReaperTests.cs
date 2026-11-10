@@ -383,19 +383,28 @@ public sealed class SlotReaperTests
         return (ownerKey, store);
     }
 
+    // Counts and records only the reset (cleanup); a verified review's archive (commit) goes to commit, and without one
+    // it fails as a plain error, so the reset goes ahead without it.
     private static async Task<(IReadOnlyList<SlotReaper.ReclaimResult> Results, int Discards)> SweepAsync(
         Microsoft.Data.Sqlite.SqliteConnection connection,
         FakeHttpMessageHandler handler,
         List<JsonObject>? calls = null,
         JsonArray? forced = null,
-        Func<TimeSpan, CancellationToken, Task>? delay = null
+        Func<TimeSpan, CancellationToken, Task>? delay = null,
+        Func<JsonObject, string, JsonObject>? commit = null
     )
     {
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
         var client = new LmStreamingS2SClient(http, null, null, null);
         var discards = 0;
-        SlotReaper.SandboxExecutor sandbox = (_, args, _, _) =>
+        SlotReaper.SandboxExecutor sandbox = (phase, args, operation, _) =>
         {
+            if (phase == "commit")
+                return Task.FromResult(
+                    commit is not null
+                        ? commit(args, operation)
+                        : throw new InvalidOperationException("No archive in this test.")
+                );
             discards++;
             calls?.Add(args.DeepClone().AsObject());
             return Task.FromResult(
@@ -1138,51 +1147,106 @@ public sealed class SlotReaperTests
         }
     }
 
-    [Fact]
-    public async Task A_verified_review_stranded_by_a_head_move_frees_its_slot_without_being_redone()
+    [Theory]
+    [InlineData("archived")] // the archive is written from the slot first, under the lost commit's own id
+    [InlineData("lost-then-archived")] // a lost archive leaves the slot for the next sweep, which replays its id
+    [InlineData("lost-every-time")] // an outage never holds the slot for good: the third sweep resets without it
+    [InlineData("refused")] // the slot no longer holds this review (re-prepared): reset at once, the error recorded
+    public async Task A_verified_review_the_reaper_frees_is_archived_before_its_slot_is_reset(string archive)
     {
         // Seen on the ADO runner (MCQdbDEV #11441): the review posted and verified, the artifact commit was deferred
-        // (verify-pending), and the PR head moved before it resumed. The attempt can never resume and its native
-        // marker no longer matched, so a plain reclaim refused. Once the lease has been lapsed 30 minutes the reaper
-        // forces the slot back, keeps the verified stage, and the new head is admitted as a fresh review.
+        // (verify-pending), and the PR head moved before it resumed. Once the lease has been lapsed 30 minutes the
+        // reaper forces the slot back. The archive is written from the slot the reset discards, so nothing could write
+        // it afterwards: the reaper archives first, the review is completed-verified and its head is never redone,
+        // and only the new head is admitted as a fresh review.
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-stranded-{Guid.NewGuid():N}.db");
         try
         {
             using var connection = PrThreadBindings.Connection(database);
             await connection.OpenAsync();
             var (ownerKey, store) = await SeedLapsedClaimAsync(connection, 0);
-            var attemptKey =
-                $"reviewd/review-attempt/{PrCommands.ParseRepo("O365Exchange/Weve_DA/Nova").NormalizedKey}/100";
+            var repo = PrCommands.ParseRepo("O365Exchange/Weve_DA/Nova");
+            var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/100";
+            var runKey = $"reviewd/review-run/{repo.NormalizedKey}/100";
             var seeded = (await store.GetAsync<JsonObject>(attemptKey))!;
             seeded["stage"] = "verify-pending";
             seeded["reviewInputId"] = "input-1";
             seeded["confirmationInputId"] = "input-2";
             seeded["verifiedPublication"] = new JsonObject { ["comments"] = 3 };
+            seeded["reviewCompletedAt"] = DateTimeOffset.UtcNow - TimeSpan.FromHours(3);
+            seeded["prepared"] = new JsonObject
+            {
+                ["mergeSha"] = new string('b', 40),
+                ["baselineComments"] = new JsonArray(new JsonArray(5, 1)),
+            };
+            // The lane's own commit lost its response before the lane died.
+            seeded[ReviewRunner.CommitReplay] = "lost-commit";
             await store.SetAsync(attemptKey, seeded, CancellationToken.None);
+            var expectedArgs = ReviewRunner.ArchiveArgs(seeded, repo, "100", 0).ToJsonString();
             var handler = new FakeHttpMessageHandler()
                 .OnJson(HttpMethod.Post, "/freeze", """{"frozen":true}""")
                 .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
                 .OnJson(HttpMethod.Get, "/subagents?recursive=true", Tree("completed"));
             var calls = new List<JsonObject>();
+            var commits = new List<(string Args, string Operation)>();
+            JsonObject Commit(JsonObject args, string operation)
+            {
+                commits.Add((args.ToJsonString(), operation));
+                // The cleanup has not run, and the owner's own saves are refused while the reaper archives.
+                calls.Should().BeEmpty("the archive is written before the slot is reset");
+                if (archive == "refused")
+                    ReviewRunner.Settle(
+                        "commit",
+                        1,
+                        "",
+                        "review_common.ReviewError: Prepared manifest does not match this PR/slot/revision.",
+                        operation
+                    );
+                if (archive == "lost-every-time" || (archive == "lost-then-archived" && commits.Count == 1))
+                    throw new SandboxException(SandboxErrorKind.TransportTimeout, "transport timeout (00:00:30).");
+                return new JsonObject { ["status"] = "committed", ["commit"] = new string('c', 40) };
+            }
+            var sweeps = archive switch
+            {
+                "lost-then-archived" => 2,
+                "lost-every-time" => SlotReaper.ArchiveAttempts,
+                _ => 1,
+            };
+            IReadOnlyList<SlotReaper.ReclaimResult> results = [];
+            for (var sweep = 1; sweep <= sweeps; sweep++)
+            {
+                (results, _) = await SweepAsync(
+                    connection,
+                    handler,
+                    calls,
+                    ["owner marker held by claim other for PR 100"],
+                    commit: Commit
+                );
+                if (sweep == sweeps)
+                    break;
+                // A transient failure leaves the slot owned and unreset, with the lost id saved for the next sweep.
+                results.Should().ContainSingle(r => r.Status == "skipped").Which.Detail.Should().Contain("next sweep");
+                calls.Should().BeEmpty();
+                (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("owned");
+                var held = (await store.GetAsync<JsonObject>(attemptKey))!;
+                held["stage"]!.GetValue<string>().Should().Be("verify-pending");
+                held["archiveFailures"]!.GetValue<int>().Should().Be(sweep);
+                held[ReviewRunner.CommitReplay]!.GetValue<string>().Should().Be("lost-commit");
+                (await store.GetAsync<JsonObject>(runKey)).Should().BeNull();
+            }
 
-            var (results, _) = await SweepAsync(
-                connection,
-                handler,
-                calls,
-                ["owner marker held by claim other for PR 100"]
-            );
-
-            calls.Should().ContainSingle().Which["force"]!.GetValue<bool>().Should().BeTrue();
-            results
+            commits.Should().HaveCount(archive == "refused" ? 1 : sweeps);
+            commits
                 .Should()
-                .ContainSingle(r => r.Status == "reclaimed")
-                .Which.Detail.Should()
-                .Be("forced: owner marker held by claim other for PR 100");
+                .OnlyContain(
+                    c => c.Operation == "lost-commit" && c.Args == expectedArgs,
+                    "every archive resubmits the lost commit's id with the runner's own request"
+                );
+            calls.Should().ContainSingle().Which["force"]!.GetValue<bool>().Should().BeTrue();
             (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("released");
             var attempt = (await store.GetAsync<JsonObject>(attemptKey))!;
-            attempt["stage"]!.GetValue<string>().Should().Be("verify-pending");
             attempt["verifiedPublication"].Should().NotBeNull();
-            attempt["resetCount"].Should().BeNull();
+            attempt["resetCount"].Should().BeNull("a verified review is never offered again on its head");
             attempt["reclaim"]!["forced"]!
                 .AsArray()
                 .Select(o => o!.GetValue<string>())
@@ -1191,6 +1255,56 @@ public sealed class SlotReaperTests
             var released = JsonSerializer.SerializeToElement(attempt);
             PrSelection.IsReleasedForEarlierHead(released, "def456").Should().BeTrue("the new head is a fresh review");
             PrSelection.IsReleasedForEarlierHead(released, "abc123").Should().BeFalse("the posted head is not redone");
+            var detail = results.Should().ContainSingle(r => r.Status == "reclaimed").Which.Detail;
+            if (archive is "archived" or "lost-then-archived")
+            {
+                detail
+                    .Should()
+                    .Be($"forced: owner marker held by claim other for PR 100; archived {new string('c', 40)}");
+                attempt["stage"]!.GetValue<string>().Should().Be("completed-verified");
+                attempt["artifactCommit"]!["commit"]!.GetValue<string>().Should().Be(new string('c', 40));
+                attempt.ContainsKey(ReviewRunner.CommitReplay).Should().BeFalse("the replayed commit settled");
+                attempt.ContainsKey("archiveError").Should().BeFalse();
+                var run = (await store.GetAsync<JsonObject>(runKey))!;
+                run["stage"]!.GetValue<string>().Should().Be("completed-verified");
+                var pr = JsonSerializer.SerializeToElement(
+                    new
+                    {
+                        Lifecycle = "Open",
+                        IsDraft = false,
+                        HeadSha = "abc123",
+                    }
+                );
+                var review = JsonSerializer.SerializeToElement(run);
+                PrSelection
+                    .IsEligible(pr, review, true, DateTimeOffset.UtcNow)
+                    .Should()
+                    .BeFalse("the head was reviewed");
+                PrSelection
+                    .IsEligible(
+                        JsonSerializer.SerializeToElement(
+                            new
+                            {
+                                Lifecycle = "Open",
+                                IsDraft = false,
+                                HeadSha = "def456",
+                            }
+                        ),
+                        review,
+                        true,
+                        DateTimeOffset.UtcNow
+                    )
+                    .Should()
+                    .BeTrue("a new head is reviewed after the cooldown");
+            }
+            else
+            {
+                // Nothing can archive it after the reset, so the review keeps its verified stage and says why.
+                attempt["stage"]!.GetValue<string>().Should().Be("verify-pending");
+                attempt["archiveError"]!.GetValue<string>().Should().NotBeNullOrEmpty();
+                detail.Should().StartWith("forced: owner marker held by claim other for PR 100; not archived: ");
+                (await store.GetAsync<JsonObject>(runKey)).Should().BeNull();
+            }
         }
         finally
         {

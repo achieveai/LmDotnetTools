@@ -448,6 +448,32 @@ internal static class ReviewRunner
     // the kit's slot and index locks.
     internal const string CommitReplay = "commitReplayOperationId";
 
+    /// <summary>
+    /// The commit request this runner sends for a finished review, rebuilt from its saved attempt, so the reaper can
+    /// archive a verified review before it resets the slot. It must stay byte-identical to the runner's own request
+    /// (same fields, same order): a resubmit under <see cref="CommitReplay"/> is replayed only for an identical request.
+    /// </summary>
+    internal static JsonObject ArchiveArgs(JsonObject attempt, RepoIdentity repo, string pr, int slot)
+    {
+        var prepared =
+            attempt["prepared"] as JsonObject
+            ?? throw new InvalidOperationException("The attempt has no prepared setup to archive from.");
+        return new JsonObject
+        {
+            ["org"] = repo.OrgOrOwner,
+            ["project"] = repo.Project,
+            ["repo"] = repo.RepoName,
+            ["pr"] = pr,
+            ["slot"] = slot,
+            ["head"] = attempt["headSha"]!.GetValue<string>(),
+            ["reviewFinished"] = true,
+            ["claimToken"] = attempt["claimToken"]!.GetValue<string>(),
+            ["adopt"] = attempt["legacyCleanupAdoption"]?.GetValue<bool>() == true,
+            ["merge"] = prepared["mergeSha"]!.DeepClone(),
+            ["baselineComments"] = prepared["baselineComments"]!.DeepClone(),
+        };
+    }
+
     // The gateway refused to admit the operation at its record or concurrency limit, so it never ran.
     internal static bool RefusedAtCapacity(Exception failure) =>
         failure
@@ -1328,8 +1354,14 @@ internal static class ReviewRunner
                 {
                     pending["cleanupError"] = releaseFailure.Message;
                     await KeepOnFailureAsync(pending);
-                    Console.Error.WriteLine($"Claim release held its lane: {releaseFailure.Message}");
-                    throw;
+                    Console.Error.WriteLine(
+                        $"{repo.DisplayName} #{pr}: this run's claim was not released ({releaseFailure.Message}); the "
+                            + "slot stays claimed until a reset releases it or its lease lapses."
+                    );
+                    // A refusal at capacity says nothing about the PR, and the batch backs off on it without counting a
+                    // failure, so it is the error that surfaces, below; a failed release must not replace it.
+                    if (!prepareRefused)
+                        throw;
                 }
                 if (prepareRefused)
                     throw;

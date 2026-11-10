@@ -87,7 +87,8 @@ internal static class SlotRelease
     /// Saves <paramref name="attempt"/>, renewing the lease unless <paramref name="renew"/> is false, in one
     /// transaction, only while the row is still held on <paramref name="token"/> with no reset begun. False, writing
     /// nothing, otherwise: a run whose slot was reset never saves over the attempt the reset recorded, even when the
-    /// reaper releases between a check and a write.
+    /// reaper releases between a check and a write. The reset itself saves by naming its operation in
+    /// <paramref name="reclaim"/>.
     /// </summary>
     internal static async Task<bool> SaveIfHeldAsync(
         SqliteConnection connection,
@@ -97,7 +98,8 @@ internal static class SlotRelease
         JsonObject attempt,
         CancellationToken ct,
         bool renew = true,
-        DateTimeOffset? nowUtc = null
+        DateTimeOffset? nowUtc = null,
+        string? reclaim = null
     )
     {
         using var transaction = connection.BeginTransaction();
@@ -107,7 +109,7 @@ internal static class SlotRelease
         read.Parameters.AddWithValue("@key", key);
         var raw = await read.ExecuteScalarAsync(ct) as string;
         var claim = raw is null ? null : JsonNode.Parse(raw)!.AsObject();
-        if (!Holds(claim, token, null))
+        if (!Holds(claim, token, reclaim))
             return false;
         if (renew)
         {

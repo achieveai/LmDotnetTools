@@ -235,13 +235,35 @@ internal static class SlotReaper
                 await RestoreIfFrozenAsync();
                 return Moved(freezeState);
             }
+            Func<CancellationToken, Task<bool>>? agentsActive = threadId is { Length: > 0 }
+                ? async token => await FindActivityAsync(client, threadId, delay, token) is not null
+                : null;
+            // A verified review is on the PR, and its archive is written from the slot the discard below throws away,
+            // so it is archived first (seen on the ADO runner, MCQdbDEV #11441: a verified review reset this way was never
+            // archived, and nothing could redo it after the reset). The owner's own commit can no longer run once the row
+            // is marked.
+            var verified = IsVerified(attempt);
+            var archive =
+                verified && attempt["stage"]?.GetValue<string>() != "completed-verified"
+                    ? await ArchiveAsync(
+                        connection,
+                        sandbox,
+                        repo,
+                        pr,
+                        slot,
+                        attempt,
+                        ownerKey,
+                        claimToken,
+                        operation,
+                        agentsActive,
+                        ct
+                    )
+                    : null;
             var result = await ReviewRunner.RunLeasedStepAsync(
                 connection,
                 ownerKey,
                 claimToken,
-                threadId is { Length: > 0 }
-                    ? async token => await FindActivityAsync(client, threadId, delay, token) is not null
-                    : null,
+                agentsActive,
                 (phase, stepArgs, stepOperation, token) => sandbox(phase, stepArgs, stepOperation, token),
                 "cleanup",
                 args,
@@ -269,13 +291,8 @@ internal static class SlotReaper
             // A review whose publication was never verified becomes a failed admission once its slot is reset: the next
             // pick admits the PR again in its own conversation, which checks what already posted (Kay9: review it again
             // rather than skip it until a new push; seen live: 12 open PRs parked that way, and prepares that failed
-            // holding their slot). A verified publication keeps its stage; only its artifact commit is missing. The
-            // runner saves verify-completed before it stores the verify result, so that stage counts as verified too.
-            if (
-                attempt["verifiedPublication"] is null
-                && attempt["stage"]?.GetValue<string>()
-                    is not ("verify-completed" or "commit-pending" or "commit-completed" or "completed-verified")
-            )
+            // holding their slot). A verified publication keeps its stage, archived above when it could be.
+            if (!verified)
             {
                 attempt["stageBeforeReclaim"] = attempt["stage"]?.DeepClone();
                 attempt["stage"] = "failed-released";
@@ -294,15 +311,148 @@ internal static class SlotReaper
             var forced = overrides is not null
                 ? "forced: " + string.Join("; ", overrides.Select(o => o!.GetValue<string>()))
                 : null;
+            var detail = string.Join("; ", new[] { forced, archive }.Where(part => part is not null));
             // Deliberately leave the host agent frozen — it has no slot to resume into, and host-side
             // eviction reclaims the in-memory instance.
-            return new ReclaimResult(repo.DisplayName, pr, slot, threadId, freezeState, "reclaimed", operation, forced);
+            return new ReclaimResult(
+                repo.DisplayName,
+                pr,
+                slot,
+                threadId,
+                freezeState,
+                "reclaimed",
+                operation,
+                detail.Length > 0 ? detail : null
+            );
         }
         catch
         {
             await RestoreIfFrozenAsync();
             throw;
         }
+    }
+
+    // The runner saves verify-completed before it stores the verify result, so that stage counts as verified too.
+    private static bool IsVerified(JsonObject attempt) =>
+        attempt["verifiedPublication"] is not null
+        || attempt["stage"]?.GetValue<string>()
+            is "verify-completed"
+                or "commit-pending"
+                or "commit-completed"
+                or "completed-verified";
+
+    // How many sweeps a verified review's archive may fail transiently (the gateway at capacity or unreachable, or a
+    // retryable commit failure) before the slot is reset without it, so an outage never holds a slot for good.
+    internal const int ArchiveAttempts = 3;
+
+    /// <summary>
+    /// Archives a verified review before its slot is reset: the runner's own commit step, under this reset. A commit
+    /// whose response was lost is resubmitted under its saved id. On success the review is <c>completed-verified</c>
+    /// and its review-run row is written before the reset, so a crash never leaves it to be reviewed again. A transient
+    /// failure is saved on the attempt and throws, leaving the slot for the next sweep, until the
+    /// <see cref="ArchiveAttempts"/>th; that, or any other failure, is recorded as <c>archiveError</c> and the reset goes
+    /// ahead. Returns what the result's detail says about the archive.
+    /// </summary>
+    private static async Task<string> ArchiveAsync(
+        SqliteConnection connection,
+        SandboxExecutor sandbox,
+        RepoIdentity repo,
+        string pr,
+        int slot,
+        JsonObject attempt,
+        string ownerKey,
+        string claimToken,
+        string reset,
+        Func<CancellationToken, Task<bool>>? agentsActive,
+        CancellationToken ct
+    )
+    {
+        var operation = attempt[ReviewRunner.CommitReplay]?.GetValue<string>() is { Length: > 0 } lost
+            ? lost
+            : Guid.NewGuid().ToString("N");
+        attempt["commitOperationId"] = operation;
+        JsonObject commit;
+        try
+        {
+            commit = await ReviewRunner.RunLeasedStepAsync(
+                connection,
+                ownerKey,
+                claimToken,
+                agentsActive,
+                (phase, stepArgs, stepOperation, token) => sandbox(phase, stepArgs, stepOperation, token),
+                "commit",
+                ReviewRunner.ArchiveArgs(attempt, repo, pr, slot),
+                operation,
+                ct,
+                reclaim: reset
+            );
+            if (
+                commit["status"]?.GetValue<string>() is not ("committed" or "unchanged")
+                || commit["commit"]?.GetValue<string>() is not { Length: 40 }
+            )
+                throw new InvalidOperationException("Artifact commit was not verified.");
+        }
+        catch (Exception failure) when (failure is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            if (ReviewRunner.CommitResponseLost(failure))
+                attempt[ReviewRunner.CommitReplay] = operation;
+            else if (failure is ReviewRunner.SettledSandboxException)
+                attempt.Remove(ReviewRunner.CommitReplay);
+            var failures = (attempt["archiveFailures"]?.GetValue<int>() ?? 0) + 1;
+            attempt["archiveFailures"] = failures;
+            attempt["archiveError"] = failure.Message;
+            var transient =
+                ReviewRunner.RefusedAtCapacity(failure)
+                || ReviewRunner.CommitResponseLost(failure)
+                || ReviewRunner.CommitRetryable(failure);
+            Console.Error.WriteLine(
+                $"{repo.DisplayName} #{pr}: archive of the verified review failed ({failure.Message}), "
+                    + $"attempt {failures} of {ArchiveAttempts}."
+            );
+            if (!transient || failures >= ArchiveAttempts)
+                return $"not archived: {failure.Message}";
+            if (
+                !await SlotRelease.SaveIfHeldAsync(
+                    connection,
+                    ownerKey,
+                    claimToken,
+                    $"reviewd/review-attempt/{repo.NormalizedKey}/{pr}",
+                    attempt,
+                    CancellationToken.None,
+                    renew: false,
+                    reclaim: reset
+                )
+            )
+                throw new InvalidOperationException(
+                    "Slot claim changed during the archive; nothing was saved or reset.",
+                    failure
+                );
+            throw new InvalidOperationException(
+                $"Archive of the verified review failed ({failure.Message}); the slot is left for the next sweep.",
+                failure
+            );
+        }
+        attempt.Remove(ReviewRunner.CommitReplay);
+        attempt.Remove("archiveError");
+        attempt["artifactCommit"] = commit;
+        attempt["stage"] = "completed-verified";
+        attempt["reviewedHeadSha"] = attempt["headSha"]!.DeepClone();
+        attempt["finishedAt"] = DateTimeOffset.UtcNow;
+        // The review-run row is what says this head was reviewed; the release below writes the attempt.
+        if (
+            !await SlotRelease.SaveIfHeldAsync(
+                connection,
+                ownerKey,
+                claimToken,
+                $"reviewd/review-run/{repo.NormalizedKey}/{pr}",
+                attempt,
+                ct,
+                renew: false,
+                reclaim: reset
+            )
+        )
+            throw new InvalidOperationException("Slot claim changed during the archive; the slot was not reset.");
+        return $"archived {commit["commit"]!.GetValue<string>()}";
     }
 
     // A live lane renews its lease every step, so a lease lapsed this long means no lane has watched the slot for an

@@ -4437,6 +4437,10 @@ public sealed class ReviewdRunnerTests
         ]);
         var phases = new List<string>();
         var lostCommit = new SandboxException(SandboxErrorKind.TransportTimeout, "transport timeout (00:00:30).");
+        var refusedPrepare = new SandboxException(SandboxErrorKind.Unavailable, "refused", 503)
+        {
+            ErrorCode = "operation_capacity_exhausted",
+        };
         string? recorded = null;
         try
         {
@@ -4491,10 +4495,7 @@ public sealed class ReviewdRunnerTests
                     if (resetDuring == "commit-lost")
                         throw lostCommit;
                     if (resetDuring.EndsWith("-refused", StringComparison.Ordinal))
-                        throw new SandboxException(SandboxErrorKind.Unavailable, "refused", 503)
-                        {
-                            ErrorCode = "operation_capacity_exhausted",
-                        };
+                        throw refusedPrepare;
                 }
                 return step switch
                 {
@@ -4549,9 +4550,11 @@ public sealed class ReviewdRunnerTests
                         .Which.Message.Should()
                         .Be("inspect failed", "the step's own failure surfaces");
                 else if (resetDuring.EndsWith("-refused", StringComparison.Ordinal))
-                    (await run.Should().ThrowAsync<InvalidOperationException>())
-                        .Which.Message.Should()
-                        .Be("Slot claim changed; exact-token release refused.", "only the reset releases a marked row");
+                    // Only the reset releases a marked row, so the run's own release fails; the capacity refusal still
+                    // surfaces, which the batch backs off on without counting a failure against the PR.
+                    (await run.Should().ThrowAsync<SandboxException>())
+                        .Which.Should()
+                        .BeSameAs(refusedPrepare, "a failed release must not replace the capacity refusal");
                 else
                 {
                     var lost = (await run.Should().ThrowAsync<ReviewRunner.SlotClaimLostException>()).Which;
@@ -4981,6 +4984,13 @@ public sealed class ReviewdRunnerTests
                 .Where(failure => failure.Kind == SandboxErrorKind.TransportTimeout);
             var lostOperation = commitOperations.Should().ContainSingle().Subject;
             (await ReplayIdAsync()).Should().Be(lostOperation);
+            // A reaper that frees this slot archives the review first, under the same id, from the saved attempt alone;
+            // the gateway replays it only for the identical request.
+            ReviewRunner
+                .ArchiveArgs((await store.GetAsync<JsonObject>(attemptKey))!, repo, "17", 2)
+                .ToJsonString()
+                .Should()
+                .Be(commitRequests.Single(), "the reaper's archive must resubmit the runner's own commit request");
             lostCommit = new SandboxException(
                 SandboxErrorKind.Unavailable,
                 "Sandbox gateway returned 503 for operation submit.",
