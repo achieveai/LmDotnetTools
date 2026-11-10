@@ -9,8 +9,8 @@
     and a dump is raw process memory, so the dump is never uploaded. Only method names and stack shapes
     reach the log: state machine fields are deliberately not requested.
 
-    Never fails the job: it runs after a failure has already been reported, and a broken diagnostic must
-    not replace the real failure in the log.
+    Best-effort diagnostics after a reported failure: a terminating error here can still fail this step,
+    but it cannot turn the failed test step green.
 
 .PARAMETER Root
     Directory searched for *_hangdump.dmp files.

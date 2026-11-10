@@ -253,31 +253,44 @@ public class HostGitCommandRunnerTests : IDisposable
         var argv = _lab.RunUntilReleased(release, marker, held);
         var runner = Runner(idleTimeout: TimeSpan.FromSeconds(byCallerCancellation ? 60 : 0.3));
 
-        if (byCallerCancellation)
+        try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
-            await FluentActions
-                .Awaiting(() => runner.RunAsync(new SandboxCommand(argv, _dir), cts.Token))
+            if (byCallerCancellation)
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+                await FluentActions
+                    .Awaiting(() => runner.RunAsync(new SandboxCommand(argv, _dir), cts.Token))
+                    .Should()
+                    .ThrowAsync<OperationCanceledException>("the caller's cancellation ended this call");
+            }
+            else
+            {
+                var result = await runner.RunAsync(new SandboxCommand(argv, _dir), default);
+                result.ExitCode.Should().Be(124, "the idle timeout ended this call: {0}", result.Stderr);
+            }
+
+            File.Exists(marker).Should().BeFalse("the child can only write this after the release below");
+
+            (await ProcessLab.WaitForHolderToExitAsync(held, TimeSpan.FromSeconds(30)))
                 .Should()
-                .ThrowAsync<OperationCanceledException>("the caller's cancellation ended this call");
+                .BeTrue(
+                    "the child still holds its file open after the call returned, so it was abandoned rather "
+                        + "than killed — that is the orphaned fetch that keeps holding the store after the daemon "
+                        + "moved on"
+                );
         }
-        else
+        finally
         {
-            var result = await runner.RunAsync(new SandboxCommand(argv, _dir), default);
-            result.ExitCode.Should().Be(124, "the idle timeout ended this call: {0}", result.Stderr);
+            // Released however the block above ended, so a failed assertion cannot leave the child running
+            // until its own two-minute bound. A child that somehow survived sees this within about a second
+            // and writes the marker. A failure to write it must not replace the failure that got us here.
+            try
+            {
+                await File.WriteAllTextAsync(release, string.Empty);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
 
-        File.Exists(marker).Should().BeFalse("the child can only write this after the release below");
-
-        (await ProcessLab.WaitForHolderToExitAsync(held, TimeSpan.FromSeconds(30)))
-            .Should()
-            .BeTrue(
-                "the child still holds its file open after the call returned, so it was abandoned rather than "
-                    + "killed — that is the orphaned fetch that keeps holding the store after the daemon moved on"
-            );
-
-        // A child that somehow survived sees this within about a second and writes the marker.
-        await File.WriteAllTextAsync(release, string.Empty);
         await Task.Delay(TimeSpan.FromSeconds(3));
         File.Exists(marker).Should().BeFalse("a child that was killed cannot react to the release");
     }

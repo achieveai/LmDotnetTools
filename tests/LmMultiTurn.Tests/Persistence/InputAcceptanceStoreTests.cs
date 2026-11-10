@@ -528,9 +528,11 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
                         var admission = Admission(InputId);
                         if (await store.TryReserveAcceptanceAsync(admission) is not null)
                         {
-                            // Without a pause the refused contenders spin on the record's gate, and the
-                            // gate's polling waiter can lose to them until its settle budget runs out. No
-                            // real caller retries in a tight loop, so that starvation is this test's own.
+                            // Mitigates a suspected race; it is not a proven fix. Contenders that retry at
+                            // once keep the record's gate busy, and a release polling for that gate can run
+                            // out its settle budget. That was seen only with the budget cut 100x, never at
+                            // the real budget, so it is the likely cause of the CI failure at 1a516bb64,
+                            // not a confirmed one. No real caller retries in a tight loop.
                             await Task.Delay(1);
                             continue;
                         }
@@ -561,6 +563,71 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
         (await stores[0].GetAcceptanceAsync("thread-1", InputId))
             .Should()
             .BeNull("every admission taken in the race was given back");
+    }
+
+    /// <summary>
+    /// The re-attempt itself, arranged rather than raced. The stress test above rarely reaches it, because
+    /// reservations and retractions share the record's gate. Here the record is left empty, so the first
+    /// attempt is refused and the store starts waiting for it to settle. The record is then retracted while
+    /// that wait is parked on its first poll. The id is free by the time the store looks again, so the only
+    /// right answer is to try the create once more and grant it. A store that reports the refusal as a fault
+    /// instead throws here.
+    /// </summary>
+    [Fact]
+    public async Task AReservationRefusedByARecordThatIsThenRetracted_IsReattemptedAndGranted()
+    {
+        const string Backing = "refused-then-retracted";
+        var clock = new TimerSignallingClock();
+        var store = CreateStore(StoreKind.File, Backing, clock);
+        (await store.TryReserveAcceptanceAsync(Admission())).Should().BeNull();
+        var recordFile = SoleAcceptanceRecordFile(Backing);
+        await File.WriteAllBytesAsync(recordFile, []);
+
+        var fresh = Admission();
+        var reserve = store.TryReserveAcceptanceAsync(fresh);
+
+        // The first timer is the settle wait's first poll: the refusal has happened and nothing has been
+        // decided yet. Waiting on the registration rather than a fixed delay is what makes this deterministic.
+        (await clock.FirstTimerRegistered.WaitAsync(TimeSpan.FromSeconds(10)))
+            .Should()
+            .BeTrue("the refused reservation must be waiting for the record to settle, or nothing is tested");
+        reserve.IsCompleted.Should().BeFalse("the reservation must still be in flight when the record goes");
+
+        File.Delete(recordFile);
+
+        // A few polls of injected time, far inside the ten-second settle budget, so the budget cannot be what
+        // ends the call. The cap fails loudly instead of looping forever.
+        for (var i = 0; i < 200 && !reserve.IsCompleted; i++)
+        {
+            clock.Advance(TimeSpan.FromMilliseconds(5));
+            await Task.Delay(1);
+        }
+
+        reserve.IsCompleted.Should().BeTrue("the reservation must settle once the record is gone");
+        (await reserve).Should().BeNull("a refusal whose record has since been retracted must end in a grant");
+        (await store.GetAcceptanceAsync(fresh.ThreadId, fresh.InputId)).Should().Be(fresh);
+    }
+
+    /// <summary>A fake clock that signals the first timer created on it, so a test can wait for a poll.</summary>
+    private sealed class TimerSignallingClock : FakeTimeProvider
+    {
+        public TimerSignallingClock()
+            : base(DateTimeOffset.UtcNow) { }
+
+        private int _timers;
+
+        public SemaphoreSlim FirstTimerRegistered { get; } = new(0);
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = base.CreateTimer(callback, state, dueTime, period);
+            if (Interlocked.Increment(ref _timers) == 1)
+            {
+                FirstTimerRegistered.Release();
+            }
+
+            return timer;
+        }
     }
 
     /// <summary>

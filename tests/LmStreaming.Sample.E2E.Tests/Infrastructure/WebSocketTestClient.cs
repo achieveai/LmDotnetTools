@@ -106,7 +106,13 @@ public sealed class WebSocketTestClient : IAsyncDisposable
             throw;
         }
 
-        return new FrameCollection(frames, $"the socket left the Open state ({_socket.State})");
+        // The loop also stops on a cancellation that lands between frames, with the socket still open, so
+        // the reason is read from the tokens first and from the socket only when neither fired.
+        var reason =
+            timeoutCts.IsCancellationRequested ? $"the {overallTimeout} timeout expired between frames"
+            : ct.IsCancellationRequested ? "the caller cancelled"
+            : $"the socket left the Open state ({_socket.State})";
+        return new FrameCollection(frames, reason);
     }
 
     /// <summary>
