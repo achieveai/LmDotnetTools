@@ -179,9 +179,9 @@ public record AnthropicRequest
             switch (message)
             {
                 case CompositeMessage compositeMsg:
-                    var (primaryMessage, secondaryMessage) = AddCompositeMessage(compositeMsg);
+                    var (primaryMessage, secondaryMessage) = AddCompositeMessage(compositeMsg, logger);
                     anthropicMessages.Add(primaryMessage);
-                    if (secondaryMessage != null)
+                    if (secondaryMessage is { Content.Count: > 0 })
                     {
                         anthropicMessages.Add(secondaryMessage);
                     }
@@ -193,7 +193,8 @@ public record AnthropicRequest
 
                     foreach (
                         var (toolCallContent, toolResultContent) in ToolCallAggregateMessageToAnthropicMessage(
-                            aggregateMsg
+                            aggregateMsg,
+                            logger
                         )
                     )
                     {
@@ -201,8 +202,13 @@ public record AnthropicRequest
                         userContents.Add(toolResultContent);
                     }
 
-                    anthropicMessages.Add(new AnthropicMessage { Role = "assistant", Content = assistantContents });
-                    anthropicMessages.Add(new AnthropicMessage { Role = "user", Content = userContents });
+                    // Every call left out for want of its result leaves nothing to send.
+                    if (assistantContents.Count > 0)
+                    {
+                        anthropicMessages.Add(new AnthropicMessage { Role = "assistant", Content = assistantContents });
+                        anthropicMessages.Add(new AnthropicMessage { Role = "user", Content = userContents });
+                    }
+
                     break;
                 default:
                     // Regular message handling for other message types
@@ -244,6 +250,13 @@ public record AnthropicRequest
         // This happens when server tool use, server tool result, and text content from a single assistant
         // turn arrive as separate IMessage objects.
         anthropicMessages = MergeConsecutiveSameRoleMessages(anthropicMessages);
+        if (DropUnmatchedToolResults(anthropicMessages, logger))
+        {
+            // A user turn that held nothing but such results is gone; join the turns around it again.
+            anthropicMessages = MergeConsecutiveSameRoleMessages([
+                .. anthropicMessages.Where(m => m.Content.Count > 0),
+            ]);
+        }
 
         // Extract the Thinking property from ExtraProperties if present
         AnthropicThinking? thinking = null;
@@ -302,7 +315,8 @@ public record AnthropicRequest
     }
 
     private static (AnthropicMessage primaryMessage, AnthropicMessage? secondaryMessage) AddCompositeMessage(
-        CompositeMessage compositeMsg
+        CompositeMessage compositeMsg,
+        ILogger? logger
     )
     {
         var role = compositeMsg.Role switch
@@ -326,7 +340,10 @@ public record AnthropicRequest
 
                 secondaryMessage ??= new AnthropicMessage { Role = "user" };
                 foreach (
-                    var (toolCallContent, toolResultContent) in ToolCallAggregateMessageToAnthropicMessage(aggregateMsg)
+                    var (toolCallContent, toolResultContent) in ToolCallAggregateMessageToAnthropicMessage(
+                        aggregateMsg,
+                        logger
+                    )
                 )
                 {
                     primaryMessage.Content.Add(toolCallContent);
@@ -561,42 +578,80 @@ public record AnthropicRequest
         }
     }
 
+    /// <summary>
+    ///     Pairs each call of the aggregate with the result that answers it by <c>ToolCallId</c>, never by
+    ///     position. History can hold a generation's results out of call order, or without one of them, and
+    ///     pairing by position then sends one call's result under another call's id. A call with no result
+    ///     here, or a result with no call, is left out and logged: Anthropic rejects a <c>tool_use</c> without
+    ///     its <c>tool_result</c> and a <c>tool_result</c> without its <c>tool_use</c>.
+    /// </summary>
     private static IEnumerable<(
         AnthropicContent toolCallContent,
         AnthropicContent toolResultContent
-    )> ToolCallAggregateMessageToAnthropicMessage(ToolsCallAggregateMessage aggregateMsg)
+    )> ToolCallAggregateMessageToAnthropicMessage(ToolsCallAggregateMessage aggregateMsg, ILogger? logger)
     {
-        // First create an assistant message with the tool calls
-        if (aggregateMsg.ToolsCallMessage.ToolCalls?.Any() == true)
-        {
-            foreach (
-                var (toolCall, toolResult) in aggregateMsg.ToolsCallMessage.ToolCalls.Zip(
-                    aggregateMsg.ToolsCallResult.ToolCallResults
-                )
-            )
-            {
-                if (IsEmptyIdServerToolCall(toolCall.ExecutionTarget, toolCall.ToolCallId))
-                {
-                    continue;
-                }
+        var toolCalls = aggregateMsg.ToolsCallMessage.ToolCalls ?? [];
+        var toolResults = aggregateMsg.ToolsCallResult.ToolCallResults ?? [];
+        var answered = new bool[toolResults.Count];
 
-                var toolResultBlocks = ToAnthropicToolResultContentBlocks(toolResult.ContentBlocks, toolResult.IsError);
-                yield return (
-                    new AnthropicContent
-                    {
-                        Type =
-                            toolCall.ExecutionTarget == ExecutionTarget.ProviderServer ? "server_tool_use" : "tool_use",
-                        Id = toolCall.ToolCallId,
-                        Name = toolCall.FunctionName,
-                        Input = SafeDeserializeArgs(toolCall.FunctionArgs),
-                    },
-                    new AnthropicContent
-                    {
-                        Type = "tool_result",
-                        ToolUseId = toolCall.ToolCallId,
-                        Content = toolResultBlocks != null ? null : toolResult.Result,
-                        ToolResultContentBlocks = toolResultBlocks,
-                    }
+        foreach (var toolCall in toolCalls)
+        {
+            if (IsEmptyIdServerToolCall(toolCall.ExecutionTarget, toolCall.ToolCallId))
+            {
+                continue;
+            }
+
+            var resultIndex = -1;
+            for (var i = 0; i < toolResults.Count; i++)
+            {
+                if (
+                    !answered[i]
+                    && string.Equals(toolResults[i].ToolCallId, toolCall.ToolCallId, StringComparison.Ordinal)
+                )
+                {
+                    resultIndex = i;
+                    break;
+                }
+            }
+
+            if (resultIndex < 0)
+            {
+                logger?.LogWarning(
+                    "Dropping tool_use {ToolCallId} ({FunctionName}): its result is not in the same tool-call aggregate",
+                    toolCall.ToolCallId,
+                    toolCall.FunctionName
+                );
+                continue;
+            }
+
+            answered[resultIndex] = true;
+            var toolResult = toolResults[resultIndex];
+            var toolResultBlocks = ToAnthropicToolResultContentBlocks(toolResult.ContentBlocks, toolResult.IsError);
+            yield return (
+                new AnthropicContent
+                {
+                    Type = toolCall.ExecutionTarget == ExecutionTarget.ProviderServer ? "server_tool_use" : "tool_use",
+                    Id = toolCall.ToolCallId,
+                    Name = toolCall.FunctionName,
+                    Input = SafeDeserializeArgs(toolCall.FunctionArgs),
+                },
+                new AnthropicContent
+                {
+                    Type = "tool_result",
+                    ToolUseId = toolResult.ToolCallId,
+                    Content = toolResultBlocks != null ? null : toolResult.Result,
+                    ToolResultContentBlocks = toolResultBlocks,
+                }
+            );
+        }
+
+        for (var i = 0; i < toolResults.Count; i++)
+        {
+            if (!answered[i] && !IsEmptyIdServerToolCall(toolResults[i].ExecutionTarget, toolResults[i].ToolCallId))
+            {
+                logger?.LogWarning(
+                    "Dropping tool_result {ToolCallId}: no unanswered tool_use for it in the same tool-call aggregate",
+                    toolResults[i].ToolCallId
                 );
             }
         }
@@ -737,6 +792,57 @@ public record AnthropicRequest
 
             yield return messageList[i];
         }
+    }
+
+    /// <summary>
+    ///     Anthropic accepts a <c>tool_result</c> only for a <c>tool_use</c> of the assistant turn right before
+    ///     it, and only once per <c>tool_use</c> (400 "each tool_use must have a single result"). History that
+    ///     split a generation can put a result in a later user turn, or answer one call twice; either fails
+    ///     every later request of the conversation. Such a block is dropped and logged; the first result
+    ///     for a call stays.
+    /// </summary>
+    /// <returns>True when a user turn was left with no content and must be removed.</returns>
+    private static bool DropUnmatchedToolResults(List<AnthropicMessage> messages, ILogger? logger)
+    {
+        var emptied = false;
+        for (var i = 0; i < messages.Count; i++)
+        {
+            var message = messages[i];
+            if (message.Role != "user" || !message.Content.Any(b => b.Type == "tool_result"))
+            {
+                continue;
+            }
+
+            var offered = new HashSet<string?>();
+            if (i > 0 && messages[i - 1].Role == "assistant")
+            {
+                offered.UnionWith(
+                    messages[i - 1].Content.Where(b => b.Type is "tool_use" or "server_tool_use").Select(b => b.Id)
+                );
+            }
+
+            var answered = new HashSet<string?>();
+            _ = message.Content.RemoveAll(block =>
+            {
+                if (block.Type != "tool_result" || (offered.Contains(block.ToolUseId) && answered.Add(block.ToolUseId)))
+                {
+                    return false;
+                }
+
+                logger?.LogWarning(
+                    "Dropping tool_result {ToolUseId}: {Reason}",
+                    block.ToolUseId,
+                    offered.Contains(block.ToolUseId)
+                        ? "its tool_use already has a result"
+                        : "no tool_use for it in the assistant turn before it"
+                );
+                return true;
+            });
+
+            emptied |= message.Content.Count == 0;
+        }
+
+        return emptied;
     }
 
     private static List<AnthropicMessage> MergeConsecutiveSameRoleMessages(List<AnthropicMessage> messages)
