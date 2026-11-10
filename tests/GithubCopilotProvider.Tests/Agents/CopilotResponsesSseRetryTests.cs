@@ -77,6 +77,24 @@ public sealed class CopilotResponsesSseRetryTests
         logger.Entries.Should().Contain(e => e.Level == LogLevel.Warning);
     }
 
+    // #769: the sample passes its replay switch to this factory. If the factory dropped it, replay would
+    // silently stay off (or on) whatever the setting says. Building the agent sends no request, so the
+    // stub token is never read.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Create_forwards_the_replay_switch_to_the_agent(bool replay)
+    {
+        using var agent = CopilotResponsesAgentFactory.Create(
+            "gpt-5.6-terra",
+            new StubTokenProvider(),
+            CopilotResponsesTransport.Sse,
+            replayReasoning: replay
+        );
+
+        agent.ReplaysReasoning.Should().Be(replay);
+    }
+
     [Fact]
     public async Task CreateSseClient_forwards_retry_options_and_logger()
     {

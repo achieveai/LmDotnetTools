@@ -823,6 +823,11 @@ try
     // every provider client below. No section keeps RetryOptions.Default.
     builder.Services.TryAddSingleton(sp => ProviderRetrySettings.Bind(sp.GetRequiredService<IConfiguration>()));
 
+    // Builds the agent for a discovered Copilot model. It is a service only so a test can swap in a fake
+    // and check, offline, that the reasoning-replay switch (#769) reaches the agent from both places that
+    // build one. The default is the same static method both places called before.
+    builder.Services.TryAddSingleton<CopilotModelAgentFactory>(CreateCopilotModelAgent);
+
     _ = builder.Services.AddSingleton<Func<string, IStreamingAgent>>(sp =>
         providerId =>
         {
@@ -833,7 +838,7 @@ try
             // Responses); everything else is a fixed provider handled by the switch below.
             if (sp.GetRequiredService<ProviderRegistry>().TryGetCopilotModel(providerId, out var copilotModel))
             {
-                return CreateCopilotModelAgent(
+                return sp.GetRequiredService<CopilotModelAgentFactory>()(
                     copilotModel,
                     loggerFactory,
                     retryOptions,
@@ -2300,7 +2305,7 @@ try
                         providerRegistry,
                         providerAgent,
                         model =>
-                            CreateCopilotModelAgent(
+                            sp.GetRequiredService<CopilotModelAgentFactory>()(
                                 model,
                                 loggerFactory,
                                 sp.GetRequiredService<RetryOptions>(),
@@ -4264,6 +4269,17 @@ public partial class Program
             return [];
         }
     }
+
+    /// <summary>
+    ///     Builds the agent for a discovered Copilot model. Registered as a service only so a test can
+    ///     replace it; the default is <see cref="CreateCopilotModelAgent"/>.
+    /// </summary>
+    internal delegate IStreamingAgent CopilotModelAgentFactory(
+        CopilotModelInfo model,
+        ILoggerFactory loggerFactory,
+        RetryOptions? retryOptions,
+        bool replayReasoning
+    );
 
     /// <summary>
     ///     Maps a discovered Copilot model's transport to the matching agent factory. Anthropic-shaped

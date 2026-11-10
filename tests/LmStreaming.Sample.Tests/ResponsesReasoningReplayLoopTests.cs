@@ -35,6 +35,12 @@ public sealed class ResponsesReasoningReplayLoopTests
             foreach (var json in turns[Math.Min(_call++, turns.Length - 1)])
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (json == Cut)
+                {
+                    // The connection drops mid-stream: the one failure the loop retries on its own.
+                    throw new HttpIOException(HttpRequestError.ResponseEnded);
+                }
+
                 yield return ResponseEventParser.Parse(json);
                 await Task.Yield();
             }
@@ -50,6 +56,11 @@ public sealed class ResponsesReasoningReplayLoopTests
         """{"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"c1","name":"Echo","arguments":"{}"}}""",
         """{"type":"response.completed","response":{"id":"r1"}}""",
     ];
+
+    private const string Cut = "CUT";
+
+    private static string ReasoningDone(string blob) =>
+        $$$"""{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_{{{blob}}}","summary":[],"encrypted_content":"{{{blob}}}"}}""";
 
     private static readonly string[] s_answer =
     [
@@ -150,5 +161,44 @@ public sealed class ResponsesReasoningReplayLoopTests
             .Should()
             .Equal("message", "reasoning", "function_call", "function_call_output", "message", "message");
         client.Requests[2].Input[1].EncryptedContent.Should().Be("BLOB");
+    }
+
+    /// <summary>
+    /// An attempt that saved its reasoning (B1) and then lost its connection is retried, and the retry saves
+    /// new reasoning (B2) with its answer. B1 belongs to no output the model ever gave, so it must not be
+    /// sent again; B2 must.
+    /// </summary>
+    [Fact]
+    public async Task Reasoning_from_an_abandoned_attempt_is_not_replayed()
+    {
+        var store = new InMemoryConversationStore();
+        var threadId = $"thread-{Guid.NewGuid():N}";
+        var client = new ScriptedClient(
+            ["""{"type":"response.created","response":{"id":"r1"}}""", ReasoningDone("B1"), Cut],
+            [
+                """{"type":"response.created","response":{"id":"r2"}}""",
+                ReasoningDone("B2"),
+                """{"type":"response.output_text.done","output_index":1,"item_id":"m1","content_index":0,"text":"done"}""",
+                """{"type":"response.completed","response":{"id":"r2"}}""",
+            ],
+            s_answer
+        );
+
+        await using (var loop = Loop(client, store, threadId))
+        {
+            await RunUntilRequestsAsync(loop, client, 2, "first");
+        }
+
+        await using (var reloaded = Loop(client, store, threadId))
+        {
+            await RunUntilRequestsAsync(reloaded, client, 3, "second");
+        }
+
+        client
+            .Requests[2]
+            .Input.Where(i => i.Type == "reasoning")
+            .Select(i => i.EncryptedContent)
+            .Should()
+            .Equal(["B2"], "only the attempt that gave an answer keeps its reasoning");
     }
 }

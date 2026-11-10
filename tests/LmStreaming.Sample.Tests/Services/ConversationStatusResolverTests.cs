@@ -139,6 +139,32 @@ public class ConversationStatusResolverTests
         var json = JsonSerializer.Serialize(result!.Response);
         json.Should().Contain("SUMMARY");
         json.Should().NotContain("OPENAI-BLOB", "the replay blob is for the model, never for a client");
+        json.Should().NotContainEquivalentOf("encryptedOrigin", "the replay tag is not for a client either");
+        json.Should().NotContain("responses:gpt-5.6-terra");
+    }
+
+    [Fact]
+    public async Task ResolveByRunIdAsync_RunEndingOnlyOnAReplayBlob_ReturnsNullResponse()
+    {
+        var store = new InMemoryConversationStore();
+        await store.UpsertRunLedgerAsync(Entry(ThreadId, "run-1", RunStatus.Errored, "input-1"));
+        var blob = new ReasoningMessage
+        {
+            Role = Role.Assistant,
+            Reasoning = "OPENAI-BLOB",
+            Visibility = ReasoningVisibility.Encrypted,
+            EncryptedOrigin = "responses:gpt-5.6-terra",
+        };
+        await store.AppendMessagesAsync(
+            ThreadId,
+            [MessagePersistenceConverter.ToPersistedMessage(blob, ThreadId, "run-1")]
+        );
+        var resolver = new ConversationStatusResolver(store, store);
+
+        var result = await resolver.ResolveByRunIdAsync(ThreadId, "run-1");
+
+        result!.Status.Should().Be(ConversationRunStatus.Errored);
+        result.Response.Should().BeNull("a run whose only output is a replay blob has no answer a client can read");
     }
 
     [Fact]

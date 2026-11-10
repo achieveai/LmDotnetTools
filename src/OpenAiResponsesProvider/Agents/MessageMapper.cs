@@ -103,18 +103,32 @@ internal static class MessageMapper
     ///     Removes a replayed reasoning item that no model output follows. A reasoning item belongs to the
     ///     output after it, and history can lose that output: a Stop mid-turn, or a compaction cut.
     /// </summary>
+    /// <remarks>
+    ///     A reasoning item followed by another reasoning item is kept only when both came from the same
+    ///     response (one response can hold several, e.g. around web searches, which are not replayed). One
+    ///     followed by reasoning from a different response is an attempt that was cut off and retried; the
+    ///     model never answered after it. Dropping a reasoning item never makes a request invalid.
+    /// </remarks>
     private static void DropReasoningWithoutOutput(List<ResponseInputItem> inputItems)
     {
         // Backwards, so a run of reasoning items is judged against what is left after each removal.
         for (var i = inputItems.Count - 1; i >= 0; i--)
         {
-            if (inputItems[i].Type != "reasoning")
+            var item = inputItems[i];
+            if (item.Type != "reasoning")
             {
                 continue;
             }
 
             var next = i + 1 < inputItems.Count ? inputItems[i + 1] : null;
-            if (next is not ({ Type: "function_call" or "reasoning" } or { Type: "message", Role: "assistant" }))
+            var outputFollows = next switch
+            {
+                { Type: "function_call" } or { Type: "message", Role: "assistant" } => true,
+                { Type: "reasoning" } => item.ReplayGenerationId is not null
+                    && item.ReplayGenerationId == next.ReplayGenerationId,
+                _ => false,
+            };
+            if (!outputFollows)
             {
                 inputItems.RemoveAt(i);
             }
@@ -236,6 +250,7 @@ internal static class MessageMapper
                         Type = "reasoning",
                         Summary = [],
                         EncryptedContent = blob.Reasoning,
+                        ReplayGenerationId = blob.GenerationId,
                     }
                 );
                 break;

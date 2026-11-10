@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
@@ -59,11 +60,12 @@ public sealed class MessageMapperReasoningTests
                 : ImmutableDictionary<string, object?>.Empty,
         };
 
-    private static ReasoningMessage Blob(string? origin = Origin) =>
+    private static ReasoningMessage Blob(string? origin = Origin, string blob = "BLOB", string? generationId = "g1") =>
         new()
         {
             Role = Role.Assistant,
-            Reasoning = "BLOB",
+            Reasoning = blob,
+            GenerationId = generationId,
             Visibility = ReasoningVisibility.Encrypted,
             EncryptedOrigin = origin,
         };
@@ -182,6 +184,69 @@ public sealed class MessageMapperReasoningTests
         );
 
         ReasoningItems(request).Should().BeEmpty("a blob is replayed only to a model it can name");
+    }
+
+    private sealed class CapturingClient : IOpenAiResponsesClient
+    {
+        public List<ResponseCreateRequest> Requests { get; } = [];
+
+        public async IAsyncEnumerable<ResponseEvent> StreamResponseAsync(
+            ResponseCreateRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default
+        )
+        {
+            Requests.Add(request);
+            await Task.Yield();
+            yield return new ResponseLifecycleEvent { Type = ResponseEventTypes.ResponseCompleted };
+        }
+
+        public void Dispose() { }
+    }
+
+    // The switch must reach the request the agent sends, not only the mapper: the agent passes its own
+    // flag to BuildRequest, and a wrong value there would replay with the switch off.
+    [Theory]
+    [InlineData(true, 1)]
+    [InlineData(false, 0)]
+    public async Task Agent_sends_the_stored_blob_only_when_its_switch_is_on(bool replay, int reasoningItems)
+    {
+        var client = new CapturingClient();
+        using var agent = new OpenAiResponsesAgent("test", client, replayReasoning: replay);
+
+        var stream = await agent.GenerateReplyStreamingAsync(
+            [User(), Blob(), Call(), new ToolsCallResultMessage { ToolCallResults = [new ToolCallResult("c1", "42")] }],
+            ReplayOptions()
+        );
+        await foreach (var _ in stream) { }
+
+        var request = client.Requests.Should().ContainSingle().Subject;
+        ReasoningItems(request).Should().HaveCount(reasoningItems);
+        (request.Include is not null).Should().Be(replay, "the blob is asked for only when replay is on");
+    }
+
+    // A response can hold several reasoning items in a row; they all belong to its answer. Reasoning from an
+    // earlier response that was cut off and retried belongs to no answer, so only the retry's is sent.
+    [Theory]
+    [InlineData("g2", "g2", new[] { "B1", "B2" })]
+    [InlineData("g1", "g2", new[] { "B2" })]
+    [InlineData(null, null, new[] { "B2" })]
+    public void A_run_of_reasoning_is_kept_only_within_one_response(
+        string? firstGeneration,
+        string? secondGeneration,
+        string[] sent
+    )
+    {
+        IMessage[] history =
+        [
+            User(),
+            Blob(blob: "B1", generationId: firstGeneration),
+            Blob(blob: "B2", generationId: secondGeneration),
+            new TextMessage { Role = Role.Assistant, Text = "done" },
+        ];
+
+        var request = MessageMapper.BuildRequest(history, ReplayOptions(), replayReasoning: true);
+
+        ReasoningItems(request).Select(i => i.EncryptedContent).Should().Equal(sent);
     }
 
     [Theory]

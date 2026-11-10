@@ -34,7 +34,8 @@ public record ReasoningMessage : IMessage, ICanGetText
     ///     the Responses agent sets it, and only with reasoning replay on. A row with this set goes back to that
     ///     model alone: other providers cannot read it, and it never goes to a subscriber or the browser.
     ///     A build without this property reads such a row as ordinary encrypted reasoning, and can send it to
-    ///     another provider. Rolling back to such a build is safe only if replay was never on.
+    ///     another provider, and it also sends the row to subscribers and the browser. Rolling back to such a
+    ///     build is safe only if replay was never on.
     /// </summary>
     [JsonPropertyName("encryptedOrigin")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
