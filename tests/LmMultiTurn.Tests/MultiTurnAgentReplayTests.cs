@@ -1418,6 +1418,14 @@ public sealed class MultiTurnAgentReplayTests
 
         protected override Task OnDisposeAsync() => Task.FromException(failure);
 
+        protected override Task FlushPendingSavesAsync()
+        {
+            FlushCount++;
+            return Task.CompletedTask;
+        }
+
+        public int FlushCount { get; private set; }
+
         public ValueTask PublishForTest(IMessage message) => PublishToAllAsync(message, CancellationToken.None);
     }
 
@@ -1512,6 +1520,20 @@ public sealed class MultiTurnAgentReplayTests
         first.Should().BeSameAs(failure);
         second.Should().BeSameAs(failure, "a repeat caller observes the one teardown's outcome, not a fresh one");
         third.Should().BeSameAs(failure);
+    }
+
+    [Fact]
+    public async Task A_failed_teardown_still_flushes_pending_saves_and_rethrows_its_own_failure()
+    {
+        // The flush is the last chance to write rows still queued behind a failed save (#950). A teardown
+        // that throws must not skip it, and the flush must not replace the teardown's exception.
+        var failure = new InvalidOperationException("teardown failed");
+        var agent = new ThrowingDisposeAgent(failure);
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(async () => await agent.DisposeAsync());
+
+        thrown.Should().BeSameAs(failure);
+        agent.FlushCount.Should().Be(1);
     }
 
     [Fact]

@@ -16,17 +16,32 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 ///         runs at a time, so a locked store cannot pile up writers.
 ///     </para>
 ///     <para>
-///         There is no cap, because dropping a row is the defect this class exists to prevent. The queue cannot
-///         outgrow the in-memory history it mirrors, and compaction skips while a row is unsaved, so a store that
-///         stays locked ends in the context-window refusal rather than unbounded growth.
+///         There is no cap, because dropping a row is the defect this class exists to prevent. While saves keep
+///         failing, the queue grows by one row for every row the loop accepts into its history. Compaction skips
+///         while a row is unsaved, so a store that stays locked ends in the context-window refusal, but rows
+///         accepted before that refusal still join the queue.
 ///     </para>
 /// </remarks>
-internal sealed class OrderedRowSaver(IConversationStore store, string threadId, ILogger logger)
+internal sealed class OrderedRowSaver(
+    IConversationStore store,
+    string threadId,
+    ILogger logger,
+    TimeSpan? flushBudget = null
+)
 {
+    /// <summary>A queued row and the task that completes once it is durable.</summary>
+    private sealed class Entry(PersistedMessage row)
+    {
+        public PersistedMessage Row { get; } = row;
+
+        public TaskCompletionSource Saved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
     private const int FlushAttempts = 3;
     private static readonly TimeSpan FlushPause = TimeSpan.FromMilliseconds(200);
-    private static readonly TimeSpan FlushBudget = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan DefaultFlushBudget = TimeSpan.FromSeconds(10);
 
+    private readonly TimeSpan _flushBudget = flushBudget ?? DefaultFlushBudget;
     private readonly object _gate = new();
     private readonly List<Entry> _queue = [];
     private Exception? _lastFailure;
@@ -104,9 +119,15 @@ internal sealed class OrderedRowSaver(IConversationStore store, string threadId,
     }
 
     /// <summary>
-    ///     Writes a row after everything queued before it and waits for it, for a caller that must not go on until
-    ///     the row is durable. If the row cannot be written it is withdrawn and the failure is thrown.
+    ///     Writes a row after everything queued before it and waits until that row is durable, for a caller that
+    ///     must not go on until then. Rows queued after it are not waited for. If the row cannot be written it is
+    ///     withdrawn and the failure is thrown.
     /// </summary>
+    /// <remarks>
+    ///     Cancellation withdraws a row still waiting its turn. A row whose append has already started cannot be
+    ///     withdrawn, so that append is settled first: if it committed, the row is durable and this returns
+    ///     normally, because the caller must then record it rather than unwind it.
+    /// </remarks>
     public async Task SaveNowAsync(PersistedMessage row, CancellationToken ct)
     {
         var entry = new Entry(row);
@@ -124,16 +145,36 @@ internal sealed class OrderedRowSaver(IConversationStore store, string threadId,
         {
             try
             {
-                await pump.WaitAsync(ct).ConfigureAwait(false);
+                _ = await Task.WhenAny(entry.Saved.Task, pump).WaitAsync(ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
+                Task writing;
                 lock (_gate)
                 {
+                    if (entry.Saved.Task.IsCompleted)
+                    {
+                        return;
+                    }
+
                     if (!IsBeingWritten(entry))
                     {
                         _ = _queue.Remove(entry);
+                        throw;
                     }
+
+                    writing = _pump!;
+                }
+
+                _ = await Task.WhenAny(entry.Saved.Task, writing).ConfigureAwait(false);
+                lock (_gate)
+                {
+                    if (entry.Saved.Task.IsCompleted)
+                    {
+                        return;
+                    }
+
+                    _ = _queue.Remove(entry);
                 }
 
                 throw;
@@ -174,7 +215,7 @@ internal sealed class OrderedRowSaver(IConversationStore store, string threadId,
     /// </summary>
     public async Task FlushAsync()
     {
-        using var budget = new CancellationTokenSource(FlushBudget);
+        using var budget = new CancellationTokenSource(_flushBudget);
         try
         {
             for (var attempt = 0; attempt < FlushAttempts && Waiting > 0; attempt++)
@@ -239,7 +280,7 @@ internal sealed class OrderedRowSaver(IConversationStore store, string threadId,
             }
             catch (Exception ex)
             {
-                if (!await IsAlreadyStoredAsync(head.Row.Id).ConfigureAwait(false))
+                if (!await IsAlreadyStoredAsync(head.Row).ConfigureAwait(false))
                 {
                     int waiting;
                     lock (_gate)
@@ -266,37 +307,39 @@ internal sealed class OrderedRowSaver(IConversationStore store, string threadId,
                 );
             }
 
+            // Leaving the queue and becoming durable happen together, so no waiter sees a row that is neither.
             lock (_gate)
             {
                 _queue.RemoveAt(0);
+                _ = head.Saved.TrySetResult();
             }
-
-            _ = head.Saved.TrySetResult();
         }
     }
 
     /// <summary>
     ///     A tool result's row id is derived from its call id, so writing the same result twice is refused for good.
-    ///     Without this check that one row would block every row behind it forever.
+    ///     Without this check that one row would block every row behind it forever. A stored row with the same id
+    ///     counts only when it is this row: a reused call id can leave a different row under the same id.
     /// </summary>
-    private async Task<bool> IsAlreadyStoredAsync(string rowId)
+    private async Task<bool> IsAlreadyStoredAsync(PersistedMessage row)
     {
         try
         {
             var rows = await store.LoadMessagesAsync(threadId, CancellationToken.None).ConfigureAwait(false);
-            return rows.Any(r => string.Equals(r.Id, rowId, StringComparison.Ordinal));
+            return rows.Any(stored =>
+                string.Equals(stored.Id, row.Id, StringComparison.Ordinal) && IsSameRow(stored, row)
+            );
         }
         catch (Exception ex)
         {
-            logger.LogDebug(ex, "Could not read thread {ThreadId} to check row {RowId}", threadId, rowId);
+            logger.LogDebug(ex, "Could not read thread {ThreadId} to check row {RowId}", threadId, row.Id);
             return false;
         }
     }
 
-    private sealed class Entry(PersistedMessage row)
-    {
-        public PersistedMessage Row { get; } = row;
-
-        public TaskCompletionSource Saved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    }
+    private static bool IsSameRow(PersistedMessage stored, PersistedMessage row) =>
+        string.Equals(stored.RunId, row.RunId, StringComparison.Ordinal)
+        && string.Equals(stored.GenerationId, row.GenerationId, StringComparison.Ordinal)
+        && string.Equals(stored.MessageType, row.MessageType, StringComparison.Ordinal)
+        && string.Equals(stored.MessageJson, row.MessageJson, StringComparison.Ordinal);
 }
