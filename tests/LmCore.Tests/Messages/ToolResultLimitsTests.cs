@@ -329,6 +329,40 @@ public sealed class ToolResultLimitsTests
         bounded.Should().StartWith("{xxx").And.Contain(ToolResultLimits.TruncationMarkerPrefix);
     }
 
+    [Theory]
+    [InlineData("-1.5e")]
+    [InlineData("7")]
+    public void A_json_number_past_the_parse_limit_becomes_the_json_object(string start)
+    {
+        var text = start + new string('3', 5 * 1024 * 1024);
+
+        var bounded = new ToolResultLimits { MaxResultBytes = 1024 }.BoundText(text);
+
+        using var document = JsonDocument.Parse(bounded);
+        document.RootElement.GetProperty("truncated").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_short_scalar_padded_past_the_parse_limit_becomes_the_json_object()
+    {
+        var text = "true" + new string(' ', 5 * 1024 * 1024);
+
+        var bounded = new ToolResultLimits { MaxResultBytes = 1024 }.BoundText(text);
+
+        using var document = JsonDocument.Parse(bounded);
+        document.RootElement.GetProperty("truncated").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public void Very_large_text_that_only_starts_and_ends_with_a_digit_keeps_the_plain_marker()
+    {
+        var text = "2026-11-09 log line " + new string('x', 5 * 1024 * 1024) + " 7";
+
+        var bounded = new ToolResultLimits { MaxResultBytes = 1024 }.BoundText(text);
+
+        bounded.Should().StartWith("2026-11-09 log line").And.Contain(ToolResultLimits.TruncationMarkerPrefix);
+    }
+
     [Fact]
     public void Unbounded_never_truncates()
     {

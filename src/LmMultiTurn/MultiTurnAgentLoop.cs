@@ -4222,6 +4222,7 @@ public sealed class MultiTurnAgentLoop
             pending!,
             toolCallId,
             result,
+            legacyResult,
             isError,
             contentBlocks,
             truncated,
@@ -4277,6 +4278,7 @@ public sealed class MultiTurnAgentLoop
         ResolvingDeferral pending,
         string toolCallId,
         string result,
+        string? legacyResult,
         bool isError,
         IList<ToolResultContentBlock>? contentBlocks,
         bool truncated,
@@ -4294,6 +4296,18 @@ public sealed class MultiTurnAgentLoop
                 pending.ChildRunId,
                 ct
             );
+
+            // A record saved before cut JSON became an object holds the fingerprint of the plain cut.
+            // The store only compares here: a call that is already resolved is never written again.
+            if (durable == DeferredResolutionOutcome.Conflict && legacyResult != null)
+            {
+                durable = await Lifecycle.TryResolveDeferredToolCallAsync(
+                    toolCallId,
+                    ComputeResolutionFingerprint(legacyResult, isError),
+                    pending.ChildRunId,
+                    ct
+                );
+            }
         }
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
         {
@@ -4780,6 +4794,7 @@ public sealed class MultiTurnAgentLoop
             pending!,
             toolCallId,
             result,
+            legacyResult,
             isError,
             contentBlocks,
             truncated,

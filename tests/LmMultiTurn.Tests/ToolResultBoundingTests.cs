@@ -1,11 +1,14 @@
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmLifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -486,6 +489,112 @@ public class ToolResultBoundingTests
 
         same.Should().Be(ResolveToolCallOutcome.Duplicate);
         different.Should().Be(ResolveToolCallOutcome.Conflict);
+    }
+
+    [Fact]
+    public async Task DeliveringOversizedJson_WhoseRecordHoldsTheOldFingerprint_IsNotAConflict()
+    {
+        var json = JsonSerializer.Serialize(Enumerable.Range(0, 2_000).ToArray());
+        await using var loop = await RestoreLegacyDeferralAsync("bounding-legacy-claimed", json);
+
+        var different = await loop.TryResolveToolCallAsync(LegacyCallId, json.Replace('1', '2'));
+        var same = await loop.TryResolveToolCallAsync(LegacyCallId, json);
+
+        different.Should().Be(ResolveToolCallOutcome.Conflict);
+        same.Should().Be(ResolveToolCallOutcome.Resolved);
+    }
+
+    private const string LegacyCallId = "tc_legacy_claimed";
+
+    /// <summary>
+    /// A deferred call left by a build from before cut JSON became an object. Its durable record
+    /// holds the fingerprint of the old plain cut, and its history row is still the placeholder.
+    /// </summary>
+    private async Task<MultiTurnAgentLoop> RestoreLegacyDeferralAsync(string threadId, string json)
+    {
+        var runId = threadId + "-run";
+        var store = new InMemoryConversationStore();
+        await store.RecordRunStartedAsync(new RunLifecycleState { ThreadId = threadId, RunId = runId });
+        _ = await store.RecordDeferredToolCallAsync(
+            runId,
+            new DeferredToolCallRecord
+            {
+                ToolCallId = LegacyCallId,
+                ToolName = "wait",
+                DeferredAt = DateTimeOffset.UtcNow,
+            }
+        );
+        // The fingerprint form is stored, so it outlives upgrades.
+        var oldFingerprint = Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes("0\n" + Limits.BoundAsPlainText(json)))
+        );
+        _ = await store.TryResolveDeferredToolCallAsync(
+            threadId,
+            LegacyCallId,
+            oldFingerprint,
+            childRunId: null,
+            DateTimeOffset.UtcNow
+        );
+
+        await store.AppendMessagesAsync(
+            threadId,
+            [
+                MessagePersistenceConverter.ToPersistedMessage(
+                    new ToolCallMessage
+                    {
+                        ToolCallId = LegacyCallId,
+                        FunctionName = "wait",
+                        FunctionArgs = "{}",
+                        Role = Role.Assistant,
+                        GenerationId = "gen-legacy",
+                        RunId = runId,
+                    },
+                    threadId,
+                    runId
+                ),
+                MessagePersistenceConverter.ToPersistedMessage(
+                    new ToolCallResultMessage
+                    {
+                        ToolCallId = LegacyCallId,
+                        ToolName = "wait",
+                        Result = string.Empty,
+                        IsDeferred = true,
+                        DeferredAt = 1_700_000_000_000,
+                        Role = Role.User,
+                        GenerationId = "gen-legacy",
+                        RunId = runId,
+                    },
+                    threadId,
+                    runId
+                ),
+            ]
+        );
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            }
+        );
+        var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            new FunctionRegistry(),
+            threadId,
+            store: store,
+            logger: _loggerMock.Object,
+            lifecycleServices: new MultiTurnLifecycleServices
+            {
+                Publisher = NullLifecyclePublisher.Instance,
+                LifecycleStore = store,
+            }
+        )
+        {
+            ToolResultLimits = Limits,
+        };
+        (await loop.RecoverAsync()).Should().BeTrue();
+        return loop;
     }
 
     [Fact]

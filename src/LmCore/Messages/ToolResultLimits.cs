@@ -278,23 +278,24 @@ public sealed record ToolResultLimits
     /// </summary>
     /// <remarks>
     ///     A parse needs temporary memory several times the size of its input, so past
-    ///     <see cref="MaxParsedChars"/> only the two ends are checked. That can only err towards the
+    ///     <see cref="MaxParsedChars"/> only its shape is checked. That can only err towards the
     ///     JSON object, which is valid whatever it holds, and every real document passes.
     /// </remarks>
     private static bool IsJsonDocument(string text)
     {
-        var trimmed = text.AsSpan().Trim(JsonWhitespace);
+        var trimmed = text.AsMemory().Trim(JsonWhitespace.AsSpan());
         if (trimmed.IsEmpty)
         {
             return false;
         }
 
-        if (text.Length > MaxParsedChars)
+        var span = trimmed.Span;
+        if (span.Length > MaxParsedChars)
         {
-            return (trimmed[0], trimmed[^1]) is ('{', '}') or ('[', ']') or ('"', '"');
+            return (span[0], span[^1]) is ('{', '}') or ('[', ']') or ('"', '"') || IsNumberShaped(span);
         }
 
-        if (trimmed[0] is not ('{' or '[' or '"' or 't' or 'f' or 'n' or '-' or (>= '0' and <= '9')))
+        if (span[0] is not ('{' or '[' or '"' or 't' or 'f' or 'n' or '-' or (>= '0' and <= '9')))
         {
             return false;
         }
@@ -302,7 +303,7 @@ public sealed record ToolResultLimits
         try
         {
             // The default limit of 64 levels would call a valid deep document malformed.
-            using var document = JsonDocument.Parse(text, s_anyDepth);
+            using var document = JsonDocument.Parse(trimmed, s_anyDepth);
             return true;
         }
         catch (Exception ex) when (ex is JsonException or ArgumentException)
@@ -311,6 +312,10 @@ public sealed record ToolResultLimits
             return false;
         }
     }
+
+    // True, false and null are short, so past the parse limit a number is the only other scalar.
+    private static bool IsNumberShaped(ReadOnlySpan<char> text) =>
+        text[0] is '-' or (>= '0' and <= '9') && !text.ContainsAnyExcept("0123456789+-.eE");
 
     /// <summary>
     ///     Builds the JSON object that replaces a cut JSON document, keeping as much preview as fits.

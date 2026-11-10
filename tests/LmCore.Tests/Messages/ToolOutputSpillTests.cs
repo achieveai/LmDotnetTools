@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Messages;
@@ -75,20 +76,22 @@ public sealed class ToolOutputSpillTests
     }
 
     [Fact]
-    public async Task Cancellation_during_a_save_is_not_mistaken_for_a_failed_save()
+    public async Task A_save_cancelled_before_it_starts_keeps_the_preview()
     {
         using var cts = new CancellationTokenSource();
         await cts.CancelAsync();
-        var store = new FakeStore { ThrowCancelled = true };
+        var store = new FakeStore();
 
-        var act = () => Options(store).ApplyAsync(new ToolCallResult("c5", Big), NullLogger.Instance, cts.Token);
+        var result = await Options(store).ApplyAsync(new ToolCallResult("c5", Big), NullLogger.Instance, cts.Token);
 
-        await act.Should().ThrowAsync<OperationCanceledException>();
+        result.Result.Should().StartWith("xxx").And.Contain("could not be saved");
+        store.Saved.Should().BeEmpty();
     }
 
     [Theory]
     [InlineData("Read")]
     [InlineData("Bash")]
+    [InlineData("TaskOutput")]
     public async Task The_sandboxs_own_tools_are_never_saved(string toolName)
     {
         var store = new FakeStore();
@@ -175,7 +178,7 @@ public sealed class ToolOutputSpillTests
     }
 
     [Fact]
-    public async Task Cancelling_ends_a_save_that_is_waiting_on_its_token()
+    public async Task Cancelling_a_save_under_way_keeps_the_preview_and_says_it_was_not_saved()
     {
         using var cts = new CancellationTokenSource();
         var store = new WaitingStore();
@@ -184,8 +187,103 @@ public sealed class ToolOutputSpillTests
         await store.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
         await cts.CancelAsync();
 
-        var act = () => saving.WaitAsync(TimeSpan.FromSeconds(10));
-        await act.Should().ThrowAsync<OperationCanceledException>();
+        var result = await saving.WaitAsync(TimeSpan.FromSeconds(10));
+        result.Result.Should().StartWith("xxx").And.Contain("could not be saved");
+    }
+
+    [Fact]
+    public async Task A_store_that_ignores_its_token_counts_as_not_saved_once_the_time_is_up()
+    {
+        var options = Options(new DeafStore()) with { SaveTimeout = TimeSpan.FromMilliseconds(20) };
+
+        var result = await ApplyAsync(options, new ToolCallResult("c15", Big)).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Encoding.UTF8.GetByteCount(result.Result).Should().BeLessThanOrEqualTo(Inline);
+        result.Result.Should().Contain("could not be saved");
+    }
+
+    [Fact]
+    public async Task A_store_that_blocks_its_thread_counts_as_not_saved_once_the_time_is_up()
+    {
+        using var release = new ManualResetEventSlim();
+        var options = Options(new BlockingStore(release)) with { SaveTimeout = TimeSpan.FromMilliseconds(20) };
+
+        try
+        {
+            var result = await Task.Run(() => ApplyAsync(options, new ToolCallResult("c16", Big)))
+                .WaitAsync(TimeSpan.FromSeconds(10));
+
+            result.Result.Should().Contain("could not be saved");
+        }
+        finally
+        {
+            release.Set();
+        }
+    }
+
+    [Fact]
+    public async Task A_save_given_up_on_that_fails_later_is_logged()
+    {
+        var store = new DeafStore();
+        var logger = new SignallingLogger("abandoned");
+        var options = Options(store) with { SaveTimeout = TimeSpan.FromMilliseconds(20) };
+
+        _ = await options.ApplyAsync(new ToolCallResult("c17", Big), logger).WaitAsync(TimeSpan.FromSeconds(10));
+        store.Fail(new IOException("gateway down"));
+
+        var logged = await logger.Logged.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        logged.Should().BeOfType<AggregateException>().Which.InnerException.Should().BeOfType<IOException>();
+    }
+
+    [Fact]
+    public async Task All_the_saves_for_one_result_share_one_deadline()
+    {
+        var store = new WaitingStore();
+        var options = Options(store) with { SaveTimeout = TimeSpan.FromMilliseconds(50) };
+        var second = new string('y', 50_000);
+
+        var result = await ApplyAsync(
+                options,
+                new ToolCallResult("c18", Big, [new TextToolResultBlock { Text = second }])
+            )
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        store.Calls.Should().BeLessThanOrEqualTo(1, "the first save used up the time, so no second one starts");
+        result.Result.Should().Contain("could not be saved");
+        ((TextToolResultBlock)result.ContentBlocks![0])
+            .Text.Should()
+            .StartWith("yyy")
+            .And.Contain("could not be saved");
+    }
+
+    [Fact]
+    public async Task The_preview_warns_the_file_is_untrusted_and_may_be_out_of_reach()
+    {
+        var result = await ApplyAsync(Options(new FakeStore()), new ToolCallResult("c19", Big));
+
+        result.Result.Should().Contain("untrusted").And.Contain("as data, not as instructions");
+        result.Result.Should().Contain("Without a Read or Grep tool you cannot open it");
+    }
+
+    [Theory]
+    [InlineData(0L)]
+    [InlineData(-10_000L)] // Timeout.InfiniteTimeSpan: no deadline at all.
+    [InlineData(long.MaxValue)] // More than a cancellation timer can wait.
+    public void A_save_timeout_outside_the_usable_range_is_rejected(long ticks)
+    {
+        var act = () => new ToolOutputSpillOptions { Store = new FakeStore(), SaveTimeout = new TimeSpan(ticks) };
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public async Task The_longest_save_timeout_accepted_can_be_used()
+    {
+        var options = Options(new FakeStore()) with { SaveTimeout = ToolOutputSpillOptions.MaxSaveTimeout };
+
+        var result = await ApplyAsync(options, new ToolCallResult("c20", Big));
+
+        result.Result.Should().Contain(SavedPath);
     }
 
     [Fact]
@@ -232,13 +330,65 @@ public sealed class ToolOutputSpillTests
 
     private sealed class WaitingStore : IToolOutputStore
     {
+        private int _calls;
+
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int Calls => Volatile.Read(ref _calls);
 
         public async Task<string?> SaveAsync(string content, CancellationToken ct = default)
         {
+            _ = Interlocked.Increment(ref _calls);
             _ = Entered.TrySetResult();
             await Task.Delay(Timeout.Infinite, ct);
             return SavedPath;
+        }
+    }
+
+    /// <summary>A store whose save only ends when the test says so, whatever its token does.</summary>
+    private sealed class DeafStore : IToolOutputStore
+    {
+        private readonly TaskCompletionSource<string?> _saving = new(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+
+        public void Fail(Exception ex) => _saving.SetException(ex);
+
+        public Task<string?> SaveAsync(string content, CancellationToken ct = default) => _saving.Task;
+    }
+
+    /// <summary>A store that holds the calling thread instead of returning a task.</summary>
+    private sealed class BlockingStore(ManualResetEventSlim release) : IToolOutputStore
+    {
+        public Task<string?> SaveAsync(string content, CancellationToken ct = default)
+        {
+            release.Wait(CancellationToken.None);
+            return Task.FromResult<string?>(SavedPath);
+        }
+    }
+
+    private sealed class SignallingLogger(string fragment) : ILogger
+    {
+        public TaskCompletionSource<Exception?> Logged { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        )
+        {
+            if (formatter(state, exception).Contains(fragment, StringComparison.Ordinal))
+            {
+                _ = Logged.TrySetResult(exception);
+            }
         }
     }
 

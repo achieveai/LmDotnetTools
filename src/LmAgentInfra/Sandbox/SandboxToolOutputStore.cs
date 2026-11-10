@@ -19,6 +19,11 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 /// files, never replace one. The <c>.gitignore</c> lives inside that folder for the same reason, and
 /// it is written first so the output is never there without it.
 /// </para>
+/// <para>
+/// <b>Nothing here removes a saved output.</b> A folder lives as long as its workspace. The gateway has
+/// no cap or expiry for workspace files either, so a very long conversation can pile them up. That is
+/// accepted for now: the files are what the model reads later, and no later turn says when they are done.
+/// </para>
 /// </remarks>
 public sealed class SandboxToolOutputStore : IToolOutputStore
 {
@@ -58,6 +63,7 @@ public sealed class SandboxToolOutputStore : IToolOutputStore
 
         var resolution = await _files
             .ResolveThreadWorkspaceSessionForBackgroundAsync(_threadId, _workspaceId, ct)
+            .WaitAsync(ct) // Recreating a session is shared and ignores this token. Others may still want it.
             .ConfigureAwait(false);
         if (resolution is not { Outcome: SandboxSessionResolutionOutcome.Resolved, Session: { } session })
         {

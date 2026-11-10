@@ -64,6 +64,39 @@ public sealed class SandboxToolOutputStoreTests
     }
 
     [Fact]
+    public async Task A_save_waiting_on_a_session_recreate_ends_with_its_token()
+    {
+        var browser = new FakeBrowser { HoldResolve = new TaskCompletionSource() };
+        using var cts = new CancellationTokenSource();
+
+        var saving = CreateStore(browser).SaveAsync("a", cts.Token);
+        await cts.CancelAsync();
+
+        var act = () => saving.WaitAsync(TimeSpan.FromSeconds(10));
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        browser.Attempts.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_save_during_a_session_recreate_gives_a_not_saved_preview_within_its_time()
+    {
+        var browser = new FakeBrowser { HoldResolve = new TaskCompletionSource() };
+        var options = new ToolOutputSpillOptions
+        {
+            Store = CreateStore(browser),
+            MaxInlineBytes = 1024,
+            SaveTimeout = TimeSpan.FromMilliseconds(20),
+        };
+
+        var result = await options
+            .ApplyAsync(new ToolCallResult("c1", new string('x', 5_000)), NullLogger.Instance)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Encoding.UTF8.GetByteCount(result.Result).Should().BeLessThanOrEqualTo(1024);
+        result.Result.Should().Contain("could not be saved");
+    }
+
+    [Fact]
     public async Task The_output_is_not_written_when_its_gitignore_cannot_be()
     {
         var browser = new FakeBrowser { FailWrites = true };
@@ -112,7 +145,10 @@ public sealed class SandboxToolOutputStoreTests
 
         public string? ResolvedWorkspace { get; private set; }
 
-        public Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionForBackgroundAsync(
+        /// <summary>When set, resolving a session waits on this and ignores its token, as a recreate does.</summary>
+        public TaskCompletionSource? HoldResolve { get; init; }
+
+        public async Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionForBackgroundAsync(
             string threadId,
             string persistedWorkspaceId,
             CancellationToken ct = default
@@ -120,11 +156,16 @@ public sealed class SandboxToolOutputStoreTests
         {
             ResolvedThread = threadId;
             ResolvedWorkspace = persistedWorkspaceId;
+            if (HoldResolve != null)
+            {
+                await HoldResolve.Task;
+            }
+
             var session =
                 Outcome == SandboxSessionResolutionOutcome.Resolved
                     ? new SandboxSession(persistedWorkspaceId, SessionId, "rel", "host")
                     : null;
-            return Task.FromResult(new SandboxSessionResolution(Outcome, session, null, null));
+            return new SandboxSessionResolution(Outcome, session, null, null);
         }
 
         public Task WriteWorkspaceFileBytesAsync(

@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Approval;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmLifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
@@ -490,6 +491,42 @@ public class StoppedTurnTests
         result.Result.Should().Contain(HoldingOutputStore.Path);
         var request = await NextRequestAsync(loop, provider, cts.Token);
         ShouldAnswerEachCallOnce(request, "big-1");
+    }
+
+    [Fact]
+    public async Task DisposeDuringTheOutputSave_KeepsTheFinishedResult()
+    {
+        var saved = new HoldingOutputStore();
+        var provider = new ScriptedProvider(call => call == 1 ? [Call("big-1", "big")] : [Answer]);
+        using var cts = new CancellationTokenSource(Generous);
+        var store = new InMemoryConversationStore();
+
+        // Lifecycle on: its tool-completed write also runs on the disposed loop, and must not stop history.
+        var loop = new MultiTurnAgentLoop(
+            provider,
+            BigOutputRegistry(),
+            "dispose-save",
+            store: store,
+            lifecycleServices: new MultiTurnLifecycleServices
+            {
+                Publisher = NullLifecyclePublisher.Instance,
+                LifecycleStore = store,
+            }
+        )
+        {
+            ToolOutputSpill = new ToolOutputSpillOptions { Store = saved, MaxInlineBytes = 2_000 },
+        };
+        var running = loop.RunAsync(cts.Token);
+        await loop.WaitUntilReadyAsync(cts.Token);
+        _ = await loop.SendAsync([new TextMessage { Text = "go", Role = Role.User }], inputId: "input-1");
+        await saved.Entered.Task.WaitAsync(cts.Token);
+
+        await loop.DisposeAsync().AsTask().WaitAsync(cts.Token);
+        await running.WaitAsync(cts.Token);
+
+        var result = ResultsFor(loop, "big-1").Should().ContainSingle().Subject;
+        result.IsError.Should().BeFalse("the tool finished before the loop was disposed");
+        result.Result.Should().StartWith("xxx").And.Contain("could not be saved");
     }
 
     [Fact]
