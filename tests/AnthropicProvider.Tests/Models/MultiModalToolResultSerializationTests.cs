@@ -256,6 +256,14 @@ public class MultiModalToolResultSerializationTests
             Messages =
             [
                 new TextMessage { Role = Role.Assistant, Text = "Let me use the server tool." },
+                // The result answers this call; a tool_result with no tool_use before it is not sent.
+                new ToolCallMessage
+                {
+                    ToolCallId = "toolu_srv_01",
+                    FunctionName = "server_tool",
+                    FunctionArgs = "{}",
+                    ExecutionTarget = ExecutionTarget.ProviderServer,
+                },
                 new ToolCallResultMessage
                 {
                     ToolCallId = "toolu_srv_01",
