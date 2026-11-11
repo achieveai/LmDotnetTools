@@ -111,6 +111,114 @@ public class OneHourCacheSplitTests : LoggingTestBase
         AssertShare(replies, written, expected);
     }
 
+    [Theory]
+    // An empty split, or one whose counts do not add up to the 619 written, is no split on a 1-hour request.
+    [InlineData(true, EmptySplit, null)]
+    [InlineData(true, MismatchedSplit, null)]
+    // A 5-minute request keeps its current reading: the reported 1-hour count, 0 when absent.
+    [InlineData(false, EmptySplit, 0)]
+    [InlineData(false, MismatchedSplit, 200)]
+    public async Task ABufferedCacheWrite_WhoseSplitDoesNotAddUp_LeavesTheOneHourShareUnknown(
+        bool oneHour,
+        string split,
+        int? expected
+    )
+    {
+        const int written = 619;
+        Logger.LogInformation(
+            "Buffered malformed split: OneHour={OneHour} Written={Written} Split={Split} ExpectedShare={ExpectedShare}",
+            oneHour,
+            written,
+            split,
+            expected
+        );
+        var response = JsonSerializer.Deserialize<AnthropicResponse>(
+            $$$"""
+            {"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-sonnet-5",
+             "content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn",
+             "usage": {{{RawUsage(5, written, split)}}}}
+            """,
+            s_wire
+        )!;
+        using var agent = new AnthropicAgent(
+            "test-agent",
+            new CannedClient(response, []),
+            LoggerFactory.CreateLogger<AnthropicAgent>()
+        );
+
+        var replies = await agent.GenerateReplyAsync(Prompt, Options(oneHour));
+
+        AssertShare(replies, written, expected);
+    }
+
+    [Theory]
+    // The malformed split arrives on message_start, and message_delta repeats the count without a split.
+    [InlineData(true, EmptySplit, null, null)]
+    [InlineData(true, MismatchedSplit, null, null)]
+    // A valid split on message_start, then message_delta reports a malformed split of its own.
+    [InlineData(true, ValidSplit, EmptySplit, null)]
+    [InlineData(true, ValidSplit, MismatchedSplit, null)]
+    // Control: the valid split alone is still taken.
+    [InlineData(true, ValidSplit, null, 300)]
+    public async Task AStreamedCacheWrite_WhoseSplitDoesNotAddUp_LeavesTheOneHourShareUnknown(
+        bool oneHour,
+        string startSplit,
+        string? deltaSplit,
+        int? expected
+    )
+    {
+        const int written = 619;
+        Logger.LogInformation(
+            "Streamed malformed split: OneHour={OneHour} Written={Written} StartSplit={StartSplit} DeltaSplit={DeltaSplit} ExpectedShare={ExpectedShare}",
+            oneHour,
+            written,
+            startSplit,
+            deltaSplit,
+            expected
+        );
+        var client = new CannedClient(
+            null,
+            [
+                $$$"""
+                {"type": "message_start", "message": {"id": "msg_1", "type": "message", "role": "assistant",
+                 "model": "claude-sonnet-5", "content": [], "usage": {{{RawUsage(1, written, startSplit)}}}}}
+                """,
+                """{"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}""",
+                """{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hi"}}""",
+                """{"type": "content_block_stop", "index": 0}""",
+                $$$"""
+                {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+                 "usage": {{{RawUsage(5, written, deltaSplit)}}}}
+                """,
+                """{"type": "message_stop"}""",
+            ]
+        );
+        using var agent = new AnthropicAgent("test-agent", client, LoggerFactory.CreateLogger<AnthropicAgent>());
+
+        var replies = new List<IMessage>();
+        await foreach (var reply in await agent.GenerateReplyStreamingAsync(Prompt, Options(oneHour)))
+        {
+            replies.Add(reply);
+        }
+
+        AssertShare(replies, written, expected);
+    }
+
+    private const string EmptySplit = "{}";
+
+    // 100 + 200 is not the 619 written.
+    private const string MismatchedSplit = """{"ephemeral_5m_input_tokens": 100, "ephemeral_1h_input_tokens": 200}""";
+
+    private const string ValidSplit = """{"ephemeral_5m_input_tokens": 319, "ephemeral_1h_input_tokens": 300}""";
+
+    private static string RawUsage(int output, int written, string? split) =>
+        split is null
+            ? $$$"""{"input_tokens": 9, "output_tokens": {{{output}}}, "cache_creation_input_tokens": {{{written}}}}"""
+            : $$$"""
+                {"input_tokens": 9, "output_tokens": {{{output}}}, "cache_creation_input_tokens": {{{written}}},
+                 "cache_creation": {{{split}}}}
+                """;
+
     private static IMessage[] Prompt => [new TextMessage { Role = Role.User, Text = "hello" }];
 
     private static GenerateReplyOptions Options(bool oneHour) =>

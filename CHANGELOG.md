@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Auto` with `ttl: "1h"`. A 1-hour write costs 2x base input against 1.25x, so it pays only when a conversation pauses for 5
   to 60 minutes. LmStreaming.Sample turns it on per model with `LmStreaming:PromptCache:{modelId}:Ttl=1h`; every other model
   stays on `Auto`. A sub-agent that inherits 1 hour drops to 5 minutes, and a fallback hop follows its own model's setting.
-  Usage carries `ephemeral_1h_input_tokens` from the response's `cache_creation` split. On a 1-hour request with no split
-  the field is left out: that write is still priced at the 5-minute rate, and the estimate is marked Partial
+  Usage carries `ephemeral_1h_input_tokens` from the response's `cache_creation` split. On a 1-hour request with no split,
+  or a split whose 5-minute and 1-hour counts do not add up to the write total, the field is left out: that write is still priced at the 5-minute rate, and the estimate is marked Partial
   (`cache_write_ttl_unknown`), a lower bound. In a stream, a `message_delta` that carries its own split wins over
   `message_start`'s. The compaction cache lifetime follows the mode unless `CompactionOptions.CacheTtl` is set, and
   `ContextObservation` gains `PromptCacheTtlSeconds`. Configuration binding can write the 5-minute default to `CacheTtl` even

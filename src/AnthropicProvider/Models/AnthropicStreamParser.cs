@@ -611,7 +611,7 @@ public class AnthropicStreamParser
         var sameWrite = usage.CacheCreationInputTokens == _cacheCreationTokens;
         _cacheCreationTokens = usage.CacheCreationInputTokens;
         _cacheWrite1hTokens = usage.CacheCreation?.Ephemeral1hInputTokens ?? (sameWrite ? _cacheWrite1hTokens : 0);
-        _cacheSplitReported = usage.CacheCreation is not null || (sameWrite && _cacheSplitReported);
+        _cacheSplitReported = usage.CacheCreation is null ? sameWrite && _cacheSplitReported : usage.ReportsCacheSplit;
     }
 
     /// <summary>
@@ -627,7 +627,7 @@ public class AnthropicStreamParser
 
         _cacheCreationTokens = _usage.CacheCreationInputTokens;
         _cacheWrite1hTokens = _usage.CacheWrite1hTokens;
-        _cacheSplitReported = _usage.CacheCreation is not null;
+        _cacheSplitReported = _usage.ReportsCacheSplit;
         _cacheReadTokens = _usage.CacheReadInputTokens;
         _initialInputTokens = _usage.InputTokens;
     }

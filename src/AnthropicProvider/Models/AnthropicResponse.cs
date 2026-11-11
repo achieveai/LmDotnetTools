@@ -104,9 +104,19 @@ public record AnthropicUsage
     /// <summary>
     ///     The one-hour share of the cache write, as the response reports it. An absent split reads as 0, which
     ///     is exact only for a 5-minute request. For a request with 1-hour markers, the usage message leaves the
-    ///     share out when <see cref="CacheCreation" /> is absent, so the cost estimate stays Partial.
+    ///     share out when <see cref="CacheCreation" /> is absent or does not add up (see
+    ///     <see cref="ReportsCacheSplit" />), so the cost estimate stays Partial.
     /// </summary>
     internal int CacheWrite1hTokens => CacheCreation?.Ephemeral1hInputTokens ?? 0;
+
+    /// <summary>
+    ///     True when <see cref="CacheCreation" /> is present and its 5-minute and 1-hour counts add up to
+    ///     <see cref="CacheCreationInputTokens" />. An empty or non-summing split is treated as no split, so a
+    ///     1-hour request leaves its share unknown instead of trusting it.
+    /// </summary>
+    internal bool ReportsCacheSplit =>
+        CacheCreation is { } split
+        && split.Ephemeral5mInputTokens + split.Ephemeral1hInputTokens == CacheCreationInputTokens;
 }
 
 /// <summary>

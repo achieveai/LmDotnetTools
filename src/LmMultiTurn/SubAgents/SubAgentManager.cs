@@ -4151,7 +4151,10 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <c>stop_reason=max_tokens</c>. Prompt caching inherits too: a template left at
     /// <see cref="PromptCachingMode.Off"/> (the default, so indistinguishable from "unset") takes the
     /// parent's <paramref name="parentPromptCaching"/> — otherwise a delegate re-bills its whole history
-    /// as uncached input on every call. Any other template option fields are preserved. Returns null only
+    /// as uncached input on every call. An inherited <see cref="PromptCachingMode.AutoOneHour"/> becomes
+    /// <see cref="PromptCachingMode.Auto"/> (5 minutes), because a short-lived delegate would not repay the
+    /// 1-hour write premium; a template that sets <see cref="PromptCachingMode.AutoOneHour"/> itself keeps
+    /// it. Any other template option fields are preserved. Returns null only
     /// when nothing is available anywhere AND the template carried no options, so the previous
     /// "inherit the provider's own defaults" behavior is unchanged when there is genuinely nothing to set.
     /// </summary>

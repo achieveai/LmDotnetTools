@@ -94,7 +94,7 @@ public static class AnthropicExtensions
             // Without a split, 0 is exact only for a 5-minute request; see AnthropicStreamParser.CreateUsageMessage.
             if (
                 response.Usage.CacheCreationInputTokens > 0
-                && (response.Usage.CacheCreation is not null || !oneHourCacheRequested)
+                && (response.Usage.ReportsCacheSplit || !oneHourCacheRequested)
             )
             {
                 usage = usage.SetExtraProperty("ephemeral_1h_input_tokens", response.Usage.CacheWrite1hTokens);
