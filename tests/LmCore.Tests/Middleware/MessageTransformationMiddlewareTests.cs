@@ -1370,31 +1370,14 @@ public class MessageTransformationMiddlewareTests
         // the generation, so the late result formed its own group and the aggregate kept two calls with one
         // result; the Anthropic request then answered one call twice.
         var middleware = new MessageTransformationMiddleware();
-        ToolCallMessage Call(string id, int order) =>
-            new()
-            {
-                FunctionName = "fn_" + id,
-                FunctionArgs = "{}",
-                ToolCallId = id,
-                GenerationId = "gen1",
-                MessageOrderIdx = order,
-            };
-        ToolCallResultMessage Result(string id, int order) =>
-            new()
-            {
-                ToolCallId = id,
-                Result = "result_" + id,
-                GenerationId = "gen1",
-                MessageOrderIdx = order,
-            };
         var userNotice = new TextMessage { Role = Role.User, Text = "Five minutes have passed." };
         var inputMessages = new List<IMessage>
         {
-            Call("call_a", 1),
-            Call("call_b", 2),
-            Result("call_b", 4),
+            GenerationCall("call_a", 1),
+            GenerationCall("call_b", 2),
+            GenerationResult("call_b", 4),
             userNotice,
-            Result("call_a", 3),
+            GenerationResult("call_a", 3),
         };
         var agent = new MockAgent();
 
@@ -1406,6 +1389,55 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal(["call_a", "call_b"], aggregate.ToolsCallMessage.ToolCalls.Select(c => c.ToolCallId));
         Assert.Equal(["call_a", "call_b"], aggregate.ToolsCallResult.ToolCallResults.Select(r => r.ToolCallId));
         Assert.Same(userNotice, receivedMessages[1]);
+    }
+
+    [Fact]
+    public async Task Upstream_DoesNotRejoinAResultOfAnotherGeneration_WhenAUserMessageSplitsIt()
+    {
+        // A result carrying a call's id but another generation's id is not that call's late result: a
+        // generation's own result is stored under its GenerationId. It stays where it was stored.
+        var middleware = new MessageTransformationMiddleware();
+        var userNotice = new TextMessage { Role = Role.User, Text = "Five minutes have passed." };
+        var inputMessages = new List<IMessage>
+        {
+            GenerationCall("call_a", 1),
+            userNotice,
+            GenerationResult("call_a", 2, "gen2"),
+        };
+        var agent = new MockAgent();
+
+        await middleware.InvokeAsync(new MiddlewareContext(Messages: inputMessages, Options: null), agent);
+
+        var receivedMessages = agent.ReceivedMessages.ToList();
+        Assert.Equal(3, receivedMessages.Count);
+        Assert.IsType<ToolsCallMessage>(receivedMessages[0]);
+        Assert.Same(userNotice, receivedMessages[1]);
+        Assert.Equal("gen2", Assert.IsType<ToolsCallResultMessage>(receivedMessages[2]).GenerationId);
+    }
+
+    [Fact]
+    public async Task Upstream_DoesNotRejoinAPluralResult_WhenOneOfItsIdsAnswersNoOpenCall()
+    {
+        // A late result message rejoins its calls only when every result in it answers an open call of
+        // that one group; a plural result that also answers an unknown id is left where it was stored.
+        var middleware = new MessageTransformationMiddleware();
+        var userNotice = new TextMessage { Role = Role.User, Text = "Five minutes have passed." };
+        var lateResults = new ToolsCallResultMessage
+        {
+            ToolCallResults = [new ToolCallResult("call_a", "result_call_a"), new ToolCallResult("call_z", "z")],
+            GenerationId = "gen1",
+            MessageOrderIdx = 2,
+        };
+        var inputMessages = new List<IMessage> { GenerationCall("call_a", 1), userNotice, lateResults };
+        var agent = new MockAgent();
+
+        await middleware.InvokeAsync(new MiddlewareContext(Messages: inputMessages, Options: null), agent);
+
+        var receivedMessages = agent.ReceivedMessages.ToList();
+        Assert.Equal(3, receivedMessages.Count);
+        Assert.IsType<ToolsCallMessage>(receivedMessages[0]);
+        Assert.Same(userNotice, receivedMessages[1]);
+        Assert.Same(lateResults, receivedMessages[2]);
     }
 
     [Fact]
@@ -1930,6 +1962,25 @@ public class MessageTransformationMiddlewareTests
         AssertNoOrphanedResults(aggregate);
         Assert.Equal(["call_1", "call_2"], aggregate.ToolsCallMessage.ToolCalls.Select(c => c.ToolCallId));
     }
+
+    private static ToolCallMessage GenerationCall(string id, int order, string generationId = "gen1") =>
+        new()
+        {
+            FunctionName = "fn_" + id,
+            FunctionArgs = "{}",
+            ToolCallId = id,
+            GenerationId = generationId,
+            MessageOrderIdx = order,
+        };
+
+    private static ToolCallResultMessage GenerationResult(string id, int order, string generationId = "gen1") =>
+        new()
+        {
+            ToolCallId = id,
+            Result = "result_" + id,
+            GenerationId = generationId,
+            MessageOrderIdx = order,
+        };
 
     private static ToolCall NewToolCall(string toolCallId, string functionName, int toolCallIdx)
     {

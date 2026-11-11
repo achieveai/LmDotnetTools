@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Anthropic requests pair each tool result with its own call.** `AnthropicRequest.FromMessages` matches a tool-call
+  aggregate's results to its calls by `ToolCallId`, not by position, and drops (with a warning naming the thread and
+  generation) a `tool_result` that answers no `tool_use` in the turn before it, or answers one a second time. Before, a
+  generation whose last result was stored after a user message sent one call's result under another call's id and then
+  answered that call twice, so Anthropic rejected every later turn with 400 "each tool_use must have a single result".
+  `MessageTransformationMiddleware` also rejoins such a late result to its calls. A tool-call aggregate holding a call or
+  result with no `ToolCallId` now throws `ArgumentException` instead of being paired by position.
+
 - **Anthropic: 1-hour prompt cache, `PromptCachingMode.AutoOneHour`, off by default.** It places the same breakpoints as
   `Auto` with `ttl: "1h"`. A 1-hour write costs 2x base input against 1.25x, so it pays only when a conversation pauses for 5
   to 60 minutes. LmStreaming.Sample turns it on per model with `LmStreaming:PromptCache:{modelId}:Ttl=1h`; every other model

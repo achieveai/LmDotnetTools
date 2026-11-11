@@ -180,7 +180,14 @@ public record AnthropicRequest
             {
                 case CompositeMessage compositeMsg:
                     var (primaryMessage, secondaryMessage) = AddCompositeMessage(compositeMsg, logger);
-                    anthropicMessages.Add(primaryMessage);
+
+                    // A composite of a usage row and an aggregate whose calls all lost their results leaves an
+                    // empty assistant turn, which Anthropic rejects.
+                    if (primaryMessage.Content.Count > 0)
+                    {
+                        anthropicMessages.Add(primaryMessage);
+                    }
+
                     if (secondaryMessage is { Content.Count: > 0 })
                     {
                         anthropicMessages.Add(secondaryMessage);
@@ -250,7 +257,7 @@ public record AnthropicRequest
         // This happens when server tool use, server tool result, and text content from a single assistant
         // turn arrive as separate IMessage objects.
         anthropicMessages = MergeConsecutiveSameRoleMessages(anthropicMessages);
-        if (DropUnmatchedToolResults(anthropicMessages, logger))
+        if (DropUnmatchedToolResults(anthropicMessages, deduplicatedMessages, logger))
         {
             // A user turn that held nothing but such results is gone; join the turns around it again.
             anthropicMessages = MergeConsecutiveSameRoleMessages([
@@ -584,7 +591,11 @@ public record AnthropicRequest
     ///     pairing by position then sends one call's result under another call's id. A call with no result
     ///     here, or a result with no call, is left out and logged: Anthropic rejects a <c>tool_use</c> without
     ///     its <c>tool_result</c> and a <c>tool_result</c> without its <c>tool_use</c>.
+    ///     A call or result with no <c>ToolCallId</c> (other than an empty-id server tool, dropped as before)
+    ///     is rejected: nothing in the history says which call such a result answers, and guessing by position
+    ///     is how one call's result was sent as another's.
     /// </summary>
+    /// <exception cref="ArgumentException">A call or result of the aggregate has no <c>ToolCallId</c>.</exception>
     private static IEnumerable<(
         AnthropicContent toolCallContent,
         AnthropicContent toolResultContent
@@ -592,6 +603,23 @@ public record AnthropicRequest
     {
         var toolCalls = aggregateMsg.ToolsCallMessage.ToolCalls ?? [];
         var toolResults = aggregateMsg.ToolsCallResult.ToolCallResults ?? [];
+        if (
+            toolCalls.Any(c => HasNoToolCallId(c.ExecutionTarget, c.ToolCallId))
+            || toolResults.Any(r => HasNoToolCallId(r.ExecutionTarget, r.ToolCallId))
+        )
+        {
+            throw new ArgumentException(
+                $"A tool-call aggregate of generation '{aggregateMsg.GenerationId}' in thread "
+                    + $"'{aggregateMsg.ThreadId}' has a tool call or result with no ToolCallId, so its results "
+                    + "cannot be paired with their calls. Call ids: ["
+                    + string.Join(", ", toolCalls.Select(c => c.ToolCallId ?? "<null>"))
+                    + "]; result ids: ["
+                    + string.Join(", ", toolResults.Select(r => r.ToolCallId ?? "<null>"))
+                    + "].",
+                nameof(aggregateMsg)
+            );
+        }
+
         var answered = new bool[toolResults.Count];
 
         foreach (var toolCall in toolCalls)
@@ -617,9 +645,11 @@ public record AnthropicRequest
             if (resultIndex < 0)
             {
                 logger?.LogWarning(
-                    "Dropping tool_use {ToolCallId} ({FunctionName}): its result is not in the same tool-call aggregate",
+                    "Dropping tool_use {ToolCallId} ({FunctionName}) of generation {GenerationId} in thread {ThreadId}: its result is not in the same tool-call aggregate",
                     toolCall.ToolCallId,
-                    toolCall.FunctionName
+                    toolCall.FunctionName,
+                    aggregateMsg.GenerationId,
+                    aggregateMsg.ThreadId
                 );
                 continue;
             }
@@ -650,12 +680,21 @@ public record AnthropicRequest
             if (!answered[i] && !IsEmptyIdServerToolCall(toolResults[i].ExecutionTarget, toolResults[i].ToolCallId))
             {
                 logger?.LogWarning(
-                    "Dropping tool_result {ToolCallId}: no unanswered tool_use for it in the same tool-call aggregate",
-                    toolResults[i].ToolCallId
+                    "Dropping tool_result {ToolCallId} of generation {GenerationId} in thread {ThreadId}: no unanswered tool_use for it in the same tool-call aggregate",
+                    toolResults[i].ToolCallId,
+                    aggregateMsg.ToolsCallResult.GenerationId ?? aggregateMsg.GenerationId,
+                    aggregateMsg.ThreadId
                 );
             }
         }
     }
+
+    /// <summary>
+    ///     A call or result with no id that is not the known empty-id server tool (see
+    ///     <see cref="IsEmptyIdServerToolCall" />).
+    /// </summary>
+    private static bool HasNoToolCallId(ExecutionTarget executionTarget, string? toolCallId) =>
+        string.IsNullOrWhiteSpace(toolCallId) && !IsEmptyIdServerToolCall(executionTarget, toolCallId);
 
     /// <summary>
     ///     A server-side (provider-executed) tool call with no id. These appear when an
@@ -802,9 +841,14 @@ public record AnthropicRequest
     ///     for a call stays.
     /// </summary>
     /// <returns>True when a user turn was left with no content and must be removed.</returns>
-    private static bool DropUnmatchedToolResults(List<AnthropicMessage> messages, ILogger? logger)
+    private static bool DropUnmatchedToolResults(
+        List<AnthropicMessage> messages,
+        IEnumerable<IMessage> sources,
+        ILogger? logger
+    )
     {
         var emptied = false;
+        (string? ThreadId, Dictionary<string, string?> GenerationByCallId)? origin = null;
         for (var i = 0; i < messages.Count; i++)
         {
             var message = messages[i];
@@ -829,13 +873,20 @@ public record AnthropicRequest
                     return false;
                 }
 
-                logger?.LogWarning(
-                    "Dropping tool_result {ToolUseId}: {Reason}",
-                    block.ToolUseId,
-                    offered.Contains(block.ToolUseId)
-                        ? "its tool_use already has a result"
-                        : "no tool_use for it in the assistant turn before it"
-                );
+                if (logger?.IsEnabled(LogLevel.Warning) == true)
+                {
+                    origin ??= FindResultOrigins(sources);
+                    logger.LogWarning(
+                        "Dropping tool_result {ToolUseId} of generation {GenerationId} in thread {ThreadId}: {Reason}",
+                        block.ToolUseId,
+                        block.ToolUseId is { } id ? origin.Value.GenerationByCallId.GetValueOrDefault(id) : null,
+                        origin.Value.ThreadId,
+                        offered.Contains(block.ToolUseId)
+                            ? "its tool_use already has a result"
+                            : "no tool_use for it in the assistant turn before it"
+                    );
+                }
+
                 return true;
             });
 
@@ -843,6 +894,58 @@ public record AnthropicRequest
         }
 
         return emptied;
+    }
+
+    /// <summary>
+    ///     The thread of the history and, for each tool call id, the generation of the first message that
+    ///     carries a result for it. Tool call ids are issued per call, so every result for one id belongs to
+    ///     that call's generation. Only read to log a dropped result.
+    /// </summary>
+    private static (string? ThreadId, Dictionary<string, string?> GenerationByCallId) FindResultOrigins(
+        IEnumerable<IMessage> sources
+    )
+    {
+        string? threadId = null;
+        var generations = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var source in sources)
+        {
+            Visit(source);
+        }
+
+        return (threadId, generations);
+
+        void Visit(IMessage message)
+        {
+            threadId ??= message.ThreadId;
+            switch (message)
+            {
+                case CompositeMessage composite:
+                    foreach (var inner in composite.Messages)
+                    {
+                        Visit(inner);
+                    }
+
+                    break;
+                case ToolsCallAggregateMessage aggregate:
+                    Visit(aggregate.ToolsCallResult);
+                    break;
+                case ToolsCallResultMessage results:
+                    foreach (var result in results.ToolCallResults ?? [])
+                    {
+                        if (result.ToolCallId is { } id)
+                        {
+                            _ = generations.TryAdd(id, results.GenerationId);
+                        }
+                    }
+
+                    break;
+                case ToolCallResultMessage { ToolCallId: { } id } single:
+                    _ = generations.TryAdd(id, single.GenerationId);
+                    break;
+                default:
+                    break;
+            }
+        }
     }
 
     private static List<AnthropicMessage> MergeConsecutiveSameRoleMessages(List<AnthropicMessage> messages)
