@@ -12,8 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generation) a `tool_result` that answers no `tool_use` in the turn before it, or answers one a second time. Before, a
   generation whose last result was stored after a user message sent one call's result under another call's id and then
   answered that call twice, so Anthropic rejected every later turn with 400 "each tool_use must have a single result".
-  `MessageTransformationMiddleware` also rejoins such a late result to its calls. A tool-call aggregate holding a call or
-  result with no `ToolCallId` now throws `ArgumentException` instead of being paired by position.
+  `MessageTransformationMiddleware` also rejoins such a late result to its calls. A tool-call aggregate holding a local
+  tool result (any `ExecutionTarget` other than `ProviderServer`) with no `ToolCallId` now throws `ArgumentException`
+  instead of being paired by position. A call with no `ToolCallId`, and a provider-server call or result with an empty
+  id, are still left out of the request with a warning, as before.
 
 - **Anthropic: 1-hour prompt cache, `PromptCachingMode.AutoOneHour`, off by default.** It places the same breakpoints as
   `Auto` with `ttl: "1h"`. A 1-hour write costs 2x base input against 1.25x, so it pays only when a conversation pauses for 5

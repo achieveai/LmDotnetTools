@@ -591,11 +591,13 @@ public record AnthropicRequest
     ///     pairing by position then sends one call's result under another call's id. A call with no result
     ///     here, or a result with no call, is left out and logged: Anthropic rejects a <c>tool_use</c> without
     ///     its <c>tool_result</c> and a <c>tool_result</c> without its <c>tool_use</c>.
-    ///     A call or result with no <c>ToolCallId</c> (other than an empty-id server tool, dropped as before)
-    ///     is rejected: nothing in the history says which call such a result answers, and guessing by position
-    ///     is how one call's result was sent as another's.
+    ///     A local result with no <c>ToolCallId</c> is rejected: nothing in the history says which call it
+    ///     answers, and guessing by position is how one call's result was sent as another's. A call with no
+    ///     <c>ToolCallId</c> has no result that can answer it, so it is left out and logged like any other
+    ///     unanswered call; an OpenAI-compatible stream can produce one, and the loop stores it before it
+    ///     refuses to run it.
     /// </summary>
-    /// <exception cref="ArgumentException">A call or result of the aggregate has no <c>ToolCallId</c>.</exception>
+    /// <exception cref="ArgumentException">A local result of the aggregate has no <c>ToolCallId</c>.</exception>
     private static IEnumerable<(
         AnthropicContent toolCallContent,
         AnthropicContent toolResultContent
@@ -603,15 +605,12 @@ public record AnthropicRequest
     {
         var toolCalls = aggregateMsg.ToolsCallMessage.ToolCalls ?? [];
         var toolResults = aggregateMsg.ToolsCallResult.ToolCallResults ?? [];
-        if (
-            toolCalls.Any(c => HasNoToolCallId(c.ExecutionTarget, c.ToolCallId))
-            || toolResults.Any(r => HasNoToolCallId(r.ExecutionTarget, r.ToolCallId))
-        )
+        if (toolResults.Any(r => HasNoToolCallId(r.ExecutionTarget, r.ToolCallId)))
         {
             throw new ArgumentException(
                 $"A tool-call aggregate of generation '{aggregateMsg.GenerationId}' in thread "
-                    + $"'{aggregateMsg.ThreadId}' has a tool call or result with no ToolCallId, so its results "
-                    + "cannot be paired with their calls. Call ids: ["
+                    + $"'{aggregateMsg.ThreadId}' has a tool result with no ToolCallId, so it cannot be paired "
+                    + "with its call. Call ids: ["
                     + string.Join(", ", toolCalls.Select(c => c.ToolCallId ?? "<null>"))
                     + "]; result ids: ["
                     + string.Join(", ", toolResults.Select(r => r.ToolCallId ?? "<null>"))
@@ -914,7 +913,9 @@ public record AnthropicRequest
 
         return (threadId, generations);
 
-        void Visit(IMessage message)
+        // fallbackGenerationId: the aggregate's own generation, for results built without one
+        // (FunctionCallMiddleware leaves the result message's GenerationId unset).
+        void Visit(IMessage message, string? fallbackGenerationId = null)
         {
             threadId ??= message.ThreadId;
             switch (message)
@@ -927,14 +928,14 @@ public record AnthropicRequest
 
                     break;
                 case ToolsCallAggregateMessage aggregate:
-                    Visit(aggregate.ToolsCallResult);
+                    Visit(aggregate.ToolsCallResult, aggregate.GenerationId);
                     break;
                 case ToolsCallResultMessage results:
                     foreach (var result in results.ToolCallResults ?? [])
                     {
                         if (result.ToolCallId is { } id)
                         {
-                            _ = generations.TryAdd(id, results.GenerationId);
+                            _ = generations.TryAdd(id, results.GenerationId ?? fallbackGenerationId);
                         }
                     }
 

@@ -1,4 +1,7 @@
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Models;
 
@@ -6,8 +9,10 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Models;
 ///     A tool_result must answer a tool_use of the assistant turn right before it, exactly once, under that
 ///     tool_use's id. Anthropic rejects any other shape with a 400 on every later turn of the conversation.
 /// </summary>
-public class ToolResultPairingTests
+public class ToolResultPairingTests(ITestOutputHelper output) : LoggingTestBase(output)
 {
+    private const string TestThreadId = "thread-1";
+
     /// <summary>
     ///     The history that broke a live conversation: a generation called two tools, one result was stored
     ///     after a user text message, so the aggregate holds two calls and only the second call's result, and
@@ -26,7 +31,7 @@ public class ToolResultPairingTests
             Results(("toolu_a", "result a")),
         };
 
-        var request = AnthropicRequest.FromMessages(messages);
+        var request = ToRequest(messages);
 
         AssertEveryToolResultAnswersThePrecedingToolUseOnce(request);
         var toolUses = request.Messages.SelectMany(m => m.Content).Where(b => b.Type == "tool_use");
@@ -46,7 +51,7 @@ public class ToolResultPairingTests
     {
         var aggregate = Aggregate(["toolu_a", "toolu_b"], ("toolu_b", "result b"), ("toolu_a", "result a"));
 
-        var request = AnthropicRequest.FromMessages([new TextMessage { Role = Role.User, Text = "go" }, aggregate]);
+        var request = ToRequest([new TextMessage { Role = Role.User, Text = "go" }, aggregate]);
 
         AssertEveryToolResultAnswersThePrecedingToolUseOnce(request);
         var toolUses = request.Messages[1].Content.Where(b => b.Type == "tool_use").Select(b => b.Id);
@@ -69,10 +74,184 @@ public class ToolResultPairingTests
         var aggregate = Aggregate([callId], (null, "result"));
 
         var error = Assert.Throws<ArgumentException>(() =>
-            AnthropicRequest.FromMessages([new TextMessage { Role = Role.User, Text = "go" }, aggregate])
+            ToRequest([new TextMessage { Role = Role.User, Text = "go" }, aggregate])
         );
 
+        Logger.LogDebug("Rejected with {Error}", error.Message);
         Assert.Contains("no ToolCallId", error.Message);
+        Assert.Contains("generation 'gen1' in thread 'thread-1'", error.Message);
+        Assert.Equal("aggregateMsg", error.ParamName);
+    }
+
+    /// <summary>
+    ///     An OpenAI-compatible stream can send a second call with no id; the loop stores it, then refuses to run
+    ///     it, so the generation is restored as [call a, call with no id] + [result a]. The id-less call has no
+    ///     result that could answer it: it is left out and logged, and call a stays paired with its result, so a
+    ///     later Anthropic request of the thread still goes out.
+    /// </summary>
+    [Fact]
+    public void FromMessages_AggregateCallWithoutToolCallId_IsDroppedAndTheRestStaysPaired()
+    {
+        var aggregate = Aggregate(["toolu_a", null], ("toolu_a", "result a"));
+        var warnings = new CapturingLogger<AnthropicRequest>();
+
+        var request = ToRequest([new TextMessage { Role = Role.User, Text = "go" }, aggregate], warnings);
+
+        AssertEveryToolResultAnswersThePrecedingToolUseOnce(request);
+        Assert.Equal(["user", "assistant", "user"], request.Messages.Select(m => m.Role));
+        Assert.Equal(["toolu_a"], request.Messages[1].Content.Select(b => b.Id));
+        var result = Assert.Single(request.Messages[2].Content);
+        Assert.Equal(("toolu_a", "result a"), (result.ToolUseId, result.Content));
+        var warning = Assert.Single(warnings.MessagesAtLevel(LogLevel.Warning));
+        Logger.LogDebug("Logged {Warning}", warning);
+        Assert.Contains("Dropping tool_use (null) (read_) of generation gen1 in thread thread-1", warning);
+    }
+
+    /// <summary>
+    ///     A result dropped from a user turn, because no tool_use before it asks for it or because its tool_use
+    ///     already has a result, is logged with the generation and thread it came from, so the stored rows can
+    ///     be found. The result may come from a singular, a plural or a composite message.
+    /// </summary>
+    [Theory]
+    [InlineData("singular", "orphan")]
+    [InlineData("plural", "orphan")]
+    [InlineData("composite", "orphan")]
+    [InlineData("singular", "duplicate")]
+    [InlineData("plural", "duplicate")]
+    [InlineData("composite", "duplicate")]
+    public void FromMessages_DroppedResults_LogTheirThreadAndGeneration(string sourceKind, string drop)
+    {
+        // Only the result rows carry the thread and generation, so the logged values can only come from them.
+        IMessage Late(string id, string text)
+        {
+            var plural = new ToolsCallResultMessage
+            {
+                ToolCallResults = [new ToolCallResult(id, text)],
+                GenerationId = "gen_late",
+                ThreadId = TestThreadId,
+            };
+            return sourceKind switch
+            {
+                "singular" => new ToolCallResultMessage
+                {
+                    ToolCallId = id,
+                    Result = text,
+                    Role = Role.User,
+                    GenerationId = "gen_late",
+                    ThreadId = TestThreadId,
+                },
+                "plural" => plural,
+                _ => new CompositeMessage { Role = Role.User, Messages = [plural] },
+            };
+        }
+
+        IMessage[] messages =
+            drop == "orphan"
+                ?
+                [
+                    new TextMessage { Role = Role.User, Text = "go" },
+                    new TextMessage { Role = Role.Assistant, Text = "first" },
+                    Late("toolu_x", "orphan"),
+                ]
+                :
+                [
+                    new TextMessage { Role = Role.User, Text = "go" },
+                    new ToolsCallMessage
+                    {
+                        ToolCalls =
+                        [
+                            new ToolCall
+                            {
+                                FunctionName = "read_toolu_x",
+                                FunctionArgs = "{}",
+                                ToolCallId = "toolu_x",
+                            },
+                        ],
+                    },
+                    Late("toolu_x", "first"),
+                    Late("toolu_x", "second"),
+                ];
+        var warnings = new CapturingLogger<AnthropicRequest>();
+
+        _ = ToRequest(messages, warnings);
+
+        var warning = Assert.Single(warnings.MessagesAtLevel(LogLevel.Warning));
+        Logger.LogDebug(
+            "Expected generation {Generation} and thread {Thread}; logged {Warning}",
+            "gen_late",
+            TestThreadId,
+            warning
+        );
+        Assert.Contains("Dropping tool_result toolu_x of generation gen_late in thread thread-1", warning);
+        Assert.Contains(
+            drop == "orphan"
+                ? "no tool_use for it in the assistant turn before it"
+                : "its tool_use already has a result",
+            warning
+        );
+    }
+
+    /// <summary>
+    ///     The second result of a call, after the one its aggregate sent, is logged under the aggregate's
+    ///     generation when the aggregate's result message has none: FunctionCallMiddleware builds its results
+    ///     without a GenerationId.
+    /// </summary>
+    [Fact]
+    public void FromMessages_DuplicateOfAnAggregateResultWithoutGeneration_LogsTheAggregatesGeneration()
+    {
+        var aggregate = Aggregate(["toolu_a"], ("toolu_a", "first"));
+        aggregate = new ToolsCallAggregateMessage(
+            aggregate.ToolsCallMessage,
+            aggregate.ToolsCallResult with
+            {
+                GenerationId = null,
+            }
+        );
+        var warnings = new CapturingLogger<AnthropicRequest>();
+
+        _ = ToRequest(
+            [new TextMessage { Role = Role.User, Text = "go" }, aggregate, Results(("toolu_a", "second"))],
+            warnings
+        );
+
+        var warning = Assert.Single(warnings.MessagesAtLevel(LogLevel.Warning));
+        Logger.LogDebug("Logged {Warning}", warning);
+        Assert.Contains("Dropping tool_result toolu_a of generation gen1 in thread thread-1", warning);
+    }
+
+    /// <summary>
+    ///     A call of an aggregate with no result in it, and a result with no call in it, are each left out and
+    ///     logged with the aggregate's generation and thread. The result message's own generation is used when
+    ///     it has one, the aggregate's otherwise.
+    /// </summary>
+    [Theory]
+    [InlineData("gen_results", "gen_results")]
+    [InlineData(null, "gen1")]
+    public void FromMessages_AggregateDrops_LogTheirThreadAndGeneration(
+        string? resultGeneration,
+        string expectedResultGeneration
+    )
+    {
+        var aggregate = Aggregate(["toolu_a"], ("toolu_b", "result b"));
+        aggregate = new ToolsCallAggregateMessage(
+            aggregate.ToolsCallMessage,
+            aggregate.ToolsCallResult with
+            {
+                GenerationId = resultGeneration,
+            }
+        );
+        var warnings = new CapturingLogger<AnthropicRequest>();
+
+        _ = ToRequest([new TextMessage { Role = Role.User, Text = "go" }, aggregate], warnings);
+
+        var logged = warnings.MessagesAtLevel(LogLevel.Warning);
+        Logger.LogDebug("Logged {Warnings}", logged);
+        Assert.Equal(2, logged.Count);
+        Assert.Contains("Dropping tool_use toolu_a (read_toolu_a) of generation gen1 in thread thread-1", logged[0]);
+        Assert.Contains(
+            $"Dropping tool_result toolu_b of generation {expectedResultGeneration} in thread thread-1",
+            logged[1]
+        );
     }
 
     /// <summary>
@@ -94,7 +273,7 @@ public class ToolResultPairingTests
             new TextMessage { Role = Role.User, Text = "next" },
         };
 
-        var request = AnthropicRequest.FromMessages(messages);
+        var request = ToRequest(messages);
 
         AssertNoEmptyTurnAndRolesAlternate(request);
         var turn = Assert.Single(request.Messages);
@@ -115,7 +294,7 @@ public class ToolResultPairingTests
             new TextMessage { Role = Role.User, Text = "next" },
         };
 
-        var request = AnthropicRequest.FromMessages(messages);
+        var request = ToRequest(messages);
 
         AssertNoEmptyTurnAndRolesAlternate(request);
         var turn = Assert.Single(request.Messages);
@@ -143,7 +322,7 @@ public class ToolResultPairingTests
             },
         };
 
-        var request = AnthropicRequest.FromMessages(messages);
+        var request = ToRequest(messages);
 
         AssertNoEmptyTurnAndRolesAlternate(request);
         Assert.Equal(["user", "assistant"], request.Messages.Select(m => m.Role));
@@ -163,7 +342,7 @@ public class ToolResultPairingTests
             Results(("toolu_a", "second")),
         };
 
-        var request = AnthropicRequest.FromMessages(messages);
+        var request = ToRequest(messages);
 
         AssertEveryToolResultAnswersThePrecedingToolUseOnce(request);
         var result = Assert.Single(request.Messages[2].Content, b => b.Type == "tool_result");
@@ -186,7 +365,7 @@ public class ToolResultPairingTests
             new TextMessage { Role = Role.Assistant, Text = "second" },
         };
 
-        var request = AnthropicRequest.FromMessages(messages);
+        var request = ToRequest(messages);
 
         AssertNoEmptyTurnAndRolesAlternate(request);
         Assert.Equal(["user", "assistant"], request.Messages.Select(m => m.Role));
@@ -210,12 +389,42 @@ public class ToolResultPairingTests
                     }),
                 ],
                 GenerationId = "gen1",
+                ThreadId = TestThreadId,
             },
             Results(results)
         );
 
     private static ToolsCallResultMessage Results(params (string? Id, string Result)[] results) =>
-        new() { ToolCallResults = [.. results.Select(r => new ToolCallResult(r.Id, r.Result))], GenerationId = "gen1" };
+        new()
+        {
+            ToolCallResults = [.. results.Select(r => new ToolCallResult(r.Id, r.Result))],
+            GenerationId = "gen1",
+            ThreadId = TestThreadId,
+        };
+
+    /// <summary>
+    ///     Converts the history, logging what went in and the turns that came out.
+    /// </summary>
+    private AnthropicRequest ToRequest(IEnumerable<IMessage> messages, ILogger? converterLogger = null)
+    {
+        var history = messages.ToList();
+        Logger.LogDebug(
+            "History {Messages}",
+            history.Select(m => $"{m.GetType().Name}({m.Role}, gen={m.GenerationId})").ToList()
+        );
+        var request = AnthropicRequest.FromMessages(history, logger: converterLogger);
+        Logger.LogDebug(
+            "Request turns {Turns}",
+            request
+                .Messages.Select(m =>
+                    m.Role
+                    + ": "
+                    + string.Join(", ", m.Content.Select(b => $"{b.Type}[{b.Id ?? b.ToolUseId}]{b.Text ?? b.Content}"))
+                )
+                .ToList()
+        );
+        return request;
+    }
 
     private static void AssertNoEmptyTurnAndRolesAlternate(AnthropicRequest request)
     {

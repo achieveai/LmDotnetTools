@@ -1441,6 +1441,87 @@ public class MessageTransformationMiddlewareTests
     }
 
     [Fact]
+    public async Task Upstream_NullToolCalls_PreservesTheEmptyPluralMessage()
+    {
+        // The rejoin pass reads the call ids of every message; a plural call message whose list is null
+        // (a deserialized row with no tool_calls) has none and is forwarded unchanged.
+        var middleware = new MessageTransformationMiddleware();
+        var emptyCalls = new ToolsCallMessage
+        {
+            ToolCalls = null!,
+            GenerationId = "gen1",
+            MessageOrderIdx = 1,
+        };
+        var userMessage = new TextMessage { Role = Role.User, Text = "Next question." };
+        var agent = new MockAgent();
+
+        await middleware.InvokeAsync(new MiddlewareContext(Messages: [emptyCalls, userMessage], Options: null), agent);
+
+        var receivedMessages = agent.ReceivedMessages.ToList();
+        Assert.Equal(2, receivedMessages.Count);
+        Assert.Null(Assert.IsType<ToolsCallMessage>(receivedMessages[0]).ToolCalls);
+        Assert.Same(userMessage, receivedMessages[1]);
+    }
+
+    [Fact]
+    public async Task Upstream_NullToolCallResults_PreservesTheEmptyPluralMessage()
+    {
+        // The rejoin pass reads the result ids of every message; a plural result message whose list is
+        // null has none, answers no open call, and is forwarded where it was stored.
+        var middleware = new MessageTransformationMiddleware();
+        var userMessage = new TextMessage { Role = Role.User, Text = "Next question." };
+        var emptyResults = new ToolsCallResultMessage
+        {
+            ToolCallResults = null!,
+            GenerationId = "gen1",
+            MessageOrderIdx = 1,
+        };
+        var agent = new MockAgent();
+
+        await middleware.InvokeAsync(
+            new MiddlewareContext(Messages: [userMessage, emptyResults], Options: null),
+            agent
+        );
+
+        var receivedMessages = agent.ReceivedMessages.ToList();
+        Assert.Equal(2, receivedMessages.Count);
+        Assert.Same(userMessage, receivedMessages[0]);
+        Assert.Null(Assert.IsType<ToolsCallResultMessage>(receivedMessages[1]).ToolCallResults);
+    }
+
+    [Fact]
+    public async Task Upstream_NullPluralListsBesideSingularRows_MergeIntoOneAggregate()
+    {
+        // A generation holding a plural message with a null list and a singular message of the same kind
+        // is merged; the null list contributes nothing instead of throwing.
+        var middleware = new MessageTransformationMiddleware();
+        var inputMessages = new List<IMessage>
+        {
+            new ToolsCallMessage
+            {
+                ToolCalls = null!,
+                GenerationId = "gen1",
+                MessageOrderIdx = 1,
+            },
+            GenerationCall("call_a", 2),
+            new ToolsCallResultMessage
+            {
+                ToolCallResults = null!,
+                GenerationId = "gen1",
+                MessageOrderIdx = 3,
+            },
+            GenerationResult("call_a", 4),
+        };
+        var agent = new MockAgent();
+
+        await middleware.InvokeAsync(new MiddlewareContext(Messages: inputMessages, Options: null), agent);
+
+        var aggregate = Assert.IsType<ToolsCallAggregateMessage>(Assert.Single(agent.ReceivedMessages));
+        Assert.Equal(["call_a"], aggregate.ToolsCallMessage.ToolCalls.Select(c => c.ToolCallId));
+        Assert.Equal(["call_a"], aggregate.ToolsCallResult.ToolCallResults.Select(r => r.ToolCallId));
+    }
+
+    [Fact]
     public async Task Upstream_PreservesMessageOrdering_WhenAggregating()
     {
         // Arrange

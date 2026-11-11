@@ -816,7 +816,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         {
             if (source is ToolsCallMessage toolsCallMessage)
             {
-                toolCalls.AddRange(toolsCallMessage.ToolCalls);
+                toolCalls.AddRange(toolsCallMessage.ToolCalls ?? []);
             }
             else if (source is ToolCallMessage toolCallMessage)
             {
@@ -869,7 +869,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         {
             if (source is ToolsCallResultMessage toolsCallResultMessage)
             {
-                toolCallResults.AddRange(toolsCallResultMessage.ToolCallResults);
+                toolCallResults.AddRange(toolsCallResultMessage.ToolCallResults ?? []);
             }
             else if (source is ToolCallResultMessage toolCallResultMessage)
             {
