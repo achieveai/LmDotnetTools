@@ -38,7 +38,10 @@ public record ReasoningMessage : IMessage, ICanGetText
     ///     A row with this set is saved under its own <c>$type</c>, <see cref="ReplayTypeDiscriminator" />, the
     ///     way a newer checkpoint schema gets its own. A build that predates it does not know that type, so its
     ///     loaders skip the row: it is never read as ordinary encrypted reasoning and never sent to another
-    ///     provider. After such a rollback the replay history is lost, not resent.
+    ///     provider. After such a rollback the replay history is lost, not resent. There is one more limit: the
+    ///     old build cannot compact a thread with replay rows once it outgrows the context window. Its compaction
+    ///     loads fewer rows than the store holds and returns <c>unsafe_state</c>, so each request is then refused
+    ///     before it is sent. The thread keeps working until then, and rolling forward clears it.
     /// </remarks>
     [JsonPropertyName("encryptedOrigin")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

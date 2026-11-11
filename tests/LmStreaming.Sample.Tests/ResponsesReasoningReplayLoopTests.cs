@@ -1,7 +1,10 @@
 using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
+using System.Text.Encodings.Web;
+using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
@@ -238,26 +241,38 @@ public sealed class ResponsesReasoningReplayLoopTests
             .HaveCount(2, "both answers are still sent");
     }
 
-    private static string[] SummaryBlobAnswer(string id, string text) =>
+    private static string[] SummaryBlobAnswer(string id, string text, int answerOutputIndex) =>
         [
             $$$"""{"type":"response.created","response":{"id":"{{{id}}}"}}""",
             $$$"""{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_{{{id}}}","summary":[{"type":"summary_text","text":"thinking {{{id}}}"}],"encrypted_content":"BLOB-{{{id}}}"}}""",
-            $$$"""{"type":"response.output_text.done","output_index":1,"item_id":"m_{{{id}}}","content_index":0,"text":"{{{text}}}"}""",
+            $$$"""{"type":"response.output_text.done","output_index":{{{answerOutputIndex}}},"item_id":"m_{{{id}}}","content_index":0,"text":"{{{text}}}"}""",
             $$$"""{"type":"response.completed","response":{"id":"{{{id}}}"}}""",
         ];
 
     /// <summary>
     /// The identities the browser merges on: across two turns, the summary and the answer streamed live carry the
     /// same generation and order as the rows saved for them, and the blob saved beside them is never streamed.
-    /// In this loop the transformation middleware gives each message its own order (summary 0, blob 1, answer 2),
-    /// so the blob never shares the summary's order here; that case is pinned in <c>JoinedSubscriptionTests</c>.
+    /// The frames and the <c>/messages</c> rows are also the client's fixture, so the client test runs on what
+    /// this server sends rather than on orders written by hand.
     /// </summary>
-    [Fact]
-    public async Task Live_and_saved_summary_and_answer_share_their_identity_across_two_turns()
+    /// <remarks>
+    /// The agent stamps the output index as the order, so with the answer on the reasoning item's index the
+    /// summary, the blob and the answer all arrive with one shared order. The loop's transformation middleware
+    /// then numbers each message in turn (summary 0, blob 1, answer 2), so the saved blob keeps an order of its
+    /// own and both layouts must reach the client as the same frames and rows. The case where nothing renumbers
+    /// is pinned in <c>JoinedSubscriptionTests</c>.
+    /// </remarks>
+    [Theory]
+    [InlineData(1)]
+    [InlineData(0)]
+    public async Task Live_and_saved_summary_and_answer_share_their_identity_across_two_turns(int answerOutputIndex)
     {
         var store = new InMemoryConversationStore();
         var threadId = $"thread-{Guid.NewGuid():N}";
-        var client = new ScriptedClient(SummaryBlobAnswer("r1", "answer one"), SummaryBlobAnswer("r2", "answer two"));
+        var client = new ScriptedClient(
+            SummaryBlobAnswer("r1", "answer one", answerOutputIndex),
+            SummaryBlobAnswer("r2", "answer two", answerOutputIndex)
+        );
         var published = new List<IMessage>();
 
         await using (var loop = Loop(client, store, threadId))
@@ -300,6 +315,124 @@ public sealed class ResponsesReasoningReplayLoopTests
 
         liveIds.Select(i => i.Text).Should().Equal("thinking r1", "answer one", "thinking r2", "answer two");
         savedIds.Should().Equal(liveIds, "a restored row must merge with its live copy, not sit beside it");
+        foreach (var generation in liveIds.Select(i => i.GenerationId).Distinct())
+        {
+            saved
+                .Where(m => m.GenerationId == generation)
+                .Select(m => m.MessageOrderIdx)
+                .Should()
+                .Equal(
+                    [0, 1, 2],
+                    "the summary, the blob and the answer each get their own order, even on one output index"
+                );
+        }
+
+        var actual = ClientFixture(live, rows, await RowsTheMessagesRouteReturnsAsync(store, threadId), threadId);
+        var expected = JsonNode.Parse(File.ReadAllText(ClientFixturePath()))!.AsObject();
+        _ = expected.Remove("_note");
+        JsonNode
+            .DeepEquals(actual, expected)
+            .Should()
+            .BeTrue(
+                "the client fixture must be what this server streams and what /messages returns; if the change is "
+                    + "intended, replace the fixture's live and rows (keep its _note) with\n{0}",
+                actual.ToJsonString(
+                    new JsonSerializerOptions
+                    {
+                        WriteIndented = true,
+                        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+                    }
+                )
+            );
+    }
+
+    private static async Task<List<PersistedMessage>> RowsTheMessagesRouteReturnsAsync(
+        InMemoryConversationStore store,
+        string threadId
+    )
+    {
+        await using var pool = Controllers.ConversationsControllerTests.CreatePool();
+        var controller = Controllers.ConversationsControllerTests.CreateController(
+            store,
+            pool,
+            Controllers.ConversationsControllerTests.ModeStoreResolvingSystemModes()
+        );
+        var result = await controller.GetMessages(threadId);
+        return
+        [
+            .. result
+                .Should()
+                .BeOfType<OkObjectResult>()
+                .Which.Value.Should()
+                .BeAssignableTo<IEnumerable<PersistedMessage>>()
+                .Subject,
+        ];
+    }
+
+    /// <summary>
+    /// The frames as the WebSocket sends them and the rows as MVC returns them, with the minted ids, the thread
+    /// and the clock replaced by stable names, so the file changes only when the wire does.
+    /// </summary>
+    private static JsonObject ClientFixture(
+        List<IMessage> live,
+        IReadOnlyList<PersistedMessage> stored,
+        List<PersistedMessage> rows,
+        string threadId
+    )
+    {
+        var wsJson = JsonSerializerOptionsFactory.CreateForProduction();
+        var mvcJson = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var frames = new JsonArray([.. live.Select(m => JsonSerializer.SerializeToNode(m, wsJson))]);
+        var served = new JsonArray([.. rows.Select(r => JsonSerializer.SerializeToNode(r, mvcJson))]);
+        for (var i = 0; i < served.Count; i++)
+        {
+            served[i]!["timestamp"] = 1000 + i;
+        }
+
+        var names = new Dictionary<string, string>();
+        void Name(string prefix, IEnumerable<string?> ids)
+        {
+            var n = 0;
+            foreach (var id in ids.OfType<string>().Where(id => id.Length > 0).Distinct())
+            {
+                _ = names.TryAdd(id, $"{prefix}-{++n}");
+            }
+        }
+
+        Name("run", live.Select(m => m.RunId));
+        Name("gen", live.Select(m => m.GenerationId));
+        // Every stored row is named, the hidden blob rows too, so an answer's parent id still resolves to a name.
+        Name("row", stored.Select(r => r.Id));
+
+        var text = new JsonObject { ["live"] = frames, ["rows"] = served }.ToJsonString();
+        text = text.Replace(threadId, "thread-x", StringComparison.Ordinal);
+        foreach (var (id, name) in names.OrderByDescending(n => n.Key.Length))
+        {
+            text = text.Replace(id, name, StringComparison.Ordinal);
+        }
+
+        return JsonNode.Parse(text)!.AsObject();
+    }
+
+    private static string ClientFixturePath()
+    {
+        var dir = Path.GetDirectoryName(typeof(ResponsesReasoningReplayLoopTests).Assembly.Location);
+        while (dir != null && !File.Exists(Path.Combine(dir, "LmDotnetTools.sln")))
+        {
+            dir = Directory.GetParent(dir)?.FullName;
+        }
+
+        return Path.Combine(
+            dir ?? throw new InvalidOperationException("Could not find the repository root."),
+            "samples",
+            "LmStreaming.Sample",
+            "ClientApp",
+            "src",
+            "__tests__",
+            "fixtures",
+            "synthetic",
+            "responsesReplay.twoTurns.json"
+        );
     }
 
     private static Task RunTurnsAsync(

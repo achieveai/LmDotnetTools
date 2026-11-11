@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **OpenAI Responses: replay encrypted reasoning to the same model, behind a switch (#769).** With
+  `LmStreaming:ReasoningReplay:{providerId}` set to true (off by default), `OpenAiResponsesAgent` asks for
+  `reasoning.encrypted_content`, saves the blob as a `ReasoningMessage` with the new `EncryptedOrigin`, and sends it back,
+  in order, to the model that made it. Other providers, subscribers and the browser never get it, and reasoning from a
+  retried attempt is not sent. **Rollback:** the blob is saved under its own `$type`, `reasoning_replay`, so an older build
+  skips the row and replay history is lost, not resent. After a rollback, a thread with replay rows can't be compacted by
+  the old build once it outgrows the window. It returns `unsafe_state`; the thread keeps working until then, and rolling
+  forward clears it.
+
 - **Stopping a run now cancels its pending MCP tool calls.** Tools from `McpClientFunctionProvider` pass the run's token to
   `CallToolAsync`, so a stalled call no longer keeps the run alive past `StopAsync`. `LegacyHandlerAdapter.ToNewHandler` gains
   overloads for handlers that take a token.
