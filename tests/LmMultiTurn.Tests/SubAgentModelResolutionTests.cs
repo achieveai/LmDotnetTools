@@ -152,4 +152,26 @@ public class SubAgentModelResolutionTests
 
         result!.PromptCaching.Should().Be(PromptCachingMode.Auto);
     }
+
+    [Theory]
+    [InlineData(PromptCachingMode.AutoOneHour, PromptCachingMode.Auto, PromptCachingMode.AutoOneHour)]
+    [InlineData(PromptCachingMode.AutoOneHour, PromptCachingMode.AutoOneHour, PromptCachingMode.AutoOneHour)]
+    [InlineData(PromptCachingMode.Off, PromptCachingMode.AutoOneHour, PromptCachingMode.Auto)]
+    public void TemplatePromptCaching_OneHourIsKept_ButAnInheritedOneHourDropsToFiveMinutes(
+        PromptCachingMode template,
+        PromptCachingMode parent,
+        PromptCachingMode expected
+    )
+    {
+        // Only an inherited 1 hour is shortened. A template that asks for 1 hour keeps it under either parent;
+        // an Off template inherits, so under a 1-hour parent it gets 5 minutes.
+        var result = SubAgentManager.ResolveSubAgentOptions(
+            templateDefaults: new GenerateReplyOptions { PromptCaching = template },
+            modelOverride: null,
+            parentModelId: "parent-model",
+            parentPromptCaching: parent
+        );
+
+        result!.PromptCaching.Should().Be(expected);
+    }
 }

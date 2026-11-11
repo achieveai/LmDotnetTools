@@ -102,6 +102,29 @@ public class PromptCachingRequestTests
     }
 
     [Fact]
+    public void Apply_WithOneHour_MarksTheLastBlockOfAnExistingSystemArrayForOneHour()
+    {
+        // A request whose system prompt is already an array takes the arm that marks its last block, not the
+        // string-to-array conversion FromMessages exercises.
+        var request = new AnthropicRequest
+        {
+            SystemContent =
+            [
+                new AnthropicSystemContent { Type = "text", Text = "First" },
+                new AnthropicSystemContent { Type = "text", Text = "Last" },
+            ],
+        };
+
+        var marked = AchieveAi.LmDotnetTools.AnthropicProvider.Caching.PromptCachingStrategy.Apply(
+            request,
+            oneHour: true
+        );
+
+        Assert.Null(marked.SystemContent![0].CacheControl);
+        Assert.Equal("1h", marked.SystemContent[1].CacheControl!.Ttl);
+    }
+
+    [Fact]
     public void FromMessages_WithCachingAuto_SendsNoTtl()
     {
         var markers = CacheControls(SerializedRequest(PromptCachingMode.Auto));

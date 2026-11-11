@@ -293,7 +293,10 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <summary>
     /// The parent's prompt-caching mode, inherited by sub-agents whose template leaves it
     /// <see cref="PromptCachingMode.Off" /> (see <c>ResolveSubAgentOptions</c>) — without it a delegate
-    /// re-bills its whole history as uncached input on every model call.
+    /// re-bills its whole history as uncached input on every model call. An inherited
+    /// <see cref="PromptCachingMode.AutoOneHour" /> parent gives its sub-agents 5 minutes
+    /// (<see cref="PromptCachingMode.Auto" />): a delegate is short-lived, so the 1-hour write premium would not be
+    /// repaid. A template that sets <see cref="PromptCachingMode.AutoOneHour" /> itself keeps it.
     /// </summary>
     /// <remarks>
     /// An init property rather than a constructor parameter on purpose: this type ships in a NuGet package,

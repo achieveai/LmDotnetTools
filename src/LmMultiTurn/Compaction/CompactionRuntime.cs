@@ -2950,15 +2950,20 @@ internal sealed class CompactionRuntime
             return null;
         }
 
+        // What the request's markers cost, whatever lifetime a host told the temperature check to assume. A
+        // 1-hour write with no 1-hour rate is unpriced: the 5-minute rate would understate the rewrite, and a
+        // missing rate counts as free in the savings sum, so either would overstate what compaction saves.
+        var oneHour = _host.DefaultOptions.PromptCaching == PromptCachingMode.AutoOneHour;
+        if (cachingEnabled && oneHour && pricing.CacheWrite1hPerMillion is null)
+        {
+            return null;
+        }
+
         return new CompactionEconomics
         {
             InputRatePerMillion = pricing.PromptPerMillion,
             OutputRatePerMillion = pricing.CompletionPerMillion,
-            // What the request's markers cost, whatever lifetime a host told the temperature check to assume.
-            CacheWriteRatePerMillion =
-                _host.DefaultOptions.PromptCaching == PromptCachingMode.AutoOneHour
-                    ? pricing.CacheWrite1hPerMillion ?? pricing.CacheWrite5mPerMillion
-                    : pricing.CacheWrite5mPerMillion,
+            CacheWriteRatePerMillion = oneHour ? pricing.CacheWrite1hPerMillion : pricing.CacheWrite5mPerMillion,
             CachingEnabled = cachingEnabled,
         };
     }

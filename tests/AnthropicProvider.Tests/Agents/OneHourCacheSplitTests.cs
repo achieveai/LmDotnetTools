@@ -1,5 +1,8 @@
 using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
@@ -8,9 +11,12 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 ///     the response does not report is 0 only for a 5-minute request. For a 1-hour request it stays unknown, so
 ///     the cost estimate is Partial instead of a Complete figure at the 5-minute rate.
 /// </summary>
-public class OneHourCacheSplitTests
+public class OneHourCacheSplitTests : LoggingTestBase
 {
     private static readonly JsonSerializerOptions s_wire = AnthropicJsonSerializerOptionsFactory.CreateForProduction();
+
+    public OneHourCacheSplitTests(ITestOutputHelper output)
+        : base(output) { }
 
     [Theory]
     // Recorded (sample-response-anthropic.sse.txt): message_delta repeats the count without the split.
@@ -31,6 +37,14 @@ public class OneHourCacheSplitTests
         int? expected
     )
     {
+        Logger.LogInformation(
+            "Streamed cache write: OneHour={OneHour} StartSplit={StartSplit} DeltaWritten={DeltaWritten} DeltaSplit={DeltaSplit} ExpectedShare={ExpectedShare}",
+            oneHour,
+            startSplit,
+            deltaWritten,
+            deltaSplit,
+            expected
+        );
         var startWritten = startSplit ?? deltaWritten;
         var client = new CannedClient(
             null,
@@ -49,7 +63,7 @@ public class OneHourCacheSplitTests
                 """{"type": "message_stop"}""",
             ]
         );
-        using var agent = new AnthropicAgent("test-agent", client);
+        using var agent = new AnthropicAgent("test-agent", client, LoggerFactory.CreateLogger<AnthropicAgent>());
 
         var replies = new List<IMessage>();
         await foreach (var reply in await agent.GenerateReplyStreamingAsync(Prompt, Options(oneHour)))
@@ -71,6 +85,13 @@ public class OneHourCacheSplitTests
     )
     {
         const int written = 619;
+        Logger.LogInformation(
+            "Buffered cache write: OneHour={OneHour} Written={Written} Split={Split} ExpectedShare={ExpectedShare}",
+            oneHour,
+            written,
+            split,
+            expected
+        );
         var response = JsonSerializer.Deserialize<AnthropicResponse>(
             $$$"""
             {"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-sonnet-5",
@@ -79,7 +100,11 @@ public class OneHourCacheSplitTests
             """,
             s_wire
         )!;
-        using var agent = new AnthropicAgent("test-agent", new CannedClient(response, []));
+        using var agent = new AnthropicAgent(
+            "test-agent",
+            new CannedClient(response, []),
+            LoggerFactory.CreateLogger<AnthropicAgent>()
+        );
 
         var replies = await agent.GenerateReplyAsync(Prompt, Options(oneHour));
 
@@ -104,9 +129,10 @@ public class OneHourCacheSplitTests
                 """
             : $$$"""{"input_tokens": 9, "output_tokens": {{{output}}}, "cache_creation_input_tokens": {{{written}}}}""";
 
-    private static void AssertShare(IEnumerable<IMessage> replies, int written, int? expected)
+    private void AssertShare(IEnumerable<IMessage> replies, int written, int? expected)
     {
         var usage = replies.OfType<UsageMessage>().Last().Usage;
+        LogData("usage", usage.ExtraProperties);
         Assert.Equal(written, usage.GetExtraProperty<int>("cache_creation_input_tokens"));
         if (expected is null)
         {

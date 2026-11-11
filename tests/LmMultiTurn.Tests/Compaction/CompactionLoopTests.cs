@@ -3068,7 +3068,7 @@ public class CompactionLoopTests
         report.Agents[0].CacheTemperature.Should().Be(expectedAfterTenIdleMinutes);
     }
 
-    private sealed class WriteRates(decimal fiveMinutes, decimal oneHour) : IPricingResolver
+    private sealed class WriteRates(decimal fiveMinutes, decimal? oneHour) : IPricingResolver
     {
         public ModelPricing? Resolve(string modelId) =>
             new()
@@ -3130,6 +3130,48 @@ public class CompactionLoopTests
             - (target * expectedWriteRate);
         decision.PredictedSavingsMicros.Should().Be(expectedSavings);
         decision.Reason.Should().Be(expectedReason);
+    }
+
+    [Theory]
+    [InlineData(PromptCachingMode.AutoOneHour, false)]
+    [InlineData(PromptCachingMode.Auto, true)]
+    public async Task EconomicBand_WithNoOneHourRateInTheCatalog_LeavesAOneHourLoopUnpriced(
+        PromptCachingMode caching,
+        bool expectPriced
+    )
+    {
+        // The catalog knows only the 5-minute write rate. Pricing a 1-hour rewrite at it would understate the
+        // rewrite and could clear the savings floor; the 5-minute loop it does price stays priced.
+        var options = new CompactionOptions
+        {
+            Mode = CompactionMode.Warn,
+            ReserveMarginTokens = 0,
+            MinPredictedSavingsMicros = 1,
+        };
+
+        await using var h = new Harness(
+            EchoThenDone(0),
+            options,
+            _ => Window,
+            promptCaching: caching,
+            pricing: new WriteRates(FiveMinuteWriteRate, oneHour: null)
+        );
+
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+        h.Clock.Now += TimeSpan.FromHours(2);
+        (await h.RunAsync(new string('x', 7_700))).IsError.Should().BeFalse();
+
+        var decision = h.Decisions[^1];
+        if (expectPriced)
+        {
+            decision.PredictedSavingsMicros.Should().NotBeNull();
+            decision.Reason.Should().Be(CompactionPolicy.EconomicReason);
+        }
+        else
+        {
+            decision.PredictedSavingsMicros.Should().BeNull("a 1-hour write with no 1-hour rate has no honest price");
+            decision.Reason.Should().NotBe(CompactionPolicy.EconomicReason);
+        }
     }
 
     [Fact]
