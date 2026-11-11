@@ -463,6 +463,119 @@ describe('useChat rehydration multi-turn identity (reload keeps turns distinct)'
   });
 });
 
+describe('useChat Responses reasoning replay (#948): live and reloaded turns merge', () => {
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+    conversationsMocks.loadConversationMessages.mockReset();
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => ({
+      socket: { readyState: 1 },
+      connectionId: `ws-${Date.now()}`,
+      threadId: options.threadId,
+      isConnected: true,
+    }));
+  });
+
+  // The identities below are the ones the server pins in
+  // ResponsesReasoningReplayLoopTests.Live_and_saved_summary_and_answer_share_their_identity_across_two_turns:
+  // the summary streams at order 0 and the answer at order 2; the saved blob holds order 1.
+  // /messages drops the blob row, so the client only ever sees summary + answer.
+  const summary = (runId: string, text: string) => ({
+    $type: MessageType.Reasoning,
+    role: 'assistant',
+    reasoning: text,
+    visibility: 1,
+    runId,
+    generationId: `gen-${runId}`,
+    messageOrderIdx: 0,
+  });
+  const answer = (runId: string, text: string, messageOrderIdx = 2) => ({
+    $type: MessageType.Text,
+    role: 'assistant',
+    text,
+    runId,
+    generationId: `gen-${runId}`,
+    messageOrderIdx,
+  });
+  function row(id: string, timestamp: number, message: Record<string, unknown>) {
+    return {
+      id,
+      threadId: 'thread-x',
+      runId: message.runId,
+      generationId: message.generationId,
+      messageOrderIdx: message.messageOrderIdx,
+      timestamp,
+      messageType: String(message.$type),
+      role: String(message.role),
+      messageJson: JSON.stringify(message),
+    };
+  }
+  const user = (runId: string, text: string, timestamp: number) => ({
+    id: `u-${runId}`,
+    threadId: 'thread-x',
+    runId,
+    generationId: `user-${runId}`,
+    messageOrderIdx: 0,
+    timestamp,
+    messageType: MessageType.Text,
+    role: 'user',
+    messageJson: JSON.stringify({ $type: MessageType.Text, role: 'user', text }),
+  });
+  const assistantTexts = (chat: ReturnType<typeof useChat>) =>
+    chat.displayItems.value
+      .filter((i) => i.type === 'assistant-message')
+      .map((i) => (i as { content: { text?: string } }).content.text ?? '');
+  const reasonings = (chat: ReturnType<typeof useChat>) =>
+    chat.displayItems.value
+      .filter((i) => i.type === 'pill')
+      .flatMap((i) => (i as { items: Array<{ $type?: string; reasoning?: string }> }).items)
+      .filter((m) => m.$type === MessageType.Reasoning)
+      .map((m) => m.reasoning ?? '');
+
+  async function twoLiveTurnsThenReload(answerTwoSavedAt: number) {
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
+    await chat.sendMessage('first');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+    const assign = (runId: string) => ({
+      $type: MessageType.RunAssignment,
+      Assignment: { runId, generationId: `gen-${runId}`, inputIds: [] },
+    });
+
+    options.onMessage(assign('run-1'));
+    options.onMessage(summary('run-1', 'thinking r1'));
+    options.onMessage(answer('run-1', 'answer one'));
+    options.onMessage(assign('run-2'));
+    options.onMessage(summary('run-2', 'thinking r2'));
+    options.onMessage(answer('run-2', 'answer two'));
+    expect(assistantTexts(chat), 'live').toEqual(['answer one', 'answer two']);
+    expect(reasonings(chat), 'live').toEqual(['thinking r1', 'thinking r2']);
+
+    conversationsMocks.loadConversationMessages.mockResolvedValue([
+      user('run-1', 'first', 1000),
+      row('p1', 1001, summary('run-1', 'thinking r1')),
+      row('p2', 1002, answer('run-1', 'answer one')),
+      user('run-2', 'second', 1003),
+      row('p3', 1004, summary('run-2', 'thinking r2')),
+      row('p4', 1005, answer('run-2', 'answer two', answerTwoSavedAt)),
+    ]);
+    await chat.loadMessagesFromBackend('thread-x');
+
+    // Switch-back resume: the replay buffer re-delivers turn 2's live frames over the reloaded rows.
+    options.onMessage(summary('run-2', 'thinking r2'));
+    options.onMessage(answer('run-2', 'answer two'));
+    return chat;
+  }
+
+  it('shows each summary and answer once, in order, after a reload and a live replay', async () => {
+    const chat = await twoLiveTurnsThenReload(2);
+
+    expect(assistantTexts(chat)).toEqual(['answer one', 'answer two']);
+    expect(reasonings(chat)).toEqual(['thinking r1', 'thinking r2']);
+  });
+});
+
 describe('useChat compaction checkpoint divider (#721, spec 679 §7.2)', () => {
   beforeEach(() => {
     wsMocks.createWebSocketConnection.mockReset();

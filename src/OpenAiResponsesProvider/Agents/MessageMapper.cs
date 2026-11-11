@@ -104,10 +104,12 @@ internal static class MessageMapper
     ///     output after it, and history can lose that output: a Stop mid-turn, or a compaction cut.
     /// </summary>
     /// <remarks>
-    ///     A reasoning item followed by another reasoning item is kept only when both came from the same
-    ///     response (one response can hold several, e.g. around web searches, which are not replayed). One
-    ///     followed by reasoning from a different response is an attempt that was cut off and retried; the
-    ///     model never answered after it. Dropping a reasoning item never makes a request invalid.
+    ///     A reasoning item is kept only when the item after it came from the same response, or its response is
+    ///     unknown. One response can hold several reasoning items, e.g. around web searches, which are not
+    ///     replayed. Anything after it from a different response means the attempt that made it was cut off and
+    ///     retried, whether the retry reasoned again or answered at once; the model never answered after it.
+    ///     A request with no reasoning item is the shape every request had before replay, and the shape it still
+    ///     has with replay off; this mapper sends no item ids, so no other item refers to a dropped one.
     /// </remarks>
     private static void DropReasoningWithoutOutput(List<ResponseInputItem> inputItems)
     {
@@ -123,7 +125,7 @@ internal static class MessageMapper
             var next = i + 1 < inputItems.Count ? inputItems[i + 1] : null;
             var outputFollows = next switch
             {
-                { Type: "function_call" } or { Type: "message", Role: "assistant" } => true,
+                { Type: "function_call" } or { Type: "message", Role: "assistant" } => !FromAnotherResponse(item, next),
                 { Type: "reasoning" } => item.ReplayGenerationId is not null
                     && item.ReplayGenerationId == next.ReplayGenerationId,
                 _ => false,
@@ -134,6 +136,12 @@ internal static class MessageMapper
             }
         }
     }
+
+    /// <summary>True only when both items name their response and the two differ.</summary>
+    private static bool FromAnotherResponse(ResponseInputItem reasoning, ResponseInputItem output) =>
+        reasoning.ReplayGenerationId is not null
+        && output.ReplayGenerationId is not null
+        && reasoning.ReplayGenerationId != output.ReplayGenerationId;
 
     /// <summary>
     ///     Removes every <c>function_call_output</c> whose <c>call_id</c> has no <c>function_call</c>
@@ -278,6 +286,7 @@ internal static class MessageMapper
                                 Text = text.Text,
                             },
                         ],
+                        ReplayGenerationId = text.GenerationId,
                     }
                 );
                 break;
@@ -295,6 +304,7 @@ internal static class MessageMapper
                             Name = call.FunctionName,
                             Arguments = string.IsNullOrEmpty(call.FunctionArgs) ? "{}" : call.FunctionArgs,
                             Content = null,
+                            ReplayGenerationId = toolsCall.GenerationId,
                         }
                     );
                 }
@@ -326,6 +336,7 @@ internal static class MessageMapper
                         Name = singleCall.FunctionName,
                         Arguments = string.IsNullOrEmpty(singleCall.FunctionArgs) ? "{}" : singleCall.FunctionArgs,
                         Content = null,
+                        ReplayGenerationId = singleCall.GenerationId,
                     }
                 );
                 break;

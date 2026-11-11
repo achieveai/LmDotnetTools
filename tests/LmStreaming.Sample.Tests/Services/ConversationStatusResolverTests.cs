@@ -144,6 +144,37 @@ public class ConversationStatusResolverTests
     }
 
     [Fact]
+    public async Task ResolveByRunIdAsync_ReplayBlobThenAnswer_ReturnsTheAnswer_WithNoOriginField()
+    {
+        var store = new InMemoryConversationStore();
+        await store.UpsertRunLedgerAsync(Entry(ThreadId, "run-1", RunStatus.Completed, "input-1"));
+        var blob = new ReasoningMessage
+        {
+            Role = Role.Assistant,
+            Reasoning = "OPENAI-BLOB",
+            Visibility = ReasoningVisibility.Encrypted,
+            EncryptedOrigin = "responses:gpt-5.6-terra",
+        };
+        var answer = new TextMessage { Text = "final answer", Role = Role.Assistant };
+        await store.AppendMessagesAsync(
+            ThreadId,
+            [
+                MessagePersistenceConverter.ToPersistedMessage(blob, ThreadId, "run-1"),
+                MessagePersistenceConverter.ToPersistedMessage(answer, ThreadId, "run-1"),
+            ]
+        );
+        var resolver = new ConversationStatusResolver(store, store);
+
+        var result = await resolver.ResolveByRunIdAsync(ThreadId, "run-1");
+
+        result!.Status.Should().Be(ConversationRunStatus.Completed);
+        var json = JsonSerializer.Serialize(result.Response);
+        json.Should().Contain("final answer");
+        json.Should().NotContain("OPENAI-BLOB");
+        json.Should().NotContainEquivalentOf("encryptedOrigin", "a genuine answer carries no replay tag");
+    }
+
+    [Fact]
     public async Task ResolveByRunIdAsync_RunEndingOnlyOnAReplayBlob_ReturnsNullResponse()
     {
         var store = new InMemoryConversationStore();

@@ -188,8 +188,9 @@ public sealed record ResponseInputItem
     public string? EncryptedContent { get; init; }
 
     /// <summary>
-    ///     For a replayed <c>reasoning</c> item: the generation (model response) that made the blob. Never sent;
-    ///     it only lets the mapper tell one response's reasoning from an abandoned attempt's.
+    ///     For a replayed <c>reasoning</c> item, and for the assistant text or function call that can follow one:
+    ///     the generation (model response) that made it. Never sent; it only lets the mapper tell one response's
+    ///     reasoning from an abandoned attempt's.
     /// </summary>
     [JsonIgnore]
     internal string? ReplayGenerationId { get; init; }

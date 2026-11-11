@@ -33,13 +33,19 @@ public record ReasoningMessage : IMessage, ICanGetText
     ///     Who can read this <see cref="ReasoningVisibility.Encrypted" /> blob, as <c>responses:{modelId}</c>. Only
     ///     the Responses agent sets it, and only with reasoning replay on. A row with this set goes back to that
     ///     model alone: other providers cannot read it, and it never goes to a subscriber or the browser.
-    ///     A build without this property reads such a row as ordinary encrypted reasoning, and can send it to
-    ///     another provider, and it also sends the row to subscribers and the browser. Rolling back to such a
-    ///     build is safe only if replay was never on.
     /// </summary>
+    /// <remarks>
+    ///     A row with this set is saved under its own <c>$type</c>, <see cref="ReplayTypeDiscriminator" />, the
+    ///     way a newer checkpoint schema gets its own. A build that predates it does not know that type, so its
+    ///     loaders skip the row: it is never read as ordinary encrypted reasoning and never sent to another
+    ///     provider. After such a rollback the replay history is lost, not resent.
+    /// </remarks>
     [JsonPropertyName("encryptedOrigin")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? EncryptedOrigin { get; init; }
+
+    /// <summary>The <c>$type</c> a row with <see cref="EncryptedOrigin" /> set is saved under.</summary>
+    public const string ReplayTypeDiscriminator = "reasoning_replay";
 
     public string? GetText()
     {

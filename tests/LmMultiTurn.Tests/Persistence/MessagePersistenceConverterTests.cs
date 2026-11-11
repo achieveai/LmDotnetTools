@@ -143,6 +143,42 @@ public class MessagePersistenceConverterTests
     #region FromPersistedMessage Tests
 
     [Fact]
+    public void A_replay_blob_is_saved_under_its_own_type_and_other_reasoning_keeps_the_old_one()
+    {
+        // A build that predates replay knows "reasoning" but not "reasoning_replay", so it skips a replay row
+        // instead of sending the blob to another provider. Every other reasoning row must keep its bytes.
+        var replay = new ReasoningMessage
+        {
+            Reasoning = "BLOB",
+            Visibility = ReasoningVisibility.Encrypted,
+            Role = Role.Assistant,
+            EncryptedOrigin = "responses:m",
+        };
+        var encrypted = replay with { EncryptedOrigin = null };
+
+        var replayRow = MessagePersistenceConverter.ToPersistedMessage(replay, "t", "r", _jsonOptions);
+        var encryptedRow = MessagePersistenceConverter.ToPersistedMessage(encrypted, "t", "r", _jsonOptions);
+
+        JsonDocument
+            .Parse(replayRow.MessageJson)
+            .RootElement.GetProperty("$type")
+            .GetString()
+            .Should()
+            .Be("reasoning_replay");
+        var restored = MessagePersistenceConverter
+            .FromPersistedMessage(replayRow, _jsonOptions)
+            .Should()
+            .BeOfType<ReasoningMessage>()
+            .Subject;
+        restored.EncryptedOrigin.Should().Be("responses:m");
+        restored.Reasoning.Should().Be("BLOB");
+        restored.Visibility.Should().Be(ReasoningVisibility.Encrypted);
+        encryptedRow
+            .MessageJson.Should()
+            .Be("""{"$type":"reasoning","reasoning":"BLOB","visibility":2,"role":"assistant"}""");
+    }
+
+    [Fact]
     public void Origin_round_trips_and_old_rows_load()
     {
         static ReasoningMessage Row(string? origin) =>

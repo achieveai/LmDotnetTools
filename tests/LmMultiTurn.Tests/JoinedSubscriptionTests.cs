@@ -832,6 +832,54 @@ public class JoinedSubscriptionTests
             .Be(1, "the text was streamed at index 1, so a reconnect must find it there");
     }
 
+    [Fact]
+    public async Task Interleaved_generations_after_a_prior_blob_keep_each_answer_at_its_streamed_order()
+    {
+        static ReasoningMessage Summary(string generation) =>
+            new()
+            {
+                Reasoning = $"summary {generation}",
+                Visibility = ReasoningVisibility.Summary,
+                GenerationId = generation,
+                MessageOrderIdx = 0,
+            };
+        static ReasoningMessage Blob(string generation) =>
+            new()
+            {
+                Reasoning = $"blob {generation}",
+                Visibility = ReasoningVisibility.Encrypted,
+                EncryptedOrigin = "responses:m",
+                GenerationId = generation,
+                MessageOrderIdx = 0,
+            };
+        static TextMessage Answer(string generation) =>
+            new()
+            {
+                Text = $"answer {generation}",
+                GenerationId = generation,
+                MessageOrderIdx = 1,
+            };
+
+        await using var agent = new HistoryAgent();
+        // Already in history before the restore: g1's summary and its blob, at the same order.
+        agent.Restore([Summary("g1"), Blob("g1")]);
+        // The next batch interleaves g2 with the rest of g1.
+        agent.Restore([Summary("g2"), Answer("g1"), Blob("g2"), Answer("g2")]);
+
+        agent
+            .GetHistorySnapshot()
+            .OfType<TextMessage>()
+            .Select(m => (m.Text, m.MessageOrderIdx))
+            .Should()
+            .Equal(("answer g1", 1), ("answer g2", 1));
+        agent
+            .GetHistorySnapshot()
+            .OfType<ReasoningMessage>()
+            .Select(m => m.MessageOrderIdx)
+            .Should()
+            .AllBeEquivalentTo(0, "a blob keeps its summary's order and the summary keeps its own");
+    }
+
     private sealed record PausingToolResult(Action BeforeDelivery) : ToolCallResultMessage, IMessage
     {
         Role IMessage.Role
