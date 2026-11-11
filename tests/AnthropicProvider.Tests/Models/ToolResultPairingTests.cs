@@ -155,6 +155,66 @@ public class ToolResultPairingTests(ITestOutputHelper output) : LoggingTestBase(
     }
 
     /// <summary>
+    ///     Two local calls with the same blank id beside one provider-server result with that blank id. Neither
+    ///     call may take the server result, and the second must not be sent once the first has been left out:
+    ///     both are dropped with one warning each, the server result is left out silently, and call a stays
+    ///     paired.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void FromMessages_TwoBlankIdLocalCallsBesideABlankIdServerResult_AreBothDroppedWithAWarningEach(
+        string? blankId
+    )
+    {
+        var aggregate = Aggregate(["toolu_a", blankId, blankId], ("toolu_a", "result a"));
+        aggregate = new ToolsCallAggregateMessage(
+            aggregate.ToolsCallMessage,
+            aggregate.ToolsCallResult with
+            {
+                ToolCallResults =
+                [
+                    .. aggregate.ToolsCallResult.ToolCallResults,
+                    new ToolCallResult(blankId, "server result") { ExecutionTarget = ExecutionTarget.ProviderServer },
+                ],
+            }
+        );
+        var warnings = new CapturingLogger<AnthropicRequest>();
+
+        var request = ToRequest([new TextMessage { Role = Role.User, Text = "go" }, aggregate], warnings);
+
+        AssertEveryToolResultAnswersThePrecedingToolUseOnce(request);
+        var blocks = request.Messages.SelectMany(m => m.Content).ToList();
+        var toolUseIds = blocks.Where(b => b.Type is "tool_use" or "server_tool_use").Select(b => b.Id).ToList();
+        var resultIds = blocks.Where(b => b.Type == "tool_result").Select(b => b.ToolUseId).ToList();
+        var logged = warnings.MessagesAtLevel(LogLevel.Warning);
+        Logger.LogDebug(
+            "Blank id {BlankId}: expected tool_use ids {ExpectedToolUseIds} and {ExpectedWarningCount} warnings, actual {ActualToolUseIds}; result ids {ActualResultIds}; warnings {Warnings}",
+            blankId,
+            new[] { "toolu_a" },
+            2,
+            toolUseIds,
+            resultIds,
+            logged
+        );
+        Assert.Equal(["toolu_a"], toolUseIds);
+        Assert.Equal(["toolu_a"], resultIds);
+        Assert.Equal(2, logged.Count);
+        Assert.All(
+            logged,
+            warning =>
+            {
+                Assert.Contains(
+                    $"Dropping tool_use {blankId ?? "(null)"} (read_{blankId}) of generation gen1",
+                    warning
+                );
+                Assert.Contains("it has no ToolCallId", warning);
+            }
+        );
+    }
+
+    /// <summary>
     ///     A result dropped from a user turn, because no tool_use before it asks for it or because its tool_use
     ///     already has a result, is logged with the generation and thread it came from, so the stored rows can
     ///     be found. The result may come from a singular, a plural or a composite message.

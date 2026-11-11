@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
@@ -2088,9 +2089,14 @@ public class MessageTransformationMiddlewareTests
 
     /// <summary>
     ///     Logs each message with its type, role, generation, order and the tool call ids it carries; a null
-    ///     call or result list is logged as null.
+    ///     call or result list is logged as null. The logger names the frame that called it, which is this
+    ///     helper, so the calling test's name is logged as TestName.
     /// </summary>
-    private static void LogMessages(string stage, IReadOnlyList<IMessage> messages)
+    private static void LogMessages(
+        string stage,
+        IReadOnlyList<IMessage> messages,
+        [CallerMemberName] string testName = ""
+    )
     {
         for (var i = 0; i < messages.Count; i++)
         {
@@ -2108,7 +2114,8 @@ public class MessageTransformationMiddlewareTests
                 _ => (null, null),
             };
             TestContextLogger.LogDebug(
-                "{Stage}[{Index}] {MessageType} role {Role} generation {GenerationId} order {MessageOrderIdx} call ids {CallIds} result ids {ResultIds}",
+                "{TestName} {Stage}[{Index}] {MessageType} role {Role} generation {GenerationId} order {MessageOrderIdx} call ids {CallIds} result ids {ResultIds}",
+                testName,
                 stage,
                 i,
                 message.GetType().Name,
