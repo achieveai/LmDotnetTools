@@ -13,6 +13,13 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 /// </summary>
 public class OneHourCacheSplitTests : LoggingTestBase
 {
+    private const string EmptySplit = "{}";
+
+    // 100 + 200 is not the 619 written.
+    private const string MismatchedSplit = """{"ephemeral_5m_input_tokens": 100, "ephemeral_1h_input_tokens": 200}""";
+
+    private const string ValidSplit = """{"ephemeral_5m_input_tokens": 319, "ephemeral_1h_input_tokens": 300}""";
+
     private static readonly JsonSerializerOptions s_wire = AnthropicJsonSerializerOptionsFactory.CreateForProduction();
 
     public OneHourCacheSplitTests(ITestOutputHelper output)
@@ -203,13 +210,6 @@ public class OneHourCacheSplitTests : LoggingTestBase
 
         AssertShare(replies, written, expected);
     }
-
-    private const string EmptySplit = "{}";
-
-    // 100 + 200 is not the 619 written.
-    private const string MismatchedSplit = """{"ephemeral_5m_input_tokens": 100, "ephemeral_1h_input_tokens": 200}""";
-
-    private const string ValidSplit = """{"ephemeral_5m_input_tokens": 319, "ephemeral_1h_input_tokens": 300}""";
 
     private static string RawUsage(int output, int written, string? split) =>
         split is null
