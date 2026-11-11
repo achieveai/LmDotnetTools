@@ -754,6 +754,47 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         payload["pr"]!.GetValue<string>().Should().Be("7");
     }
 
+    [Fact]
+    public async Task A_commit_whose_output_read_is_cut_is_lost_and_its_replay_resends_the_same_command()
+    {
+        // The connection drops while the SDK reads the finished commit's output. That reaches the runner as a plain
+        // IOException, which must count as a lost response so the attempt resumes at verify-pending. The replay under
+        // the same id must send the gateway the very same command (script, args, cwd and timeout), since the
+        // gateway replays only an identical request and refuses a changed one (409).
+        var gateway = new ScriptedSandboxGateway
+        {
+            CommandStdout = """{"status":"committed","commit":"cccccccccccccccccccccccccccccccccccccccc"}""",
+            TruncateStdout = true,
+        };
+        using var http = new HttpClient(gateway, disposeHandler: false);
+        using var sandbox = new SandboxClient(
+            new SandboxClientOptions(
+                new Uri("http://127.0.0.1:8080"),
+                "app",
+                "",
+                TimeSpan.FromMinutes(10),
+                TimeSpan.FromSeconds(30)
+            ),
+            http
+        );
+        var operation = Guid.NewGuid().ToString("N");
+        var args = new JsonObject { ["pr"] = "7", ["claimToken"] = "claim" };
+        Task<JsonObject> Commit() =>
+            ReviewRunner.ExecuteSandboxAsync(sandbox, "sess-1", "commit", args, operation, CancellationToken.None);
+
+        var cut = await FluentActions.Invoking(Commit).Should().ThrowAsync<IOException>();
+        ReviewRunner.CommitResponseLost(cut.Which).Should().BeTrue("the commit ran; only its output was lost");
+
+        gateway.TruncateStdout = false;
+        var replayed = await Commit();
+
+        replayed["commit"]!.GetValue<string>().Should().Be(new string('c', 40));
+        gateway.SubmitBodies.Should().HaveCount(2);
+        gateway.SubmitBodies[1].Should().Be(gateway.SubmitBodies[0]);
+        using var body = System.Text.Json.JsonDocument.Parse(gateway.SubmitBodies[0]);
+        body.RootElement.GetProperty("operation_id").GetString().Should().Be(operation);
+    }
+
     [SkippableFact]
     public async Task A_forced_cleanup_delayed_past_another_reset_cannot_discard_the_next_owner()
     {

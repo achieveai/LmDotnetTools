@@ -413,7 +413,11 @@ internal static class ReviewRunner
     // commit twice. Held instead, the slot was reaped at commit-pending, which pick never offers again, so the archive
     // of a review already on the PR was never written (seen live: NScript #148, ADO !11452). A 424 or an
     // operation_api_unavailable (whatever its status) cannot succeed on a resubmit, and a refusal at capacity
-    // answered (the operation never ran), so none of them is a lost response.
+    // answered (the operation never ran), so none of them is a lost response. A connection cut while the SDK reads the
+    // finished commit's output reaches here as a plain IOException (HttpIOException): the commit ran, only its output
+    // was lost, so it is lost too and the replay reads the operation's output again. A 404 operation_not_found (the
+    // gateway restarted and dropped the record) is held at commit-pending instead: a missing record does not prove the
+    // first commit stopped, and a resubmit would run a fresh one beside it, so an operator decides.
     internal static bool CommitResponseLost(Exception failure) =>
         !RefusedAtCapacity(failure)
         && failure
@@ -423,7 +427,8 @@ internal static class ReviewRunner
                     Kind: SandboxErrorKind.Unavailable,
                     StatusCode: not 424,
                     ErrorCode: not "operation_api_unavailable",
-                };
+                }
+                or IOException;
 
     // Set on the attempt while its commit's outcome is unknown; the next commit resubmits that operation id. The
     // gateway replays only a request it still holds and that is identical, so the commit's request carries nothing a
@@ -1382,7 +1387,7 @@ internal static class ReviewRunner
             // is final, and the cleanup after it refuses the lost claim itself.
             if (!await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, ct) && claimRequired)
                 throw new SlotClaimLostException(
-                    $"Slot claim {claimToken} was lost at {receipt["stage"]}; the slot was reset under this run."
+                    $"Slot claim {claimToken} was lost, so {receipt["stage"]} was not saved; the slot was reset under this run."
                 );
             await store.SetAsync(attemptKey, receipt, ct);
         }
@@ -1472,6 +1477,10 @@ internal static class ReviewRunner
             {
                 // Verify-pending resumes by re-verifying (read-only) and then committing again. Only a settled
                 // outcome ends a replay; a refusal at capacity says nothing about the original operation.
+                // Logged first: the save below throws if the claim was lost, and the commit's own error would be lost.
+                Console.Error.WriteLine(
+                    $"{repo.DisplayName} #{pr}: commit, operation {operation}, failed: {refused.Message}"
+                );
                 if (CommitResponseLost(refused))
                     receipt[CommitReplay] = operation;
                 else if (refused is SettledSandboxException)
