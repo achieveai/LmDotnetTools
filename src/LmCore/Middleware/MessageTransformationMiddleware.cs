@@ -712,8 +712,8 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         message switch
         {
             ToolCallMessage { ToolCallId: { Length: > 0 } id } => [id],
-            ToolsCallMessage calls => calls
-                .ToolCalls.Select(c => c.ToolCallId)
+            ToolsCallMessage calls => (calls.ToolCalls ?? [])
+                .Select(c => c.ToolCallId)
                 .OfType<string>()
                 .Where(id => id.Length > 0),
             _ => [],
@@ -723,8 +723,8 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         message switch
         {
             ToolCallResultMessage { ToolCallId: { Length: > 0 } id } => [id],
-            ToolsCallResultMessage results => results
-                .ToolCallResults.Select(r => r.ToolCallId)
+            ToolsCallResultMessage results => (results.ToolCallResults ?? [])
+                .Select(r => r.ToolCallId)
                 .OfType<string>()
                 .Where(id => id.Length > 0),
             _ => [],
@@ -816,7 +816,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         {
             if (source is ToolsCallMessage toolsCallMessage)
             {
-                toolCalls.AddRange(toolsCallMessage.ToolCalls);
+                toolCalls.AddRange(toolsCallMessage.ToolCalls ?? []);
             }
             else if (source is ToolCallMessage toolCallMessage)
             {
@@ -869,7 +869,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         {
             if (source is ToolsCallResultMessage toolsCallResultMessage)
             {
-                toolCallResults.AddRange(toolsCallResultMessage.ToolCallResults);
+                toolCallResults.AddRange(toolsCallResultMessage.ToolCallResults ?? []);
             }
             else if (source is ToolCallResultMessage toolCallResultMessage)
             {

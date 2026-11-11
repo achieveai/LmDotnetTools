@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
@@ -1370,31 +1371,14 @@ public class MessageTransformationMiddlewareTests
         // the generation, so the late result formed its own group and the aggregate kept two calls with one
         // result; the Anthropic request then answered one call twice.
         var middleware = new MessageTransformationMiddleware();
-        ToolCallMessage Call(string id, int order) =>
-            new()
-            {
-                FunctionName = "fn_" + id,
-                FunctionArgs = "{}",
-                ToolCallId = id,
-                GenerationId = "gen1",
-                MessageOrderIdx = order,
-            };
-        ToolCallResultMessage Result(string id, int order) =>
-            new()
-            {
-                ToolCallId = id,
-                Result = "result_" + id,
-                GenerationId = "gen1",
-                MessageOrderIdx = order,
-            };
         var userNotice = new TextMessage { Role = Role.User, Text = "Five minutes have passed." };
         var inputMessages = new List<IMessage>
         {
-            Call("call_a", 1),
-            Call("call_b", 2),
-            Result("call_b", 4),
+            GenerationCall("call_a", 1),
+            GenerationCall("call_b", 2),
+            GenerationResult("call_b", 4),
             userNotice,
-            Result("call_a", 3),
+            GenerationResult("call_a", 3),
         };
         var agent = new MockAgent();
 
@@ -1406,6 +1390,159 @@ public class MessageTransformationMiddlewareTests
         Assert.Equal(["call_a", "call_b"], aggregate.ToolsCallMessage.ToolCalls.Select(c => c.ToolCallId));
         Assert.Equal(["call_a", "call_b"], aggregate.ToolsCallResult.ToolCallResults.Select(r => r.ToolCallId));
         Assert.Same(userNotice, receivedMessages[1]);
+    }
+
+    [Fact]
+    public async Task Upstream_DoesNotRejoinAResultOfAnotherGeneration_WhenAUserMessageSplitsIt()
+    {
+        // A result carrying a call's id but another generation's id is not that call's late result: a
+        // generation's own result is stored under its GenerationId. It stays where it was stored.
+        var middleware = new MessageTransformationMiddleware();
+        var userNotice = new TextMessage { Role = Role.User, Text = "Five minutes have passed." };
+        var inputMessages = new List<IMessage>
+        {
+            GenerationCall("call_a", 1),
+            userNotice,
+            GenerationResult("call_a", 2, "gen2"),
+        };
+        var agent = new MockAgent();
+
+        await middleware.InvokeAsync(new MiddlewareContext(Messages: inputMessages, Options: null), agent);
+
+        var receivedMessages = agent.ReceivedMessages.ToList();
+        Assert.Equal(3, receivedMessages.Count);
+        Assert.IsType<ToolsCallMessage>(receivedMessages[0]);
+        Assert.Same(userNotice, receivedMessages[1]);
+        Assert.Equal("gen2", Assert.IsType<ToolsCallResultMessage>(receivedMessages[2]).GenerationId);
+    }
+
+    [Fact]
+    public async Task Upstream_DoesNotRejoinAPluralResult_WhenOneOfItsIdsAnswersNoOpenCall()
+    {
+        // A late result message rejoins its calls only when every result in it answers an open call of
+        // that one group; a plural result that also answers an unknown id is left where it was stored.
+        var middleware = new MessageTransformationMiddleware();
+        var userNotice = new TextMessage { Role = Role.User, Text = "Five minutes have passed." };
+        var lateResults = new ToolsCallResultMessage
+        {
+            ToolCallResults = [new ToolCallResult("call_a", "result_call_a"), new ToolCallResult("call_z", "z")],
+            GenerationId = "gen1",
+            MessageOrderIdx = 2,
+        };
+        var inputMessages = new List<IMessage> { GenerationCall("call_a", 1), userNotice, lateResults };
+        var agent = new MockAgent();
+
+        await middleware.InvokeAsync(new MiddlewareContext(Messages: inputMessages, Options: null), agent);
+
+        var receivedMessages = agent.ReceivedMessages.ToList();
+        Assert.Equal(3, receivedMessages.Count);
+        Assert.IsType<ToolsCallMessage>(receivedMessages[0]);
+        Assert.Same(userNotice, receivedMessages[1]);
+        Assert.Same(lateResults, receivedMessages[2]);
+    }
+
+    [Fact]
+    public async Task Upstream_NullToolCalls_PreservesTheEmptyPluralMessage()
+    {
+        // The rejoin pass reads the call ids of every message; a plural call message whose list is null
+        // (a deserialized row with no tool_calls) has none and is forwarded unchanged.
+        var middleware = new MessageTransformationMiddleware();
+        var emptyCalls = new ToolsCallMessage
+        {
+            ToolCalls = null!,
+            GenerationId = "gen1",
+            MessageOrderIdx = 1,
+        };
+        var userMessage = new TextMessage { Role = Role.User, Text = "Next question." };
+        var agent = new MockAgent();
+        LogMessages("Input", [emptyCalls, userMessage]);
+        TestContextLogger.LogDebug(
+            "Expected {ExpectedCount} messages: {ExpectedFirst} with null ToolCalls, then {ExpectedSecond}",
+            2,
+            nameof(ToolsCallMessage),
+            nameof(TextMessage)
+        );
+
+        await middleware.InvokeAsync(new MiddlewareContext(Messages: [emptyCalls, userMessage], Options: null), agent);
+
+        var receivedMessages = agent.ReceivedMessages.ToList();
+        LogMessages("Actual", receivedMessages);
+        Assert.Equal(2, receivedMessages.Count);
+        Assert.Null(Assert.IsType<ToolsCallMessage>(receivedMessages[0]).ToolCalls);
+        Assert.Same(userMessage, receivedMessages[1]);
+    }
+
+    [Fact]
+    public async Task Upstream_NullToolCallResults_PreservesTheEmptyPluralMessage()
+    {
+        // The rejoin pass reads the result ids of every message; a plural result message whose list is
+        // null has none, answers no open call, and is forwarded where it was stored.
+        var middleware = new MessageTransformationMiddleware();
+        var userMessage = new TextMessage { Role = Role.User, Text = "Next question." };
+        var emptyResults = new ToolsCallResultMessage
+        {
+            ToolCallResults = null!,
+            GenerationId = "gen1",
+            MessageOrderIdx = 1,
+        };
+        var agent = new MockAgent();
+        LogMessages("Input", [userMessage, emptyResults]);
+        TestContextLogger.LogDebug(
+            "Expected {ExpectedCount} messages: {ExpectedFirst}, then {ExpectedSecond} with null ToolCallResults",
+            2,
+            nameof(TextMessage),
+            nameof(ToolsCallResultMessage)
+        );
+
+        await middleware.InvokeAsync(
+            new MiddlewareContext(Messages: [userMessage, emptyResults], Options: null),
+            agent
+        );
+
+        var receivedMessages = agent.ReceivedMessages.ToList();
+        LogMessages("Actual", receivedMessages);
+        Assert.Equal(2, receivedMessages.Count);
+        Assert.Same(userMessage, receivedMessages[0]);
+        Assert.Null(Assert.IsType<ToolsCallResultMessage>(receivedMessages[1]).ToolCallResults);
+    }
+
+    [Fact]
+    public async Task Upstream_NullPluralListsBesideSingularRows_MergeIntoOneAggregate()
+    {
+        // A generation holding a plural message with a null list and a singular message of the same kind
+        // is merged; the null list contributes nothing instead of throwing.
+        var middleware = new MessageTransformationMiddleware();
+        var inputMessages = new List<IMessage>
+        {
+            new ToolsCallMessage
+            {
+                ToolCalls = null!,
+                GenerationId = "gen1",
+                MessageOrderIdx = 1,
+            },
+            GenerationCall("call_a", 2),
+            new ToolsCallResultMessage
+            {
+                ToolCallResults = null!,
+                GenerationId = "gen1",
+                MessageOrderIdx = 3,
+            },
+            GenerationResult("call_a", 4),
+        };
+        var agent = new MockAgent();
+        LogMessages("Input", inputMessages);
+        TestContextLogger.LogDebug(
+            "Expected one aggregate with call id {ExpectedCallId} and result id {ExpectedResultId}",
+            "call_a",
+            "call_a"
+        );
+
+        await middleware.InvokeAsync(new MiddlewareContext(Messages: inputMessages, Options: null), agent);
+
+        LogMessages("Actual", agent.ReceivedMessages);
+        var aggregate = Assert.IsType<ToolsCallAggregateMessage>(Assert.Single(agent.ReceivedMessages));
+        Assert.Equal(["call_a"], aggregate.ToolsCallMessage.ToolCalls.Select(c => c.ToolCallId));
+        Assert.Equal(["call_a"], aggregate.ToolsCallResult.ToolCallResults.Select(r => r.ToolCallId));
     }
 
     [Fact]
@@ -1929,6 +2066,66 @@ public class MessageTransformationMiddlewareTests
         var aggregate = Assert.IsType<ToolsCallAggregateMessage>(Assert.Single(agent.ReceivedMessages));
         AssertNoOrphanedResults(aggregate);
         Assert.Equal(["call_1", "call_2"], aggregate.ToolsCallMessage.ToolCalls.Select(c => c.ToolCallId));
+    }
+
+    private static ToolCallMessage GenerationCall(string id, int order, string generationId = "gen1") =>
+        new()
+        {
+            FunctionName = "fn_" + id,
+            FunctionArgs = "{}",
+            ToolCallId = id,
+            GenerationId = generationId,
+            MessageOrderIdx = order,
+        };
+
+    private static ToolCallResultMessage GenerationResult(string id, int order, string generationId = "gen1") =>
+        new()
+        {
+            ToolCallId = id,
+            Result = "result_" + id,
+            GenerationId = generationId,
+            MessageOrderIdx = order,
+        };
+
+    /// <summary>
+    ///     Logs each message with its type, role, generation, order and the tool call ids it carries; a null
+    ///     call or result list is logged as null. The logger names the frame that called it, which is this
+    ///     helper, so the calling test's name is logged as TestName.
+    /// </summary>
+    private static void LogMessages(
+        string stage,
+        IReadOnlyList<IMessage> messages,
+        [CallerMemberName] string testName = ""
+    )
+    {
+        for (var i = 0; i < messages.Count; i++)
+        {
+            var message = messages[i];
+            (string?[]? CallIds, string?[]? ResultIds) ids = message switch
+            {
+                ToolCallMessage call => ([call.ToolCallId], null),
+                ToolCallResultMessage result => (null, [result.ToolCallId]),
+                ToolsCallMessage calls => (calls.ToolCalls?.Select(c => c.ToolCallId).ToArray(), null),
+                ToolsCallResultMessage results => (null, results.ToolCallResults?.Select(r => r.ToolCallId).ToArray()),
+                ToolsCallAggregateMessage aggregate => (
+                    aggregate.ToolsCallMessage.ToolCalls?.Select(c => c.ToolCallId).ToArray(),
+                    aggregate.ToolsCallResult.ToolCallResults?.Select(r => r.ToolCallId).ToArray()
+                ),
+                _ => (null, null),
+            };
+            TestContextLogger.LogDebug(
+                "{TestName} {Stage}[{Index}] {MessageType} role {Role} generation {GenerationId} order {MessageOrderIdx} call ids {CallIds} result ids {ResultIds}",
+                testName,
+                stage,
+                i,
+                message.GetType().Name,
+                message.Role,
+                message.GenerationId,
+                message.MessageOrderIdx,
+                ids.CallIds,
+                ids.ResultIds
+            );
+        }
     }
 
     private static ToolCall NewToolCall(string toolCallId, string functionName, int toolCallIdx)
