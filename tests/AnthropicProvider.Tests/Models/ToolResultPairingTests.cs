@@ -108,6 +108,53 @@ public class ToolResultPairingTests(ITestOutputHelper output) : LoggingTestBase(
     }
 
     /// <summary>
+    ///     A local call with a blank id beside a provider-server result with the same blank id: the two ids match,
+    ///     and pairing them sent a tool_use with no id, which Anthropic rejects. The call is left out and logged
+    ///     before any result is looked up, the server result is left out as before, and call a stays paired.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void FromMessages_BlankIdLocalCallBesideABlankIdServerResult_IsDroppedAndNotSentWithoutAnId(string? blankId)
+    {
+        var aggregate = Aggregate(["toolu_a", blankId], ("toolu_a", "result a"));
+        aggregate = new ToolsCallAggregateMessage(
+            aggregate.ToolsCallMessage,
+            aggregate.ToolsCallResult with
+            {
+                ToolCallResults =
+                [
+                    .. aggregate.ToolsCallResult.ToolCallResults,
+                    new ToolCallResult(blankId, "server result") { ExecutionTarget = ExecutionTarget.ProviderServer },
+                ],
+            }
+        );
+        var warnings = new CapturingLogger<AnthropicRequest>();
+
+        var request = ToRequest([new TextMessage { Role = Role.User, Text = "go" }, aggregate], warnings);
+
+        AssertEveryToolResultAnswersThePrecedingToolUseOnce(request);
+        var blocks = request.Messages.SelectMany(m => m.Content).ToList();
+        var toolUseIds = blocks.Where(b => b.Type is "tool_use" or "server_tool_use").Select(b => b.Id).ToList();
+        var resultIds = blocks.Where(b => b.Type == "tool_result").Select(b => b.ToolUseId).ToList();
+        var logged = warnings.MessagesAtLevel(LogLevel.Warning);
+        Logger.LogDebug(
+            "Blank id {BlankId}: expected tool_use ids {ExpectedToolUseIds}, actual {ActualToolUseIds}; result ids {ActualResultIds}; warnings {Warnings}",
+            blankId,
+            new[] { "toolu_a" },
+            toolUseIds,
+            resultIds,
+            logged
+        );
+        Assert.Equal(["toolu_a"], toolUseIds);
+        Assert.Equal(["toolu_a"], resultIds);
+        var warning = Assert.Single(logged);
+        Assert.Contains($"Dropping tool_use {blankId ?? "(null)"} (read_{blankId}) of generation gen1", warning);
+        Assert.Contains("it has no ToolCallId", warning);
+    }
+
+    /// <summary>
     ///     A result dropped from a user turn, because no tool_use before it asks for it or because its tool_use
     ///     already has a result, is logged with the generation and thread it came from, so the stored rows can
     ///     be found. The result may come from a singular, a plural or a composite message.
@@ -408,21 +455,35 @@ public class ToolResultPairingTests(ITestOutputHelper output) : LoggingTestBase(
     private AnthropicRequest ToRequest(IEnumerable<IMessage> messages, ILogger? converterLogger = null)
     {
         var history = messages.ToList();
-        Logger.LogDebug(
-            "History {Messages}",
-            history.Select(m => $"{m.GetType().Name}({m.Role}, gen={m.GenerationId})").ToList()
-        );
+        for (var i = 0; i < history.Count; i++)
+        {
+            Logger.LogDebug(
+                "History[{Index}] {MessageType} role {Role} generation {GenerationId}",
+                i,
+                history[i].GetType().Name,
+                history[i].Role,
+                history[i].GenerationId
+            );
+        }
+
         var request = AnthropicRequest.FromMessages(history, logger: converterLogger);
-        Logger.LogDebug(
-            "Request turns {Turns}",
-            request
-                .Messages.Select(m =>
-                    m.Role
-                    + ": "
-                    + string.Join(", ", m.Content.Select(b => $"{b.Type}[{b.Id ?? b.ToolUseId}]{b.Text ?? b.Content}"))
-                )
-                .ToList()
-        );
+        for (var turn = 0; turn < request.Messages.Count; turn++)
+        {
+            foreach (var block in request.Messages[turn].Content)
+            {
+                Logger.LogDebug(
+                    "Turn[{Turn}] {TurnRole} block {BlockType} id {BlockId} tool_use_id {ToolUseId} text {BlockText} content {BlockContent}",
+                    turn,
+                    request.Messages[turn].Role,
+                    block.Type,
+                    block.Id,
+                    block.ToolUseId,
+                    block.Text,
+                    block.Content
+                );
+            }
+        }
+
         return request;
     }
 

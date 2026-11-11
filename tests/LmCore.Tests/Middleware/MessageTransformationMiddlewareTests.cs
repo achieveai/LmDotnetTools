@@ -1454,10 +1454,18 @@ public class MessageTransformationMiddlewareTests
         };
         var userMessage = new TextMessage { Role = Role.User, Text = "Next question." };
         var agent = new MockAgent();
+        LogMessages("Input", [emptyCalls, userMessage]);
+        TestContextLogger.LogDebug(
+            "Expected {ExpectedCount} messages: {ExpectedFirst} with null ToolCalls, then {ExpectedSecond}",
+            2,
+            nameof(ToolsCallMessage),
+            nameof(TextMessage)
+        );
 
         await middleware.InvokeAsync(new MiddlewareContext(Messages: [emptyCalls, userMessage], Options: null), agent);
 
         var receivedMessages = agent.ReceivedMessages.ToList();
+        LogMessages("Actual", receivedMessages);
         Assert.Equal(2, receivedMessages.Count);
         Assert.Null(Assert.IsType<ToolsCallMessage>(receivedMessages[0]).ToolCalls);
         Assert.Same(userMessage, receivedMessages[1]);
@@ -1477,6 +1485,13 @@ public class MessageTransformationMiddlewareTests
             MessageOrderIdx = 1,
         };
         var agent = new MockAgent();
+        LogMessages("Input", [userMessage, emptyResults]);
+        TestContextLogger.LogDebug(
+            "Expected {ExpectedCount} messages: {ExpectedFirst}, then {ExpectedSecond} with null ToolCallResults",
+            2,
+            nameof(TextMessage),
+            nameof(ToolsCallResultMessage)
+        );
 
         await middleware.InvokeAsync(
             new MiddlewareContext(Messages: [userMessage, emptyResults], Options: null),
@@ -1484,6 +1499,7 @@ public class MessageTransformationMiddlewareTests
         );
 
         var receivedMessages = agent.ReceivedMessages.ToList();
+        LogMessages("Actual", receivedMessages);
         Assert.Equal(2, receivedMessages.Count);
         Assert.Same(userMessage, receivedMessages[0]);
         Assert.Null(Assert.IsType<ToolsCallResultMessage>(receivedMessages[1]).ToolCallResults);
@@ -1513,9 +1529,16 @@ public class MessageTransformationMiddlewareTests
             GenerationResult("call_a", 4),
         };
         var agent = new MockAgent();
+        LogMessages("Input", inputMessages);
+        TestContextLogger.LogDebug(
+            "Expected one aggregate with call id {ExpectedCallId} and result id {ExpectedResultId}",
+            "call_a",
+            "call_a"
+        );
 
         await middleware.InvokeAsync(new MiddlewareContext(Messages: inputMessages, Options: null), agent);
 
+        LogMessages("Actual", agent.ReceivedMessages);
         var aggregate = Assert.IsType<ToolsCallAggregateMessage>(Assert.Single(agent.ReceivedMessages));
         Assert.Equal(["call_a"], aggregate.ToolsCallMessage.ToolCalls.Select(c => c.ToolCallId));
         Assert.Equal(["call_a"], aggregate.ToolsCallResult.ToolCallResults.Select(r => r.ToolCallId));
@@ -2062,6 +2085,41 @@ public class MessageTransformationMiddlewareTests
             GenerationId = generationId,
             MessageOrderIdx = order,
         };
+
+    /// <summary>
+    ///     Logs each message with its type, role, generation, order and the tool call ids it carries; a null
+    ///     call or result list is logged as null.
+    /// </summary>
+    private static void LogMessages(string stage, IReadOnlyList<IMessage> messages)
+    {
+        for (var i = 0; i < messages.Count; i++)
+        {
+            var message = messages[i];
+            (string?[]? CallIds, string?[]? ResultIds) ids = message switch
+            {
+                ToolCallMessage call => ([call.ToolCallId], null),
+                ToolCallResultMessage result => (null, [result.ToolCallId]),
+                ToolsCallMessage calls => (calls.ToolCalls?.Select(c => c.ToolCallId).ToArray(), null),
+                ToolsCallResultMessage results => (null, results.ToolCallResults?.Select(r => r.ToolCallId).ToArray()),
+                ToolsCallAggregateMessage aggregate => (
+                    aggregate.ToolsCallMessage.ToolCalls?.Select(c => c.ToolCallId).ToArray(),
+                    aggregate.ToolsCallResult.ToolCallResults?.Select(r => r.ToolCallId).ToArray()
+                ),
+                _ => (null, null),
+            };
+            TestContextLogger.LogDebug(
+                "{Stage}[{Index}] {MessageType} role {Role} generation {GenerationId} order {MessageOrderIdx} call ids {CallIds} result ids {ResultIds}",
+                stage,
+                i,
+                message.GetType().Name,
+                message.Role,
+                message.GenerationId,
+                message.MessageOrderIdx,
+                ids.CallIds,
+                ids.ResultIds
+            );
+        }
+    }
 
     private static ToolCall NewToolCall(string toolCallId, string functionName, int toolCallIdx)
     {

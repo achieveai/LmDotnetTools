@@ -628,6 +628,20 @@ public record AnthropicRequest
                 continue;
             }
 
+            // Checked before the result lookup: a blank id would otherwise match the blank id of a provider-server
+            // result and go out as a tool_use with no id.
+            if (string.IsNullOrWhiteSpace(toolCall.ToolCallId))
+            {
+                logger?.LogWarning(
+                    "Dropping tool_use {ToolCallId} ({FunctionName}) of generation {GenerationId} in thread {ThreadId}: it has no ToolCallId, so no result can answer it",
+                    toolCall.ToolCallId,
+                    toolCall.FunctionName,
+                    aggregateMsg.GenerationId,
+                    aggregateMsg.ThreadId
+                );
+                continue;
+            }
+
             var resultIndex = -1;
             for (var i = 0; i < toolResults.Count; i++)
             {

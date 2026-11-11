@@ -14,8 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answered that call twice, so Anthropic rejected every later turn with 400 "each tool_use must have a single result".
   `MessageTransformationMiddleware` also rejoins such a late result to its calls. A tool-call aggregate holding a local
   tool result (any `ExecutionTarget` other than `ProviderServer`) with no `ToolCallId` now throws `ArgumentException`
-  instead of being paired by position. A call with no `ToolCallId`, and a provider-server call or result with an empty
-  id, are still left out of the request with a warning, as before.
+  instead of being paired by position. A call with no `ToolCallId` is left out of the request with a warning, even when
+  a provider-server result with an empty id sits beside it. A provider-server call or result with an empty id is still
+  left out silently, as before.
 
 - **Anthropic: 1-hour prompt cache, `PromptCachingMode.AutoOneHour`, off by default.** It places the same breakpoints as
   `Auto` with `ttl: "1h"`. A 1-hour write costs 2x base input against 1.25x, so it pays only when a conversation pauses for 5
