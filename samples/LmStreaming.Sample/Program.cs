@@ -2720,7 +2720,8 @@ try
                                     new GenerateReplyOptions
                                     {
                                         ModelId = controllerModelId,
-                                        // Same caching as the root loop; the controller's delegates inherit it.
+                                        // Always the 5-minute cache: only the root loop reads the per-model
+                                        // 1-hour setting. The controller's delegates inherit this.
                                         PromptCaching = PromptCachingMode.Auto,
                                         // The controller loop inherits the parent's reasoning (Option A: fixed High
                                         // floor), shaped for its OWN model so the orchestrator thinks instead of
@@ -2904,7 +2905,10 @@ try
                             ModelId = modelId,
                             BuiltInTools = filteredBuiltInTools,
                             RequestResponseDumpFileName = requestResponseDumpFileName,
-                            PromptCaching = PromptCachingMode.Auto,
+                            PromptCaching = PromptCacheSettings.ModeForModel(
+                                sp.GetRequiredService<IConfiguration>(),
+                                modelId
+                            ),
                             ExtraProperties = extraProperties,
                         },
                         useDelegatedFallback: normalizedProviderId is "openai"
@@ -4797,7 +4801,8 @@ public partial class Program
         FallbackWebTools webTools
     )
     {
-        var section = sp.GetRequiredService<IConfiguration>().GetSection($"LmStreaming:ModelFallback:{providerId}");
+        var configuration = sp.GetRequiredService<IConfiguration>();
+        var section = configuration.GetSection($"LmStreaming:ModelFallback:{providerId}");
         // Blank, not null, is how a list's parent key reads when the setting comes through host settings.
         string[]? fallbackIds = string.IsNullOrWhiteSpace(section.Value) ? section.Get<string[]>() : [section.Value];
         if (fallbackIds is not { Length: > 0 })
@@ -4873,13 +4878,18 @@ public partial class Program
                 targetId,
                 requestedEffort: null
             );
+            var targetModelId = ResolveModelIdForProvider(registry, targetId);
+            var targetCaching = PromptCacheSettings.ModeForModel(configuration, targetModelId);
             targets.Add(
                 new FallbackTarget(
-                    ResolveModelIdForProvider(registry, targetId),
+                    targetModelId,
                     targetAgent,
                     options =>
                         options with
                         {
+                            // The 1-hour setting is per model, so a hop follows the target's own.
+                            PromptCaching =
+                                options.PromptCaching == PromptCachingMode.Off ? PromptCachingMode.Off : targetCaching,
                             BuiltInTools = targetBuiltIns,
                             Functions = webTools.ShapeFunctions(options.Functions, hasNativeSearch, hiddenWebTools),
                             ExtraProperties = options

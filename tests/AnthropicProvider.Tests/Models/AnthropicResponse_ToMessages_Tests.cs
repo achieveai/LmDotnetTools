@@ -359,8 +359,9 @@ public class AnthropicResponse_ToMessages_Tests
     [InlineData(""", "cache_creation": {"ephemeral_5m_input_tokens": 100, "ephemeral_1h_input_tokens": 200}""", 200)]
     public void NonStreaming_CacheWrite_ReportsTheOneHourSplit(string cacheCreation, int expectedOneHour)
     {
-        // Same contract as the streaming parser: a cache write always carries its 1h share, 0 when the
-        // response has no split, because this provider only sends default (5-minute) cache_control.
+        // Same contract as the streaming parser on a 5-minute request: a cache write always carries its 1h
+        // share, 0 when the response has no split, so the cost estimate is complete instead of a lower bound.
+        // A 1-hour request with no split leaves the share out (OneHourCacheSplitTests).
         var json = $$"""
             {
               "id": "msg_ttl", "type": "message", "role": "assistant", "model": "claude-sonnet-5",

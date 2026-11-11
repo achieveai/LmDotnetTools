@@ -146,6 +146,18 @@ public class RealAnthropicResponseParsingTests
     }
 
     [Fact]
+    public void ToolCallResponse_KeepsTheOneHourShareFromMessageStart_WhenMessageDeltaRepeatsTheCountWithoutIt()
+    {
+        // In this recording message_start carries the 619-token 1h split; message_delta repeats 619 with no split.
+        var result = ParseSseFile(ToolCallFixture);
+
+        foreach (var usage in result.StreamedMessages.Concat(result.JoinedMessages).OfType<UsageMessage>())
+        {
+            Assert.Equal(619, usage.Usage.GetExtraProperty<int>("ephemeral_1h_input_tokens"));
+        }
+    }
+
+    [Fact]
     public void ToolCallResponse_StreamedAndJoined_UsageValuesMatch()
     {
         var result = ParseSseFile(ToolCallFixture);
