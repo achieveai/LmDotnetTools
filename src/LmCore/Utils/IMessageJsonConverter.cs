@@ -173,6 +173,12 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         {
             discriminator = CompactionCheckpointMessage.DiscriminatorFor(checkpoint.SchemaVersion);
         }
+        // The same rule for a replayable reasoning blob: a build that predates it skips the row instead of
+        // reading it as ordinary encrypted reasoning and sending it to another provider.
+        else if (value is ReasoningMessage { EncryptedOrigin: not null })
+        {
+            discriminator = ReasoningMessage.ReplayTypeDiscriminator;
+        }
         else if (_typeToDiscriminator.TryGetValue(valueType, out var registeredDiscriminator))
         {
             discriminator = registeredDiscriminator;
@@ -475,6 +481,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             "tools_call_aggregate" => typeof(ToolsCallAggregateMessage),
             "usage" => typeof(UsageMessage),
             "reasoning" => typeof(ReasoningMessage),
+            ReasoningMessage.ReplayTypeDiscriminator => typeof(ReasoningMessage),
             "reasoning_update" => typeof(ReasoningUpdateMessage),
             "server_tool_use" => typeof(ToolCallMessage),
             "server_tool_result" => typeof(ToolCallResultMessage),

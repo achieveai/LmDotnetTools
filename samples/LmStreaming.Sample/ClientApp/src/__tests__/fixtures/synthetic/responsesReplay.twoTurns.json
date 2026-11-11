@@ -1,0 +1,193 @@
+{
+  "_note": "Two Responses turns, each a reasoning summary, a replay blob and an answer, exactly as the server streams them over the WebSocket (live) and returns them from GET /api/conversations/{id}/messages (rows). The blob is in neither: it is never streamed, and the route drops its row, which is why rows skip row-3 and row-7 and the answers' parentMessageId names a row the client never sees. Run, generation, row and thread ids and timestamps are renamed to stable values. The whole file except _note is pinned by LmStreaming.Sample.Tests/ResponsesReasoningReplayLoopTests.Live_and_saved_summary_and_answer_share_their_identity_across_two_turns; regenerate it there, not by hand.",
+  "live": [
+    {
+      "$type": "run_assignment",
+      "Assignment": {
+        "RunId": "run-1",
+        "GenerationId": "gen-1",
+        "InputIds": ["input-1"],
+        "WasInjected": false
+      },
+      "Role": "system",
+      "RunId": "run-1",
+      "ThreadId": "thread-x",
+      "GenerationId": "gen-1"
+    },
+    {
+      "$type": "reasoning",
+      "reasoning": "thinking r1",
+      "visibility": 1,
+      "fromAgent": "test",
+      "role": "assistant",
+      "generationId": "gen-1",
+      "threadId": "thread-x",
+      "runId": "run-1",
+      "messageOrderIdx": 0
+    },
+    {
+      "$type": "text",
+      "text": "answer one",
+      "isThinking": false,
+      "fromAgent": "test",
+      "role": "assistant",
+      "generationId": "gen-1",
+      "threadId": "thread-x",
+      "runId": "run-1",
+      "messageOrderIdx": 2
+    },
+    {
+      "$type": "run_completed",
+      "CompletedRunId": "run-1",
+      "WasForked": false,
+      "HasPendingMessages": false,
+      "PendingMessageCount": 0,
+      "IsError": false,
+      "Role": "system",
+      "RunId": "run-1",
+      "ThreadId": "thread-x",
+      "GenerationId": "gen-1"
+    },
+    {
+      "$type": "run_assignment",
+      "Assignment": {
+        "RunId": "run-2",
+        "GenerationId": "gen-2",
+        "InputIds": ["input-2"],
+        "ParentRunId": "run-1",
+        "WasInjected": false
+      },
+      "Role": "system",
+      "RunId": "run-2",
+      "ParentRunId": "run-1",
+      "ThreadId": "thread-x",
+      "GenerationId": "gen-2"
+    },
+    {
+      "$type": "reasoning",
+      "reasoning": "thinking r2",
+      "visibility": 1,
+      "fromAgent": "test",
+      "role": "assistant",
+      "generationId": "gen-2",
+      "threadId": "thread-x",
+      "runId": "run-2",
+      "messageOrderIdx": 0
+    },
+    {
+      "$type": "text",
+      "text": "answer two",
+      "isThinking": false,
+      "fromAgent": "test",
+      "role": "assistant",
+      "generationId": "gen-2",
+      "threadId": "thread-x",
+      "runId": "run-2",
+      "messageOrderIdx": 2
+    },
+    {
+      "$type": "run_completed",
+      "CompletedRunId": "run-2",
+      "WasForked": false,
+      "HasPendingMessages": false,
+      "PendingMessageCount": 0,
+      "IsError": false,
+      "Role": "system",
+      "RunId": "run-2",
+      "ThreadId": "thread-x",
+      "GenerationId": "gen-2"
+    }
+  ],
+  "rows": [
+    {
+      "id": "row-1",
+      "threadId": "thread-x",
+      "runId": "run-1",
+      "parentRunId": null,
+      "generationId": null,
+      "messageOrderIdx": null,
+      "timestamp": 1000,
+      "seq": 1,
+      "parentMessageId": null,
+      "messageType": "TextMessage",
+      "role": "User",
+      "fromAgent": null,
+      "messageJson": "{\"$type\":\"text\",\"text\":\"first\",\"isThinking\":false,\"role\":\"user\"}"
+    },
+    {
+      "id": "row-2",
+      "threadId": "thread-x",
+      "runId": "run-1",
+      "parentRunId": null,
+      "generationId": "gen-1",
+      "messageOrderIdx": 0,
+      "timestamp": 1001,
+      "seq": 2,
+      "parentMessageId": "row-1",
+      "messageType": "ReasoningMessage",
+      "role": "Assistant",
+      "fromAgent": "test",
+      "messageJson": "{\"$type\":\"reasoning\",\"reasoning\":\"thinking r1\",\"visibility\":1,\"fromAgent\":\"test\",\"role\":\"assistant\",\"generationId\":\"gen-1\",\"threadId\":\"thread-x\",\"runId\":\"run-1\",\"messageOrderIdx\":0}"
+    },
+    {
+      "id": "row-4",
+      "threadId": "thread-x",
+      "runId": "run-1",
+      "parentRunId": null,
+      "generationId": "gen-1",
+      "messageOrderIdx": 2,
+      "timestamp": 1002,
+      "seq": 4,
+      "parentMessageId": "row-3",
+      "messageType": "TextMessage",
+      "role": "Assistant",
+      "fromAgent": "test",
+      "messageJson": "{\"$type\":\"text\",\"text\":\"answer one\",\"isThinking\":false,\"fromAgent\":\"test\",\"role\":\"assistant\",\"generationId\":\"gen-1\",\"threadId\":\"thread-x\",\"runId\":\"run-1\",\"messageOrderIdx\":2}"
+    },
+    {
+      "id": "row-5",
+      "threadId": "thread-x",
+      "runId": "run-2",
+      "parentRunId": null,
+      "generationId": null,
+      "messageOrderIdx": null,
+      "timestamp": 1003,
+      "seq": 5,
+      "parentMessageId": "row-4",
+      "messageType": "TextMessage",
+      "role": "User",
+      "fromAgent": null,
+      "messageJson": "{\"$type\":\"text\",\"text\":\"second\",\"isThinking\":false,\"role\":\"user\"}"
+    },
+    {
+      "id": "row-6",
+      "threadId": "thread-x",
+      "runId": "run-2",
+      "parentRunId": null,
+      "generationId": "gen-2",
+      "messageOrderIdx": 0,
+      "timestamp": 1004,
+      "seq": 6,
+      "parentMessageId": "row-5",
+      "messageType": "ReasoningMessage",
+      "role": "Assistant",
+      "fromAgent": "test",
+      "messageJson": "{\"$type\":\"reasoning\",\"reasoning\":\"thinking r2\",\"visibility\":1,\"fromAgent\":\"test\",\"role\":\"assistant\",\"generationId\":\"gen-2\",\"threadId\":\"thread-x\",\"runId\":\"run-2\",\"messageOrderIdx\":0}"
+    },
+    {
+      "id": "row-8",
+      "threadId": "thread-x",
+      "runId": "run-2",
+      "parentRunId": null,
+      "generationId": "gen-2",
+      "messageOrderIdx": 2,
+      "timestamp": 1005,
+      "seq": 8,
+      "parentMessageId": "row-7",
+      "messageType": "TextMessage",
+      "role": "Assistant",
+      "fromAgent": "test",
+      "messageJson": "{\"$type\":\"text\",\"text\":\"answer two\",\"isThinking\":false,\"fromAgent\":\"test\",\"role\":\"assistant\",\"generationId\":\"gen-2\",\"threadId\":\"thread-x\",\"runId\":\"run-2\",\"messageOrderIdx\":2}"
+    }
+  ]
+}

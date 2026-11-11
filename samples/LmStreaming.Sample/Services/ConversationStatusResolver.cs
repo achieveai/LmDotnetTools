@@ -151,8 +151,27 @@ public sealed class ConversationStatusResolver(IConversationStore conversationSt
             }
         }
 
-        var fallback = runMessages.LastOrDefault(m => m.Role != nameof(Role.User));
+        var fallback = runMessages.LastOrDefault(m => m.Role != nameof(Role.User) && !IsReplayBlob(m));
         return fallback == null ? null : DeserializeMessage(fallback);
+    }
+
+    /// <summary>A Responses reasoning blob (#769) is kept for the model only and is never a response.</summary>
+    private static bool IsReplayBlob(PersistedMessage message)
+    {
+        if (message.MessageType != nameof(ReasoningMessage))
+        {
+            return false;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<IMessage>(message.MessageJson, ResponseMessageOptions)
+                is ReasoningMessage { EncryptedOrigin: not null };
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     /// <summary>

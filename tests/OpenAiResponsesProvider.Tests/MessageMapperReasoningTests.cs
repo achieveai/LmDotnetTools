@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
@@ -42,5 +43,230 @@ public sealed class MessageMapperReasoningTests
         var request = MessageMapper.BuildRequest(s_userTurn, options: null);
 
         request.Reasoning.Should().BeNull();
+    }
+
+    private const string Model = "gpt-5.6-terra";
+    private const string Origin = "responses:" + Model;
+
+    private static GenerateReplyOptions ReplayOptions(bool reasoning = true) =>
+        new()
+        {
+            ModelId = Model,
+            ExtraProperties = reasoning
+                ? ImmutableDictionary<string, object?>.Empty.Add(
+                    "Reasoning",
+                    new ResponseReasoningOptions { Summary = "auto" }
+                )
+                : ImmutableDictionary<string, object?>.Empty,
+        };
+
+    private static ReasoningMessage Blob(string? origin = Origin, string blob = "BLOB", string? generationId = "g1") =>
+        new()
+        {
+            Role = Role.Assistant,
+            Reasoning = blob,
+            GenerationId = generationId,
+            Visibility = ReasoningVisibility.Encrypted,
+            EncryptedOrigin = origin,
+        };
+
+    private static ToolsCallMessage Call() =>
+        new()
+        {
+            Role = Role.Assistant,
+            ToolCalls =
+            [
+                new ToolCall
+                {
+                    ToolCallId = "c1",
+                    FunctionName = "calc",
+                    FunctionArgs = "{}",
+                },
+            ],
+        };
+
+    private static TextMessage User(string text = "go") => new() { Role = Role.User, Text = text };
+
+    private static IEnumerable<ResponseInputItem> ReasoningItems(ResponseCreateRequest request) =>
+        request.Input.Where(i => i.Type == "reasoning");
+
+    [Fact]
+    public void Encrypted_reasoning_maps_to_input_item_before_its_function_call()
+    {
+        IMessage[] history =
+        [
+            User(),
+            new ReasoningMessage
+            {
+                Role = Role.Assistant,
+                Reasoning = "summary text",
+                Visibility = ReasoningVisibility.Summary,
+            },
+            Blob(),
+            Call(),
+            new ToolsCallResultMessage { ToolCallResults = [new ToolCallResult("c1", "42")] },
+        ];
+
+        var request = MessageMapper.BuildRequest(history, ReplayOptions(), replayReasoning: true);
+
+        request
+            .Input.Select(i => i.Type)
+            .Should()
+            .Equal("message", "reasoning", "function_call", "function_call_output");
+        System
+            .Text.Json.JsonSerializer.Serialize(request.Input[1])
+            .Should()
+            .Be("{\"type\":\"reasoning\",\"summary\":[],\"encrypted_content\":\"BLOB\"}");
+    }
+
+    [Fact]
+    public void Request_includes_encrypted_when_replay_on()
+    {
+        var request = MessageMapper.BuildRequest([User()], ReplayOptions(), replayReasoning: true);
+
+        request.Include.Should().Equal("reasoning.encrypted_content");
+        request.Store.Should().BeFalse("the blob is only returned for a response the server does not keep");
+    }
+
+    [Fact]
+    public void Replay_on_without_reasoning_asks_for_no_blob()
+    {
+        var request = MessageMapper.BuildRequest([User()], ReplayOptions(reasoning: false), replayReasoning: true);
+
+        request.Include.Should().BeNull();
+        request.Store.Should().BeNull();
+    }
+
+    [Fact]
+    public void Replay_off_leaves_request_unchanged()
+    {
+        var request = MessageMapper.BuildRequest([User()], ReplayOptions(), replayReasoning: false);
+
+        request.Include.Should().BeNull();
+        request.Store.Should().BeNull();
+    }
+
+    [Fact]
+    public void Stored_rows_are_not_replayed_after_switch_off()
+    {
+        var request = MessageMapper.BuildRequest([User(), Blob(), Call(), User("next")], ReplayOptions());
+
+        ReasoningItems(request).Should().BeEmpty("turning the switch off stops all replay at once");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("responses:gpt-5.5")]
+    [InlineData("responses:gpt-5.6-terra-mini")]
+    [InlineData("anthropic:gpt-5.6-terra")]
+    public void Row_from_anywhere_else_is_not_replayed(string? origin)
+    {
+        var request = MessageMapper.BuildRequest(
+            [User(), Blob(origin), Call(), User("next")],
+            ReplayOptions(),
+            replayReasoning: true
+        );
+
+        ReasoningItems(request).Should().BeEmpty("only the model that made a blob can read it");
+    }
+
+    [Fact]
+    public void Without_a_model_id_nothing_is_replayed()
+    {
+        // "responses:" is the tag an empty model id would build, so it is the row that could match.
+        var request = MessageMapper.BuildRequest(
+            [User(), Blob("responses:"), Call(), User("next")],
+            ReplayOptions() with
+            {
+                ModelId = "",
+            },
+            replayReasoning: true
+        );
+
+        ReasoningItems(request).Should().BeEmpty("a blob is replayed only to a model it can name");
+    }
+
+    private sealed class CapturingClient : IOpenAiResponsesClient
+    {
+        public List<ResponseCreateRequest> Requests { get; } = [];
+
+        public async IAsyncEnumerable<ResponseEvent> StreamResponseAsync(
+            ResponseCreateRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default
+        )
+        {
+            Requests.Add(request);
+            await Task.Yield();
+            yield return new ResponseLifecycleEvent { Type = ResponseEventTypes.ResponseCompleted };
+        }
+
+        public void Dispose() { }
+    }
+
+    // The switch must reach the request the agent sends, not only the mapper: the agent passes its own
+    // flag to BuildRequest, and a wrong value there would replay with the switch off.
+    [Theory]
+    [InlineData(true, 1)]
+    [InlineData(false, 0)]
+    public async Task Agent_sends_the_stored_blob_only_when_its_switch_is_on(bool replay, int reasoningItems)
+    {
+        var client = new CapturingClient();
+        using var agent = new OpenAiResponsesAgent("test", client, replayReasoning: replay);
+
+        var stream = await agent.GenerateReplyStreamingAsync(
+            [User(), Blob(), Call(), new ToolsCallResultMessage { ToolCallResults = [new ToolCallResult("c1", "42")] }],
+            ReplayOptions()
+        );
+        await foreach (var _ in stream) { }
+
+        var request = client.Requests.Should().ContainSingle().Subject;
+        ReasoningItems(request).Should().HaveCount(reasoningItems);
+        (request.Include is not null).Should().Be(replay, "the blob is asked for only when replay is on");
+    }
+
+    // A response can hold several reasoning items in a row; they all belong to its answer. Reasoning from an
+    // earlier response that was cut off and retried belongs to no answer, so only the retry's is sent.
+    [Theory]
+    [InlineData("g2", "g2", new[] { "B1", "B2" })]
+    [InlineData("g1", "g2", new[] { "B2" })]
+    [InlineData(null, null, new[] { "B2" })]
+    public void A_run_of_reasoning_is_kept_only_within_one_response(
+        string? firstGeneration,
+        string? secondGeneration,
+        string[] sent
+    )
+    {
+        IMessage[] history =
+        [
+            User(),
+            Blob(blob: "B1", generationId: firstGeneration),
+            Blob(blob: "B2", generationId: secondGeneration),
+            new TextMessage { Role = Role.Assistant, Text = "done" },
+        ];
+
+        var request = MessageMapper.BuildRequest(history, ReplayOptions(), replayReasoning: true);
+
+        ReasoningItems(request).Select(i => i.EncryptedContent).Should().Equal(sent);
+    }
+
+    [Theory]
+    [InlineData("nothing", false)]
+    [InlineData("user", false)]
+    [InlineData("assistant", true)]
+    public void Reasoning_is_kept_only_when_model_output_follows_it(string following, bool kept)
+    {
+        List<IMessage> history = [User(), Blob()];
+        if (following == "user")
+        {
+            history.Add(User("next"));
+        }
+        else if (following == "assistant")
+        {
+            history.Add(new TextMessage { Role = Role.Assistant, Text = "done" });
+        }
+
+        var request = MessageMapper.BuildRequest(history, ReplayOptions(), replayReasoning: true);
+
+        ReasoningItems(request).Should().HaveCount(kept ? 1 : 0);
     }
 }
