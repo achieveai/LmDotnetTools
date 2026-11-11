@@ -11,29 +11,42 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Caching;
 /// </summary>
 public static class PromptCachingStrategy
 {
-    private static readonly AnthropicCacheControl s_ephemeral = new();
+    private static readonly AnthropicCacheControl s_fiveMinutes = new();
+    private static readonly AnthropicCacheControl s_oneHour = new() { Ttl = "1h" };
+
+    /// <summary>
+    ///     Applies 5-minute cache breakpoints to the request and returns a new request with caching enabled.
+    /// </summary>
+    /// <param name="request">The request to mark.</param>
+    public static AnthropicRequest Apply(AnthropicRequest request) => Apply(request, oneHour: false);
 
     /// <summary>
     ///     Applies cache breakpoints to the request and returns a new request with caching enabled.
     /// </summary>
-    public static AnthropicRequest Apply(AnthropicRequest request)
+    /// <param name="request">The request to mark.</param>
+    /// <param name="oneHour">
+    ///     Marks every breakpoint for 1 hour. All of them, because reading a 5-minute entry only restarts its
+    ///     5 minutes, so a 5-minute tail behind 1-hour markers would never become a 1-hour entry.
+    /// </param>
+    public static AnthropicRequest Apply(AnthropicRequest request, bool oneHour)
     {
         ArgumentNullException.ThrowIfNull(request);
         var result = request;
+        var marker = oneHour ? s_oneHour : s_fiveMinutes;
 
         // 1. Mark last tool definition with cache_control
-        result = ApplyToolsCaching(result);
+        result = ApplyToolsCaching(result, marker);
 
         // 2. Convert system prompt to array form and mark with cache_control
-        result = ApplySystemCaching(result);
+        result = ApplySystemCaching(result, marker);
 
         // 3. Mark last user message's last content block with cache_control
-        result = ApplyMessagesCaching(result);
+        result = ApplyMessagesCaching(result, marker);
 
         return result;
     }
 
-    private static AnthropicRequest ApplyToolsCaching(AnthropicRequest request)
+    private static AnthropicRequest ApplyToolsCaching(AnthropicRequest request, AnthropicCacheControl marker)
     {
         if (request.Tools is not { Count: > 0 })
         {
@@ -46,8 +59,8 @@ public static class PromptCachingStrategy
 
         tools[^1] = lastTool switch
         {
-            AnthropicTool tool => tool with { CacheControl = s_ephemeral },
-            AnthropicBuiltInTool builtIn => builtIn with { CacheControl = s_ephemeral },
+            AnthropicTool tool => tool with { CacheControl = marker },
+            AnthropicBuiltInTool builtIn => builtIn with { CacheControl = marker },
             _ => lastTool,
         };
 
@@ -57,13 +70,13 @@ public static class PromptCachingStrategy
         };
     }
 
-    private static AnthropicRequest ApplySystemCaching(AnthropicRequest request)
+    private static AnthropicRequest ApplySystemCaching(AnthropicRequest request, AnthropicCacheControl marker)
     {
         // If already using SystemContent array form, mark the last block
         if (request.SystemContent is { Count: > 0 })
         {
             var systemContent = new List<AnthropicSystemContent>(request.SystemContent);
-            systemContent[^1] = systemContent[^1] with { CacheControl = s_ephemeral };
+            systemContent[^1] = systemContent[^1] with { CacheControl = marker };
             return request with { SystemContent = systemContent };
         }
 
@@ -76,7 +89,7 @@ public static class PromptCachingStrategy
                 {
                     Type = "text",
                     Text = request.System,
-                    CacheControl = s_ephemeral,
+                    CacheControl = marker,
                 },
             };
 
@@ -90,7 +103,7 @@ public static class PromptCachingStrategy
         return request;
     }
 
-    private static AnthropicRequest ApplyMessagesCaching(AnthropicRequest request)
+    private static AnthropicRequest ApplyMessagesCaching(AnthropicRequest request, AnthropicCacheControl marker)
     {
         if (request.Messages is not { Count: > 0 })
         {
@@ -104,7 +117,7 @@ public static class PromptCachingStrategy
             if (message.Role == "user" && message.Content.Count > 0)
             {
                 var lastContent = message.Content[^1];
-                message.Content[^1] = lastContent with { CacheControl = s_ephemeral };
+                message.Content[^1] = lastContent with { CacheControl = marker };
                 return request;
             }
         }

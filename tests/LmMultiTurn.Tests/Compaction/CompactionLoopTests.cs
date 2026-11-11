@@ -308,9 +308,12 @@ public class CompactionLoopTests
             ILogger<MultiTurnAgentLoop>? logger = null,
             string? extraTool = null,
             bool realSummarizer = false,
+            PromptCachingMode promptCaching = PromptCachingMode.Off,
             Func<string?, long>? textTokens = null,
             Func<CheckpointActivation, CancellationToken, ValueTask<bool>>? onCheckpointActivated = null,
             IFunctionProvider? extraProvider = null,
+            Func<IStreamingAgent, IStreamingAgent>? wrapAgent = null,
+            IPricingResolver? pricing = null,
             bool deferTools = false
         )
         {
@@ -368,13 +371,19 @@ public class CompactionLoopTests
             };
             KillSwitch = killSwitch;
             Loop = new MultiTurnAgentLoop(
-                Agent,
+                wrapAgent?.Invoke(Agent) ?? Agent,
                 registry,
                 Thread,
                 includeAskUserQuestionTool: false,
                 includeNotifyClientTool: false,
-                defaultOptions: new GenerateReplyOptions { ModelId = Model, MaxToken = 100 },
+                defaultOptions: new GenerateReplyOptions
+                {
+                    ModelId = Model,
+                    MaxToken = 100,
+                    PromptCaching = promptCaching,
+                },
                 store: Store,
+                pricingResolver: pricing,
                 lifecycleServices: new MultiTurnLifecycleServices { Publisher = Publisher },
                 subAgentOptions: subAgentOptions,
                 collaboration: collaboration,
@@ -2956,6 +2965,213 @@ public class CompactionLoopTests
         (await h.RunAsync("continue")).IsError.Should().BeFalse();
         h.Summarizer.Requests.Should().HaveCount(1, "the first request of the next run is where the policy runs");
         HasEnvelope(h.Agent.Requests[decisionsAfterRunOne]).Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(PromptCachingMode.AutoOneHour, null, "hot", 3600)]
+    [InlineData(PromptCachingMode.Auto, null, "cold", null)]
+    [InlineData(PromptCachingMode.AutoOneHour, 5, "cold", 300)]
+    public async Task AfterTenIdleMinutes_TheCacheReadsByTheLoopsOwnLifetime_AndAHostValueWins(
+        PromptCachingMode caching,
+        int? hostTtlMinutes,
+        string expectedTemperature,
+        int? expectedRecordedSeconds
+    )
+    {
+        var options = new CompactionOptions { Mode = CompactionMode.Warn };
+        if (hostTtlMinutes is { } minutes)
+        {
+            options = options with { CacheTtl = TimeSpan.FromMinutes(minutes) };
+        }
+
+        await using var h = new Harness(EchoThenDone(0), options, _ => Window, promptCaching: caching);
+
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+        h.Clock.Now += TimeSpan.FromMinutes(10);
+        (await h.RunAsync("continue")).IsError.Should().BeFalse();
+
+        h.Decisions[^1].CacheTemperature.Should().Be(expectedTemperature);
+        (await h.ObservationsAsync())[^1].PromptCacheTtlSeconds.Should().Be(expectedRecordedSeconds);
+    }
+
+    /// <summary>A primary whose provider is down, so every turn falls through to the fallback target.</summary>
+    private sealed class DownAgent : IStreamingAgent
+    {
+        public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
+            IEnumerable<IMessage> messages,
+            GenerateReplyOptions? options = null,
+            CancellationToken cancellationToken = default
+        ) => throw new HttpRequestException("down", null, HttpStatusCode.ServiceUnavailable);
+
+        public Task<IEnumerable<IMessage>> GenerateReplyAsync(
+            IEnumerable<IMessage> messages,
+            GenerateReplyOptions? options = null,
+            CancellationToken cancellationToken = default
+        ) => throw new HttpRequestException("down", null, HttpStatusCode.ServiceUnavailable);
+    }
+
+    [Theory]
+    [InlineData(PromptCachingMode.AutoOneHour, PromptCachingMode.Auto, 300, CacheTemperature.Cold)]
+    [InlineData(PromptCachingMode.Auto, PromptCachingMode.AutoOneHour, 3600, CacheTemperature.Hot)]
+    [InlineData(PromptCachingMode.Off, PromptCachingMode.AutoOneHour, 3600, CacheTemperature.Hot)]
+    public async Task AFallbackReply_RecordsTheLifetimeOfTheAttemptThatAnswered_AndTheReportReadsItAfterARestart(
+        PromptCachingMode primary,
+        PromptCachingMode target,
+        int expectedSeconds,
+        CacheTemperature expectedAfterTenIdleMinutes
+    )
+    {
+        var store = new InMemoryConversationStore();
+        await using (
+            var h = new Harness(
+                _ =>
+                    [
+                        new TextMessage { Text = "done", Role = Role.Assistant },
+                        new UsageMessage
+                        {
+                            Usage = new Usage
+                            {
+                                PromptTokens = 10,
+                                CompletionTokens = 3,
+                                TotalTokens = 13,
+                            },
+                        },
+                    ],
+                new CompactionOptions { Mode = CompactionMode.Warn },
+                _ => Window,
+                store: store,
+                promptCaching: primary,
+                wrapAgent: scripted => new ModelFallbackAgent(
+                    new DownAgent(),
+                    [new FallbackTarget("target-model", scripted, o => o with { PromptCaching = target })]
+                )
+            )
+        )
+        {
+            (await h.RunAsync("start")).IsError.Should().BeFalse();
+        }
+
+        // The loop is gone: everything below is read from what it persisted.
+        var persisted = await ContextObservationProjection.LoadLatestAsync(store, Thread);
+        persisted!.PromptCacheTtlSeconds.Should().Be(expectedSeconds);
+
+        var report = await ConversationContextReport.BuildAsync(
+            store,
+            Thread,
+            [AgentExecutionRef.Root(Thread)],
+            new ConversationContextReportOptions
+            {
+                TimeProvider = new FixedClock { Now = DateTimeOffset.UtcNow.AddMinutes(10) },
+            }
+        );
+
+        report.Agents[0].CacheTemperature.Should().Be(expectedAfterTenIdleMinutes);
+    }
+
+    private sealed class WriteRates(decimal fiveMinutes, decimal? oneHour) : IPricingResolver
+    {
+        public ModelPricing? Resolve(string modelId) =>
+            new()
+            {
+                ModelId = modelId,
+                PromptPerMillion = EconomicInputRate,
+                CompletionPerMillion = 0m,
+                CacheWrite5mPerMillion = fiveMinutes,
+                CacheWrite1hPerMillion = oneHour,
+            };
+    }
+
+    private const int EconomicInputRate = 100;
+    private const int FiveMinuteWriteRate = 125;
+    private const int OneHourWriteRate = 200;
+
+    [Theory]
+    [InlineData(PromptCachingMode.AutoOneHour, null, OneHourWriteRate, CompactionSkipReasons.BelowThreshold)]
+    [InlineData(PromptCachingMode.Auto, null, FiveMinuteWriteRate, CompactionPolicy.EconomicReason)]
+    [InlineData(PromptCachingMode.AutoOneHour, 5, OneHourWriteRate, CompactionSkipReasons.BelowThreshold)]
+    [InlineData(PromptCachingMode.Auto, 60, FiveMinuteWriteRate, CompactionPolicy.EconomicReason)]
+    public async Task EconomicBand_PricesTheCacheRewriteAtTheRateTheRequestsMarkersCost_WhateverLifetimeAHostSet(
+        PromptCachingMode caching,
+        int? hostTtlMinutes,
+        int expectedWriteRate,
+        string expectedReason
+    )
+    {
+        var options = new CompactionOptions
+        {
+            Mode = CompactionMode.Warn,
+            ReserveMarginTokens = 0,
+            MinPredictedSavingsMicros = 1,
+        };
+        if (hostTtlMinutes is { } minutes)
+        {
+            options = options with { CacheTtl = TimeSpan.FromMinutes(minutes) };
+        }
+
+        await using var h = new Harness(
+            EchoThenDone(0),
+            options,
+            _ => Window,
+            promptCaching: caching,
+            pricing: new WriteRates(FiveMinuteWriteRate, OneHourWriteRate)
+        );
+
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+        h.Clock.Now += TimeSpan.FromHours(2);
+        (await h.RunAsync(new string('x', 7_700))).IsError.Should().BeFalse();
+
+        var decision = h.Decisions[^1];
+        decision.CacheTemperature.Should().Be("cold");
+        var target = (long)(options.TargetRatio * (decision.Window!.Value - decision.Reserve));
+        var removed = decision.Tokens - target;
+        var expectedSavings =
+            (removed * options.ExpectedFutureGenerations * EconomicInputRate)
+            - (removed * EconomicInputRate)
+            - (target * expectedWriteRate);
+        decision.PredictedSavingsMicros.Should().Be(expectedSavings);
+        decision.Reason.Should().Be(expectedReason);
+    }
+
+    [Theory]
+    [InlineData(PromptCachingMode.AutoOneHour, false)]
+    [InlineData(PromptCachingMode.Auto, true)]
+    public async Task EconomicBand_WithNoOneHourRateInTheCatalog_LeavesAOneHourLoopUnpriced(
+        PromptCachingMode caching,
+        bool expectPriced
+    )
+    {
+        // The catalog knows only the 5-minute write rate. Pricing a 1-hour rewrite at it would understate the
+        // rewrite and could clear the savings floor; the 5-minute loop it does price stays priced.
+        var options = new CompactionOptions
+        {
+            Mode = CompactionMode.Warn,
+            ReserveMarginTokens = 0,
+            MinPredictedSavingsMicros = 1,
+        };
+
+        await using var h = new Harness(
+            EchoThenDone(0),
+            options,
+            _ => Window,
+            promptCaching: caching,
+            pricing: new WriteRates(FiveMinuteWriteRate, oneHour: null)
+        );
+
+        (await h.RunAsync("start")).IsError.Should().BeFalse();
+        h.Clock.Now += TimeSpan.FromHours(2);
+        (await h.RunAsync(new string('x', 7_700))).IsError.Should().BeFalse();
+
+        var decision = h.Decisions[^1];
+        if (expectPriced)
+        {
+            decision.PredictedSavingsMicros.Should().NotBeNull();
+            decision.Reason.Should().Be(CompactionPolicy.EconomicReason);
+        }
+        else
+        {
+            decision.PredictedSavingsMicros.Should().BeNull("a 1-hour write with no 1-hour rate has no honest price");
+            decision.Reason.Should().NotBe(CompactionPolicy.EconomicReason);
+        }
     }
 
     [Fact]

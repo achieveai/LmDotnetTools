@@ -213,7 +213,10 @@ public sealed record ConversationContextReportOptions
     /// <summary>The clock the cache temperature is judged against.</summary>
     public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
 
-    /// <summary>The prompt-cache TTL.</summary>
+    /// <summary>
+    ///     The prompt-cache lifetime used only when the observation recorded none
+    ///     (<see cref="ContextObservation.PromptCacheTtlSeconds" /> is null); a recorded lifetime wins.
+    /// </summary>
     public TimeSpan CacheTtl { get; init; } = DefaultCacheTtl;
 
     /// <summary><see cref="InFlightAbandonedAfter" /> for a host on the default <see cref="CompactionOptions" />.</summary>
@@ -405,7 +408,9 @@ public sealed record ConversationContextReport
             CacheTemperature = ConversationActivity.ResolveCacheTemperature(
                 lastActivity,
                 now,
-                options.CacheTtl,
+                observation?.PromptCacheTtlSeconds is { } ttlSeconds
+                    ? TimeSpan.FromSeconds(ttlSeconds)
+                    : options.CacheTtl,
                 cachingEnabled
             ),
             Compaction = CompactionStatus(state, now, options.InFlightAbandonedAfter) with

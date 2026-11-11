@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.LmCore.Core;
+
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 
 /// <summary>How far the just-in-time compaction policy is allowed to go (spec §8.1).</summary>
@@ -119,8 +121,10 @@ public enum SummaryPrefixMode
 ///     <see cref="MaxCompactionsPerRun"/> = 2 (the policy's own attempts; fit and reactive re-cuts are bounded by
 ///     progress instead) bound the number of summary calls a single run's policy can make, the same shape of
 ///     guard the review daemon's retry budget uses (#616, #470) — a precedent, not shared code.</item>
-///     <item><see cref="CacheTtl"/> = 5 minutes matches the 5-minute cache-write rate <c>ModelPricing</c>
-///     prices (#682) and the sample host's <c>PromptCachingMode.Auto</c>.</item>
+///     <item>The cache lifetime follows the loop's caching mode unless a host sets <see cref="CacheTtl"/>:
+///     5 minutes for <c>PromptCachingMode.Auto</c>, 1 hour for <c>PromptCachingMode.AutoOneHour</c> (see
+///     <see cref="EffectiveCacheTtl"/>). The sample host picks the mode per model, so it is not always
+///     <c>Auto</c>.</item>
 ///     <item><see cref="ExpectedFutureGenerations"/> = 3 is the economic guess the spec names; #686 could
 ///     not reach the band it governs (see above), so it is still the first knob to measure on a
 ///     production window.</item>
@@ -128,6 +132,10 @@ public enum SummaryPrefixMode
 /// </remarks>
 public sealed record CompactionOptions
 {
+    private static readonly TimeSpan s_defaultCacheTtl = TimeSpan.FromMinutes(5);
+
+    private TimeSpan? _cacheTtl;
+
     /// <summary>Environment variable that, when set to <c>1</c> or <c>true</c>, kills compaction in every loop.</summary>
     public const string KillSwitchEnvironmentVariable = "LMMULTITURN_COMPACTION_DISABLED";
 
@@ -218,8 +226,37 @@ public sealed record CompactionOptions
     /// <summary>Economic floor: an economic compaction needs at least this many predicted micro-dollars saved.</summary>
     public long MinPredictedSavingsMicros { get; init; }
 
-    /// <summary>How long a prompt cache stays hot after the last provider call.</summary>
-    public TimeSpan CacheTtl { get; init; } = TimeSpan.FromMinutes(5);
+    /// <summary>
+    ///     The host's override of how long a prompt cache stays hot after the last provider call. When a host
+    ///     sets it, it wins for every caching mode. When none did, a loop's lifetime follows its mode through
+    ///     <see cref="EffectiveCacheTtl" /> (1 hour for <c>PromptCachingMode.AutoOneHour</c>), and this getter
+    ///     reads 5 minutes.
+    /// </summary>
+    /// <remarks>
+    ///     Configuration binding writes this getter's 5-minute value back through the setter even when the key
+    ///     is absent, which then reads as a host override. A library host that binds these options from
+    ///     configuration must call <see cref="WithCacheTtlUnset" /> when the key is absent; the sample host does
+    ///     (<c>CompactionHostSetup</c>).
+    /// </remarks>
+    public TimeSpan CacheTtl
+    {
+        get => _cacheTtl ?? s_defaultCacheTtl;
+        init => _cacheTtl = value;
+    }
+
+    /// <summary>The cache lifetime for a loop sending with <paramref name="promptCaching" />.</summary>
+    public TimeSpan EffectiveCacheTtl(PromptCachingMode promptCaching) => _cacheTtl ?? DefaultCacheTtl(promptCaching);
+
+    /// <summary>
+    ///     A copy with no host-set cache lifetime, so <see cref="EffectiveCacheTtl" /> follows the caching mode.
+    ///     For a host that binds these options from configuration: when the key is absent the binder still
+    ///     writes <see cref="CacheTtl" />'s default back through its setter, which would read as a host value.
+    /// </summary>
+    public CompactionOptions WithCacheTtlUnset() => this with { _cacheTtl = null };
+
+    /// <summary>The cache lifetime <paramref name="promptCaching" /> gives when no host set one.</summary>
+    internal static TimeSpan DefaultCacheTtl(PromptCachingMode promptCaching) =>
+        promptCaching == PromptCachingMode.AutoOneHour ? TimeSpan.FromHours(1) : s_defaultCacheTtl;
 
     /// <summary>Ring length of <c>context.observations</c> kept in thread metadata.</summary>
     public int ObservationHistoryLength { get; init; } = 50;

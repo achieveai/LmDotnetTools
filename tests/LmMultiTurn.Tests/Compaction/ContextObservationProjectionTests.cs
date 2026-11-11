@@ -172,6 +172,7 @@ public sealed class ContextObservationProjectionTests : IAsyncLifetime
             MeasuredInputTokens = 4_444,
             Provenance = MeasurementProvenance.Measured,
             PromptCachingEnabled = true,
+            PromptCacheTtlSeconds = 3_600,
         };
 
         await ContextObservationProjection.RecordAsync(store, policy);
@@ -181,6 +182,7 @@ public sealed class ContextObservationProjectionTests : IAsyncLifetime
         afterMeasurement.MeasuredInputTokens.Should().Be(4_444);
         afterMeasurement.Provenance.Should().Be(MeasurementProvenance.Measured);
         afterMeasurement.PromptCachingEnabled.Should().BeTrue();
+        afterMeasurement.PromptCacheTtlSeconds.Should().Be(3_600);
         afterMeasurement.Decision!.Decision.Should().Be("Warn", "the loop's measurement must not erase the decision");
         afterMeasurement.ActiveCheckpointId.Should().Be("cp-9");
 
@@ -192,6 +194,9 @@ public sealed class ContextObservationProjectionTests : IAsyncLifetime
         afterPolicy.MeasuredInputTokens.Should().Be(4_444, "the decision must not erase the measurement");
         afterPolicy.Provenance.Should().Be(MeasurementProvenance.Measured);
         afterPolicy.PromptCachingEnabled.Should().BeTrue();
+        afterPolicy
+            .PromptCacheTtlSeconds.Should()
+            .Be(3_600, "the policy records no lifetime, so it keeps the measured one");
 
         (await ContextObservationProjection.LoadHistoryAsync(store, Thread))
             .Should()

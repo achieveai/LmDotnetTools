@@ -12,4 +12,12 @@ public record AnthropicCacheControl
     /// </summary>
     [JsonPropertyName("type")]
     public string Type { get; init; } = "ephemeral";
+
+    /// <summary>
+    ///     How long the entry lives: "1h" for one hour. Null leaves the field off the wire, which means
+    ///     Anthropic's 5-minute default.
+    /// </summary>
+    [JsonPropertyName("ttl")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Ttl { get; init; }
 }
