@@ -29,6 +29,27 @@ public record ReasoningMessage : IMessage, ICanGetText
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public ReasoningVisibility Visibility { get; init; } = ReasoningVisibility.Plain;
 
+    /// <summary>
+    ///     Who can read this <see cref="ReasoningVisibility.Encrypted" /> blob, as <c>responses:{modelId}</c>. Only
+    ///     the Responses agent sets it, and only with reasoning replay on. A row with this set goes back to that
+    ///     model alone: other providers cannot read it, and it never goes to a subscriber or the browser.
+    /// </summary>
+    /// <remarks>
+    ///     A row with this set is saved under its own <c>$type</c>, <see cref="ReplayTypeDiscriminator" />, the
+    ///     way a newer checkpoint schema gets its own. A build that predates it does not know that type, so its
+    ///     loaders skip the row: it is never read as ordinary encrypted reasoning and never sent to another
+    ///     provider. After such a rollback the replay history is lost, not resent. There is one more limit: the
+    ///     old build cannot compact a thread with replay rows once it outgrows the context window. Its compaction
+    ///     loads fewer rows than the store holds and returns <c>unsafe_state</c>, so each request is then refused
+    ///     before it is sent. The thread keeps working until then, and rolling forward clears it.
+    /// </remarks>
+    [JsonPropertyName("encryptedOrigin")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? EncryptedOrigin { get; init; }
+
+    /// <summary>The <c>$type</c> a row with <see cref="EncryptedOrigin" /> set is saved under.</summary>
+    public const string ReplayTypeDiscriminator = "reasoning_replay";
+
     public string? GetText()
     {
         return Visibility == ReasoningVisibility.Encrypted ? null : Reasoning;

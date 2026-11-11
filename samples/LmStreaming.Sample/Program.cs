@@ -824,6 +824,11 @@ try
     // every provider client below. No section keeps RetryOptions.Default.
     builder.Services.TryAddSingleton(sp => ProviderRetrySettings.Bind(sp.GetRequiredService<IConfiguration>()));
 
+    // Builds the agent for a discovered Copilot model. It is a service only so a test can swap in a fake
+    // and check, offline, that the reasoning-replay switch (#769) reaches the agent from both places that
+    // build one. The default is the same static method both places called before.
+    builder.Services.TryAddSingleton<CopilotModelAgentFactory>(CreateCopilotModelAgent);
+
     _ = builder.Services.AddSingleton<Func<string, IStreamingAgent>>(sp =>
         providerId =>
         {
@@ -834,7 +839,12 @@ try
             // Responses); everything else is a fixed provider handled by the switch below.
             if (sp.GetRequiredService<ProviderRegistry>().TryGetCopilotModel(providerId, out var copilotModel))
             {
-                return CreateCopilotModelAgent(copilotModel, loggerFactory, retryOptions);
+                return sp.GetRequiredService<CopilotModelAgentFactory>()(
+                    copilotModel,
+                    loggerFactory,
+                    retryOptions,
+                    ReasoningReplaySettings.IsOn(sp.GetRequiredService<IConfiguration>(), providerId)
+                );
             }
 
             // Discovered Anthropic-compatible provider-family models (e.g. DeepSeek) route through the
@@ -2298,7 +2308,13 @@ try
                     var characteristicsAgentFactory = new CharacteristicsAgentFactory(
                         providerRegistry,
                         providerAgent,
-                        model => CreateCopilotModelAgent(model, loggerFactory, sp.GetRequiredService<RetryOptions>()),
+                        model =>
+                            sp.GetRequiredService<CopilotModelAgentFactory>()(
+                                model,
+                                loggerFactory,
+                                sp.GetRequiredService<RetryOptions>(),
+                                ReasoningReplaySettings.IsOn(sp.GetRequiredService<IConfiguration>(), model.Id)
+                            ),
                         loggerFactory.CreateLogger<CharacteristicsAgentFactory>(),
                         parentCopilotModel: isCopilotBackedModel ? copilotModelInfo : null,
                         // Parent-model-reuse fallback: a classic Copilot Anthropic parent (advertises no
@@ -4284,6 +4300,17 @@ public partial class Program
     }
 
     /// <summary>
+    ///     Builds the agent for a discovered Copilot model. Registered as a service only so a test can
+    ///     replace it; the default is <see cref="CreateCopilotModelAgent"/>.
+    /// </summary>
+    internal delegate IStreamingAgent CopilotModelAgentFactory(
+        CopilotModelInfo model,
+        ILoggerFactory loggerFactory,
+        RetryOptions? retryOptions,
+        bool replayReasoning
+    );
+
+    /// <summary>
     ///     Maps a discovered Copilot model's transport to the matching agent factory. Anthropic-shaped
     ///     models route through the Copilot Messages backend; OpenAI-shaped models (and Grok) through the
     ///     Copilot Responses backend; Chat-Completions-only models (Gemini) through Copilot's
@@ -4292,7 +4319,8 @@ public partial class Program
     internal static IStreamingAgent CreateCopilotModelAgent(
         CopilotModelInfo model,
         ILoggerFactory loggerFactory,
-        RetryOptions? retryOptions = null
+        RetryOptions? retryOptions = null,
+        bool replayReasoning = false
     )
     {
         return model.Transport switch
@@ -4305,7 +4333,8 @@ public partial class Program
             CopilotModelTransport.Responses => CreateCopilotResponsesAgent(
                 model.DisplayName,
                 loggerFactory,
-                retryOptions
+                retryOptions,
+                replayReasoning
             ),
             CopilotModelTransport.ChatCompletions => CreateCopilotChatCompletionsAgent(
                 model.DisplayName,
@@ -4358,7 +4387,8 @@ public partial class Program
     private static IStreamingAgent CreateCopilotResponsesAgent(
         string name,
         ILoggerFactory loggerFactory,
-        RetryOptions? retryOptions
+        RetryOptions? retryOptions,
+        bool replayReasoning
     )
     {
         Log.Information("Creating Copilot-backed OpenAI Responses agent: {Name}", name);
@@ -4368,7 +4398,8 @@ public partial class Program
             CopilotResponsesTransport.Sse,
             s_copilotSession.Value,
             logger: loggerFactory.CreateLogger<OpenAiResponsesAgent>(),
-            retryOptions: retryOptions
+            retryOptions: retryOptions,
+            replayReasoning: replayReasoning
         );
     }
 

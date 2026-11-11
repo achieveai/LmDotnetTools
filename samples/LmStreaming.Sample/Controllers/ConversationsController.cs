@@ -826,7 +826,7 @@ public class ConversationsController(
 
                     // The experimental elapsed-time notice is for the model only: it is persisted so it
                     // stays in future context, but the browser never renders it, live or on reload.
-                    if (ElapsedTimeNotice.IsNotice(msg))
+                    if (ElapsedTimeNotice.IsNotice(msg) || msg is ReasoningMessage { EncryptedOrigin: not null })
                     {
                         return null;
                     }

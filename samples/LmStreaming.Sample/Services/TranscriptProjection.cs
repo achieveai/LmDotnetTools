@@ -64,7 +64,7 @@ public static class TranscriptProjection
                 continue;
             }
 
-            if (ElapsedTimeNotice.IsNotice(msg))
+            if (ElapsedTimeNotice.IsNotice(msg) || msg is ReasoningMessage { EncryptedOrigin: not null })
             {
                 continue;
             }
