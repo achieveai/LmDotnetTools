@@ -267,6 +267,11 @@ internal static class SlotReaper
                         ct
                     )
                     : null;
+            // One the archive did not take is never discarded bare: the reset preserves the slot's files first (the
+            // kit's hash-verified preservation archive), and without that evidence the slot stays claimed.
+            var preserve = verified && attempt["stage"]?.GetValue<string>() != "completed-verified";
+            if (preserve)
+                args["preserve"] = true;
             var result = await ReviewRunner.RunLeasedStepAsync(
                 connection,
                 ownerKey,
@@ -286,6 +291,15 @@ internal static class SlotReaper
                 throw new InvalidOperationException(
                     "Discard-reset postconditions were not verified; slot remains claimed."
                 );
+            if (preserve)
+            {
+                if (result["evidencePreserved"]?.GetValue<bool>() != true || result["preservation"] is not JsonObject)
+                    throw new InvalidOperationException(
+                        "The verified review was neither archived nor preserved by the reset; slot remains claimed."
+                    );
+                attempt["preservedEvidence"] = result["preservation"]!.DeepClone();
+                archive += "; evidence preserved";
+            }
 
             // 4) Release the SQLite owner on the exact claim token, stamping the attempt released. A forced reset keeps
             //    what it overrode on the attempt too, not just in the log.
@@ -350,16 +364,17 @@ internal static class SlotReaper
                 or "completed-verified";
 
     // How many sweeps a verified review's archive may fail transiently (the gateway at capacity or unreachable, or a
-    // retryable commit failure) before the slot is reset without it, so an outage never holds a slot for good.
+    // retryable commit failure) before the slot is reset without it, its files preserved, so an outage never holds a
+    // slot for good.
     internal const int ArchiveAttempts = 3;
 
     /// <summary>
     /// Archives a verified review before its slot is reset: the runner's own commit step, under this reset. A commit
     /// whose response was lost is resubmitted under its saved id. On success the review is <c>completed-verified</c>
-    /// and its review-run row is written before the reset, so a crash never leaves it to be reviewed again. A transient
-    /// failure is saved on the attempt and throws, leaving the slot for the next sweep, until the
-    /// <see cref="ArchiveAttempts"/>th; that, or any other failure, is recorded as <c>archiveError</c> and the reset goes
-    /// ahead. Returns what the result's detail says about the archive.
+    /// and it is saved with its review-run row before the reset, so a crash never leaves it to be reviewed again. A
+    /// failure is saved on the attempt as <c>archiveError</c>. A transient one throws, leaving the slot for the next
+    /// sweep, until the <see cref="ArchiveAttempts"/>th; that, or any other failure, lets the reset go ahead, which
+    /// then must preserve the slot's files. Returns what the result's detail says about the archive.
     /// </summary>
     private static async Task<string> ArchiveAsync(
         SqliteConnection connection,
@@ -417,8 +432,7 @@ internal static class SlotReaper
                 $"{repo.DisplayName} #{pr}: archive of the verified review failed ({failure.Message}), "
                     + $"attempt {failures} of {ArchiveAttempts}."
             );
-            if (!transient || failures >= ArchiveAttempts)
-                return $"not archived: {failure.Message}";
+            // Saved before the reset, so a reset that then fails still leaves the record of why.
             if (
                 !await SlotRelease.SaveIfHeldAsync(
                     connection,
@@ -435,6 +449,8 @@ internal static class SlotReaper
                     "Slot claim changed during the archive; nothing was saved or reset.",
                     failure
                 );
+            if (!transient || failures >= ArchiveAttempts)
+                return $"not archived: {failure.Message}";
             throw new InvalidOperationException(
                 $"Archive of the verified review failed ({failure.Message}); the slot is left for the next sweep.",
                 failure
@@ -446,17 +462,19 @@ internal static class SlotReaper
         attempt["stage"] = "completed-verified";
         attempt["reviewedHeadSha"] = attempt["headSha"]!.DeepClone();
         attempt["finishedAt"] = DateTimeOffset.UtcNow;
-        // The review-run row is what says this head was reviewed; the release below writes the attempt.
+        // The attempt and the review-run row (what says this head was reviewed) are saved together before the reset, so
+        // a reset that then fails leaves an archived review, which the next sweep only resets.
         if (
             !await SlotRelease.SaveIfHeldAsync(
                 connection,
                 ownerKey,
                 claimToken,
-                $"reviewd/review-run/{repo.NormalizedKey}/{pr}",
+                $"reviewd/review-attempt/{repo.NormalizedKey}/{pr}",
                 attempt,
                 ct,
                 renew: false,
-                reclaim: reset
+                reclaim: reset,
+                copyKey: $"reviewd/review-run/{repo.NormalizedKey}/{pr}"
             )
         )
             throw new InvalidOperationException("Slot claim changed during the archive; the slot was not reset.");

@@ -384,7 +384,8 @@ public sealed class SlotReaperTests
     }
 
     // Counts and records only the reset (cleanup); a verified review's archive (commit) goes to commit, and without one
-    // it fails as a plain error, so the reset goes ahead without it.
+    // it fails as a plain error, so the reset goes ahead without it, preserving the slot's files when asked to unless
+    // preserves is false. onCleanup runs as the reset starts.
     private static async Task<(IReadOnlyList<SlotReaper.ReclaimResult> Results, int Discards)> SweepAsync(
         Microsoft.Data.Sqlite.SqliteConnection connection,
         FakeHttpMessageHandler handler,
@@ -392,7 +393,9 @@ public sealed class SlotReaperTests
         JsonArray? forced = null,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
         AbandonedChildProbe.ReadLog? reads = null,
-        Func<JsonObject, string, JsonObject>? commit = null
+        Func<JsonObject, string, JsonObject>? commit = null,
+        Action<JsonObject>? onCleanup = null,
+        bool preserves = true
     )
     {
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
@@ -407,12 +410,16 @@ public sealed class SlotReaperTests
                         : throw new InvalidOperationException("No archive in this test.")
                 );
             discards++;
+            onCleanup?.Invoke(args);
             calls?.Add(args.DeepClone().AsObject());
+            var preserved = preserves && args["preserve"]?.GetValue<bool>() == true;
             return Task.FromResult(
                 new JsonObject
                 {
                     ["claimToken"] = args["claimToken"]!.DeepClone(),
                     ["cleanBaselineVerified"] = true,
+                    ["evidencePreserved"] = preserved,
+                    ["preservation"] = preserved ? new JsonObject { ["path"] = "preserved/slot" } : null,
                     ["forced"] = forced?.DeepClone() ?? new JsonArray(),
                 }
             );
@@ -1215,6 +1222,7 @@ public sealed class SlotReaperTests
     [InlineData("lost-then-archived")] // a lost archive leaves the slot for the next sweep, which replays its id
     [InlineData("lost-every-time")] // an outage never holds the slot for good: the third sweep resets without it
     [InlineData("refused")] // the slot no longer holds this review (re-prepared): reset at once, the error recorded
+    [InlineData("refused-unpreserved")] // not archived and the reset preserved nothing: held until a later sweep preserves it
     public async Task A_verified_review_the_reaper_frees_is_archived_before_its_slot_is_reset(string archive)
     {
         // Seen on the ADO runner (MCQdbDEV #11441): the review posted and verified, the artifact commit was deferred
@@ -1257,7 +1265,7 @@ public sealed class SlotReaperTests
                 commits.Add((args.ToJsonString(), operation));
                 // The cleanup has not run, and the owner's own saves are refused while the reaper archives.
                 calls.Should().BeEmpty("the archive is written before the slot is reset");
-                if (archive == "refused")
+                if (archive is "refused" or "refused-unpreserved")
                     ReviewRunner.Settle(
                         "commit",
                         1,
@@ -1275,6 +1283,15 @@ public sealed class SlotReaperTests
                 "lost-every-time" => SlotReaper.ArchiveAttempts,
                 _ => 1,
             };
+            // What the database already held when the reset started: the reset discards the slot, so anything not
+            // saved by then is lost if the reset or the host fails.
+            JsonObject? attemptAtReset = null;
+            JsonObject? runAtReset = null;
+            void OnCleanup(JsonObject _)
+            {
+                attemptAtReset = store.GetAsync<JsonObject>(attemptKey).GetAwaiter().GetResult();
+                runAtReset = store.GetAsync<JsonObject>(runKey).GetAwaiter().GetResult();
+            }
             IReadOnlyList<SlotReaper.ReclaimResult> results = [];
             for (var sweep = 1; sweep <= sweeps; sweep++)
             {
@@ -1283,7 +1300,9 @@ public sealed class SlotReaperTests
                     handler,
                     calls,
                     ["owner marker held by claim other for PR 100"],
-                    commit: Commit
+                    commit: Commit,
+                    onCleanup: OnCleanup,
+                    preserves: archive != "refused-unpreserved"
                 );
                 if (sweep == sweeps)
                     break;
@@ -1296,6 +1315,63 @@ public sealed class SlotReaperTests
                 held["archiveFailures"]!.GetValue<int>().Should().Be(sweep);
                 held[ReviewRunner.CommitReplay]!.GetValue<string>().Should().Be("lost-commit");
                 (await store.GetAsync<JsonObject>(runKey)).Should().BeNull();
+            }
+
+            if (archive == "refused-unpreserved")
+            {
+                // The same head's archive failed and the reset kept nothing: the review would be lost, so the reset
+                // fails and the slot stays claimed, with the archive error saved.
+                results
+                    .Should()
+                    .ContainSingle(r => r.Status == "skipped")
+                    .Which.Detail.Should()
+                    .Contain("neither archived nor preserved");
+                (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("owned");
+                var kept = (await store.GetAsync<JsonObject>(attemptKey))!;
+                kept["stage"]!.GetValue<string>().Should().Be("verify-pending");
+                kept["archiveError"]!.GetValue<string>().Should().Contain("Prepared manifest does not match");
+                kept.ContainsKey("preservedEvidence").Should().BeFalse();
+                (await store.GetAsync<JsonObject>(runKey)).Should().BeNull();
+                // The hold is not for good: once the lease has lapsed again, a later sweep retries, and a reset that
+                // now preserves the files frees the slot.
+                var owner = (await store.GetAsync<JsonObject>(ownerKey))!;
+                owner[SlotRelease.Reclaiming].Should().NotBeNull("the alarm reports a slot left marked this way");
+                owner["leaseExpiresAt"] = DateTimeOffset.UtcNow - TimeSpan.FromHours(2);
+                await store.SetAsync(ownerKey, owner, CancellationToken.None);
+                (results, _) = await SweepAsync(
+                    connection,
+                    handler,
+                    calls,
+                    ["owner marker held by claim other for PR 100"],
+                    commit: Commit,
+                    onCleanup: OnCleanup
+                );
+                results
+                    .Should()
+                    .ContainSingle(r => r.Status == "reclaimed")
+                    .Which.Detail.Should()
+                    .EndWith("; evidence preserved");
+                (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("released");
+                (await store.GetAsync<JsonObject>(attemptKey))!["preservedEvidence"].Should().NotBeNull();
+                return;
+            }
+
+            // The reset ran once, after the archive's outcome was already in the database.
+            attemptAtReset.Should().NotBeNull();
+            if (archive is "archived" or "lost-then-archived")
+            {
+                calls.Single().ContainsKey("preserve").Should().BeFalse("an archived review needs no preservation");
+                attemptAtReset!["stage"]!.GetValue<string>().Should().Be("completed-verified");
+                attemptAtReset["artifactCommit"]!["commit"]!.GetValue<string>().Should().Be(new string('c', 40));
+                runAtReset.Should().NotBeNull("the review-run row is saved with the attempt, before the reset");
+                runAtReset!["stage"]!.GetValue<string>().Should().Be("completed-verified");
+            }
+            else
+            {
+                calls.Single()["preserve"]!.GetValue<bool>().Should().BeTrue("an unarchived review is preserved");
+                attemptAtReset!["stage"]!.GetValue<string>().Should().Be("verify-pending");
+                attemptAtReset["archiveError"]!.GetValue<string>().Should().NotBeNullOrEmpty();
+                runAtReset.Should().BeNull();
             }
 
             commits.Should().HaveCount(archive == "refused" ? 1 : sweeps);
@@ -1362,10 +1438,13 @@ public sealed class SlotReaperTests
             }
             else
             {
-                // Nothing can archive it after the reset, so the review keeps its verified stage and says why.
+                // Nothing can archive it after the reset, so the review keeps its verified stage and says why, and the
+                // reset kept the slot's files as evidence.
                 attempt["stage"]!.GetValue<string>().Should().Be("verify-pending");
                 attempt["archiveError"]!.GetValue<string>().Should().NotBeNullOrEmpty();
+                attempt["preservedEvidence"]!["path"]!.GetValue<string>().Should().Be("preserved/slot");
                 detail.Should().StartWith("forced: owner marker held by claim other for PR 100; not archived: ");
+                detail.Should().EndWith("; evidence preserved");
                 (await store.GetAsync<JsonObject>(runKey)).Should().BeNull();
             }
         }

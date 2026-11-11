@@ -88,7 +88,7 @@ internal static class SlotRelease
     /// transaction, only while the row is still held on <paramref name="token"/> with no reset begun. False, writing
     /// nothing, otherwise: a run whose slot was reset never saves over the attempt the reset recorded, even when the
     /// reaper releases between a check and a write. The reset itself saves by naming its operation in
-    /// <paramref name="reclaim"/>.
+    /// <paramref name="reclaim"/>. <paramref name="copyKey"/>, when given, gets the same value in the same transaction.
     /// </summary>
     internal static async Task<bool> SaveIfHeldAsync(
         SqliteConnection connection,
@@ -99,7 +99,8 @@ internal static class SlotRelease
         CancellationToken ct,
         bool renew = true,
         DateTimeOffset? nowUtc = null,
-        string? reclaim = null
+        string? reclaim = null,
+        string? copyKey = null
     )
     {
         using var transaction = connection.BeginTransaction();
@@ -130,6 +131,11 @@ internal static class SlotRelease
         save.Parameters.AddWithValue("@key", attemptKey);
         save.Parameters.AddWithValue("@value", attempt.ToJsonString());
         await save.ExecuteNonQueryAsync(ct);
+        if (copyKey is not null)
+        {
+            save.Parameters["@key"].Value = copyKey;
+            await save.ExecuteNonQueryAsync(ct);
+        }
         transaction.Commit();
         return true;
     }
