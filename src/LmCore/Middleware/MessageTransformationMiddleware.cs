@@ -588,6 +588,10 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     ///     call and its result. Splitting the generation there separates the call from its result, which
     ///     providers reject on every later turn. Such a notice is held back and follows the generation it
     ///     interrupted.
+    ///     Any other message can still land between a call and its result in stored order (a user message
+    ///     recorded mid-generation, or rows committed out of order). A result of the same generation that
+    ///     answers calls of an already closed group by <c>ToolCallId</c> rejoins that group, so the calls and
+    ///     their results are rebuilt into one aggregate.
     /// </remarks>
     private static List<List<IMessage>> GroupByGeneration(List<IMessage> messages)
     {
@@ -596,13 +600,24 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         var heldBack = new List<IMessage>();
         string? currentGenerationId = null;
 
+        // Calls that have no result yet, by ToolCallId, with the group holding them.
+        var unanswered = new Dictionary<string, List<IMessage>>(StringComparer.Ordinal);
+
         foreach (var message in messages)
         {
             var messageGenerationId = message.GenerationId;
 
+            if (FindGroupItAnswers(message) is { } callsGroup)
+            {
+                callsGroup.Add(message);
+                TrackToolCalls(message, callsGroup);
+                continue;
+            }
+
             if (messageGenerationId != null && messageGenerationId == currentGenerationId)
             {
                 currentGroup.Add(message);
+                TrackToolCalls(message, currentGroup);
                 continue;
             }
 
@@ -615,10 +630,56 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
             CloseGroup();
             currentGroup = [message];
             currentGenerationId = messageGenerationId;
+            TrackToolCalls(message, currentGroup);
         }
 
         CloseGroup();
         return groups;
+
+        void TrackToolCalls(IMessage message, List<IMessage> group)
+        {
+            if (message.GenerationId == null)
+            {
+                return;
+            }
+
+            foreach (var callId in ToolCallIds(message))
+            {
+                unanswered[callId] = group;
+            }
+
+            foreach (var resultId in ToolResultIds(message))
+            {
+                _ = unanswered.Remove(resultId);
+            }
+        }
+
+        // The group of the same generation holding the calls this message answers, if it is a result
+        // message and every result in it answers a call of that one group.
+        List<IMessage>? FindGroupItAnswers(IMessage message)
+        {
+            if (message.GenerationId == null)
+            {
+                return null;
+            }
+
+            List<IMessage>? found = null;
+            foreach (var resultId in ToolResultIds(message))
+            {
+                if (
+                    !unanswered.TryGetValue(resultId, out var group)
+                    || (found != null && !ReferenceEquals(found, group))
+                    || group[0].GenerationId != message.GenerationId
+                )
+                {
+                    return null;
+                }
+
+                found = group;
+            }
+
+            return found;
+        }
 
         void CloseGroup()
         {
@@ -646,6 +707,28 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
             heldBack.Clear();
         }
     }
+
+    private static IEnumerable<string> ToolCallIds(IMessage message) =>
+        message switch
+        {
+            ToolCallMessage { ToolCallId: { Length: > 0 } id } => [id],
+            ToolsCallMessage calls => calls
+                .ToolCalls.Select(c => c.ToolCallId)
+                .OfType<string>()
+                .Where(id => id.Length > 0),
+            _ => [],
+        };
+
+    private static IEnumerable<string> ToolResultIds(IMessage message) =>
+        message switch
+        {
+            ToolCallResultMessage { ToolCallId: { Length: > 0 } id } => [id],
+            ToolsCallResultMessage results => results
+                .ToolCallResults.Select(r => r.ToolCallId)
+                .OfType<string>()
+                .Where(id => id.Length > 0),
+            _ => [],
+        };
 
     /// <summary>
     /// Folds every tool message in a generation into at most one ToolsCallMessage and one

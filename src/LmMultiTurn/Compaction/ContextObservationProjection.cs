@@ -138,6 +138,7 @@ public static class ContextObservationProjection
                     : incoming.Provenance,
             WindowTokens = incoming.WindowTokens ?? previous.WindowTokens,
             PromptCachingEnabled = incoming.PromptCachingEnabled ?? previous.PromptCachingEnabled,
+            PromptCacheTtlSeconds = incoming.PromptCacheTtlSeconds ?? previous.PromptCacheTtlSeconds,
             ActiveCheckpointId = incoming.ActiveCheckpointId ?? previous.ActiveCheckpointId,
             Decision = incoming.Decision ?? previous.Decision,
         };

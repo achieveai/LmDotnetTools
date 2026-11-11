@@ -150,8 +150,8 @@ public class PromptCachingStreamParserTests
     [Fact]
     public void ProcessEvent_CacheWriteWithoutTtlSplit_ReportsZeroOneHourTokens()
     {
-        // This provider only sends default-TTL cache_control, so every write is a 5-minute write. Saying so
-        // explicitly (0 one-hour tokens) is what lets the cost estimate be complete instead of a lower bound.
+        // A response with no split reads as all 5-minute writes, which is exact for a 5-minute request. Saying
+        // so explicitly (0 one-hour tokens) is what lets the cost estimate be complete instead of a lower bound.
         var usage = StreamUsage("""{"input_tokens": 200, "cache_creation_input_tokens": 1500}""");
 
         Assert.Equal(1500, usage.GetExtraProperty<int>("cache_creation_input_tokens"));

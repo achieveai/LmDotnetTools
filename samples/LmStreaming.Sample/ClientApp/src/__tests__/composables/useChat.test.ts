@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDisplayText, isTestInstruction, useChat } from '@/composables/useChat';
 import { MessageType } from '@/types';
+import replayFx from '../fixtures/synthetic/responsesReplay.twoTurns.json';
 
 const wsMocks = vi.hoisted(() => ({
   createWebSocketConnection: vi.fn(),
@@ -460,6 +461,69 @@ describe('useChat rehydration multi-turn identity (reload keeps turns distinct)'
     expect(reasonings, 'reloaded reasoning must stay distinct per turn').toEqual(['R1', 'R2']);
     expect(texts, 'reloaded text must stay distinct per turn').toEqual(['A1', 'A2']);
     expect(toolIds, 'reloaded tool calls must stay distinct').toEqual(['call_1', 'call_2']);
+  });
+});
+
+describe('useChat Responses reasoning replay (#948): live and reloaded turns merge', () => {
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+    conversationsMocks.loadConversationMessages.mockReset();
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => ({
+      socket: { readyState: 1 },
+      connectionId: `ws-${Date.now()}`,
+      threadId: options.threadId,
+      isConnected: true,
+    }));
+  });
+
+  // Every frame and row here is server output: ResponsesReasoningReplayLoopTests runs the real loop and the
+  // real Responses agent for two turns and pins this file, so a server change to orders or identities fails
+  // there and, once the fixture is regenerated, runs here. The blob is in neither list (never streamed, and
+  // /messages drops its row).
+  type Frame = Record<string, unknown>;
+  const runOf = (frame: Frame) => (frame.runId ?? frame.RunId) as string | undefined;
+  const framesOf = (runId: string) => (replayFx.live as Frame[]).filter((f) => runOf(f) === runId);
+
+  const assistantTexts = (chat: ReturnType<typeof useChat>) =>
+    chat.displayItems.value
+      .filter((i) => i.type === 'assistant-message')
+      .map((i) => (i as { content: { text?: string } }).content.text ?? '');
+  const reasonings = (chat: ReturnType<typeof useChat>) =>
+    chat.displayItems.value
+      .filter((i) => i.type === 'pill')
+      .flatMap((i) => (i as { items: Array<{ $type?: string; reasoning?: string }> }).items)
+      .filter((m) => m.$type === MessageType.Reasoning)
+      .map((m) => m.reasoning ?? '');
+
+  it('shows each summary and answer once, in order, after a reload and a live replay', async () => {
+    // The socket normalizes each frame before onMessage sees it (wsClient is mocked here, so do the same).
+    const { normalizeKeys } = await vi.importActual<typeof import('@/api/wsClient')>('@/api/wsClient');
+    const deliver = (frame: Frame) => options.onMessage(normalizeKeys(structuredClone(frame)));
+    const chat = useChat({ getModeId: () => 'default', provisionThreadId });
+    await chat.sendMessage('first');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+
+    for (const frame of [...framesOf('run-1'), ...framesOf('run-2')]) {
+      deliver(frame);
+    }
+    expect(assistantTexts(chat), 'live').toEqual(['answer one', 'answer two']);
+    expect(reasonings(chat), 'live').toEqual(['thinking r1', 'thinking r2']);
+
+    await vi.dynamicImportSettled();
+    conversationsMocks.loadConversationMessages.mockResolvedValue(structuredClone(replayFx.rows));
+    await chat.loadMessagesFromBackend('thread-x');
+    expect(assistantTexts(chat), 'reloaded').toEqual(['answer one', 'answer two']);
+    expect(reasonings(chat), 'reloaded').toEqual(['thinking r1', 'thinking r2']);
+
+    // Switch-back resume: the replay buffer re-delivers turn 2's live frames over the reloaded rows.
+    for (const frame of framesOf('run-2')) {
+      deliver(frame);
+    }
+    expect(assistantTexts(chat)).toEqual(['answer one', 'answer two']);
+    expect(reasonings(chat)).toEqual(['thinking r1', 'thinking r2']);
   });
 });
 

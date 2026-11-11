@@ -14,6 +14,13 @@ public record Usage
     /// </summary>
     public const string ModelExtraProperty = "model";
 
+    /// <summary>
+    ///     The <see cref="ExtraProperties" /> key naming the <see cref="Core.PromptCachingMode" /> a fallback's
+    ///     request was sent with. Model fallback sets it on a fallback's reply; any other reply was sent with
+    ///     the caller's own mode and carries none.
+    /// </summary>
+    public const string PromptCachingModeExtraProperty = "prompt_caching_mode";
+
     [JsonPropertyName("prompt_tokens")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int PromptTokens { get; init; }

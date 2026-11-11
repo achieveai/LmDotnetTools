@@ -107,6 +107,47 @@ public class ModelFallbackChainTests
             .Be("backup-model-2026-11");
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task AFallbackReply_NamesTheCachingModeItsRequestWasSentWith_APrimaryReplyDoesNot(bool streaming)
+    {
+        var reportedUsage = new UsageMessage
+        {
+            Usage = new Usage { PromptTokens = 5 }.SetExtraProperty(Usage.ModelExtraProperty, "backup-model-2026-11"),
+        };
+        var middleware = new ModelFallbackMiddleware([
+            new FallbackTarget(
+                "backup-model",
+                new ScriptedAgent(Messages(reportedUsage)),
+                options => options with { PromptCaching = PromptCachingMode.AutoOneHour }
+            ),
+        ]);
+        var context = new MiddlewareContext(
+            Prompt,
+            new GenerateReplyOptions { ModelId = "primary-model", PromptCaching = PromptCachingMode.Auto }
+        );
+
+        var fallback = (await RunAsync(middleware, context, new ScriptedAgent(Outage(503)), streaming))
+            .OfType<UsageMessage>()
+            .Single()
+            .Usage;
+        var primary = (await RunAsync(middleware, context, new ScriptedAgent(Messages(reportedUsage)), streaming))
+            .OfType<UsageMessage>()
+            .Single()
+            .Usage;
+
+        fallback
+            .GetExtraProperty<string>(Usage.PromptCachingModeExtraProperty)
+            .Should()
+            .Be(nameof(PromptCachingMode.AutoOneHour), "the target's own request is the one that was cached");
+        fallback
+            .GetExtraProperty<string>(Usage.ModelExtraProperty)
+            .Should()
+            .Be("backup-model-2026-11", "a provider's own report of its model still stands");
+        primary.ExtraProperties.Should().NotContainKey(Usage.PromptCachingModeExtraProperty);
+    }
+
     [Fact]
     public async Task AWorkingPrimary_NeverCallsAFallback()
     {

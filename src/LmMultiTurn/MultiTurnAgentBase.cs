@@ -1003,7 +1003,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             foreach (var existing in ConversationHistory)
             {
                 if (
-                    ReplayMessagePolicy.IsCanonicalOrControl(existing)
+                    TakesPartInOrderFixUp(existing)
                     && existing.GenerationId is { } generation
                     && existing.MessageOrderIdx is { } index
                 )
@@ -1018,7 +1018,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
             {
                 var normalized = message;
                 if (
-                    ReplayMessagePolicy.IsCanonicalOrControl(message)
+                    TakesPartInOrderFixUp(message)
                     && message.GenerationId is { } generation
                     && message.MessageOrderIdx is { } index
                 )
@@ -2476,6 +2476,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     /// <param name="ct">Cancellation token</param>
     protected ValueTask PublishToAllAsync(IMessage message, CancellationToken ct)
     {
+        // A replayable reasoning blob is saved for the model. No subscriber can use it.
+        if (message is ReasoningMessage { EncryptedOrigin: not null })
+        {
+            return ValueTask.CompletedTask;
+        }
+
         _ = PublishToModeAsync(message, joinedOnly: false, ct);
         // History content is published to joined subscribers only by its append/replacement.
         // Lifecycle and transient controls have no history entry and pass through once.
@@ -2508,7 +2514,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     private IMessage NormalizeCanonicalOrder(IMessage message)
     {
         if (
-            !ReplayMessagePolicy.IsCanonicalOrControl(message)
+            !TakesPartInOrderFixUp(message)
             || message.GenerationId is not { } generation
             || message.MessageOrderIdx is not { } index
         )
@@ -2517,10 +2523,16 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         }
 
         var previous = ConversationHistory.FindLast(m =>
-            m.GenerationId == generation && m.MessageOrderIdx.HasValue && ReplayMessagePolicy.IsCanonicalOrControl(m)
+            m.GenerationId == generation && m.MessageOrderIdx.HasValue && TakesPartInOrderFixUp(m)
         );
         return NormalizeCanonicalOrder(message, index, previous?.MessageOrderIdx);
     }
+
+    // A Responses reasoning blob (#769) shares its summary's order and is never shown, so it neither
+    // takes an order nor pushes later rows to the next one. Saved order then matches what was streamed.
+    private static bool TakesPartInOrderFixUp(IMessage message) =>
+        ReplayMessagePolicy.IsCanonicalOrControl(message)
+        && message is not ReasoningMessage { EncryptedOrigin: not null };
 
     private static IMessage NormalizeCanonicalOrder(IMessage message, int index, int? previousOrder)
     {

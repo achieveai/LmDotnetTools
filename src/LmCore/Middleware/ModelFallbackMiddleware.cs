@@ -161,9 +161,9 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
                     attempt.Options,
                     cancellationToken
                 );
-                return attempt.FallbackModelId is { } ranModel
-                    ? [.. replies.Select(reply => CreditUsage(reply, ranModel))]
-                    : replies;
+                return attempt.FallbackModelId is null
+                    ? replies
+                    : [.. replies.Select(reply => CreditUsage(reply, attempt))];
             }
             catch (Exception ex) when (CanFallBack(ex, i, attempts.Count, cancellationToken))
             {
@@ -207,21 +207,21 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
     )
     {
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(callToken, readToken);
-        var (reply, hasMessage, fallbackModelId) = await StartReplyAsync(context, attempts, stop.Token);
+        var (reply, hasMessage, answered) = await StartReplyAsync(context, attempts, stop.Token);
         await using (reply)
         {
             while (hasMessage)
             {
                 // A provider that ignores its token can still answer after the caller stopped the turn.
                 stop.Token.ThrowIfCancellationRequested();
-                yield return fallbackModelId is null ? reply.Current : CreditUsage(reply.Current, fallbackModelId);
+                yield return answered.FallbackModelId is null ? reply.Current : CreditUsage(reply.Current, answered);
                 hasMessage = await reply.MoveNextAsync();
             }
         }
     }
 
     /// <summary>Tries each attempt until one's first read succeeds. The caller owns the returned stream.</summary>
-    private async Task<(IAsyncEnumerator<IMessage> Reply, bool HasMessage, string? FallbackModelId)> StartReplyAsync(
+    private async Task<(IAsyncEnumerator<IMessage> Reply, bool HasMessage, Attempt Answered)> StartReplyAsync(
         MiddlewareContext context,
         List<Attempt> attempts,
         CancellationToken cancellationToken
@@ -247,7 +247,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
 
                 // The request goes out on this first read, so this is where an outage shows.
                 reply = stream.GetAsyncEnumerator(cancellationToken);
-                return (reply, await reply.MoveNextAsync(), attempt.FallbackModelId);
+                return (reply, await reply.MoveNextAsync(), attempt);
             }
             catch (Exception ex) when (CanFallBack(ex, i, attempts.Count, cancellationToken))
             {
@@ -351,10 +351,11 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
         };
 
     /// <summary>
-    ///     Credits a fallback reply's usage to the model that ran. A provider that reports its own model
-    ///     keeps it; one that reports none would otherwise be billed as the primary model.
+    ///     Credits a fallback reply's usage to the attempt that ran: its model, unless the provider reports its
+    ///     own (one that reports none would otherwise be billed as the primary model), and the caching mode
+    ///     its request was sent with, which only this attempt knows.
     /// </summary>
-    private static IMessage CreditUsage(IMessage message, string ranModel)
+    private static IMessage CreditUsage(IMessage message, Attempt attempt)
     {
         if (message is not UsageMessage usageMessage)
         {
@@ -362,15 +363,19 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
         }
 
         var usage = usageMessage.Usage;
-        if (!string.IsNullOrEmpty(usage.GetExtraProperty<string>(Usage.ModelExtraProperty)))
+        var extras = usage.ExtraProperties ?? ImmutableDictionary<string, object?>.Empty;
+        if (string.IsNullOrEmpty(usage.GetExtraProperty<string>(Usage.ModelExtraProperty)))
         {
-            return message;
+            extras = extras.SetItem(Usage.ModelExtraProperty, attempt.FallbackModelId);
         }
 
-        var extras = usage.ExtraProperties ?? ImmutableDictionary<string, object?>.Empty;
+        var caching = attempt.Options?.PromptCaching ?? PromptCachingMode.Off;
         return usageMessage with
         {
-            Usage = usage with { ExtraProperties = extras.SetItem(Usage.ModelExtraProperty, ranModel) },
+            Usage = usage with
+            {
+                ExtraProperties = extras.SetItem(Usage.PromptCachingModeExtraProperty, caching.ToString()),
+            },
         };
     }
 

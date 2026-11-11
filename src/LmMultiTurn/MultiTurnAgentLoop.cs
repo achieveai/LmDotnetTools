@@ -3184,6 +3184,18 @@ public sealed class MultiTurnAgentLoop
     }
 
     /// <summary>
+    /// The caching mode of the request that answered: the one a model fallback stamped on its reply, else
+    /// the loop's own. An estimate has no reply yet, so it reads the loop's own.
+    /// </summary>
+    private PromptCachingMode AnsweredPromptCaching(UsageMessage? usage) =>
+        Enum.TryParse<PromptCachingMode>(
+            usage?.Usage.GetExtraProperty<string>(Usage.PromptCachingModeExtraProperty),
+            out var stamped
+        )
+            ? stamped
+            : DefaultOptions.PromptCaching;
+
+    /// <summary>
     /// Records one context observation for the generation (#681; spec 679 §4.1–4.2): estimated from the
     /// request when <paramref name="usage"/> is null, measured from the provider's usage otherwise. The
     /// observation is kept in memory, persisted under the thread's metadata (one ring entry per
@@ -3220,6 +3232,7 @@ public sealed class MultiTurnAgentLoop
             var capacity = LifecycleServices.CapacityResolver?.Resolve(modelId);
             var estimated = sameGeneration ? previous!.EstimatedInputTokens : EstimateObservedTokens(request);
             long? measured = usage is null ? null : MeasuredInputTokens(usage.Usage);
+            var caching = AnsweredPromptCaching(usage);
 
             var observation = new ContextObservation
             {
@@ -3237,7 +3250,18 @@ public sealed class MultiTurnAgentLoop
                 // §5.2: the reserve is what the loop asked the model to keep for output; the catalog's
                 // ceiling stands in only when the loop set no budget of its own.
                 ReserveTokens = DefaultOptions.MaxToken ?? capacity?.MaxOutputTokens ?? 0,
-                PromptCachingEnabled = DefaultOptions.PromptCaching != PromptCachingMode.Off,
+                PromptCachingEnabled = caching != PromptCachingMode.Off,
+                // Either side at 1 hour needs a number: the projection keeps the generation's earlier
+                // value when this is null, and that estimate carries the primary's lifetime.
+                PromptCacheTtlSeconds =
+                    caching == PromptCachingMode.AutoOneHour
+                    || DefaultOptions.PromptCaching == PromptCachingMode.AutoOneHour
+                        ? (int)
+                            (
+                                _compaction?.Options.EffectiveCacheTtl(caching)
+                                ?? CompactionOptions.DefaultCacheTtl(caching)
+                            ).TotalSeconds
+                        : null,
                 // The execution view and its active checkpoint arrive with the cut (#683); until then the
                 // request is the whole canonical history.
                 RowsInView = request.Count,

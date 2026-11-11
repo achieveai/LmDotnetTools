@@ -19,6 +19,55 @@ public class MultiTurnAgentBaseTests
 {
     private readonly Mock<ILogger<TestMultiTurnAgent>> _loggerMock = new();
 
+    [Fact]
+    public async Task Tagged_reasoning_row_is_not_published()
+    {
+        await using var agent = new TestMultiTurnAgent("thread-blob");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var received = new List<IMessage>();
+        var reader = Task.Run(async () =>
+        {
+            await foreach (var msg in agent.SubscribeAsync(cts.Token))
+            {
+                lock (received)
+                {
+                    received.Add(msg);
+                }
+            }
+        });
+
+        const string ProbeText = "after-the-blob";
+        await AchieveAi.LmDotnetTools.LmTestUtils.Wait.UntilAsync(
+            async () =>
+            {
+                await agent.PublishForTest(
+                    new ReasoningMessage
+                    {
+                        Role = Role.Assistant,
+                        Reasoning = "BLOB",
+                        Visibility = ReasoningVisibility.Encrypted,
+                        EncryptedOrigin = "responses:m",
+                    },
+                    cts.Token
+                );
+                await agent.PublishForTest(new TextMessage { Text = ProbeText, Role = Role.System }, cts.Token);
+                lock (received)
+                {
+                    return received.OfType<TextMessage>().Any(m => m.Text == ProbeText);
+                }
+            },
+            "the subscriber saw the message published after the blob"
+        );
+
+        lock (received)
+        {
+            received.OfType<ReasoningMessage>().Should().BeEmpty("no subscriber can use a replayable blob");
+        }
+
+        await cts.CancelAsync();
+        await reader.ContinueWith(_ => { }, TaskScheduler.Default);
+    }
+
     /// <summary>
     /// Test implementation of MultiTurnAgentBase for testing purposes.
     /// </summary>

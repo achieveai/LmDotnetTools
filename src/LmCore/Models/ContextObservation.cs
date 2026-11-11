@@ -176,6 +176,16 @@ public sealed record ContextObservation
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? PromptCachingEnabled { get; init; }
 
+    /// <summary>
+    ///     The cache lifetime of the request that answered, in seconds. Set when either the loop or that request
+    ///     ran on 1 hour, so a 5-minute loop whose fallback hop ran on 1 hour carries 3600, and a 1-hour loop
+    ///     whose hop ran on 5 minutes carries 300. A compaction cache lifetime the host set replaces either
+    ///     number. Null when neither ran on 1 hour; a reader then keeps its own default.
+    /// </summary>
+    [JsonPropertyName("prompt_cache_ttl_seconds")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? PromptCacheTtlSeconds { get; init; }
+
     /// <summary>The checkpoint the view was built on, when one was active.</summary>
     [JsonPropertyName("active_checkpoint_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

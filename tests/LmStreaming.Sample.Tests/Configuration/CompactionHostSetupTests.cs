@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Compaction;
 using LmStreaming.Sample.Configuration;
@@ -44,6 +45,26 @@ public class CompactionHostSetupTests
             .Create(options, capacityResolver: null, providerId: "test")!
             .TextTokens.Should()
             .NotBeNull("the checked-in profile uses the real o200k tokenizer");
+    }
+
+    [Theory]
+    [InlineData(null, 60)]
+    [InlineData("00:05:00", 5)]
+    public void BoundOptions_LeaveTheCacheLifetimeToTheModeUnlessTheKeyIsSet(string? configured, int expectedMinutes)
+    {
+        var values = new Dictionary<string, string?> { ["Compaction:Mode"] = "Compact" };
+        if (configured is not null)
+        {
+            values["Compaction:CacheTtl"] = configured;
+        }
+
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
+
+        CompactionHostSetup
+            .BindOptions(configuration)
+            .EffectiveCacheTtl(PromptCachingMode.AutoOneHour)
+            .Should()
+            .Be(TimeSpan.FromMinutes(expectedMinutes));
     }
 
     [Fact]

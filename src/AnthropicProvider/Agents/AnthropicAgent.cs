@@ -51,6 +51,10 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
         GC.SuppressFinalize(this);
     }
 
+    // The same predicate AnthropicRequest.FromMessages uses to mark the request for 1 hour.
+    private static bool OneHourCacheRequested(GenerateReplyOptions? options) =>
+        options?.PromptCaching == PromptCachingMode.AutoOneHour;
+
     /// <inheritdoc />
     public async Task<IEnumerable<IMessage>> GenerateReplyAsync(
         IEnumerable<IMessage> messages,
@@ -108,7 +112,10 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
             );
 
             // Convert to messages using the Models namespace extension
-            var resultMessages = response.ToMessages(Name).Select(m => m.WithIds(options)).ToList();
+            var resultMessages = response
+                .ToMessages(Name, OneHourCacheRequested(options))
+                .Select(m => m.WithIds(options))
+                .ToList();
 
             _logger.LogDebug(
                 LogEventIds.MessageTransformation,
@@ -209,7 +216,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
         var modelId = request.Model ?? "claude-3-5-sonnet-20241022";
 
         // Create a parser to track state across events
-        var parser = new AnthropicStreamParser(_logger);
+        var parser = new AnthropicStreamParser(_logger) { OneHourCacheRequested = OneHourCacheRequested(options) };
 
         IAsyncEnumerable<AnthropicStreamEvent> streamEvents;
         try

@@ -25,7 +25,11 @@ public static class CompactionHostSetup
     public static CompactionOptions BindOptions(IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
-        return configuration.GetSection(SectionName).Get<CompactionOptions>() ?? new CompactionOptions();
+        var section = configuration.GetSection(SectionName);
+        var options = section.Get<CompactionOptions>() ?? new CompactionOptions();
+
+        // Bound with no CacheTtl key, the option reads as a host-set 5 minutes (see WithCacheTtlUnset).
+        return section[nameof(CompactionOptions.CacheTtl)] is null ? options.WithCacheTtlUnset() : options;
     }
 
     /// <summary>

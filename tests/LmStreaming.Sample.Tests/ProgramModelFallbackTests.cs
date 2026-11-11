@@ -89,6 +89,31 @@ public sealed class ProgramModelFallbackTests : LoggingTestBase
     }
 
     [Theory]
+    [InlineData(PromptCachingMode.AutoOneHour, false, PromptCachingMode.Auto)]
+    [InlineData(PromptCachingMode.Auto, true, PromptCachingMode.AutoOneHour)]
+    [InlineData(PromptCachingMode.Off, true, PromptCachingMode.Off)]
+    public async Task AHop_FollowsTheTargetModelsOwnCacheSetting(
+        PromptCachingMode requested,
+        bool targetIsOneHour,
+        PromptCachingMode expected
+    )
+    {
+        var target = Agent("test-anthropic");
+        List<KeyValuePair<string, string?>> settings = [new($"{SettingKey}:0", "test-anthropic")];
+        if (targetIsOneHour)
+        {
+            settings.Add(new($"{PromptCacheSettings.SectionName}:claude-sonnet-4-5-20250929:Ttl", "1h"));
+        }
+
+        await FallBackAsync(
+            BuildFrom(Registry(), null, settings),
+            new GenerateReplyOptions { PromptCaching = requested }
+        );
+
+        target.LastOptions!.PromptCaching.Should().Be(expected);
+    }
+
+    [Theory]
     [InlineData("test-anthropic", true)]
     [InlineData("test", false)]
     public async Task TheFallback_ReplacesThePrimarysReasoning_AndKeepsEverythingElse(

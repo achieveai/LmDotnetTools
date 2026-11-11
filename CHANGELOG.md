@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Anthropic: 1-hour prompt cache, `PromptCachingMode.AutoOneHour`, off by default.** It places the same breakpoints as
+  `Auto` with `ttl: "1h"`. A 1-hour write costs 2x base input against 1.25x, so it pays only when a conversation pauses for 5
+  to 60 minutes. LmStreaming.Sample turns it on per model with `LmStreaming:PromptCache:{modelId}:Ttl=1h`; every other model
+  stays on `Auto`. A sub-agent that inherits 1 hour drops to 5 minutes, and a fallback hop follows its own model's setting.
+  Usage carries `ephemeral_1h_input_tokens` from the response's `cache_creation` split. On a 1-hour request with no split,
+  or a split whose 5-minute and 1-hour counts do not add up to the write total, the field is left out: that write is still priced at the 5-minute rate, and the estimate is marked Partial
+  (`cache_write_ttl_unknown`), a lower bound. In a stream, a `message_delta` that carries its own split wins over
+  `message_start`'s. The compaction cache lifetime follows the mode unless `CompactionOptions.CacheTtl` is set, and
+  `ContextObservation` gains `PromptCacheTtlSeconds`. Configuration binding can write the 5-minute default to `CacheTtl` even
+  when the key is absent, so a library host that binds `CompactionOptions` must call `WithCacheTtlUnset()` when the key is
+  missing; LmStreaming.Sample does (`CompactionHostSetup`).
+
+- **OpenAI Responses: replay encrypted reasoning to the same model, behind a switch (#769).** Turn it on with
+  `new OpenAiResponsesAgent(..., replayReasoning: true)`, or in LmStreaming.Sample with
+  `LmStreaming:ReasoningReplay:{providerId}` set to true. It is off by default. With it on, the agent asks for
+  `reasoning.encrypted_content`, saves the blob as a `ReasoningMessage` with the new `EncryptedOrigin`, and sends it back,
+  in order, to the model that made it. Other providers, subscribers and the browser never get it, and reasoning from a
+  retried attempt is not sent. **Rollback:** the blob is saved under its own `$type`, `reasoning_replay`, so an older build
+  skips the row and replay history is lost, not resent. After a rollback, the old build can't compact a thread with
+  replay rows once it outgrows the window: each request then fails with `ContextOverflowException` whose `Reason` is
+  `overflow_after_compaction`. The thread keeps working until then, and rolling forward clears it.
+
 - **Stopping a run now cancels its pending MCP tool calls.** Tools from `McpClientFunctionProvider` pass the run's token to
   `CallToolAsync`, so a stalled call no longer keeps the run alive past `StopAsync`. `LegacyHandlerAdapter.ToNewHandler` gains
   overloads for handlers that take a token.

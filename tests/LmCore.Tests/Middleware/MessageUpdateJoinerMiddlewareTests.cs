@@ -733,6 +733,49 @@ public class MessageUpdateJoinerMiddlewareTests
     #region Helper Methods
 
     // Run a scripted provider stream through the joiner middleware and collect the joined output.
+    [Fact]
+    public async Task Encrypted_row_survives_summary_double_finalize()
+    {
+        static ReasoningMessage Summary() =>
+            new()
+            {
+                Reasoning = "summary",
+                Visibility = ReasoningVisibility.Summary,
+                GenerationId = "g",
+                MessageOrderIdx = 0,
+            };
+
+        var results = await RunThroughJoinerAsync([
+            new ReasoningUpdateMessage
+            {
+                Reasoning = "summary",
+                Visibility = ReasoningVisibility.Summary,
+                GenerationId = "g",
+                MessageOrderIdx = 0,
+            },
+            Summary(),
+            // The output_item.done repeat of the same summary.
+            Summary(),
+            new ReasoningMessage
+            {
+                Reasoning = "BLOB",
+                Visibility = ReasoningVisibility.Encrypted,
+                EncryptedOrigin = "responses:m",
+                GenerationId = "g",
+                MessageOrderIdx = 0,
+            },
+        ]);
+
+        results
+            .OfType<ReasoningMessage>()
+            .Select(m => (m.Reasoning, m.Visibility, m.EncryptedOrigin))
+            .Should()
+            .Equal(
+                ("summary", ReasoningVisibility.Summary, null),
+                ("BLOB", ReasoningVisibility.Encrypted, "responses:m")
+            );
+    }
+
     private static async Task<List<IMessage>> RunThroughJoinerAsync(IEnumerable<IMessage> stream)
     {
         var middleware = new MessageUpdateJoinerMiddleware();
