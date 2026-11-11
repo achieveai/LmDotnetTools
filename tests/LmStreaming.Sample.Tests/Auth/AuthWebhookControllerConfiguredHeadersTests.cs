@@ -113,6 +113,8 @@ public sealed class AuthWebhookControllerConfiguredHeadersTests
         // Static values carry no lifetime of their own; the expiry mirrors the provider cache TTL so a
         // rotated value takes effect promptly.
         decision.ExpiresAt.Should().BeCloseTo(DateTimeOffset.UtcNow.AddSeconds(30), TimeSpan.FromSeconds(10));
+        // The rule re-match reads method and path, so the gateway's exact-path reuse default must stay.
+        decision.CacheScope.Should().BeNull();
     }
 
     [Fact]
