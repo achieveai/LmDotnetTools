@@ -19,14 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when the key is absent, so a library host that binds `CompactionOptions` must call `WithCacheTtlUnset()` when the key is
   missing; LmStreaming.Sample does (`CompactionHostSetup`).
 
-- **OpenAI Responses: replay encrypted reasoning to the same model, behind a switch (#769).** With
-  `LmStreaming:ReasoningReplay:{providerId}` set to true (off by default), `OpenAiResponsesAgent` asks for
+- **OpenAI Responses: replay encrypted reasoning to the same model, behind a switch (#769).** Turn it on with
+  `new OpenAiResponsesAgent(..., replayReasoning: true)`, or in LmStreaming.Sample with
+  `LmStreaming:ReasoningReplay:{providerId}` set to true. It is off by default. With it on, the agent asks for
   `reasoning.encrypted_content`, saves the blob as a `ReasoningMessage` with the new `EncryptedOrigin`, and sends it back,
   in order, to the model that made it. Other providers, subscribers and the browser never get it, and reasoning from a
   retried attempt is not sent. **Rollback:** the blob is saved under its own `$type`, `reasoning_replay`, so an older build
-  skips the row and replay history is lost, not resent. After a rollback, a thread with replay rows can't be compacted by
-  the old build once it outgrows the window. It returns `unsafe_state`; the thread keeps working until then, and rolling
-  forward clears it.
+  skips the row and replay history is lost, not resent. After a rollback, the old build can't compact a thread with
+  replay rows once it outgrows the window: each request then fails with `ContextOverflowException` whose `Reason` is
+  `overflow_after_compaction`. The thread keeps working until then, and rolling forward clears it.
 
 - **Stopping a run now cancels its pending MCP tool calls.** Tools from `McpClientFunctionProvider` pass the run's token to
   `CallToolAsync`, so a stalled call no longer keeps the run alive past `StopAsync`. `LegacyHandlerAdapter.ToNewHandler` gains
