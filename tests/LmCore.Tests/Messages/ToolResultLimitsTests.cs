@@ -213,6 +213,157 @@ public sealed class ToolResultLimitsTests
     }
 
     [Fact]
+    public void Cut_json_becomes_a_parseable_object_with_sizes_and_preview()
+    {
+        var limits = new ToolResultLimits { MaxResultBytes = 512 };
+        var original = JsonSerializer.Serialize(Enumerable.Range(0, 2_000).Select(i => new { id = i }).ToArray());
+
+        var bounded = limits.Apply(new ToolCallResult("json-cut", original));
+
+        bounded.IsTruncated.Should().BeTrue();
+        Encoding.UTF8.GetByteCount(bounded.Result).Should().BeLessThanOrEqualTo(512);
+        using var document = JsonDocument.Parse(bounded.Result);
+        var root = document.RootElement;
+        root.GetProperty("truncated").GetBoolean().Should().BeTrue();
+        root.TryGetProperty("error", out _).Should().BeFalse("being cut is not a failed call");
+        root.GetProperty("original_bytes").GetInt32().Should().Be(Encoding.UTF8.GetByteCount(original));
+        var preview = root.GetProperty("preview").GetString()!;
+        original.Should().StartWith(preview);
+        root.GetProperty("kept_bytes").GetInt32().Should().Be(Encoding.UTF8.GetByteCount(preview));
+        preview.Should().NotBeEmpty();
+        root.GetProperty("note").GetString().Should().Contain(ToolResultLimits.TruncationMarkerPrefix);
+    }
+
+    [Theory]
+    [InlineData(ToolResultLimits.MinResultBytes)]
+    [InlineData(257)]
+    [InlineData(300)]
+    [InlineData(1_024)]
+    [InlineData(5_000)]
+    public void Cut_json_parses_and_fits_even_when_escaping_grows_the_preview(int cap)
+    {
+        // Each \u0001 is one raw byte and six escaped ones, so a raw-byte budget alone would overrun.
+        var original = JsonSerializer.Serialize(string.Concat(Enumerable.Repeat("\u0001\"☃\U0001F600", 5_000)));
+
+        var bounded = new ToolResultLimits { MaxResultBytes = cap }.BoundText(original);
+
+        Encoding.UTF8.GetByteCount(bounded).Should().BeLessThanOrEqualTo(cap);
+        using var document = JsonDocument.Parse(bounded);
+        document.RootElement.GetProperty("truncated").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public void Text_that_only_starts_like_json_keeps_the_plain_marker()
+    {
+        var limits = new ToolResultLimits { MaxResultBytes = 256 };
+        var original = "{ this is a log line, not a document " + MakeAscii(1_000);
+
+        var bounded = limits.BoundText(original);
+
+        bounded.Should().StartWith("{ this is a log line");
+        bounded.Should().EndWith(" of 1,037 bytes]");
+    }
+
+    [Fact]
+    public void A_lone_surrogate_in_json_shaped_text_does_not_break_the_cut()
+    {
+        var original = "{\"text\":\"" + new string('\uD800', 500) + "\"}";
+        var limits = new ToolResultLimits { MaxResultBytes = 256 };
+
+        var bounded = limits.BoundText(original);
+
+        Encoding.UTF8.GetByteCount(bounded).Should().BeLessThanOrEqualTo(256);
+        bounded.Should().Contain(ToolResultLimits.TruncationMarkerPrefix);
+    }
+
+    [Theory]
+    [InlineData("true")]
+    [InlineData("false")]
+    [InlineData("null")]
+    [InlineData("-12.5")]
+    [InlineData("42")]
+    public void An_oversized_json_scalar_becomes_the_json_object(string scalar)
+    {
+        var text = scalar + new string(' ', 2_000);
+
+        var bounded = new ToolResultLimits { MaxResultBytes = 512 }.BoundText(text);
+
+        using var document = JsonDocument.Parse(bounded);
+        document.RootElement.GetProperty("original_bytes").GetInt32().Should().Be(text.Length);
+    }
+
+    [Fact]
+    public void Json_nested_past_the_default_parser_depth_becomes_the_json_object()
+    {
+        var text = new string('[', 65) + new string(' ', 2_000) + new string(']', 65);
+
+        var bounded = new ToolResultLimits { MaxResultBytes = 512 }.BoundText(text);
+
+        using var document = JsonDocument.Parse(bounded);
+        document.RootElement.GetProperty("original_bytes").GetInt32().Should().Be(text.Length);
+    }
+
+    [Fact]
+    public void Cutting_a_very_large_json_document_takes_far_less_memory_than_the_document()
+    {
+        // Two characters per value is the costliest shape for a parser: one record per value.
+        var text = "[" + string.Concat(Enumerable.Repeat("1,", 10_000_000)) + "1]";
+        var limits = new ToolResultLimits { MaxResultBytes = 1024 };
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var bounded = limits.BoundText(text);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        allocated.Should().BeLessThan(1024 * 1024);
+        using var document = JsonDocument.Parse(bounded);
+        document.RootElement.GetProperty("original_bytes").GetInt32().Should().Be(text.Length);
+    }
+
+    [Fact]
+    public void Very_large_text_that_only_starts_like_json_keeps_the_plain_marker()
+    {
+        var text = "{" + new string('x', 5 * 1024 * 1024);
+
+        var bounded = new ToolResultLimits { MaxResultBytes = 1024 }.BoundText(text);
+
+        bounded.Should().StartWith("{xxx").And.Contain(ToolResultLimits.TruncationMarkerPrefix);
+    }
+
+    [Theory]
+    [InlineData("-1.5e")]
+    [InlineData("7")]
+    public void A_json_number_past_the_parse_limit_becomes_the_json_object(string start)
+    {
+        var text = start + new string('3', 5 * 1024 * 1024);
+
+        var bounded = new ToolResultLimits { MaxResultBytes = 1024 }.BoundText(text);
+
+        using var document = JsonDocument.Parse(bounded);
+        document.RootElement.GetProperty("truncated").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_short_scalar_padded_past_the_parse_limit_becomes_the_json_object()
+    {
+        var text = "true" + new string(' ', 5 * 1024 * 1024);
+
+        var bounded = new ToolResultLimits { MaxResultBytes = 1024 }.BoundText(text);
+
+        using var document = JsonDocument.Parse(bounded);
+        document.RootElement.GetProperty("truncated").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public void Very_large_text_that_only_starts_and_ends_with_a_digit_keeps_the_plain_marker()
+    {
+        var text = "2026-11-09 log line " + new string('x', 5 * 1024 * 1024) + " 7";
+
+        var bounded = new ToolResultLimits { MaxResultBytes = 1024 }.BoundText(text);
+
+        bounded.Should().StartWith("2026-11-09 log line").And.Contain(ToolResultLimits.TruncationMarkerPrefix);
+    }
+
+    [Fact]
     public void Unbounded_never_truncates()
     {
         var original = MakeAscii(ReproducedOversizedLength);

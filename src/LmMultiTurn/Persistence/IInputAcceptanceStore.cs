@@ -130,7 +130,11 @@ public interface IInputAcceptanceStore
     /// <param name="inputId">The input identifier.</param>
     /// <param name="reservationId">The token the caller reserved under.</param>
     /// <param name="ct">Cancellation token.</param>
-    /// <returns><c>true</c> when this caller's record was removed; <c>false</c> when there was nothing of its own to remove.</returns>
+    /// <returns>
+    /// <c>true</c> when this caller's record was removed. <c>false</c> when nothing was removed: either there
+    /// was nothing of its own to remove, or the store could not get exclusive access to the record in time
+    /// and the record may still be there.
+    /// </returns>
     Task<bool> TryReleaseAcceptanceAsync(
         string threadId,
         string inputId,

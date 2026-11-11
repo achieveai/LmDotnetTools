@@ -134,7 +134,11 @@ public sealed class WebFetchTool
             // query, fragment, and userinfo so secrets/PII in those parts are never echoed to the model.
             var framed = WebToolOutput.WrapUntrusted(markdown, WebToolOutput.MinimizeUrl(validation.Value));
             var sanitized = WebToolOutput.Sanitize(framed, _options.JinaApiKey);
-            var bounded = WebToolOutput.Truncate(sanitized, _options.OutputCap);
+            // When the caller saves large output, the whole page stays readable from a file. Secrets
+            // are already gone at this point, so the saved copy is as clean as the inline one.
+            var bounded = context.CanSaveLargeOutput
+                ? sanitized
+                : WebToolOutput.Truncate(sanitized, _options.OutputCap);
             return ToolHandlerResult.FromText(bounded);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

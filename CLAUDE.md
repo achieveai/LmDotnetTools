@@ -6,6 +6,7 @@ LmDotnetTools is a comprehensive .NET SDK for working with large language models
 ## Review operations policy
 - Requested PR review runs may post appropriate inline comments, replies and summaries. The former NOVA collect-only restriction is superseded (2026-10-09).
 - On a review-process restart, reset every PR review slot in its configured Gateway workspace/pool. Retain no old slot assignment or interrupted attempt for resumption. Retire active writers, reset through supported cleanup mechanisms, clear stale ownership, verify fresh slots, then refill.
+- Exception (operator-approved 2026-11-10): automatic restarts by the Windows runners' watchdog and alarm (`samples/Reviewd.Sample/ops/github`, `ops/ado`) reuse slots and do not run the all-slot reset; the batch's slot reaper frees lapsed leases. The all-slot reset still applies to operator-initiated restarts.
 - This reset scope does not include repository roots, shared knowledge, credentials, unrelated workspace data or already-posted PR comments. Protect application/source branches. Review feedback authorization does not authorize source pushes, merges or PR completion.
 - Policy does not bypass authentication, capability checks, writer-quiescence checks or native cleanup guards. Do not claim that recording this policy automatically changes the running service or implements all-slot restart cleanup.
 

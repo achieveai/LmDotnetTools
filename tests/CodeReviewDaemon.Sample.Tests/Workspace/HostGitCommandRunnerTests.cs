@@ -244,35 +244,55 @@ public class HostGitCommandRunnerTests : IDisposable
     public async Task RunAsync_kills_the_child_rather_than_abandoning_it(bool byCallerCancellation)
     {
         var marker = Path.Combine(_dir, "still-alive.txt");
-        // Writes the marker only if it survives well past the point it should have been killed (~300ms).
-        var argv = _lab.WriteMarkerAfter(TimeSpan.FromSeconds(4), marker);
-        var runner = Runner(idleTimeout: TimeSpan.FromMilliseconds(300));
+        var release = Path.Combine(_dir, "release.txt");
+        var held = Path.Combine(_dir, "held.txt");
 
-        if (byCallerCancellation)
+        // The child cannot finish until the release below, so however late the kill lands on a loaded
+        // machine it still lands on a running child. Each path gets a timeout the other cannot beat: with
+        // both at 300ms, either could end the call and the outcome asserted below would be a coin toss.
+        var argv = _lab.RunUntilReleased(release, marker, held);
+        var runner = Runner(idleTimeout: TimeSpan.FromSeconds(byCallerCancellation ? 60 : 0.3));
+
+        try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+            if (byCallerCancellation)
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+                await FluentActions
+                    .Awaiting(() => runner.RunAsync(new SandboxCommand(argv, _dir), cts.Token))
+                    .Should()
+                    .ThrowAsync<OperationCanceledException>("the caller's cancellation ended this call");
+            }
+            else
+            {
+                var result = await runner.RunAsync(new SandboxCommand(argv, _dir), default);
+                result.ExitCode.Should().Be(124, "the idle timeout ended this call: {0}", result.Stderr);
+            }
+
+            File.Exists(marker).Should().BeFalse("the child can only write this after the release below");
+
+            (await ProcessLab.WaitForHolderToExitAsync(held, TimeSpan.FromSeconds(30)))
+                .Should()
+                .BeTrue(
+                    "the child still holds its file open after the call returned, so it was abandoned rather "
+                        + "than killed — that is the orphaned fetch that keeps holding the store after the daemon "
+                        + "moved on"
+                );
+        }
+        finally
+        {
+            // Released however the block above ended, so a failed assertion cannot leave the child running
+            // until its own two-minute bound. A child that somehow survived sees this within about a second
+            // and writes the marker. A failure to write it must not replace the failure that got us here.
             try
             {
-                _ = await runner.RunAsync(new SandboxCommand(argv, _dir), cts.Token);
+                await File.WriteAllTextAsync(release, string.Empty);
             }
-            catch (OperationCanceledException)
-            {
-                // Expected on this path; the point of the test is what happens to the child.
-            }
-        }
-        else
-        {
-            _ = await runner.RunAsync(new SandboxCommand(argv, _dir), default);
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
 
-        // Well past when the abandoned child would have written it.
-        await Task.Delay(TimeSpan.FromSeconds(7));
-        File.Exists(marker)
-            .Should()
-            .BeFalse(
-                "the child outlived the call, so it was abandoned rather than killed — that is the orphaned "
-                    + "fetch that keeps holding the store after the daemon has moved on"
-            );
+        await Task.Delay(TimeSpan.FromSeconds(3));
+        File.Exists(marker).Should().BeFalse("a child that was killed cannot react to the release");
     }
 
     /// <summary>

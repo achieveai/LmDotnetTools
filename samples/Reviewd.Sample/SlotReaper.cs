@@ -73,7 +73,9 @@ internal static class SlotReaper
     /// single validated attempt. A conversation the host does not know is treated as already stopped. A
     /// conversation that will not quiesce within the deadline is still live: it is unfrozen and the method
     /// throws, so the caller skips it rather than discarding a running review. With <paramref name="execute"/>
-    /// false only quiescence is inspected (the live conversation is restored) and nothing is reset.
+    /// false only quiescence is inspected (the live conversation is restored) and nothing is reset. The abandoned-child
+    /// check keeps its readings and warnings in <paramref name="reads"/>, so a caller that passes one log to every
+    /// reclaim reports a ghost once; without one this reclaim starts afresh.
     /// </summary>
     internal static async Task<ReclaimResult> ReclaimOneAsync(
         SqliteConnection connection,
@@ -89,12 +91,14 @@ internal static class SlotReaper
         CancellationToken ct,
         bool force = false,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
-        Func<CancellationToken, Task<bool?>>? recheck = null
+        Func<CancellationToken, Task<bool?>>? recheck = null,
+        AbandonedChildProbe.ReadLog? reads = null
     )
     {
         delay ??= Task.Delay;
         var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/{pr}";
         var threadId = attempt["threadId"]?.GetValue<string>();
+        var abandoned = new AbandonedChildProbe($"Reaper {repo.DisplayName}#{pr}/slot{slot}", reads);
         var head =
             attempt["headSha"]?.GetValue<string>()
             ?? throw new InvalidOperationException("Attempt has no head sha; refusing to reclaim.");
@@ -104,7 +108,10 @@ internal static class SlotReaper
         //    undated owner swept under --include-undated, the active session, or a background child still
         //    writing after its root went idle). Leave it wholly untouched — never freeze it — so in-flight
         //    work is not interrupted. A later sweep retries once the whole tree goes quiet.
-        if (threadId is { Length: > 0 } && await FindActivityAsync(client, threadId, delay, ct) is { } liveActivity)
+        if (
+            threadId is { Length: > 0 }
+            && await FindActivityAsync(client, threadId, delay, ct, abandoned) is { } liveActivity
+        )
             return new ReclaimResult(
                 repo.DisplayName,
                 pr,
@@ -185,12 +192,13 @@ internal static class SlotReaper
         try
         {
             // 2) Confirm the frozen conversation and every descendant are quiet. Freezing stops only the
-            //    root, so a running child keeps the tree busy until it finishes. If it will not quiesce
+            //    root, so a running child keeps the tree busy until it finishes, unless the shared probe finds it
+            //    abandoned (#956). If it will not quiesce
             //    within the deadline it was live, not dead — abort (the catch unfreezes it so it continues).
             if (frozenActive)
             {
                 var deadline = DateTimeOffset.UtcNow + QuiescenceDeadline;
-                while (await FindActivityAsync(client, threadId!, delay, ct) is { } activity)
+                while (await FindActivityAsync(client, threadId!, delay, ct, abandoned) is { } activity)
                 {
                     if (DateTimeOffset.UtcNow >= deadline)
                         throw new InvalidOperationException(
@@ -518,14 +526,16 @@ internal static class SlotReaper
     /// <summary>
     /// Describes why <paramref name="threadId"/>'s tree is not quiet, or returns null when it is: the root
     /// has no run in progress or pending, and every descendant has settled by the same rule the review
-    /// wait uses (<see cref="ReviewRunner.IsSettledNode"/>). A busy hierarchy means the descendants are
-    /// unknown, which is never quiet. A thread the host does not know at all has nothing running.
+    /// wait uses (<see cref="ReviewRunner.IsSettledNode"/>, and, when <paramref name="probe"/> is given,
+    /// <see cref="AbandonedChildProbe"/> for a Running child under an idle root). A busy hierarchy means the
+    /// descendants are unknown, which is never quiet. A thread the host does not know at all has nothing running.
     /// </summary>
     internal static async Task<string?> FindActivityAsync(
         LmStreamingS2SClient client,
         string threadId,
         Func<TimeSpan, CancellationToken, Task> delay,
-        CancellationToken ct
+        CancellationToken ct,
+        AbandonedChildProbe? probe = null
     )
     {
         var root = await client.GetRunStateAsync(threadId, ct);
@@ -562,6 +572,10 @@ internal static class SlotReaper
         }
         var now = DateTimeOffset.UtcNow;
         var active = tree.Nodes.Where(n => !ReviewRunner.IsSettledNode(n, now)).ToList();
+        // The root is idle here and there is no input to wait on, so a caller that passes a probe lets abandoned
+        // children settle (#956).
+        if (active.Count > 0 && probe is not null && await probe.AllAbandonedAsync(client, threadId, active, now, ct))
+            return null;
         return active.Count == 0
             ? null
             : $"{active.Count} descendant(s) still active ({string.Join(", ", active.Select(n => $"{n.AgentId}={n.Status}"))})";
@@ -572,7 +586,8 @@ internal static class SlotReaper
     /// lapsed. A still-live review (its lease fresh, or it refuses to quiesce) is skipped, never
     /// discarded. Per-owner failures are caught and recorded so one wedged slot never stops the sweep.
     /// Owners in other workspaces are ignored — only the live session's own workspace can discard its
-    /// native markers.
+    /// native markers. Every sweep shares <paramref name="reads"/> (the process's log unless a caller passes its own),
+    /// so a ghost that holds a slot across sweeps is read at most once per interval and reported once.
     /// </summary>
     internal static async Task<IReadOnlyList<ReclaimResult>> SweepAsync(
         SqliteConnection connection,
@@ -583,9 +598,11 @@ internal static class SlotReaper
         bool undatedExpired,
         bool execute,
         CancellationToken ct,
-        Func<TimeSpan, CancellationToken, Task>? delay = null
+        Func<TimeSpan, CancellationToken, Task>? delay = null,
+        AbandonedChildProbe.ReadLog? reads = null
     )
     {
+        reads ??= AbandonedChildProbe.ReadLog.Process;
         var owners = new List<(RepoIdentity Repo, string Pr, int Slot, bool Force)>();
         using (var scan = connection.CreateCommand())
         {
@@ -648,7 +665,8 @@ internal static class SlotReaper
                                 && owner["claimToken"]?.GetValue<string>() == token
                                 && SlotRelease.IsLeaseExpired(owner, DateTimeOffset.UtcNow, undatedExpired);
                             return stillLapsed ? IsForceDue(owner!, DateTimeOffset.UtcNow) : null;
-                        }
+                        },
+                        reads
                     )
                 );
             }

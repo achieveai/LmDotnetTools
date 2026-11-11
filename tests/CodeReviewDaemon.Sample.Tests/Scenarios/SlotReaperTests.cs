@@ -391,6 +391,7 @@ public sealed class SlotReaperTests
         List<JsonObject>? calls = null,
         JsonArray? forced = null,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
+        AbandonedChildProbe.ReadLog? reads = null,
         Func<JsonObject, string, JsonObject>? commit = null
     )
     {
@@ -425,7 +426,9 @@ public sealed class SlotReaperTests
             undatedExpired: false,
             execute: true,
             CancellationToken.None,
-            delay: delay ?? ((_, _) => Task.CompletedTask)
+            delay: delay ?? ((_, _) => Task.CompletedTask),
+            // A test's own log, never the process's, so no reading or warning leaks between tests.
+            reads: reads ?? new AbandonedChildProbe.ReadLog()
         );
         return (results, discards);
     }
@@ -454,6 +457,66 @@ public sealed class SlotReaperTests
             discards.Should().Be(0, "a working descendant means the slot is still in use");
             handler.CountRequests("/freeze").Should().Be(0, "a live tree is never frozen");
             (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("owned");
+        }
+        finally
+        {
+            ReviewdSqlitePools.Clear(database);
+            File.Delete(database);
+        }
+    }
+
+    // #956, seen live: "Reaper waiting on lapsed-lease slot ...#948/slot0: 1 descendant(s) still active
+    // (agent-10=Running)" on every sweep, for a child whose run was abandoned hours before. A running child whose last
+    // turn finished and went quiet for 45 minutes no longer holds a lapsed slot; one that wrote minutes ago still does.
+    // Every sweep keeps its readings and warnings in the batch's one log: the abandoned child is reported there, and
+    // the recent one is not read again by the next sweep minutes later.
+    [Theory]
+    [InlineData(180, "reclaimed")]
+    [InlineData(2, "skipped")]
+    public async Task Reaper_reclaims_a_slot_held_only_by_an_abandoned_child(int quietMinutes, string status)
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-abandoned-{Guid.NewGuid():N}.db");
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await connection.OpenAsync();
+            var (ownerKey, store) = await SeedLapsedClaimAsync(connection, 4);
+            var handler = new FakeHttpMessageHandler()
+                .OnJson(HttpMethod.Post, "/freeze", """{"frozen":true}""")
+                .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+                .OnJson(HttpMethod.Get, "/subagents?recursive=true", Tree("completed", "running"))
+                .OnJson(
+                    HttpMethod.Get,
+                    "/agents/agent-2/transcript",
+                    ReviewdRunnerTests.Transcript(DateTimeOffset.UtcNow.AddMinutes(-quietMinutes), "finished")
+                );
+
+            var reads = new AbandonedChildProbe.ReadLog();
+
+            var (results, discards) = await SweepAsync(connection, handler, reads: reads);
+
+            results.Should().ContainSingle(r => r.Status == status);
+            if (status == "reclaimed")
+            {
+                discards.Should().Be(1);
+                (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("released");
+                reads.Warned.Keys.Should().Equal(["child-2"], "the batch's log records the child as reported");
+            }
+            else
+            {
+                results.Single().Detail.Should().Contain("agent-2=Running");
+                discards.Should().Be(0, "a child that wrote minutes ago may still be working in the slot");
+                handler.CountRequests("/freeze").Should().Be(0);
+                (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("owned");
+
+                (results, _) = await SweepAsync(connection, handler, reads: reads);
+
+                results.Should().ContainSingle(r => r.Status == "skipped", "the child still holds the slot");
+                handler
+                    .CountRequests("/agents/agent-2/transcript")
+                    .Should()
+                    .Be(1, "the next sweep reuses the batch's reading until it is due");
+            }
         }
         finally
         {
