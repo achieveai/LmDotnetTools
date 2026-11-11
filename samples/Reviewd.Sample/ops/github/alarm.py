@@ -12,9 +12,6 @@ Problems, per install:
                 the head was seen (catches a stopped, hung or wedged batch whatever the cause)
   quarantined   a PR whose head failed 3 times the same way: the batch skips it until a new push
   stuck         a review was posted but the attempt froze at commit-pending (archive step failed)
-  held          a slot whose reset began and has not finished for 1 h: the slot reaper retries each time the lease
-                lapses, and the slot stays claimed until it succeeds (e.g. a verified review it could neither
-                archive nor preserve)
   paused        state\\PAUSED older than 1 h (a deploy that died halfway leaves it behind)
   watchdog      status.json older than 20 min: the watchdog task itself is not running
   down          gateway, host, webhook or batch reported down by the watchdog for 15 min
@@ -53,7 +50,6 @@ REALERT = datetime.timedelta(hours=24)
 # At most once per install per STALL_RESTART, and never a batch younger than this.
 STALL_RESTART = datetime.timedelta(hours=2)
 QUARANTINE_AFTER = 3  # ReviewBatch.QuarantineAfter
-HOLD_LIMIT = datetime.timedelta(hours=1)
 
 
 def ts(value):
@@ -122,36 +118,6 @@ def pr_problems(name, rows, max_age, now):
                 found.append((f"{name}:unreviewed:{repo}#{pr}:{head}", name, "unreviewed",
                               f"{subject} ({title}): head {head[:8]} seen {hours(now - seen)} ago, {state}",
                               now - seen))
-    return found
-
-
-def held_slots(name, rows, now, memory):
-    """Slots the reaper began to reset and has not freed: the owner row is still owned and carries its
-    reclaimingOperation (SlotRelease.Reclaiming). The reaper retries once the lease lapses, renewing it as it works, so this times the
-    hold from when it was first seen here. Each is told with its attempt's last archive error, if any."""
-    seen = memory.setdefault("held", {})
-    found, current = [], set()
-    for key, owner in rows.items():
-        if (not key.startswith("reviewd/slot-owner/") or not isinstance(owner, dict)
-                or owner.get("state") != "owned" or not owner.get("reclaimingOperation")):
-            continue
-        token = owner.get("claimToken")
-        hold = f"{name}:held:{key[len('reviewd/slot-owner/'):]}:{token}"
-        current.add(hold)
-        first = ts(seen.setdefault(hold, now.isoformat()))
-        if now - first < HOLD_LIMIT:
-            continue
-        attempt = next((a for k, a in rows.items() if k.startswith("reviewd/review-attempt/")
-                        and isinstance(a, dict) and a.get("claimToken") == token), {})
-        error = (attempt.get("archiveError") or "").splitlines()
-        found.append((hold, name, "held",
-                      f"{owner.get('repository')} #{owner.get('prId')} slot {owner.get('slot')}: its reset has not "
-                      f"finished for {hours(now - first)}; the slot stays claimed and the reaper retries each time "
-                      f"its lease lapses. "
-                      + (f"Archive failed: {error[0][:160]}. " if error else "")
-                      + "Reason: 'Reaper waiting on lapsed-lease slot' in state\\logs\\batch.err.log."))
-    for stale in [k for k in seen if k.startswith(f"{name}:held:") and k not in current]:
-        seen.pop(stale)
     return found
 
 
@@ -281,7 +247,6 @@ def install_problems(install, now, memory, dry=False):
         return found + [(f"{name}:unreadable", name, "unreadable", f"could not read reviews.db: "
                          f"{type(error).__name__}: {str(error)[:160]}")]
     found += [p[:4] for p in prs]
-    found += held_slots(name, rows, now, memory)
     waiting = [p[4] for p in prs if len(p) > 4 and p[4] >= STALL_RESTART]
     try:
         restarted = restart_stalled(install, name, rows, waiting, now, memory, dry)

@@ -767,10 +767,9 @@ elif phase == 'cleanup':
             raise ReviewError('Source checkout has local data; no automatic destructive cleanup allowed.')
         # Preserve all outside-source attempt artifacts with native hash/fsync verification before reset.
         # A discard reset (a dead conversation its owner has frozen, being thrown away to reclaim the slot)
-        # skips the clean-source guard, exactly like the post-checkout reset, and keeps nothing unless asked to
-        # preserve: the reaper asks for a verified review it could not archive, so its files outlive the reset.
+        # keeps nothing: skip preservation and the clean-source guard, exactly like the post-checkout reset.
         preserved = None
-        if not discard or args.get('preserve'):
+        if not discard:
             inspection = inspect_checkout_preservation(outer, protected=source)
             preserved = preserve_checkout_generation(writable, inspection,
                                                     operation_id='reviewd-' + args['claimToken'], repository=outer)

@@ -31,116 +31,6 @@ internal static class SlotRelease
     internal const string OwnerKeyPrefix = "reviewd/slot-owner/";
 
     /// <summary>
-    /// Set on an owner row, by the reaper, just before it resets that slot: the reset's operation id. From then on
-    /// the owner's own renewals, saves and cleanup fail as if the claim were gone, so a run whose step ends during
-    /// the reset stops instead of sending into a slot that is being reset. Only the reaper's renewals, which name the
-    /// operation, and its exact-token release still work.
-    /// </summary>
-    internal const string Reclaiming = "reclaimingOperation";
-
-    // The row is owned on this exact claim, and either no reset has begun (reclaim null) or it is this reset's own.
-    private static bool Holds(JsonNode? claim, string token, string? reclaim) =>
-        claim?["claimToken"]?.GetValue<string>() == token
-        && claim["state"]?.GetValue<string>() == "owned"
-        && claim[Reclaiming]?.GetValue<string>() == reclaim;
-
-    /// <summary>
-    /// Marks an owned slot as being reset: a CAS on <paramref name="expected"/>, the exact row the reaper last checked
-    /// (a lapsed lease on this claim). False when the row changed since, so a lane that renewed its lease after that
-    /// check is never reset.
-    /// </summary>
-    internal static async Task<bool> MarkReclaimingAsync(
-        SqliteConnection connection,
-        string key,
-        string token,
-        string operation,
-        string? expected,
-        CancellationToken ct
-    )
-    {
-        using var transaction = connection.BeginTransaction();
-        using var read = connection.CreateCommand();
-        read.Transaction = transaction;
-        read.CommandText = "SELECT value FROM cache WHERE key=@key";
-        read.Parameters.AddWithValue("@key", key);
-        var raw = await read.ExecuteScalarAsync(ct) as string;
-        var claim = raw is null ? null : JsonNode.Parse(raw)!.AsObject();
-        if (
-            raw != expected
-            || claim?["claimToken"]?.GetValue<string>() != token
-            || claim["state"]?.GetValue<string>() != "owned"
-        )
-            return false;
-        claim[Reclaiming] = operation;
-        using var write = connection.CreateCommand();
-        write.Transaction = transaction;
-        write.CommandText = "UPDATE cache SET value=@value WHERE key=@key AND value=@old";
-        write.Parameters.AddWithValue("@key", key);
-        write.Parameters.AddWithValue("@old", raw!);
-        write.Parameters.AddWithValue("@value", claim.ToJsonString());
-        var marked = await write.ExecuteNonQueryAsync(ct) == 1;
-        transaction.Commit();
-        return marked;
-    }
-
-    /// <summary>
-    /// Saves <paramref name="attempt"/>, renewing the lease unless <paramref name="renew"/> is false, in one
-    /// transaction, only while the row is still held on <paramref name="token"/> with no reset begun. False, writing
-    /// nothing, otherwise: a run whose slot was reset never saves over the attempt the reset recorded, even when the
-    /// reaper releases between a check and a write. The reset itself saves by naming its operation in
-    /// <paramref name="reclaim"/>. <paramref name="copyKey"/>, when given, gets the same value in the same transaction.
-    /// </summary>
-    internal static async Task<bool> SaveIfHeldAsync(
-        SqliteConnection connection,
-        string key,
-        string token,
-        string attemptKey,
-        JsonObject attempt,
-        CancellationToken ct,
-        bool renew = true,
-        DateTimeOffset? nowUtc = null,
-        string? reclaim = null,
-        string? copyKey = null
-    )
-    {
-        using var transaction = connection.BeginTransaction();
-        using var read = connection.CreateCommand();
-        read.Transaction = transaction;
-        read.CommandText = "SELECT value FROM cache WHERE key=@key";
-        read.Parameters.AddWithValue("@key", key);
-        var raw = await read.ExecuteScalarAsync(ct) as string;
-        var claim = raw is null ? null : JsonNode.Parse(raw)!.AsObject();
-        if (!Holds(claim, token, reclaim))
-            return false;
-        if (renew)
-        {
-            claim!["leaseExpiresAt"] = (nowUtc ?? DateTimeOffset.UtcNow) + DefaultLeaseWindow;
-            using var write = connection.CreateCommand();
-            write.Transaction = transaction;
-            write.CommandText = "UPDATE cache SET value=@value WHERE key=@key AND value=@old";
-            write.Parameters.AddWithValue("@key", key);
-            write.Parameters.AddWithValue("@old", raw!);
-            write.Parameters.AddWithValue("@value", claim.ToJsonString());
-            if (await write.ExecuteNonQueryAsync(ct) != 1)
-                return false;
-        }
-        using var save = connection.CreateCommand();
-        save.Transaction = transaction;
-        save.CommandText =
-            "INSERT INTO cache(key,value) VALUES(@key,@value) ON CONFLICT(key) DO UPDATE SET value=excluded.value";
-        save.Parameters.AddWithValue("@key", attemptKey);
-        save.Parameters.AddWithValue("@value", attempt.ToJsonString());
-        await save.ExecuteNonQueryAsync(ct);
-        if (copyKey is not null)
-        {
-            save.Parameters["@key"].Value = copyKey;
-            await save.ExecuteNonQueryAsync(ct);
-        }
-        transaction.Commit();
-        return true;
-    }
-
-    /// <summary>
     ///     Claims the slot owner row and saves <paramref name="owner"/>, stamped with the claim token and
     ///     <c>cleanupState</c>, as the attempt at <paramref name="attemptKey"/> in the same transaction. A crash
     ///     can therefore never leave a durable claim whose attempt reconcile-slot cannot find.
@@ -237,18 +127,13 @@ internal static class SlotRelease
         DateTimeOffset? nowUtc = null
     ) => await RenewAsync(connection, key, token, ct, nowUtc) is not null;
 
-    /// <summary>
-    /// The heartbeat, returning the owner row it replaced and the row it wrote (null when it wrote none). Once a
-    /// reset has begun (<see cref="Reclaiming"/>) only the reset's own renewals, naming it in
-    /// <paramref name="reclaim"/>, still write.
-    /// </summary>
+    /// <summary>The heartbeat, returning the owner row it replaced and the row it wrote (null when it wrote none).</summary>
     internal static async Task<(string Before, string After)?> RenewAsync(
         SqliteConnection connection,
         string key,
         string token,
         CancellationToken ct,
-        DateTimeOffset? nowUtc = null,
-        string? reclaim = null
+        DateTimeOffset? nowUtc = null
     )
     {
         using var transaction = connection.BeginTransaction();
@@ -258,9 +143,9 @@ internal static class SlotRelease
         read.Parameters.AddWithValue("@key", key);
         var raw = await read.ExecuteScalarAsync(ct) as string;
         var claim = raw is null ? null : JsonNode.Parse(raw)!.AsObject();
-        if (!Holds(claim, token, reclaim))
+        if (claim?["claimToken"]?.GetValue<string>() != token || claim["state"]?.GetValue<string>() != "owned")
             return null;
-        claim!["leaseExpiresAt"] = (nowUtc ?? DateTimeOffset.UtcNow) + DefaultLeaseWindow;
+        claim["leaseExpiresAt"] = (nowUtc ?? DateTimeOffset.UtcNow) + DefaultLeaseWindow;
         var renewed = claim.ToJsonString();
         using var write = connection.CreateCommand();
         write.Transaction = transaction;
@@ -311,7 +196,7 @@ internal static class SlotRelease
         read.Parameters.AddWithValue("@key", key);
         var current = await read.ExecuteScalarAsync(ct) as string;
         var claim = current is null ? null : JsonNode.Parse(current);
-        if (!Holds(claim, token, null))
+        if (claim?["claimToken"]?.GetValue<string>() != token || claim["state"]?.GetValue<string>() != "owned")
             throw new InvalidOperationException("Slot claim changed; no cleanup or release allowed.");
     }
 
@@ -322,8 +207,7 @@ internal static class SlotRelease
         string attemptKey,
         JsonObject attempt,
         CancellationToken ct,
-        IReadOnlyList<string>? adoptedHistory = null,
-        string? reclaim = null
+        IReadOnlyList<string>? adoptedHistory = null
     )
     {
         using var transaction = connection.BeginTransaction();
@@ -333,11 +217,9 @@ internal static class SlotRelease
         read.Parameters.AddWithValue("@key", key);
         var raw = await read.ExecuteScalarAsync(ct) as string;
         var claim = raw is null ? null : JsonNode.Parse(raw)!.AsObject();
-        // Once a reset has begun only the reset itself releases (it names its operation in reclaim): an owner's own
-        // release would record its stage over the reset's.
-        if (!Holds(claim, token, reclaim))
+        if (claim?["claimToken"]?.GetValue<string>() != token || claim["state"]?.GetValue<string>() != "owned")
             throw new InvalidOperationException("Slot claim changed; exact-token release refused.");
-        claim!["state"] = "released";
+        claim["state"] = "released";
         // Stage the released receipt; the caller's object changes only after the commit below.
         var released = attempt.DeepClone().AsObject();
         released["cleanupState"] = "released";
