@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **A run reports completion only once its transcript rows are saved.** `MultiTurnAgentBase` saved each history row
+  without waiting and published `RunCompletedMessage` while those saves could still be in flight. A sub-agent's roster
+  marks the child finished from that message, so a focus view that then replayed the child's transcript could read an
+  empty or partial one. Completion now waits for the row saves already issued (with compaction on, the ordered saver is
+  drained, which stops at a row that keeps failing). A slow store delays completion by the time its writes take.
+
+- **`ToolOutputSpillOptions.TimeProvider`.** The clock `SaveTimeout` is measured on; defaults to `TimeProvider.System`.
+
 - **Anthropic requests pair each tool result with its own call.** `AnthropicRequest.FromMessages` matches a tool-call
   aggregate's results to its calls by `ToolCallId`, not by position, and drops (with a warning naming the thread and
   generation) a `tool_result` that answers no `tool_use` in the turn before it, or answers one a second time. Before, a
