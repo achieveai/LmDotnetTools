@@ -549,16 +549,24 @@ def receipt_files(receipt, stem='publication_receipts'):
     # holding some of the comments; <stem>.json lists the others under continued_in. Returns {file name: text}. The
     # judge reads every publication_receipts*.json, and verify reads publication_receipts.json back (read_receipt).
     head = {key: value for key, value in receipt.items() if key != 'comments'}
-    budget = CONTEXT_PIECE_LIMIT - 1024 - len(render_json(head))
-    chunks, used = [[]], 0
-    for comment in receipt['comments']:
-        size = len(render_json(comment, '  ')) + 2
-        if chunks[-1] and used + size > budget:
-            chunks.append([])
-            used = 0
-        chunks[-1].append(comment)
-        used += size
-    names = [f'{stem}.json'] + [f'{stem}-{n}.json' for n in range(2, len(chunks) + 1)]
+    # The first file also lists the others under continued_in; a long stem (a recovered receipt's names carry a head
+    # SHA) or many files can outgrow the 1 KiB kept for it, so the room grows until the list fits.
+    reserve = 1024
+    while True:
+        budget = CONTEXT_PIECE_LIMIT - reserve - len(render_json(head))
+        chunks, used = [[]], 0
+        for comment in receipt['comments']:
+            size = len(render_json(comment, '  ')) + 2
+            if chunks[-1] and used + size > budget:
+                chunks.append([])
+                used = 0
+            chunks[-1].append(comment)
+            used += size
+        names = [f'{stem}.json'] + [f'{stem}-{n}.json' for n in range(2, len(chunks) + 1)]
+        listed = len(render_json({'continued_in': names[1:]})) + 64
+        if listed <= reserve:
+            break
+        reserve = listed
     files = {name: {**head, 'comments': chunk} for name, chunk in zip(names, chunks)}
     files[names[0]]['continued_in'] = names[1:]
     return {name: render_json(value) + '\n' for name, value in files.items()}
