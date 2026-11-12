@@ -5618,7 +5618,13 @@ public sealed class ReviewdRunnerTests
                 .Contain("setup-context.json")
                 .And.Contain("Do not reset or rerun setup")
                 .And.Contain("give it only to a history specialist, who writes anything useful into history-notes.md")
-                .And.Contain("The rest of the review reads history-notes.md and ignores setup-history files");
+                .And.Contain("The rest of the review reads history-notes.md and ignores setup-history files")
+                // A publisher that declines once ended a run asking which publisher to use, and a reused conversation
+                // copied an earlier round's comments into the receipt; verify rejected both, so every prompt says so.
+                .And.Contain("post the same text yourself with the route above")
+                .And.Contain("Never end the run to ask which publisher to use")
+                .And.Contain("Record every comment/reply this run posts, and only those")
+                .And.Contain("never in publication_receipts.json");
             // The judged ratings are split by the rules header in the sent prompt; v1 reviews say "Review quality rules."
             // and v2 reviews "Review quality rules v2. Every".
             var reviewText = JsonNode.Parse(

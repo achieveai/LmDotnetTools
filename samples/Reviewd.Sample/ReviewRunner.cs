@@ -1159,6 +1159,7 @@ internal static class ReviewRunner
                 Read latest discussions, post appropriate feedback inline where possible, reply to existing finding threads instead of duplicating them, and post a summary (including when no findings).
                 {ReviewQualityRules}
                 {publishing}
+                If a publisher sub-agent or skill declines to post (for example because it expects a different input format), post the same text yourself with the route above. Never end the run to ask which publisher to use.
                 Immediately before publication, verify the PR is still active and non-draft; stop if it was closed, abandoned or made a draft. If the target branch moved or the PR got a new push since setup, still post your findings on the head you reviewed, {args[
                     "head"
                 ]}: on GitHub use it as commit_id; on Azure DevOps anchor inline threads to the iteration whose source commit is {args[
@@ -1170,7 +1171,7 @@ internal static class ReviewRunner
                 ]}; newer pushes get their own review." Never bypass tool, auth, publication or network denials.
                 Save {directory}/publication_receipts.json with this schema:
                 {publicationSchema}
-                Record every posted comment/reply. Record this round's summary as kind summary, even when posted as a reply in an existing summary thread. Do not edit source, commit, push, merge, or complete the PR. Coordinator retains artifacts afterward.
+                Record every comment/reply this run posts, and only those: verify rejects any comment that was on the PR before this run, an earlier round's included. Keep an earlier round's unrecorded receipts in a separate file in the same folder (publication_receipts-<that head>-recovered.json), never in publication_receipts.json. Record this round's summary as kind summary, even when posted as a reply in an existing summary thread. Do not edit source, commit, push, merge, or complete the PR. Coordinator retains artifacts afterward.
                 """;
             if (!resume)
             {
