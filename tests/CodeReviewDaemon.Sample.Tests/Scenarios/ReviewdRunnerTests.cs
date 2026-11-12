@@ -1591,10 +1591,12 @@ public sealed class ReviewdRunnerTests
     [Theory]
     [InlineData("resume")]
     [InlineData("slot-not-idle")]
+    [InlineData("claim-lost")]
     public async Task Batch_does_not_count_failures_that_say_nothing_about_the_pr(string kind)
     {
         // Seen live: a review whose input was lost re-verified on every resume, five times; only a fresh admission can
-        // replace it, so quarantining it would skip a PR that would pass. A held slot fails every PR the same way.
+        // replace it, so quarantining it would skip a PR that would pass. A held slot fails every PR the same way, and
+        // a slot reset under a run whose lease renewals failed is a host or database outage.
         using var batch = new BatchFixture(0);
         batch.PutAttempt(
             "1",
@@ -1620,9 +1622,16 @@ public sealed class ReviewdRunnerTests
             if (!batch.Runs[^1].StartsWith("1:", StringComparison.Ordinal))
                 return Task.CompletedTask;
             batch.AdvanceSeconds((int)ReviewBatch.QuarantineSpacing.TotalSeconds);
-            throw kind == "resume"
-                ? new InvalidOperationException($"Sandbox verify failed (exit 1, operation {Guid.NewGuid():N}).")
-                : new ReviewRunner.SlotUnavailableException("Native slot is not idle: orphaned owner marker.");
+            throw kind switch
+            {
+                "resume" => new InvalidOperationException(
+                    $"Sandbox verify failed (exit 1, operation {Guid.NewGuid():N})."
+                ),
+                "claim-lost" => new ReviewRunner.SlotClaimLostException(
+                    $"Slot claim {Guid.NewGuid():N} was lost at prepare-completed; the slot was reset under this run."
+                ),
+                _ => new ReviewRunner.SlotUnavailableException("Native slot is not idle: orphaned owner marker."),
+            };
         };
 
         await batch.ExecuteAsync();
@@ -5501,6 +5510,298 @@ public sealed class ReviewdRunnerTests
         }
     }
 
+    // Lease renewals that fail for longer than the lease (the step's renewal catch logs and retries them) let a sweep
+    // reset the slot under a live step. The run must then stop at its next save: sending the review on a reset slot
+    // posts it with missing context, and committing on one archives a slot the reset discarded. The reset records the
+    // attempt (a review never verified becomes a failed admission that pick offers again), so the stopped run, failing
+    // or not, saves nothing over it. A commit that finished is the one exception: the review is final and stays in the
+    // review-run history.
+    [Theory]
+    [InlineData("prepare")] // released during a long prepare: stops at the save after it, before provisioning
+    [InlineData("inspect")] // released just before the send: stops at the send-pending save
+    [InlineData("prepare-marked")] // the reset has begun (the row is marked) but not released: stops all the same
+    [InlineData("inspect-failed")] // released, then the step itself fails: the failure saves nothing either
+    [InlineData("verify")] // released during verify: stops before committing
+    [InlineData("commit-lost")] // released during a commit whose response is lost: stops, the commit error kept inside
+    [InlineData("commit")] // released during a commit that finished: the result is kept, only the cleanup is refused
+    [InlineData("send")] // released while a 503'd send backs off: the resend never goes out
+    [InlineData("prepare-marked-refused")] // marked, then prepare is refused at capacity: the run does not release it
+    public async Task Runner_stops_once_a_sweep_reset_its_slot(string resetDuring)
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-lost-claim-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/17";
+        var runKey = $"reviewd/review-run/{repo.NormalizedKey}/17";
+        var ownerKey = SlotRelease.OwnerKey("workspace", repo.NormalizedKey, 2);
+        var phase = resetDuring.Split('-')[0];
+        var marked = resetDuring.Contains("-marked", StringComparison.Ordinal);
+        Func<Task>? resetOnSend = null;
+        var refusedSends = 0;
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .On(
+                request =>
+                    request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
+                _ => Json("""{"threadId":"thread"}""")
+            )
+            .OnJson(HttpMethod.Get, "/api/conversations?", "[]")
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .On(
+                request =>
+                    phase == "send"
+                    && request.RequestUri!.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal)
+                    && refusedSends++ == 0,
+                _ =>
+                {
+                    // The host refuses the turn, and the slot is reset while the send backs off.
+                    resetOnSend!().GetAwaiter().GetResult();
+                    return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                    {
+                        Content = new StringContent("{}"),
+                    };
+                }
+            )
+            .OnJson(HttpMethod.Post, "/messages", """{"inputId":"input","idempotencyKeyHonored":true}""")
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Completed","runId":"run","response":{"text":"done"}}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        var options = CliOptions.Parse([
+            "review",
+            "run",
+            "--repo",
+            repo.DisplayName,
+            "--pr",
+            "17",
+            "--slot",
+            "2",
+            "--db",
+            database,
+            "--session",
+            "session",
+            "--workspace",
+            "workspace",
+            "--provider",
+            "test",
+            "--execute",
+        ]);
+        var phases = new List<string>();
+        var lostCommit = new SandboxException(SandboxErrorKind.TransportTimeout, "transport timeout (00:00:30).");
+        var refusedPrepare = new SandboxException(SandboxErrorKind.Unavailable, "refused", 503)
+        {
+            ErrorCode = "operation_capacity_exhausted",
+        };
+        string? recorded = null;
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            var store = new SqliteKvStore(connection);
+            await store.SetAsync(
+                $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                new JsonObject
+                {
+                    ["17"] = new JsonObject
+                    {
+                        ["Lifecycle"] = "Open",
+                        ["IsDraft"] = false,
+                        ["HeadSha"] = new string('a', 40),
+                    },
+                }
+            );
+            async Task ResetAsync(CancellationToken token)
+            {
+                using var read = connection.CreateCommand();
+                read.CommandText = "SELECT value FROM cache WHERE key=@key";
+                read.Parameters.AddWithValue("@key", ownerKey);
+                var row = (string)(await read.ExecuteScalarAsync(token))!;
+                var claimToken = JsonNode.Parse(row)!["claimToken"]!.GetValue<string>();
+                if (marked)
+                {
+                    // The reaper has marked the row and is resetting the slot; it has not released it yet.
+                    (await SlotRelease.MarkReclaimingAsync(connection, ownerKey, claimToken, "reset", row, token))
+                        .Should()
+                        .BeTrue();
+                }
+                else
+                {
+                    // What the reaper's sweep does to a lapsed slot: the attempt becomes a failed admission and the
+                    // owner is released on the exact claim, all while this run is still going.
+                    var attempt = (await store.GetAsync<JsonObject>(attemptKey))!;
+                    attempt["stageBeforeReclaim"] = attempt["stage"]!.DeepClone();
+                    attempt["stage"] = "failed-released";
+                    await SlotRelease.ReleaseAsync(connection, ownerKey, claimToken, attemptKey, attempt, token);
+                }
+                recorded = (await store.GetAsync<JsonObject>(attemptKey))!.ToJsonString();
+            }
+            resetOnSend = () => ResetAsync(CancellationToken.None);
+            async Task<JsonObject> Sandbox(string step, JsonObject args, string operation, CancellationToken token)
+            {
+                phases.Add(step);
+                if (step == phase && phases.Count(p => p == step) == 1)
+                {
+                    await ResetAsync(token);
+                    if (resetDuring.EndsWith("-failed", StringComparison.Ordinal))
+                        throw new InvalidOperationException("inspect failed");
+                    if (resetDuring == "commit-lost")
+                        throw lostCommit;
+                    if (resetDuring.EndsWith("-refused", StringComparison.Ordinal))
+                        throw refusedPrepare;
+                }
+                return step switch
+                {
+                    "prepare" => new JsonObject
+                    {
+                        ["mergeSha"] = new string('b', 40),
+                        ["contextPath"] = "context",
+                        ["reviewDirectory"] = "reviews",
+                        ["baselineComments"] = new JsonArray(),
+                    },
+                    "verify" => new JsonObject
+                    {
+                        ["comments"] = new JsonArray(
+                            new JsonObject
+                            {
+                                ["threadId"] = 7,
+                                ["commentId"] = 1,
+                                ["kind"] = "summary",
+                            }
+                        ),
+                    },
+                    "commit" => new JsonObject { ["status"] = "committed", ["commit"] = new string('c', 40) },
+                    _ => new JsonObject { ["ok"] = true },
+                };
+            }
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    options,
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ => Task.CompletedTask
+                );
+
+            if (resetDuring == "commit")
+            {
+                // The commit finished, so the review is final; only the cleanup refuses the lost claim.
+                (await run.Should().ThrowAsync<InvalidOperationException>())
+                    .Which.Should()
+                    .NotBeOfType<ReviewRunner.SlotClaimLostException>();
+                var finished = (await store.GetAsync<JsonObject>(runKey))!;
+                finished["stage"]!.GetValue<string>().Should().Be("completed-verified");
+                finished["reviewedHeadSha"]!.GetValue<string>().Should().Be(new string('a', 40));
+                finished["artifactCommit"]!["commit"]!.GetValue<string>().Should().Be(new string('c', 40));
+                phases.Should().EndWith("commit");
+            }
+            else
+            {
+                if (resetDuring.EndsWith("-failed", StringComparison.Ordinal))
+                    (await run.Should().ThrowAsync<InvalidOperationException>())
+                        .Which.Message.Should()
+                        .Be("inspect failed", "the step's own failure surfaces");
+                else if (resetDuring.EndsWith("-refused", StringComparison.Ordinal))
+                    // Only the reset releases a marked row, so the run's own release fails; the capacity refusal still
+                    // surfaces, which the batch backs off on without counting a failure against the PR.
+                    (await run.Should().ThrowAsync<SandboxException>())
+                        .Which.Should()
+                        .BeSameAs(refusedPrepare, "a failed release must not replace the capacity refusal");
+                else
+                {
+                    var lost = (await run.Should().ThrowAsync<ReviewRunner.SlotClaimLostException>()).Which;
+                    if (resetDuring == "commit-lost")
+                        lost.InnerException.Should().BeSameAs(lostCommit, "the commit's own error is kept");
+                }
+                (await store.GetAsync<JsonObject>(attemptKey))!
+                    .ToJsonString()
+                    .Should()
+                    .Be(recorded, "the run saved nothing over the reset");
+                (await store.GetAsync<JsonObject>(runKey)).Should().BeNull("no review finished");
+                phases.Should().EndWith(phase == "send" ? "inspect" : phase);
+                handler
+                    .Requests.Count(request => request.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+                    .Should()
+                    .Be(
+                        phase switch
+                        {
+                            "send" => 1,
+                            "verify" or "commit" => 2,
+                            _ => 0,
+                        },
+                        "a review sent on a reset slot is posted with missing context"
+                    );
+                handler
+                    .Requests.Any(request =>
+                        request.Method == HttpMethod.Post && request.Uri.AbsolutePath == "/api/conversations"
+                    )
+                    .Should()
+                    .Be(phase != "prepare", "a reset during prepare stops before provisioning");
+            }
+            phases.Should().NotContain("cleanup", "the reset already cleaned the slot");
+            var owner = (await store.GetAsync<JsonObject>(ownerKey))!;
+            owner["state"]!.GetValue<string>().Should().Be(marked ? "owned" : "released");
+        }
+        finally
+        {
+            ReviewdSqlitePools.Clear(database);
+            File.Delete(database);
+        }
+    }
+
+    [Fact]
+    public void Commit_response_lost_is_only_an_ambiguous_transport_failure_never_a_settled_or_caller_one()
+    {
+        // Lost: the commit may or may not have run, so its id is replayed. Not lost: a settled outcome, a refusal
+        // that never ran (424, or a 503 at capacity), a bare 502 protocol error, an authorization failure, or the
+        // caller's own cancellation. The SDK reports its own HttpClient
+        // timeouts as a TransportTimeout, so a raw TaskCanceledException, whatever its inner exception, is not lost.
+        var settled = FluentActions
+            .Invoking(() => ReviewRunner.Settle("commit", 1, "", "review_common.ReviewError: boom", "op"))
+            .Should()
+            .Throw<ReviewRunner.SettledSandboxException>()
+            .Which;
+        var lost = new Exception[]
+        {
+            new SandboxException(SandboxErrorKind.TransportTimeout, "transport timeout (00:00:30)."),
+            new SandboxException(
+                SandboxErrorKind.Unavailable,
+                "Sandbox gateway returned 503 for operation submit.",
+                503
+            ),
+        };
+        var notLost = new Exception[]
+        {
+            new SandboxException(SandboxErrorKind.Unavailable, "no operation api", 424)
+            {
+                ErrorCode = "operation_api_unavailable",
+            },
+            // A 424 is never lost on its status alone, with no error code.
+            new SandboxException(SandboxErrorKind.Unavailable, "no operation api", 424),
+            new SandboxException(SandboxErrorKind.Unavailable, "no operation api", 503)
+            {
+                ErrorCode = "operation_api_unavailable",
+            },
+            new SandboxException(SandboxErrorKind.Unavailable, "refused", 503)
+            {
+                ErrorCode = "operation_capacity_exhausted",
+            },
+            new SandboxException(SandboxErrorKind.Authorization, "denied", 401),
+            // A bare 502 (no error code) is what the SDK builds as a protocol error: held at commit-pending.
+            new SandboxException(SandboxErrorKind.Protocol, "Sandbox gateway returned 502 for operation submit.", 502),
+            new OperationCanceledException(),
+            new TaskCanceledException("caller cancelled"),
+            new TaskCanceledException("HttpClient.Timeout of 120 seconds elapsing.", new TimeoutException()),
+            settled,
+        };
+        lost.Should().OnlyContain(failure => ReviewRunner.CommitResponseLost(failure));
+        notLost.Should().NotContain(failure => ReviewRunner.CommitResponseLost(failure));
+    }
+
     [Fact]
     public async Task Runner_prepares_before_sending_reuses_thread_and_preserves_success_on_publication_failure()
     {
@@ -5512,6 +5813,7 @@ public sealed class ReviewdRunnerTests
         var polls = 0;
         var phases = new List<string>();
         var verifySummaryThreads = new List<string>();
+        var verifyRequests = new List<string>();
         string? lostInput = null;
         var handler = new FakeHttpMessageHandler()
             .OnJson(
@@ -5590,6 +5892,10 @@ public sealed class ReviewdRunnerTests
         var failPublication = false;
         var refuseCommit = false;
         string? retryableCommit = null;
+        Exception? lostCommit = null;
+        var commitOperations = new List<string>();
+        var commitRequests = new List<string>();
+        var verifyThread = 7;
         try
         {
             using var connection = PrThreadBindings.Connection(database);
@@ -5762,6 +6068,135 @@ public sealed class ReviewdRunnerTests
                     .Should()
                     .Be("verify-pending", "the commit stopped short of a verified archive, and a rerun is safe");
             }
+            // A commit whose response was lost (the live NScript #148 and ADO !11452 failures) also resumes at
+            // verification; held at commit-pending, its slot was reaped and pick never offered the PR again.
+            // The lost commit may still be running, so every later commit resubmits its operation id: the gateway
+            // then replays that operation instead of starting a second commit beside it.
+            async Task<string?> ReplayIdAsync()
+            {
+                var attempt = (await store.GetAsync<JsonObject>(attemptKey))!;
+                attempt["stage"]!
+                    .GetValue<string>()
+                    .Should()
+                    .Be("verify-pending", "the commit's response was lost, so a rerun after re-verifying is safe");
+                return attempt[ReviewRunner.CommitReplay]?.GetValue<string>();
+            }
+            // A lost response followed by a settled failure ends the replay either way: the lost commit has finished,
+            // so its id is never resubmitted again. Removed from the durable attempt, not just this run's copy.
+            commitOperations.Clear();
+            lostCommit = new SandboxException(
+                SandboxErrorKind.Unavailable,
+                "Sandbox gateway returned 503 for operation submit.",
+                503
+            );
+            await refusedCommit.Should().ThrowAsync<SandboxException>();
+            lostCommit = null;
+            var settledRetryable = commitOperations.Should().ContainSingle().Subject;
+            (await ReplayIdAsync()).Should().Be(settledRetryable);
+            retryableCommit = "Git push failed (exit 1); no state was forcibly cleared.";
+            await refusedCommit.Should().ThrowAsync<InvalidOperationException>().WithMessage("*Git push failed*");
+            retryableCommit = null;
+            (await ReplayIdAsync()).Should().BeNull("the replayed commit settled as a retryable failure");
+            lostCommit = new SandboxException(
+                SandboxErrorKind.Unavailable,
+                "Sandbox gateway returned 503 for operation submit.",
+                503
+            );
+            await refusedCommit.Should().ThrowAsync<SandboxException>();
+            lostCommit = null;
+            commitOperations.Should().HaveCount(3);
+            commitOperations[1].Should().Be(settledRetryable, "the lost commit was resubmitted under its id");
+            var settledFatal = commitOperations[2];
+            settledFatal.Should().NotBe(settledRetryable, "the rerun after a settled failure is a fresh commit");
+            (await ReplayIdAsync()).Should().Be(settledFatal);
+            // Not one of the retryable messages, so it settles as a plain commit failure, held at commit-pending.
+            retryableCommit = "Archive manifest does not match the review folder.";
+            await refusedCommit.Should().ThrowAsync<InvalidOperationException>().WithMessage("*Archive manifest*");
+            retryableCommit = null;
+            commitOperations.Should().HaveCount(4).And.EndWith(settledFatal);
+            var held = (await store.GetAsync<JsonObject>(attemptKey))!;
+            held["stage"]!.GetValue<string>().Should().Be("commit-pending");
+            held.ContainsKey(ReviewRunner.CommitReplay)
+                .Should()
+                .BeFalse("a replayed commit that settled as a failure is not retried under its id again");
+            // An operator who has inspected it sends the attempt back to verification.
+            held["stage"] = "verify-pending";
+            await store.SetAsync(attemptKey, held);
+            (await ReplayIdAsync()).Should().BeNull();
+            commitOperations.Clear();
+            commitRequests.Clear();
+            var verifiesBeforeLoss = verifySummaryThreads.Count;
+            // The lost round's verify records a summary thread of its own, so the resume's re-verify is given one more
+            // (ADO): the commit's request must not change with it, or the gateway refuses the resubmitted id (409).
+            verifyThread = 8;
+            lostCommit = new SandboxException(
+                SandboxErrorKind.TransportTimeout,
+                "Sandbox gateway request to 'api/v1/sandboxes/s/operations/o' did not complete within the "
+                    + "configured transport timeout (00:00:30)."
+            );
+            await refusedCommit
+                .Should()
+                .ThrowAsync<SandboxException>()
+                .Where(failure => failure.Kind == SandboxErrorKind.TransportTimeout);
+            var lostOperation = commitOperations.Should().ContainSingle().Subject;
+            (await ReplayIdAsync()).Should().Be(lostOperation);
+            // A reaper that frees this slot archives the review first, under the same id, from the saved attempt alone;
+            // the gateway replays it only for the identical request.
+            ReviewRunner
+                .ArchiveArgs((await store.GetAsync<JsonObject>(attemptKey))!, repo, "17", 2)
+                .ToJsonString()
+                .Should()
+                .Be(commitRequests.Single(), "the reaper's archive must resubmit the runner's own commit request");
+            lostCommit = new SandboxException(
+                SandboxErrorKind.Unavailable,
+                "Sandbox gateway returned 503 for operation submit.",
+                503
+            );
+            await refusedCommit
+                .Should()
+                .ThrowAsync<SandboxException>()
+                .Where(failure => failure.Kind == SandboxErrorKind.Unavailable);
+            lostCommit = null;
+            (await ReplayIdAsync()).Should().Be(lostOperation);
+            refuseCommit = true;
+            await refusedCommit.Should().ThrowAsync<SandboxException>();
+            refuseCommit = false;
+            (await ReplayIdAsync())
+                .Should()
+                .Be(lostOperation, "a refusal at capacity says nothing about the lost commit");
+            commitOperations.Should().Equal(lostOperation, lostOperation, lostOperation);
+            // The gateway refuses a resubmitted id whose request changed (409 idempotency_conflict). That is not a lost
+            // response and settles nothing about the original, so the id is kept and the attempt is held at
+            // commit-pending: no fresh commit starts beside one that may still be running, and a rerun is refused.
+            lostCommit = new SandboxException(
+                SandboxErrorKind.Conflict,
+                "Sandbox gateway returned 409 for operation submit (error_code idempotency_conflict).",
+                409
+            )
+            {
+                ErrorCode = "idempotency_conflict",
+            };
+            await refusedCommit
+                .Should()
+                .ThrowAsync<SandboxException>()
+                .Where(failure => failure.Kind == SandboxErrorKind.Conflict);
+            lostCommit = null;
+            var conflicted = (await store.GetAsync<JsonObject>(attemptKey))!;
+            conflicted["stage"]!.GetValue<string>().Should().Be("commit-pending");
+            conflicted[ReviewRunner.CommitReplay]
+                ?.GetValue<string>()
+                .Should()
+                .Be(lostOperation, "a refused resubmit says nothing about the lost commit");
+            phases.Clear();
+            var requestsBeforeHeld = handler.Requests.Count;
+            await refusedCommit.Should().ThrowAsync<InvalidOperationException>();
+            phases.Should().BeEmpty("a commit-pending attempt is never resumed automatically");
+            handler.Requests.Should().HaveCount(requestsBeforeHeld);
+            commitOperations.Should().HaveCount(4).And.OnlyContain(operation => operation == lostOperation);
+            // An operator who has inspected it sends the attempt back to verification; the id still stands.
+            conflicted["stage"] = "verify-pending";
+            await store.SetAsync(attemptKey, conflicted);
+            (await ReplayIdAsync()).Should().Be(lostOperation);
             // The first verification found the confirmation lost (the host never ran it); a retry must not
             // wait on it again, or every retry stalls the lane for the whole lost-input bound.
             var lost = (await store.GetAsync<JsonObject>(attemptKey))!;
@@ -5792,6 +6227,29 @@ public sealed class ReviewdRunnerTests
             phases.Should().Equal("inspect-prepared", "verify", "commit", "cleanup");
             var recovered = (await store.GetAsync<JsonObject>(attemptKey))!;
             recovered["stage"]!.GetValue<string>().Should().Be("completed-verified");
+            commitOperations.Should().HaveCount(5).And.OnlyContain(operation => operation == lostOperation);
+            recovered.ContainsKey(ReviewRunner.CommitReplay).Should().BeFalse("the replayed commit settled");
+            verifySummaryThreads.Skip(verifiesBeforeLoss).Should().Equal("[7]", "[7,8]", "[7,8]", "[7,8]", "[7,8]");
+            commitRequests.Should().HaveCount(5).And.OnlyContain(request => request == commitRequests[0]);
+            commitRequests[0].Should().NotContain("summaryThreads", "only verify reads them");
+            // Each verify is given exactly the commit's request plus the summary threads, so dropping the org, the
+            // project or the claim from the verify request fails here, not only a change to the threads.
+            var committed = JsonNode.Parse(commitRequests[0])!.AsObject();
+            committed["org"]!.GetValue<string>().Should().Be("org");
+            committed["project"]!.GetValue<string>().Should().Be("project");
+            committed["claimToken"]!.GetValue<string>().Should().Be(recovered["claimToken"]!.GetValue<string>());
+            var verified = verifyRequests.Skip(verifiesBeforeLoss).ToList();
+            verified.Should().HaveCount(5);
+            for (var round = 0; round < verified.Count; round++)
+            {
+                var verifyRequest = JsonNode.Parse(verified[round])!.AsObject();
+                verifyRequest.Remove("summaryThreads").Should().BeTrue();
+                JsonNode
+                    .DeepEquals(verifyRequest, JsonNode.Parse(commitRequests[round]))
+                    .Should()
+                    .BeTrue($"verify round {round} must carry the commit's whole request: {verified[round]}");
+            }
+            verifyThread = 7;
             foreach (var input in new[] { "reviewInputId", "confirmationInputId" })
                 recovered[input]!.GetValue<string>().Should().Be(verificationPending[input]!.GetValue<string>());
             foreach (var refusal in new[] { "missing-confirmation", "commit-pending", "changed-head" })
@@ -5939,10 +6397,15 @@ public sealed class ReviewdRunnerTests
                 throw new InvalidOperationException("publication unavailable");
             }
             if (phase == "verify")
+            {
                 verifySummaryThreads.Add(args["summaryThreads"]!.ToJsonString());
+                verifyRequests.Add(args.ToJsonString());
+            }
             if (phase == "commit")
             {
                 polls.Should().BeGreaterThanOrEqualTo(3, "input completion alone must not allow commits");
+                commitOperations.Add(operation);
+                commitRequests.Add(args.ToJsonString());
                 if (refuseCommit)
                     throw new SandboxException(SandboxErrorKind.Unavailable, "refused", 503)
                     {
@@ -5950,13 +6413,15 @@ public sealed class ReviewdRunnerTests
                     };
                 if (retryableCommit is not null)
                     ReviewRunner.Settle("commit", 1, "", "review_common.ReviewError: " + retryableCommit, operation);
+                if (lostCommit is not null)
+                    throw lostCommit;
             }
             var json = phase switch
             {
                 "prepare" =>
                     """{"mergeSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","contextPath":".worktrees/Nova-2/PRs/nova-17/setup-context.json","reviewDirectory":".worktrees/Nova-2/PRs/nova-17","baselineComments":[]}""",
                 "commit" => """{"status":"committed","commit":"cccccccccccccccccccccccccccccccccccccccc"}""",
-                "verify" => """{"comments":[{"threadId":7,"commentId":1,"kind":"summary"}]}""",
+                "verify" => $$"""{"comments":[{"threadId":{{verifyThread}},"commentId":1,"kind":"summary"}]}""",
                 "cleanup" => new JsonObject
                 {
                     ["claimToken"] = args["claimToken"]!.DeepClone(),

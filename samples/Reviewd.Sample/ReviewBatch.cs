@@ -1162,12 +1162,18 @@ internal static class ReviewBatch
                 // prepare that timed out three times, each time holding its slot until the reaper freed it).
                 // A resume is not counted: it repeats one admission, which only a fresh admission can replace
                 // (seen live: a lost input re-verified five times). Neither is a held slot, which says nothing
-                // about the PR.
+                // about the PR, nor a run whose slot a reset took after its lease renewals failed: that is a host
+                // or database outage, and the per-head reset limit already bounds how often it repeats.
                 var failedTimes =
                     launchedFresh
                     && !transientBeforeClaim
                     && !capacity
-                    && ex is not (ReviewRunner.ReviewNotAdmittedException or ReviewRunner.SlotUnavailableException)
+                    && ex
+                        is not (
+                            ReviewRunner.ReviewNotAdmittedException
+                            or ReviewRunner.SlotUnavailableException
+                            or ReviewRunner.SlotClaimLostException
+                        )
                         ? await RecordFailureAsync(entry, ex.Message)
                         : 0;
                 if (failedTimes >= QuarantineAfter && retained is not null && Reusable(retained))

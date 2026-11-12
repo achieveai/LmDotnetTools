@@ -44,6 +44,15 @@ internal static class ReviewRunner
     }
 
     /// <summary>
+    ///     The run no longer owns its slot: a sweep began resetting it, or reset it, while the run's lease went
+    ///     unrenewed (a renewal outage longer than the lease window). The run stops before it sends or commits on the
+    ///     reset slot, and leaves the attempt as the reset recorded it. The failure that was being saved, if any, is
+    ///     the inner exception.
+    /// </summary>
+    internal sealed class SlotClaimLostException(string message, Exception? cause = null)
+        : InvalidOperationException(message, cause);
+
+    /// <summary>
     ///     The host accepted an input but never ran it while the conversation sat idle (see
     ///     <see cref="NeverStartedGrace"/>), so no status for it will ever arrive.
     /// </summary>
@@ -205,13 +214,15 @@ internal static class ReviewRunner
         string phase,
         JsonObject args,
         string operation,
-        CancellationToken ct
+        CancellationToken ct,
+        string? reclaim = null
     )
     {
         // The renewal shares the connection, so it stops before the caller writes again.
         using var stepDone = CancellationTokenSource.CreateLinkedTokenSource(ct);
         (string Before, string After)? renewed = null;
         var stopped = false;
+        var lostLogged = false;
         var renewal = RenewAsync(stepDone.Token);
         try
         {
@@ -253,15 +264,42 @@ internal static class ReviewRunner
                     {
                         active = agentsActive is not null && await agentsActive(token);
                     }
-                    catch (Exception failure) when (failure is not OperationCanceledException)
+                    // Only the step's own end stops the renewals. An HttpClient timeout in the host read is a
+                    // TaskCanceledException too; the old filter let it through, which ended the renewals and, once
+                    // the step finished, replaced the step's result, even a successful commit's.
+                    catch (Exception failure)
+                        when (failure is not OperationCanceledException || !token.IsCancellationRequested)
                     {
                         Console.Error.WriteLine($"Step {operation}: agent read failed: {failure.Message}");
                         active = true;
                     }
                     if (!active && await StopStuckStepAsync())
                         return;
-                    if (await SlotRelease.RenewAsync(connection, ownerKey, claimToken, token) is { } lease)
-                        renewed = (renewed?.Before ?? lease.Before, lease.After);
+                    // A renewal that fails (a busy database) never stopped the step either; the next one retries.
+                    // Failures that outlast the lease let a sweep reset the slot under the step, so the runner's
+                    // next save checks the claim and stops before it sends or commits (SlotClaimLostException).
+                    try
+                    {
+                        if (
+                            await SlotRelease.RenewAsync(connection, ownerKey, claimToken, token, reclaim: reclaim) is
+                            { } lease
+                        )
+                            renewed = (renewed?.Before ?? lease.Before, lease.After);
+                        else if (!lostLogged)
+                        {
+                            // The step runs on; the caller's next save finds the claim lost and stops there.
+                            lostLogged = true;
+                            Console.Error.WriteLine(
+                                $"Step {operation} ({phase}): the slot claim is lost or a reset has begun; "
+                                    + "no longer renewed."
+                            );
+                        }
+                    }
+                    catch (Exception failure)
+                        when (failure is not OperationCanceledException || !token.IsCancellationRequested)
+                    {
+                        Console.Error.WriteLine($"Step {operation}: lease renewal failed: {failure.Message}");
+                    }
                     try
                     {
                         if (active)
@@ -272,7 +310,8 @@ internal static class ReviewRunner
                                 token
                             );
                     }
-                    catch (Exception failure) when (failure is not OperationCanceledException)
+                    catch (Exception failure)
+                        when (failure is not OperationCanceledException || !token.IsCancellationRequested)
                     {
                         // A missed mark only lets the watchdog judge by the step's own activity; the next renewal retries.
                         Console.Error.WriteLine($"Step {operation}: agent mark failed: {failure.Message}");
@@ -351,8 +390,9 @@ internal static class ReviewRunner
         );
         var settled = Settle(phase, result.ExitCode, result.StandardOutput, result.StandardError, operation);
         // The SDK keeps a record whose id the caller supplied, and the gateway holds at most a few hundred per
-        // session for an hour; past that, every submit is refused. A settled success is fully consumed and
-        // never replayed (each step mints a new id), so release it. Failures stay for inspection.
+        // session for an hour; past that, every submit is refused. A settled success is fully consumed and never
+        // replayed: each step mints a new id, and a commit keeps its id (CommitReplay) only while its response is
+        // lost, so release it. Failures stay for inspection.
         try
         {
             await sandbox.DeleteOperationAsync(session, operation, token);
@@ -380,6 +420,61 @@ internal static class ReviewRunner
             )
             || failure.Message.Contains("Git push failed (exit ", StringComparison.Ordinal)
         );
+
+    // The commit's response was lost, so it may or may not have run, and may still be running: the gateway transport
+    // timed out or was unreachable. The SDK reports its own HttpClient timeouts as a TransportTimeout, and the lease
+    // renewal beside the step never replaces the step's outcome, so a commit's TaskCanceledException is only the
+    // caller's own cancellation. Unlike the settled failures above this is not a rerun: the resume resubmits the same
+    // operation id (CommitReplay), and the gateway answers with that operation's own status instead of running the
+    // commit twice. Held instead, the slot was reaped at commit-pending, which pick never offers again, so the archive
+    // of a review already on the PR was never written (seen live: NScript #148, ADO !11452). A 424 or an
+    // operation_api_unavailable (whatever its status) cannot succeed on a resubmit, and a refusal at capacity
+    // answered (the operation never ran), so none of them is a lost response.
+    internal static bool CommitResponseLost(Exception failure) =>
+        !RefusedAtCapacity(failure)
+        && failure
+            is SandboxException { Kind: SandboxErrorKind.TransportTimeout }
+                or SandboxException
+                {
+                    Kind: SandboxErrorKind.Unavailable,
+                    StatusCode: not 424,
+                    ErrorCode: not "operation_api_unavailable",
+                };
+
+    // Set on the attempt while its commit's outcome is unknown; the next commit resubmits that operation id. The
+    // gateway replays only a request it still holds and that is identical, so the commit's request carries nothing a
+    // re-verify can change (see the verify step); a changed one is refused 409 and the attempt stays commit-pending.
+    // The gateway prunes only terminal records (after an hour), so a resubmit past that runs the commit afresh after
+    // the original finished: the settled-rerun case above. A gateway restart drops every record, finished or not, so
+    // after one this automatic resubmit can run the commit afresh beside the original still running, fenced only by
+    // the kit's slot and index locks.
+    internal const string CommitReplay = "commitReplayOperationId";
+
+    /// <summary>
+    /// The commit request this runner sends for a finished review, rebuilt from its saved attempt, so the reaper can
+    /// archive a verified review before it resets the slot. It must stay byte-identical to the runner's own request
+    /// (same fields, same order): a resubmit under <see cref="CommitReplay"/> is replayed only for an identical request.
+    /// </summary>
+    internal static JsonObject ArchiveArgs(JsonObject attempt, RepoIdentity repo, string pr, int slot)
+    {
+        var prepared =
+            attempt["prepared"] as JsonObject
+            ?? throw new InvalidOperationException("The attempt has no prepared setup to archive from.");
+        return new JsonObject
+        {
+            ["org"] = repo.OrgOrOwner,
+            ["project"] = repo.Project,
+            ["repo"] = repo.RepoName,
+            ["pr"] = pr,
+            ["slot"] = slot,
+            ["head"] = attempt["headSha"]!.GetValue<string>(),
+            ["reviewFinished"] = true,
+            ["claimToken"] = attempt["claimToken"]!.GetValue<string>(),
+            ["adopt"] = attempt["legacyCleanupAdoption"]?.GetValue<bool>() == true,
+            ["merge"] = prepared["mergeSha"]!.DeepClone(),
+            ["baselineComments"] = prepared["baselineComments"]!.DeepClone(),
+        };
+    }
 
     // The gateway refused to admit the operation at its record or concurrency limit, so it never ran.
     internal static bool RefusedAtCapacity(Exception failure) =>
@@ -1202,8 +1297,12 @@ internal static class ReviewRunner
                     "confirmation",
                     "Can you confirm if the PR feedback and replies to any discussion where you could add value have been posted. Audit and report existing publication receipts; do not post duplicates. Report your final verdict on the PR, with a brief rationale and any unresolved blockers. If the review is incomplete or blocked, state that explicitly rather than inferring approval. If this review verified a medium or high issue, or a failing required check this PR caused, that the summary you posted does not list as a blocker, reply in that summary thread now (on GitHub, a new PR comment): first \"REQUEST_CHANGES (replaces the verdict above)\", then each such blocker in one short line; record the reply in publication_receipts.json. Waiting for reviewer votes, approvals or policies is not such a blocker. You MUST return a non-empty final text response. End your response with a standalone line in exactly this format: verdict: <APPROVE | APPROVE_WITH_COMMENTS | REQUEST_CHANGES | BLOCKED | INCOMPLETE>. Choose exactly one value, do not leave the placeholder, and put nothing after this verdict line."
                 );
-            args["summaryThreads"] = await PriorSummaryThreadsAsync(connection, repo, pr, ct);
-            receipt["verifiedPublication"] = await StepAsync("verify");
+            // Only verify reads the summary threads, and a re-verify can find more (the lost round's own, on ADO), so
+            // they stay out of args: a commit resubmitted under a lost one's id must send the same request, or the
+            // gateway refuses it (409 idempotency_conflict) and the attempt is held at commit-pending.
+            var verifyArgs = args.DeepClone().AsObject();
+            verifyArgs["summaryThreads"] = await PriorSummaryThreadsAsync(connection, repo, pr, ct);
+            receipt["verifiedPublication"] = await StepAsync("verify", verifyArgs);
             await WaitAsync(
                 client,
                 thread!,
@@ -1241,6 +1340,16 @@ internal static class ReviewRunner
             Console.WriteLine(receipt.ToJsonString());
             return 0;
         }
+        catch (SlotClaimLostException lost)
+        {
+            // The reset already released the slot and recorded the attempt (a review never verified becomes a failed
+            // admission that pick offers again), so nothing is cleaned or saved over it.
+            Console.Error.WriteLine(
+                $"{repo.DisplayName} #{pr}: {lost.Message} Stopped; the attempt is left as reset."
+                    + (lost.InnerException is { } cause ? $" It stopped on: {cause.Message}" : "")
+            );
+            throw;
+        }
         catch (Exception failure)
         {
             var prepareRefused =
@@ -1269,9 +1378,15 @@ internal static class ReviewRunner
                 catch (Exception releaseFailure)
                 {
                     pending["cleanupError"] = releaseFailure.Message;
-                    await store.SetAsync(attemptKey, pending, CancellationToken.None);
-                    Console.Error.WriteLine($"Claim release held its lane: {releaseFailure.Message}");
-                    throw;
+                    await KeepOnFailureAsync(pending);
+                    Console.Error.WriteLine(
+                        $"{repo.DisplayName} #{pr}: this run's claim was not released ({releaseFailure.Message}); the "
+                            + "slot stays claimed until a reset releases it or its lease lapses."
+                    );
+                    // A refusal at capacity says nothing about the PR, and the batch backs off on it without counting a
+                    // failure, so it is the error that surfaces, below; a failed release must not replace it.
+                    if (!prepareRefused)
+                        throw;
                 }
                 if (prepareRefused)
                     throw;
@@ -1297,10 +1412,10 @@ internal static class ReviewRunner
             // Keep the pending phase and previous successful receipt so a live run can resume and finish
             // publication without redoing the review. The slot stays leased, so if this process dies the
             // lease reaper reclaims it within the lease window — retention never becomes a permanent block.
-            await store.SetAsync(attemptKey, receipt, CancellationToken.None);
-            Console.Error.WriteLine(
-                $"Review stopped at {receipt["stage"]}; retained {attemptKey}. No automatic retry or cleanup."
-            );
+            if (await KeepOnFailureAsync(receipt))
+                Console.Error.WriteLine(
+                    $"Review stopped at {receipt["stage"]}; retained {attemptKey}. No automatic retry or cleanup."
+                );
             throw;
         }
 
@@ -1309,12 +1424,47 @@ internal static class ReviewRunner
             query.Parameters["@key"].Value = name;
             return await query.ExecuteScalarAsync(ct) is string json ? JsonNode.Parse(json) : null;
         }
-        async Task SaveAsync()
+        async Task SaveAsync(bool claimRequired = true, Exception? cause = null)
         {
-            await store.SetAsync(attemptKey, receipt, ct);
-            // Extend the slot lease on every progress checkpoint so a live review is never mistaken for
-            // a dead one by the reaper. A lost claim (already reclaimed) is a no-op, never a failure.
-            _ = await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, ct);
+            // Extend the slot lease on every progress checkpoint so a live review is never mistaken for a dead one
+            // by the reaper. The renewal and the write are one transaction on the owner row, so a lost claim, or a
+            // reset that has begun (the reaper marks the row before it touches the slot), stops the run here: before
+            // it provisions, sends or commits, and without saving over the attempt the reset records. Only the save
+            // after a successful commit goes on: that result is final and belongs in the attempt, and the cleanup
+            // after it refuses the lost claim itself.
+            if (await SlotRelease.SaveIfHeldAsync(connection, ownerKey, claimToken, attemptKey, receipt, ct))
+                return;
+            if (!claimRequired)
+            {
+                await store.SetAsync(attemptKey, receipt, ct);
+                return;
+            }
+            throw new SlotClaimLostException(
+                $"Slot claim {claimToken} was lost at {receipt["stage"]}; the slot was reset under this run.",
+                cause
+            );
+        }
+        // A failing run keeps its attempt for a resume, but only while it still holds the slot: once a reset has
+        // begun, the reset's record stands. The lease is not renewed, so a dead process still frees the slot in time.
+        async Task<bool> KeepOnFailureAsync(JsonObject attempt)
+        {
+            if (
+                await SlotRelease.SaveIfHeldAsync(
+                    connection,
+                    ownerKey,
+                    claimToken,
+                    attemptKey,
+                    attempt,
+                    CancellationToken.None,
+                    renew: false
+                )
+            )
+                return true;
+            Console.Error.WriteLine(
+                $"{repo.DisplayName} #{pr}: stopped at {attempt["stage"]}, but slot claim {claimToken} is lost; nothing "
+                    + "was saved, and the attempt is left as the reset recorded it."
+            );
+            return false;
         }
         async Task CleanupAsync()
         {
@@ -1366,9 +1516,14 @@ internal static class ReviewRunner
                 receipt["stage"] = "failed-released";
             await SlotRelease.ReleaseAsync(connection, ownerKey, claimToken, attemptKey, receipt, ct, adoptedHistory);
         }
-        async Task<JsonObject> StepAsync(string phase)
+        async Task<JsonObject> StepAsync(string phase, JsonObject? stepArgs = null)
         {
-            var operation = Guid.NewGuid().ToString("N");
+            // A commit whose response was lost is resubmitted under its own id, so the gateway reports its outcome
+            // rather than starting a second commit beside one that may still be running.
+            var operation =
+                phase == "commit" && receipt[CommitReplay]?.GetValue<string>() is { Length: > 0 } lost
+                    ? lost
+                    : Guid.NewGuid().ToString("N");
             receipt["stage"] = phase + "-pending";
             receipt[phase + "OperationId"] = operation;
             await SaveAsync();
@@ -1385,21 +1540,36 @@ internal static class ReviewRunner
                     AgentsActiveAsync,
                     sandbox,
                     phase,
-                    args,
+                    stepArgs ?? args,
                     operation,
                     ct
                 );
             }
             catch (Exception refused)
-                when (phase == "commit" && (RefusedAtCapacity(refused) || CommitRetryable(refused)))
+                when (phase == "commit"
+                    && (RefusedAtCapacity(refused) || CommitRetryable(refused) || CommitResponseLost(refused))
+                )
             {
-                // Verify-pending resumes by re-verifying (read-only) and then committing again.
+                // Verify-pending resumes by re-verifying (read-only) and then committing again. Only a settled
+                // outcome ends a replay; a refusal at capacity says nothing about the original operation.
+                if (CommitResponseLost(refused))
+                    receipt[CommitReplay] = operation;
+                else if (refused is SettledSandboxException)
+                    receipt.Remove(CommitReplay);
                 receipt["stage"] = "verify-pending";
-                await SaveAsync();
+                await SaveAsync(cause: refused);
                 throw;
             }
+            catch (SettledSandboxException) when (phase == "commit")
+            {
+                // A replayed commit that settled as a failure is not retried under its id again.
+                receipt.Remove(CommitReplay);
+                throw;
+            }
+            if (phase == "commit")
+                receipt.Remove(CommitReplay);
             receipt["stage"] = phase + "-completed";
-            await SaveAsync();
+            await SaveAsync(claimRequired: phase != "commit");
             return result;
         }
         // Unknown or busy counts as active: a step is never stopped on a guess.
@@ -1457,6 +1627,9 @@ internal static class ReviewRunner
                     );
                     for (var poll = 0; poll < SendRetryPolls; poll++)
                         await LeasedDelayAsync(ct);
+                    // The wait's heartbeats do not check the claim, so the resend does: a slot reset during the backoff
+                    // stops the run here instead of sending the turn into the reset slot.
+                    await SaveAsync();
                 }
             }
             receipt[phase + "InputId"] = input;

@@ -107,6 +107,32 @@ class AlarmTests(unittest.TestCase):
                 keys |= {key for key, *_ in found if "restart" in key}
         self.assertEqual({"GitHub:restart-failed"}, keys)
 
+    def test_slot_left_mid_reset_alerts_after_one_hour_and_clears_once_released(self):
+        # The reaper never resets a verified review it could neither archive nor preserve: the owner row stays owned
+        # with its reclaimingOperation, and the lease renews on each retry, so only time first seen here counts.
+        owner = {"state": "owned", "claimToken": "t1", "reclaimingOperation": "op", "repository": "o/r",
+                 "prId": "100", "slot": 2, "leaseExpiresAt": NOW.isoformat()}
+        attempt = {"claimToken": "t1", "stage": "verify-pending", "archiveError": "Prepared manifest does not match"}
+        rows = {"reviewd/slot-owner/abc": owner, "reviewd/review-attempt/o/r/100": attempt,
+                "reviewd/slot-owner/live": dict(owner, claimToken="t2", reclaimingOperation=None)}
+
+        def held(minutes, rows):
+            with sqlite3.connect(self.install / "state" / "reviews.db") as db:
+                db.execute("delete from cache")
+                db.executemany("insert into cache values (?, ?)", [(k, json.dumps(v)) for k, v in rows.items()])
+            found = self.alarm.install_problems(self.install, NOW + datetime.timedelta(minutes=minutes), memory)
+            return [(key, detail) for key, _, kind, detail in found if kind == "held"]
+
+        memory = {}
+        self.assertEqual([], held(0, rows))
+        self.assertEqual([], held(45, rows))
+        found = held(60, rows)
+        self.assertEqual(["GitHub:held:abc:t1"], [key for key, _ in found])
+        self.assertIn("o/r #100 slot 2", found[0][1])
+        self.assertIn("Prepared manifest does not match", found[0][1])
+        self.assertEqual([], held(120, dict(rows, **{"reviewd/slot-owner/abc": dict(owner, state="released")})))
+        self.assertEqual({}, memory["held"])
+
     def test_batch_that_fails_at_every_start_alerts_down_after_15_minutes(self):
         # "started" is what the watchdog wrote before the fix; false is what it writes now. Both must alert.
         for written in ("started", False):
