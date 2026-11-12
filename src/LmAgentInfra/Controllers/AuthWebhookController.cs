@@ -578,6 +578,16 @@ public sealed record AuthWebhookResponse
     public string? Message { get; init; }
 
     /// <summary>
+    /// How widely the gateway may reuse an allow. Gateways from v0.1.20 reuse an allow that omits it
+    /// only for the exact method and path; <c>"host"</c> restores reuse for every request to the same
+    /// host and port. Older gateways ignore the field. Set only where the decision never depends on the
+    /// method or path (see <see cref="AuthWebhookCredentials.BuildAllow"/>).
+    /// </summary>
+    [JsonPropertyName("cache_scope")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CacheScope { get; init; }
+
+    /// <summary>
     /// Builds an allow decision injecting a host-appropriate Authorization header and the token's real
     /// expiry. Most endpoints take <c>Bearer</c>, but GitHub's git-over-HTTPS endpoint
     /// (<c>github.com</c>) rejects Bearer with 401 and requires HTTP Basic — so git operations get

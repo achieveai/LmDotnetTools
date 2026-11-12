@@ -166,6 +166,7 @@ public sealed class AuthWebhookControllerPredefinedKeyPortTests
             if (expected == "allow")
             {
                 decision.Headers.Should().ContainSingle().Which[0].Should().Be("Authorization");
+                decision.CacheScope.Should().Be("host");
             }
             else
             {
