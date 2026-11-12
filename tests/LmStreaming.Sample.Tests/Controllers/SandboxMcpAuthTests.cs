@@ -29,6 +29,13 @@ public sealed class SandboxMcpAuthTests
         repeated.Headers.Should().BeEquivalentTo(first.Headers);
         other.Headers.Should().ContainSingle().Which.Should().Equal("Authorization", "Bearer app-b-canary");
         first.ExpiresAt.Should().BeAfter(DateTimeOffset.UtcNow).And.BeBefore(DateTimeOffset.UtcNow.AddSeconds(61));
+        // MCP allows are tied to one server URL and path, so they keep the gateway's exact-path reuse default.
+        first.CacheScope.Should().BeNull();
+        using (var allowJson = JsonDocument.Parse(JsonSerializer.Serialize(first, JsonSerializerOptions.Web)))
+        {
+            allowJson.RootElement.TryGetProperty("cache_scope", out _).Should().BeFalse();
+        }
+
         denied.Decision.Should().Be("deny");
         denied.Headers.Should().BeNull();
         using var sent = JsonDocument.Parse(fixture.Creates[0]);
