@@ -438,12 +438,45 @@ public sealed class ReviewdArchiveSetAsideTests
             {
                 $"publication_receipts-{new string('a', 40)}-recovered.json",
                 $"publication_receipts-{new string('b', 40)}-recovered.json",
+                $"publication_receipts-{new string('c', 40)}-recovered.json",
             };
             await File.WriteAllTextAsync(Path.Combine(folder, unreadable[0]), "{not json " + new string('x', 2 << 20));
             await File.WriteAllTextAsync(
                 Path.Combine(folder, unreadable[1]),
                 new JsonObject { ["note"] = new string('x', 2 << 20) }.ToJsonString()
             );
+            await File.WriteAllTextAsync(
+                Path.Combine(folder, unreadable[2]),
+                new JsonObject { ["comments"] = null, ["note"] = new string('x', 2 << 20) }.ToJsonString()
+            );
+            // 20,000 short rows: the size estimate must charge each row's list indent and separator, or most pieces
+            // pass 64 KiB. Each commentId sits in two threads 10,000 rows apart, so in two pieces; ours is per thread.
+            var shortHead = new string('f', 40);
+            var shortRows = Enumerable
+                .Range(0, 20_000)
+                .Select(row =>
+                    (JsonNode)
+                        new JsonObject
+                        {
+                            ["threadId"] = 20_000 + row,
+                            ["commentId"] = row % 10_000 + 1,
+                            ["kind"] = "reply",
+                            ["content"] = "ok",
+                        }
+                )
+                .ToArray();
+            var shortName = $"publication_receipts-{shortHead}-recovered.json";
+            await File.WriteAllTextAsync(
+                Path.Combine(folder, shortName),
+                new JsonObject
+                {
+                    ["prId"] = pr.ToString(),
+                    ["headSha"] = shortHead,
+                    ["mergeSha"] = new string('m', 40),
+                    ["comments"] = new JsonArray(shortRows),
+                }.ToJsonString()
+            );
+            new FileInfo(Path.Combine(folder, shortName)).Length.Should().BeGreaterThan(1024 * 1024);
 
             var commit = await ReviewdAutoSlotTests.NativePhaseAsync(python!, root, "commit", pr, "A");
 
@@ -455,6 +488,8 @@ public sealed class ReviewdArchiveSetAsideTests
                 .Select(Path.GetFileName)
                 .Should()
                 .BeSubsetOf(archived, "the archive keeps every recovered receipt and no note in place of one");
+            foreach (var file in Directory.GetFiles(folder, $"publication_receipts-{shortHead}-recovered*"))
+                new FileInfo(file).Length.Should().BeLessThanOrEqualTo(65_536, "a piece stays within 64 KiB");
             foreach (var file in recovered)
             {
                 new FileInfo(file).Length.Should().BeLessThanOrEqualTo(64 * 1024);
@@ -481,7 +516,11 @@ public sealed class ReviewdArchiveSetAsideTests
                 .Select(pair => (pair![0]!.GetValue<int>(), pair[1]!.GetValue<int>()))
                 .Should()
                 .BeEquivalentTo(
-                    Enumerable.Range(1, 150).Select(id => (10_000 + id, id)).Append((11_000, 1_000)),
+                    Enumerable
+                        .Range(1, 150)
+                        .Select(id => (10_000 + id, id))
+                        .Append((11_000, 1_000))
+                        .Concat(Enumerable.Range(0, 20_000).Select(row => (20_000 + row, row % 10_000 + 1))),
                     "the judge counts every recovered comment and this run's as ours"
                 );
             JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(folder, "publication_receipts.json")))!["comments"]!

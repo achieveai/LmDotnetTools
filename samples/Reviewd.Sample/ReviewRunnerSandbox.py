@@ -554,7 +554,8 @@ def receipt_files(receipt, stem='publication_receipts', linked=True):
     budget = CONTEXT_PIECE_LIMIT - 1024 - len(render_json(head))
     chunks, used = [[]], 0
     for comment in receipt['comments']:
-        size = len(render_json(comment, '  ')) + 2
+        # Each comment is a row of the comments list: two spaces of indent before it and a comma and newline after.
+        size = len(render_json(comment, '  ')) + 4
         if chunks[-1] and used + size > budget:
             chunks.append([])
             used = 0
