@@ -459,7 +459,7 @@ public sealed class ReviewdArchiveSetAsideTests
                         new JsonObject
                         {
                             ["threadId"] = 20_000 + row,
-                            ["commentId"] = row % 10_000 + 1,
+                            ["commentId"] = (row % 10_000) + 1,
                             ["kind"] = "reply",
                             ["content"] = "ok",
                         }
@@ -520,7 +520,7 @@ public sealed class ReviewdArchiveSetAsideTests
                         .Range(1, 150)
                         .Select(id => (10_000 + id, id))
                         .Append((11_000, 1_000))
-                        .Concat(Enumerable.Range(0, 20_000).Select(row => (20_000 + row, row % 10_000 + 1))),
+                        .Concat(Enumerable.Range(0, 20_000).Select(row => (20_000 + row, (row % 10_000) + 1))),
                     "the judge counts every recovered comment and this run's as ours"
                 );
             JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(folder, "publication_receipts.json")))!["comments"]!
