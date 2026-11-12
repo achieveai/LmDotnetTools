@@ -544,31 +544,26 @@ def write_prepared_context(folder, report):
     return folder / 'setup-context.json'
 
 
-def receipt_files(receipt, stem='publication_receipts'):
+def receipt_files(receipt, stem='publication_receipts', linked=True):
     # A receipt over ARCHIVE_FILE_LIMIT as receipts within CONTEXT_PIECE_LIMIT, each naming the PR revision and
-    # holding some of the comments; <stem>.json lists the others under continued_in. Returns {file name: text}. The
-    # judge reads every publication_receipts*.json, and verify reads publication_receipts.json back (read_receipt).
+    # holding some of the comments. Returns {file name: text}. The judge reads every publication_receipts*.json on
+    # its own; verify reads publication_receipts.json back (read_receipt), which needs the others listed under
+    # continued_in (linked). An earlier round's recovered receipt is never verified, so its pieces stand alone and a
+    # long list of long names cannot push the first one over the limit.
     head = {key: value for key, value in receipt.items() if key != 'comments'}
-    # The first file also lists the others under continued_in; a long stem (a recovered receipt's names carry a head
-    # SHA) or many files can outgrow the 1 KiB kept for it, so the room grows until the list fits.
-    reserve = 1024
-    while True:
-        budget = CONTEXT_PIECE_LIMIT - reserve - len(render_json(head))
-        chunks, used = [[]], 0
-        for comment in receipt['comments']:
-            size = len(render_json(comment, '  ')) + 2
-            if chunks[-1] and used + size > budget:
-                chunks.append([])
-                used = 0
-            chunks[-1].append(comment)
-            used += size
-        names = [f'{stem}.json'] + [f'{stem}-{n}.json' for n in range(2, len(chunks) + 1)]
-        listed = len(render_json({'continued_in': names[1:]})) + 64
-        if listed <= reserve:
-            break
-        reserve = listed
+    budget = CONTEXT_PIECE_LIMIT - 1024 - len(render_json(head))
+    chunks, used = [[]], 0
+    for comment in receipt['comments']:
+        size = len(render_json(comment, '  ')) + 2
+        if chunks[-1] and used + size > budget:
+            chunks.append([])
+            used = 0
+        chunks[-1].append(comment)
+        used += size
+    names = [f'{stem}.json'] + [f'{stem}-{n}.json' for n in range(2, len(chunks) + 1)]
     files = {name: {**head, 'comments': chunk} for name, chunk in zip(names, chunks)}
-    files[names[0]]['continued_in'] = names[1:]
+    if linked:
+        files[names[0]]['continued_in'] = names[1:]
     return {name: render_json(value) + '\n' for name, value in files.items()}
 
 
@@ -886,7 +881,8 @@ elif phase == 'commit':
         if not receipt.is_file() or receipt.is_symlink() or receipt.stat().st_size <= ARCHIVE_FILE_LIMIT:
             continue
         try:
-            parts = receipt_files(json.loads(receipt.read_text()), receipt.stem)
+            parts = receipt_files(json.loads(receipt.read_text()), receipt.stem,
+                                  linked=receipt.name == 'publication_receipts.json')
         except (ValueError, TypeError, KeyError, AttributeError):
             if receipt.name == 'publication_receipts.json':
                 raise

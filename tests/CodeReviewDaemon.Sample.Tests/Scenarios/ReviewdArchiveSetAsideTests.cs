@@ -382,6 +382,7 @@ public sealed class ReviewdArchiveSetAsideTests
     {
         // A review that finds an earlier round's posts unrecorded keeps them in publication_receipts-<head>-recovered.json,
         // and the judge counts every publication_receipts*.json as ours. Set aside at 1 MiB, those comments were lost.
+        // A recovered file over the limit that is no receipt is set aside with its note, and the commit still succeeds.
         Skip.IfNot(OperatingSystem.IsLinux(), "the sandbox script scans /proc, so it runs only on Linux");
         var python = await ReviewdSummaryReplyTests.FindPythonAsync();
         Skip.If(python is null, "no Python interpreter on PATH, so the sandbox script cannot be run");
@@ -401,6 +402,7 @@ public sealed class ReviewdArchiveSetAsideTests
                     return sorted(p.relative_to(folder).as_posix() for p in folder.rglob('*') if p.is_file())
                 """
             );
+            // ADO receipt rows: the judge keys ours by (threadId, commentId).
             JsonObject Receipt(string head, IEnumerable<int> ids) =>
                 new()
                 {
@@ -412,7 +414,7 @@ public sealed class ReviewdArchiveSetAsideTests
                                 (JsonNode)
                                     new JsonObject
                                     {
-                                        ["commentType"] = "issue_comment",
+                                        ["threadId"] = 10_000 + id,
                                         ["commentId"] = id,
                                         ["kind"] = "inline",
                                         ["content"] = $"Finding {id}: " + new string('x', 9000),
@@ -432,34 +434,61 @@ public sealed class ReviewdArchiveSetAsideTests
                 Receipt(earlier, Enumerable.Range(1, 150)).ToJsonString()
             );
             new FileInfo(Path.Combine(folder, recoveredName)).Length.Should().BeGreaterThan(1024 * 1024);
+            var unreadable = new[]
+            {
+                $"publication_receipts-{new string('a', 40)}-recovered.json",
+                $"publication_receipts-{new string('b', 40)}-recovered.json",
+            };
+            await File.WriteAllTextAsync(Path.Combine(folder, unreadable[0]), "{not json " + new string('x', 2 << 20));
+            await File.WriteAllTextAsync(
+                Path.Combine(folder, unreadable[1]),
+                new JsonObject { ["note"] = new string('x', 2 << 20) }.ToJsonString()
+            );
 
             var commit = await ReviewdAutoSlotTests.NativePhaseAsync(python!, root, "commit", pr, "A");
 
             commit.ExitCode.Should().Be(0, commit.Stderr);
+            var archived = JsonNode.Parse(commit.Stdout)!.AsArray().Select(node => node!.GetValue<string>()).ToList();
             var recovered = Directory.GetFiles(folder, $"publication_receipts-{earlier}-recovered*");
             recovered.Length.Should().BeGreaterThan(1);
             recovered
                 .Select(Path.GetFileName)
                 .Should()
-                .BeSubsetOf(
-                    JsonNode.Parse(commit.Stdout)!.AsArray().Select(node => node!.GetValue<string>()),
-                    "the archive keeps every recovered receipt and no note in place of one"
-                );
-            var ids = new List<int>();
+                .BeSubsetOf(archived, "the archive keeps every recovered receipt and no note in place of one");
             foreach (var file in recovered)
             {
                 new FileInfo(file).Length.Should().BeLessThanOrEqualTo(64 * 1024);
                 var part = JsonNode.Parse(await File.ReadAllTextAsync(file))!;
                 part["headSha"]!.GetValue<string>().Should().Be(earlier);
-                ids.AddRange(part["comments"]!.AsArray().Select(node => node!["commentId"]!.GetValue<int>()));
+                part["continued_in"].Should().BeNull("a recovered piece stands alone; nothing verifies it back");
             }
-            ids.Should().BeEquivalentTo(Enumerable.Range(1, 150), "the judge still finds every recovered comment");
+            foreach (var name in unreadable)
+            {
+                File.Exists(Path.Combine(folder, name)).Should().BeFalse($"{name} is no receipt over the limit");
+                archived.Should().Contain($"{name}.omitted.json");
+            }
+            // The judge's own reader and ours collection, over every receipt file the archive keeps.
+            var receipts = new JsonObject();
+            foreach (var file in Directory.GetFiles(folder, "publication_receipts*.json"))
+                receipts[Path.GetFileName(file)] = await File.ReadAllTextAsync(file);
+            var ours = await ReviewdJudgeTests.SandboxAsync(
+                python!,
+                "sorted(list(k) for k in sandbox.collect_ours([(c, n, 'r') for n, t in data.items()"
+                    + " for c in (sandbox.parse_receipt(t, n)[0] or {'comments': []})['comments']], []))",
+                receipts
+            );
+            ours.AsArray()
+                .Select(pair => (pair![0]!.GetValue<int>(), pair[1]!.GetValue<int>()))
+                .Should()
+                .BeEquivalentTo(
+                    Enumerable.Range(1, 150).Select(id => (10_000 + id, id)).Append((11_000, 1_000)),
+                    "the judge counts every recovered comment and this run's as ours"
+                );
             JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(folder, "publication_receipts.json")))!["comments"]!
                 .AsArray()
                 .Select(node => node!["commentId"]!.GetValue<int>())
                 .Should()
                 .Equal([1_000], "this run's receipt is left as it was");
-            Directory.Exists(quarantine).Should().BeFalse("nothing is set aside");
         }
         finally
         {
