@@ -5501,6 +5501,16 @@ public sealed class ReviewdRunnerTests
         }
     }
 
+    // A publisher that declined once ended a run asking which publisher to use, and a reused conversation copied an
+    // earlier round's comments into the receipt; verify rejected both, so every review prompt carries these lines.
+    private static void AssertPublicationPolicy(string prompt) =>
+        prompt
+            .Should()
+            .Contain("post the same text yourself with the route above")
+            .And.Contain("Never end the run to ask which publisher to use")
+            .And.Contain("Record every comment/reply this run posts, and only those")
+            .And.Contain("(publication_receipts-<that head>-recovered.json), never in publication_receipts.json");
+
     [Fact]
     public async Task Runner_prepares_before_sending_reuses_thread_and_preserves_success_on_publication_failure()
     {
@@ -5624,6 +5634,7 @@ public sealed class ReviewdRunnerTests
             var reviewText = JsonNode.Parse(
                 handler.Requests.First(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal)).Body!
             )!["text"]!.GetValue<string>();
+            AssertPublicationPolicy(reviewText);
             reviewText.Should().Contain(ReviewRunner.ReviewQualityRules).And.Contain("Review quality rules v2.1.");
             reviewText.Should().NotContain("Review quality rules.").And.NotContain("Review quality rules v2. ");
             // Checked by content as well, so dropping v2.1's approve-last rule from the block fails here.
@@ -5672,6 +5683,8 @@ public sealed class ReviewdRunnerTests
             );
             thaw.Should().BeGreaterThan(-1, "a re-review must thaw the conversation it reuses");
             var send = reReview.FindIndex(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal));
+            reReview[send].Body.Should().Contain("This conversation already reviewed an earlier revision");
+            AssertPublicationPolicy(JsonNode.Parse(reReview[send].Body!)!["text"]!.GetValue<string>());
             reReview
                 .FindIndex(thaw, r => r.Uri.AbsolutePath.EndsWith("/run-state", StringComparison.Ordinal))
                 .Should()
