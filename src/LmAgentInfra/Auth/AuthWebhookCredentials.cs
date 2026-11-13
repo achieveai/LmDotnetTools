@@ -37,16 +37,25 @@ internal static class AuthWebhookCredentials
             ? ado.GetWebhookAccessTokenAsync(ct)
             : provider.GetAccessTokenAsync(scopes, ct);
 
+    /// <summary>
+    /// Builds the allow for a managed OAuth provider or predefined key. Both gate only on provider,
+    /// host and port, never on method or path, so the gateway may reuse the answer host-wide.
+    /// </summary>
     internal static AuthWebhookResponse BuildAllow(
         IOAuthTokenProvider provider,
         PredefinedKeyEntry? keyRevision,
         string? destinationHost,
         OAuthAccessToken token
     ) =>
-        provider is PredefinedKeyProvider && keyRevision is not null
-            ? AuthWebhookResponse.AllowCustom(
-                PredefinedKeyProvider.BuildHeaders(keyRevision, token),
-                PredefinedKeyProvider.IncludesExpiry(keyRevision) ? token.ExpiresAtUtc : null
-            )
-            : AuthWebhookResponse.Allow(provider.ProviderId, destinationHost, token);
+        (
+            provider is PredefinedKeyProvider && keyRevision is not null
+                ? AuthWebhookResponse.AllowCustom(
+                    PredefinedKeyProvider.BuildHeaders(keyRevision, token),
+                    PredefinedKeyProvider.IncludesExpiry(keyRevision) ? token.ExpiresAtUtc : null
+                )
+                : AuthWebhookResponse.Allow(provider.ProviderId, destinationHost, token)
+        ) with
+        {
+            CacheScope = "host",
+        };
 }

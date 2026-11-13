@@ -377,6 +377,166 @@ public sealed class ReviewdArchiveSetAsideTests
         }
     }
 
+    [SkippableFact]
+    public async Task A_recovered_receipt_over_the_limit_is_kept_as_several_with_every_comment()
+    {
+        // A review that finds an earlier round's posts unrecorded keeps them in publication_receipts-<head>-recovered.json,
+        // and the judge counts every publication_receipts*.json as ours. Set aside at 1 MiB, those comments were lost.
+        // A recovered file over the limit that is no receipt is set aside with its note, and the commit still succeeds.
+        Skip.IfNot(OperatingSystem.IsLinux(), "the sandbox script scans /proc, so it runs only on Linux");
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox script cannot be run");
+        var pr = Random.Shared.Next(1_000_000, int.MaxValue);
+        var (root, folder) = await PreparedSlotAsync(pr);
+        var quarantine = $"/tmp/review-quarantine/nova-{pr}-hhhhhhhh";
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(root, ".claude/skills/review-setup/scripts/review_commit.py"),
+                """
+                from pathlib import Path
+
+
+                def commit_review(root, repo, pr, slot, source_sha, expected_branch):
+                    folder = Path(root) / f'slots/{slot}/PRs/{repo.lower()}-{pr}'
+                    return sorted(p.relative_to(folder).as_posix() for p in folder.rglob('*') if p.is_file())
+                """
+            );
+            // ADO receipt rows: the judge keys ours by (threadId, commentId).
+            JsonObject Receipt(string head, IEnumerable<int> ids) =>
+                new()
+                {
+                    ["prId"] = pr.ToString(),
+                    ["headSha"] = head,
+                    ["mergeSha"] = new string('m', 40),
+                    ["comments"] = new JsonArray(
+                        ids.Select(id =>
+                                (JsonNode)
+                                    new JsonObject
+                                    {
+                                        ["threadId"] = 10_000 + id,
+                                        ["commentId"] = id,
+                                        ["kind"] = "inline",
+                                        ["content"] = $"Finding {id}: " + new string('x', 9000),
+                                    }
+                            )
+                            .ToArray()
+                    ),
+                };
+            var earlier = new string('e', 40);
+            var recoveredName = $"publication_receipts-{earlier}-recovered.json";
+            await File.WriteAllTextAsync(
+                Path.Combine(folder, "publication_receipts.json"),
+                Receipt(new string('h', 40), [1_000]).ToJsonString()
+            );
+            await File.WriteAllTextAsync(
+                Path.Combine(folder, recoveredName),
+                Receipt(earlier, Enumerable.Range(1, 150)).ToJsonString()
+            );
+            new FileInfo(Path.Combine(folder, recoveredName)).Length.Should().BeGreaterThan(1024 * 1024);
+            var unreadable = new[]
+            {
+                $"publication_receipts-{new string('a', 40)}-recovered.json",
+                $"publication_receipts-{new string('b', 40)}-recovered.json",
+                $"publication_receipts-{new string('c', 40)}-recovered.json",
+            };
+            await File.WriteAllTextAsync(Path.Combine(folder, unreadable[0]), "{not json " + new string('x', 2 << 20));
+            await File.WriteAllTextAsync(
+                Path.Combine(folder, unreadable[1]),
+                new JsonObject { ["note"] = new string('x', 2 << 20) }.ToJsonString()
+            );
+            await File.WriteAllTextAsync(
+                Path.Combine(folder, unreadable[2]),
+                new JsonObject { ["comments"] = null, ["note"] = new string('x', 2 << 20) }.ToJsonString()
+            );
+            // 20,000 short rows: the size estimate must charge each row's list indent and separator, or most pieces
+            // pass 64 KiB. Each commentId sits in two threads 10,000 rows apart, so in two pieces; ours is per thread.
+            var shortHead = new string('f', 40);
+            var shortRows = Enumerable
+                .Range(0, 20_000)
+                .Select(row =>
+                    (JsonNode)
+                        new JsonObject
+                        {
+                            ["threadId"] = 20_000 + row,
+                            ["commentId"] = (row % 10_000) + 1,
+                            ["kind"] = "reply",
+                            ["content"] = "ok",
+                        }
+                )
+                .ToArray();
+            var shortName = $"publication_receipts-{shortHead}-recovered.json";
+            await File.WriteAllTextAsync(
+                Path.Combine(folder, shortName),
+                new JsonObject
+                {
+                    ["prId"] = pr.ToString(),
+                    ["headSha"] = shortHead,
+                    ["mergeSha"] = new string('m', 40),
+                    ["comments"] = new JsonArray(shortRows),
+                }.ToJsonString()
+            );
+            new FileInfo(Path.Combine(folder, shortName)).Length.Should().BeGreaterThan(1024 * 1024);
+
+            var commit = await ReviewdAutoSlotTests.NativePhaseAsync(python!, root, "commit", pr, "A");
+
+            commit.ExitCode.Should().Be(0, commit.Stderr);
+            var archived = JsonNode.Parse(commit.Stdout)!.AsArray().Select(node => node!.GetValue<string>()).ToList();
+            var recovered = Directory.GetFiles(folder, $"publication_receipts-{earlier}-recovered*");
+            recovered.Length.Should().BeGreaterThan(1);
+            recovered
+                .Select(Path.GetFileName)
+                .Should()
+                .BeSubsetOf(archived, "the archive keeps every recovered receipt and no note in place of one");
+            foreach (var file in Directory.GetFiles(folder, $"publication_receipts-{shortHead}-recovered*"))
+                new FileInfo(file).Length.Should().BeLessThanOrEqualTo(65_536, "a piece stays within 64 KiB");
+            foreach (var file in recovered)
+            {
+                new FileInfo(file).Length.Should().BeLessThanOrEqualTo(64 * 1024);
+                var part = JsonNode.Parse(await File.ReadAllTextAsync(file))!;
+                part["headSha"]!.GetValue<string>().Should().Be(earlier);
+                part["continued_in"].Should().BeNull("a recovered piece stands alone; nothing verifies it back");
+            }
+            foreach (var name in unreadable)
+            {
+                File.Exists(Path.Combine(folder, name)).Should().BeFalse($"{name} is no receipt over the limit");
+                archived.Should().Contain($"{name}.omitted.json");
+            }
+            // The judge's own reader and ours collection, over every receipt file the archive keeps.
+            var receipts = new JsonObject();
+            foreach (var file in Directory.GetFiles(folder, "publication_receipts*.json"))
+                receipts[Path.GetFileName(file)] = await File.ReadAllTextAsync(file);
+            var ours = await ReviewdJudgeTests.SandboxAsync(
+                python!,
+                "sorted(list(k) for k in sandbox.collect_ours([(c, n, 'r') for n, t in data.items()"
+                    + " for c in (sandbox.parse_receipt(t, n)[0] or {'comments': []})['comments']], []))",
+                receipts
+            );
+            ours.AsArray()
+                .Select(pair => (pair![0]!.GetValue<int>(), pair[1]!.GetValue<int>()))
+                .Should()
+                .BeEquivalentTo(
+                    Enumerable
+                        .Range(1, 150)
+                        .Select(id => (10_000 + id, id))
+                        .Append((11_000, 1_000))
+                        .Concat(Enumerable.Range(0, 20_000).Select(row => (20_000 + row, (row % 10_000) + 1))),
+                    "the judge counts every recovered comment and this run's as ours"
+                );
+            JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(folder, "publication_receipts.json")))!["comments"]!
+                .AsArray()
+                .Select(node => node!["commentId"]!.GetValue<int>())
+                .Should()
+                .Equal([1_000], "this run's receipt is left as it was");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+            if (Directory.Exists(quarantine))
+                Directory.Delete(quarantine, recursive: true);
+        }
+    }
+
     [SkippableTheory]
     // A context prepared before contexts were written in pieces may be over 1 MiB. A commit try that then failed has
     // set it aside and left its note, and the resumed attempt runs inspect-prepared again: the note shows the context

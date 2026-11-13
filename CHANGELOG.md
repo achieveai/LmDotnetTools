@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`ToolOutputSpillOptions.TimeProvider`.** The clock `SaveTimeout` is measured on; defaults to `TimeProvider.System`.
 
+- **Auth webhook: managed OAuth and predefined-key allows are cached host-wide.** `AuthWebhookResponse` gains an optional
+  `cache_scope` field, left out of the JSON when null. Managed OAuth and predefined-key allows now send
+  `cache_scope: "host"`, so a gateway from v0.1.20 reuses one allow for every method and path on the same host and port
+  instead of asking the webhook again for each new path. Configured-provider (`cfg-`) allows and MCP allows still omit
+  the field, since their decisions depend on method and path, and keep the gateway's exact-path default. Older gateways
+  ignore the field.
+
 - **Anthropic requests pair each tool result with its own call.** `AnthropicRequest.FromMessages` matches a tool-call
   aggregate's results to its calls by `ToolCallId`, not by position, and drops (with a warning naming the thread and
   generation) a `tool_result` that answers no `tool_use` in the turn before it, or answers one a second time. Before, a
