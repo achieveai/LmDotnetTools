@@ -191,6 +191,9 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
         doc.RootElement.TryGetProperty("expires_at", out var expiresAt).Should().BeTrue();
         expiresAt.GetDateTimeOffset().Should().BeAfter(DateTimeOffset.UtcNow.AddDays(1));
 
+        // The decision depends only on provider and host, so the gateway may reuse it host-wide.
+        doc.RootElement.GetProperty("cache_scope").GetString().Should().Be("host");
+
         // Clean up so a sibling test in the same process starts from a known (signed-out) state.
         await factory.Services.GetRequiredService<IOAuthTokenStore>().RemoveAsync("github");
         LogTestEnd();
@@ -249,6 +252,7 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
                 pair[0].GetString().Should().Be("X-Api-Key");
                 pair[1].GetString().Should().Be("secret-123");
                 allow.RootElement.TryGetProperty("expires_at", out _).Should().BeFalse();
+                allow.RootElement.GetProperty("cache_scope").GetString().Should().Be("host");
             }
 
             using (var deny = await PostWebhookAsync(client, sharedSecret, providerId, "evil.test"))

@@ -544,23 +544,27 @@ def write_prepared_context(folder, report):
     return folder / 'setup-context.json'
 
 
-def receipt_files(receipt):
+def receipt_files(receipt, stem='publication_receipts', linked=True):
     # A receipt over ARCHIVE_FILE_LIMIT as receipts within CONTEXT_PIECE_LIMIT, each naming the PR revision and
-    # holding some of the comments; publication_receipts.json lists the others under continued_in. Returns
-    # {file name: text}. The judge reads every publication_receipts*.json, and verify reads them back (read_receipt).
+    # holding some of the comments. Returns {file name: text}. The judge reads every publication_receipts*.json on
+    # its own; verify reads publication_receipts.json back (read_receipt), which needs the others listed under
+    # continued_in (linked). An earlier round's recovered receipt is never verified, so its pieces stand alone and a
+    # long list of long names cannot push the first one over the limit.
     head = {key: value for key, value in receipt.items() if key != 'comments'}
     budget = CONTEXT_PIECE_LIMIT - 1024 - len(render_json(head))
     chunks, used = [[]], 0
     for comment in receipt['comments']:
-        size = len(render_json(comment, '  ')) + 2
+        # Each comment is a row of the comments list: two spaces of indent before it and a comma and newline after.
+        size = len(render_json(comment, '  ')) + 4
         if chunks[-1] and used + size > budget:
             chunks.append([])
             used = 0
         chunks[-1].append(comment)
         used += size
-    names = ['publication_receipts.json'] + [f'publication_receipts-{n}.json' for n in range(2, len(chunks) + 1)]
+    names = [f'{stem}.json'] + [f'{stem}-{n}.json' for n in range(2, len(chunks) + 1)]
     files = {name: {**head, 'comments': chunk} for name, chunk in zip(names, chunks)}
-    files[names[0]]['continued_in'] = names[1:]
+    if linked:
+        files[names[0]]['continued_in'] = names[1:]
     return {name: render_json(value) + '\n' for name, value in files.items()}
 
 
@@ -871,10 +875,19 @@ elif phase == 'commit':
         print(f'Left out {directory}/{path.name}, prepared history the archive does not keep; moved to {target}',
               file=sys.stderr)
     # A receipt over the limit is kept as several, before set_aside_unarchivable would move it out: when the push
-    # fails, the attempt resumes by verifying it again. Each file is replaced whole, the first one last.
-    receipt = folder / 'publication_receipts.json'
-    if receipt.is_file() and not receipt.is_symlink() and receipt.stat().st_size > ARCHIVE_FILE_LIMIT:
-        parts = receipt_files(json.loads(receipt.read_text()))
+    # fails, the attempt resumes by verifying it again. Each file is replaced whole, the first one last. An earlier
+    # round's receipts the review recovered (publication_receipts-<head>-recovered.json) are split the same way, so
+    # the judge still counts those comments as ours; one that is not a receipt is left to be set aside.
+    for receipt in [folder / 'publication_receipts.json'] + sorted(folder.glob('publication_receipts-*-recovered.json')):
+        if not receipt.is_file() or receipt.is_symlink() or receipt.stat().st_size <= ARCHIVE_FILE_LIMIT:
+            continue
+        try:
+            parts = receipt_files(json.loads(receipt.read_text()), receipt.stem,
+                                  linked=receipt.name == 'publication_receipts.json')
+        except (ValueError, TypeError, KeyError, AttributeError):
+            if receipt.name == 'publication_receipts.json':
+                raise
+            continue
         for name in sorted(parts, key=lambda name: name == receipt.name):
             with (folder / f'{name}.part').open('w', encoding='utf-8', newline='\n') as stream:
                 stream.write(parts[name])
