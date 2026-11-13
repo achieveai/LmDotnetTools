@@ -32,6 +32,12 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
     /// <summary>The JSON body of the most recent <c>POST .../operations</c> submit, for wire-level assertions.</summary>
     public string? LastSubmitBody { get; private set; }
 
+    /// <summary>Every <c>POST .../operations</c> submit body, in order.</summary>
+    public List<string> SubmitBodies { get; } = [];
+
+    /// <summary>When true, the stdout artifact download is cut mid-body, as a dropped connection is (<see cref="HttpIOException"/>).</summary>
+    public bool TruncateStdout { get; set; }
+
     public int CommandExitCode { get; init; }
     public string CommandStdout { get; init; } = string.Empty;
     public string CommandStderr { get; init; } = string.Empty;
@@ -133,6 +139,7 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
         if (request.Method == HttpMethod.Post && request.Content is not null)
         {
             LastSubmitBody = await request.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            SubmitBodies.Add(LastSubmitBody);
         }
 
         var operationId = await ResolveOperationIdAsync(request, ct).ConfigureAwait(false);
@@ -206,7 +213,12 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
         // GET: an operation artifact download, or a user file read.
         if (path.EndsWith("/stdout", StringComparison.Ordinal))
         {
-            return Octet(Encoding.UTF8.GetBytes(CommandStdout));
+            return TruncateStdout
+                ? new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StreamContent(new CutStream(Encoding.UTF8.GetBytes(CommandStdout))),
+                }
+                : Octet(Encoding.UTF8.GetBytes(CommandStdout));
         }
 
         if (path.EndsWith("/stderr", StringComparison.Ordinal))
@@ -276,6 +288,30 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
         }
 
         return string.Empty;
+    }
+
+    /// <summary>Serves the first half of its bytes, then fails the read the way a dropped connection does.</summary>
+    private sealed class CutStream(byte[] bytes) : MemoryStream(bytes[..(bytes.Length / 2)])
+    {
+        public override int Read(byte[] buffer, int offset, int count) =>
+            base.Read(buffer, offset, count) is > 0 and var read ? read : throw Cut();
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default
+        ) =>
+            await base.ReadAsync(buffer, cancellationToken).ConfigureAwait(false) is > 0 and var read
+                ? read
+                : throw Cut();
+
+        public override Task<int> ReadAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken
+        ) => ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+        private static HttpIOException Cut() => new(HttpRequestError.ResponseEnded, "The response ended prematurely.");
     }
 
     private static HttpResponseMessage Json(HttpStatusCode status, string body) =>

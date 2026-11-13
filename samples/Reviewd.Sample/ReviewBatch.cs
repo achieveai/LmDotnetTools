@@ -1155,7 +1155,18 @@ internal static class ReviewBatch
                 // A gateway at its operation limit says nothing about the PR: a restart resumes every owner at
                 // once and briefly exceeds it. Back off without spending the PR's retries, or admitted reviews
                 // are held and their slots wait for the reaper.
-                var capacity = ex is SandboxException { Kind: SandboxErrorKind.Unavailable, StatusCode: 503 };
+                // A plain 503 while a lost commit awaits its replay is that commit's response lost again, not a
+                // refusal at the limit, so it counts toward the lane's retries. Each resume renews the lease, so
+                // backing it off without a bound kept the slot forever, out of the reaper's and the alarm's sight.
+                // A sandbox_busy refusal (the gateway quiescing) is refused before it runs, so it backs off like a
+                // capacity refusal here; RefusedAtCapacity stays narrower, so the commit keeps its replay id.
+                var capacity =
+                    ex is SandboxException { Kind: SandboxErrorKind.Unavailable, StatusCode: 503 } unavailable
+                    && (
+                        ReviewRunner.RefusedAtCapacity(ex)
+                        || unavailable.ErrorCode == "sandbox_busy"
+                        || retained?[ReviewRunner.CommitReplay]?.GetValue<string>() is not { Length: > 0 }
+                    );
                 // A fresh admission that fails says something about the PR, so it is counted. One that released
                 // its slot quarantines now; one still owning its slot is held below, and once the reaper frees the
                 // slot the pre-launch check skips it, so a quarantine never strands an owned slot (seen live: a
