@@ -4,6 +4,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Messages;
 
@@ -22,6 +23,20 @@ public sealed class ToolOutputSpillTests
 
     private static Task<ToolCallResult> ApplyAsync(ToolOutputSpillOptions options, ToolCallResult result) =>
         options.ApplyAsync(result, NullLogger.Instance);
+
+    // A save given up on is the one under way at the deadline. A deadline that passes before the thread pool
+    // starts the save skips it, so these tests hold the clock until the store is called.
+    private static (ToolOutputSpillOptions Options, FakeTimeProvider Time) OnFakeClock(IToolOutputStore store)
+    {
+        var time = new FakeTimeProvider();
+        return (Options(store) with { SaveTimeout = TimeSpan.FromMilliseconds(20), TimeProvider = time }, time);
+    }
+
+    private static async Task PassDeadlineOnceSavingAsync(TaskCompletionSource entered, FakeTimeProvider time)
+    {
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        time.Advance(TimeSpan.FromMilliseconds(20));
+    }
 
     [Fact]
     public async Task Oversized_text_is_saved_whole_and_the_model_gets_a_preview_and_the_path()
@@ -227,9 +242,11 @@ public sealed class ToolOutputSpillTests
     {
         var store = new DeafStore();
         var logger = new SignallingLogger("abandoned");
-        var options = Options(store) with { SaveTimeout = TimeSpan.FromMilliseconds(20) };
+        var (options, time) = OnFakeClock(store);
 
-        _ = await options.ApplyAsync(new ToolCallResult("c17", Big), logger).WaitAsync(TimeSpan.FromSeconds(10));
+        var applying = options.ApplyAsync(new ToolCallResult("c17", Big), logger);
+        await PassDeadlineOnceSavingAsync(store.Entered, time);
+        _ = await applying.WaitAsync(TimeSpan.FromSeconds(10));
         store.Fail(new IOException("gateway down"));
 
         var logged = await logger.Logged.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -242,11 +259,11 @@ public sealed class ToolOutputSpillTests
         var store = new ManualStore();
         // The save finishes in the moment between the deadline and the save being given up on.
         var logger = new RecordingLogger("not saved within", () => store.Finish(SavedPath));
-        var options = Options(store) with { SaveTimeout = TimeSpan.FromMilliseconds(20) };
+        var (options, time) = OnFakeClock(store);
 
-        var result = await options
-            .ApplyAsync(new ToolCallResult("c21", Big), logger)
-            .WaitAsync(TimeSpan.FromSeconds(10));
+        var applying = options.ApplyAsync(new ToolCallResult("c21", Big), logger);
+        await PassDeadlineOnceSavingAsync(store.Entered, time);
+        var result = await applying.WaitAsync(TimeSpan.FromSeconds(10));
 
         store.Finished.Should().BeTrue();
         result.Result.Should().Contain("could not be saved").And.NotContain(SavedPath);
@@ -258,9 +275,11 @@ public sealed class ToolOutputSpillTests
         var store = new ManualStore();
         // The save fails in the moment between the deadline and the save being given up on.
         var logger = new RecordingLogger("not saved within", () => store.Fail(new IOException("gateway down")));
-        var options = Options(store) with { SaveTimeout = TimeSpan.FromMilliseconds(20) };
+        var (options, time) = OnFakeClock(store);
 
-        _ = await options.ApplyAsync(new ToolCallResult("c22", Big), logger).WaitAsync(TimeSpan.FromSeconds(10));
+        var applying = options.ApplyAsync(new ToolCallResult("c22", Big), logger);
+        await PassDeadlineOnceSavingAsync(store.Entered, time);
+        _ = await applying.WaitAsync(TimeSpan.FromSeconds(10));
 
         var abandoned = logger.Entries.Where(e => e.Message.Contains("abandoned", StringComparison.Ordinal));
         abandoned
@@ -409,9 +428,15 @@ public sealed class ToolOutputSpillTests
             TaskCreationOptions.RunContinuationsAsynchronously
         );
 
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public void Fail(Exception ex) => _saving.SetException(ex);
 
-        public Task<string?> SaveAsync(string content, CancellationToken ct = default) => _saving.Task;
+        public Task<string?> SaveAsync(string content, CancellationToken ct = default)
+        {
+            _ = Entered.TrySetResult();
+            return _saving.Task;
+        }
     }
 
     /// <summary>
@@ -422,13 +447,19 @@ public sealed class ToolOutputSpillTests
     {
         private readonly TaskCompletionSource<string?> _saving = new();
 
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public bool Finished => _saving.Task.IsCompleted;
 
         public void Finish(string path) => _saving.SetResult(path);
 
         public void Fail(Exception ex) => _saving.SetException(ex);
 
-        public Task<string?> SaveAsync(string content, CancellationToken ct = default) => _saving.Task;
+        public Task<string?> SaveAsync(string content, CancellationToken ct = default)
+        {
+            _ = Entered.TrySetResult();
+            return _saving.Task;
+        }
     }
 
     /// <summary>A store that holds the calling thread instead of returning a task.</summary>
