@@ -1557,6 +1557,11 @@ internal static class ReviewRunner
                     );
                     for (var poll = 0; poll < SendRetryPolls; poll++)
                         await LeasedDelayAsync(ct);
+                    // A sweep may have reset the slot during the wait; the resend must not go out on a reset slot.
+                    if (!await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, ct))
+                        throw new SlotClaimLostException(
+                            $"Slot claim {claimToken} was lost while {phase} send waited out a 503; not resent."
+                        );
                 }
             }
             receipt[phase + "InputId"] = input;

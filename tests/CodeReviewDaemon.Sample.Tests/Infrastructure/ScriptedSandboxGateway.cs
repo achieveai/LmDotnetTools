@@ -35,6 +35,9 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
     /// <summary>Every <c>POST .../operations</c> submit body, in order.</summary>
     public List<string> SubmitBodies { get; } = [];
 
+    /// <summary>Every operation id released by a <c>DELETE .../operations/{id}</c>, in order.</summary>
+    public List<string> DeletedOperations { get; } = [];
+
     /// <summary>When true, the stdout artifact download is cut mid-body, as a dropped connection is (<see cref="HttpIOException"/>).</summary>
     public bool TruncateStdout { get; set; }
 
@@ -133,6 +136,7 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
     /// <summary>
     /// Answers <c>POST .../operations</c> with a terminal snapshot (no poll needed), ECHOING the
     /// submitted <c>operation_id</c> so the SDK's correlation-id check passes (the SDK generates the id).
+    /// A <c>DELETE</c> is recorded in <see cref="DeletedOperations"/> and answered <c>204</c>.
     /// </summary>
     private async Task<HttpResponseMessage> RespondToOperationAsync(HttpRequestMessage request, CancellationToken ct)
     {
@@ -143,6 +147,12 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
         }
 
         var operationId = await ResolveOperationIdAsync(request, ct).ConfigureAwait(false);
+
+        if (request.Method == HttpMethod.Delete)
+        {
+            DeletedOperations.Add(operationId);
+            return new HttpResponseMessage(HttpStatusCode.NoContent);
+        }
 
         if (HangOperations)
         {

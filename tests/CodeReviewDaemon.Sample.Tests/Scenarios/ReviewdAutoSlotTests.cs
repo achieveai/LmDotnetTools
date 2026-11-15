@@ -760,7 +760,8 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         // The connection drops while the SDK reads the finished commit's output. That reaches the runner as a plain
         // IOException, which must count as a lost response so the attempt resumes at verify-pending. The replay under
         // the same id must send the gateway the very same command (script, args, cwd and timeout), since the
-        // gateway replays only an identical request and refuses a changed one (409).
+        // gateway replays only an identical request and refuses a changed one (409). The lost operation is never
+        // deleted: its record is what the replay reads, so only the settled replay releases it.
         var gateway = new ScriptedSandboxGateway
         {
             CommandStdout = """{"status":"committed","commit":"cccccccccccccccccccccccccccccccccccccccc"}""",
@@ -784,6 +785,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
 
         var cut = await FluentActions.Invoking(Commit).Should().ThrowAsync<IOException>();
         ReviewRunner.CommitResponseLost(cut.Which).Should().BeTrue("the commit ran; only its output was lost");
+        gateway.DeletedOperations.Should().BeEmpty("the lost operation's record is what the replay reads");
 
         gateway.TruncateStdout = false;
         var replayed = await Commit();
@@ -793,6 +795,11 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         gateway.SubmitBodies[1].Should().Be(gateway.SubmitBodies[0]);
         using var body = System.Text.Json.JsonDocument.Parse(gateway.SubmitBodies[0]);
         body.RootElement.GetProperty("operation_id").GetString().Should().Be(operation);
+        gateway
+            .DeletedOperations.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(operation, "the settled replay is released");
     }
 
     [SkippableFact]
