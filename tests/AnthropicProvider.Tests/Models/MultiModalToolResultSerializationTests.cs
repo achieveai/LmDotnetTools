@@ -475,6 +475,61 @@ public class MultiModalToolResultSerializationTests
         Assert.StartsWith("iVBOR", source.GetProperty("data").GetString());
     }
 
+    /// <summary>
+    ///     The multi-turn loop re-attaches only a result's images (its history keeps the text in
+    ///     <c>Result</c>). The array replaces the string, so the text must lead it, as the OpenAI mappers
+    ///     send it; otherwise the model sees the screenshot and never the handle beside it.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FromMessages_ImageOnlyContentBlocks_LeadWithTheResultText(bool batch)
+    {
+        const string resultText = "{\"browserHandle\":\"e95437b7\"}";
+        IList<ToolResultContentBlock> imageOnly =
+        [
+            new ImageToolResultBlock { Data = "iVBORw0KGgo=", MimeType = "image/png" },
+        ];
+        IMessage[] messages = batch
+            ? CreateToolCallAndResultMessages("toolu_01IMG", resultText, imageOnly)
+            :
+            [
+                new TextMessage { Role = Role.User, Text = "Open it" },
+                new ToolsCallMessage
+                {
+                    ToolCalls =
+                    [
+                        new ToolCall
+                        {
+                            FunctionName = "open",
+                            FunctionArgs = "{}",
+                            ToolCallId = "toolu_01IMG",
+                            ToolCallIdx = 0,
+                        },
+                    ],
+                    Role = Role.Assistant,
+                    GenerationId = "gen1",
+                },
+                new ToolCallResultMessage
+                {
+                    ToolCallId = "toolu_01IMG",
+                    Result = resultText,
+                    ContentBlocks = imageOnly,
+                    Role = Role.User,
+                },
+            ];
+
+        var json = JsonSerializer.Serialize(AnthropicRequest.FromMessages(messages), _jsonOptions);
+        var content = GetMessageByRole(JsonDocument.Parse(json), "user", skip: 1)
+            .GetProperty("content")[0]
+            .GetProperty("content");
+
+        Assert.Equal(2, content.GetArrayLength());
+        Assert.Equal("text", content[0].GetProperty("type").GetString());
+        Assert.Equal(resultText, content[0].GetProperty("text").GetString());
+        Assert.Equal("image", content[1].GetProperty("type").GetString());
+    }
+
     #region Helpers
 
     /// <summary>
