@@ -1,3 +1,7 @@
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
+
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Models;
 
 /// <summary>
@@ -5,7 +9,7 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Models;
 ///     are serialized correctly in the Anthropic API request format.
 ///     Text-only results must remain backward compatible (string format).
 /// </summary>
-public class MultiModalToolResultSerializationTests
+public class MultiModalToolResultSerializationTests(ITestOutputHelper output) : LoggingTestBase(output)
 {
     private static readonly JsonSerializerOptions _jsonOptions =
         AnthropicJsonSerializerOptionsFactory.CreateUniversal();
@@ -475,62 +479,222 @@ public class MultiModalToolResultSerializationTests
         Assert.StartsWith("iVBOR", source.GetProperty("data").GetString());
     }
 
+    /// <summary>The four mapper paths that turn a tool result into a <c>tool_result</c>.</summary>
+    private static readonly string[] Paths = ["single", "aggregate", "plural", "composite"];
+
+    public static TheoryData<string, string?> ImageOnlyCases()
+    {
+        var data = new TheoryData<string, string?>();
+        foreach (var path in Paths)
+        {
+            foreach (var result in new[] { "{\"browserHandle\":\"e95437b7\"}", null, "", " ", "\n" })
+            {
+                data.Add(path, result);
+            }
+        }
+
+        return data;
+    }
+
+    public static TheoryData<string> AllPaths()
+    {
+        var data = new TheoryData<string>();
+        foreach (var path in Paths)
+        {
+            data.Add(path);
+        }
+
+        return data;
+    }
+
     /// <summary>
     ///     The multi-turn loop re-attaches only a result's images (its history keeps the text in
     ///     <c>Result</c>). The array replaces the string, so the text must lead it, as the OpenAI mappers
-    ///     send it; otherwise the model sees the screenshot and never the handle beside it.
+    ///     send it; otherwise the model sees the screenshot and never the handle beside it. A blank
+    ///     <c>Result</c> adds nothing: the image goes alone. Each call keeps its own text.
     /// </summary>
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void FromMessages_ImageOnlyContentBlocks_LeadWithTheResultText(bool batch)
+    [MemberData(nameof(ImageOnlyCases))]
+    public void FromMessages_ImageOnlyContentBlocks_LeadWithTheResultText(string path, string? result)
     {
-        const string resultText = "{\"browserHandle\":\"e95437b7\"}";
-        IList<ToolResultContentBlock> imageOnly =
+        // Two calls, so the plural loop and the composite show each text stays with its own call.
+        var second = string.IsNullOrWhiteSpace(result) ? result : result + " (second)";
+        (string Id, string? Result)[] results = [("toolu_01IMG", result), ("toolu_02IMG", second)];
+        var json = Serialize(path, [.. results.Select(r => (r.Id, r.Result, ImageOnly()))]);
+
+        foreach (var (id, text) in results)
+        {
+            var content = FindToolResult(json, id).GetProperty("content");
+            var expectText = !string.IsNullOrWhiteSpace(text);
+            Assert.Equal(expectText ? 2 : 1, content.GetArrayLength());
+            if (expectText)
+            {
+                Assert.Equal("text", content[0].GetProperty("type").GetString());
+                Assert.Equal(text, content[0].GetProperty("text").GetString());
+            }
+
+            Assert.Equal("image", content[content.GetArrayLength() - 1].GetProperty("type").GetString());
+        }
+    }
+
+    /// <summary>
+    ///     Blocks that carry their own text keep it, and <c>Result</c> is not added beside it, on every path.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(AllPaths))]
+    public void FromMessages_TextBlockDiffersFromResult_KeepsTheBlockTextOnly(string path)
+    {
+        IList<ToolResultContentBlock> blocks =
         [
+            new TextToolResultBlock { Text = "From the block" },
             new ImageToolResultBlock { Data = "iVBORw0KGgo=", MimeType = "image/png" },
         ];
-        IMessage[] messages = batch
-            ? CreateToolCallAndResultMessages("toolu_01IMG", resultText, imageOnly)
-            :
+        var json = Serialize(path, [("toolu_01TXT", "From Result", blocks)]);
+
+        var content = FindToolResult(json, "toolu_01TXT").GetProperty("content");
+        Assert.Equal(2, content.GetArrayLength());
+        Assert.Equal("From the block", content[0].GetProperty("text").GetString());
+        Assert.Equal("image", content[1].GetProperty("type").GetString());
+        Assert.DoesNotContain("From Result", json);
+    }
+
+    #region Helpers
+
+    private static IList<ToolResultContentBlock> ImageOnly() =>
+        [new ImageToolResultBlock { Data = "iVBORw0KGgo=", MimeType = "image/png" }];
+
+    /// <summary>
+    ///     Builds the calls and their results for one mapper path, serializes the request and logs both.
+    ///     single: standalone <see cref="ToolCallResultMessage" />s; aggregate: a
+    ///     <see cref="ToolsCallAggregateMessage" />; plural: a direct <see cref="ToolsCallResultMessage" />;
+    ///     composite: provider-server results inside a <see cref="CompositeMessage" />.
+    /// </summary>
+    private string Serialize(string path, (string Id, string? Result, IList<ToolResultContentBlock> Blocks)[] results)
+    {
+        var calls = results
+            .Select(
+                (r, i) =>
+                    new ToolCall
+                    {
+                        FunctionName = "open",
+                        FunctionArgs = "{}",
+                        ToolCallId = r.Id,
+                        ToolCallIdx = i,
+                    }
+            )
+            .ToList();
+        var toolResults = results.Select(r => new ToolCallResult(r.Id, r.Result!, r.Blocks)).ToList();
+        IMessage question = new TextMessage { Role = Role.User, Text = "Open it" };
+        IMessage[] messages = path switch
+        {
+            "single" =>
             [
-                new TextMessage { Role = Role.User, Text = "Open it" },
+                question,
                 new ToolsCallMessage
                 {
-                    ToolCalls =
+                    ToolCalls = [.. calls],
+                    Role = Role.Assistant,
+                    GenerationId = "gen1",
+                },
+                .. results.Select(r => new ToolCallResultMessage
+                {
+                    ToolCallId = r.Id,
+                    Result = r.Result!,
+                    ContentBlocks = r.Blocks,
+                    Role = Role.User,
+                }),
+            ],
+            "aggregate" =>
+            [
+                question,
+                new ToolsCallAggregateMessage(
+                    new ToolsCallMessage { ToolCalls = [.. calls], GenerationId = "gen1" },
+                    new ToolsCallResultMessage { ToolCallResults = [.. toolResults], GenerationId = "gen1" },
+                    "assistant"
+                ),
+            ],
+            "plural" =>
+            [
+                question,
+                new ToolsCallMessage
+                {
+                    ToolCalls = [.. calls],
+                    Role = Role.Assistant,
+                    GenerationId = "gen1",
+                },
+                new ToolsCallResultMessage
+                {
+                    ToolCallResults = [.. toolResults],
+                    Role = Role.User,
+                    GenerationId = "gen1",
+                },
+            ],
+            "composite" =>
+            [
+                question,
+                new CompositeMessage
+                {
+                    Messages =
                     [
-                        new ToolCall
-                        {
-                            FunctionName = "open",
-                            FunctionArgs = "{}",
-                            ToolCallId = "toolu_01IMG",
-                            ToolCallIdx = 0,
-                        },
+                        .. results.SelectMany(r =>
+                            new IMessage[]
+                            {
+                                new ToolCallMessage
+                                {
+                                    ToolCallId = r.Id,
+                                    FunctionName = "server_tool",
+                                    FunctionArgs = "{}",
+                                    ExecutionTarget = ExecutionTarget.ProviderServer,
+                                },
+                                new ToolCallResultMessage
+                                {
+                                    ToolCallId = r.Id,
+                                    Result = r.Result!,
+                                    ContentBlocks = r.Blocks,
+                                    ExecutionTarget = ExecutionTarget.ProviderServer,
+                                    Role = Role.User,
+                                },
+                            }
+                        ),
                     ],
                     Role = Role.Assistant,
                     GenerationId = "gen1",
                 },
-                new ToolCallResultMessage
-                {
-                    ToolCallId = "toolu_01IMG",
-                    Result = resultText,
-                    ContentBlocks = imageOnly,
-                    Role = Role.User,
-                },
-            ];
+            ],
+            _ => throw new ArgumentOutOfRangeException(nameof(path), path, null),
+        };
 
+        LogData("path", path);
+        LogData(
+            "results",
+            results.Select(r => new
+            {
+                r.Id,
+                r.Result,
+                Blocks = r.Blocks.Select(b => b.GetType().Name),
+            })
+        );
         var json = JsonSerializer.Serialize(AnthropicRequest.FromMessages(messages), _jsonOptions);
-        var content = GetMessageByRole(JsonDocument.Parse(json), "user", skip: 1)
-            .GetProperty("content")[0]
-            .GetProperty("content");
-
-        Assert.Equal(2, content.GetArrayLength());
-        Assert.Equal("text", content[0].GetProperty("type").GetString());
-        Assert.Equal(resultText, content[0].GetProperty("text").GetString());
-        Assert.Equal("image", content[1].GetProperty("type").GetString());
+        Logger.LogDebug("Serialized request: {Json}", json);
+        return json;
     }
 
-    #region Helpers
+    /// <summary>Finds the one <c>tool_result</c> that answers <paramref name="toolUseId" />, in any message.</summary>
+    private static JsonElement FindToolResult(string json, string toolUseId)
+    {
+        var matches = JsonDocument
+            .Parse(json)
+            .RootElement.GetProperty("messages")
+            .EnumerateArray()
+            .Where(m => m.GetProperty("content").ValueKind == JsonValueKind.Array)
+            .SelectMany(m => m.GetProperty("content").EnumerateArray())
+            .Where(c =>
+                c.GetProperty("type").GetString() == "tool_result"
+                && c.GetProperty("tool_use_id").GetString() == toolUseId
+            )
+            .ToList();
+        return Assert.Single(matches);
+    }
 
     /// <summary>
     ///     Creates a standard tool call + result message pair using ToolsCallAggregateMessage.

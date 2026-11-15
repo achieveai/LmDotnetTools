@@ -1232,7 +1232,7 @@ public record AnthropicRequest
         }
 
         var result = new List<AnthropicContent>(contentBlocks.Count + 1);
-        if (!contentBlocks.OfType<TextToolResultBlock>().Any() && !string.IsNullOrEmpty(resultText))
+        if (!contentBlocks.OfType<TextToolResultBlock>().Any() && !string.IsNullOrWhiteSpace(resultText))
         {
             result.Add(new AnthropicContent { Type = "text", Text = resultText });
         }

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Anthropic requests keep a screenshot's tool-result text.** When a tool result's `ContentBlocks` hold images but no
+  text block, `AnthropicRequest` now puts the result's `Result` text first in the `tool_result` array, on all four paths
+  (standalone, aggregate, plural and provider-server composite results). `MultiTurnAgentLoop` re-attaches only a
+  result's images, and the array replaces the string, so before this the model got the image and never the text beside
+  it (for example a browser handle). A blank `Result` adds nothing; blocks with their own text are sent unchanged. The
+  OpenAI mappers already sent both.
+
 - **Auth webhook: managed OAuth and predefined-key allows are cached host-wide.** `AuthWebhookResponse` gains an optional
   `cache_scope` field, left out of the JSON when null. Managed OAuth and predefined-key allows now send
   `cache_scope: "host"`, so a gateway from v0.1.20 reuses one allow for every method and path on the same host and port
