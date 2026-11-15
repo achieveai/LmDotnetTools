@@ -103,6 +103,12 @@ public sealed record ToolOutputSpillOptions
         }
     }
 
+    /// <summary>
+    ///     The clock <see cref="SaveTimeout"/> is measured on. Defaults to <see cref="TimeProvider.System"/>;
+    ///     tests substitute a controllable one so a deadline falls exactly where they need it.
+    /// </summary>
+    public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
+
     /// <summary>Tools whose results are never saved. Compared by exact name.</summary>
     public IReadOnlySet<string> ExemptToolNames { get; init; } = DefaultExemptToolNames;
 
@@ -140,8 +146,8 @@ public sealed record ToolOutputSpillOptions
         var cap = Math.Min(MaxInlineBytes, maxResultBytes);
 
         // One deadline for the whole result, however many of its fields are over the limit.
-        using var saveBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        saveBudget.CancelAfter(SaveTimeout);
+        using var deadline = new CancellationTokenSource(SaveTimeout, TimeProvider);
+        using var saveBudget = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
 
         // A handler can return the same text as both the result and a content block. One file is enough.
         var savedPaths = new Dictionary<string, string?>(StringComparer.Ordinal);

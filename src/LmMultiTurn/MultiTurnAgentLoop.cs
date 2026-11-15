@@ -5222,6 +5222,15 @@ public sealed class MultiTurnAgentLoop
     /// <inheritdoc />
     protected override Task FlushPendingSavesAsync() => _compaction?.Saver?.FlushAsync() ?? Task.CompletedTask;
 
+    /// <inheritdoc />
+    /// <remarks>
+    ///     A row queued on the saver completes only once it is durable, which a refusing store can put off for
+    ///     good. A drain stops at a row that still cannot be written, so a refusing store costs a run's
+    ///     completion one more attempt instead of holding it.
+    /// </remarks>
+    protected override Task WaitForIssuedSavesAsync() =>
+        _compaction?.Saver is { } saver ? saver.DrainAsync() : base.WaitForIssuedSavesAsync();
+
     private IReadOnlyList<AgentRef> RosterForCompaction() =>
         SubAgentManager is null
             ? []
