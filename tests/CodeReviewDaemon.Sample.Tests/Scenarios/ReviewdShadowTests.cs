@@ -1,0 +1,395 @@
+extern alias Reviewd;
+
+using System.Net;
+using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.Misc.Storage;
+using CodeReviewDaemon.Sample.Agents;
+using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using Microsoft.Extensions.Configuration;
+using Reviewd::Reviewd.Sample;
+
+namespace CodeReviewDaemon.Sample.Tests.Scenarios;
+
+/// <summary>
+///     <c>review run --shadow</c> is an A/B experiment arm: the same review on a fresh read-only-egress conversation,
+///     recorded in would_post.json instead of posted, and titled apart so the live runner never reuses it.
+/// </summary>
+public sealed class ReviewdShadowTests : IDisposable
+{
+    private static readonly RepoIdentity Repo = PrCommands.ParseRepo("org/project/Nova");
+    private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-10-07T22:00:00Z");
+    private static readonly string Head = new('a', 40);
+    private readonly string _database = Path.Combine(Path.GetTempPath(), $"reviewd-shadow-{Guid.NewGuid():N}.db");
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_shadow_run_provisions_read_only_titles_apart_and_sends_the_shadow_prompt(bool shadow)
+    {
+        var handler = Host();
+        var phases = new List<(string Phase, JsonObject Args)>();
+        await SnapshotAsync();
+
+        // The scripted host reports the review Errored after the send; this test only checks how it got there.
+        var run = () => RunAsync(handler, phases, shadow ? ["--shadow", "--variant", "kb-h1"] : []);
+        await run.Should().ThrowAsync<InvalidOperationException>();
+
+        var provision = handler.Requests.Single(r =>
+            r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations"
+        );
+        var title = handler.Requests.Single(r => r.Uri.AbsolutePath.EndsWith("/metadata", StringComparison.Ordinal));
+        var send = handler.Requests.First(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal));
+        var attempt = await AttemptAsync();
+        if (shadow)
+        {
+            provision.Body.Should().Contain("\"readOnlyEgress\":true");
+            title.Body.Should().Contain("shadow-Nova-17-aaaaaaaa");
+            send.Body.Should().Contain("SHADOW review").And.Contain("would_post.json");
+            phases.Should().OnlyContain(p => p.Args["shadow"]!.GetValue<bool>());
+            attempt["shadow"]!.GetValue<bool>().Should().BeTrue();
+            attempt["variant"]!.GetValue<string>().Should().Be("kb-h1");
+        }
+        else
+        {
+            provision.Body.Should().NotContain("\"readOnlyEgress\":true");
+            title.Body.Should().Contain("\"Nova-17-aaaaaaaa\"");
+            send.Body.Should().NotContain("SHADOW");
+            phases.Should().OnlyContain(p => p.Args["shadow"] == null);
+            attempt.ContainsKey("shadow").Should().BeFalse();
+        }
+    }
+
+    [Fact]
+    public async Task A_shadow_run_reviews_a_head_another_run_already_reviewed()
+    {
+        // The live reviewer's conversation for this head would refuse a live re-run as a duplicate post. A shadow run
+        // posts nothing, so it neither reuses that conversation nor stops at it.
+        var live = new JsonArray(
+            new JsonObject
+            {
+                ["messageType"] = "text",
+                ["role"] = "User",
+                ["timestamp"] = 1,
+                ["messageJson"] = new JsonObject
+                {
+                    ["text"] =
+                        $"Review org/project/Nova PR #17 in slot Nova-2.\nExpected source head {Head}; prepared merge {new string('b', 40)}.",
+                }.ToJsonString(),
+            },
+            new JsonObject
+            {
+                ["messageType"] = "text",
+                ["role"] = "Assistant",
+                ["timestamp"] = 2,
+                ["messageJson"] = new JsonObject { ["text"] = "Done." }.ToJsonString(),
+            }
+        ).ToJsonString();
+        var handler = Host(
+            """[{"threadId":"live","title":"Nova-17-aaaaaaaa","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1,"clientToolsDisabled":true}]""",
+            live
+        );
+        await SnapshotAsync();
+
+        var run = () => RunAsync(handler, [], ["--shadow"]);
+
+        (await run.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should()
+            .NotBe("PR head was already reviewed by another run; skipped.");
+        handler
+            .Requests.Should()
+            .Contain(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations");
+        handler.Requests.Should().NotContain(r => r.Uri.AbsolutePath.Contains("/live/", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task A_resume_must_match_the_attempts_shadow_flag(bool shadowRun, bool shadowAttempt)
+    {
+        await SnapshotAsync();
+        var attempt = new JsonObject
+        {
+            ["repository"] = Repo.DisplayName,
+            ["prId"] = "17",
+            ["slot"] = 2,
+            ["stage"] = "review-running",
+            ["threadId"] = "thread",
+        };
+        if (shadowAttempt)
+            attempt["shadow"] = true;
+        await PutAsync($"reviewd/review-attempt/{Repo.NormalizedKey}/17", attempt);
+        var handler = new FakeHttpMessageHandler();
+
+        var run = () => RunAsync(handler, [], shadowRun ? ["--shadow", "--resume"] : ["--resume"]);
+
+        (await run.Should().ThrowAsync<ArgumentException>()).WithMessage(
+            shadowRun ? "--shadow cannot resume a live*" : "A shadow review attempt can only be resumed with --shadow*"
+        );
+        handler.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_shadow_run_refuses_GitHub_before_touching_anything()
+    {
+        var handler = new FakeHttpMessageHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        var options = CliOptions.Parse([
+            "review",
+            "run",
+            "--repo",
+            "owner/repo",
+            "--pr",
+            "17",
+            "--slot",
+            "2",
+            "--db",
+            _database,
+            "--session",
+            "session",
+            "--workspace",
+            "workspace",
+            "--provider",
+            "test",
+            "--shadow",
+            "--execute",
+        ]);
+
+        var run = () =>
+            ReviewRunner.RunAsync(
+                options,
+                config,
+                new LmStreamingS2SClient(http, null, null, null),
+                (_, _, _, _) => throw new InvalidOperationException("sandbox must not be reached"),
+                CancellationToken.None,
+                _ => Task.CompletedTask,
+                () => Now
+            );
+
+        (await run.Should().ThrowAsync<ArgumentException>()).WithMessage("--shadow supports Azure DevOps*");
+        handler.Requests.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("kb-h1", true)]
+    [InlineData("a", true)]
+    [InlineData("0skill-edit-2", true)]
+    [InlineData("KB", false)]
+    [InlineData("-lead", false)]
+    [InlineData("has space", false)]
+    [InlineData("exp/kb", false)]
+    [InlineData("a1234567890123456789012345678901234567890", false)]
+    public void Variant_labels_are_short_lowercase_slugs(string label, bool valid)
+    {
+        foreach (var command in new[] { RunArguments, ["review", "batch"] })
+        {
+            var parse = () => CliOptions.Parse([.. command, "--shadow", "--variant", label]);
+            if (valid)
+                parse().Get("variant").Should().Be(label);
+            else
+                parse.Should().Throw<ArgumentException>().WithMessage("--variant*");
+        }
+    }
+
+    [Fact]
+    public void Shadow_is_a_flag_that_takes_no_value()
+    {
+        var options = CliOptions.Parse([.. RunArguments, "--shadow", "--execute"]);
+
+        options.Has("shadow").Should().BeTrue();
+        options.Has("execute").Should().BeTrue();
+    }
+
+    private static readonly string[] RunArguments =
+    [
+        "review",
+        "run",
+        "--repo",
+        "org/project/Nova",
+        "--pr",
+        "17",
+        "--db",
+        "x.db",
+        "--session",
+        "session",
+        "--workspace",
+        "workspace",
+        "--provider",
+        "test",
+    ];
+
+    [SkippableFact]
+    public async Task Would_post_verification_needs_this_revision_and_exactly_one_well_formed_summary()
+    {
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox's would-post rule cannot be run");
+        static JsonObject Record(params JsonObject[] comments) =>
+            new()
+            {
+                ["prId"] = "17",
+                ["headSha"] = "h",
+                ["mergeSha"] = "m",
+                ["comments"] = new JsonArray([.. comments]),
+            };
+        static JsonObject Comment(string kind, string content = "text", string? file = null, JsonNode? line = null) =>
+            new()
+            {
+                ["kind"] = kind,
+                ["content"] = content,
+                ["filePath"] = file,
+                ["line"] = line,
+            };
+        var summary = Comment("summary");
+        var wrongHead = Record(summary.DeepClone().AsObject());
+        wrongHead["headSha"] = "other";
+        var badReply = Comment("reply");
+        badReply["threadId"] = -1;
+        var cases = new JsonArray(
+            Record(summary.DeepClone().AsObject(), Comment("inline", file: "/a.cs", line: 3), Comment("reply")),
+            Record(summary.DeepClone().AsObject(), Comment("inline", file: "/a.cs")),
+            wrongHead,
+            Record(),
+            Record(Comment("inline", file: "/a.cs", line: 3)),
+            Record(summary.DeepClone().AsObject(), Comment("summary")),
+            Record(summary.DeepClone().AsObject(), Comment("inline", line: 3)),
+            Record(summary.DeepClone().AsObject(), Comment("inline", file: "/a.cs", line: 0)),
+            Record(summary.DeepClone().AsObject(), Comment("vote")),
+            Record(Comment("summary", content: "  ")),
+            Record(summary.DeepClone().AsObject(), badReply)
+        );
+
+        var results = await ReviewdSummaryReplyTests.RunAsync(
+            python!,
+            ["verify_would_post"],
+            "passes(lambda: verify_would_post(json.dumps(c), 17, 'h', 'm'))",
+            cases.ToJsonString()
+        );
+
+        results.Should().Equal(true, true, false, false, false, false, false, false, false, false, false);
+    }
+
+    public void Dispose()
+    {
+        ReviewdSqlitePools.Clear(_database);
+        if (File.Exists(_database))
+            File.Delete(_database);
+    }
+
+    private static FakeHttpMessageHandler Host(string conversations = "[]", string liveTranscript = "[]") =>
+        new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/live/messages", liveTranscript)
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+            )
+            .On(
+                request =>
+                    request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
+                _ => new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{"threadId":"thread","readOnlyEgressAccepted":true}"""),
+                }
+            )
+            .OnJson(HttpMethod.Get, "/api/conversations?", conversations)
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .OnJson(HttpMethod.Post, "/messages", """{"inputId":"input","idempotencyKeyHonored":true}""")
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+
+    private async Task<int> RunAsync(
+        FakeHttpMessageHandler handler,
+        List<(string Phase, JsonObject Args)> phases,
+        string[] extra
+    )
+    {
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        var options = CliOptions.Parse([
+            "review",
+            "run",
+            "--repo",
+            Repo.DisplayName,
+            "--pr",
+            "17",
+            "--slot",
+            "2",
+            "--db",
+            _database,
+            "--session",
+            "session",
+            "--workspace",
+            "workspace",
+            "--provider",
+            "test",
+            "--max-age-hours",
+            "72",
+            "--execute",
+            .. extra,
+        ]);
+        Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token)
+        {
+            phases.Add((phase, args.DeepClone().AsObject()));
+            return Task.FromResult(
+                phase switch
+                {
+                    "eligibility" => new JsonObject
+                    {
+                        ["prId"] = "17",
+                        ["status"] = "active",
+                        ["isDraft"] = false,
+                        ["headSha"] = Head,
+                        ["createdAt"] = Now.AddHours(-1).ToString("O"),
+                    },
+                    "prepare" => new JsonObject
+                    {
+                        ["mergeSha"] = new string('b', 40),
+                        ["contextPath"] = "context",
+                        ["reviewDirectory"] = "reviews",
+                        ["baselineComments"] = new JsonArray(),
+                    },
+                    _ => [],
+                }
+            );
+        }
+        return await ReviewRunner.RunAsync(
+            options,
+            config,
+            new LmStreamingS2SClient(http, null, null, null),
+            Sandbox,
+            CancellationToken.None,
+            _ => Task.CompletedTask,
+            () => Now
+        );
+    }
+
+    private Task SnapshotAsync() =>
+        PutAsync(
+            $"reviewd/pr-snapshot/{Repo.NormalizedKey}",
+            new JsonObject
+            {
+                ["17"] = new JsonObject
+                {
+                    ["Lifecycle"] = "Open",
+                    ["IsDraft"] = false,
+                    ["HeadSha"] = Head,
+                },
+            }
+        );
+
+    private async Task PutAsync(string key, JsonObject value)
+    {
+        using var connection = PrThreadBindings.Connection(_database);
+        await new SqliteKvStore(connection).SetAsync(key, value);
+    }
+
+    private async Task<JsonObject> AttemptAsync()
+    {
+        using var connection = PrThreadBindings.Connection(_database);
+        return (
+            await new SqliteKvStore(connection).GetAsync<JsonObject>($"reviewd/review-attempt/{Repo.NormalizedKey}/17")
+        )!;
+    }
+}

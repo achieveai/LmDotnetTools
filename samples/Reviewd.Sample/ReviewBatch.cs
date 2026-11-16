@@ -1097,6 +1097,10 @@ internal static class ReviewBatch
                 };
                 if (options.Get("reasoning-effort") is { } effort)
                     arguments.AddRange(["--reasoning-effort", effort]);
+                if (options.Has("shadow"))
+                    arguments.Add("--shadow");
+                if (options.Get("variant") is { } variant)
+                    arguments.AddRange(["--variant", variant]);
                 if (maxAgeHours is { } maximumAge)
                     arguments.AddRange([
                         "--max-age-hours",

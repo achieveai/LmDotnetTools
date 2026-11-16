@@ -2,6 +2,8 @@ namespace Reviewd.Sample;
 
 internal sealed class CliOptions
 {
+    private static readonly System.Text.RegularExpressions.Regex VariantLabel = new("^[a-z0-9][a-z0-9-]{0,39}$");
+
     private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
 
     public string Command { get; private init; } = "";
@@ -79,6 +81,8 @@ internal sealed class CliOptions
                 "resume",
                 "cleanup-only",
                 "head",
+                "shadow",
+                "variant",
             ],
             "review batch" =>
             [
@@ -93,6 +97,8 @@ internal sealed class CliOptions
                 "listen",
                 "callback",
                 "execute",
+                "shadow",
+                "variant",
             ],
             "review reconcile-slot" => ["repo", "pr", "db", "evidence", "execute"],
             "review reclaim-slot" => ["repo", "pr", "slot", "db", "workspace", "session", "execute"],
@@ -173,7 +179,7 @@ internal sealed class CliOptions
             }
 
             var value = "true";
-            if (name is not ("wait" or "execute" or "resume" or "cleanup-only" or "rejudge"))
+            if (name is not ("wait" or "execute" or "resume" or "cleanup-only" or "rejudge" or "shadow"))
             {
                 if (++i >= commandArgs.Length || commandArgs[i].StartsWith("--", StringComparison.Ordinal))
                 {
@@ -211,6 +217,11 @@ internal sealed class CliOptions
                 throw new ArgumentException("--max-age-hours must be a positive integer.");
             result._values["max-age-hours"] = hours.ToString(System.Globalization.CultureInfo.InvariantCulture);
         }
+
+        if (result.Get("variant") is { } variant && !VariantLabel.IsMatch(variant))
+            throw new ArgumentException(
+                "--variant must be 1-40 lowercase letters, digits or dashes, starting with a letter or digit."
+            );
 
         if (command.StartsWith("pr ", StringComparison.Ordinal))
         {
@@ -495,6 +506,11 @@ internal sealed class CliOptions
 
         review run --repo <org/project/repo> --pr <id> [--slot <0-5> | --slots <csv>] --db <pending.db>
                    --session <sandbox-session-id> --workspace <host-workspace-id> --provider <id> [--mode <id>] [--reasoning-effort <low|medium|high|xhigh>] [--max-age-hours <positive-integer>] [--execute] [--resume] [--cleanup-only]
+                   [--shadow] [--variant <label>]
+        --shadow reviews without posting, for A/B experiments: Azure DevOps repos only, a fresh read-only-egress
+        conversation (never a reused one), comments the review would post saved as would_post.json, and the
+        artifacts committed to the store's local review branch without a push. Use its own --db, workspace and
+        store clone per arm. --variant labels the receipt with the arm (lowercase letters, digits, dashes).
         Without --slot, run takes the first free slot, or one whose lease has lapsed (reclaimed like reap-slots);
         a PR that already owns a slot keeps it. No usable slot exits 3 with per-slot reasons on stderr.
         It tries --slots in order, else the first Reviewd:LanesPerRepo slots (configuration, 1-6, default 6).
@@ -502,6 +518,7 @@ internal sealed class CliOptions
         Read-only: one JSON line per slot, state free | queued | owned | expired, with the owner PR and lease.
         review batch --selection <json> --db <pending.db> --session <id> --workspace <id> --provider <id>
                      [--mode <id>] [--reasoning-effort <low|medium|high|xhigh>] [--max-age-hours <positive-integer>] [--listen <url>] [--callback <url>] --execute
+                     [--shadow] [--variant <label>]  (passed to every review run; see review run)
         Batch resumes its fixed selected queue; failed PRs requeue, ambiguous owners hold slots. No automatic new PR discovery.
         review capacity --repos <comma-separated-org/project/repo> --db <path> --workspace <id> --session <id>
                         --evidence <native-and-thread-quiescence.json>
