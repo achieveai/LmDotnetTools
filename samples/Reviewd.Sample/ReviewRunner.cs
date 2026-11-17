@@ -149,35 +149,54 @@ internal static class ReviewRunner
         }
         using var sandbox = config.CreateSandboxClient(TimeSpan.FromMinutes(10));
         var workspace = await client.GetWorkspaceAsync(options.Required("workspace"), ct);
-        var session = await sandbox.GetAsync(options.Required("session"), ct);
-        var logical = session.WorkspaceRelativePath;
-        if (!MatchesWorkspace(logical, workspace.DirectoryRelPath))
-        {
-            throw new InvalidOperationException("Sandbox session does not identify the selected host workspace.");
-        }
-        // A shadow review's steps run in a read-only-egress session (all but prepare; see ReadOnlySessions). The shadow
-        // agent can edit the workspace those steps run in, so in the full session they could be made to post.
-        var postSession = options.Get("post-session");
-        if (postSession is not null)
-        {
-            ReadOnlySessions.Require(AuthCommands.LoadOptions(config, null).TokenStoreDir!, postSession);
-            var post = await sandbox.GetAsync(postSession, ct);
-            if (!MatchesWorkspace(post.WorkspaceRelativePath, workspace.DirectoryRelPath))
-                throw new InvalidOperationException("--post-session does not identify the selected host workspace.");
-        }
         return await RunAsync(
             options,
             config,
             client,
-            ReadOnlySessions.Route(
+            await StepExecutorAsync(
+                options,
+                () => AuthCommands.LoadOptions(config, null).TokenStoreDir!,
+                workspace.DirectoryRelPath,
+                async (id, token) => (await sandbox.GetAsync(id, token)).WorkspaceRelativePath,
                 (target, phase, args, operation, token) =>
                     ExecuteSandboxAsync(sandbox, target, phase, args, operation, token),
-                options.Required("session"),
-                postSession
+                ct
             ),
             ct,
             reads: AbandonedChildProbe.ReadLog.Process
         );
+    }
+
+    /// <summary>
+    ///     What a review's steps run through: <c>--session</c>, or for a shadow review <c>--post-session</c> for every
+    ///     step but prepare (<see cref="ReadOnlySessions.Route" />). The shadow agent can edit the workspace those
+    ///     steps run in, so in the full session they could be made to post. Both sessions must belong to the
+    ///     workspace, and the post session must carry this host's read-only marker.
+    /// </summary>
+    internal static async Task<Func<string, JsonObject, string, CancellationToken, Task<JsonObject>>> StepExecutorAsync(
+        CliOptions options,
+        Func<string> tokenStoreDir,
+        string workspaceDirectory,
+        Func<string, CancellationToken, Task<string?>> sessionWorkspace,
+        Func<string, string, JsonObject, string, CancellationToken, Task<JsonObject>> execute,
+        CancellationToken ct
+    )
+    {
+        var session = options.Required("session");
+        if (!MatchesWorkspace(await sessionWorkspace(session, ct), workspaceDirectory))
+        {
+            throw new InvalidOperationException("Sandbox session does not identify the selected host workspace.");
+        }
+        var postSession = options.Get("post-session");
+        if (postSession is not null)
+        {
+            ReadOnlySessions.Require(tokenStoreDir(), postSession);
+            if (!MatchesWorkspace(await sessionWorkspace(postSession, ct), workspaceDirectory))
+            {
+                throw new InvalidOperationException("--post-session does not identify the selected host workspace.");
+            }
+        }
+        return ReadOnlySessions.Route(execute, session, postSession);
     }
 
     internal static async Task<JsonObject> CheckEligibilityAsync(
@@ -194,12 +213,17 @@ internal static class ReviewRunner
         var client = config.CreateS2SClient();
         using var sandbox = config.CreateSandboxClient(TimeSpan.FromMinutes(10));
         var workspace = await client.GetWorkspaceAsync(options.Required("workspace"), ct);
-        var session = await sandbox.GetAsync(options.Required("session"), ct);
-        if (!MatchesWorkspace(session.WorkspaceRelativePath, workspace.DirectoryRelPath))
-            throw new InvalidOperationException("Sandbox session does not identify the selected host workspace.");
-        return await ExecuteSandboxAsync(
-            sandbox,
-            options.Required("session"),
+        // A shadow batch's eligibility runs the same workspace helpers, so it takes the read-only session too.
+        var step = await StepExecutorAsync(
+            options,
+            () => AuthCommands.LoadOptions(config, null).TokenStoreDir!,
+            workspace.DirectoryRelPath,
+            async (id, token) => (await sandbox.GetAsync(id, token)).WorkspaceRelativePath,
+            (target, phase, args, operation, token) =>
+                ExecuteSandboxAsync(sandbox, target, phase, args, operation, token),
+            ct
+        );
+        return await step(
             "eligibility",
             new JsonObject
             {

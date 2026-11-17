@@ -159,7 +159,7 @@ public sealed class ReviewdShadowTests : IDisposable
     public async Task A_database_belongs_to_one_arm(string? first, string? second, string refusal)
     {
         // The first run pins the database to its arm; a run from any other arm is refused before it touches the host.
-        // null is a live run. A live first run pins nothing, so the live arm is pinned by holding a live attempt.
+        // null is a database from before the pin: it holds a live attempt and no marker.
         static string[] Arm(string? arm) =>
             arm switch
             {
@@ -199,6 +199,82 @@ public sealed class ReviewdShadowTests : IDisposable
 
         var other = () => ReviewArm.CheckAsync(_database, shadow: false, null, pin: false, CancellationToken.None);
         await other.Should().ThrowAsync<ArgumentException>().WithMessage("This --db belongs to shadow arm 'kb-h1'*");
+    }
+
+    [Theory]
+    [InlineData(false, true, "This --db belongs to the live reviewer; shadow arm 'kb-h1' needs*")]
+    [InlineData(true, false, "This --db belongs to shadow arm 'kb-h1'; the live reviewer needs*")]
+    public async Task Whichever_executed_run_starts_first_reserves_the_database(
+        bool firstShadow,
+        bool secondShadow,
+        string refusal
+    )
+    {
+        // A live and a shadow run that start together: the first insert wins, and the other run is refused before it
+        // writes anything, instead of the live run later finding its own database pinned to shadow.
+        await SnapshotAsync();
+        await ReviewArm.CheckAsync(_database, firstShadow, firstShadow ? "kb-h1" : null, pin: true, default);
+
+        var second = () =>
+            ReviewArm.CheckAsync(_database, secondShadow, secondShadow ? "kb-h1" : null, pin: true, default);
+
+        await second.Should().ThrowAsync<ArgumentException>().WithMessage(refusal);
+        await ReviewArm.CheckAsync(_database, firstShadow, firstShadow ? "kb-h1" : null, pin: true, default);
+    }
+
+    [Theory]
+    [InlineData("reviewd/batch-queue/workspace", true)]
+    [InlineData("reviewd/batch-state/digest", true)]
+    [InlineData("reviewd/batch-queue/workspace", false)]
+    public async Task A_shadow_run_is_refused_on_a_database_holding_a_live_batch_queue(string key, bool live)
+    {
+        // A live queue with no attempt yet still belongs to the live reviewer: a shadow restart pinning it would
+        // leave the live batch refused on its own database.
+        await SnapshotAsync();
+        var scope = new JsonObject { ["workspace"] = "workspace" };
+        if (!live)
+            scope["shadow"] = true;
+        await PutAsync(key, new JsonObject { ["schemaVersion"] = 2, ["scope"] = scope });
+
+        var shadow = () => ReviewArm.CheckAsync(_database, shadow: true, "kb-h1", pin: true, default);
+
+        if (!live)
+        {
+            await shadow();
+            return;
+        }
+        await shadow.Should().ThrowAsync<ArgumentException>().WithMessage("This --db holds live reviews*");
+        await ReviewArm.CheckAsync(_database, shadow: false, null, pin: true, default);
+    }
+
+    [Fact]
+    public async Task Only_a_shadow_run_starts_a_new_database()
+    {
+        // A mistyped live --db must fail rather than run against a new empty database.
+        var live = () => ReviewArm.CheckAsync(_database, shadow: false, null, pin: true, default);
+
+        await live.Should().ThrowAsync<Microsoft.Data.Sqlite.SqliteException>();
+        File.Exists(_database).Should().BeFalse();
+        await ReviewArm.CheckAsync(_database, shadow: true, "kb-h1", pin: true, default);
+        File.Exists(_database).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task A_fresh_shadow_run_never_continues_the_live_thread_bound_to_the_pr()
+    {
+        // The binding alone (no live receipt or attempt) does not make the database live, so the shadow run goes
+        // ahead, but in a new read-only conversation rather than the bound one, which can post.
+        await SnapshotAsync();
+        await PrThreadBindings.SetAsync(_database, Repo, "17", "live", default);
+        var handler = Host();
+
+        var run = () => RunAsync(handler, [], ["--shadow"]);
+
+        await run.Should().ThrowAsync<InvalidOperationException>();
+        handler
+            .Requests.Should()
+            .Contain(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations");
+        handler.Requests.Should().NotContain(r => r.Uri.AbsolutePath.Contains("/live/", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -338,6 +414,137 @@ public sealed class ReviewdShadowTests : IDisposable
             traversal.Should().Throw<ArgumentException>().WithMessage("*is not a sandbox session id.");
             await ReadOnlySessions.MarkAsync(store, "session-1", "workspace", CancellationToken.None);
             unmarked.Should().NotThrow();
+        }
+        finally
+        {
+            Directory.Delete(store, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("marked", null)]
+    [InlineData("unmarked", "--post-session post was not created*")]
+    [InlineData("elsewhere", "--post-session does not identify the selected host workspace.")]
+    [InlineData("none", null)]
+    public async Task The_runner_entry_sends_every_step_but_prepare_to_a_marked_post_session_of_its_workspace(
+        string post,
+        string? refusal
+    )
+    {
+        // The entry review run and the batch's eligibility check build their steps here, so this is where a shadow
+        // run's read-only session is checked and wired in.
+        var store = Path.Combine(Path.GetTempPath(), $"reviewd-tokens-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(store);
+        try
+        {
+            if (post != "unmarked")
+                await ReadOnlySessions.MarkAsync(store, "post", "workspace", CancellationToken.None);
+            var options = CliOptions.Parse([
+                .. RunArguments,
+                .. post == "none" ? Array.Empty<string>() : ["--shadow", "--post-session", "post"],
+            ]);
+            var targets = new List<(string Session, string Phase)>();
+
+            var build = () =>
+                ReviewRunner.StepExecutorAsync(
+                    options,
+                    () => store,
+                    "workspace",
+                    (id, _) => Task.FromResult<string?>(id == "post" && post == "elsewhere" ? "other" : "workspace"),
+                    (session, phase, _, _, _) =>
+                    {
+                        targets.Add((session, phase));
+                        return Task.FromResult(new JsonObject());
+                    },
+                    CancellationToken.None
+                );
+
+            if (refusal is not null)
+            {
+                await build.Should().ThrowAsync<Exception>().WithMessage(refusal);
+                return;
+            }
+            var step = await build();
+            foreach (var phase in new[] { "eligibility", "prepare", "verify", "commit" })
+                await step(phase, [], Guid.NewGuid().ToString("N"), CancellationToken.None);
+            var read = post == "none" ? "session" : "post";
+            targets.Should().Equal((read, "eligibility"), ("session", "prepare"), (read, "verify"), (read, "commit"));
+        }
+        finally
+        {
+            Directory.Delete(store, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(true, false, "This --db belongs to a shadow arm, so --session session must be*")]
+    [InlineData(true, true, null)]
+    [InlineData(false, false, null)]
+    public async Task An_operator_reap_or_reclaim_of_a_shadow_database_needs_a_read_only_session(
+        bool shadowDb,
+        bool marked,
+        string? refusal
+    )
+    {
+        // reap-slots and reclaim-slot reset slots with workspace helpers a shadow agent can edit.
+        await SnapshotAsync();
+        await ReviewArm.CheckAsync(_database, shadowDb, shadowDb ? "kb-h1" : null, pin: true, default);
+        var store = Path.Combine(Path.GetTempPath(), $"reviewd-tokens-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(store);
+        try
+        {
+            if (marked)
+                await ReadOnlySessions.MarkAsync(store, "session", "workspace", CancellationToken.None);
+
+            var check = () =>
+                ReviewArm.RequireReadOnlySessionForShadowAsync(_database, () => store, "session", default);
+
+            if (refusal is null)
+                await check.Should().NotThrowAsync();
+            else
+                await check.Should().ThrowAsync<ArgumentException>().WithMessage(refusal);
+        }
+        finally
+        {
+            Directory.Delete(store, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("reap-slots")]
+    [InlineData("reclaim-slot")]
+    public async Task Reap_and_reclaim_refuse_a_shadow_database_with_an_unmarked_session_before_any_host_call(
+        string command
+    )
+    {
+        await SnapshotAsync();
+        await ReviewArm.CheckAsync(_database, shadow: true, "kb-h1", pin: true, default);
+        var store = Path.Combine(Path.GetTempPath(), $"reviewd-tokens-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(store);
+        try
+        {
+            // No gateway or host is configured, so getting past the check would fail differently.
+            await File.WriteAllTextAsync(Path.Combine(store, "msal-ado.bin"), "");
+            using var config = new ReviewdConfig(
+                new ConfigurationBuilder()
+                    .AddInMemoryCollection(
+                        new Dictionary<string, string?> { ["Auth:TokenStoreDir"] = store, ["Auth:Ado:ClientId"] = "c" }
+                    )
+                    .Build()
+            );
+            string[] common = ["--db", _database, "--workspace", "workspace", "--session", "session", "--execute"];
+            var options = CliOptions.Parse(
+                command == "reap-slots"
+                    ? ["review", command, .. common]
+                    : ["review", command, "--repo", Repo.DisplayName, "--pr", "17", "--slot", "2", .. common]
+            );
+
+            var run = () =>
+                command == "reap-slots"
+                    ? SlotReaper.RunAsync(options, config, default)
+                    : ReclaimSlotCommand.RunAsync(options, config, default);
+
+            await run.Should().ThrowAsync<ArgumentException>().WithMessage("This --db belongs to a shadow arm*");
         }
         finally
         {

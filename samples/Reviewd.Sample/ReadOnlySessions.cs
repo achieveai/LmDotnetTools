@@ -53,11 +53,17 @@ internal static partial class ReadOnlySessions
     /// <summary>Refuses a <paramref name="sessionId" /> that <c>sandbox create --read-only-egress</c> did not create.</summary>
     internal static void Require(string tokenStoreDir, string sessionId)
     {
-        if (!File.Exists(MarkerPath(tokenStoreDir, sessionId)))
+        if (!IsMarked(tokenStoreDir, sessionId))
+        {
             throw new ArgumentException(
                 $"--post-session {sessionId} was not created by sandbox create --read-only-egress on this host."
             );
+        }
     }
+
+    /// <summary>True when <c>sandbox create --read-only-egress</c> on this host created <paramref name="sessionId" />.</summary>
+    internal static bool IsMarked(string tokenStoreDir, string sessionId) =>
+        File.Exists(MarkerPath(tokenStoreDir, sessionId));
 
     /// <summary>
     ///     Sends <see cref="FullEgressPhases" /> to <paramref name="session" /> and every other step to

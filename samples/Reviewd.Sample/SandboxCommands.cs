@@ -64,12 +64,24 @@ internal static class SandboxCommands
             // The gateway does not report a session's rules back, so the host keeps the read-only mark itself; a
             // review run --shadow refuses a --post-session without it.
             if (readOnly)
-                await ReadOnlySessions.MarkAsync(
-                    auth.TokenStoreDir!,
-                    session.SessionId,
-                    options.Required("workspace"),
-                    ct
-                );
+            {
+                try
+                {
+                    await ReadOnlySessions.MarkAsync(
+                        auth.TokenStoreDir!,
+                        session.SessionId,
+                        options.Required("workspace"),
+                        ct
+                    );
+                }
+                catch
+                {
+                    Console.Error.WriteLine(
+                        $"Session {session.SessionId} was created with read-only egress but its read-only marker could not be written, so no shadow run will accept it. No command was executed; the session was not deleted."
+                    );
+                    throw;
+                }
+            }
             Console.WriteLine(
                 JsonSerializer.Serialize(
                     new

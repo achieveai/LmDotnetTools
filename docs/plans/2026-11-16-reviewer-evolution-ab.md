@@ -1,15 +1,19 @@
-> Approved 2026-11-16 (ReviewPlan rev 3; standing approval: $300 pilot cap). Copied verbatim below.
+> Approved 2026-11-16 (ReviewPlan rev 3; standing approval: $300 pilot cap). Below is the approved plan, with
+> edits since approval where the build changed it (this note, and build item 2).
 >
 > **Slice 1 as built** (`review run|batch --shadow --variant`): the shadow half of build item 2 only.
 > - The receipt key does **not** gain the variant: about ten readers parse that key. Each arm runs on its own `--db`
 >   (and its own workspace and store clone) instead; the receipt records `shadow` and `variant`.
-> - A shadow run pins its `--db` to its arm (`reviewd/arm`); a run of another arm, live included, is refused there.
->   A shadow arm also refuses a `--db` that already holds live reviews. A batch keeps the arm in its queue scope.
+> - An executed run pins its `--db` to its arm (`reviewd/arm`, one insert, so a live and a shadow run that start
+>   together cannot both claim it); a run of another arm is refused there. A shadow arm also refuses an unpinned
+>   `--db` that already holds live reviews or a live batch queue. A batch keeps the arm in its queue scope.
 > - Shadow is Azure DevOps only: read-only egress cannot stop a GitHub post, so `--shadow` refuses GitHub.
 > - Shadow conversations are titled `shadow-{repo}-{pr}-{head8}` and skip both title lookups, so live and shadow
 >   never reuse each other's conversations and a shadow run reviews heads the live reviewer already did.
 > - Every shadow step but prepare runs in `--post-session`, a session made by `sandbox create --read-only-egress`
->   (the host keeps a marker; the gateway does not report rules back). The shadow agent can edit the workspace, so
+>   (the host keeps a marker; the gateway does not report rules back), and so do a shadow batch's eligibility checks
+>   and slot sweeps; an operator `reap-slots` or `reclaim-slot` on a shadow `--db` needs a marked `--session`.
+>   The shadow agent can edit the workspace, so
 >   in the full session those steps could be made to post. Prepare keeps full egress for its ADO git fetch (a POST
 >   that read-only egress refuses), so a helper the agent edits still runs once with full egress at the next prepare
 >   of that arm's workspace. Residual; closing it needs prepare's fetch allowed under read-only egress.
@@ -184,7 +188,7 @@ The baseline before slice 1, kept as approved. Slice 1 changed the "A/B in Revie
 
 ### Smallest build list (Reviewd.Sample)
 1. `reviewd variant up <manifest>` (above), including `marketplace register`, which calls the existing SDK `RegisterAppMarketplaceAsync`.
-2. `review run|batch --variant <id> --shadow`: the receipt key gains the variant; read-only egress; write `would_post.json` instead of publishing.
+2. `review run|batch --variant <id> --shadow`: the receipt key keeps its shape and each arm runs on its own `--db` (see the note at the top); read-only egress; write `would_post.json` instead of publishing.
 3. `--task-prompt-file`: the inline task prompt and `ReviewQualityRules` become a template; its SHA goes in the receipt.
 4. Receipt provenance: the manifest hash plus every SHA (store, plugin, mode, task prompt), the Reviewd code commit, model, effort, and the experiment record id.
 5. Historical head for merged PRs (`--at-head <sha>`). The slot hides refs newer than the review time.
