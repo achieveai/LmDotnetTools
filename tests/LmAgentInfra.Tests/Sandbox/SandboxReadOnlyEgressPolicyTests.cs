@@ -1,6 +1,7 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.Sandbox;
+using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Tests.Sandbox;
 
@@ -8,7 +9,7 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Tests.Sandbox;
 /// Read-only egress (a judge thread's sandbox) may only GET and HEAD ADO. Everything else in the policy, and the
 /// whole policy of a normal (lane) sandbox, must stay exactly as it is.
 /// </summary>
-public sealed class SandboxReadOnlyEgressPolicyTests
+public sealed class SandboxReadOnlyEgressPolicyTests(ITestOutputHelper output)
 {
     [Fact]
     public void ReadOnly_narrows_only_the_ado_rule_to_GET_and_HEAD_and_keeps_its_credential()
@@ -214,6 +215,14 @@ public sealed class SandboxReadOnlyEgressPolicyTests
 
         SandboxSessionRegistry.NarrowAdoToReadOnly(rules, PrepareReads);
 
+        output.WriteLine(
+            "DEBUG narrowed {0}: "
+                + string.Join(
+                    "; ",
+                    rules.Select(rule => $"{rule.Id} [{string.Join(",", rule.Methods)}] {string.Join(",", rule.Paths)}")
+                ),
+            id
+        );
         string[] expected = sibling ? [id + "-read-post"] : [];
         rules.Where(rule => rule.Methods.Contains("POST")).Select(rule => rule.Id).Should().Equal(expected);
     }

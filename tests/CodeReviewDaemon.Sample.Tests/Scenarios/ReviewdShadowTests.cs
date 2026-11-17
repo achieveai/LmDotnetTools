@@ -576,17 +576,20 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     [InlineData(false)]
     public async Task A_shadow_batch_checks_eligibility_in_its_post_session(bool shadow)
     {
-        // Drives the production steps (SandboxStepsAsync, which the batch's eligibility wrapper and review run both
-        // use) over a real SandboxClient, so the session each submit reaches is read off the wire.
+        // Calls the batch's real eligibility check (ReviewBatch's caller), client construction included: the host and
+        // gateway clients send through scripted endpoints, so the session each submit reaches is read off the wire.
         var store = Path.Combine(Path.GetTempPath(), $"reviewd-tokens-{Guid.NewGuid():N}");
         Directory.CreateDirectory(store);
         try
         {
             await ReadOnlySessions.MarkAsync(store, "post", "workspace", [Repo.DisplayName], default);
-            using var config = HostConfig(store);
+            var host = new FakeHttpMessageHandler().OnJson(
+                HttpMethod.Get,
+                "api/workspaces/workspace",
+                """{"id":"workspace","name":"nova","directoryRelPath":"workspace","marketplaces":[]}"""
+            );
             var gateway = new ScriptedSandboxGateway { CommandStdout = "{}", WorkspaceRelativePath = "workspace" };
-            using var http = new HttpClient(gateway, disposeHandler: false);
-            using var sandbox = SandboxOver(http);
+            using var config = HostConfig(store, new HostAndGateway(host, gateway));
             var options = CliOptions.Parse([
                 "review",
                 "batch",
@@ -597,8 +600,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
                 .. shadow ? ["--shadow", "--post-session", "post"] : Array.Empty<string>(),
             ]);
 
-            var step = await ReviewRunner.SandboxStepsAsync(options, config, sandbox, "workspace", default);
-            _ = await ReviewRunner.CheckEligibilityAsync(step, Repo.DisplayName, "17", 2, Head, default);
+            _ = await ReviewRunner.CheckEligibilityAsync(options, config, Repo.DisplayName, "17", 2, Head, default);
 
             // The submit's args are ["-c", <script>, <phase>, <payload>].
             var argv = JsonNode.Parse(gateway.LastSubmitBody!)!["args"]!.AsArray();
@@ -1349,15 +1351,22 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         {
             ReviewdSqlitePools.Clear(_database);
             if (File.Exists(_database))
+            {
                 File.Delete(_database);
+            }
             if (Directory.Exists(_files))
+            {
                 Directory.Delete(_files, recursive: true);
+            }
         }
         base.Dispose(disposing);
     }
 
-    /// <summary>A host config over <paramref name="store" />, with ADO signed in, as the CLI loads it.</summary>
-    private static ReviewdConfig HostConfig(string store)
+    /// <summary>
+    ///     A host config over <paramref name="store" />, with ADO signed in, as the CLI loads it. With a
+    ///     <paramref name="transport" />, its host and gateway clients send through it.
+    /// </summary>
+    private static ReviewdConfig HostConfig(string store, HttpMessageHandler? transport = null)
     {
         File.WriteAllText(Path.Combine(store, "msal-ado.bin"), "");
         return new ReviewdConfig(
@@ -1366,7 +1375,25 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
                     new Dictionary<string, string?> { ["Auth:TokenStoreDir"] = store, ["Auth:Ado:ClientId"] = "c" }
                 )
                 .Build()
-        );
+        )
+        {
+            Transport = transport,
+        };
+    }
+
+    /// <summary>Sends gateway requests (<c>/api/v1/...</c>) to <paramref name="gateway" /> and the rest to <paramref name="host" />.</summary>
+    private sealed class HostAndGateway(HttpMessageHandler host, HttpMessageHandler gateway) : HttpMessageHandler
+    {
+        private readonly HttpMessageInvoker _host = new(host, disposeHandler: false);
+        private readonly HttpMessageInvoker _gateway = new(gateway, disposeHandler: false);
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        ) =>
+            (
+                request.RequestUri!.AbsolutePath.StartsWith("/api/v1/", StringComparison.Ordinal) ? _gateway : _host
+            ).SendAsync(request, cancellationToken);
     }
 
     private static SandboxClient SandboxOver(HttpClient http) =>
@@ -1392,7 +1419,9 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         )
         {
             if (request.Method != HttpMethod.Post || request.RequestUri!.AbsolutePath != "/api/v1/sandboxes")
+            {
                 return new HttpResponseMessage(HttpStatusCode.NotImplemented);
+            }
             CreateBody = await request.Content!.ReadAsStringAsync(cancellationToken);
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
