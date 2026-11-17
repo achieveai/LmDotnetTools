@@ -949,9 +949,13 @@ internal sealed class LmStreamingS2SClient
         foreach (var mode in modes.RootElement.EnumerateArray())
         {
             if (!mode.TryGetProperty("name", out var named) || named.GetString() != name)
+            {
                 continue;
+            }
             if (mode.TryGetProperty("isSystemDefined", out var system) && system.ValueKind == JsonValueKind.True)
+            {
                 throw new InvalidOperationException($"'{name}' is a system chat mode; it is never edited.");
+            }
             existing = mode.GetProperty("id").GetString();
             break;
         }

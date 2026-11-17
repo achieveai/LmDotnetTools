@@ -1047,10 +1047,13 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             .Contain("- PRs: 1 to start, 1 review has no verified artifact commit.");
     }
 
-    // A shadow review (review run --shadow) posted nothing and judge run refuses it, so the scan counts it apart and
-    // never picks it; it would otherwise read as a verified review that found nothing.
-    [Fact]
-    public async Task A_shadow_review_is_counted_and_never_picked()
+    // A shadow review (review run --shadow) posted nothing: judge run scores its would-post comments, and only in a
+    // session created read-only on this host. So the scan picks it when its target's session is one, and otherwise
+    // counts it apart, where a judge run would only be refused.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_shadow_review_is_picked_only_for_a_target_whose_session_is_read_only(bool readOnly)
     {
         var (key, value) = Review("7002");
         var shadow = JsonNode.Parse(value)!.AsObject();
@@ -1061,11 +1064,29 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             (key, shadow.ToJsonString()),
             Snapshot(("7001", "Merged", Now.AddDays(-2)), ("7002", "Merged", Now.AddDays(-1)))
         );
+        var asked = new List<string>();
+        var settings = Settings with
+        {
+            ReadOnlySession = session =>
+            {
+                asked.Add(session);
+                return readOnly;
+            },
+        };
 
-        var (scan, plan) = await PlanAsync(new FakeHttpMessageHandler(), [], Target("alpha", alpha));
+        var (scan, plan) = await PlanAsync(new FakeHttpMessageHandler(), [], settings, Target("alpha", alpha));
 
-        plan.Select(entry => entry.Pick.Pr.Label).Should().Equal("Nova !7001");
-        scan.Counts.Should().BeEquivalentTo(new Dictionary<string, int> { ["Start"] = 1, ["shadow"] = 1 });
+        asked.Should().Equal("session-1");
+        if (readOnly)
+        {
+            plan.Select(entry => entry.Pick.Pr.Label).Should().BeEquivalentTo("Nova !7001", "Nova !7002");
+            scan.Counts.Should().BeEquivalentTo(new Dictionary<string, int> { ["Start"] = 2 });
+        }
+        else
+        {
+            plan.Select(entry => entry.Pick.Pr.Label).Should().Equal("Nova !7001");
+            scan.Counts.Should().BeEquivalentTo(new Dictionary<string, int> { ["Start"] = 1, ["shadow"] = 1 });
+        }
     }
 
     [Fact]

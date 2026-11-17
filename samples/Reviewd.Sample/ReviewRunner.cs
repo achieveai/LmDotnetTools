@@ -605,14 +605,20 @@ internal static class ReviewRunner
         var resume = options.Has("resume");
         var cleanupOnly = options.Has("cleanup-only");
         if (resume && arm is not null && attempt?["provenance"] is JsonObject sent)
+        {
             foreach (var (field, value) in arm.Provenance(mode, provider, reasoningEffort))
+            {
                 if (
                     field is "taskPromptSha256" or "manifestSha256" or "experimentId"
                     && sent[field]?.ToString() != value?.ToString()
                 )
+                {
                     throw new ArgumentException(
                         $"This attempt was started with {field} {sent[field]?.ToString() ?? "none"}; a resume must use the same arm, not {value?.ToString() ?? "none"}."
                     );
+                }
+            }
+        }
         // A finished review is posted (a shadow one recorded in would_post.json), verified and archived on the head it
         // reviewed, even after a new push.
         var finishedResume = resume && !cleanupOnly && ReviewFinished(attempt);

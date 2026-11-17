@@ -56,10 +56,14 @@ internal sealed partial record VariantManifest(
 
         var id = Text(root, "id") ?? throw new ArgumentException($"Variant manifest {path} has no id.");
         if (!CliOptions.VariantLabel.IsMatch(id))
+        {
             throw new ArgumentException($"Variant manifest {path}: id '{id}' is not a variant label.");
+        }
         var effort = Text(root, "effort");
         if (effort is not (null or "low" or "medium" or "high" or "xhigh"))
+        {
             throw new ArgumentException($"Variant manifest {path}: effort must be low, medium, high or xhigh.");
+        }
         var reviewRepo = root["reviewRepo"];
         var plugins = root["plugins"];
         var mode = root["mode"];
@@ -107,23 +111,29 @@ internal sealed record ShadowArm(
     internal static async Task<ShadowArm?> ResolveAsync(CliOptions options, string provider, CancellationToken ct)
     {
         if (!options.Has("shadow"))
+        {
             return null;
+        }
         var template = options.Get("task-prompt-file") is { } file
             ? await File.ReadAllTextAsync(file, ct)
             : ShadowTaskPrompt.Default;
         ShadowTaskPrompt.Validate(template, options.Get("task-prompt-file") ?? "the default task prompt");
         var sha = VariantManifest.Sha256Hex(template);
         if (options.Get("manifest") is not { } manifestPath)
+        {
             return new ShadowArm(template, sha, null, null);
+        }
 
         var manifest = await VariantManifest.LoadAsync(manifestPath, ct);
         var variant = options.Required("variant");
         void Agree(string what, string? pinned, string? actual)
         {
             if (pinned is not null && pinned != actual)
+            {
                 throw new ArgumentException(
                     $"Variant manifest {manifest.Id} pins {what} {pinned}, but this run uses {actual ?? "none"}."
                 );
+            }
         }
         Agree("id", manifest.Id, variant);
         // The mode is pinned by name and file: the host mints mode ids, so variant up prints the one to pass as --mode.
@@ -190,11 +200,15 @@ internal static partial class ShadowTaskPrompt
     {
         var used = Placeholder().Matches(template).Select(m => m.Groups[1].Value).ToHashSet(StringComparer.Ordinal);
         if (used.FirstOrDefault(name => !Placeholders.Contains(name)) is { } unknown)
+        {
             throw new ArgumentException(
                 $"{source}: unknown placeholder {{{{{unknown}}}}}; use {string.Join(", ", Placeholders.Order().Select(p => "{{" + p + "}}"))}."
             );
+        }
         if (Required.FirstOrDefault(name => !used.Contains(name)) is { } missing)
+        {
             throw new ArgumentException($"{source} must use {{{{{missing}}}}}.");
+        }
     }
 
     internal static string Render(string template, IReadOnlyDictionary<string, string> values) =>

@@ -1,6 +1,9 @@
 extern alias Reviewd;
 
+using System.Diagnostics;
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.Misc.Storage;
@@ -25,7 +28,9 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-10-07T22:00:00Z");
     private static readonly string Head = new('a', 40);
     private readonly string _database = Path.Combine(Path.GetTempPath(), $"reviewd-shadow-{Guid.NewGuid():N}.db");
-    private readonly string _files = Path.Combine(Path.GetTempPath(), $"reviewd-shadow-{Guid.NewGuid():N}");
+
+    // Not "shadow": judge-inputs echoes its store path, and the blind-judge test bans the word from every input.
+    private readonly string _files = Path.Combine(Path.GetTempPath(), $"reviewd-variants-{Guid.NewGuid():N}");
 
     /// <summary>The flags of variant arm <paramref name="id" />, with a manifest that pins only its id.</summary>
     private string[] Variant(string id, string manifest = "")
@@ -1072,7 +1077,8 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     private async Task<(JsonObject Result, List<string> Calls)> VariantUpAsync(
         FakeHttpMessageHandler handler,
         string cloneSha,
-        bool execute = true
+        bool execute = true,
+        params string[] knowledgeChanges
     )
     {
         Directory.CreateDirectory(_files);
@@ -1102,7 +1108,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             (directory, _) =>
             {
                 calls.Add($"head {directory}");
-                return Task.FromResult(cloneSha);
+                return Task.FromResult(new VariantUp.Clone(cloneSha, knowledgeChanges));
             },
             CancellationToken.None
         );
@@ -1161,6 +1167,23 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get);
     }
 
+    // An arm is judged in its own workspace, with that workspace's KnowledgeBase, so an arm that changed it would be
+    // judged with other knowledge than the champion.
+    [Fact]
+    public async Task Variant_up_refuses_an_arm_whose_commit_changes_the_KnowledgeBase_and_changes_nothing()
+    {
+        var handler = VariantHost();
+
+        var changed = () =>
+            VariantUpAsync(handler, new string('2', 40), true, "KnowledgeBase/nova/a.md", "KnowledgeBase/_index.jsonl");
+
+        (await changed.Should().ThrowAsync<InvalidOperationException>()).WithMessage(
+            "Manifest b-007's commit changes KnowledgeBase/ since it forked from origin/main "
+                + "(KnowledgeBase/nova/a.md, KnowledgeBase/_index.jsonl). Every arm reviews and is judged with*"
+        );
+        handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "no mode or workspace was made");
+    }
+
     [Fact]
     public async Task Variant_up_needs_a_fully_pinned_manifest_and_an_experiment()
     {
@@ -1172,7 +1195,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
                 CliOptions.Parse([.. command, "--experiment", "exp-1", "--execute"]),
                 null!,
                 (_, _, _, _) => Task.FromResult(""),
-                (_, _) => Task.FromResult(""),
+                (_, _) => Task.FromResult(new VariantUp.Clone("", [])),
                 CancellationToken.None
             );
 
@@ -1376,11 +1399,537 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             }
             if (Directory.Exists(_files))
             {
+                // git writes its objects read-only, and Windows will not delete a read-only file.
+                foreach (var file in Directory.EnumerateFiles(_files, "*", SearchOption.AllDirectories))
+                {
+                    File.SetAttributes(file, FileAttributes.Normal);
+                }
                 Directory.Delete(_files, recursive: true);
             }
         }
         base.Dispose(disposing);
     }
+
+    // Words that name the arm in ArmReceipt: none may reach the judge.
+    private static readonly string[] ArmLabels =
+    [
+        "shadow",
+        "b-007",
+        "exp-1",
+        "arm-provider-x",
+        "arm-post",
+        "arm-session",
+    ];
+
+    /// <summary>A verified shadow review's receipt, with every field that names its arm.</summary>
+    private static JsonObject ArmReceipt(JsonObject wouldPost, string commit) =>
+        new()
+        {
+            ["repository"] = Repo.DisplayName,
+            ["prId"] = "17",
+            ["slot"] = 2,
+            ["workspaceId"] = "workspace",
+            ["sessionId"] = "arm-session",
+            ["providerId"] = "arm-provider-x",
+            ["reasoningEffort"] = "high",
+            ["headSha"] = Head,
+            ["reviewedHeadSha"] = Head,
+            ["mergeSha"] = new string('e', 40),
+            ["startedAt"] = "2026-10-07T20:00:00Z",
+            ["finishedAt"] = "2026-10-07T21:00:00Z",
+            ["stage"] = "completed-verified",
+            ["threadId"] = "thread-arm",
+            ["shadow"] = true,
+            ["postSessionId"] = "arm-post",
+            ["variant"] = "b-007",
+            ["provenance"] = new JsonObject
+            {
+                ["provider"] = "arm-provider-x",
+                ["experimentId"] = "exp-1",
+                ["taskPromptSha256"] = new string('7', 64),
+            },
+            ["initialPrompt"] = "You are the SHADOW reviewer of arm b-007.",
+            ["reviewResponse"] = "Shadow review done.",
+            ["confirmationResponse"] = "verdict: APPROVE",
+            ["wouldPost"] = wouldPost.DeepClone(),
+            ["artifactCommit"] = new JsonObject
+            {
+                ["status"] = "committed",
+                ["commit"] = commit,
+                ["branch"] = "review/nova-17",
+                ["reviewDirectory"] = "PRs/nova-17",
+            },
+            ["prepared"] = new JsonObject
+            {
+                ["mergeSha"] = new string('e', 40),
+                ["reviewDirectory"] = "PRs/nova-17",
+                ["baselineComments"] = new JsonArray(),
+            },
+        };
+
+    // A shadow review is judged from what it would have posted, blind to its arm: judge run sends judge-inputs the
+    // review's verified would-post record, its receipts cut to their neutral fields, and the would-post prompt section.
+    // The arm's agent could edit the store that phase runs git in, so only a read-only session may run it.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_shadow_review_is_judged_blind_and_only_in_a_read_only_session(bool readOnly)
+    {
+        var store = Path.Combine(Path.GetTempPath(), $"reviewd-tokens-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(store);
+        try
+        {
+            if (readOnly)
+            {
+                await ReadOnlySessions.MarkAsync(store, "judge-session", "workspace", [Repo.DisplayName], default);
+            }
+            var wouldPost = new JsonObject
+            {
+                ["file"] = "would_post.json",
+                ["comments"] = new JsonArray(
+                    new JsonObject { ["kind"] = "summary", ["contentSha256"] = new string('c', 64) }
+                ),
+            };
+            await PutAsync($"reviewd/review-run/{Repo.NormalizedKey}/17", ArmReceipt(wouldPost, new string('d', 40)));
+            var retried = ArmReceipt(wouldPost, new string('d', 40));
+            retried["stage"] = "failed-released";
+            retried["threadId"] = "thread-old";
+            await PutAsync("reviewd/attempt-history/0123456789abcdef", retried);
+            var host = new FakeHttpMessageHandler()
+                .OnJson(
+                    HttpMethod.Get,
+                    "api/workspaces/workspace",
+                    """{"id":"workspace","name":"nova","directoryRelPath":"workspace","marketplaces":[]}"""
+                )
+                .OnJson(HttpMethod.Get, "api/providers", """{"providers":[{"id":"gpt-6.1-sol","available":true}]}""")
+                .OnJson(HttpMethod.Get, "api/chat-modes/workspace-agent", "{}")
+                .OnJson(HttpMethod.Get, "api/conversations/thread-arm/usage", "{}", HttpStatusCode.NotFound)
+                .OnJson(HttpMethod.Get, "api/conversations/thread-old/usage", "{}", HttpStatusCode.NotFound)
+                .OnCurrentReviewHostCapabilities();
+            var gateway = new ScriptedSandboxGateway
+            {
+                WorkspaceRelativePath = "workspace",
+                CommandStdout = """
+                    {"status":"ok","n":1,"judgmentRel":"PRs/nova-17/judgment-1","summaryMd":"summary",
+                     "before":{"path":"PRs/nova-17/judgment-1/before.json","sha256":"b"}}
+                    """,
+            };
+            using var config = HostConfig(store, new HostAndGateway(host, gateway));
+            string[] arguments =
+            [
+                "judge",
+                "run",
+                "--repo",
+                Repo.DisplayName,
+                "--pr",
+                "17",
+                "--db",
+                _database,
+                "--session",
+                "judge-session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "gpt-6.1-sol",
+                "--mode",
+                "workspace-agent",
+            ];
+
+            var exit = await JudgeRunner.RunAsync(CliOptions.Parse(arguments), config, default);
+
+            Logger.LogDebug(
+                "judge run exit {Exit}, read-only {ReadOnly}, submits to {Sessions}",
+                exit,
+                readOnly,
+                string.Join(",", gateway.SubmitSessions)
+            );
+            if (!readOnly)
+            {
+                exit.Should().Be(1);
+                gateway.SubmitSessions.Should().BeEmpty("nothing runs where the arm could make git post");
+                return;
+            }
+            exit.Should().Be(0);
+            gateway.SubmitSessions.Should().Equal("judge-session");
+            // The submit's args are ["-B", "-c", <script>, "judge-inputs", <args JSON>, <prompt template>].
+            var argv = JsonNode.Parse(gateway.LastSubmitBody!)!["args"]!
+                .AsArray()
+                .Select(a => a!.GetValue<string>())
+                .ToList();
+            var json = argv[argv.IndexOf("judge-inputs") + 1];
+            var template = argv[^1];
+            Logger.LogDebug("judge-inputs args {Args}", json);
+            foreach (var label in ArmLabels)
+            {
+                json.Should().NotContainEquivalentOf(label);
+                template.Should().NotContainEquivalentOf(label);
+            }
+            var args = JsonNode.Parse(json)!;
+            JsonNode.DeepEquals(args["wouldPost"], wouldPost).Should().BeTrue("judge-inputs checks ours against it");
+            args["host"]!["receipt"]!
+                .AsObject()
+                .Select(field => field.Key)
+                .Should()
+                .BeEquivalentTo(
+                    "repository",
+                    "prId",
+                    "slot",
+                    "headSha",
+                    "reviewedHeadSha",
+                    "mergeSha",
+                    "startedAt",
+                    "finishedAt",
+                    "threadId",
+                    "stage",
+                    "artifactCommit",
+                    "prepared"
+                );
+            args["host"]!["attemptHistory"]![0]!["threadId"]!.GetValue<string>().Should().Be("thread-old");
+            template.Should().Contain("## 12. A would-post review");
+
+            // An executed run records the judgment as a shadow one, so judge close refuses it. The section has its own
+            // identity field: the base template's sha, which judge batch matches, stays the embedded prompt's.
+            // (The scripted host cannot provision a judge, so the run then fails; the receipt is written before.)
+            await JudgeRunner.RunAsync(CliOptions.Parse([.. arguments, "--execute"]), config, default, leaseHeld: true);
+
+            var judgment = await ReceiptAsync($"reviewd/judge-run/{Repo.NormalizedKey}/17/1");
+            Logger.LogDebug("judgment receipt {Receipt}", judgment.ToJsonString());
+            judgment["shadow"]!.GetValue<bool>().Should().BeTrue();
+            judgment["identity"]!["promptTemplateSha256"]!
+                .GetValue<string>()
+                .Should()
+                .Be(await JudgeRunner.EmbeddedPromptSha256Async(default));
+            judgment["identity"]!["wouldPostPromptSha256"]!
+                .GetValue<string>()
+                .Should()
+                .Be(
+                    Convert.ToHexStringLower(
+                        SHA256.HashData(Encoding.UTF8.GetBytes(await ResourceAsync("merged-judge-would-post.md")))
+                    )
+                );
+        }
+        finally
+        {
+            Directory.Delete(store, recursive: true);
+        }
+    }
+
+    // judge-inputs over a real store and scripted ADO GETs: ours is the would_post.json at the review's own artifact
+    // commit, checked against its verified record, never a publication receipt on another review branch or on main; the
+    // live reviewer's [Revobot] comment is context of its own class; and no input file names the arm.
+    [SkippableFact]
+    public async Task Judge_inputs_of_a_would_post_review_give_its_comments_and_never_name_the_arm()
+    {
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no python3 on PATH");
+        var root = Path.Combine(_files, "store");
+        var comments = new (string Kind, string Content, string? File, int? Line, int? Thread)[]
+        {
+            ("summary", "Two issues: see inline.", null, null, null),
+            ("inline", "x can be null here.", "/src/A.cs", 12, null),
+            ("reply", "Thanks, the fix covers it.", null, null, 102),
+        };
+        var record = new JsonObject
+        {
+            ["prId"] = 17,
+            ["headSha"] = Head,
+            ["mergeSha"] = new string('e', 40),
+            ["comments"] = new JsonArray([
+                .. comments.Select(c =>
+                    (JsonNode)
+                        new JsonObject
+                        {
+                            ["kind"] = c.Kind,
+                            ["content"] = c.Content,
+                            ["filePath"] = c.File,
+                            ["line"] = c.Line,
+                            ["threadId"] = c.Thread,
+                        }
+                ),
+            ]),
+        };
+        JsonObject Verified(int tampered = 0) =>
+            new()
+            {
+                ["file"] = "would_post.json",
+                ["comments"] = new JsonArray([
+                    .. comments.Select(
+                        (c, i) =>
+                            (JsonNode)
+                                new JsonObject
+                                {
+                                    ["kind"] = c.Kind,
+                                    ["filePath"] = c.File,
+                                    ["line"] = c.Line,
+                                    ["threadId"] = c.Thread,
+                                    ["contentSha256"] = Convert.ToHexStringLower(
+                                        SHA256.HashData(
+                                            Encoding.UTF8.GetBytes(c.Content + (i + 1 == tampered ? "!" : ""))
+                                        )
+                                    ),
+                                }
+                    ),
+                ]),
+            };
+        // main and a live round's branch hold publication receipts naming the live reviewer's PR comment 101/1; the
+        // arm's own branch holds would_post.json.
+        Directory.CreateDirectory(Path.Combine(root, "PRs", "nova-17"));
+        Git(root, "init", "-q", "-b", "main");
+        Git(root, "config", "user.email", "t@example.com");
+        Git(root, "config", "user.name", "t");
+        Git(root, "config", "commit.gpgsign", "false");
+        File.WriteAllText(Path.Combine(root, "README.md"), "store\n");
+        Git(root, "add", "-A");
+        Git(root, "commit", "-q", "-m", "base");
+        Git(root, "checkout", "-q", "-b", "review/nova-17");
+        File.WriteAllText(Path.Combine(root, "PRs", "nova-17", "would_post.json"), record.ToJsonString());
+        File.WriteAllText(Path.Combine(root, "PRs", "nova-17", "review.md"), "# Review\n");
+        Git(root, "add", "-A");
+        Git(root, "commit", "-q", "-m", "arm review");
+        var artifact = Git(root, "rev-parse", "HEAD");
+        Git(root, "checkout", "-q", "main");
+        Directory.CreateDirectory(Path.Combine(root, "PRs", "nova-17"));
+        var live =
+            $$"""{"prId":17,"headSha":"{{Head}}","comments":[{"threadId":101,"commentId":1,"kind":"summary"}]}""";
+        File.WriteAllText(Path.Combine(root, "PRs", "nova-17", "publication_receipts.json"), live);
+        Git(root, "add", "-A");
+        Git(root, "commit", "-q", "-m", "live review");
+        Git(root, "branch", "review/nova-17-abcdef12");
+
+        var receipt = ArmReceipt(Verified(), artifact);
+        var usage = JsonNode.Parse(
+            """
+            [{"threadId":"thread-arm","foundVia":["receipt:latest"],"usage":{"preferredCostMicros":1230000,"totalTokens":1000,
+              "completeness":2,"perModel":[{"modelId":"arm-provider-x-large","preferredCostMicros":1230000,"totalTokens":1000}]}}]
+            """
+        )!;
+        JsonObject Args(int minN, string nonce, JsonObject verified) =>
+            new()
+            {
+                ["org"] = "org",
+                ["project"] = "project",
+                ["repo"] = "Nova",
+                ["pr"] = "17",
+                ["minN"] = minN,
+                ["nonce"] = nonce,
+                ["dryRun"] = false,
+                ["host"] = new JsonObject
+                {
+                    ["receiptKey"] = $"reviewd/review-run/{Repo.NormalizedKey}/17",
+                    ["receipt"] = JudgeRunner.Blind(receipt),
+                    ["attemptHistory"] = new JsonArray(),
+                    ["threads"] = usage.DeepClone(),
+                    ["priorJudgments"] = new JsonArray(),
+                },
+                ["wouldPost"] = verified,
+            };
+        var template =
+            await ResourceAsync("merged-judge.md") + "\n\n" + await ResourceAsync("merged-judge-would-post.md");
+
+        var built = await JudgeInputsAsync(python!, root, Args(1, new string('1', 32), Verified()), template);
+        var tampered = await JudgeInputsAsync(python!, root, Args(2, new string('2', 32), Verified(2)), template);
+
+        built.Exit.Should().Be(0, built.Error);
+        var inputs = Path.Combine(root, "PRs", "nova-17", "judgment-1", "inputs");
+        foreach (var file in Directory.EnumerateFiles(inputs, "*", SearchOption.AllDirectories))
+        {
+            var text = File.ReadAllText(file);
+            foreach (var label in ArmLabels)
+            {
+                text.Should().NotContainEquivalentOf(label, $"{Path.GetFileName(file)} must not name the arm");
+            }
+        }
+        var packet = JsonNode.Parse(File.ReadAllText(Path.Combine(inputs, "packet.json")))!;
+        var threads = File.ReadAllText(Path.Combine(inputs, "threads.md")).ReplaceLineEndings("\n");
+        Logger.LogDebug("packet ours {Ours}; threads.md {Threads}", packet["ours"]!.ToJsonString(), threads);
+        packet["ours"]!["mode"]!.GetValue<string>().Should().Be("would-post");
+        packet["ours"]!["posted"]!.AsArray().Should().BeEmpty("no comment on the PR is ours");
+        packet["ours"]!["wouldPost"]!
+            .AsArray()
+            .Select(e => $"{e!["id"]} {e["kind"]}")
+            .Should()
+            .Equal("wp/1 summary", "wp/2 inline", "wp/3 reply");
+        packet["review"]!["rounds"]!
+            .AsArray()
+            .Select(r => $"{r!["branch"]} {r["tip"]}")
+            .Should()
+            .Equal($"review/nova-17 {artifact}");
+        packet["grading"]!["notApplicable"]!
+            .AsObject()
+            .Select(p => p.Key)
+            .Should()
+            .Equal("threadHelp", "fixRate", "developerBehaviors");
+        packet["cost"]!["threads"]![0]!.AsObject().ContainsKey("perModel").Should().BeFalse();
+        // The per-comment rows the judge queries say the same: the live reviewer's comment is not ours.
+        packet["ado"]!["threads"]!
+            .AsArray()
+            .SelectMany(t =>
+                t!["comments"]!
+                    .AsArray()
+                    .Select(c =>
+                        $"{t["threadId"]}/{c!["commentId"]} {c["ours"]} {c["operatorAuthored"]?.GetValue<string>()}"
+                    )
+            )
+            .Should()
+            .Equal("101/1 false live-reviewer", "101/2 false operator-manual", "102/1 false ");
+        threads
+            .Split('\n')
+            .Where(line =>
+                line.StartsWith("wp/", StringComparison.Ordinal) || line.StartsWith("101/", StringComparison.Ordinal)
+            )
+            .Should()
+            .Equal(
+                "wp/1 | summary | PR | Two issues: see inline.",
+                "wp/2 | inline | /src/A.cs:12 | x can be null here.",
+                "wp/3 | reply | thread 102 | Thanks, the fix covers it.",
+                "101/1 | live-reviewer | active | PR | iter - | 2026-10-07T19:00Z | Op | [Revobot] live summary",
+                "101/2 | operator | active | PR | iter - | 2026-10-07T19:05Z | Op | manual note"
+            );
+        JsonNode.Parse(File.ReadAllText(Path.Combine(inputs, "would-post.json")))!["comments"]!
+            .AsArray()
+            .Select(c => c!["content"]!.GetValue<string>())
+            .Should()
+            .Equal(comments.Select(c => c.Content));
+        tampered.Exit.Should().Be(2);
+        tampered.Error.Should().Contain("comment 2 differs from the review's verified record");
+        Directory.Exists(Path.Combine(root, "PRs", "nova-17", "judgment-2")).Should().BeFalse("nothing is written");
+    }
+
+    private static async Task<string> ResourceAsync(string name)
+    {
+        using var stream = typeof(JudgeRunner).Assembly.GetManifestResourceStream($"Reviewd.Sample.Prompts.{name}")!;
+        using var reader = new StreamReader(stream);
+        return await reader.ReadToEndAsync();
+    }
+
+    private static string Git(string directory, params string[] arguments)
+    {
+        var start = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = directory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        foreach (var argument in arguments)
+        {
+            start.ArgumentList.Add(argument);
+        }
+        using var process = Process.Start(start)!;
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        process.ExitCode.Should().Be(0, error);
+        return output.Result.Trim();
+    }
+
+    /// <summary>
+    ///     Runs the embedded JudgeSandbox.py's judge-inputs in <paramref name="root" /> with <paramref name="args" />,
+    ///     its ADO GETs answered from <see cref="AdoFixture" />.
+    /// </summary>
+    private static async Task<(int Exit, string Output, string Error)> JudgeInputsAsync(
+        string python,
+        string root,
+        JsonObject args,
+        string template
+    )
+    {
+        var script = Path.Combine(Path.GetTempPath(), $"judge-sandbox-{Guid.NewGuid():N}.py");
+        using (var resource = typeof(JudgeRunner).Assembly.GetManifestResourceStream("Reviewd.Sample.JudgeSandbox.py")!)
+        using (var file = File.Create(script))
+        {
+            await resource.CopyToAsync(file);
+        }
+        try
+        {
+            const string harness = """
+                import importlib.util, json, sys
+                from pathlib import Path
+                spec = importlib.util.spec_from_file_location("judge_sandbox", sys.argv[1])
+                sandbox = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(sandbox)
+                data = json.loads(sys.stdin.read())
+
+                class Transport:
+                    def request(self, method, path):
+                        assert method == "GET", method
+                        for key, body in data["ado"]:
+                            if key in path:
+                                return body
+                        raise AssertionError("unscripted GET " + path)
+
+                    def get_pages(self, path):
+                        return self.request("GET", path)
+
+                sandbox.ado = lambda: (None, Transport())
+                sandbox.phase, sandbox.args, sandbox.template = "judge-inputs", data["args"], data["template"]
+                sandbox.root = Path(sys.argv[2]).resolve()
+                sandbox.judge_inputs()
+                """;
+            var start = new ProcessStartInfo(python)
+            {
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                WorkingDirectory = root,
+            };
+            foreach (var argument in new[] { "-I", "-c", harness, script, root })
+            {
+                start.ArgumentList.Add(argument);
+            }
+            using var process = Process.Start(start)!;
+            await process.StandardInput.WriteAsync(
+                new JsonObject
+                {
+                    ["args"] = args,
+                    ["template"] = template,
+                    ["ado"] = AdoFixture(),
+                }.ToJsonString()
+            );
+            process.StandardInput.Close();
+            var output = process.StandardOutput.ReadToEndAsync();
+            var error = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            return (process.ExitCode, await output, error);
+        }
+        finally
+        {
+            File.Delete(script);
+        }
+    }
+
+    /// <summary>
+    ///     The ADO GETs of a completed Nova !17 reviewed at <see cref="Head" />, as (path fragment, response) pairs:
+    ///     a live [Revobot] summary and an operator note in thread 101, an author's fix comment in 102.
+    /// </summary>
+    private static JsonArray AdoFixture() =>
+        JsonNode
+            .Parse(
+                $$$"""
+                [
+                  ["pullRequests/17?includeWorkItemRefs", {"pullRequestId": 17, "status": "completed", "title": "Fix the filter",
+                    "createdBy": {"displayName": "Ana", "uniqueName": "ana@example.com"},
+                    "repository": {"id": "r-id", "name": "Nova", "project": {"id": "p-id", "name": "project"}},
+                    "creationDate": "2026-10-07T18:00:00Z", "closedDate": "2026-10-08T09:00:00Z",
+                    "sourceRefName": "refs/heads/fix", "targetRefName": "refs/heads/main",
+                    "lastMergeSourceCommit": {"commitId": "{{{Head}}}"}, "lastMergeCommit": {"commitId": "ffffffffffffffffffffffffffffffffffffffff"},
+                    "workItemRefs": []}],
+                  ["/threads?", {"count": 2, "value": [
+                    {"id": 101, "status": "active", "comments": [
+                      {"id": 1, "author": {"id": "op-id", "displayName": "Op", "uniqueName": "op@example.com"},
+                        "commentType": "text", "publishedDate": "2026-10-07T19:00:00Z", "content": "[Revobot] live summary"},
+                      {"id": 2, "author": {"id": "op-id", "displayName": "Op", "uniqueName": "op@example.com"},
+                        "commentType": "text", "publishedDate": "2026-10-07T19:05:00Z", "content": "manual note"}]},
+                    {"id": 102, "status": "fixed", "threadContext": {"filePath": "/src/A.cs", "rightFileStart": {"line": 12}},
+                      "comments": [{"id": 1, "author": {"id": "ana-id", "displayName": "Ana", "uniqueName": "ana@example.com"},
+                        "commentType": "text", "publishedDate": "2026-10-07T21:30:00Z", "content": "Fixed the null check"}]}]}],
+                  ["/iterations?", [{"id": 1, "sourceRefCommit": {"commitId": "{{{Head}}}"}, "createdDate": "2026-10-07T18:00:00Z",
+                    "author": {"displayName": "Ana"}}]],
+                  ["/commits?", []]
+                ]
+                """
+            )!
+            .AsArray();
 
     /// <summary>
     ///     A host config over <paramref name="store" />, with ADO signed in, as the CLI loads it. With a
