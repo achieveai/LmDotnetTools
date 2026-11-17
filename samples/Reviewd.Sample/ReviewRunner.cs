@@ -590,9 +590,11 @@ internal static class ReviewRunner
         var shadow = options.Has("shadow");
         var variant = options.Get("variant");
         if (shadow && repo.Provider == "github")
+        {
             throw new ArgumentException(
                 "--shadow supports Azure DevOps repositories only: read-only egress cannot stop a GitHub post."
             );
+        }
         // Before anything is written: a shadow arm and the live reviewer never share a database.
         await ReviewArm.CheckAsync(database, shadow, variant, pin: options.Has("execute"), ct);
         now ??= () => DateTimeOffset.UtcNow;
@@ -833,13 +835,17 @@ internal static class ReviewRunner
         // A shadow run must never continue or resume a conversation that can post. A fresh one is provisioned with
         // read-only egress, and a resume must be of a shadow attempt (and a live resume of a live one).
         if ((resume || cleanupOnly) && (attempt?["shadow"]?.GetValue<bool>() ?? false) != shadow)
+        {
             throw new ArgumentException(
                 shadow
                     ? "--shadow cannot resume a live (posting) review attempt."
                     : "A shadow review attempt can only be resumed with --shadow."
             );
+        }
         if (shadow && !resume && !cleanupOnly)
+        {
             thread = null;
+        }
         // True when this review continues an existing conversation (prior revision of this PR) rather
         // than a freshly-provisioned blank one. Drives the incremental re-review prompt below: the
         // conversation already holds the earlier review's full message history.
@@ -1019,7 +1025,9 @@ internal static class ReviewRunner
         };
         // The commit step reads it: a shadow review commits to the store's local review branch and never pushes.
         if (shadow)
+        {
             args["shadow"] = true;
+        }
         if (!options.Has("execute"))
         {
             Console.WriteLine(
@@ -1129,7 +1137,9 @@ internal static class ReviewRunner
             receipt["postSessionId"] = options.Required("post-session");
         }
         if (variant is not null)
+        {
             receipt["variant"] = variant;
+        }
         if (selection is not null)
             receipt["slotSelection"] = selection.DeepClone();
         // Resets of one head add up across its retries, whatever ended each one.
@@ -1239,12 +1249,14 @@ internal static class ReviewRunner
             }
             var revision = args["head"]!.GetValue<string>();
             if (!verificationResume)
+            {
                 await client.UpdateMetadataAsync(
                     thread,
                     $"{TitlePrefix(shadow)}{repo.RepoName}-{pr}-{revision[..8]}",
                     null,
                     ct
                 );
+            }
             var contextPath = "/workspace/" + setup["contextPath"]!.GetValue<string>();
             var directory = "/workspace/" + setup["reviewDirectory"]!.GetValue<string>();
             var github = repo.Provider == "github";
@@ -1327,6 +1339,7 @@ internal static class ReviewRunner
                 Record every comment/reply this run posts, and only those: verify rejects any comment that was on the PR before this run, an earlier round's included. Keep an earlier round's unrecorded receipts in a separate file in the same folder (publication_receipts-<that head>-recovered.json), never in publication_receipts.json. Record this round's summary as kind summary, even when posted as a reply in an existing summary thread. Do not edit source, commit, push, merge, or complete the PR. Coordinator retains artifacts afterward.
                 """;
             if (shadow)
+            {
                 prompt = ShadowReviewPrompt(
                     repo,
                     pr,
@@ -1336,6 +1349,7 @@ internal static class ReviewRunner
                     args["head"]!.GetValue<string>(),
                     args["merge"]!.GetValue<string>()
                 );
+            }
             if (!resume)
             {
                 receipt["initialPrompt"] = prompt;
@@ -1360,6 +1374,7 @@ internal static class ReviewRunner
                 await SaveAsync();
             }
             else
+            {
                 // A live confirmation that finds a verified blocker the posted summary missed corrects the verdict on the
                 // PR: 12 judged reviews posted an approval while their own confirmation said REQUEST_CHANGES or BLOCKED.
                 // A shadow confirmation corrects would_post.json instead, and posts nothing.
@@ -1369,6 +1384,7 @@ internal static class ReviewRunner
                         ? ShadowConfirmationPrompt(directory)
                         : "Can you confirm if the PR feedback and replies to any discussion where you could add value have been posted. Audit and report existing publication receipts; do not post duplicates. Report your final verdict on the PR, with a brief rationale and any unresolved blockers. If the review is incomplete or blocked, state that explicitly rather than inferring approval. If this review verified a medium or high issue, or a failing required check this PR caused, that the summary you posted does not list as a blocker, reply in that summary thread now (on GitHub, a new PR comment): first \"REQUEST_CHANGES (replaces the verdict above)\", then each such blocker in one short line; record the reply in publication_receipts.json. Waiting for reviewer votes, approvals or policies is not such a blocker. You MUST return a non-empty final text response. End your response with a standalone line in exactly this format: verdict: <APPROVE | APPROVE_WITH_COMMENTS | REQUEST_CHANGES | BLOCKED | INCOMPLETE>. Choose exactly one value, do not leave the placeholder, and put nothing after this verdict line."
                 );
+            }
             args["summaryThreads"] = await PriorSummaryThreadsAsync(connection, repo, pr, ct);
             // A shadow review posted nothing, so its verify step checks would_post.json instead of the PR. The phase keeps
             // its name so every verify-pending resume rule applies unchanged; the result goes under its own key so

@@ -381,7 +381,9 @@ internal static class ReviewBatch
             scope["postSession"] = options.Required("post-session");
         }
         if (options.Get("variant") is { } variant)
+        {
             scope["variant"] = variant;
+        }
         // Every run refuses another arm's --db, so a mismatched batch stops here instead of failing each PR. It is a
         // short local read, so it runs even when the batch starts already canceled.
         await ReviewArm.CheckAsync(
@@ -1126,9 +1128,13 @@ internal static class ReviewBatch
                 if (options.Get("reasoning-effort") is { } effort)
                     arguments.AddRange(["--reasoning-effort", effort]);
                 if (options.Has("shadow"))
+                {
                     arguments.AddRange(["--shadow", "--post-session", options.Required("post-session")]);
+                }
                 if (options.Get("variant") is { } variant)
+                {
                     arguments.AddRange(["--variant", variant]);
+                }
                 if (maxAgeHours is { } maximumAge)
                     arguments.AddRange([
                         "--max-age-hours",
