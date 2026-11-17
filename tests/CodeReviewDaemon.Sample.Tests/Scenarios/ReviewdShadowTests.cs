@@ -142,7 +142,9 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             ["threadId"] = "thread",
         };
         if (shadowAttempt)
+        {
             attempt["shadow"] = true;
+        }
         await PutAsync($"reviewd/review-attempt/{Repo.NormalizedKey}/17", attempt);
         var handler = new FakeHttpMessageHandler();
 
@@ -173,10 +175,12 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             };
         await SnapshotAsync();
         if (first is null)
+        {
             await PutAsync(
                 $"reviewd/review-attempt/{Repo.NormalizedKey}/17",
                 new JsonObject { ["repository"] = Repo.DisplayName, ["stage"] = "review-running" }
             );
+        }
         else
         {
             // The scripted host reports the review Errored after the send; by then the first run has pinned the db.
@@ -267,7 +271,9 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         await SnapshotAsync();
         var scope = new JsonObject { ["workspace"] = "workspace" };
         if (!live)
+        {
             scope["shadow"] = true;
+        }
         await PutAsync(key, new JsonObject { ["schemaVersion"] = 2, ["scope"] = scope });
 
         var shadow = () => ReviewArm.CheckAsync(_database, shadow: true, "kb-h1", pin: true, default);
@@ -425,7 +431,9 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             "read-only"
         );
         foreach (var phase in new[] { "eligibility", "prepare", "inspect", "verify", "commit", "cleanup" })
+        {
             _ = await route(phase, [], phase + "-op", CancellationToken.None);
+        }
         _ = await route("step-stop", new JsonObject { ["operation"] = "prepare-op" }, "s1", CancellationToken.None);
         _ = await route("step-activity", new JsonObject { ["operation"] = "commit-op" }, "s2", CancellationToken.None);
         _ = await route("step-stop", new JsonObject { ["operation"] = "unknown" }, "s3", CancellationToken.None);
@@ -551,7 +559,9 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             }
             var step = await build();
             foreach (var phase in new[] { "eligibility", "prepare", "verify", "commit" })
+            {
                 await step(phase, [], Guid.NewGuid().ToString("N"), CancellationToken.None);
+            }
             var read = post == "none" ? "session" : "post";
             targets.Should().Equal((read, "eligibility"), (read, "prepare"), (read, "verify"), (read, "commit"));
         }
@@ -783,15 +793,21 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         try
         {
             if (marked)
+            {
                 await ReadOnlySessions.MarkAsync(store, "session", "workspace", [Repo.DisplayName], default);
+            }
 
             var check = () =>
                 ReviewArm.RequireReadOnlySessionForShadowAsync(_database, () => store, "session", default);
 
             if (refusal is null)
+            {
                 await check.Should().NotThrowAsync();
+            }
             else
+            {
                 await check.Should().ThrowAsync<ArgumentException>().WithMessage(refusal);
+            }
         }
         finally
         {
@@ -956,9 +972,13 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             var parse = () =>
                 CliOptions.Parse([.. command, "--shadow", "--post-session", "read-only", "--variant", label]);
             if (valid)
+            {
                 parse().Get("variant").Should().Be(label);
+            }
             else
+            {
                 parse.Should().Throw<ArgumentException>().WithMessage("--variant*");
+            }
         }
     }
 
