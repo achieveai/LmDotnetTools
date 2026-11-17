@@ -35,7 +35,9 @@ internal static class SandboxCommands
                 );
             }
             var secret = RandomNumberGenerator.GetHexString(64);
-            var policy = SandboxSessionRegistry.BuildAuthPolicy(auth, gateway, secret);
+            // Read-only egress narrows every Azure DevOps rule to GET and HEAD (a shadow review's --post-session).
+            var readOnly = options.Has("read-only-egress");
+            var policy = SandboxSessionRegistry.BuildAuthPolicy(auth, gateway, secret, readOnlyEgress: readOnly);
             var marketplaces = (options.Get("marketplaces") ?? "").Split(
                 ',',
                 StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries
@@ -59,6 +61,15 @@ internal static class SandboxCommands
                 );
                 throw;
             }
+            // The gateway does not report a session's rules back, so the host keeps the read-only mark itself; a
+            // review run --shadow refuses a --post-session without it.
+            if (readOnly)
+                await ReadOnlySessions.MarkAsync(
+                    auth.TokenStoreDir!,
+                    session.SessionId,
+                    options.Required("workspace"),
+                    ct
+                );
             Console.WriteLine(
                 JsonSerializer.Serialize(
                     new
@@ -67,6 +78,7 @@ internal static class SandboxCommands
                         appId = config.AppId,
                         workspace = options.Required("workspace"),
                         callback = auth.Webhook.CallbackBaseUrl,
+                        readOnlyEgress = readOnly,
                     }
                 )
             );

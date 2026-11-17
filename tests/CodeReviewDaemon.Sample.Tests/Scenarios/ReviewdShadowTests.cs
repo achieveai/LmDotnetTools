@@ -204,7 +204,10 @@ public sealed class ReviewdShadowTests : IDisposable
     [Fact]
     public async Task Batch_shadow_arm_is_forwarded_to_fresh_and_resumed_runs_and_a_restart_cannot_change_it()
     {
-        using var batch = new ReviewdRunnerTests.BatchFixture(0, 1) { Arm = ["--shadow", "--variant", "kb-h1"] };
+        using var batch = new ReviewdRunnerTests.BatchFixture(0, 1)
+        {
+            Arm = ["--shadow", "--post-session", "read-only", "--variant", "kb-h1"],
+        };
         batch.Cancellation.Cancel();
         await batch.ExecuteAsync();
         batch.Restart();
@@ -230,12 +233,20 @@ public sealed class ReviewdShadowTests : IDisposable
         await batch.ExecuteAsync();
 
         batch.Runs.Should().Contain("3:resume").And.Contain("1:fresh");
-        batch.RunArms.Should().HaveCount(3).And.OnlyContain(arm => arm == "shadow:kb-h1");
+        batch.RunArms.Should().HaveCount(3).And.OnlyContain(arm => arm == "shadow:kb-h1:read-only");
         var scope = batch.Read(batch.StateKey)!["scope"]!.AsObject();
         scope["shadow"]!.GetValue<bool>().Should().BeTrue();
         scope["variant"]!.GetValue<string>().Should().Be("kb-h1");
+        scope["postSession"]!.GetValue<string>().Should().Be("read-only");
         // A restart that drops --shadow, or names another variant, would run this arm's queue as another arm.
-        foreach (var arm in new[] { Array.Empty<string>(), ["--shadow", "--variant", "kb-h2"], ["--shadow"] })
+        foreach (
+            var arm in new[]
+            {
+                Array.Empty<string>(),
+                ["--shadow", "--post-session", "read-only", "--variant", "kb-h2"],
+                ["--shadow", "--post-session", "read-only"],
+            }
+        )
         {
             batch.Restart();
             batch.Arm = arm;
@@ -246,6 +257,92 @@ public sealed class ReviewdShadowTests : IDisposable
                 .WithMessage("This --db belongs to shadow arm 'kb-h1'*");
         }
         batch.Runs.Should().HaveCount(3);
+    }
+
+    [Theory]
+    [InlineData("--shadow", "*--shadow needs --post-session*")]
+    [InlineData("--post-session read-only", "*--post-session needs --shadow.")]
+    [InlineData("--shadow --post-session session", "--post-session must be a read-only session other than --session.")]
+    public void A_shadow_run_names_a_read_only_post_session_and_only_a_shadow_run_does(string flags, string refusal)
+    {
+        foreach (var command in new[] { RunArguments, ["review", "batch", "--session", "session"] })
+        {
+            var parse = () => CliOptions.Parse([.. command, .. flags.Split(' ')]);
+
+            parse.Should().Throw<ArgumentException>().WithMessage(refusal);
+        }
+        CliOptions
+            .Parse(["sandbox", "create", "--workspace", "w", "--callback", "http://h", "--read-only-egress"])
+            .Has("read-only-egress")
+            .Should()
+            .BeTrue();
+    }
+
+    [Fact]
+    public async Task Every_step_but_prepare_runs_in_the_read_only_session_and_a_step_stop_follows_its_step()
+    {
+        // The shadow agent can edit the workspace these steps run in; only prepare needs full egress (its git fetch).
+        var calls = new List<string>();
+        var route = ReadOnlySessions.Route(
+            (target, phase, args, _, _) =>
+            {
+                calls.Add($"{phase}@{target}");
+                return Task.FromResult(new JsonObject());
+            },
+            "full",
+            "read-only"
+        );
+        foreach (var phase in new[] { "eligibility", "prepare", "inspect", "verify", "commit", "cleanup" })
+            _ = await route(phase, [], phase + "-op", CancellationToken.None);
+        _ = await route("step-stop", new JsonObject { ["operation"] = "prepare-op" }, "s1", CancellationToken.None);
+        _ = await route("step-activity", new JsonObject { ["operation"] = "commit-op" }, "s2", CancellationToken.None);
+        _ = await route("step-stop", new JsonObject { ["operation"] = "unknown" }, "s3", CancellationToken.None);
+        var live = ReadOnlySessions.Route(
+            (target, phase, _, _, _) =>
+            {
+                calls.Add($"live {phase}@{target}");
+                return Task.FromResult(new JsonObject());
+            },
+            "full",
+            null
+        );
+        _ = await live("commit", [], "op", CancellationToken.None);
+
+        calls
+            .Should()
+            .Equal(
+                "eligibility@read-only",
+                "prepare@full",
+                "inspect@read-only",
+                "verify@read-only",
+                "commit@read-only",
+                "cleanup@read-only",
+                "step-stop@full",
+                "step-activity@read-only",
+                "step-stop@read-only",
+                "live commit@full"
+            );
+    }
+
+    [Fact]
+    public async Task Only_a_session_marked_read_only_on_this_host_is_accepted_as_a_post_session()
+    {
+        var store = Path.Combine(Path.GetTempPath(), $"reviewd-tokens-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(store);
+        try
+        {
+            var unmarked = () => ReadOnlySessions.Require(store, "session-1");
+            var traversal = () => ReadOnlySessions.Require(store, "../session-1");
+
+            unmarked.Should().Throw<ArgumentException>().WithMessage("--post-session session-1 was not created*");
+            traversal.Should().Throw<ArgumentException>().WithMessage("*is not a sandbox session id.");
+            await ReadOnlySessions.MarkAsync(store, "session-1", "workspace", CancellationToken.None);
+            unmarked.Should().NotThrow();
+        }
+        finally
+        {
+            Directory.Delete(store, recursive: true);
+        }
     }
 
     [Fact]
@@ -280,6 +377,8 @@ public sealed class ReviewdShadowTests : IDisposable
             "--provider",
             "test",
             "--shadow",
+            "--post-session",
+            "read-only",
             "--execute",
         ]);
 
@@ -311,7 +410,8 @@ public sealed class ReviewdShadowTests : IDisposable
     {
         foreach (var command in new[] { RunArguments, ["review", "batch"] })
         {
-            var parse = () => CliOptions.Parse([.. command, "--shadow", "--variant", label]);
+            var parse = () =>
+                CliOptions.Parse([.. command, "--shadow", "--post-session", "read-only", "--variant", label]);
             if (valid)
                 parse().Get("variant").Should().Be(label);
             else
@@ -322,7 +422,7 @@ public sealed class ReviewdShadowTests : IDisposable
     [Fact]
     public void Shadow_is_a_flag_that_takes_no_value()
     {
-        var options = CliOptions.Parse([.. RunArguments, "--shadow", "--execute"]);
+        var options = CliOptions.Parse([.. RunArguments, "--shadow", "--post-session", "read-only", "--execute"]);
 
         options.Has("shadow").Should().BeTrue();
         options.Has("execute").Should().BeTrue();
@@ -474,6 +574,7 @@ public sealed class ReviewdShadowTests : IDisposable
             "72",
             "--execute",
             .. extra,
+            .. extra.Contains("--shadow") ? new[] { "--post-session", "read-only" } : [],
         ]);
         Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token)
         {

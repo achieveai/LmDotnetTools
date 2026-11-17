@@ -155,17 +155,29 @@ internal static class ReviewRunner
         {
             throw new InvalidOperationException("Sandbox session does not identify the selected host workspace.");
         }
+        // A shadow review's steps run in a read-only-egress session (all but prepare; see ReadOnlySessions). The shadow
+        // agent can edit the workspace those steps run in, so in the full session they could be made to post.
+        var postSession = options.Get("post-session");
+        if (postSession is not null)
+        {
+            ReadOnlySessions.Require(AuthCommands.LoadOptions(config, null).TokenStoreDir!, postSession);
+            var post = await sandbox.GetAsync(postSession, ct);
+            if (!MatchesWorkspace(post.WorkspaceRelativePath, workspace.DirectoryRelPath))
+                throw new InvalidOperationException("--post-session does not identify the selected host workspace.");
+        }
         return await RunAsync(
             options,
             config,
             client,
-            (phase, args, operation, token) => ExecuteAsync(phase, args, operation, token),
+            ReadOnlySessions.Route(
+                (target, phase, args, operation, token) =>
+                    ExecuteSandboxAsync(sandbox, target, phase, args, operation, token),
+                options.Required("session"),
+                postSession
+            ),
             ct,
             reads: AbandonedChildProbe.ReadLog.Process
         );
-
-        Task<JsonObject> ExecuteAsync(string phase, JsonObject args, string operation, CancellationToken token) =>
-            ExecuteSandboxAsync(sandbox, options.Required("session"), phase, args, operation, token);
     }
 
     internal static async Task<JsonObject> CheckEligibilityAsync(
@@ -1056,7 +1068,10 @@ internal static class ReviewRunner
         if (reasoningEffort is not null)
             receipt["reasoningEffort"] = reasoningEffort;
         if (shadow)
+        {
             receipt["shadow"] = true;
+            receipt["postSessionId"] = options.Required("post-session");
+        }
         if (variant is not null)
             receipt["variant"] = variant;
         if (selection is not null)

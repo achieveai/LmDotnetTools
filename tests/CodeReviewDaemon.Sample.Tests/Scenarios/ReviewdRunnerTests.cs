@@ -3020,7 +3020,11 @@ public sealed class ReviewdRunnerTests
                         Runs.Add(pr + (options.Has("resume") ? ":resume" : ":fresh"));
                         RunSlots.Add((pr, int.Parse(options.Required("slot"))));
                         RunEfforts.Add(options.Get("reasoning-effort"));
-                        RunArms.Add(options.Has("shadow") ? $"shadow:{options.Get("variant")}" : "live");
+                        RunArms.Add(
+                            options.Has("shadow")
+                                ? $"shadow:{options.Get("variant")}:{options.Get("post-session")}"
+                                : "live"
+                        );
                         RunAges.Add(options.Get("max-age-hours"));
                         Events.Add($"run {pr}@{head[0]}" + (options.Has("resume") ? ":resume" : ":fresh"));
                     }

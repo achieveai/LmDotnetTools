@@ -83,6 +83,7 @@ internal sealed class CliOptions
                 "head",
                 "shadow",
                 "variant",
+                "post-session",
             ],
             "review batch" =>
             [
@@ -99,6 +100,7 @@ internal sealed class CliOptions
                 "execute",
                 "shadow",
                 "variant",
+                "post-session",
             ],
             "review reconcile-slot" => ["repo", "pr", "db", "evidence", "execute"],
             "review reclaim-slot" => ["repo", "pr", "slot", "db", "workspace", "session", "execute"],
@@ -145,7 +147,7 @@ internal sealed class CliOptions
             "workspace exec" => ["workspace", "directory", "timeout"],
             "auth serve" => ["listen", "callback"],
             "auth run" => ["listen", "callback"],
-            "sandbox create" => ["workspace", "callback", "marketplaces"],
+            "sandbox create" => ["workspace", "callback", "marketplaces", "read-only-egress"],
             "sandbox exec" => ["session", "directory", "timeout"],
             "agent start" =>
             [
@@ -179,7 +181,18 @@ internal sealed class CliOptions
             }
 
             var value = "true";
-            if (name is not ("wait" or "execute" or "resume" or "cleanup-only" or "rejudge" or "shadow"))
+            if (
+                name
+                is not (
+                    "wait"
+                    or "execute"
+                    or "resume"
+                    or "cleanup-only"
+                    or "rejudge"
+                    or "shadow"
+                    or "read-only-egress"
+                )
+            )
             {
                 if (++i >= commandArgs.Length || commandArgs[i].StartsWith("--", StringComparison.Ordinal))
                 {
@@ -225,6 +238,15 @@ internal sealed class CliOptions
         // A variant names a shadow arm; the live reviewer has none (ReviewArm pins a shadow --db to its variant).
         if (result.Has("variant") && !result.Has("shadow"))
             throw new ArgumentException("--variant names a shadow arm and needs --shadow.");
+        // A shadow review's steps after prepare run in a read-only-egress session (ReadOnlySessions); only a shadow
+        // review names one.
+        if (result.Has("shadow") != result.Has("post-session"))
+            throw new ArgumentException(
+                "--shadow needs --post-session <id of a sandbox create --read-only-egress session>, and "
+                    + "--post-session needs --shadow."
+            );
+        if (result.Get("post-session") is { } postSession && postSession == result.Get("session"))
+            throw new ArgumentException("--post-session must be a read-only session other than --session.");
 
         if (command.StartsWith("pr ", StringComparison.Ordinal))
         {
@@ -498,6 +520,7 @@ internal sealed class CliOptions
         auth serve [--listen <url>] [--callback <gateway-reachable-url>]
         auth run [--listen <url>] [--callback <gateway-reachable-url>] -- <local-program> [args...]
         sandbox create --workspace <logical-leaf> --callback <gateway-reachable-url> [--marketplaces <csv>]
+                       [--read-only-egress]  (Azure DevOps GET/HEAD only; a review run --shadow --post-session)
         sandbox exec --session <id> [--directory <relative-dir>] [--timeout <seconds>] -- <program> [args...]
         workspace list
         workspace plugins [--workspace <id>]
@@ -509,11 +532,13 @@ internal sealed class CliOptions
 
         review run --repo <org/project/repo> --pr <id> [--slot <0-5> | --slots <csv>] --db <pending.db>
                    --session <sandbox-session-id> --workspace <host-workspace-id> --provider <id> [--mode <id>] [--reasoning-effort <low|medium|high|xhigh>] [--max-age-hours <positive-integer>] [--execute] [--resume] [--cleanup-only]
-                   [--shadow] [--variant <label>]
+                   [--shadow --post-session <read-only-session-id>] [--variant <label>]
         --shadow reviews without posting, for A/B experiments: Azure DevOps repos only, a fresh read-only-egress
         conversation (never a reused one), comments the review would post saved as would_post.json, and the
-        artifacts committed to the store's local review branch without a push. Use its own --db, workspace and
-        store clone per arm. --variant labels the receipt with the arm (lowercase letters, digits, dashes).
+        artifacts committed to the store's local review branch without a push. Every step but prepare runs in
+        --post-session, a session made by sandbox create --read-only-egress on the same workspace. Use its own
+        --db, workspace and store clone per arm; the --db is pinned to its arm on the first executed run.
+        --variant labels the receipt with the arm (lowercase letters, digits, dashes).
         Without --slot, run takes the first free slot, or one whose lease has lapsed (reclaimed like reap-slots);
         a PR that already owns a slot keeps it. No usable slot exits 3 with per-slot reasons on stderr.
         It tries --slots in order, else the first Reviewd:LanesPerRepo slots (configuration, 1-6, default 6).
@@ -521,7 +546,7 @@ internal sealed class CliOptions
         Read-only: one JSON line per slot, state free | queued | owned | expired, with the owner PR and lease.
         review batch --selection <json> --db <pending.db> --session <id> --workspace <id> --provider <id>
                      [--mode <id>] [--reasoning-effort <low|medium|high|xhigh>] [--max-age-hours <positive-integer>] [--listen <url>] [--callback <url>] --execute
-                     [--shadow] [--variant <label>]  (passed to every review run; see review run)
+                     [--shadow --post-session <id>] [--variant <label>]  (passed to every review run; see review run)
         Batch resumes its fixed selected queue; failed PRs requeue, ambiguous owners hold slots. No automatic new PR discovery.
         review capacity --repos <comma-separated-org/project/repo> --db <path> --workspace <id> --session <id>
                         --evidence <native-and-thread-quiescence.json>

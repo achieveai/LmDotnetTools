@@ -206,7 +206,10 @@ internal static class ReviewBatch
             }
             var client = config.CreateS2SClient();
             using var sandboxClient = config.CreateSandboxClient(TimeSpan.FromMinutes(10));
-            var session = options.Required("session");
+            // A shadow arm's reaper resets slots its agents wrote to, so it runs in the read-only session too.
+            var session = options.Get("post-session") ?? options.Required("session");
+            if (options.Has("post-session"))
+                ReadOnlySessions.Require(AuthCommands.LoadOptions(config, null).TokenStoreDir!, session);
             SlotReaper.SandboxExecutor sandbox = (phase, args, operation, token) =>
                 ReviewRunner.ExecuteSandboxAsync(sandboxClient, session, phase, args, operation, token);
             var results = await SlotReaper.SweepAsync(
@@ -365,7 +368,10 @@ internal static class ReviewBatch
             scope["maxAgeHours"] = hours;
         // The arm is part of the scope: a restart that drops --shadow must not admit the saved queue as live reviews.
         if (options.Has("shadow"))
+        {
             scope["shadow"] = true;
+            scope["postSession"] = options.Required("post-session");
+        }
         if (options.Get("variant") is { } variant)
             scope["variant"] = variant;
         // Every run refuses another arm's --db, so a mismatched batch stops here instead of failing each PR. It is a
@@ -1112,7 +1118,7 @@ internal static class ReviewBatch
                 if (options.Get("reasoning-effort") is { } effort)
                     arguments.AddRange(["--reasoning-effort", effort]);
                 if (options.Has("shadow"))
-                    arguments.Add("--shadow");
+                    arguments.AddRange(["--shadow", "--post-session", options.Required("post-session")]);
                 if (options.Get("variant") is { } variant)
                     arguments.AddRange(["--variant", variant]);
                 if (maxAgeHours is { } maximumAge)
