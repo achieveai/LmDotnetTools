@@ -348,16 +348,38 @@ public sealed class ReviewdShadowTests : IDisposable
             parse.Should().Throw<ArgumentException>().WithMessage(refusal);
         }
         CliOptions
-            .Parse(["sandbox", "create", "--workspace", "w", "--callback", "http://h", "--read-only-egress"])
+            .Parse([
+                "sandbox",
+                "create",
+                "--workspace",
+                "w",
+                "--callback",
+                "http://h",
+                "--read-only-egress",
+                "--read-repos",
+                "org/project/Nova",
+            ])
             .Has("read-only-egress")
             .Should()
             .BeTrue();
     }
 
-    [Fact]
-    public async Task Every_step_but_prepare_runs_in_the_read_only_session_and_a_step_stop_follows_its_step()
+    [Theory]
+    [InlineData("--read-only-egress")]
+    [InlineData("--read-repos org/project/Nova")]
+    public void A_read_only_session_names_the_repos_its_prepare_may_fetch_and_only_it_does(string flags)
     {
-        // The shadow agent can edit the workspace these steps run in; only prepare needs full egress (its git fetch).
+        var parse = () =>
+            CliOptions.Parse(["sandbox", "create", "--workspace", "w", "--callback", "http://h", .. flags.Split(' ')]);
+
+        parse.Should().Throw<ArgumentException>().WithMessage("--read-only-egress needs --read-repos*");
+    }
+
+    [Fact]
+    public async Task Every_step_prepare_included_runs_in_the_read_only_session_when_there_is_one()
+    {
+        // The shadow agent can edit the workspace these steps run in, so no step may run with full egress; the
+        // read-only session's egress allows prepare's fetch and read queries.
         var calls = new List<string>();
         var route = ReadOnlySessions.Route(
             (target, phase, args, _, _) =>
@@ -388,12 +410,12 @@ public sealed class ReviewdShadowTests : IDisposable
             .Should()
             .Equal(
                 "eligibility@read-only",
-                "prepare@full",
+                "prepare@read-only",
                 "inspect@read-only",
                 "verify@read-only",
                 "commit@read-only",
                 "cleanup@read-only",
-                "step-stop@full",
+                "step-stop@read-only",
                 "step-activity@read-only",
                 "step-stop@read-only",
                 "live commit@full"
@@ -412,8 +434,20 @@ public sealed class ReviewdShadowTests : IDisposable
 
             unmarked.Should().Throw<ArgumentException>().WithMessage("--post-session session-1 was not created*");
             traversal.Should().Throw<ArgumentException>().WithMessage("*is not a sandbox session id.");
-            await ReadOnlySessions.MarkAsync(store, "session-1", "workspace", CancellationToken.None);
+            await ReadOnlySessions.MarkAsync(
+                store,
+                "session-1",
+                "workspace",
+                [Repo.DisplayName],
+                CancellationToken.None
+            );
             unmarked.Should().NotThrow();
+            ReadOnlySessions.Require(store, "session-1", Repo.DisplayName);
+            var otherRepo = () => ReadOnlySessions.Require(store, "session-1", "org/project/Other");
+            otherRepo
+                .Should()
+                .Throw<ArgumentException>()
+                .WithMessage("--post-session session-1 cannot fetch org/project/Other*--read-repos org/project/Other.");
         }
         finally
         {
@@ -424,9 +458,10 @@ public sealed class ReviewdShadowTests : IDisposable
     [Theory]
     [InlineData("marked", null)]
     [InlineData("unmarked", "--post-session post was not created*")]
+    [InlineData("other-repo", "--post-session post cannot fetch org/project/Nova*")]
     [InlineData("elsewhere", "--post-session does not identify the selected host workspace.")]
     [InlineData("none", null)]
-    public async Task The_runner_entry_sends_every_step_but_prepare_to_a_marked_post_session_of_its_workspace(
+    public async Task The_runner_entry_sends_every_step_to_a_marked_post_session_of_its_workspace_and_repo(
         string post,
         string? refusal
     )
@@ -438,7 +473,10 @@ public sealed class ReviewdShadowTests : IDisposable
         try
         {
             if (post != "unmarked")
-                await ReadOnlySessions.MarkAsync(store, "post", "workspace", CancellationToken.None);
+            {
+                string[] repos = post == "other-repo" ? ["org/project/Other"] : [Repo.DisplayName];
+                await ReadOnlySessions.MarkAsync(store, "post", "workspace", repos, CancellationToken.None);
+            }
             var options = CliOptions.Parse([
                 .. RunArguments,
                 .. post == "none" ? Array.Empty<string>() : ["--shadow", "--post-session", "post"],
@@ -468,7 +506,7 @@ public sealed class ReviewdShadowTests : IDisposable
             foreach (var phase in new[] { "eligibility", "prepare", "verify", "commit" })
                 await step(phase, [], Guid.NewGuid().ToString("N"), CancellationToken.None);
             var read = post == "none" ? "session" : "post";
-            targets.Should().Equal((read, "eligibility"), ("session", "prepare"), (read, "verify"), (read, "commit"));
+            targets.Should().Equal((read, "eligibility"), (read, "prepare"), (read, "verify"), (read, "commit"));
         }
         finally
         {
@@ -494,7 +532,7 @@ public sealed class ReviewdShadowTests : IDisposable
         try
         {
             if (marked)
-                await ReadOnlySessions.MarkAsync(store, "session", "workspace", CancellationToken.None);
+                await ReadOnlySessions.MarkAsync(store, "session", "workspace", [Repo.DisplayName], default);
 
             var check = () =>
                 ReviewArm.RequireReadOnlySessionForShadowAsync(_database, () => store, "session", default);
@@ -550,6 +588,51 @@ public sealed class ReviewdShadowTests : IDisposable
         {
             Directory.Delete(store, recursive: true);
         }
+    }
+
+    [Theory]
+    [InlineData("https://Contoso@dev.azure.com/Contoso/Weve%20DA/_git/Nova%20Repo")]
+    [InlineData("https://contoso.visualstudio.com/DefaultCollection/Weve%20DA/_git/Nova%20Repo")]
+    public void Read_only_post_paths_are_the_ones_prepare_sends_for_the_repo(string remoteUrl)
+    {
+        // Prepare's git fetch lowercases the organization and re-escapes the names from remoteUrl; its REST client
+        // keeps the organization as given and addresses the PR query by project and repository id.
+        using var record = System.Text.Json.JsonDocument.Parse(
+            new JsonObject
+            {
+                ["id"] = "r-id",
+                ["remoteUrl"] = remoteUrl,
+                ["project"] = new JsonObject { ["id"] = "p-id" },
+            }.ToJsonString()
+        );
+
+        var paths = AdoReadOnlyPaths.For(PrCommands.ParseRepo("Contoso/Weve DA/Nova Repo"), record.RootElement);
+
+        paths
+            .Should()
+            .Equal(
+                "/Contoso/Weve%20DA/_git/Nova%20Repo/git-upload-pack",
+                "/Contoso/_apis/wit/workitemsbatch",
+                "/Contoso/p-id/_apis/git/repositories/r-id/pullrequestquery",
+                "/contoso/Weve%20DA/_git/Nova%20Repo/git-upload-pack",
+                "/contoso/_apis/wit/workitemsbatch",
+                "/contoso/p-id/_apis/git/repositories/r-id/pullrequestquery"
+            );
+    }
+
+    [Theory]
+    [InlineData("https://github.com/Contoso/Nova", true)]
+    [InlineData("https://dev.azure.com/Contoso/Weve%20DA/_git/Nova", false)]
+    public void An_unexpected_repository_record_creates_no_read_only_session(string remoteUrl, bool withProject)
+    {
+        var record = new JsonObject { ["id"] = "r-id", ["remoteUrl"] = remoteUrl };
+        if (withProject)
+            record["project"] = new JsonObject { ["id"] = "p-id" };
+        using var document = System.Text.Json.JsonDocument.Parse(record.ToJsonString());
+
+        var paths = () => AdoReadOnlyPaths.For(Repo, document.RootElement);
+
+        paths.Should().Throw<InvalidOperationException>().WithMessage("*no read-only session was created.");
     }
 
     [Fact]

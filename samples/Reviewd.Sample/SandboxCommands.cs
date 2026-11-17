@@ -35,9 +35,38 @@ internal static class SandboxCommands
                 );
             }
             var secret = RandomNumberGenerator.GetHexString(64);
-            // Read-only egress narrows every Azure DevOps rule to GET and HEAD (a shadow review's --post-session).
+            // Read-only egress narrows every Azure DevOps rule to GET and HEAD (a shadow review's --post-session),
+            // plus POST to each listed repo's git fetch and prepare's two read queries, so prepare runs there too.
             var readOnly = options.Has("read-only-egress");
-            var policy = SandboxSessionRegistry.BuildAuthPolicy(auth, gateway, secret, readOnlyEgress: readOnly);
+            var readRepos = (options.Get("read-repos") ?? "")
+                .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                .Select(PrCommands.ParseRepo)
+                .ToArray();
+            if (readRepos.Any(repo => repo.Provider != "azure-devops"))
+            {
+                throw new ArgumentException("--read-repos takes Azure DevOps repositories (org/project/repo) only.");
+            }
+            var readPaths = new List<string>();
+            if (readRepos.Length > 0)
+            {
+                using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
+                var tokens = new AdoOAuthProvider(
+                    auth.Ado,
+                    Path.Combine(auth.TokenStoreDir!, "msal-ado.bin"),
+                    NullLogger<AdoOAuthProvider>.Instance
+                );
+                foreach (var repo in readRepos)
+                {
+                    readPaths.AddRange(await AdoReadOnlyPaths.ResolveAsync(http, tokens, repo, ct));
+                }
+            }
+            var policy = SandboxSessionRegistry.BuildAuthPolicy(
+                auth,
+                gateway,
+                secret,
+                readOnlyEgress: readOnly,
+                readOnlyAdoPostPaths: [.. readPaths.Distinct(StringComparer.Ordinal)]
+            );
             var marketplaces = (options.Get("marketplaces") ?? "").Split(
                 ',',
                 StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries
@@ -71,6 +100,7 @@ internal static class SandboxCommands
                         auth.TokenStoreDir!,
                         session.SessionId,
                         options.Required("workspace"),
+                        [.. readRepos.Select(repo => repo.DisplayName)],
                         ct
                     );
                 }

@@ -10,13 +10,14 @@
 > - Shadow is Azure DevOps only: read-only egress cannot stop a GitHub post, so `--shadow` refuses GitHub.
 > - Shadow conversations are titled `shadow-{repo}-{pr}-{head8}` and skip both title lookups, so live and shadow
 >   never reuse each other's conversations and a shadow run reviews heads the live reviewer already did.
-> - Every shadow step but prepare runs in `--post-session`, a session made by `sandbox create --read-only-egress`
->   (the host keeps a marker; the gateway does not report rules back), and so do a shadow batch's eligibility checks
->   and slot sweeps; an operator `reap-slots` or `reclaim-slot` on a shadow `--db` needs a marked `--session`.
->   The shadow agent can edit the workspace, so
->   in the full session those steps could be made to post. Prepare keeps full egress for its ADO git fetch (a POST
->   that read-only egress refuses), so a helper the agent edits still runs once with full egress at the next prepare
->   of that arm's workspace. Residual; closing it needs prepare's fetch allowed under read-only egress.
+> - Every shadow step, prepare included, runs in `--post-session`, a session made by
+>   `sandbox create --read-only-egress --read-repos <repos>` (the host keeps a marker listing the repos; the gateway
+>   does not report rules back), and so do a shadow batch's eligibility checks and slot sweeps; an operator
+>   `reap-slots` or `reclaim-slot` on a shadow `--db` needs a marked `--session`. The shadow agent can edit the
+>   workspace, so in a full-egress session those steps could be made to post. Read-only egress keeps ADO GET and
+>   HEAD, plus POST to exact paths only: each listed repo's git fetch (`git-upload-pack`; push is
+>   `git-receive-pack`) and prepare's two read queries (`workitemsbatch`, `pullrequestquery`), which would otherwise
+>   fail into warnings and leave the shadow arm thinner context than the live one.
 > - Verify checks `would_post.json` (recorded as `wouldPost`, never `verifiedPublication`), and refuses one over
 >   1 MiB, which commit would set aside; commit keeps the review branch local (no push).
 > - `judge run` refuses shadow receipts and `judge batch` counts them as `shadow` until item 6 lands.

@@ -147,7 +147,7 @@ internal sealed class CliOptions
             "workspace exec" => ["workspace", "directory", "timeout"],
             "auth serve" => ["listen", "callback"],
             "auth run" => ["listen", "callback"],
-            "sandbox create" => ["workspace", "callback", "marketplaces", "read-only-egress"],
+            "sandbox create" => ["workspace", "callback", "marketplaces", "read-only-egress", "read-repos"],
             "sandbox exec" => ["session", "directory", "timeout"],
             "agent start" =>
             [
@@ -238,8 +238,7 @@ internal sealed class CliOptions
         // A variant names a shadow arm; the live reviewer has none (ReviewArm pins a shadow --db to its variant).
         if (result.Has("variant") && !result.Has("shadow"))
             throw new ArgumentException("--variant names a shadow arm and needs --shadow.");
-        // A shadow review's steps after prepare run in a read-only-egress session (ReadOnlySessions); only a shadow
-        // review names one.
+        // A shadow review's steps run in a read-only-egress session (ReadOnlySessions); only a shadow review names one.
         if (result.Has("shadow") != result.Has("post-session"))
             throw new ArgumentException(
                 "--shadow needs --post-session <id of a sandbox create --read-only-egress session>, and "
@@ -247,6 +246,12 @@ internal sealed class CliOptions
             );
         if (result.Get("post-session") is { } postSession && postSession == result.Get("session"))
             throw new ArgumentException("--post-session must be a read-only session other than --session.");
+        // A read-only session runs a shadow review's prepare, which must fetch its repo.
+        if (result.Has("read-only-egress") != result.Has("read-repos"))
+            throw new ArgumentException(
+                "--read-only-egress needs --read-repos <org/project/repo,...> (the repos its prepare may fetch), "
+                    + "and --read-repos needs --read-only-egress."
+            );
 
         if (command.StartsWith("pr ", StringComparison.Ordinal))
         {
@@ -520,7 +525,8 @@ internal sealed class CliOptions
         auth serve [--listen <url>] [--callback <gateway-reachable-url>]
         auth run [--listen <url>] [--callback <gateway-reachable-url>] -- <local-program> [args...]
         sandbox create --workspace <logical-leaf> --callback <gateway-reachable-url> [--marketplaces <csv>]
-                       [--read-only-egress]  (Azure DevOps GET/HEAD only; a review run --shadow --post-session)
+                       [--read-only-egress --read-repos <org/project/repo,...>]  (a review run --shadow --post-session:
+                       Azure DevOps GET/HEAD only, plus each listed repo's git fetch and prepare's two read queries)
         sandbox exec --session <id> [--directory <relative-dir>] [--timeout <seconds>] -- <program> [args...]
         workspace list
         workspace plugins [--workspace <id>]
@@ -535,8 +541,9 @@ internal sealed class CliOptions
                    [--shadow --post-session <read-only-session-id>] [--variant <label>]
         --shadow reviews without posting, for A/B experiments: Azure DevOps repos only, a fresh read-only-egress
         conversation (never a reused one), comments the review would post saved as would_post.json, and the
-        artifacts committed to the store's local review branch without a push. Every step but prepare runs in
-        --post-session, a session made by sandbox create --read-only-egress on the same workspace. Use its own
+        artifacts committed to the store's local review branch without a push. Every step, prepare included, runs
+        in --post-session, a session made by sandbox create --read-only-egress --read-repos on the same workspace
+        that lists this --repo (--session is only checked against the workspace). Use its own
         --db, workspace and store clone per arm; the --db is pinned to its arm on the first executed run.
         --variant labels the receipt with the arm (lowercase letters, digits, dashes).
         Without --slot, run takes the first free slot, or one whose lease has lapsed (reclaimed like reap-slots);

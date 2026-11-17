@@ -169,9 +169,9 @@ internal static class ReviewRunner
 
     /// <summary>
     ///     What a review's steps run through: <c>--session</c>, or for a shadow review <c>--post-session</c> for every
-    ///     step but prepare (<see cref="ReadOnlySessions.Route" />). The shadow agent can edit the workspace those
-    ///     steps run in, so in the full session they could be made to post. Both sessions must belong to the
-    ///     workspace, and the post session must carry this host's read-only marker.
+    ///     step, prepare included (<see cref="ReadOnlySessions.Route" />). The shadow agent can edit the workspace
+    ///     those steps run in, so in a full-egress session they could be made to post. Both sessions must belong to the
+    ///     workspace, and the post session must carry this host's read-only marker listing the run's repo.
     /// </summary>
     internal static async Task<Func<string, JsonObject, string, CancellationToken, Task<JsonObject>>> StepExecutorAsync(
         CliOptions options,
@@ -190,7 +190,12 @@ internal static class ReviewRunner
         var postSession = options.Get("post-session");
         if (postSession is not null)
         {
-            ReadOnlySessions.Require(tokenStoreDir(), postSession);
+            // review run names its repo, whose prepare runs here; the batch's eligibility check has none and fetches nothing.
+            ReadOnlySessions.Require(
+                tokenStoreDir(),
+                postSession,
+                options.Get("repo") is { } repo ? PrCommands.ParseRepo(repo).DisplayName : null
+            );
             if (!MatchesWorkspace(await sessionWorkspace(postSession, ct), workspaceDirectory))
             {
                 throw new InvalidOperationException("--post-session does not identify the selected host workspace.");
