@@ -2835,6 +2835,9 @@ public sealed class ReviewdRunnerTests
         public CancellationToken SchedulingToken { get; private set; }
         public string? ReasoningEffort { get; set; }
         public string? MaxAgeHours { get; set; }
+
+        // The batch's arm flags, as "--shadow --variant x"; empty is the live reviewer.
+        public string[] Arm { get; set; } = [];
         public List<string?> RunAges { get; } = [];
         public DateTimeOffset Now => DateTimeOffset.FromUnixTimeSeconds(_seconds);
 
@@ -2848,6 +2851,9 @@ public sealed class ReviewdRunnerTests
         }
 
         public List<string?> RunEfforts { get; } = [];
+
+        // Each run's arm, as "shadow:<variant>" or "live".
+        public List<string> RunArms { get; } = [];
         public Func<string, JsonObject> Eligibility { get; set; } = Live;
         public Action? OnRun { get; set; }
         public Func<Task>? OnRunAsync { get; set; }
@@ -2972,6 +2978,7 @@ public sealed class ReviewdRunnerTests
                     "--execute",
                     .. ReasoningEffort is null ? [] : new string[] { "--reasoning-effort", ReasoningEffort },
                     .. MaxAgeHours is null ? [] : new string[] { "--max-age-hours", MaxAgeHours },
+                    .. Arm,
                 ]),
                 _config,
                 _ =>
@@ -3013,6 +3020,7 @@ public sealed class ReviewdRunnerTests
                         Runs.Add(pr + (options.Has("resume") ? ":resume" : ":fresh"));
                         RunSlots.Add((pr, int.Parse(options.Required("slot"))));
                         RunEfforts.Add(options.Get("reasoning-effort"));
+                        RunArms.Add(options.Has("shadow") ? $"shadow:{options.Get("variant")}" : "live");
                         RunAges.Add(options.Get("max-age-hours"));
                         Events.Add($"run {pr}@{head[0]}" + (options.Has("resume") ? ":resume" : ":fresh"));
                     }

@@ -308,6 +308,9 @@ def github_verify(comments, read, baseline):
 def verify_would_post(text, pr_id, head, merge):
     # A shadow review's record of what it would have posted. Nothing is on the PR to read back, so this checks only
     # that the record names the prepared revision and that each comment is well formed, with exactly one summary.
+    # A record over ARCHIVE_FILE_LIMIT would pass here and then be set aside by commit, so it is refused here.
+    if len(text.encode()) > ARCHIVE_FILE_LIMIT:
+        raise ReviewError('would_post.json is over 1 MiB, so the review archive would not keep it.')
     record = json.loads(text)
     if (not isinstance(record, dict) or str(record.get('prId')) != str(pr_id) or record.get('headSha') != head
             or record.get('mergeSha') != merge):
@@ -857,7 +860,7 @@ elif phase == 'verify' and args.get('shadow'):
     # A shadow review posts nothing (its conversation had read-only egress), so there is nothing on the PR to verify.
     # Its record is would_post.json: check it names the prepared revision and holds well-formed would-post comments.
     inspect_prepared()
-    print(json.dumps(verify_would_post(safe_path(outer, f'{directory}/would_post.json').read_text(), pr,
+    print(json.dumps(verify_would_post(safe_path(outer, f'{directory}/would_post.json').read_bytes().decode(), pr,
                                        args['head'], args['merge'])))
 elif phase == 'verify':
     inspect_prepared()

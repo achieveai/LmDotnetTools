@@ -222,6 +222,9 @@ internal sealed class CliOptions
             throw new ArgumentException(
                 "--variant must be 1-40 lowercase letters, digits or dashes, starting with a letter or digit."
             );
+        // A variant names a shadow arm; the live reviewer has none (ReviewArm pins a shadow --db to its variant).
+        if (result.Has("variant") && !result.Has("shadow"))
+            throw new ArgumentException("--variant names a shadow arm and needs --shadow.");
 
         if (command.StartsWith("pr ", StringComparison.Ordinal))
         {

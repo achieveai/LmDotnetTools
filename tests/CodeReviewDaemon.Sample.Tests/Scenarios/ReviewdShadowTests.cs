@@ -60,6 +60,27 @@ public sealed class ReviewdShadowTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_finished_shadow_run_records_what_it_would_post_and_never_a_publication(bool shadow)
+    {
+        // Readers of verifiedPublication count it as comments on the PR, so a shadow run must record its verify
+        // result under wouldPost alone, and its commit step must be told not to push.
+        var handler = Host(status: """{"status":"Completed","runId":"run","response":{"text":"verdict: APPROVE"}}""");
+        var phases = new List<(string Phase, JsonObject Args)>();
+        await SnapshotAsync();
+
+        (await RunAsync(handler, phases, shadow ? ["--shadow"] : [])).Should().Be(0);
+
+        var receipt = await ReceiptAsync($"reviewd/review-run/{Repo.NormalizedKey}/17");
+        receipt["stage"]!.GetValue<string>().Should().Be("completed-verified");
+        receipt.ContainsKey("wouldPost").Should().Be(shadow);
+        receipt.ContainsKey("verifiedPublication").Should().Be(!shadow);
+        receipt[shadow ? "wouldPost" : "verifiedPublication"]!["file"]!.GetValue<string>().Should().Be("checked");
+        phases.Single(p => p.Phase == "commit").Args.ContainsKey("shadow").Should().Be(shadow);
+    }
+
     [Fact]
     public async Task A_shadow_run_reviews_a_head_another_run_already_reviewed()
     {
@@ -123,10 +144,116 @@ public sealed class ReviewdShadowTests : IDisposable
 
         var run = () => RunAsync(handler, [], shadowRun ? ["--shadow", "--resume"] : ["--resume"]);
 
+        // A shadow run meets the live attempt at the database check first, so it never gets as far as the resume.
         (await run.Should().ThrowAsync<ArgumentException>()).WithMessage(
-            shadowRun ? "--shadow cannot resume a live*" : "A shadow review attempt can only be resumed with --shadow*"
+            shadowRun ? "This --db holds live reviews*" : "A shadow review attempt can only be resumed with --shadow*"
         );
         handler.Requests.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(null, "--shadow", "This --db holds live reviews*")]
+    [InlineData("--shadow", null, "This --db belongs to a shadow arm; the live reviewer needs*")]
+    [InlineData("--variant kb-h1", "--variant kb-h2", "*shadow arm 'kb-h1'; shadow arm 'kb-h2' needs*")]
+    [InlineData("--variant kb-h1", "", "*shadow arm 'kb-h1'; a shadow arm needs*")]
+    public async Task A_database_belongs_to_one_arm(string? first, string? second, string refusal)
+    {
+        // The first run pins the database to its arm; a run from any other arm is refused before it touches the host.
+        // null is a live run. A live first run pins nothing, so the live arm is pinned by holding a live attempt.
+        static string[] Arm(string? arm) =>
+            arm switch
+            {
+                null => [],
+                "" or "--shadow" => ["--shadow"],
+                _ => ["--shadow", .. arm.Split(' ')],
+            };
+        await SnapshotAsync();
+        if (first is null)
+            await PutAsync(
+                $"reviewd/review-attempt/{Repo.NormalizedKey}/17",
+                new JsonObject { ["repository"] = Repo.DisplayName, ["stage"] = "review-running" }
+            );
+        else
+        {
+            // The scripted host reports the review Errored after the send; by then the first run has pinned the db.
+            var pin = () => RunAsync(Host(), [], Arm(first));
+            await pin.Should().ThrowAsync<InvalidOperationException>();
+        }
+        var handler = new FakeHttpMessageHandler();
+
+        var run = () => RunAsync(handler, [], Arm(second));
+
+        (await run.Should().ThrowAsync<ArgumentException>()).WithMessage(refusal);
+        handler.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_dry_shadow_run_pins_nothing_and_the_same_arm_runs_again()
+    {
+        await SnapshotAsync();
+
+        await ReviewArm.CheckAsync(_database, shadow: true, "kb-h1", pin: false, CancellationToken.None);
+        await ReviewArm.CheckAsync(_database, shadow: false, null, pin: false, CancellationToken.None);
+        await ReviewArm.CheckAsync(_database, shadow: true, "kb-h1", pin: true, CancellationToken.None);
+        await ReviewArm.CheckAsync(_database, shadow: true, "kb-h1", pin: true, CancellationToken.None);
+
+        var other = () => ReviewArm.CheckAsync(_database, shadow: false, null, pin: false, CancellationToken.None);
+        await other.Should().ThrowAsync<ArgumentException>().WithMessage("This --db belongs to shadow arm 'kb-h1'*");
+    }
+
+    [Fact]
+    public async Task Batch_shadow_arm_is_forwarded_to_fresh_and_resumed_runs_and_a_restart_cannot_change_it()
+    {
+        using var batch = new ReviewdRunnerTests.BatchFixture(0, 1) { Arm = ["--shadow", "--variant", "kb-h1"] };
+        batch.Cancellation.Cancel();
+        await batch.ExecuteAsync();
+        batch.Restart();
+        // The batch stopped while PR 3 ran on slot 1, so the restart resumes it.
+        var state = batch.Read(batch.StateKey)!.AsObject();
+        state["entries"]![2]!["status"] = "launching";
+        state["entries"]![2]!["slot"] = 1;
+        batch.Put(batch.StateKey, state);
+        batch.PutAttempt(
+            "3",
+            new JsonObject
+            {
+                ["slot"] = 1,
+                ["stage"] = "review-running",
+                ["claimToken"] = "running",
+                ["reviewInputId"] = "original",
+                ["mergeSha"] = new string('b', 40),
+                ["shadow"] = true,
+                ["variant"] = "kb-h1",
+            }
+        );
+
+        await batch.ExecuteAsync();
+
+        batch.Runs.Should().Contain("3:resume").And.Contain("1:fresh");
+        batch.RunArms.Should().HaveCount(3).And.OnlyContain(arm => arm == "shadow:kb-h1");
+        var scope = batch.Read(batch.StateKey)!["scope"]!.AsObject();
+        scope["shadow"]!.GetValue<bool>().Should().BeTrue();
+        scope["variant"]!.GetValue<string>().Should().Be("kb-h1");
+        // A restart that drops --shadow, or names another variant, would run this arm's queue as another arm.
+        foreach (var arm in new[] { Array.Empty<string>(), ["--shadow", "--variant", "kb-h2"], ["--shadow"] })
+        {
+            batch.Restart();
+            batch.Arm = arm;
+            var changed = () => batch.ExecuteAsync();
+            await changed
+                .Should()
+                .ThrowAsync<ArgumentException>()
+                .WithMessage("This --db belongs to shadow arm 'kb-h1'*");
+        }
+        batch.Runs.Should().HaveCount(3);
+    }
+
+    [Fact]
+    public void A_variant_needs_shadow()
+    {
+        var parse = () => CliOptions.Parse([.. RunArguments, "--variant", "kb-h1"]);
+
+        parse.Should().Throw<ArgumentException>().WithMessage("--variant names a shadow arm and needs --shadow.");
     }
 
     [Fact]
@@ -245,28 +372,43 @@ public sealed class ReviewdShadowTests : IDisposable
         wrongHead["headSha"] = "other";
         var badReply = Comment("reply");
         badReply["threadId"] = -1;
-        var cases = new JsonArray(
-            Record(summary.DeepClone().AsObject(), Comment("inline", file: "/a.cs", line: 3), Comment("reply")),
-            Record(summary.DeepClone().AsObject(), Comment("inline", file: "/a.cs")),
-            wrongHead,
-            Record(),
-            Record(Comment("inline", file: "/a.cs", line: 3)),
-            Record(summary.DeepClone().AsObject(), Comment("summary")),
-            Record(summary.DeepClone().AsObject(), Comment("inline", line: 3)),
-            Record(summary.DeepClone().AsObject(), Comment("inline", file: "/a.cs", line: 0)),
-            Record(summary.DeepClone().AsObject(), Comment("vote")),
-            Record(Comment("summary", content: "  ")),
-            Record(summary.DeepClone().AsObject(), badReply)
-        );
+        (string Name, JsonObject Record, bool Passes)[] cases =
+        [
+            ("summary only", Record(summary.DeepClone().AsObject()), true),
+            (
+                "summary, inline and reply",
+                Record(summary.DeepClone().AsObject(), Comment("inline", file: "/a.cs", line: 3), Comment("reply")),
+                true
+            ),
+            ("file-level inline", Record(summary.DeepClone().AsObject(), Comment("inline", file: "/a.cs")), true),
+            ("another head", wrongHead, false),
+            ("no comments", Record(), false),
+            ("no summary", Record(Comment("inline", file: "/a.cs", line: 3)), false),
+            ("two summaries", Record(summary.DeepClone().AsObject(), Comment("summary")), false),
+            ("inline without a file", Record(summary.DeepClone().AsObject(), Comment("inline", line: 3)), false),
+            (
+                "inline on line 0",
+                Record(summary.DeepClone().AsObject(), Comment("inline", file: "/a.cs", line: 0)),
+                false
+            ),
+            ("unknown kind", Record(summary.DeepClone().AsObject(), Comment("vote")), false),
+            ("blank summary", Record(Comment("summary", content: "  ")), false),
+            ("negative thread id", Record(summary.DeepClone().AsObject(), badReply), false),
+            // Commit sets aside any file over 1 MiB, so a record that size would pass verify and then go missing.
+            ("over 1 MiB", Record(Comment("summary", content: new string('x', 1024 * 1024))), false),
+        ];
 
         var results = await ReviewdSummaryReplyTests.RunAsync(
             python!,
-            ["verify_would_post"],
+            ["verify_would_post", "ARCHIVE_FILE_LIMIT"],
             "passes(lambda: verify_would_post(json.dumps(c), 17, 'h', 'm'))",
-            cases.ToJsonString()
+            new JsonArray([.. cases.Select(c => c.Record)]).ToJsonString()
         );
 
-        results.Should().Equal(true, true, false, false, false, false, false, false, false, false, false);
+        cases
+            .Zip(results, (c, passed) => (c.Name, Passed: passed))
+            .Should()
+            .Equal(cases.Select(c => (c.Name, Passed: c.Passes)));
     }
 
     public void Dispose()
@@ -276,7 +418,11 @@ public sealed class ReviewdShadowTests : IDisposable
             File.Delete(_database);
     }
 
-    private static FakeHttpMessageHandler Host(string conversations = "[]", string liveTranscript = "[]") =>
+    private static FakeHttpMessageHandler Host(
+        string conversations = "[]",
+        string liveTranscript = "[]",
+        string status = """{"status":"Errored","runId":"run","response":null}"""
+    ) =>
         new FakeHttpMessageHandler()
             .OnJson(HttpMethod.Get, "/live/messages", liveTranscript)
             .OnJson(
@@ -295,7 +441,7 @@ public sealed class ReviewdShadowTests : IDisposable
             .OnJson(HttpMethod.Get, "/api/conversations?", conversations)
             .OnJson(HttpMethod.Put, "/metadata", "{}")
             .OnJson(HttpMethod.Post, "/messages", """{"inputId":"input","idempotencyKeyHonored":true}""")
-            .OnJson(HttpMethod.Get, "/status?", """{"status":"Errored","runId":"run","response":null}""")
+            .OnJson(HttpMethod.Get, "/status?", status)
             .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
             .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
 
@@ -350,6 +496,14 @@ public sealed class ReviewdShadowTests : IDisposable
                         ["reviewDirectory"] = "reviews",
                         ["baselineComments"] = new JsonArray(),
                     },
+                    "verify" => new JsonObject { ["file"] = "checked", ["comments"] = new JsonArray() },
+                    "commit" => new JsonObject { ["status"] = "committed", ["commit"] = new string('c', 40) },
+                    "cleanup" => new JsonObject
+                    {
+                        ["claimToken"] = args["claimToken"]!.DeepClone(),
+                        ["cleanBaselineVerified"] = true,
+                        ["evidencePreserved"] = true,
+                    },
                     _ => [],
                 }
             );
@@ -385,11 +539,11 @@ public sealed class ReviewdShadowTests : IDisposable
         await new SqliteKvStore(connection).SetAsync(key, value);
     }
 
-    private async Task<JsonObject> AttemptAsync()
+    private Task<JsonObject> AttemptAsync() => ReceiptAsync($"reviewd/review-attempt/{Repo.NormalizedKey}/17");
+
+    private async Task<JsonObject> ReceiptAsync(string key)
     {
         using var connection = PrThreadBindings.Connection(_database);
-        return (
-            await new SqliteKvStore(connection).GetAsync<JsonObject>($"reviewd/review-attempt/{Repo.NormalizedKey}/17")
-        )!;
+        return (await new SqliteKvStore(connection).GetAsync<JsonObject>(key))!;
     }
 }

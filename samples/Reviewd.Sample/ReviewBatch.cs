@@ -363,6 +363,20 @@ internal static class ReviewBatch
             scope["reasoningEffort"] = reasoningEffort;
         if (maxAgeHours is { } hours)
             scope["maxAgeHours"] = hours;
+        // The arm is part of the scope: a restart that drops --shadow must not admit the saved queue as live reviews.
+        if (options.Has("shadow"))
+            scope["shadow"] = true;
+        if (options.Get("variant") is { } variant)
+            scope["variant"] = variant;
+        // Every run refuses another arm's --db, so a mismatched batch stops here instead of failing each PR. It is a
+        // short local read, so it runs even when the batch starts already canceled.
+        await ReviewArm.CheckAsync(
+            database,
+            options.Has("shadow"),
+            options.Get("variant"),
+            pin: true,
+            CancellationToken.None
+        );
         JsonObject? state = null;
         using var writes = new SemaphoreSlim(1, 1);
         // Steps started here, by repo and slot. Only the loop below adds or removes them.

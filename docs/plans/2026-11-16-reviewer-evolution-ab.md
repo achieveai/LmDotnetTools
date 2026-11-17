@@ -1,14 +1,18 @@
 > Approved 2026-11-16 (ReviewPlan rev 3; standing approval: $300 pilot cap). Copied verbatim below.
 >
-> **Slice 1 as built** (eview run|batch --shadow --variant): the shadow half of build item 2 only.
-> - The receipt key does **not** gain the variant: about ten readers parse that key. Each arm runs on its own --db
->   (and its own workspace and store clone) instead; the receipt records shadow and ariant.
-> - Shadow is Azure DevOps only: read-only egress cannot stop a GitHub post, so --shadow refuses GitHub.
-> - Shadow conversations are titled shadow-{repo}-{pr}-{head8} and skip both title lookups, so live and shadow
+> **Slice 1 as built** (`review run|batch --shadow --variant`): the shadow half of build item 2 only.
+> - The receipt key does **not** gain the variant: about ten readers parse that key. Each arm runs on its own `--db`
+>   (and its own workspace and store clone) instead; the receipt records `shadow` and `variant`.
+> - A shadow run pins its `--db` to its arm (`reviewd/arm`); a run of another arm, live included, is refused there.
+>   A shadow arm also refuses a `--db` that already holds live reviews. A batch keeps the arm in its queue scope.
+> - Shadow is Azure DevOps only: read-only egress cannot stop a GitHub post, so `--shadow` refuses GitHub.
+> - Shadow conversations are titled `shadow-{repo}-{pr}-{head8}` and skip both title lookups, so live and shadow
 >   never reuse each other's conversations and a shadow run reviews heads the live reviewer already did.
-> - Verify checks would_post.json (recorded as wouldPost, never erifiedPublication); commit keeps the review
->   branch local (no push).
-> - judge run refuses shadow receipts and judge batch counts them as shadow until item 6 lands.
+> - Verify checks `would_post.json` (recorded as `wouldPost`, never `verifiedPublication`), and refuses one over
+>   1 MiB, which commit would set aside; commit keeps the review branch local (no push).
+> - `judge run` refuses shadow receipts and `judge batch` counts them as `shadow` until item 6 lands.
+> - Merged-PR replay is not supported yet: `review run` admits open PRs only (`PrSelection.cs`), so slice 1
+>   shadows open PRs. Build item 5 adds historical heads.
 # Plan: Reviewers that improve themselves, proven by blind A/B against the judge
 
 **Done when:** one challenger, generated from judge misses and bound to a `ClaudePlugins` branch, has been
@@ -132,6 +136,8 @@ Then: `review batch --workspace <ws> --variant <id> --shadow --mode <mode> --tas
 - Task prompt → becomes the default template.
 
 ### What exists today (verified)
+The baseline before slice 1, kept as approved. Slice 1 changed the "A/B in Reviewd" row (see the note at the top).
+
 | Area | State | Evidence |
 | --- | --- | --- |
 | Judge | `reviewd judge` scores merged PRs on 8 dims (1–5) incl. completeness and accuracy, plus foundCapture recall and true/false/unproven counts | `Prompts/merged-judge.md:319-350,429-471` |
@@ -193,7 +199,8 @@ Then: `review batch --workspace <ws> --variant <id> --shadow --mode <mode> --tas
 ### Still unverified
 - The gateway submodule is not checked out, so it is unknown whether two commits of one repo can be mounted at once.
 - Whether the host loads the review repo's `CLAUDE.md` into the reviewer (layer 5).
-- Whether a merged ADO PR can be re-reviewed at its old head without code changes.
+- Whether a merged ADO PR can be re-reviewed at its old head. Not without code changes: `review run` admits open
+  PRs only (`PrSelection.cs`), so this needs build item 5.
 - The plugin name clash when two marketplaces both expose `code-reviewer`: the workspace must enable only one.
 - Whether live Reviewd reviews actually invoke `code-reviewer:pr-review`. To check from traces in the pilot.
 - How much disk and time a second review-repo clone and its source pool take on the host.

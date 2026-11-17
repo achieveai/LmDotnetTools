@@ -525,6 +525,8 @@ internal static class ReviewRunner
             throw new ArgumentException(
                 "--shadow supports Azure DevOps repositories only: read-only egress cannot stop a GitHub post."
             );
+        // Before anything is written: a shadow arm and the live reviewer never share a database.
+        await ReviewArm.CheckAsync(database, shadow, variant, pin: options.Has("execute"), ct);
         now ??= () => DateTimeOffset.UtcNow;
         var key = $"reviewd/review-run/{repo.NormalizedKey}/{pr}";
         var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/{pr}";
@@ -560,7 +562,8 @@ internal static class ReviewRunner
         var attempt = await ReadAsync(attemptKey);
         var resume = options.Has("resume");
         var cleanupOnly = options.Has("cleanup-only");
-        // A finished review is posted, verified and archived on the head it reviewed, even after a new push.
+        // A finished review is posted (a shadow one recorded in would_post.json), verified and archived on the head it
+        // reviewed, even after a new push.
         var finishedResume = resume && !cleanupOnly && ReviewFinished(attempt);
         if (
             !cleanupOnly
@@ -1286,8 +1289,9 @@ internal static class ReviewRunner
                 await SaveAsync();
             }
             else
-                // A confirmation that finds a verified blocker the posted summary missed now corrects the verdict on the PR:
-                // 12 judged reviews posted an approval while their own confirmation said REQUEST_CHANGES or BLOCKED.
+                // A live confirmation that finds a verified blocker the posted summary missed corrects the verdict on the
+                // PR: 12 judged reviews posted an approval while their own confirmation said REQUEST_CHANGES or BLOCKED.
+                // A shadow confirmation corrects would_post.json instead, and posts nothing.
                 await SendAndWaitAsync(
                     "confirmation",
                     shadow
