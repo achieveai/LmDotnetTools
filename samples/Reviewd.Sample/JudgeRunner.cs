@@ -205,9 +205,11 @@ internal static class JudgeRunner
         // A shadow review posted nothing; the judge scores posted comments, so it would read a shadow review as one
         // that found nothing. Refused until the judge can score would_post.json instead.
         if (review["shadow"]?.GetValue<bool>() == true)
+        {
             throw new InvalidOperationException(
                 "Review receipt is a shadow review (nothing posted); the judge cannot score it yet."
             );
+        }
         if (
             review["repository"]?.GetValue<string>()?.Equals(repo.DisplayName, StringComparison.OrdinalIgnoreCase)
                 != true

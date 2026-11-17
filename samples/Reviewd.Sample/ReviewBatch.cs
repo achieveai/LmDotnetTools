@@ -381,7 +381,9 @@ internal static class ReviewBatch
             scope["postSession"] = options.Required("post-session");
         }
         if (options.Get("variant") is { } variant)
+        {
             scope["variant"] = variant;
+        }
         // The arm's prompt and manifest are checked once here, so a bad one stops the batch instead of every run. The
         // scope keeps their hashes: a restart with an edited prompt or manifest would run the queue as another arm.
         // Short local reads, so like the check below they run even when the batch starts already canceled.
@@ -1138,8 +1140,11 @@ internal static class ReviewBatch
                 if (options.Get("reasoning-effort") is { } effort)
                     arguments.AddRange(["--reasoning-effort", effort]);
                 if (options.Has("shadow"))
+                {
                     arguments.AddRange(["--shadow", "--post-session", options.Required("post-session")]);
+                }
                 if (options.Get("variant") is { } variant)
+                {
                     arguments.AddRange([
                         "--variant",
                         variant,
@@ -1148,8 +1153,11 @@ internal static class ReviewBatch
                         "--experiment",
                         options.Required("experiment"),
                     ]);
+                }
                 if (options.Get("task-prompt-file") is { } taskPrompt)
+                {
                     arguments.AddRange(["--task-prompt-file", taskPrompt]);
+                }
                 if (maxAgeHours is { } maximumAge)
                     arguments.AddRange([
                         "--max-age-hours",
