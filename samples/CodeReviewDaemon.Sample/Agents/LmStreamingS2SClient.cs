@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace CodeReviewDaemon.Sample.Agents;
 
@@ -934,6 +935,32 @@ internal sealed class LmStreamingS2SClient
         }
 
         return catalog;
+    }
+
+    /// <summary>
+    ///     Creates user chat mode <paramref name="name"/> from <paramref name="payload"/>, or replaces the one already
+    ///     named so, and returns its id. The host mints mode ids, so the name is the identity. A system mode of that
+    ///     name is refused, never edited.
+    /// </summary>
+    public async Task<string> EnsureChatModeAsync(string name, JsonObject payload, CancellationToken ct)
+    {
+        using var modes = JsonDocument.Parse(await SendReadAsync(HttpMethod.Get, "api/chat-modes", null, ct));
+        string? existing = null;
+        foreach (var mode in modes.RootElement.EnumerateArray())
+        {
+            if (!mode.TryGetProperty("name", out var named) || named.GetString() != name)
+                continue;
+            if (mode.TryGetProperty("isSystemDefined", out var system) && system.ValueKind == JsonValueKind.True)
+                throw new InvalidOperationException($"'{name}' is a system chat mode; it is never edited.");
+            existing = mode.GetProperty("id").GetString();
+            break;
+        }
+        var body = existing is null
+            ? await SendReadAsync(HttpMethod.Post, "api/chat-modes", payload, ct)
+            : await SendReadAsync(HttpMethod.Put, $"api/chat-modes/{Uri.EscapeDataString(existing)}", payload, ct);
+        using var saved = JsonDocument.Parse(body);
+        return saved.RootElement.GetProperty("id").GetString()
+            ?? throw new ReviewHostContractException("The host saved the chat mode but returned no id.");
     }
 
     /// <summary>Whether the host resolves chat mode <paramref name="modeId"/> (<c>GET api/chat-modes/{id}</c>; 404 = no).</summary>

@@ -382,6 +382,18 @@ internal static class ReviewBatch
         }
         if (options.Get("variant") is { } variant)
             scope["variant"] = variant;
+        // The arm's prompt and manifest are checked once here, so a bad one stops the batch instead of every run. The
+        // scope keeps their hashes: a restart with an edited prompt or manifest would run the queue as another arm.
+        // Short local reads, so like the check below they run even when the batch starts already canceled.
+        if (await ShadowArm.ResolveAsync(options, options.Required("provider"), CancellationToken.None) is { } arm)
+        {
+            scope["taskPromptSha256"] = arm.TemplateSha256;
+            if (arm.Manifest is { } manifest)
+            {
+                scope["manifestSha256"] = manifest.Sha256;
+                scope["experiment"] = arm.Experiment;
+            }
+        }
         // Every run refuses another arm's --db, so a mismatched batch stops here instead of failing each PR. It is a
         // short local read, so it runs even when the batch starts already canceled.
         await ReviewArm.CheckAsync(
@@ -1128,7 +1140,16 @@ internal static class ReviewBatch
                 if (options.Has("shadow"))
                     arguments.AddRange(["--shadow", "--post-session", options.Required("post-session")]);
                 if (options.Get("variant") is { } variant)
-                    arguments.AddRange(["--variant", variant]);
+                    arguments.AddRange([
+                        "--variant",
+                        variant,
+                        "--manifest",
+                        options.Required("manifest"),
+                        "--experiment",
+                        options.Required("experiment"),
+                    ]);
+                if (options.Get("task-prompt-file") is { } taskPrompt)
+                    arguments.AddRange(["--task-prompt-file", taskPrompt]);
                 if (maxAgeHours is { } maximumAge)
                     arguments.AddRange([
                         "--max-age-hours",

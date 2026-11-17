@@ -21,6 +21,16 @@ public sealed class ReviewdShadowTests : IDisposable
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-10-07T22:00:00Z");
     private static readonly string Head = new('a', 40);
     private readonly string _database = Path.Combine(Path.GetTempPath(), $"reviewd-shadow-{Guid.NewGuid():N}.db");
+    private readonly string _files = Path.Combine(Path.GetTempPath(), $"reviewd-shadow-{Guid.NewGuid():N}");
+
+    /// <summary>The flags of variant arm <paramref name="id" />, with a manifest that pins only its id.</summary>
+    private string[] Variant(string id, string manifest = "")
+    {
+        Directory.CreateDirectory(_files);
+        var path = Path.Combine(_files, id + ".json");
+        File.WriteAllText(path, manifest.Length > 0 ? manifest : $$"""{"id":"{{id}}"}""");
+        return ["--variant", id, "--manifest", path, "--experiment", "exp-1"];
+    }
 
     [Theory]
     [InlineData(true)]
@@ -32,7 +42,7 @@ public sealed class ReviewdShadowTests : IDisposable
         await SnapshotAsync();
 
         // The scripted host reports the review Errored after the send; this test only checks how it got there.
-        var run = () => RunAsync(handler, phases, shadow ? ["--shadow", "--variant", "kb-h1"] : []);
+        var run = () => RunAsync(handler, phases, shadow ? ["--shadow", .. Variant("kb-h1")] : []);
         await run.Should().ThrowAsync<InvalidOperationException>();
 
         var provision = handler.Requests.Single(r =>
@@ -160,12 +170,12 @@ public sealed class ReviewdShadowTests : IDisposable
     {
         // The first run pins the database to its arm; a run from any other arm is refused before it touches the host.
         // null is a database from before the pin: it holds a live attempt and no marker.
-        static string[] Arm(string? arm) =>
+        string[] Arm(string? arm) =>
             arm switch
             {
                 null => [],
                 "" or "--shadow" => ["--shadow"],
-                _ => ["--shadow", .. arm.Split(' ')],
+                _ => ["--shadow", .. Variant(arm.Split(' ')[1])],
             };
         await SnapshotAsync();
         if (first is null)
@@ -310,7 +320,7 @@ public sealed class ReviewdShadowTests : IDisposable
     {
         using var batch = new ReviewdRunnerTests.BatchFixture(0, 1)
         {
-            Arm = ["--shadow", "--post-session", "read-only", "--variant", "kb-h1"],
+            Arm = ["--shadow", "--post-session", "read-only", .. Variant("kb-h1")],
         };
         batch.Cancellation.Cancel();
         await batch.ExecuteAsync();
@@ -347,7 +357,7 @@ public sealed class ReviewdShadowTests : IDisposable
             var arm in new[]
             {
                 Array.Empty<string>(),
-                ["--shadow", "--post-session", "read-only", "--variant", "kb-h2"],
+                ["--shadow", "--post-session", "read-only", .. Variant("kb-h2")],
                 ["--shadow", "--post-session", "read-only"],
             }
         )
@@ -784,6 +794,276 @@ public sealed class ReviewdShadowTests : IDisposable
     }
 
     [Fact]
+    public async Task A_variant_run_sends_its_own_task_prompt_and_records_what_produced_the_review()
+    {
+        // The arm's template drops the quality rules for its own; the receipt names the prompt, manifest and build.
+        Directory.CreateDirectory(_files);
+        var template = Path.Combine(_files, "b-007.md");
+        await File.WriteAllTextAsync(
+            template,
+            "B-007 RULES. Review {{repo}} #{{pr}} at {{head}}; save {{directory}}/would_post.json."
+        );
+        var flags = Variant(
+            "b-007",
+            """{"id":"b-007","provider":"test","taskPrompt":"b-007.md","plugins":{"sha":"1111111111111111111111111111111111111111"}}"""
+        );
+        var handler = Host();
+        await SnapshotAsync();
+
+        var run = () => RunAsync(handler, [], ["--shadow", "--task-prompt-file", template, .. flags]);
+        await run.Should().ThrowAsync<InvalidOperationException>();
+
+        var send = handler.Requests.First(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal));
+        send.Body.Should().Contain("B-007 RULES. Review org/project/Nova #17 at " + Head);
+        send.Body.Should().NotContain("Review quality rules");
+        var provenance = (await AttemptAsync())["provenance"]!.AsObject();
+        provenance["taskPromptSha256"]!
+            .GetValue<string>()
+            .Should()
+            .Be(VariantManifest.Sha256Hex(await File.ReadAllTextAsync(template)));
+        provenance["manifestSha256"]!
+            .GetValue<string>()
+            .Should()
+            .Be(VariantManifest.Sha256Hex(await File.ReadAllBytesAsync(flags[3])));
+        provenance["experimentId"]!.GetValue<string>().Should().Be("exp-1");
+        provenance["pluginSha"]!.GetValue<string>().Should().Be(new string('1', 40));
+        provenance["mode"]!.GetValue<string>().Should().Be("workspace-agent");
+        provenance["reviewdBuild"]!.GetValue<string>().Should().NotBeNullOrEmpty();
+    }
+
+    [Theory]
+    [InlineData("""{"id":"other"}""", "*pins id other, but this run uses b-007.")]
+    [InlineData("""{"id":"b-007","provider":"claude"}""", "*pins provider claude, but this run uses test.")]
+    [InlineData("""{"id":"b-007","effort":"xhigh"}""", "*pins reasoning effort xhigh, but this run uses none.")]
+    [InlineData("""{"id":"b-007","taskPrompt":"b-007.md"}""", "*pins task prompt SHA-256*")]
+    [InlineData("""{"id":"b-007","plugins":{"sha":"main"}}""", "*plugins.sha*must be a 40-character commit SHA.")]
+    public async Task A_run_that_differs_from_its_manifest_is_refused_before_any_host_call(
+        string manifest,
+        string refusal
+    )
+    {
+        // The manifest's task prompt differs from the default one this run sends.
+        Directory.CreateDirectory(_files);
+        await File.WriteAllTextAsync(Path.Combine(_files, "b-007.md"), "Mine: {{directory}} {{head}}");
+        await SnapshotAsync();
+        var handler = new FakeHttpMessageHandler();
+
+        var run = () => RunAsync(handler, [], ["--shadow", .. Variant("b-007", manifest)]);
+
+        (await run.Should().ThrowAsync<ArgumentException>()).WithMessage(refusal);
+        handler.Requests.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("--task-prompt-file t.md", "--task-prompt-file sets a shadow review's task prompt and needs --shadow.")]
+    [InlineData(
+        "--shadow --post-session p --variant b --manifest m.json",
+        "--variant, --manifest and --experiment go*"
+    )]
+    [InlineData(
+        "--shadow --post-session p --manifest m.json --experiment e",
+        "--variant, --manifest and --experiment go*"
+    )]
+    [InlineData("--shadow --post-session p --variant b --manifest m --experiment a/b", "--experiment must be*")]
+    public void Task_prompt_manifest_and_experiment_belong_to_a_shadow_variant(string flags, string refusal)
+    {
+        foreach (var command in new[] { RunArguments, ["review", "batch", "--session", "session"] })
+        {
+            var parse = () => CliOptions.Parse([.. command, .. flags.Split(' ')]);
+
+            parse.Should().Throw<ArgumentException>().WithMessage(refusal);
+        }
+    }
+
+    [Theory]
+    [InlineData("Save {{directory}}/would_post.json for {{head}} on {{branch}}.", "*unknown placeholder {{branch}}*")]
+    [InlineData("Review {{pr}} at {{head}}.", "*must use {{directory}}.")]
+    [InlineData("Save {{directory}}/would_post.json.", "*must use {{head}}.")]
+    public async Task A_task_prompt_template_must_say_where_and_what_it_reviews(string template, string refusal)
+    {
+        Directory.CreateDirectory(_files);
+        var path = Path.Combine(_files, "t.md");
+        await File.WriteAllTextAsync(path, template);
+        await SnapshotAsync();
+        var handler = new FakeHttpMessageHandler();
+
+        var run = () => RunAsync(handler, [], ["--shadow", "--task-prompt-file", path]);
+
+        (await run.Should().ThrowAsync<ArgumentException>()).WithMessage(refusal);
+        handler.Requests.Should().BeEmpty();
+        ShadowTaskPrompt.Validate(ShadowTaskPrompt.Default, "default");
+    }
+
+    [Fact]
+    public async Task A_resume_must_send_the_task_prompt_its_attempt_started_with()
+    {
+        await SnapshotAsync();
+        await PutAsync(
+            $"reviewd/review-attempt/{Repo.NormalizedKey}/17",
+            new JsonObject
+            {
+                ["repository"] = Repo.DisplayName,
+                ["prId"] = "17",
+                ["slot"] = 2,
+                ["stage"] = "review-running",
+                ["threadId"] = "thread",
+                ["shadow"] = true,
+                ["provenance"] = new JsonObject { ["taskPromptSha256"] = new string('0', 64) },
+            }
+        );
+        var handler = new FakeHttpMessageHandler();
+
+        var run = () => RunAsync(handler, [], ["--shadow", "--resume"]);
+
+        (await run.Should().ThrowAsync<ArgumentException>()).WithMessage(
+            "This attempt was started with taskPromptSha256 0000*; a resume must use the same arm*"
+        );
+        handler.Requests.Should().BeEmpty();
+    }
+
+    private const string ArmManifest = """
+        {"id":"b-007","reviewRepo":{"directory":"exp-b","ref":"exp/b-007","sha":"2222222222222222222222222222222222222222"},
+         "plugins":{"alias":"cr-b-007","url":"https://github.com/o/ClaudePlugins","sha":"3333333333333333333333333333333333333333"},
+         "mode":{"name":"code-review-b-007","file":"mode.json"},"provider":"test"}
+        """;
+
+    /// <summary>A host with the base workspace and no arm yet; the arm's mode and workspace are created.</summary>
+    private static FakeHttpMessageHandler VariantHost() =>
+        new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "api/workspaces/base",
+                """{"id":"base","name":"nova","directoryRelPath":"nova-reviews","marketplaces":["claude-plugins","sandbox-plugins"],"pluginSelection":[{"marketplace":"claude-plugins","plugin":"code-reviewer"},{"marketplace":"sandbox-plugins","plugin":"review-setup"}],"pluginsRevision":3}"""
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "api/workspaces",
+                """[{"id":"base","name":"nova","directoryRelPath":"nova-reviews","marketplaces":[]}]"""
+            )
+            .OnJson(HttpMethod.Get, "api/chat-modes", "[]")
+            .OnJson(HttpMethod.Post, "api/chat-modes", """{"id":"mode-1"}""")
+            .OnJson(
+                HttpMethod.Post,
+                "api/workspaces",
+                """{"id":"ws-b","name":"variant-b-007","directoryRelPath":"exp-b","marketplaces":[]}"""
+            );
+
+    private async Task<(JsonObject Result, List<string> Calls)> VariantUpAsync(
+        FakeHttpMessageHandler handler,
+        string cloneSha,
+        bool execute = true
+    )
+    {
+        Directory.CreateDirectory(_files);
+        await File.WriteAllTextAsync(Path.Combine(_files, "mode.json"), """{"systemPrompt":"Review as b-007."}""");
+        var flags = Variant("b-007", ArmManifest);
+        var calls = new List<string>();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var options = CliOptions.Parse([
+            "variant",
+            "up",
+            "--manifest",
+            flags[3],
+            "--experiment",
+            "exp-1",
+            "--from-workspace",
+            "base",
+            .. execute ? new[] { "--execute" } : [],
+        ]);
+        var result = await VariantUp.RunCoreAsync(
+            options,
+            new LmStreamingS2SClient(http, null, null, null),
+            (alias, url, sha, _) =>
+            {
+                calls.Add($"register {alias} {url} {sha}");
+                return Task.FromResult(sha);
+            },
+            (directory, _) =>
+            {
+                calls.Add($"head {directory}");
+                return Task.FromResult(cloneSha);
+            },
+            CancellationToken.None
+        );
+        return (result, calls);
+    }
+
+    [Fact]
+    public async Task Variant_up_builds_the_arm_from_the_base_workspace_with_only_the_reviewer_from_its_alias()
+    {
+        var handler = VariantHost();
+
+        var (result, calls) = await VariantUpAsync(handler, new string('2', 40));
+
+        calls
+            .Should()
+            .Equal("head exp-b", $"register cr-b-007 https://github.com/o/ClaudePlugins {new string('3', 40)}");
+        var mode = handler.Requests.Single(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/chat-modes");
+        JsonNode.Parse(mode.Body!)!["name"]!.GetValue<string>().Should().Be("code-review-b-007");
+        var created = JsonNode.Parse(
+            handler.Requests.Single(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/workspaces").Body!
+        )!;
+        created["name"]!.GetValue<string>().Should().Be("variant-b-007");
+        created["directoryRelPath"]!.GetValue<string>().Should().Be("exp-b");
+        created["marketplaces"]!
+            .AsArray()
+            .Select(m => m!.GetValue<string>())
+            .Should()
+            .Equal("claude-plugins", "sandbox-plugins", "cr-b-007");
+        created["pluginSelection"]!
+            .AsArray()
+            .Select(p => $"{p!["marketplace"]}/{p["plugin"]}")
+            .Should()
+            .Equal("cr-b-007/code-reviewer", "sandbox-plugins/review-setup");
+        result["workspaceId"]!.GetValue<string>().Should().Be("ws-b");
+        result["next"]!
+            .GetValue<string>()
+            .Should()
+            .Contain("--workspace ws-b --provider test --mode mode-1 --shadow")
+            .And.Contain("--variant b-007 --manifest ")
+            .And.Contain("--experiment exp-1");
+    }
+
+    [Fact]
+    public async Task Variant_up_changes_nothing_when_the_clone_is_not_at_the_pinned_commit_or_on_a_preview()
+    {
+        var handler = VariantHost();
+
+        var preview = await VariantUpAsync(handler, new string('2', 40), execute: false);
+        var wrongClone = () => VariantUpAsync(handler, new string('9', 40));
+
+        preview.Calls.Should().BeEmpty();
+        preview.Result["preview"]!.GetValue<bool>().Should().BeTrue();
+        (await wrongClone.Should().ThrowAsync<InvalidOperationException>()).WithMessage(
+            $"The review-repo clone in exp-b is at {new string('9', 40)}, but manifest b-007 pins*"
+        );
+        handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get);
+    }
+
+    [Fact]
+    public async Task Variant_up_needs_a_fully_pinned_manifest_and_an_experiment()
+    {
+        var manifest = Variant("b-007")[3];
+        string[] command = ["variant", "up", "--manifest", manifest, "--from-workspace", "base"];
+        var noExperiment = () => CliOptions.Parse(command);
+        var unpinned = () =>
+            VariantUp.RunCoreAsync(
+                CliOptions.Parse([.. command, "--experiment", "exp-1", "--execute"]),
+                null!,
+                (_, _, _, _) => Task.FromResult(""),
+                (_, _) => Task.FromResult(""),
+                CancellationToken.None
+            );
+
+        // An arm is never built outside an experiment record, nor from a manifest that leaves a layer unpinned.
+        noExperiment.Should().Throw<ArgumentException>().WithMessage("*--experiment*");
+        (await unpinned.Should().ThrowAsync<ArgumentException>()).WithMessage(
+            "Variant manifest b-007 must pin reviewRepo.directory, reviewRepo.sha, plugins.alias, plugins.url, "
+                + "plugins.sha, mode.name, mode.file for variant up."
+        );
+    }
+
+    [Fact]
     public void A_variant_needs_shadow()
     {
         var parse = () => CliOptions.Parse([.. RunArguments, "--variant", "kb-h1"]);
@@ -849,7 +1129,18 @@ public sealed class ReviewdShadowTests : IDisposable
         foreach (var command in new[] { RunArguments, ["review", "batch"] })
         {
             var parse = () =>
-                CliOptions.Parse([.. command, "--shadow", "--post-session", "read-only", "--variant", label]);
+                CliOptions.Parse([
+                    .. command,
+                    "--shadow",
+                    "--post-session",
+                    "read-only",
+                    "--variant",
+                    label,
+                    "--manifest",
+                    "m.json",
+                    "--experiment",
+                    "e1",
+                ]);
             if (valid)
                 parse().Get("variant").Should().Be(label);
             else
@@ -954,6 +1245,8 @@ public sealed class ReviewdShadowTests : IDisposable
         ReviewdSqlitePools.Clear(_database);
         if (File.Exists(_database))
             File.Delete(_database);
+        if (Directory.Exists(_files))
+            Directory.Delete(_files, recursive: true);
     }
 
     private static FakeHttpMessageHandler Host(
