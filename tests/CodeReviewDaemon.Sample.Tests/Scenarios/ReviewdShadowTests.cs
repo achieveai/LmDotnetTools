@@ -2,12 +2,16 @@ extern alias Reviewd;
 
 using System.Net;
 using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.Misc.Storage;
+using AchieveAi.LmDotnetTools.Sandbox;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Reviewd::Reviewd.Sample;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -15,7 +19,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 ///     <c>review run --shadow</c> is an A/B experiment arm: the same review on a fresh read-only-egress conversation,
 ///     recorded in would_post.json instead of posted, and titled apart so the live runner never reuses it.
 /// </summary>
-public sealed class ReviewdShadowTests : IDisposable
+public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBase(output)
 {
     private static readonly RepoIdentity Repo = PrCommands.ParseRepo("org/project/Nova");
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-10-07T22:00:00Z");
@@ -254,10 +258,12 @@ public sealed class ReviewdShadowTests : IDisposable
 
         var live = () => ReviewArm.CheckAsync(_database, shadow: false, null, pin: true, default);
 
-        await live.Should()
+        var refusal = await live.Should()
             .ThrowAsync<ArgumentException>()
             .WithMessage("This --db belongs to shadow arm 'kb-h1'; the live reviewer needs a --db of its own.");
-        (await ReceiptAsync(ReviewArm.Key)).ToJsonString().Should().Be("""{"shadow":true,"variant":"kb-h1"}""");
+        var pin = await ReceiptAsync(ReviewArm.Key);
+        Logger.LogDebug("Live pin refused with {Refusal}; pin now {Pin}", refusal.Which.Message, pin.ToJsonString());
+        pin.ToJsonString().Should().Be("""{"shadow":true,"variant":"kb-h1"}""");
     }
 
     [Theory]
@@ -486,6 +492,19 @@ public sealed class ReviewdShadowTests : IDisposable
                 .Should()
                 .Throw<ArgumentException>()
                 .WithMessage("--post-session session-1 cannot fetch org/project/Other*--read-repos org/project/Other.");
+            // ADO names are case-insensitive: the marker's org/project/Nova covers ORG/Project/nova.
+            ReadOnlySessions.Require(store, "session-1", "ORG/Project/nova");
+
+            // A marker written before markers listed their repos grants no fetch, so its session is refused.
+            await File.WriteAllTextAsync(
+                Path.Combine(store, "read-only-sessions", "legacy.json"),
+                """{"sessionId":"legacy","workspace":"workspace"}"""
+            );
+            var legacy = () => ReadOnlySessions.Require(store, "legacy", Repo.DisplayName);
+            legacy
+                .Should()
+                .Throw<ArgumentException>()
+                .WithMessage("--post-session legacy cannot fetch org/project/Nova*");
         }
         finally
         {
@@ -557,11 +576,17 @@ public sealed class ReviewdShadowTests : IDisposable
     [InlineData(false)]
     public async Task A_shadow_batch_checks_eligibility_in_its_post_session(bool shadow)
     {
+        // Drives the production steps (SandboxStepsAsync, which the batch's eligibility wrapper and review run both
+        // use) over a real SandboxClient, so the session each submit reaches is read off the wire.
         var store = Path.Combine(Path.GetTempPath(), $"reviewd-tokens-{Guid.NewGuid():N}");
         Directory.CreateDirectory(store);
         try
         {
             await ReadOnlySessions.MarkAsync(store, "post", "workspace", [Repo.DisplayName], default);
+            using var config = HostConfig(store);
+            var gateway = new ScriptedSandboxGateway { CommandStdout = "{}", WorkspaceRelativePath = "workspace" };
+            using var http = new HttpClient(gateway, disposeHandler: false);
+            using var sandbox = SandboxOver(http);
             var options = CliOptions.Parse([
                 "review",
                 "batch",
@@ -571,29 +596,23 @@ public sealed class ReviewdShadowTests : IDisposable
                 "workspace",
                 .. shadow ? ["--shadow", "--post-session", "post"] : Array.Empty<string>(),
             ]);
-            var calls = new List<(string Session, string Phase, JsonObject Args)>();
 
-            _ = await ReviewRunner.CheckEligibilityAsync(
-                options,
-                () => store,
-                "workspace",
-                (_, _) => Task.FromResult<string?>("workspace"),
-                (session, phase, args, _, _) =>
-                {
-                    calls.Add((session, phase, args));
-                    return Task.FromResult(new JsonObject());
-                },
-                Repo.DisplayName,
-                "17",
-                2,
-                Head,
-                default
+            var step = await ReviewRunner.SandboxStepsAsync(options, config, sandbox, "workspace", default);
+            _ = await ReviewRunner.CheckEligibilityAsync(step, Repo.DisplayName, "17", 2, Head, default);
+
+            // The submit's args are ["-c", <script>, <phase>, <payload>].
+            var argv = JsonNode.Parse(gateway.LastSubmitBody!)!["args"]!.AsArray();
+            Logger.LogDebug(
+                "Eligibility submits to {Sessions}: phase {Phase}, payload {Payload}",
+                string.Join(",", gateway.SubmitSessions),
+                argv[2]?.ToJsonString(),
+                argv[3]?.ToJsonString()
             );
-
-            var call = calls.Should().ContainSingle().Subject;
-            (call.Session, call.Phase).Should().Be((shadow ? "post" : "session", "eligibility"));
-            call.Args["repo"]!.GetValue<string>().Should().Be("Nova");
-            call.Args["slot"]!.GetValue<int>().Should().Be(2);
+            gateway.SubmitSessions.Should().Equal(shadow ? "post" : "session");
+            argv[2]!.GetValue<string>().Should().Be("eligibility");
+            var args = JsonNode.Parse(argv[3]!.GetValue<string>())!;
+            args["repo"]!.GetValue<string>().Should().Be("Nova");
+            args["slot"]!.GetValue<int>().Should().Be(2);
         }
         finally
         {
@@ -635,6 +654,7 @@ public sealed class ReviewdShadowTests : IDisposable
 
             var skipped = await ReviewBatch.SweepSlotsAsync(options, config, undatedExpired: true, default);
 
+            Logger.LogDebug("Startup sweep skipped: {Reason}", skipped);
             skipped.Should().StartWith("This --db belongs to a shadow arm, so --session session must be");
         }
         finally
@@ -657,7 +677,12 @@ public sealed class ReviewdShadowTests : IDisposable
             var mark = () =>
                 SandboxCommands.MarkCreatedSessionAsync(store, "s-1", "workspace", [Repo.DisplayName], error, default);
 
-            await mark.Should().ThrowAsync<IOException>();
+            var failure = await mark.Should().ThrowAsync<IOException>();
+            Logger.LogDebug(
+                "Marker write failed with {Failure}; stderr {Error}",
+                failure.Which.Message,
+                error.ToString()
+            );
             error
                 .ToString()
                 .Should()
@@ -665,6 +690,82 @@ public sealed class ReviewdShadowTests : IDisposable
                     "Session s-1 was created with read-only egress but its read-only marker could not be written"
                 );
             ReadOnlySessions.IsMarked(store, "s-1").Should().BeFalse();
+        }
+        finally
+        {
+            Directory.Delete(store, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Sandbox_create_sends_the_read_only_policy_and_marks_the_session_the_gateway_created(bool readOnly)
+    {
+        // Drives the production create (the policy it sends and the marker it writes) over a real SandboxClient: a
+        // read-only session whose policy or marker was dropped, or whose marker named another session, would leave a
+        // shadow run either refused or posting with full egress.
+        var store = Path.Combine(Path.GetTempPath(), $"reviewd-tokens-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(store);
+        try
+        {
+            using var config = HostConfig(store);
+            var gateway = new CreateGateway("s-created");
+            using var http = new HttpClient(gateway, disposeHandler: false);
+            using var sandbox = SandboxOver(http);
+            var options = CliOptions.Parse([
+                "sandbox",
+                "create",
+                "--workspace",
+                "workspace",
+                "--callback",
+                "http://127.0.0.1:5203",
+                .. readOnly ? ["--read-only-egress", "--read-repos", Repo.DisplayName] : Array.Empty<string>(),
+            ]);
+            var asked = new List<string>();
+            using var output = new StringWriter();
+            using var error = new StringWriter();
+
+            var exit = await SandboxCommands.CreateAsync(
+                options,
+                config,
+                sandbox,
+                (_, repos, _) =>
+                {
+                    asked.AddRange(repos.Select(repo => repo.DisplayName));
+                    return Task.FromResult<IReadOnlyList<string>>(["/org/project/_git/Nova/git-upload-pack"]);
+                },
+                output,
+                error,
+                default
+            );
+
+            Logger.LogDebug(
+                "Create sent {Body}; printed {Output}; stderr {Error}",
+                gateway.CreateBody,
+                output.ToString(),
+                error.ToString()
+            );
+            exit.Should().Be(0);
+            var rules = JsonNode.Parse(gateway.CreateBody!)!["network"]!["rules"]!.AsArray();
+            var ado = rules.Single(rule => rule!["id"]!.GetValue<string>() == "ado")!;
+            var methods = ado["methods"]!.AsArray().Select(method => method!.GetValue<string>());
+            var posts = rules
+                .Where(rule => rule!["methods"]!.AsArray().Any(method => method!.GetValue<string>() == "POST"))
+                .SelectMany(rule => rule!["paths"]!.AsArray().Select(path => path!.GetValue<string>()));
+            ReadOnlySessions.IsMarked(store, "s-created").Should().Be(readOnly);
+            if (readOnly)
+            {
+                asked.Should().Equal(Repo.DisplayName);
+                methods.Should().Equal("GET", "HEAD");
+                posts.Should().Equal("/org/project/_git/Nova/git-upload-pack");
+                ReadOnlySessions.Require(store, "s-created", Repo.DisplayName);
+            }
+            else
+            {
+                asked.Should().BeEmpty();
+                methods.Should().BeEmpty();
+            }
         }
         finally
         {
@@ -785,7 +886,9 @@ public sealed class ReviewdShadowTests : IDisposable
     {
         var record = new JsonObject { ["id"] = "r-id", ["remoteUrl"] = remoteUrl };
         if (withProject)
+        {
             record["project"] = new JsonObject { ["id"] = "p-id" };
+        }
         using var document = System.Text.Json.JsonDocument.Parse(record.ToJsonString());
 
         var paths = () => AdoReadOnlyPaths.For(Repo, document.RootElement);
@@ -1240,13 +1343,66 @@ public sealed class ReviewdShadowTests : IDisposable
             .Equal(cases.Select(c => (c.Name, Passed: c.Passes)));
     }
 
-    public void Dispose()
+    protected override void Dispose(bool disposing)
     {
-        ReviewdSqlitePools.Clear(_database);
-        if (File.Exists(_database))
-            File.Delete(_database);
-        if (Directory.Exists(_files))
-            Directory.Delete(_files, recursive: true);
+        if (disposing)
+        {
+            ReviewdSqlitePools.Clear(_database);
+            if (File.Exists(_database))
+                File.Delete(_database);
+            if (Directory.Exists(_files))
+                Directory.Delete(_files, recursive: true);
+        }
+        base.Dispose(disposing);
+    }
+
+    /// <summary>A host config over <paramref name="store" />, with ADO signed in, as the CLI loads it.</summary>
+    private static ReviewdConfig HostConfig(string store)
+    {
+        File.WriteAllText(Path.Combine(store, "msal-ado.bin"), "");
+        return new ReviewdConfig(
+            new ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    new Dictionary<string, string?> { ["Auth:TokenStoreDir"] = store, ["Auth:Ado:ClientId"] = "c" }
+                )
+                .Build()
+        );
+    }
+
+    private static SandboxClient SandboxOver(HttpClient http) =>
+        new(
+            new SandboxClientOptions(
+                new Uri("http://127.0.0.1:8080"),
+                "app",
+                "",
+                TimeSpan.FromMinutes(10),
+                TimeSpan.FromSeconds(30)
+            ),
+            http
+        );
+
+    /// <summary>Answers <c>POST /api/v1/sandboxes</c> with <paramref name="sessionId" /> and keeps the request body.</summary>
+    private sealed class CreateGateway(string sessionId) : HttpMessageHandler
+    {
+        public string? CreateBody { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
+        {
+            if (request.Method != HttpMethod.Post || request.RequestUri!.AbsolutePath != "/api/v1/sandboxes")
+                return new HttpResponseMessage(HttpStatusCode.NotImplemented);
+            CreateBody = await request.Content!.ReadAsStringAsync(cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    new JsonObject { ["session_id"] = sessionId, ["container_id"] = null }.ToJsonString(),
+                    System.Text.Encoding.UTF8,
+                    "application/json"
+                ),
+            };
+        }
     }
 
     private static FakeHttpMessageHandler Host(

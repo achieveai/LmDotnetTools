@@ -240,38 +240,52 @@ internal sealed class CliOptions
         }
 
         if (result.Get("variant") is { } variant && !VariantLabel.IsMatch(variant))
+        {
             throw new ArgumentException(
                 "--variant must be 1-40 lowercase letters, digits or dashes, starting with a letter or digit."
             );
+        }
         // A variant names a shadow arm; the live reviewer has none (ReviewArm pins a shadow --db to its variant).
         if (result.Has("variant") && !result.Has("shadow"))
+        {
             throw new ArgumentException("--variant names a shadow arm and needs --shadow.");
+        }
         // A shadow review's steps run in a read-only-egress session (ReadOnlySessions); only a shadow review names one.
         if (result.Has("shadow") != result.Has("post-session"))
+        {
             throw new ArgumentException(
                 "--shadow needs --post-session <id of a sandbox create --read-only-egress session>, and "
                     + "--post-session needs --shadow."
             );
+        }
         if (result.Get("post-session") is { } postSession && postSession == result.Get("session"))
+        {
             throw new ArgumentException("--post-session must be a read-only session other than --session.");
+        }
         // A read-only session runs a shadow review's prepare, which must fetch its repo.
         if (result.Has("read-only-egress") != result.Has("read-repos"))
+        {
             throw new ArgumentException(
                 "--read-only-egress needs --read-repos <org/project/repo,...> (the repos its prepare may fetch), "
                     + "and --read-repos needs --read-only-egress."
             );
+        }
         // A shadow arm's task prompt is a template (ShadowTaskPrompt); a variant arm also names the manifest it was
         // built from and the experiment it belongs to, both recorded in its receipts (ShadowArm).
         if (result.Has("task-prompt-file") && !result.Has("shadow"))
+        {
             throw new ArgumentException("--task-prompt-file sets a shadow review's task prompt and needs --shadow.");
+        }
         if (
             command is "review run" or "review batch"
             && (result.Has("variant") != result.Has("manifest") || result.Has("variant") != result.Has("experiment"))
         )
+        {
             throw new ArgumentException(
                 "--variant, --manifest and --experiment go together: a variant arm names the manifest it was built "
                     + "from and the experiment record it belongs to."
             );
+        }
         // variant up refuses to build an arm outside an experiment record (the study store is the only state between
         // rounds).
         if (command == "variant up")
@@ -281,7 +295,9 @@ internal sealed class CliOptions
             _ = result.Required("from-workspace");
         }
         if (result.Get("experiment") is { } experiment && !ExperimentId.IsMatch(experiment))
+        {
             throw new ArgumentException("--experiment must be 1-80 letters, digits, dots, underscores or dashes.");
+        }
 
         if (command.StartsWith("pr ", StringComparison.Ordinal))
         {

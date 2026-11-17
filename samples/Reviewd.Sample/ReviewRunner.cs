@@ -123,19 +123,32 @@ internal static class ReviewRunner
             options,
             config,
             client,
-            await StepExecutorAsync(
-                options,
-                () => AuthCommands.LoadOptions(config, null).TokenStoreDir!,
-                workspace.DirectoryRelPath,
-                async (id, token) => (await sandbox.GetAsync(id, token)).WorkspaceRelativePath,
-                (target, phase, args, operation, token) =>
-                    ExecuteSandboxAsync(sandbox, target, phase, args, operation, token),
-                ct
-            ),
+            await SandboxStepsAsync(options, config, sandbox, workspace.DirectoryRelPath, ct),
             ct,
             reads: AbandonedChildProbe.ReadLog.Process
         );
     }
+
+    /// <summary>
+    ///     The gateway-backed steps of <c>review run</c> and the batch's eligibility check: each step runs in the session
+    ///     <see cref="StepExecutorAsync" /> picks, on <paramref name="sandbox" />.
+    /// </summary>
+    internal static Task<Func<string, JsonObject, string, CancellationToken, Task<JsonObject>>> SandboxStepsAsync(
+        CliOptions options,
+        ReviewdConfig config,
+        SandboxClient sandbox,
+        string workspaceDirectory,
+        CancellationToken ct
+    ) =>
+        StepExecutorAsync(
+            options,
+            () => AuthCommands.LoadOptions(config, null).TokenStoreDir!,
+            workspaceDirectory,
+            async (id, token) => (await sandbox.GetAsync(id, token)).WorkspaceRelativePath,
+            (target, phase, args, operation, token) =>
+                ExecuteSandboxAsync(sandbox, target, phase, args, operation, token),
+            ct
+        );
 
     /// <summary>
     ///     What a review's steps run through: <c>--session</c>, or for a shadow review <c>--post-session</c> for every
@@ -188,12 +201,7 @@ internal static class ReviewRunner
         using var sandbox = config.CreateSandboxClient(TimeSpan.FromMinutes(10));
         var workspace = await client.GetWorkspaceAsync(options.Required("workspace"), ct);
         return await CheckEligibilityAsync(
-            options,
-            () => AuthCommands.LoadOptions(config, null).TokenStoreDir!,
-            workspace.DirectoryRelPath,
-            async (id, token) => (await sandbox.GetAsync(id, token)).WorkspaceRelativePath,
-            (target, phase, args, operation, token) =>
-                ExecuteSandboxAsync(sandbox, target, phase, args, operation, token),
+            await SandboxStepsAsync(options, config, sandbox, workspace.DirectoryRelPath, ct),
             repository,
             pr,
             slot,
@@ -203,15 +211,12 @@ internal static class ReviewRunner
     }
 
     /// <summary>
-    ///     The batch's eligibility step, run through <see cref="StepExecutorAsync" />: a shadow batch's eligibility runs
-    ///     the same workspace helpers as its reviews, so it takes the read-only <c>--post-session</c> too.
+    ///     The batch's eligibility step, run through the same steps as a review (<see cref="SandboxStepsAsync" />): a
+    ///     shadow batch's eligibility runs the same workspace helpers as its reviews, so it takes the read-only
+    ///     <c>--post-session</c> too.
     /// </summary>
     internal static async Task<JsonObject> CheckEligibilityAsync(
-        CliOptions options,
-        Func<string> tokenStoreDir,
-        string workspaceDirectory,
-        Func<string, CancellationToken, Task<string?>> sessionWorkspace,
-        Func<string, string, JsonObject, string, CancellationToken, Task<JsonObject>> execute,
+        Func<string, JsonObject, string, CancellationToken, Task<JsonObject>> step,
         string repository,
         string pr,
         int slot,
@@ -220,7 +225,6 @@ internal static class ReviewRunner
     )
     {
         var repo = PrCommands.ParseRepo(repository);
-        var step = await StepExecutorAsync(options, tokenStoreDir, workspaceDirectory, sessionWorkspace, execute, ct);
         return await step(
             "eligibility",
             new JsonObject

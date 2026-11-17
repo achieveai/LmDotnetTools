@@ -62,9 +62,16 @@ internal static partial class ReadOnlySessions
         {
             return;
         }
+        // ADO repo names are case-insensitive, so compare normalized identities: org/project/Nova is org/PROJECT/nova.
         var marker = JsonNode.Parse(File.ReadAllText(MarkerPath(tokenStoreDir, sessionId))) as JsonObject;
         var repos = marker?["readRepos"] as JsonArray;
-        if (repos is null || !repos.Any(value => value?.GetValue<string>() == repo))
+        var wanted = PrCommands.ParseRepo(repo).NormalizedKey;
+        if (
+            repos is null
+            || !repos.Any(value =>
+                value?.GetValue<string>() is { } read && PrCommands.ParseRepo(read).NormalizedKey == wanted
+            )
+        )
         {
             throw new ArgumentException(
                 $"--post-session {sessionId} cannot fetch {repo}: create it with sandbox create --read-only-egress "
