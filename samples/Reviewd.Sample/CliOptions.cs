@@ -232,26 +232,36 @@ internal sealed class CliOptions
         }
 
         if (result.Get("variant") is { } variant && !VariantLabel.IsMatch(variant))
+        {
             throw new ArgumentException(
                 "--variant must be 1-40 lowercase letters, digits or dashes, starting with a letter or digit."
             );
+        }
         // A variant names a shadow arm; the live reviewer has none (ReviewArm pins a shadow --db to its variant).
         if (result.Has("variant") && !result.Has("shadow"))
+        {
             throw new ArgumentException("--variant names a shadow arm and needs --shadow.");
+        }
         // A shadow review's steps run in a read-only-egress session (ReadOnlySessions); only a shadow review names one.
         if (result.Has("shadow") != result.Has("post-session"))
+        {
             throw new ArgumentException(
                 "--shadow needs --post-session <id of a sandbox create --read-only-egress session>, and "
                     + "--post-session needs --shadow."
             );
+        }
         if (result.Get("post-session") is { } postSession && postSession == result.Get("session"))
+        {
             throw new ArgumentException("--post-session must be a read-only session other than --session.");
+        }
         // A read-only session runs a shadow review's prepare, which must fetch its repo.
         if (result.Has("read-only-egress") != result.Has("read-repos"))
+        {
             throw new ArgumentException(
                 "--read-only-egress needs --read-repos <org/project/repo,...> (the repos its prepare may fetch), "
                     + "and --read-repos needs --read-only-egress."
             );
+        }
 
         if (command.StartsWith("pr ", StringComparison.Ordinal))
         {

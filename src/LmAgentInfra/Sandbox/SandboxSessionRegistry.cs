@@ -3398,7 +3398,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// allow, which must come after every credential rule it could match.
     /// </para>
     /// </summary>
-    private static void NarrowAdoToReadOnly(List<SandboxNetworkRule> rules, IReadOnlyList<string> postPaths)
+    internal static void NarrowAdoToReadOnly(List<SandboxNetworkRule> rules, IReadOnlyList<string> postPaths)
     {
         var adoHosts = OAuthProviderHosts.For("ado");
         for (var index = rules.Count - 1; index >= 0; index--)

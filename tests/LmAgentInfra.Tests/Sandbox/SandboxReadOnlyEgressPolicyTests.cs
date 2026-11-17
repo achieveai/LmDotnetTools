@@ -178,6 +178,47 @@ public sealed class SandboxReadOnlyEgressPolicyTests
     }
 
     [Theory]
+    [InlineData("any-method", "dev.azure.com", "", "", "ado-auth", true)]
+    [InlineData("explicit-post", "dev.azure.com", "POST", "", "ado-auth", true)]
+    [InlineData("any-host", "", "", "", "ado-auth", true)]
+    [InlineData("some-paths", "dev.azure.com", "", "/contoso/*", "ado-auth", false)]
+    [InlineData("no-credential", "dev.azure.com", "", "", "", false)]
+    [InlineData("not-dev-azure-com", "*.visualstudio.com", "", "", "ado-auth", false)]
+    [InlineData("no-post", "dev.azure.com", "GET,PATCH", "", "ado-auth", false)]
+    public void Only_an_ado_rule_with_a_credential_and_POST_on_every_dev_azure_com_path_gets_a_POST_sibling(
+        string id,
+        string hosts,
+        string methods,
+        string paths,
+        string authProvider,
+        bool sibling
+    )
+    {
+        // Config rules can name only configured providers, so these credentialed rules are built directly: each
+        // misses at most one of the sibling's conditions.
+        static string[] List(string csv) => csv.Split(',', StringSplitOptions.RemoveEmptyEntries);
+        var rules = new List<SandboxNetworkRule>
+        {
+            new(
+                id,
+                "allow",
+                List(hosts),
+                [443],
+                List(methods),
+                List(paths),
+                authProvider.Length > 0 ? authProvider : null,
+                [],
+                200
+            ),
+        };
+
+        SandboxSessionRegistry.NarrowAdoToReadOnly(rules, PrepareReads);
+
+        string[] expected = sibling ? [id + "-read-post"] : [];
+        rules.Where(rule => rule.Methods.Contains("POST")).Select(rule => rule.Id).Should().Equal(expected);
+    }
+
+    [Theory]
     [InlineData("POST", "/contoso/Weve%20DA/_git/Nova/git-upload-pack", "allow")]
     [InlineData("POST", "/Contoso/_apis/wit/workitemsbatch", "allow")]
     [InlineData("POST", "/Contoso/p-id/_apis/git/repositories/r-id/pullrequestquery", "allow")]
