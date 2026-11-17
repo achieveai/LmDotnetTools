@@ -180,9 +180,9 @@ internal static class ReviewBatch
     /// (with a busy timeout so it yields to in-flight reviews) and swallows any sweep-level error so a
     /// transient SQLite contention or host blip never stops the batch — the next sweep retries.
     /// <paramref name="undatedExpired"/> also reclaims legacy owners with no lease; used only at startup
-    /// when no review is running yet.
+    /// when no review is running yet. Returns why the sweep was skipped, or null.
     /// </summary>
-    private static async Task SweepSlotsAsync(
+    internal static async Task<string?> SweepSlotsAsync(
         CliOptions options,
         ReviewdConfig config,
         bool undatedExpired,
@@ -191,6 +191,16 @@ internal static class ReviewBatch
     {
         try
         {
+            // A shadow arm's reaper resets slots its agents wrote to, so it runs in the read-only session too. The
+            // arm is checked here, before any reset: a restart that drops --shadow and --post-session still names the
+            // shadow --db, and the batch's own arm check comes only after the startup sweep.
+            Func<string> tokenStoreDir = () => AuthCommands.LoadOptions(config, null).TokenStoreDir!;
+            var session = options.Get("post-session") ?? options.Required("session");
+            if (options.Has("post-session"))
+            {
+                ReadOnlySessions.Require(tokenStoreDir(), session);
+            }
+            await ReviewArm.RequireReadOnlySessionForShadowAsync(options.Required("db"), tokenStoreDir, session, ct);
             await using var connection = new SqliteConnection(
                 new SqliteConnectionStringBuilder
                 {
@@ -206,10 +216,6 @@ internal static class ReviewBatch
             }
             var client = config.CreateS2SClient();
             using var sandboxClient = config.CreateSandboxClient(TimeSpan.FromMinutes(10));
-            // A shadow arm's reaper resets slots its agents wrote to, so it runs in the read-only session too.
-            var session = options.Get("post-session") ?? options.Required("session");
-            if (options.Has("post-session"))
-                ReadOnlySessions.Require(AuthCommands.LoadOptions(config, null).TokenStoreDir!, session);
             SlotReaper.SandboxExecutor sandbox = (phase, args, operation, token) =>
                 ReviewRunner.ExecuteSandboxAsync(sandboxClient, session, phase, args, operation, token);
             var results = await SlotReaper.SweepAsync(
@@ -238,10 +244,12 @@ internal static class ReviewBatch
                 Console.Error.WriteLine(
                     $"Reaper waiting on lapsed-lease slot {skipped.Repo}#{skipped.Pr}/slot{skipped.Slot}: {skipped.Detail}"
                 );
+            return null;
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
             Console.Error.WriteLine($"Reaper sweep skipped: {ex.Message}.");
+            return ex.Message;
         }
     }
 

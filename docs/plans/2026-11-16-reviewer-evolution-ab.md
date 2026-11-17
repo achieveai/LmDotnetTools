@@ -1,5 +1,6 @@
 > Approved 2026-11-16 (ReviewPlan rev 3; standing approval: $300 pilot cap). Below is the approved plan, with
-> edits since approval where the build changed it (this note, and build item 2).
+> edits since approval where the build changed it: this note, key dot 2 (no variant key), build item 2, the
+> `review batch` line under "How an arm is built" (`--post-session`), and the line under "What exists today".
 >
 > **Slice 1 as built** (`review run|batch --shadow --variant`): the shadow half of build item 2 only.
 > - The receipt key does **not** gain the variant: about ten readers parse that key. Each arm runs on its own `--db`
@@ -12,8 +13,9 @@
 >   never reuse each other's conversations and a shadow run reviews heads the live reviewer already did.
 > - Every shadow step, prepare included, runs in `--post-session`, a session made by
 >   `sandbox create --read-only-egress --read-repos <repos>` (the host keeps a marker listing the repos; the gateway
->   does not report rules back), and so do a shadow batch's eligibility checks and slot sweeps; an operator
->   `reap-slots` or `reclaim-slot` on a shadow `--db` needs a marked `--session`. The shadow agent can edit the
+>   does not report rules back), and so do a shadow batch's eligibility checks and slot sweeps. A batch sweep, an
+>   operator `reap-slots` and a `reclaim-slot` on a shadow `--db` each skip or refuse a session without the marker,
+>   so a restart that drops `--shadow` cannot reset the arm's slots with full egress. The shadow agent can edit the
 >   workspace, so in a full-egress session those steps could be made to post. Read-only egress keeps ADO GET and
 >   HEAD, plus POST to exact paths only: each listed repo's git fetch (`git-upload-pack`; push is
 >   `git-receive-pack`) and prepare's two read queries (`workitemsbatch`, `pullrequestquery`), which would otherwise
@@ -32,7 +34,7 @@ per PR, and given a recorded promote / park decision.
 ## Key dots
 1. **One arm = one variant manifest.** It pins every lever: review-repo branch, `ClaudePlugins` ref, chat mode, task prompt, model.
    `reviewd variant up` turns it into its own workspace. Champion and challenger are built the same way. (See "How an arm is built".)
-2. **Shadow reviews.** Both arms review in shadow: never post (read-only egress), save would-post comments under the variant key.
+2. **Shadow reviews.** Both arms review in shadow: never post (read-only egress), save would-post comments in each arm's own `--db` (receipts record `shadow` and `variant`).
 3. **Blind, frozen judge.** Every arm is judged from the champion's store, with the same prompt, model and knowledge base, and labels hidden.
 4. **A/A pilot first.** The champion's manifest, run twice on ~12 merged PRs. It measures noise and cost, which sets the sample size.
 5. **First A/B, two ideas:** (H1) feed the knowledge base into reviews, which today read none of it; (H2) one skill edit, drawn from judge misses. Then H1+H2.
@@ -131,7 +133,8 @@ A review today stacks 7 layers. Each one has a different home, so each needs its
 4. Create or update the workspace: the clone directory, `[cr-<id>, sandbox-plugins]`, and `code-reviewer` enabled from the arm's alias only.
 5. Print the workspace id and the manifest hash.
 
-Then: `review batch --workspace <ws> --variant <id> --shadow --mode <mode> --task-prompt-file <file>`.
+Then: `review batch --workspace <ws> --variant <id> --shadow --post-session <read-only session> --mode <mode> --task-prompt-file <file>`.
+The read-only session comes from `sandbox create --read-only-egress --read-repos <repos>` on the same workspace.
 
 **Clones:** there are two experiment clones of each review repo, separate from the production store.
 - `exp-A` stays at `main`: the champion.

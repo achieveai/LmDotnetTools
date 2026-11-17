@@ -214,20 +214,43 @@ internal static class ReviewRunner
         CancellationToken ct
     )
     {
-        var repo = PrCommands.ParseRepo(repository);
         var client = config.CreateS2SClient();
         using var sandbox = config.CreateSandboxClient(TimeSpan.FromMinutes(10));
         var workspace = await client.GetWorkspaceAsync(options.Required("workspace"), ct);
-        // A shadow batch's eligibility runs the same workspace helpers, so it takes the read-only session too.
-        var step = await StepExecutorAsync(
+        return await CheckEligibilityAsync(
             options,
             () => AuthCommands.LoadOptions(config, null).TokenStoreDir!,
             workspace.DirectoryRelPath,
             async (id, token) => (await sandbox.GetAsync(id, token)).WorkspaceRelativePath,
             (target, phase, args, operation, token) =>
                 ExecuteSandboxAsync(sandbox, target, phase, args, operation, token),
+            repository,
+            pr,
+            slot,
+            head,
             ct
         );
+    }
+
+    /// <summary>
+    ///     The batch's eligibility step, run through <see cref="StepExecutorAsync" />: a shadow batch's eligibility runs
+    ///     the same workspace helpers as its reviews, so it takes the read-only <c>--post-session</c> too.
+    /// </summary>
+    internal static async Task<JsonObject> CheckEligibilityAsync(
+        CliOptions options,
+        Func<string> tokenStoreDir,
+        string workspaceDirectory,
+        Func<string, CancellationToken, Task<string?>> sessionWorkspace,
+        Func<string, string, JsonObject, string, CancellationToken, Task<JsonObject>> execute,
+        string repository,
+        string pr,
+        int slot,
+        string head,
+        CancellationToken ct
+    )
+    {
+        var repo = PrCommands.ParseRepo(repository);
+        var step = await StepExecutorAsync(options, tokenStoreDir, workspaceDirectory, sessionWorkspace, execute, ct);
         return await step(
             "eligibility",
             new JsonObject

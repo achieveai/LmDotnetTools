@@ -94,23 +94,14 @@ internal static class SandboxCommands
             // review run --shadow refuses a --post-session without it.
             if (readOnly)
             {
-                try
-                {
-                    await ReadOnlySessions.MarkAsync(
-                        auth.TokenStoreDir!,
-                        session.SessionId,
-                        options.Required("workspace"),
-                        [.. readRepos.Select(repo => repo.DisplayName)],
-                        ct
-                    );
-                }
-                catch
-                {
-                    Console.Error.WriteLine(
-                        $"Session {session.SessionId} was created with read-only egress but its read-only marker could not be written, so no shadow run will accept it. No command was executed; the session was not deleted."
-                    );
-                    throw;
-                }
+                await MarkCreatedSessionAsync(
+                    auth.TokenStoreDir!,
+                    session.SessionId,
+                    options.Required("workspace"),
+                    [.. readRepos.Select(repo => repo.DisplayName)],
+                    Console.Error,
+                    ct
+                );
             }
             Console.WriteLine(
                 JsonSerializer.Serialize(
@@ -141,5 +132,31 @@ internal static class SandboxCommands
         Console.Out.Write(result.StandardOutput);
         Console.Error.Write(result.StandardError);
         return result.ExitCode;
+    }
+
+    /// <summary>
+    ///     Writes a just-created read-only session's marker. The session already exists, so a failure names it and says
+    ///     it was kept before rethrowing: without the marker no shadow run will accept it.
+    /// </summary>
+    internal static async Task MarkCreatedSessionAsync(
+        string tokenStoreDir,
+        string sessionId,
+        string workspace,
+        IReadOnlyList<string> readRepos,
+        TextWriter error,
+        CancellationToken ct
+    )
+    {
+        try
+        {
+            await ReadOnlySessions.MarkAsync(tokenStoreDir, sessionId, workspace, readRepos, ct);
+        }
+        catch
+        {
+            await error.WriteLineAsync(
+                $"Session {sessionId} was created with read-only egress but its read-only marker could not be written, so no shadow run will accept it. No command was executed; the session was not deleted."
+            );
+            throw;
+        }
     }
 }

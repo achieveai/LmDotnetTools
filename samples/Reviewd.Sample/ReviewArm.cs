@@ -35,19 +35,27 @@ internal static class ReviewArm
         );
         await connection.OpenAsync(ct);
         if (pin)
+        {
             _ = new AchieveAi.LmDotnetTools.Misc.Storage.SqliteKvStore(connection); // creates the cache table
+        }
         else if (!await HasCacheAsync(connection, ct))
+        {
             return; // nothing is stored yet, so nothing is pinned and nothing is live
+        }
         var pinned = await ReadAsync(connection, ct);
         if (pinned is null)
         {
             if (shadow && await HoldsLiveReviewsAsync(connection, ct))
+            {
                 throw new ArgumentException(
                     "This --db holds live reviews. A shadow arm needs a --db of its own, so the live reviewer never "
                         + "reuses its read-only conversations or reads its reviews as posted."
                 );
+            }
             if (!pin)
+            {
                 return;
+            }
             using var insert = connection.CreateCommand();
             insert.CommandText = "INSERT INTO cache(key, value) VALUES (@key, @value) ON CONFLICT(key) DO NOTHING";
             insert.Parameters.AddWithValue("@key", Key);
@@ -56,14 +64,18 @@ internal static class ReviewArm
             pinned = await ReadAsync(connection, ct);
         }
         if (pinned is null)
+        {
             return;
+        }
         var pinnedShadow = pinned["shadow"]?.GetValue<bool>() == true;
         var pinnedVariant = pinned["variant"]?.GetValue<string>();
         if (pinnedShadow != shadow || pinnedVariant != variant)
+        {
             throw new ArgumentException(
                 $"This --db belongs to {Describe(pinnedShadow, pinnedVariant)}; {Describe(shadow, variant)} needs a "
                     + "--db of its own."
             );
+        }
     }
 
     /// <summary>

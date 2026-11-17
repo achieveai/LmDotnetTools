@@ -222,6 +222,34 @@ public sealed class ReviewdShadowTests : IDisposable
         await ReviewArm.CheckAsync(_database, firstShadow, firstShadow ? "kb-h1" : null, pin: true, default);
     }
 
+    [Fact]
+    public async Task A_live_run_whose_pin_loses_the_race_after_an_empty_read_is_refused_and_the_shadow_pin_stays()
+    {
+        // The live run reads no pin, then a shadow run pins first: the trigger plays that shadow run, writing its pin
+        // just before the live insert, which must then do nothing and read the shadow pin back.
+        await SnapshotAsync();
+        using (var connection = PrThreadBindings.Connection(_database))
+        {
+            await connection.OpenAsync();
+            using var trigger = connection.CreateCommand();
+            trigger.CommandText = $$"""
+                CREATE TRIGGER rival_shadow_pin BEFORE INSERT ON cache
+                WHEN NEW.key = '{{ReviewArm.Key}}' AND NEW.value LIKE '%"shadow":false%'
+                BEGIN
+                  INSERT INTO cache(key, value) VALUES ('{{ReviewArm.Key}}', '{"shadow":true,"variant":"kb-h1"}');
+                END
+                """;
+            _ = await trigger.ExecuteNonQueryAsync();
+        }
+
+        var live = () => ReviewArm.CheckAsync(_database, shadow: false, null, pin: true, default);
+
+        await live.Should()
+            .ThrowAsync<ArgumentException>()
+            .WithMessage("This --db belongs to shadow arm 'kb-h1'; the live reviewer needs a --db of its own.");
+        (await ReceiptAsync(ReviewArm.Key)).ToJsonString().Should().Be("""{"shadow":true,"variant":"kb-h1"}""");
+    }
+
     [Theory]
     [InlineData("reviewd/batch-queue/workspace", true)]
     [InlineData("reviewd/batch-state/digest", true)]
@@ -507,6 +535,126 @@ public sealed class ReviewdShadowTests : IDisposable
                 await step(phase, [], Guid.NewGuid().ToString("N"), CancellationToken.None);
             var read = post == "none" ? "session" : "post";
             targets.Should().Equal((read, "eligibility"), (read, "prepare"), (read, "verify"), (read, "commit"));
+        }
+        finally
+        {
+            Directory.Delete(store, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_shadow_batch_checks_eligibility_in_its_post_session(bool shadow)
+    {
+        var store = Path.Combine(Path.GetTempPath(), $"reviewd-tokens-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(store);
+        try
+        {
+            await ReadOnlySessions.MarkAsync(store, "post", "workspace", [Repo.DisplayName], default);
+            var options = CliOptions.Parse([
+                "review",
+                "batch",
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                .. shadow ? ["--shadow", "--post-session", "post"] : Array.Empty<string>(),
+            ]);
+            var calls = new List<(string Session, string Phase, JsonObject Args)>();
+
+            _ = await ReviewRunner.CheckEligibilityAsync(
+                options,
+                () => store,
+                "workspace",
+                (_, _) => Task.FromResult<string?>("workspace"),
+                (session, phase, args, _, _) =>
+                {
+                    calls.Add((session, phase, args));
+                    return Task.FromResult(new JsonObject());
+                },
+                Repo.DisplayName,
+                "17",
+                2,
+                Head,
+                default
+            );
+
+            var call = calls.Should().ContainSingle().Subject;
+            (call.Session, call.Phase).Should().Be((shadow ? "post" : "session", "eligibility"));
+            call.Args["repo"]!.GetValue<string>().Should().Be("Nova");
+            call.Args["slot"]!.GetValue<int>().Should().Be(2);
+        }
+        finally
+        {
+            Directory.Delete(store, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task A_batch_restart_without_shadow_flags_skips_the_slot_sweep_of_a_shadow_database()
+    {
+        // The startup sweep runs before the batch's own arm check, so the sweep checks the arm itself: a restart that
+        // drops --shadow and --post-session would otherwise reset the shadow arm's slots with full egress.
+        await SnapshotAsync();
+        await ReviewArm.CheckAsync(_database, shadow: true, "kb-h1", pin: true, default);
+        var store = Path.Combine(Path.GetTempPath(), $"reviewd-tokens-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(store);
+        try
+        {
+            // No gateway or host is configured, so getting past the check would fail differently.
+            await File.WriteAllTextAsync(Path.Combine(store, "msal-ado.bin"), "");
+            using var config = new ReviewdConfig(
+                new ConfigurationBuilder()
+                    .AddInMemoryCollection(
+                        new Dictionary<string, string?> { ["Auth:TokenStoreDir"] = store, ["Auth:Ado:ClientId"] = "c" }
+                    )
+                    .Build()
+            );
+            var options = CliOptions.Parse([
+                "review",
+                "batch",
+                "--db",
+                _database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--execute",
+            ]);
+
+            var skipped = await ReviewBatch.SweepSlotsAsync(options, config, undatedExpired: true, default);
+
+            skipped.Should().StartWith("This --db belongs to a shadow arm, so --session session must be");
+        }
+        finally
+        {
+            Directory.Delete(store, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task A_marker_that_cannot_be_written_names_the_kept_session_and_fails()
+    {
+        // A file where the marker directory belongs makes the write fail after the session already exists.
+        var store = Path.Combine(Path.GetTempPath(), $"reviewd-tokens-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(store);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(store, "read-only-sessions"), "");
+            using var error = new StringWriter();
+
+            var mark = () =>
+                SandboxCommands.MarkCreatedSessionAsync(store, "s-1", "workspace", [Repo.DisplayName], error, default);
+
+            await mark.Should().ThrowAsync<IOException>();
+            error
+                .ToString()
+                .Should()
+                .StartWith(
+                    "Session s-1 was created with read-only egress but its read-only marker could not be written"
+                );
+            ReadOnlySessions.IsMarked(store, "s-1").Should().BeFalse();
         }
         finally
         {
