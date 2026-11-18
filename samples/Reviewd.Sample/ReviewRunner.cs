@@ -1338,6 +1338,11 @@ internal static class ReviewRunner
                 }
                 catch (Exception releaseFailure)
                 {
+                    // A sweep that reset the slot first owns the record: neither overwrite it nor blame the PR.
+                    if (!await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, CancellationToken.None))
+                        throw new SlotClaimLostException(
+                            $"Slot claim {claimToken} was lost before the refused prepare released it ({releaseFailure.Message}); the attempt is left as reset."
+                        );
                     pending["cleanupError"] = releaseFailure.Message;
                     await store.SetAsync(attemptKey, pending, CancellationToken.None);
                     Console.Error.WriteLine($"Claim release held its lane: {releaseFailure.Message}");
@@ -1368,8 +1373,12 @@ internal static class ReviewRunner
             // publication without redoing the review. The slot stays leased, so if this process dies the
             // lease reaper reclaims it within the lease window — retention never becomes a permanent block.
             // A cancel or DB error in a wait skips that wait's claim check, so check it here: a sweep that reset the
-            // slot meanwhile recorded its own attempt, and retaining this receipt would overwrite it.
-            if (!await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, CancellationToken.None))
+            // slot meanwhile recorded its own attempt, and retaining this receipt would overwrite it. A receipt this run
+            // released itself (a settled prepare failure's cleanup) has no claim left by design; its failure stands.
+            if (
+                receipt["cleanupState"]?.GetValue<string>() != "released"
+                && !await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, CancellationToken.None)
+            )
             {
                 Console.Error.WriteLine(
                     $"{repo.DisplayName} #{pr}: slot claim {claimToken} was lost after {failure.Message} Stopped; the attempt is left as reset."
