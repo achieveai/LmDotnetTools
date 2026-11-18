@@ -367,6 +367,7 @@ public record AnthropicRequest
                 // and require a matching tool_result in the next user turn.
                 secondaryMessage ??= new AnthropicMessage { Role = "user" };
                 var serverToolResultBlocks = ToAnthropicToolResultContentBlocks(
+                    toolCallResultMsg.Result,
                     toolCallResultMsg.ContentBlocks,
                     toolCallResultMsg.IsError
                 );
@@ -524,6 +525,7 @@ public record AnthropicRequest
             if (!IsEmptyIdServerToolCall(singularToolResultMsg.ExecutionTarget, singularToolResultMsg.ToolCallId))
             {
                 var toolResultBlocks = ToAnthropicToolResultContentBlocks(
+                    singularToolResultMsg.Result,
                     singularToolResultMsg.ContentBlocks,
                     singularToolResultMsg.IsError
                 );
@@ -575,7 +577,11 @@ public record AnthropicRequest
             // Then add tool results
             foreach (var result in toolResultMsg.ToolCallResults)
             {
-                var toolResultBlocks = ToAnthropicToolResultContentBlocks(result.ContentBlocks, result.IsError);
+                var toolResultBlocks = ToAnthropicToolResultContentBlocks(
+                    result.Result,
+                    result.ContentBlocks,
+                    result.IsError
+                );
                 anthropicMessage.Content.Add(
                     new AnthropicContent
                     {
@@ -673,7 +679,11 @@ public record AnthropicRequest
 
             answered[resultIndex] = true;
             var toolResult = toolResults[resultIndex];
-            var toolResultBlocks = ToAnthropicToolResultContentBlocks(toolResult.ContentBlocks, toolResult.IsError);
+            var toolResultBlocks = ToAnthropicToolResultContentBlocks(
+                toolResult.Result,
+                toolResult.ContentBlocks,
+                toolResult.IsError
+            );
             yield return (
                 new AnthropicContent
                 {
@@ -1200,8 +1210,11 @@ public record AnthropicRequest
     ///     - No content blocks present
     ///     - No images in the content blocks (text-only blocks fall back to string)
     ///     - Error results (always text-only per Anthropic API convention)
+    ///     When the blocks carry no text, <paramref name="resultText"/> goes first, as the OpenAI mappers
+    ///     send it: the multi-turn loop re-attaches only a result's images, and the array replaces the string.
     /// </summary>
     private static IList<AnthropicContent>? ToAnthropicToolResultContentBlocks(
+        string? resultText,
         IList<ToolResultContentBlock>? contentBlocks,
         bool isError = false
     )
@@ -1218,7 +1231,11 @@ public record AnthropicRequest
             return null;
         }
 
-        var result = new List<AnthropicContent>(contentBlocks.Count);
+        var result = new List<AnthropicContent>(contentBlocks.Count + 1);
+        if (!contentBlocks.OfType<TextToolResultBlock>().Any() && !string.IsNullOrWhiteSpace(resultText))
+        {
+            result.Add(new AnthropicContent { Type = "text", Text = resultText });
+        }
         foreach (var block in contentBlocks)
         {
             switch (block)

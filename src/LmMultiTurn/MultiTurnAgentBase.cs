@@ -136,6 +136,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     // time so the terminal flush persists the terminal state. Merged monotonically by
     // ConversationUsageProjection.MaxCompleteness, so a stale InProgress write can never regress it.
     private UsageCompleteness _usageCompleteness = UsageCompleteness.InProgress;
+
+    // Row saves AddToHistory has issued that have not finished. Run completion waits for those already
+    // issued, so a reader acting on the completion finds the run's transcript in the store. Locked on itself.
+    private readonly HashSet<Task> _issuedSaves = [];
     private volatile bool _isDisposed;
 
     // The single teardown every DisposeAsync caller awaits. Assigned under _replayLock together with
@@ -625,9 +629,53 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
             if (runId != null)
             {
-                _ = PersistMessageAsync(message, runId, CancellationToken.None);
+                TrackIssuedSave(PersistMessageAsync(message, runId, CancellationToken.None));
             }
         }
+    }
+
+    private void TrackIssuedSave(Task save)
+    {
+        if (save.IsCompleted)
+        {
+            return;
+        }
+
+        lock (_issuedSaves)
+        {
+            _ = _issuedSaves.Add(save);
+        }
+
+        // Registered after the add, so a save that finished in between is still removed.
+        _ = save.ContinueWith(
+            static (done, state) =>
+            {
+                var issued = (HashSet<Task>)state!;
+                lock (issued)
+                {
+                    _ = issued.Remove(done);
+                }
+            },
+            _issuedSaves,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default
+        );
+    }
+
+    /// <summary>
+    /// Completes once every row save issued so far has finished. Must not wait indefinitely on a store
+    /// that refuses writes, and should not fault; a failed save is reported where it happens.
+    /// </summary>
+    protected virtual Task WaitForIssuedSavesAsync()
+    {
+        Task[] issued;
+        lock (_issuedSaves)
+        {
+            issued = [.. _issuedSaves];
+        }
+
+        return issued.Length == 0 ? Task.CompletedTask : Task.WhenAll(issued);
     }
 
     /// <summary>
@@ -3635,6 +3683,18 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
         // visible. Capture only already-scheduled observations; the reusable conversation and later
         // descendants remain live, so this boundary must not force terminal completeness or join them.
         await FlushUsageAsync(forceWrite: false, ct: ct);
+
+        // Same for the run's transcript rows, which AddToHistory saves without waiting: a reader that acts on
+        // the completion (a sub-agent roster saying the child finished, then a replay of its transcript) must
+        // find them in the store. Only saves already issued are waited for.
+        try
+        {
+            await WaitForIssuedSavesAsync().WaitAsync(ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            Logger.LogWarning(ex, "Waiting for issued message saves failed for thread {ThreadId}", ThreadId);
+        }
 
         if (RunLedgerStore != null)
         {
