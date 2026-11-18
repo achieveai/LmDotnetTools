@@ -567,6 +567,11 @@ internal static class ReviewRunner
         }
         // The arm's task prompt and manifest are read and checked before anything is written.
         var arm = await ShadowArm.ResolveAsync(options, provider, ct);
+        // And the workspace and mode are the ones variant up built for that manifest (host reads only).
+        if (arm is not null)
+        {
+            await arm.CheckProvisionedAsync(client, workspace, mode, ct);
+        }
         // Before anything is written: a shadow arm and the live reviewer never share a database.
         await ReviewArm.CheckAsync(database, shadow, variant, pin: options.Has("execute"), ct);
         now ??= () => DateTimeOffset.UtcNow;
@@ -609,7 +614,7 @@ internal static class ReviewRunner
             foreach (var (field, value) in arm.Provenance(mode, provider, reasoningEffort))
             {
                 if (
-                    field is "taskPromptSha256" or "manifestSha256" or "experimentId"
+                    field is "taskPromptSha256" or "manifestSha256" or "experimentId" or "modeFileSha256"
                     && sent[field]?.ToString() != value?.ToString()
                 )
                 {

@@ -149,7 +149,7 @@ internal sealed class CliOptions
             "judge close" => ["repo", "pr", "db", "store", "judgment", "remote", "execute"],
             "workspace list" => [],
             "workspace plugins" => ["workspace"],
-            "variant up" => ["manifest", "experiment", "from-workspace", "execute"],
+            "variant up" => ["manifest", "experiment", "from-workspace", "champion", "execute"],
             "workspace create" => ["name", "directory", "marketplaces", "enabled-plugins"],
             "workspace edit" => ["workspace", "marketplaces", "enabled-plugins"],
             "workspace exec" => ["workspace", "directory", "timeout"],
@@ -293,6 +293,10 @@ internal sealed class CliOptions
             _ = result.Required("manifest");
             _ = result.Required("experiment");
             _ = result.Required("from-workspace");
+            if (!System.Text.RegularExpressions.Regex.IsMatch(result.Required("champion"), "^[0-9a-f]{40}$"))
+            {
+                throw new ArgumentException("--champion must be a 40-character commit SHA.");
+            }
         }
         if (result.Get("experiment") is { } experiment && !ExperimentId.IsMatch(experiment))
         {
@@ -574,9 +578,10 @@ internal sealed class CliOptions
                        [--read-only-egress --read-repos <org/project/repo,...>]  (a review run --shadow --post-session:
                        Azure DevOps GET/HEAD only, plus each listed repo's git fetch and prepare's two read queries)
         sandbox exec --session <id> [--directory <relative-dir>] [--timeout <seconds>] -- <program> [args...]
-        variant up --manifest <variant.json> --experiment <record-id> --from-workspace <base-workspace-id> [--execute]
+        variant up --manifest <variant.json> --experiment <record-id> --from-workspace <base-workspace-id>
+                   --champion <commit> [--execute]
         Builds an A/B arm's workspace (variant-<id>) from its manifest: checks its review-repo clone is at the pinned
-        commit, registers its plugin alias at the pinned SHA, creates or updates its chat mode, and enables
+        commit and holds the same KnowledgeBase/ as the experiment's frozen champion commit, registers its plugin alias at the pinned SHA, creates or updates its chat mode, and enables
         code-reviewer from that alias, with every other plugin as in the base workspace. Prints the ids and the
         review batch command. Without --execute it only previews.
         workspace list

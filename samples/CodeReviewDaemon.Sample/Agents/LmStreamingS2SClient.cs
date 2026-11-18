@@ -940,10 +940,12 @@ internal sealed class LmStreamingS2SClient
     /// <summary>
     ///     Creates user chat mode <paramref name="name"/> from <paramref name="payload"/>, or replaces the one already
     ///     named so, and returns its id. The host mints mode ids, so the name is the identity. A system mode of that
-    ///     name is refused, never edited.
+    ///     name is refused, never edited. Both requests send <see cref="ChatModeReplacement"/>, so a replaced mode
+    ///     holds exactly what a fresh one would.
     /// </summary>
     public async Task<string> EnsureChatModeAsync(string name, JsonObject payload, CancellationToken ct)
     {
+        payload = ChatModeReplacement(payload);
         using var modes = JsonDocument.Parse(await SendReadAsync(HttpMethod.Get, "api/chat-modes", null, ct));
         string? existing = null;
         foreach (var mode in modes.RootElement.EnumerateArray())
@@ -966,6 +968,49 @@ internal sealed class LmStreamingS2SClient
         return saved.RootElement.GetProperty("id").GetString()
             ?? throw new ReviewHostContractException("The host saved the chat mode but returned no id.");
     }
+
+    /// <summary>
+    ///     The optional fields of the host's chat-mode body (<c>ChatModeCreateUpdate</c>). An update keeps the stored
+    ///     value of an omitted one, and a create stores null for it.
+    /// </summary>
+    internal static readonly IReadOnlyList<string> ChatModeOptionalFields =
+    [
+        "description",
+        "enabledTools",
+        "enabledBuiltInTools",
+        "enabledCapabilityTools",
+        "subAgentPrompt",
+        "subAgentPromptPlacement",
+        "subAgentRequiredTools",
+        "subAgentReasoningEffort",
+        "subAgentModelIntelligenceByType",
+        "defaultSubAgentModelIntelligence",
+        "env",
+        "tiers",
+    ];
+
+    /// <summary>
+    ///     A copy of <paramref name="payload"/> with every optional field it omits set to an explicit null, the value a
+    ///     create stores for it. Sent as an update, it replaces the stored mode instead of merging into it.
+    /// </summary>
+    internal static JsonObject ChatModeReplacement(JsonObject payload)
+    {
+        var replacement = payload.DeepClone().AsObject();
+        foreach (var field in ChatModeOptionalFields)
+        {
+            if (!replacement.ContainsKey(field))
+            {
+                replacement[field] = null;
+            }
+        }
+        return replacement;
+    }
+
+    /// <summary>Chat mode <paramref name="modeId"/> as the host stores it (<c>GET api/chat-modes/{id}</c>).</summary>
+    public async Task<JsonObject> GetChatModeAsync(string modeId, CancellationToken ct) =>
+        JsonNode.Parse(await SendReadAsync(HttpMethod.Get, $"api/chat-modes/{Uri.EscapeDataString(modeId)}", null, ct))
+            as JsonObject
+        ?? throw new ReviewHostContractException($"The host returned no chat mode object for {modeId}.");
 
     /// <summary>Whether the host resolves chat mode <paramref name="modeId"/> (<c>GET api/chat-modes/{id}</c>; 404 = no).</summary>
     public async Task<bool> ModeExistsAsync(string modeId, CancellationToken ct)

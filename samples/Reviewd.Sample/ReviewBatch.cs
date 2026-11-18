@@ -18,6 +18,17 @@ internal static class ReviewBatch
             {
                 if (!options.Has("execute"))
                     throw new InvalidOperationException("review batch requires --execute; no state was changed.");
+                // A variant arm's workspace and mode must be the ones variant up built for its manifest. Each run
+                // checks again before it provisions.
+                if (await ShadowArm.ResolveAsync(options, options.Required("provider"), token) is { } arm)
+                {
+                    await arm.CheckProvisionedAsync(
+                        config.CreateS2SClient(),
+                        options.Required("workspace"),
+                        options.Get("mode") ?? config.ModeId,
+                        token
+                    );
+                }
                 // Startup sweep: reclaim any slot a prior (crashed) batch left owned — including legacy
                 // owners claimed before leasing existed — so restarting the batch always clears jams.
                 await SweepSlotsAsync(options, config, undatedExpired: true, token);

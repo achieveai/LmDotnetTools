@@ -1089,6 +1089,42 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         }
     }
 
+    // Only a verified shadow review reads as stage "shadow" (the scan's SQL); one still running, waiting for verify or
+    // failed is not verified, so neither session kind picks it, and its live sibling is still planned.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_shadow_review_that_did_not_finish_verified_is_never_picked(bool readOnly)
+    {
+        static (string Key, string Value) Shadow(string pr, string stage)
+        {
+            var (key, value) = Review(pr);
+            var row = JsonNode.Parse(value)!.AsObject();
+            row["shadow"] = true;
+            row["stage"] = stage;
+            return (key, row.ToJsonString());
+        }
+        var alpha = Db(
+            "alpha",
+            Review("7001"),
+            Shadow("7003", "review-running"),
+            Shadow("7004", "verify-pending"),
+            Shadow("7005", "failed"),
+            Snapshot(
+                ("7001", "Merged", Now.AddDays(-2)),
+                ("7003", "Merged", Now.AddDays(-1)),
+                ("7004", "Merged", Now.AddDays(-1)),
+                ("7005", "Merged", Now.AddDays(-1))
+            )
+        );
+        var settings = Settings with { ReadOnlySession = _ => readOnly };
+
+        var (scan, plan) = await PlanAsync(new FakeHttpMessageHandler(), [], settings, Target("alpha", alpha));
+
+        plan.Select(entry => entry.Pick.Pr.Label).Should().Equal("Nova !7001");
+        scan.Counts.Should().BeEquivalentTo(new Dictionary<string, int> { ["Start"] = 1, ["review-not-verified"] = 3 });
+    }
+
     [Fact]
     public void Shard_parses_i_of_n_and_the_cli_refuses_anything_else()
     {

@@ -931,9 +931,14 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         );
         var flags = Variant(
             "b-007",
-            """{"id":"b-007","provider":"test","taskPrompt":"b-007.md","plugins":{"sha":"1111111111111111111111111111111111111111"}}"""
+            """{"id":"b-007","provider":"test","taskPrompt":"b-007.md","plugins":{"alias":"cr-b-007","sha":"1111111111111111111111111111111111111111"}}"""
         );
-        var handler = Host();
+        var handler = Host()
+            .OnJson(
+                HttpMethod.Get,
+                "api/workspaces/workspace",
+                """{"id":"workspace","name":"variant-b-007","directoryRelPath":"exp-b","marketplaces":[],"pluginSelection":[{"marketplace":"cr-b-007","plugin":"code-reviewer"}]}"""
+            );
         await SnapshotAsync();
 
         var run = () => RunAsync(handler, [], ["--shadow", "--task-prompt-file", template, .. flags]);
@@ -1003,6 +1008,15 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
 
     [Theory]
     [InlineData("Save {{directory}}/would_post.json for {{head}} on {{branch}}.", "*unknown placeholder {{branch}}*")]
+    [InlineData(
+        "Save {{directory}}/would_post.json for {{head}} of PR {{pr_number}}.",
+        "*unknown placeholder {{pr_number}}*"
+    )]
+    [InlineData(
+        "Save {{directory}}/would_post.json for {{head}} by {{reviewer2}}.",
+        "*unknown placeholder {{reviewer2}}*"
+    )]
+    [InlineData("Save {{directory}}/would_post.json for {{head}} of {{ pr }}.", "*unknown placeholder {{ pr }}*")]
     [InlineData("Review {{pr}} at {{head}}.", "*must use {{directory}}.")]
     [InlineData("Save {{directory}}/would_post.json.", "*must use {{head}}.")]
     public async Task A_task_prompt_template_must_say_where_and_what_it_reviews(string template, string refusal)
@@ -1047,6 +1061,225 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         handler.Requests.Should().BeEmpty();
     }
 
+    // A manifest's pins are recorded on every receipt, so a run may only use the workspace and mode variant up built
+    // for that manifest; the host holds that binding.
+    [Theory]
+    [InlineData("directory", "workspace workspace uses directory exp-a, not exp-b")]
+    [InlineData("plugin", "workspace workspace takes code-reviewer from claude-plugins, not cr-b-007")]
+    [InlineData("mode name", "mode mode-1 is named 'code-review-a', not 'code-review-b-007'")]
+    [InlineData("mode setting", "mode mode-1 differs from * in systemPrompt, subAgentPrompt")]
+    [InlineData("none", null)]
+    public async Task A_run_on_a_workspace_or_mode_not_built_for_its_manifest_is_refused_before_provisioning(
+        string mismatch,
+        string? refusal
+    )
+    {
+        Directory.CreateDirectory(_files);
+        await File.WriteAllTextAsync(Path.Combine(_files, "mode.json"), """{"systemPrompt":"Review as b-007."}""");
+        await SnapshotAsync();
+        var workspace = new JsonObject
+        {
+            ["id"] = "workspace",
+            ["name"] = "variant-b-007",
+            ["directoryRelPath"] = mismatch == "directory" ? "exp-a" : "exp-b",
+            ["marketplaces"] = new JsonArray(),
+            ["pluginSelection"] = new JsonArray(
+                new JsonObject
+                {
+                    ["marketplace"] = mismatch == "plugin" ? "claude-plugins" : "cr-b-007",
+                    ["plugin"] = "code-reviewer",
+                },
+                new JsonObject { ["marketplace"] = "sandbox-plugins", ["plugin"] = "review-setup" }
+            ),
+        };
+        // The host writes unset fields as null; the stored mode matches the file unless a setting was edited.
+        var mode = new JsonObject
+        {
+            ["id"] = "mode-1",
+            ["name"] = mismatch == "mode name" ? "code-review-a" : "code-review-b-007",
+            ["systemPrompt"] = mismatch == "mode setting" ? "Review as a." : "Review as b-007.",
+            ["subAgentPrompt"] = mismatch == "mode setting" ? "left over" : null,
+            ["isSystemDefined"] = false,
+        };
+        var handler = Host()
+            .OnJson(HttpMethod.Get, "api/workspaces/workspace", workspace.ToJsonString())
+            .OnJson(HttpMethod.Get, "api/chat-modes/mode-1", mode.ToJsonString());
+
+        var run = () => RunAsync(handler, [], ["--shadow", "--mode", "mode-1", .. Variant("b-007", ArmManifest)]);
+
+        if (refusal is null)
+        {
+            await run.Should().ThrowAsync<InvalidOperationException>("the scripted review never finishes");
+            handler
+                .Requests.Should()
+                .Contain(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations");
+            return;
+        }
+        (await run.Should().ThrowAsync<InvalidOperationException>()).WithMessage(
+            $"Manifest b-007 was not provisioned as this run's arm: {refusal}. Run variant up*"
+        );
+        handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "nothing is provisioned or sent");
+    }
+
+    // A rebuilt arm may change only its mode file; a resume must still finish under the mode its attempt started with.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_resume_must_use_the_mode_file_its_attempt_started_with(bool changed)
+    {
+        Directory.CreateDirectory(_files);
+        var modeFile = Path.Combine(_files, "mode-b.json");
+        await File.WriteAllTextAsync(modeFile, """{"systemPrompt":"Review as b-007, v1."}""");
+        var started = VariantManifest.Sha256Hex(await File.ReadAllBytesAsync(modeFile));
+        if (changed)
+        {
+            // Edited and rebuilt with variant up, so the host's mode matches the new file.
+            await File.WriteAllTextAsync(modeFile, """{"systemPrompt":"Review as b-007, v2."}""");
+        }
+        var flags = Variant("b-007", """{"id":"b-007","mode":{"name":"code-review-b-007","file":"mode-b.json"}}""");
+        await SnapshotAsync();
+        await PutAsync(
+            $"reviewd/review-attempt/{Repo.NormalizedKey}/17",
+            new JsonObject
+            {
+                ["repository"] = Repo.DisplayName,
+                ["prId"] = "17",
+                ["slot"] = 2,
+                ["stage"] = "review-running",
+                ["threadId"] = "thread",
+                ["shadow"] = true,
+                ["provenance"] = new JsonObject
+                {
+                    ["taskPromptSha256"] = VariantManifest.Sha256Hex(ShadowTaskPrompt.Default),
+                    ["experimentId"] = "exp-1",
+                    ["manifestSha256"] = VariantManifest.Sha256Hex(await File.ReadAllBytesAsync(flags[3])),
+                    ["modeFileSha256"] = started,
+                },
+            }
+        );
+        var stored = new JsonObject
+        {
+            ["id"] = "mode-b",
+            ["name"] = "code-review-b-007",
+            ["systemPrompt"] = changed ? "Review as b-007, v2." : "Review as b-007, v1.",
+        };
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "api/chat-modes/mode-b",
+            stored.ToJsonString()
+        );
+
+        var error = await Record.ExceptionAsync(() =>
+            RunAsync(handler, [], ["--shadow", "--resume", "--mode", "mode-b", .. flags])
+        );
+
+        if (changed)
+        {
+            error
+                .Should()
+                .BeOfType<ArgumentException>()
+                .Which.Message.Should()
+                .Match($"This attempt was started with modeFileSha256 {started}; a resume must use the same arm*");
+            handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "the host only read the mode");
+        }
+        else
+        {
+            error?.Message.Should().NotContain("modeFileSha256", "an unchanged mode file passes the identity check");
+        }
+    }
+
+    // A replaced mode must hold what a fresh one would: a field the mode file dropped is cleared, not kept.
+    [Fact]
+    public async Task Variant_up_replaces_an_existing_mode_with_exactly_what_a_fresh_one_holds()
+    {
+        var fresh = VariantHost();
+        var rebuilt = VariantHost(
+            """[{"id":"mode-1","name":"code-review-b-007","isSystemDefined":false,"subAgentPrompt":"old rule"}]"""
+        );
+
+        await VariantUpAsync(fresh, new string('2', 40));
+        await VariantUpAsync(rebuilt, new string('2', 40));
+
+        var created = JsonNode.Parse(
+            fresh.Requests.Single(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/chat-modes").Body!
+        )!;
+        var replaced = JsonNode.Parse(
+            rebuilt
+                .Requests.Single(r => r.Method == HttpMethod.Put && r.Uri.AbsolutePath == "/api/chat-modes/mode-1")
+                .Body!
+        )!;
+        rebuilt
+            .Requests.Should()
+            .NotContain(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/chat-modes");
+        JsonNode
+            .DeepEquals(replaced, created)
+            .Should()
+            .BeTrue($"{replaced.ToJsonString()} vs {created.ToJsonString()}");
+        var body = replaced.AsObject();
+        body["systemPrompt"]!.GetValue<string>().Should().Be("Review as b-007.");
+        foreach (var field in LmStreamingS2SClient.ChatModeOptionalFields)
+        {
+            body.ContainsKey(field).Should().BeTrue(field + " is sent");
+            body[field].Should().BeNull(field + " is cleared, as a fresh mode leaves it");
+        }
+    }
+
+    // The collector itself, over real git: the arm's KnowledgeBase/ tree is compared with the champion commit's.
+    [Fact]
+    public async Task Variant_up_compares_the_whole_KnowledgeBase_tree_with_the_champion_over_real_git()
+    {
+        var root = Path.Combine(_files, "clone");
+        Directory.CreateDirectory(Path.Combine(root, "KnowledgeBase"));
+        Directory.CreateDirectory(Path.Combine(root, "src"));
+        async Task<string> Commit(string message, params (string Path, string Text)[] files)
+        {
+            foreach (var (path, text) in files)
+            {
+                await File.WriteAllTextAsync(Path.Combine(root, path), text);
+            }
+            await GitAsync(root, "add", "-A");
+            await GitAsync(root, "commit", "-q", "-m", message);
+            return await GitAsync(root, "rev-parse", "HEAD");
+        }
+        await GitAsync(root, "init", "-q", "-b", "main");
+        await GitAsync(root, "config", "user.email", "t@example.com");
+        await GitAsync(root, "config", "user.name", "t");
+        await GitAsync(root, "config", "commit.gpgsign", "false");
+        var older = await Commit("older", ("KnowledgeBase/a.md", "a v1\n"), ("src/x.cs", "x v1\n"));
+        var champion = await Commit("champion", ("KnowledgeBase/a.md", "a v2\n"));
+        await GitAsync(root, "checkout", "-q", "-b", "arm-src");
+        var sourceOnly = await Commit("source", ("src/x.cs", "x v2\n"));
+        await GitAsync(root, "checkout", "-q", "-b", "arm-kb", champion);
+        var knowledge = await Commit("knowledge", ("KnowledgeBase/b.md", "b\n"));
+        VariantUp.Git git = async (what, arguments, _) =>
+        {
+            var (exit, output, error) = await RunGitAsync(root, arguments);
+            return exit == 0 ? output : throw new InvalidOperationException($"{what} failed: {error}");
+        };
+        async Task<VariantUp.Clone> At(string commit, string against)
+        {
+            await GitAsync(root, "checkout", "-q", commit);
+            return await VariantUp.ReadCloneAsync(git, against, CancellationToken.None);
+        }
+
+        var edits = await At(knowledge, champion);
+        var source = await At(sourceOnly, champion);
+        var ancestor = await At(older, champion);
+        var absent = () => At(knowledge, new string('f', 40));
+
+        edits.Head.Should().Be(knowledge);
+        edits.KnowledgeChanges.Should().Equal("KnowledgeBase/b.md");
+        source.KnowledgeChanges.Should().BeEmpty("a source-only arm holds the champion's KnowledgeBase");
+        ancestor
+            .KnowledgeChanges.Should()
+            .Equal(["KnowledgeBase/a.md"], "an older base forks with no delta of its own");
+        (await absent.Should().ThrowAsync<InvalidOperationException>()).WithMessage(
+            $"Comparing KnowledgeBase/ with champion {new string('f', 40)} (fetch it into the clone first) failed: *"
+        );
+    }
+
+    private static readonly string Champion = new('4', 40);
+
     private const string ArmManifest = """
         {"id":"b-007","reviewRepo":{"directory":"exp-b","ref":"exp/b-007","sha":"2222222222222222222222222222222222222222"},
          "plugins":{"alias":"cr-b-007","url":"https://github.com/o/ClaudePlugins","sha":"3333333333333333333333333333333333333333"},
@@ -1054,7 +1287,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         """;
 
     /// <summary>A host with the base workspace and no arm yet; the arm's mode and workspace are created.</summary>
-    private static FakeHttpMessageHandler VariantHost() =>
+    private static FakeHttpMessageHandler VariantHost(string modes = "[]") =>
         new FakeHttpMessageHandler()
             .OnJson(
                 HttpMethod.Get,
@@ -1066,8 +1299,9 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
                 "api/workspaces",
                 """[{"id":"base","name":"nova","directoryRelPath":"nova-reviews","marketplaces":[]}]"""
             )
-            .OnJson(HttpMethod.Get, "api/chat-modes", "[]")
+            .OnJson(HttpMethod.Get, "api/chat-modes", modes)
             .OnJson(HttpMethod.Post, "api/chat-modes", """{"id":"mode-1"}""")
+            .OnJson(HttpMethod.Put, "api/chat-modes/", """{"id":"mode-1"}""")
             .OnJson(
                 HttpMethod.Post,
                 "api/workspaces",
@@ -1095,6 +1329,8 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             "exp-1",
             "--from-workspace",
             "base",
+            "--champion",
+            Champion,
             .. execute ? new[] { "--execute" } : [],
         ]);
         var result = await VariantUp.RunCoreAsync(
@@ -1105,9 +1341,9 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
                 calls.Add($"register {alias} {url} {sha}");
                 return Task.FromResult(sha);
             },
-            (directory, _) =>
+            (directory, champion, _) =>
             {
-                calls.Add($"head {directory}");
+                calls.Add($"head {directory} against {champion}");
                 return Task.FromResult(new VariantUp.Clone(cloneSha, knowledgeChanges));
             },
             CancellationToken.None
@@ -1124,7 +1360,10 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
 
         calls
             .Should()
-            .Equal("head exp-b", $"register cr-b-007 https://github.com/o/ClaudePlugins {new string('3', 40)}");
+            .Equal(
+                $"head exp-b against {Champion}",
+                $"register cr-b-007 https://github.com/o/ClaudePlugins {new string('3', 40)}"
+            );
         var mode = handler.Requests.Single(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/chat-modes");
         JsonNode.Parse(mode.Body!)!["name"]!.GetValue<string>().Should().Be("code-review-b-007");
         var created = JsonNode.Parse(
@@ -1148,7 +1387,9 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             .Should()
             .Contain("--workspace ws-b --provider test --mode mode-1 --shadow")
             .And.Contain("--variant b-007 --manifest ")
-            .And.Contain("--experiment exp-1");
+            .And.Contain("--experiment exp-1")
+            .And.Contain("--read-only-egress --read-repos <org/project/repo,");
+        result["champion"]!.GetValue<string>().Should().Be(Champion);
     }
 
     [Fact]
@@ -1167,8 +1408,8 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get);
     }
 
-    // An arm is judged in its own workspace, with that workspace's KnowledgeBase, so an arm that changed it would be
-    // judged with other knowledge than the champion.
+    // An arm is reviewed and judged in its own workspace, with that workspace's KnowledgeBase, so an arm holding
+    // another one than the frozen champion would be judged with other knowledge.
     [Fact]
     public async Task Variant_up_refuses_an_arm_whose_commit_changes_the_KnowledgeBase_and_changes_nothing()
     {
@@ -1178,7 +1419,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             VariantUpAsync(handler, new string('2', 40), true, "KnowledgeBase/nova/a.md", "KnowledgeBase/_index.jsonl");
 
         (await changed.Should().ThrowAsync<InvalidOperationException>()).WithMessage(
-            "Manifest b-007's commit changes KnowledgeBase/ since it forked from origin/main "
+            $"Manifest b-007's commit holds a different KnowledgeBase/ from champion {Champion} "
                 + "(KnowledgeBase/nova/a.md, KnowledgeBase/_index.jsonl). Every arm reviews and is judged with*"
         );
         handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "no mode or workspace was made");
@@ -1188,14 +1429,24 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     public async Task Variant_up_needs_a_fully_pinned_manifest_and_an_experiment()
     {
         var manifest = Variant("b-007")[3];
-        string[] command = ["variant", "up", "--manifest", manifest, "--from-workspace", "base"];
+        string[] command =
+        [
+            "variant",
+            "up",
+            "--manifest",
+            manifest,
+            "--from-workspace",
+            "base",
+            "--champion",
+            Champion,
+        ];
         var noExperiment = () => CliOptions.Parse(command);
         var unpinned = () =>
             VariantUp.RunCoreAsync(
                 CliOptions.Parse([.. command, "--experiment", "exp-1", "--execute"]),
                 null!,
                 (_, _, _, _) => Task.FromResult(""),
-                (_, _) => Task.FromResult(new VariantUp.Clone("", [])),
+                (_, _, _) => Task.FromResult(new VariantUp.Clone("", [])),
                 CancellationToken.None
             );
 
@@ -1674,27 +1925,27 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         // main and a live round's branch hold publication receipts naming the live reviewer's PR comment 101/1; the
         // arm's own branch holds would_post.json.
         Directory.CreateDirectory(Path.Combine(root, "PRs", "nova-17"));
-        Git(root, "init", "-q", "-b", "main");
-        Git(root, "config", "user.email", "t@example.com");
-        Git(root, "config", "user.name", "t");
-        Git(root, "config", "commit.gpgsign", "false");
+        await GitAsync(root, "init", "-q", "-b", "main");
+        await GitAsync(root, "config", "user.email", "t@example.com");
+        await GitAsync(root, "config", "user.name", "t");
+        await GitAsync(root, "config", "commit.gpgsign", "false");
         File.WriteAllText(Path.Combine(root, "README.md"), "store\n");
-        Git(root, "add", "-A");
-        Git(root, "commit", "-q", "-m", "base");
-        Git(root, "checkout", "-q", "-b", "review/nova-17");
+        await GitAsync(root, "add", "-A");
+        await GitAsync(root, "commit", "-q", "-m", "base");
+        await GitAsync(root, "checkout", "-q", "-b", "review/nova-17");
         File.WriteAllText(Path.Combine(root, "PRs", "nova-17", "would_post.json"), record.ToJsonString());
         File.WriteAllText(Path.Combine(root, "PRs", "nova-17", "review.md"), "# Review\n");
-        Git(root, "add", "-A");
-        Git(root, "commit", "-q", "-m", "arm review");
-        var artifact = Git(root, "rev-parse", "HEAD");
-        Git(root, "checkout", "-q", "main");
+        await GitAsync(root, "add", "-A");
+        await GitAsync(root, "commit", "-q", "-m", "arm review");
+        var artifact = await GitAsync(root, "rev-parse", "HEAD");
+        await GitAsync(root, "checkout", "-q", "main");
         Directory.CreateDirectory(Path.Combine(root, "PRs", "nova-17"));
         var live =
             $$"""{"prId":17,"headSha":"{{Head}}","comments":[{"threadId":101,"commentId":1,"kind":"summary"}]}""";
         File.WriteAllText(Path.Combine(root, "PRs", "nova-17", "publication_receipts.json"), live);
-        Git(root, "add", "-A");
-        Git(root, "commit", "-q", "-m", "live review");
-        Git(root, "branch", "review/nova-17-abcdef12");
+        await GitAsync(root, "add", "-A");
+        await GitAsync(root, "commit", "-q", "-m", "live review");
+        await GitAsync(root, "branch", "review/nova-17-abcdef12");
 
         var receipt = ArmReceipt(Verified(), artifact);
         var usage = JsonNode.Parse(
@@ -1802,7 +2053,10 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         return await reader.ReadToEndAsync();
     }
 
-    private static string Git(string directory, params string[] arguments)
+    private static async Task<(int Exit, string Output, string Error)> RunGitAsync(
+        string directory,
+        params string[] arguments
+    )
     {
         var start = new ProcessStartInfo("git")
         {
@@ -1816,10 +2070,16 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         }
         using var process = Process.Start(start)!;
         var output = process.StandardOutput.ReadToEndAsync();
-        var error = process.StandardError.ReadToEnd();
-        process.WaitForExit();
-        process.ExitCode.Should().Be(0, error);
-        return output.Result.Trim();
+        var error = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return (process.ExitCode, (await output).Trim(), (await error).Trim());
+    }
+
+    private static async Task<string> GitAsync(string directory, params string[] arguments)
+    {
+        var (exit, output, error) = await RunGitAsync(directory, arguments);
+        exit.Should().Be(0, error);
+        return output;
     }
 
     /// <summary>

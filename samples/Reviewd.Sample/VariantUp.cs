@@ -19,13 +19,32 @@ internal static class VariantUp
     internal delegate Task<string> RegisterMarketplace(string alias, string url, string sha, CancellationToken ct);
 
     /// <summary>
-    ///     A review-repo clone: the commit it has checked out, and the <c>KnowledgeBase/</c> paths that commit changes
-    ///     since it forked from <c>origin/main</c>.
+    ///     A review-repo clone: the commit it has checked out, and the <c>KnowledgeBase/</c> paths whose content differs
+    ///     between that commit and the champion's.
     /// </summary>
     internal sealed record Clone(string Head, IReadOnlyList<string> KnowledgeChanges);
 
-    /// <summary>Reads a workspace directory's review-repo clone.</summary>
-    internal delegate Task<Clone> ReadClone(string directory, CancellationToken ct);
+    /// <summary>Reads a workspace directory's review-repo clone against champion commit <c>champion</c>.</summary>
+    internal delegate Task<Clone> ReadClone(string directory, string champion, CancellationToken ct);
+
+    /// <summary>Runs git with <c>arguments</c> in the clone and returns its trimmed output; fails naming <c>what</c>.</summary>
+    internal delegate Task<string> Git(string what, string[] arguments, CancellationToken ct);
+
+    /// <summary>
+    ///     The clone's head, and every <c>KnowledgeBase/</c> path whose content differs from champion commit
+    ///     <paramref name="champion"/>: a tree comparison, so an arm based on an older commit than the champion is
+    ///     caught as surely as one that edits the KnowledgeBase.
+    /// </summary>
+    internal static async Task<Clone> ReadCloneAsync(Git git, string champion, CancellationToken ct)
+    {
+        var head = await git("git rev-parse HEAD", ["rev-parse", "HEAD"], ct);
+        var changes = await git(
+            $"Comparing KnowledgeBase/ with champion {champion} (fetch it into the clone first)",
+            ["diff", "--name-only", champion, head, "--", "KnowledgeBase/"],
+            ct
+        );
+        return new Clone(head, changes.Split('\n', StringSplitOptions.RemoveEmptyEntries));
+    }
 
     public static async Task<int> RunAsync(CliOptions options, ReviewdConfig config, CancellationToken ct)
     {
@@ -35,39 +54,26 @@ internal static class VariantUp
             config.CreateS2SClient(),
             async (alias, url, sha, token) =>
                 (await sandbox.RegisterAppMarketplaceAsync(alias, url, sha, token)).ResolvedSha,
-            async (directory, token) =>
+            async (directory, champion, token) =>
             {
                 var session = await sandbox.CreateAsync(new SandboxCreateRequest(directory, []), token);
-                async Task<string> Git(string what, params string[] arguments)
-                {
-                    var run = await sandbox.ExecuteAsync(
-                        session.SessionId,
-                        new SandboxCommand(["git", .. arguments], "."),
-                        token
-                    );
-                    return run.ExitCode == 0
-                        ? run.StandardOutput.Trim()
-                        : throw new InvalidOperationException(
-                            $"{what} failed in {directory}: {run.StandardError.Trim()}"
+                return await ReadCloneAsync(
+                    async (what, arguments, cancellation) =>
+                    {
+                        var run = await sandbox.ExecuteAsync(
+                            session.SessionId,
+                            new SandboxCommand(["git", .. arguments], "."),
+                            cancellation
                         );
-                }
-                var head = await Git("git rev-parse HEAD", "rev-parse", "HEAD");
-                var fork = await Git(
-                    "Finding where HEAD forked from origin/main (to check KnowledgeBase/)",
-                    "merge-base",
-                    "HEAD",
-                    "origin/main"
+                        return run.ExitCode == 0
+                            ? run.StandardOutput.Trim()
+                            : throw new InvalidOperationException(
+                                $"{what} failed in {directory}: {run.StandardError.Trim()}"
+                            );
+                    },
+                    champion,
+                    token
                 );
-                var changes = await Git(
-                    "git diff -- KnowledgeBase/",
-                    "diff",
-                    "--name-only",
-                    fork,
-                    head,
-                    "--",
-                    "KnowledgeBase/"
-                );
-                return new Clone(head, changes.Split('\n', StringSplitOptions.RemoveEmptyEntries));
             },
             ct
         );
@@ -85,6 +91,7 @@ internal static class VariantUp
     {
         var manifest = await VariantManifest.LoadAsync(options.Required("manifest"), ct);
         var experiment = options.Required("experiment");
+        var champion = options.Required("champion");
         var missing = new (string Name, string? Value)[]
         {
             ("reviewRepo.directory", manifest.ReviewRepoDirectory),
@@ -104,16 +111,7 @@ internal static class VariantUp
                 $"Variant manifest {manifest.Id} must pin {string.Join(", ", missing)} for variant up."
             );
         }
-        var mode =
-            JsonNode.Parse(await File.ReadAllTextAsync(manifest.ModeFile!, ct)) as JsonObject
-            ?? throw new ArgumentException($"Mode file {manifest.ModeFile} is not a JSON object.");
-        if (mode["name"] is { } named && named.ToString() != manifest.ModeName)
-        {
-            throw new ArgumentException(
-                $"Mode file {manifest.ModeFile} is named '{named}', but the manifest pins mode {manifest.ModeName}."
-            );
-        }
-        mode["name"] = manifest.ModeName;
+        var mode = await manifest.ModePayloadAsync(ct);
 
         // The arm is the base workspace with the reviewer plugin taken from the arm's own alias.
         var source = await client.GetWorkspaceAsync(options.Required("from-workspace"), ct);
@@ -144,6 +142,7 @@ internal static class VariantUp
             ["command"] = "variant up",
             ["variant"] = manifest.Id,
             ["experimentId"] = experiment,
+            ["champion"] = champion,
             ["manifestSha256"] = manifest.Sha256,
             ["workspaceName"] = name,
             ["directory"] = manifest.ReviewRepoDirectory,
@@ -166,7 +165,7 @@ internal static class VariantUp
 
         // The clone is checked first, so an arm on the wrong commit, or one that changes the KnowledgeBase, changes
         // nothing.
-        var clone = await readClone(manifest.ReviewRepoDirectory!, ct);
+        var clone = await readClone(manifest.ReviewRepoDirectory!, champion, ct);
         var head = clone.Head;
         if (head != manifest.ReviewRepoSha)
         {
@@ -177,13 +176,14 @@ internal static class VariantUp
             );
         }
         // Each arm's reviews are judged in its own workspace, by a judge that reads that workspace's KnowledgeBase.
-        // An arm that changed it would be judged with other knowledge than the champion, so no arm may.
+        // An arm holding other knowledge than the experiment's frozen champion would be reviewed and judged with it, so
+        // no arm may: not one that edits it, nor one based on an older or newer commit.
         if (clone.KnowledgeChanges.Count > 0)
         {
             throw new InvalidOperationException(
-                $"Manifest {manifest.Id}'s commit changes KnowledgeBase/ since it forked from origin/main "
+                $"Manifest {manifest.Id}'s commit holds a different KnowledgeBase/ from champion {champion} "
                     + $"({string.Join(", ", clone.KnowledgeChanges.Take(3))}{(clone.KnowledgeChanges.Count > 3 ? ", ..." : "")}). "
-                    + "Every arm reviews and is judged with the champion's knowledge; move those changes out of the arm."
+                    + "Every arm reviews and is judged with the champion's knowledge; base the arm on it."
             );
         }
         var resolved = await register(alias, manifest.PluginUrl!, manifest.PluginSha!, ct);
@@ -210,7 +210,8 @@ internal static class VariantUp
         var taskPrompt = manifest.TaskPromptFile is { } file ? $" --task-prompt-file {file}" : "";
         var effort = manifest.Effort is { } level ? $" --reasoning-effort {level}" : "";
         result["next"] =
-            $"sandbox create --workspace {manifest.ReviewRepoDirectory} --callback <url> --read-only-egress, then "
+            $"sandbox create --workspace {manifest.ReviewRepoDirectory} --callback <url> --read-only-egress "
+            + "--read-repos <org/project/repo,... every repo this arm reviews>, then "
             + $"review batch --selection <json> --db <this arm's db> --session <session> --workspace {workspace.Id} "
             + $"--provider {manifest.Provider ?? "<provider>"} --mode {modeId}{effort} --shadow --post-session <read-only "
             + $"session> --variant {manifest.Id} --manifest {manifest.Path} --experiment {experiment}{taskPrompt} --execute";
