@@ -1367,6 +1367,17 @@ internal static class ReviewRunner
             // Keep the pending phase and previous successful receipt so a live run can resume and finish
             // publication without redoing the review. The slot stays leased, so if this process dies the
             // lease reaper reclaims it within the lease window — retention never becomes a permanent block.
+            // A cancel or DB error in a wait skips that wait's claim check, so check it here: a sweep that reset the
+            // slot meanwhile recorded its own attempt, and retaining this receipt would overwrite it.
+            if (!await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, CancellationToken.None))
+            {
+                Console.Error.WriteLine(
+                    $"{repo.DisplayName} #{pr}: slot claim {claimToken} was lost after {failure.Message} Stopped; the attempt is left as reset."
+                );
+                throw new SlotClaimLostException(
+                    $"Slot claim {claimToken} was lost while the run failed ({failure.Message}); the attempt was not retained."
+                );
+            }
             await store.SetAsync(attemptKey, receipt, CancellationToken.None);
             Console.Error.WriteLine(
                 $"Review stopped at {receipt["stage"]}; retained {attemptKey}. No automatic retry or cleanup."
