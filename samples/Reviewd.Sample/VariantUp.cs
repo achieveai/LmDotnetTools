@@ -46,6 +46,13 @@ internal static class VariantUp
         return new Clone(head, changes.Split('\n', StringSplitOptions.RemoveEmptyEntries));
     }
 
+    /// <summary>
+    ///     Reads a workspace directory's clone with <see cref="ReadCloneAsync"/>, through the git <paramref name="open"/>
+    ///     returns for that directory.
+    /// </summary>
+    internal static ReadClone CloneReader(Func<string, CancellationToken, Task<Git>> open) =>
+        async (directory, champion, ct) => await ReadCloneAsync(await open(directory, ct), champion, ct);
+
     public static async Task<int> RunAsync(CliOptions options, ReviewdConfig config, CancellationToken ct)
     {
         using var sandbox = config.CreateSandboxClient();
@@ -54,11 +61,11 @@ internal static class VariantUp
             config.CreateS2SClient(),
             async (alias, url, sha, token) =>
                 (await sandbox.RegisterAppMarketplaceAsync(alias, url, sha, token)).ResolvedSha,
-            async (directory, champion, token) =>
-            {
-                var session = await sandbox.CreateAsync(new SandboxCreateRequest(directory, []), token);
-                return await ReadCloneAsync(
-                    async (what, arguments, cancellation) =>
+            CloneReader(
+                async (directory, token) =>
+                {
+                    var session = await sandbox.CreateAsync(new SandboxCreateRequest(directory, []), token);
+                    return async (what, arguments, cancellation) =>
                     {
                         var run = await sandbox.ExecuteAsync(
                             session.SessionId,
@@ -70,11 +77,9 @@ internal static class VariantUp
                             : throw new InvalidOperationException(
                                 $"{what} failed in {directory}: {run.StandardError.Trim()}"
                             );
-                    },
-                    champion,
-                    token
-                );
-            },
+                    };
+                }
+            ),
             ct
         );
         Console.WriteLine(result.ToJsonString());

@@ -100,7 +100,7 @@ internal static class JudgeRunner
     // A shadow review's receipts reach the judge with only these fields, so no input names the arm: its variant,
     // experiment, provider, effort, sessions, task prompt and answers stay on the host. A field added to the receipt
     // later stays out until it is listed here.
-    private static readonly string[] BlindReceiptKeys =
+    private static readonly string[] S_blindReceiptKeys =
     [
         "repository",
         "prId",
@@ -1342,6 +1342,9 @@ internal static class JudgeRunner
     internal static async Task<string> EmbeddedPromptSha256Async(CancellationToken ct) =>
         Sha256Hex(await ReadResourceAsync(PromptResource, ct));
 
+    internal static async Task<string> EmbeddedWouldPostPromptSha256Async(CancellationToken ct) =>
+        Sha256Hex(await ReadResourceAsync(WouldPostResource, ct));
+
     private static void PrintOutcome(JsonObject receipt)
     {
         var compare = receipt["ado"]?["compare"];
@@ -1370,12 +1373,12 @@ internal static class JudgeRunner
     }
 
     /// <summary>A receipt row without its claim token or send keys, each long string cut to its last 4 KB.</summary>
-    /// <summary>A shadow review's receipt row as the judge sees it: stripped, and only <see cref="BlindReceiptKeys" />.</summary>
+    /// <summary>A shadow review's receipt row as the judge sees it: stripped, and only <see cref="S_blindReceiptKeys" />.</summary>
     internal static JsonObject Blind(JsonObject row)
     {
         var stripped = Strip(row);
         var blind = new JsonObject();
-        foreach (var key in BlindReceiptKeys)
+        foreach (var key in S_blindReceiptKeys)
         {
             if (stripped[key] is { } value)
             {

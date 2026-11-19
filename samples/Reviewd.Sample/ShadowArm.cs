@@ -14,7 +14,8 @@ internal sealed record ShadowArm(
     string TemplateSha256,
     VariantManifest? Manifest,
     string? Experiment,
-    string? ModeFileSha256 = null
+    string? ModeFileSha256 = null,
+    JsonObject? ModePayload = null
 )
 {
     /// <summary>The live run has none; a shadow run gets the default template unless --task-prompt-file names one.</summary>
@@ -71,22 +72,37 @@ internal sealed record ShadowArm(
                 );
             }
         }
-        var modeSha = manifest.ModeFile is { } modeFile
-            ? VariantManifest.Sha256Hex(await File.ReadAllBytesAsync(modeFile, ct))
-            : null;
-        return new ShadowArm(template, sha, manifest, options.Required("experiment"), modeSha);
+        // The mode file is read once: the hash the receipt and a resume record names the very payload the run checks.
+        if (manifest.ModeFile is not { } modeFile)
+        {
+            return new ShadowArm(template, sha, manifest, options.Required("experiment"));
+        }
+        var modeBytes = await File.ReadAllBytesAsync(modeFile, ct);
+        return new ShadowArm(
+            template,
+            sha,
+            manifest,
+            options.Required("experiment"),
+            VariantManifest.Sha256Hex(modeBytes),
+            manifest.ModePayload(modeBytes)
+        );
     }
 
     /// <summary>
     ///     Checks that this run's workspace and mode are the ones <c>variant up</c> built from the manifest, so a receipt
     ///     never records the manifest's pins for another arm's review. The host holds that binding: the workspace's
     ///     directory and reviewer plugin, the mode's name and settings. Each pin the manifest names is checked; GETs
-    ///     only.
+    ///     only. Then the commits a review would run, which can move after the arm was built: the review-repo clone's,
+    ///     through <paramref name="reviewRepoHead"/>, and the one the reviewer's marketplace alias resolves to, through
+    ///     <paramref name="aliasSha"/> (a new sandbox mounts the alias's current commit). A run that executes passes
+    ///     both; a preview writes nothing and passes null.
     /// </summary>
     internal async Task CheckProvisionedAsync(
         LmStreamingS2SClient client,
         string workspaceId,
         string modeId,
+        Func<CancellationToken, Task<string?>>? reviewRepoHead,
+        Func<string, CancellationToken, Task<string?>>? aliasSha,
         CancellationToken ct
     )
     {
@@ -130,7 +146,7 @@ internal sealed record ShadowArm(
             }
             if (manifest.ModeFile is { } file)
             {
-                var differing = (await manifest.ModePayloadAsync(ct))
+                var differing = ModePayload!
                     .Where(field => !JsonNode.DeepEquals(WithoutNulls(field.Value), WithoutNulls(stored[field.Key])))
                     .Select(field => field.Key)
                     .ToList();
@@ -138,6 +154,30 @@ internal sealed record ShadowArm(
                 {
                     throw Mismatch($"mode {modeId} differs from {file} in {string.Join(", ", differing)}");
                 }
+            }
+        }
+        // The receipt records the manifest's commit, so the clone must have it checked out now, not only when the arm
+        // was built.
+        if (manifest.ReviewRepoSha is { } pinned && reviewRepoHead is not null)
+        {
+            var head = await reviewRepoHead(ct);
+            if (head != pinned)
+            {
+                throw Mismatch(
+                    $"the review-repo clone in {manifest.ReviewRepoDirectory} is at {head ?? "an unreadable commit"}, "
+                        + $"not {pinned}"
+                );
+            }
+        }
+        if (manifest.PluginSha is { } pluginSha && aliasSha is not null)
+        {
+            var resolved = await aliasSha(manifest.PluginAlias!, ct);
+            if (resolved != pluginSha)
+            {
+                throw Mismatch(
+                    $"marketplace alias {manifest.PluginAlias} resolves to {resolved ?? "nothing (not registered)"}, "
+                        + $"not {pluginSha}"
+                );
             }
         }
     }
@@ -153,6 +193,26 @@ internal sealed record ShadowArm(
             null => null,
             _ => node.DeepClone(),
         };
+
+    /// <summary>
+    ///     Why a resume of an attempt that recorded <paramref name="sent"/> as its provenance may not run as this arm, or
+    ///     null when it may: the task prompt, manifest, experiment and mode file must be the ones it started with.
+    /// </summary>
+    internal string? ResumeMismatch(JsonObject sent, string mode, string provider, string? effort)
+    {
+        foreach (var (field, value) in Provenance(mode, provider, effort))
+        {
+            if (
+                field is "taskPromptSha256" or "manifestSha256" or "experimentId" or "modeFileSha256"
+                && sent[field]?.ToString() != value?.ToString()
+            )
+            {
+                return $"This attempt was started with {field} {sent[field]?.ToString() ?? "none"}; a resume must use "
+                    + $"the same arm, not {value?.ToString() ?? "none"}.";
+            }
+        }
+        return null;
+    }
 
     /// <summary>The receipt's record of what produced the review (plan build item 4).</summary>
     internal JsonObject Provenance(string mode, string provider, string? effort) =>

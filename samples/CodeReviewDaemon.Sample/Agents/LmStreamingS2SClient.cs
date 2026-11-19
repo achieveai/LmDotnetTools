@@ -973,7 +973,7 @@ internal sealed class LmStreamingS2SClient
     ///     The optional fields of the host's chat-mode body (<c>ChatModeCreateUpdate</c>). An update keeps the stored
     ///     value of an omitted one, and a create stores null for it.
     /// </summary>
-    internal static readonly IReadOnlyList<string> ChatModeOptionalFields =
+    internal static readonly IReadOnlyList<string> S_chatModeOptionalFields =
     [
         "description",
         "enabledTools",
@@ -989,14 +989,37 @@ internal sealed class LmStreamingS2SClient
         "tiers",
     ];
 
+    // Every field of the host's chat-mode body, by the name the host writes it under.
+    private static readonly IReadOnlyList<string> S_chatModeFields =
+    [
+        "name",
+        "systemPrompt",
+        .. S_chatModeOptionalFields,
+    ];
+
     /// <summary>
-    ///     A copy of <paramref name="payload"/> with every optional field it omits set to an explicit null, the value a
-    ///     create stores for it. Sent as an update, it replaces the stored mode instead of merging into it.
+    ///     A copy of <paramref name="payload"/> with every field under the name the host writes it, and every optional
+    ///     field it omits set to an explicit null, the value a create stores for it. Sent as an update, it replaces the
+    ///     stored mode instead of merging into it.
     /// </summary>
     internal static JsonObject ChatModeReplacement(JsonObject payload)
     {
-        var replacement = payload.DeepClone().AsObject();
-        foreach (var field in ChatModeOptionalFields)
+        var replacement = new JsonObject();
+        foreach (var (key, value) in payload)
+        {
+            // The host binds field names in any letter case, so "SubAgentPrompt" sets subAgentPrompt. Kept as
+            // written, the null fill below would add a second subAgentPrompt, and a run's check would compare the
+            // stored subAgentPrompt with nothing.
+            var field =
+                S_chatModeFields.FirstOrDefault(name => string.Equals(name, key, StringComparison.OrdinalIgnoreCase))
+                ?? key;
+            if (replacement.ContainsKey(field))
+            {
+                throw new ArgumentException($"The chat mode sets {field} twice, in different letter cases.");
+            }
+            replacement[field] = value?.DeepClone();
+        }
+        foreach (var field in S_chatModeOptionalFields)
         {
             if (!replacement.ContainsKey(field))
             {

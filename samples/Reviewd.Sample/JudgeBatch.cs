@@ -59,6 +59,20 @@ internal static class JudgeBatch
         ///     review (judge run refuses any other), so a target without one counts its shadow reviews and skips them.
         /// </summary>
         public Func<string, bool> ReadOnlySession { get; init; } = _ => false;
+
+        /// <summary>
+        ///     The would-post prompt section a shadow review's judgment adds to the template. A judgment that recorded
+        ///     another one stopped under another prompt, as one with another template did.
+        /// </summary>
+        public string? WouldPostPromptSha256 { get; init; }
+
+        /// <summary>Whether <paramref name="identity"/> names this batch's prompt: the template and any would-post section.</summary>
+        public bool SamePrompt(JsonNode? identity) =>
+            identity?["promptTemplateSha256"]?.GetValue<string>() == PromptSha256
+            && (
+                identity["wouldPostPromptSha256"]?.GetValue<string>() is not { } wouldPost
+                || wouldPost == WouldPostPromptSha256
+            );
     }
 
     /// <summary>
@@ -215,6 +229,7 @@ internal static class JudgeBatch
         )
         {
             ReadOnlySession = session => ReadOnlySessions.IsMarked(tokenStore.Value, session),
+            WouldPostPromptSha256 = await JudgeRunner.EmbeddedWouldPostPromptSha256Async(ct),
         };
         var limit = options.GetCount("limit") ?? int.MaxValue;
         var stopFile = options.Get("stop-file");
@@ -418,13 +433,11 @@ internal static class JudgeBatch
         var stage = latest["stage"]?.GetValue<string>() ?? "";
         if (JudgeRunner.ResumableStages.Contains(stage))
         {
-            var ours =
-                latest["identity"]?["promptTemplateSha256"]?.GetValue<string>() == settings.PromptSha256
-                && latest["caps"]?["maxUsd"] is not null;
+            var ours = settings.SamePrompt(latest["identity"]) && latest["caps"]?["maxUsd"] is not null;
             // A live run the batch cannot resume (another prompt, no stored cap) is only "Running now".
             if (inFlight && !ours)
                 return new(pr, Kind.Skip, "running");
-            if (latest["identity"]?["promptTemplateSha256"]?.GetValue<string>() != settings.PromptSha256)
+            if (!settings.SamePrompt(latest["identity"]))
                 return new(
                     pr,
                     Kind.NeedsYou,

@@ -19,13 +19,23 @@ internal static class ReviewBatch
                 if (!options.Has("execute"))
                     throw new InvalidOperationException("review batch requires --execute; no state was changed.");
                 // A variant arm's workspace and mode must be the ones variant up built for its manifest. Each run
-                // checks again before it provisions.
+                // checks again before it provisions, the clone's and the alias's commits included.
                 if (await ShadowArm.ResolveAsync(options, options.Required("provider"), token) is { } arm)
                 {
                     await arm.CheckProvisionedAsync(
                         config.CreateS2SClient(),
                         options.Required("workspace"),
                         options.Get("mode") ?? config.ModeId,
+                        reviewRepoHead: null,
+                        aliasSha: null,
+                        token
+                    );
+                    await CheckResumesAsync(
+                        options.Required("db"),
+                        arm,
+                        options.Get("mode") ?? config.ModeId,
+                        options.Required("provider"),
+                        options.Get("reasoning-effort"),
                         token
                     );
                 }
@@ -1536,6 +1546,59 @@ internal static class ReviewBatch
         && failure["count"]?.GetValue<int>() >= QuarantineAfter;
 
     private const string InterruptedLaunch = "Interrupted launch has no definitive non-admission evidence.";
+
+    /// <summary>
+    ///     Refuses a shadow batch whose arm differs from the one an attempt it would resume started with. A restart
+    ///     resumes every attempt the database still owns, and each such resume would be refused, retried and then held
+    ///     with its slot. The arm is the task prompt, manifest, experiment and mode file
+    ///     (<see cref="ShadowArm.ResumeMismatch"/>). An attempt that released its slot is left out: it holds nothing,
+    ///     and a newer head admits it fresh.
+    /// </summary>
+    internal static async Task CheckResumesAsync(
+        string database,
+        ShadowArm arm,
+        string mode,
+        string provider,
+        string? effort,
+        CancellationToken ct
+    )
+    {
+        if (!File.Exists(database))
+        {
+            return;
+        }
+        var refused = new List<string>();
+        using (var connection = Connection(database, SqliteOpenMode.ReadOnly))
+        {
+            await connection.OpenAsync(ct);
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                "SELECT value FROM cache WHERE substr(key, 1, 23) = 'reviewd/review-attempt/' ORDER BY key";
+            using var reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                if (
+                    JsonNode.Parse(reader.GetString(0)) is JsonObject attempt
+                    && attempt["stage"]?.GetValue<string>() != "failed-released"
+                    && attempt["cleanupState"]?.GetValue<string>() != "released"
+                    && Resumable(attempt)
+                    && attempt["provenance"] is JsonObject sent
+                    && arm.ResumeMismatch(sent, mode, provider, effort) is { } mismatch
+                )
+                {
+                    refused.Add($"{attempt["repository"]} #{attempt["prId"]}: {mismatch}");
+                }
+            }
+        }
+        if (refused.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"This batch's arm differs from the one {refused.Count} retained attempt(s) started with, so none "
+                    + "could resume. Finish them with the arm they started with, or release them, then start the "
+                    + $"changed arm. {string.Join(" ", refused)}"
+            );
+        }
+    }
 
     private static bool Reusable(JsonNode attempt) =>
         attempt["cleanupState"]?.GetValue<string>() == "released"

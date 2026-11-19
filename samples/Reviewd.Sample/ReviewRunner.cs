@@ -567,10 +567,30 @@ internal static class ReviewRunner
         }
         // The arm's task prompt and manifest are read and checked before anything is written.
         var arm = await ShadowArm.ResolveAsync(options, provider, ct);
-        // And the workspace and mode are the ones variant up built for that manifest (host reads only).
+        // And the workspace and mode are the ones variant up built for that manifest (host reads only), with the
+        // manifest's commit checked out in the review-repo clone (a read-only step, run only by an executing run).
         if (arm is not null)
         {
-            await arm.CheckProvisionedAsync(client, workspace, mode, ct);
+            await arm.CheckProvisionedAsync(
+                client,
+                workspace,
+                mode,
+                options.Has("execute")
+                    ? async token =>
+                        (await sandbox("review-repo-head", [], Guid.NewGuid().ToString("N"), token))["head"]
+                            ?.GetValue<string>()
+                    : null,
+                options.Has("execute")
+                    ? async (alias, token) =>
+                    {
+                        using var gateway = config.CreateSandboxClient();
+                        return (await gateway.ListAppMarketplacesAsync(token))
+                            .SingleOrDefault(registered => registered.Alias == alias)
+                            ?.ResolvedSha;
+                    }
+                    : null,
+                ct
+            );
         }
         // Before anything is written: a shadow arm and the live reviewer never share a database.
         await ReviewArm.CheckAsync(database, shadow, variant, pin: options.Has("execute"), ct);
@@ -609,20 +629,14 @@ internal static class ReviewRunner
         var attempt = await ReadAsync(attemptKey);
         var resume = options.Has("resume");
         var cleanupOnly = options.Has("cleanup-only");
-        if (resume && arm is not null && attempt?["provenance"] is JsonObject sent)
+        if (
+            resume
+            && arm is not null
+            && attempt?["provenance"] is JsonObject sent
+            && arm.ResumeMismatch(sent, mode, provider, reasoningEffort) is { } mismatch
+        )
         {
-            foreach (var (field, value) in arm.Provenance(mode, provider, reasoningEffort))
-            {
-                if (
-                    field is "taskPromptSha256" or "manifestSha256" or "experimentId" or "modeFileSha256"
-                    && sent[field]?.ToString() != value?.ToString()
-                )
-                {
-                    throw new ArgumentException(
-                        $"This attempt was started with {field} {sent[field]?.ToString() ?? "none"}; a resume must use the same arm, not {value?.ToString() ?? "none"}."
-                    );
-                }
-            }
+            throw new ArgumentException(mismatch);
         }
         // A finished review is posted (a shadow one recorded in would_post.json), verified and archived on the head it
         // reviewed, even after a new push.

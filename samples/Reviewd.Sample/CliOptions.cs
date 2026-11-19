@@ -3,7 +3,7 @@ namespace Reviewd.Sample;
 internal sealed class CliOptions
 {
     internal static readonly System.Text.RegularExpressions.Regex VariantLabel = new("^[a-z0-9][a-z0-9-]{0,39}$");
-    private static readonly System.Text.RegularExpressions.Regex ExperimentId = new("^[A-Za-z0-9._-]{1,80}$");
+    private static readonly System.Text.RegularExpressions.Regex S_experimentId = new("^[A-Za-z0-9._-]{1,80}$");
 
     private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
 
@@ -298,7 +298,7 @@ internal sealed class CliOptions
                 throw new ArgumentException("--champion must be a 40-character commit SHA.");
             }
         }
-        if (result.Get("experiment") is { } experiment && !ExperimentId.IsMatch(experiment))
+        if (result.Get("experiment") is { } experiment && !S_experimentId.IsMatch(experiment))
         {
             throw new ArgumentException("--experiment must be 1-80 letters, digits, dots, underscores or dashes.");
         }

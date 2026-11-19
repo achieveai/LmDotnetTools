@@ -20,7 +20,10 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
     private const string Repo = "O365Exchange/Weve_DA/Nova";
     private const string Workspace = "ws-1";
     private static readonly DateTimeOffset Now = DateTimeOffset.UtcNow;
-    private static readonly JudgeBatch.Settings Settings = new(5m, 30m, 4m, 7, "prompt-sha");
+    private static readonly JudgeBatch.Settings Settings = new(5m, 30m, 4m, 7, "prompt-sha")
+    {
+        WouldPostPromptSha256 = "would-post-sha",
+    };
     private static readonly string RepoKey = PrCommands.ParseRepo(Repo).NormalizedKey;
     private readonly string _dir = Directory.CreateTempSubdirectory("judge-batch-").FullName;
 
@@ -266,6 +269,17 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         var otherPrompt = Stage("judge-running");
         otherPrompt["identity"]!["promptTemplateSha256"] = "old-prompt";
         Row(Of([otherPrompt]))
+            .Should()
+            .Be(
+                "NeedsYou judgment 1 stopped in the judging step under another prompt; resume it by hand with the original prompt"
+            );
+        // A shadow review's judgment adds the would-post section, which is part of its prompt too.
+        var sameWouldPost = Stage("judge-running");
+        sameWouldPost["identity"]!["wouldPostPromptSha256"] = "would-post-sha";
+        Row(Of([sameWouldPost])).Should().Be("Resume resume judgment 1 from the judging step (stored)");
+        var otherWouldPost = Stage("judge-running");
+        otherWouldPost["identity"]!["wouldPostPromptSha256"] = "old-would-post";
+        Row(Of([otherWouldPost]))
             .Should()
             .Be(
                 "NeedsYou judgment 1 stopped in the judging step under another prompt; resume it by hand with the original prompt"

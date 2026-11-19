@@ -9,7 +9,7 @@ namespace Reviewd.Sample;
 /// </summary>
 internal static partial class ShadowTaskPrompt
 {
-    internal static readonly IReadOnlySet<string> Placeholders = new HashSet<string>(StringComparer.Ordinal)
+    internal static readonly IReadOnlySet<string> S_placeholders = new HashSet<string>(StringComparer.Ordinal)
     {
         "repo",
         "pr",
@@ -21,7 +21,7 @@ internal static partial class ShadowTaskPrompt
         "qualityRules",
     };
 
-    private static readonly string[] Required = ["directory", "head"];
+    private static readonly string[] S_required = ["directory", "head"];
 
     // Any double-braced text is a placeholder, so a misspelt one ({{pr_number}}, {{ pr }}) is refused, never sent as is.
     [GeneratedRegex(@"\{\{(.*?)\}\}", RegexOptions.Singleline)]
@@ -30,13 +30,13 @@ internal static partial class ShadowTaskPrompt
     internal static void Validate(string template, string source)
     {
         var used = Placeholder().Matches(template).Select(m => m.Groups[1].Value).ToHashSet(StringComparer.Ordinal);
-        if (used.FirstOrDefault(name => !Placeholders.Contains(name)) is { } unknown)
+        if (used.FirstOrDefault(name => !S_placeholders.Contains(name)) is { } unknown)
         {
             throw new ArgumentException(
-                $"{source}: unknown placeholder {{{{{unknown}}}}}; use {string.Join(", ", Placeholders.Order().Select(p => "{{" + p + "}}"))}."
+                $"{source}: unknown placeholder {{{{{unknown}}}}}; use {string.Join(", ", S_placeholders.Order().Select(p => "{{" + p + "}}"))}."
             );
         }
-        if (Required.FirstOrDefault(name => !used.Contains(name)) is { } missing)
+        if (S_required.FirstOrDefault(name => !used.Contains(name)) is { } missing)
         {
             throw new ArgumentException($"{source} must use {{{{{missing}}}}}.");
         }

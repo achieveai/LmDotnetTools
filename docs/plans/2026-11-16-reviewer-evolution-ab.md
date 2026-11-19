@@ -1,6 +1,6 @@
 > Approved 2026-11-16 (ReviewPlan rev 3; standing approval: $300 pilot cap). Below is the approved plan, with
-> edits since approval where the build changed it: this note, key dot 2 (no variant key), build item 2, the
-> `review batch` line under "How an arm is built" (`--post-session`), and the line under "What exists today".
+> edits since approval where the build changed it: these notes, key dot 2 (no variant key), build item 2, the
+> manifest and the commands under "How an arm is built", and the line under "What exists today".
 >
 > **Slice 1 as built** (`review run|batch --shadow --variant`): the shadow half of build item 2 only.
 > - The receipt key does **not** gain the variant: about ten readers parse that key. Each arm runs on its own `--db`
@@ -22,9 +22,41 @@
 >   fail into warnings and leave the shadow arm thinner context than the live one.
 > - Verify checks `would_post.json` (recorded as `wouldPost`, never `verifiedPublication`), and refuses one over
 >   1 MiB, which commit would set aside; commit keeps the review branch local (no push).
-> - `judge run` refuses shadow receipts and `judge batch` counts them as `shadow` until item 6 lands.
+> - Slice 1 left shadow reviews unjudged (`judge run` refused them). Slice 2 judges them; see its note.
 > - Merged-PR replay is not supported yet: `review run` admits open PRs only (`PrSelection.cs`), so slice 1
 >   shadows open PRs. Build item 5 adds historical heads.
+>
+> **Slice 2 as built** (`variant up`, arm checks, judging shadow reviews): build items 1, 3 and the judge half of 6.
+> - The manifest, as `variant up` reads it (paths relative to the manifest; `sha`s are 40-character commits):
+>   ```json
+>   { "id": "b-007",
+>     "reviewRepo": {"repo": "AchieveAi_reviews", "ref": "exp/b-007", "sha": "<commit>", "directory": "exp-b"},
+>     "plugins": {"alias": "cr-b-007", "url": "https://github.com/gautam-achieveai/ClaudePlugins", "sha": "<commit>"},
+>     "mode": {"name": "code-review-b-007", "file": "modes/b-007.json"},
+>     "taskPrompt": "prompts/b-007.md", "provider": "<provider>", "effort": "xhigh" }
+>   ```
+>   The mode file is a JSON chat-mode body (`systemPrompt` and any optional field, in any letter case).
+> - Build an arm (preview without `--execute`):
+>   `variant up --manifest <manifest> --experiment <id> --from-workspace <base workspace> --champion <commit> --execute`.
+>   It never moves the clone: it refuses one in `reviewRepo.directory` that is not at `reviewRepo.sha`, or whose
+>   `KnowledgeBase/` tree differs from the champion commit's, before it changes anything. Then it registers the alias at
+>   `plugins.sha`, creates or replaces the mode (a replace clears every field the file omits), and creates or updates
+>   workspace `variant-<id>`, taking `code-reviewer` from the alias only. `--champion` is given per run: every arm of
+>   an experiment must pass the same one, and the operator owns that.
+> - Run it, with the workspace and mode `variant up` printed:
+>   `sandbox create --workspace <directory> --callback <url> --read-only-egress --read-repos <org/project/repo,...>`,
+>   then `review batch --selection <json> --db <arm db> --session <session> --workspace <workspace> --provider <provider>
+>   --mode <mode> [--reasoning-effort <effort>] --shadow --post-session <read-only session> --variant <id>
+>   --manifest <manifest> --experiment <id> [--task-prompt-file <file>] --execute`.
+> - Every run checks, on the host, that its workspace and mode are the ones `variant up` built for the manifest
+>   (directory, reviewer plugin source, mode name and settings) and, when it executes, that the clone is still at
+>   `reviewRepo.sha`. A resume must keep the arm it started with (task prompt, manifest, experiment, mode file), and a
+>   batch that would resume an attempt of another arm is refused at start.
+> - Judging: each arm is judged in its own workspace, so its `KnowledgeBase/` must equal the champion's (the tree check
+>   above) instead of the judge reading the champion's store. `judge run` scores a shadow review's `would_post.json`
+>   blind (arm labels stripped), only in a read-only session; `judge batch` skips a shadow review whose target session
+>   is not read-only. `judge close` refuses a shadow judgment and both judge ticks skip it: it is a score, never a
+>   lesson.
 # Plan: Reviewers that improve themselves, proven by blind A/B against the judge
 
 **Done when:** one challenger, generated from judge misses and bound to a `ClaudePlugins` branch, has been
@@ -120,9 +152,9 @@ A review today stacks 7 layers. Each one has a different home, so each needs its
 
 **The variant manifest** (one small JSON per arm, kept in the study store):
 ```json
-{ "id": "b-007", "reviewRepo": {"repo": "AchieveAi_reviews", "ref": "exp/b-007", "sha": "…"},
+{ "id": "b-007", "reviewRepo": {"repo": "AchieveAi_reviews", "ref": "exp/b-007", "sha": "…", "directory": "exp-b"},
   "plugins": {"alias": "cr-b-007", "url": "https://github.com/gautam-achieveai/ClaudePlugins", "sha": "…"},
-  "mode": {"id": "code-review-b-007", "file": "modes/b-007.yaml"},
+  "mode": {"name": "code-review-b-007", "file": "modes/b-007.json"},
   "taskPrompt": "prompts/b-007.md", "provider": "…", "effort": "xhigh" }
 ```
 
@@ -133,8 +165,8 @@ A review today stacks 7 layers. Each one has a different home, so each needs its
 4. Create or update the workspace: the clone directory, `[cr-<id>, sandbox-plugins]`, and `code-reviewer` enabled from the arm's alias only.
 5. Print the workspace id and the manifest hash.
 
-Then: `review batch --workspace <ws> --variant <id> --shadow --post-session <read-only session> --mode <mode> --task-prompt-file <file>`.
-The read-only session comes from `sandbox create --read-only-egress --read-repos <repos>` on the same workspace.
+As built, step 2 only checks the clone (the operator checks out `ref`), and step 5 also prints the mode id. The full
+`variant up`, `sandbox create` and `review batch` commands are in the "Slice 2 as built" note at the top.
 
 **Clones:** there are two experiment clones of each review repo, separate from the production store.
 - `exp-A` stays at `main`: the champion.

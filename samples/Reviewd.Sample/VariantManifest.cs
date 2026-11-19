@@ -90,11 +90,19 @@ internal sealed partial record VariantManifest(
     ///     The chat mode the manifest pins, as <c>variant up</c> sends it: the mode file, named <see cref="ModeName"/>,
     ///     with every field it omits set to the host's create default.
     /// </summary>
-    internal async Task<JsonObject> ModePayloadAsync(CancellationToken ct)
+    internal async Task<JsonObject> ModePayloadAsync(CancellationToken ct) =>
+        ModePayload(await File.ReadAllBytesAsync(ModeFile!, ct));
+
+    /// <summary>
+    ///     <see cref="ModePayloadAsync"/> from the mode file's bytes already read, so a hash of the same bytes names
+    ///     exactly this payload.
+    /// </summary>
+    internal JsonObject ModePayload(byte[] bytes)
     {
-        var mode =
-            JsonNode.Parse(await File.ReadAllTextAsync(ModeFile!, ct)) as JsonObject
-            ?? throw new ArgumentException($"Mode file {ModeFile} is not a JSON object.");
+        var mode = LmStreamingS2SClient.ChatModeReplacement(
+            JsonNode.Parse(bytes) as JsonObject
+                ?? throw new ArgumentException($"Mode file {ModeFile} is not a JSON object.")
+        );
         if (mode["name"] is { } named && named.ToString() != ModeName)
         {
             throw new ArgumentException(
@@ -102,7 +110,7 @@ internal sealed partial record VariantManifest(
             );
         }
         mode["name"] = ModeName;
-        return LmStreamingS2SClient.ChatModeReplacement(mode);
+        return mode;
     }
 
     internal static string Sha256Hex(byte[] bytes) => Convert.ToHexStringLower(SHA256.HashData(bytes));
