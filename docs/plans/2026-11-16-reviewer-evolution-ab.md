@@ -36,7 +36,10 @@
 >     "mode": {"name": "code-review-b-007", "file": "modes/b-007.json"},
 >     "taskPrompt": "prompts/b-007.md", "provider": "<provider>", "effort": "xhigh" }
 >   ```
->   The mode file is a JSON chat-mode body (`systemPrompt` and any optional field, in any letter case).
+>   The mode file is a JSON chat-mode body: `systemPrompt` and any optional field the host keeps, with names in any
+>   letter case (`env` and `subAgentModelIntelligenceByType` keys are data and match exactly). `variant up` reads the
+>   saved mode back and refuses a file the host stores otherwise (a field it does not keep, a number written as a
+>   string), because every run would refuse that arm.
 > - Build an arm (preview without `--execute`):
 >   `variant up --manifest <manifest> --experiment <id> --from-workspace <base workspace> --champion <commit> --execute`.
 >   It never moves the clone: it refuses one in `reviewRepo.directory` that is not at `reviewRepo.sha`, or whose

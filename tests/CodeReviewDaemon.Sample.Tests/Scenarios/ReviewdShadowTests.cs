@@ -1886,28 +1886,35 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             };
     }
 
-    // The host stores a mode value as it parses it: a number written as a string comes back as a number, and every run
-    // would refuse the arm, so variant up reads the saved mode back and refuses it, naming the field. A nested name in
-    // another letter case is bound by the host and stored in its own (tiers.Caps.Skill as caps.skill): that arm builds.
+    // The host stores a mode value as it parses it: a number written as a string comes back as a number, and a field or
+    // array element the file lacks would be one the run never asked for; every run would refuse such an arm, so
+    // variant up reads the saved mode back and refuses it, naming the field. A nested name in another letter case is
+    // bound by the host and stored in its own (tiers.Caps.Skill as caps.skill): that arm builds. An env name is data
+    // the host matches exactly, so FOO stored as foo differs.
     [Theory]
-    [InlineData("""{"caps":{"skill":3}}""", """{"caps":{"skill":3}}""", true)]
-    [InlineData("""{"Caps":{"Skill":3}}""", """{"caps":{"skill":3}}""", true)]
-    [InlineData("""{"caps":{"skill":"3"}}""", """{"caps":{"skill":3}}""", false)]
+    [InlineData("tiers", """{"caps":{"skill":3}}""", """{"caps":{"skill":3}}""", true)]
+    [InlineData("tiers", """{"Caps":{"Skill":3}}""", """{"caps":{"skill":3}}""", true)]
+    [InlineData("tiers", """{"caps":{"skill":"3"}}""", """{"caps":{"skill":3}}""", false)]
+    [InlineData("tiers", """{"caps":{"skill":3}}""", """{"caps":{"skill":3,"agent":2}}""", false)]
+    [InlineData("tiers", """{"loaded":["skill:a"]}""", """{"loaded":["skill:a","skill:b"]}""", false)]
+    [InlineData("env", """{"FOO":"1"}""", """{"FOO":"1"}""", true)]
+    [InlineData("env", """{"FOO":"1"}""", """{"foo":"1"}""", false)]
     public async Task Variant_up_refuses_a_mode_the_host_stores_otherwise_than_its_file(
-        string fileTiers,
-        string storedTiers,
+        string field,
+        string fileValue,
+        string storedValue,
         bool builds
     )
     {
         var handler = VariantHost(
-            stored: $$"""{"id":"mode-1","name":"code-review-b-007","systemPrompt":"Review as b-007.","tiers":{{storedTiers}}}"""
+            stored: $$"""{"id":"mode-1","name":"code-review-b-007","systemPrompt":"Review as b-007.","{{field}}":{{storedValue}}}"""
         );
 
         var up = () =>
             VariantUpAsync(
                 handler,
                 new string('2', 40),
-                modeFile: $$"""{"systemPrompt":"Review as b-007.","tiers":{{fileTiers}}}"""
+                modeFile: $$"""{"systemPrompt":"Review as b-007.","{{field}}":{{fileValue}}}"""
             );
 
         if (builds)
@@ -1916,7 +1923,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             return;
         }
         (await up.Should().ThrowAsync<InvalidOperationException>()).WithMessage(
-            "The host stored mode mode-1 differently from * in tiers, so every run of this arm would be refused.*"
+            $"The host stored mode mode-1 differently from * in {field}, so every run of this arm would be refused.*"
         );
         handler
             .Requests.Should()

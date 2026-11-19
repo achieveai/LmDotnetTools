@@ -184,30 +184,43 @@ internal sealed record ShadowArm(
     ///     not hold, ignoring unset fields. Both variant up, after it saves the mode, and every run compare this way.
     /// </summary>
     internal static List<string> ModeDifferences(JsonObject payload, JsonNode stored) =>
-        [.. payload.Where(field => !SameModeValue(field.Value, stored[field.Key])).Select(field => field.Key)];
+        [
+            .. payload
+                .Where(field =>
+                    !SameModeValue(
+                        field.Value,
+                        stored[field.Key],
+                        S_modeMaps.Contains(field.Key) ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase
+                    )
+                )
+                .Select(field => field.Key),
+        ];
+
+    // The mode fields that are maps, not records: their keys are data the host keeps as written and matches exactly
+    // (an env name in another letter case is another variable), so they compare exactly.
+    private static readonly HashSet<string> S_modeMaps = ["env", "subAgentModelIntelligenceByType"];
 
     // The host binds a mode's names in any letter case and stores its own (tiers.Caps.Skill comes back as
     // caps.skill), and may write an unset field as null or leave it out; both mean unset. Values compare exactly, so a
     // number written as a string, or a field the host does not keep, still differs.
-    private static bool SameModeValue(JsonNode? file, JsonNode? stored) =>
+    private static bool SameModeValue(JsonNode? file, JsonNode? stored, StringComparison names) =>
         (file, stored) switch
         {
-            (JsonObject a, JsonObject b) => SameModeFields(a, b),
+            (JsonObject a, JsonObject b) => SameModeFields(a, b, names),
             (JsonArray a, JsonArray b) => a.Count == b.Count
-                && a.Zip(b).All(pair => SameModeValue(pair.First, pair.Second)),
+                && a.Zip(b).All(pair => SameModeValue(pair.First, pair.Second, names)),
             (JsonObject or JsonArray, _) or (_, JsonObject or JsonArray) => false,
             _ => JsonNode.DeepEquals(file, stored),
         };
 
-    private static bool SameModeFields(JsonObject file, JsonObject stored)
+    private static bool SameModeFields(JsonObject file, JsonObject stored, StringComparison names)
     {
         var set = stored.Where(p => p.Value is not null).ToList();
         var written = file.Where(p => p.Value is not null).ToList();
         return written.Count == set.Count
             && written.All(field =>
-                set.Where(p => string.Equals(p.Key, field.Key, StringComparison.OrdinalIgnoreCase)).ToList()
-                    is [var match]
-                && SameModeValue(field.Value, match.Value)
+                set.Where(p => string.Equals(p.Key, field.Key, names)).ToList() is [var match]
+                && SameModeValue(field.Value, match.Value, names)
             );
     }
 

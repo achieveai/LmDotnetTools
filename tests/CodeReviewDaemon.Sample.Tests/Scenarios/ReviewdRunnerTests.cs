@@ -2052,7 +2052,10 @@ public sealed class ReviewdRunnerTests
         void Refuse(string pr)
         {
             if (pr == "1" && ++refusals <= 7)
-                throw new SandboxException(SandboxErrorKind.Unavailable, "operation_concurrency_limit", 503);
+                throw new SandboxException(SandboxErrorKind.Unavailable, "operation_concurrency_limit", 503)
+                {
+                    ErrorCode = "operation_concurrency_limit",
+                };
         }
         batch.Eligibility = pr =>
         {
@@ -2061,12 +2064,42 @@ public sealed class ReviewdRunnerTests
             return BatchFixture.Live(pr);
         };
         if (refusedAt is "resume" or "fresh")
+        {
             batch.OnRun = () => Refuse(batch.Runs[^1].Split(':')[0]);
+        }
         await batch.ExecuteAsync();
         refusals.Should().Be(8);
         batch.Runs.Should().Contain(refusedAt == "resume" ? "1:resume" : "1:fresh");
         batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
         batch.Entries().First()["failures"]!.GetValue<int>().Should().Be(0);
+    }
+
+    // A fresh run's other 503 before its claim (a failed workspace restore, not the gateway's capacity limit) is not
+    // held at once, but each one counts, so the PR is held at the retry cap instead of retrying forever.
+    [Fact]
+    public async Task Batch_counts_a_fresh_runs_other_gateway_503_before_its_claim_and_holds_it_at_the_cap()
+    {
+        using var batch = new BatchFixture(0);
+        var refusals = 0;
+        batch.OnRun = () =>
+        {
+            if (batch.Runs[^1] != "1:fresh")
+            {
+                return;
+            }
+            refusals++;
+            throw new SandboxException(SandboxErrorKind.Unavailable, "workspace restore failed", 503)
+            {
+                ErrorCode = "workspace_restore_failed",
+            };
+        };
+
+        await batch.ExecuteAsync();
+
+        refusals.Should().Be(5, "each refusal counts toward the lane's five retries");
+        var entry = batch.Entries().Single(value => value["pr"]!.GetValue<string>() == "1");
+        entry["status"]!.GetValue<string>().Should().Be("held");
+        entry["capacityRetries"].Should().BeNull("it never backed off as capacity");
     }
 
     [Theory]
