@@ -235,6 +235,10 @@ internal static class ReviewBatch
                 Console.Error.WriteLine(
                     $"Reaper waiting on lapsed-lease slot {skipped.Repo}#{skipped.Pr}/slot{skipped.Slot}: {skipped.Detail}"
                 );
+            foreach (var held in results.Where(result => result.Status == "held"))
+                Console.Error.WriteLine(
+                    $"Reaper holding lapsed-lease slot {held.Repo}#{held.Pr}/slot{held.Slot}: {held.Detail}"
+                );
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {

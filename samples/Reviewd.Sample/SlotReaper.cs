@@ -75,7 +75,9 @@ internal static class SlotReaper
     /// throws, so the caller skips it rather than discarding a running review. With <paramref name="execute"/>
     /// false only quiescence is inspected (the live conversation is restored) and nothing is reset. The abandoned-child
     /// check keeps its readings and warnings in <paramref name="reads"/>, so a caller that passes one log to every
-    /// reclaim reports a ghost once; without one this reclaim starts afresh.
+    /// reclaim reports a ghost once; without one this reclaim starts afresh. A verified review whose artifact commit has
+    /// not completed is held (<see cref="HoldsUnarchivedReview"/>): nothing is touched unless the operator passes
+    /// <paramref name="discardVerified"/>.
     /// </summary>
     internal static async Task<ReclaimResult> ReclaimOneAsync(
         SqliteConnection connection,
@@ -92,12 +94,27 @@ internal static class SlotReaper
         bool force = false,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
         Func<CancellationToken, Task<bool?>>? recheck = null,
-        AbandonedChildProbe.ReadLog? reads = null
+        AbandonedChildProbe.ReadLog? reads = null,
+        bool discardVerified = false
     )
     {
         delay ??= Task.Delay;
         var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/{pr}";
         var threadId = attempt["threadId"]?.GetValue<string>();
+        // The review is on the PR, and its archive is written from the slot a reset discards, so a reset would lose the
+        // archive for good (seen on the ADO runner, MCQdbDEV #11441). The slot stays held, untouched and said on every
+        // sweep; the alarm reports it as held and an operator finishes the commit or discards the slot.
+        if (!discardVerified && HoldsUnarchivedReview(attempt))
+            return new ReclaimResult(
+                repo.DisplayName,
+                pr,
+                slot,
+                threadId,
+                "not-frozen",
+                "held",
+                Detail: $"verified review at {attempt["stage"]?.GetValue<string>()} has no archive commit; held for an "
+                    + "operator to finish the commit or discard the slot (README: A held verified review)."
+            );
         var abandoned = new AbandonedChildProbe($"Reaper {repo.DisplayName}#{pr}/slot{slot}", reads);
         var head =
             attempt["headSha"]?.GetValue<string>()
@@ -265,13 +282,8 @@ internal static class SlotReaper
             // A review whose publication was never verified becomes a failed admission once its slot is reset: the next
             // pick admits the PR again in its own conversation, which checks what already posted (Kay9: review it again
             // rather than skip it until a new push; seen live: 12 open PRs parked that way, and prepares that failed
-            // holding their slot). A verified publication keeps its stage; only its artifact commit is missing. The
-            // runner saves verify-completed before it stores the verify result, so that stage counts as verified too.
-            if (
-                attempt["verifiedPublication"] is null
-                && attempt["stage"]?.GetValue<string>()
-                    is not ("verify-completed" or "commit-pending" or "commit-completed" or "completed-verified")
-            )
+            // holding their slot). A verified publication keeps its stage: it is archived, or an operator discarded it.
+            if (!IsVerified(attempt))
             {
                 attempt["stageBeforeReclaim"] = attempt["stage"]?.DeepClone();
                 attempt["stage"] = "failed-released";
@@ -292,6 +304,19 @@ internal static class SlotReaper
             throw;
         }
     }
+
+    // The runner saves verify-completed before it stores the verify result, so that stage counts as verified too.
+    private static bool IsVerified(JsonObject attempt) =>
+        attempt["verifiedPublication"] is not null
+        || attempt["stage"]?.GetValue<string>()
+            is "verify-completed"
+                or "commit-pending"
+                or "commit-completed"
+                or "completed-verified";
+
+    /// <summary>A verified review whose artifact commit has not completed: the reaper never resets its slot.</summary>
+    internal static bool HoldsUnarchivedReview(JsonObject attempt) =>
+        IsVerified(attempt) && attempt["stage"]?.GetValue<string>() != "completed-verified";
 
     // A live lane renews its lease every step, so a lease lapsed this long means no lane has watched the slot for an
     // hour: only our own bookkeeping still holds it. From here a reclaim forces through any disagreement between the
@@ -556,6 +581,7 @@ internal static class SlotReaper
                     includeUndated = undatedExpired,
                     reclaimed = results.Count(r => r.Status == "reclaimed"),
                     skipped = results.Count(r => r.Status == "skipped"),
+                    held = results.Count(r => r.Status == "held"),
                     results,
                 }
             )

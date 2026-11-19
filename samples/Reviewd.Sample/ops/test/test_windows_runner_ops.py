@@ -107,6 +107,45 @@ class AlarmTests(unittest.TestCase):
                 keys |= {key for key, *_ in found if "restart" in key}
         self.assertEqual({"GitHub:restart-failed"}, keys)
 
+    def test_held_verified_review_is_told_once_as_held_whatever_the_head(self):
+        # The reaper never resets a verified review whose archive commit has not completed (SlotReaper
+        # .HoldsUnarchivedReview). The alarm tells that slot as held on every run, keyed by slot and claim, so a push
+        # that moves the head does not hide it, and the PR is not told again as stuck or unreviewed.
+        head = "a" * 40
+        owner = {"state": "owned", "claimToken": "t1", "repository": "o/r", "prId": "100", "slot": 2,
+                 "leaseExpiresAt": (NOW - datetime.timedelta(minutes=45)).isoformat()}
+        attempt = {"claimToken": "t1", "stage": "commit-pending", "headSha": head, "verifiedPublication": {"comments": 3}}
+
+        def problems(owner=owner, attempt=attempt, snapshot_head=head):
+            rows = {"reviewd/slot-owner/abc": owner, "reviewd/review-attempt/o/r/100": attempt,
+                    "reviewd/pr-snapshot/o/r": {"100": {
+                        "Lifecycle": "Open", "IsDraft": False, "HeadSha": snapshot_head,
+                        "CreatedAt": (NOW - datetime.timedelta(days=1)).isoformat(),
+                        "LastChangedAt": (NOW - datetime.timedelta(hours=3)).isoformat()}}}
+            with sqlite3.connect(self.install / "state" / "reviews.db") as db:
+                db.execute("delete from cache")
+                db.executemany("insert into cache values (?, ?)", [(k, json.dumps(v)) for k, v in rows.items()])
+            with mock.patch.object(self.alarm, "restart_stalled", return_value=None):
+                found = self.alarm.install_problems(self.install, NOW, {})
+            return [(key, kind, detail) for key, _, kind, detail in found if kind in ("held", "stuck", "unreviewed")]
+
+        held = problems()
+        self.assertEqual([("GitHub:held:abc:t1", "held")], [(key, kind) for key, kind, _ in held])
+        self.assertIn("o/r #100 slot 2", held[0][2])
+        self.assertIn("commit-pending", held[0][2])
+        self.assertEqual(held, problems(snapshot_head="b" * 40), "a new push does not hide the held slot")
+        # verify-completed is saved before the verify result, so it counts as verified on its own.
+        self.assertEqual(["held"], [kind for _, kind, _ in problems(attempt={"claimToken": "t1",
+                                                                             "stage": "verify-completed"})])
+        # Not held: never verified (the reaper resets it), a live lease, archived, or a slot already released.
+        for name, changed_owner, changed_attempt in [
+                ("unverified", owner, {"claimToken": "t1", "stage": "verify-pending"}),
+                ("live lease", dict(owner, leaseExpiresAt=(NOW + datetime.timedelta(minutes=5)).isoformat()), attempt),
+                ("archived", owner, dict(attempt, stage="completed-verified")),
+                ("released", dict(owner, state="released"), attempt)]:
+            with self.subTest(name):
+                self.assertNotIn("held", [kind for _, kind, _ in problems(changed_owner, changed_attempt)])
+
     def test_batch_that_fails_at_every_start_alerts_down_after_15_minutes(self):
         # "started" is what the watchdog wrote before the fix; false is what it writes now. Both must alert.
         for written in ("started", False):

@@ -1108,6 +1108,8 @@ internal static class ReviewRunner
         }
         args["adopt"] = receipt["legacyCleanupAdoption"]?.GetValue<bool>() == true;
         var store = new SqliteKvStore(connection);
+        // Set when the save after a successful commit finds the claim gone: a reset released and cleaned the slot.
+        var commitClaimLost = false;
         try
         {
             if (cleanupResume || failedCleanup)
@@ -1288,6 +1290,10 @@ internal static class ReviewRunner
             receipt["stage"] = "completed-verified";
             receipt["reviewedHeadSha"] = args["head"]!.DeepClone();
             receipt["finishedAt"] = DateTimeOffset.UtcNow;
+            // The reset that took the claim already cleaned and released the slot, so the attempt says so and frees its
+            // lane now, instead of reading as owned until a later cleanup is refused.
+            if (commitClaimLost)
+                receipt["cleanupState"] = "released";
             using (var transaction = connection.BeginTransaction())
             {
                 using var completion = connection.CreateCommand();
@@ -1300,7 +1306,13 @@ internal static class ReviewRunner
                 await completion.ExecuteNonQueryAsync(ct);
                 transaction.Commit();
             }
-            await CleanupAsync();
+            if (commitClaimLost)
+                Console.Error.WriteLine(
+                    $"{repo.DisplayName} #{pr}: the commit landed after a reset took slot claim {claimToken}; "
+                        + "kept its result, no cleanup (the reset cleaned the slot)."
+                );
+            else
+                await CleanupAsync();
             Console.WriteLine(receipt.ToJsonString());
             return 0;
         }
@@ -1385,11 +1397,15 @@ internal static class ReviewRunner
             // by the reaper. A lost claim means a sweep reset the slot under this run (its renewals failed for longer
             // than the lease), so the run stops here, before it sends or commits on the reset slot, and does not
             // overwrite the attempt the reset recorded. Only the save after a successful commit goes on: that result
-            // is final, and the cleanup after it refuses the lost claim itself.
-            if (!await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, ct) && claimRequired)
-                throw new SlotClaimLostException(
-                    $"Slot claim {claimToken} was lost, so {receipt["stage"]} was not saved; the slot was reset under this run."
-                );
+            // is final, and no cleanup follows it.
+            if (!await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, ct))
+            {
+                if (claimRequired)
+                    throw new SlotClaimLostException(
+                        $"Slot claim {claimToken} was lost, so {receipt["stage"]} was not saved; the slot was reset under this run."
+                    );
+                commitClaimLost = true;
+            }
             await store.SetAsync(attemptKey, receipt, ct);
         }
         async Task CleanupAsync()

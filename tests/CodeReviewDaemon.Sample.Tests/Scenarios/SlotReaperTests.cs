@@ -680,23 +680,18 @@ public sealed class SlotReaperTests
     }
 
     [Theory]
-    [InlineData("prepare-pending", false, false, "failed-released", true, 2)]
-    [InlineData("review-completed", true, false, "failed-released", true, 2)]
-    // The runner saves verify-completed before the verify result: a crash in between still posted the review.
-    [InlineData("verify-completed", true, false, "verify-completed", false, 1)]
-    [InlineData("commit-pending", true, true, "commit-pending", false, 1)]
+    [InlineData("prepare-pending", false)]
+    [InlineData("review-completed", true)]
+    // Verify had not passed, so nothing counts as posted: the PR is reviewed again.
+    [InlineData("verify-pending", true)]
     public async Task Reaper_turns_a_reset_review_without_verified_publication_into_a_failed_admission(
         string stage,
-        bool sent,
-        bool verified,
-        string expectedStage,
-        bool pickOffersItAgain,
-        int resetsAfter
+        bool sent
     )
     {
         // Seen live: 12 open PRs whose reviews stopped before publication was verified were reset by the reaper and
         // then parked until a new push, and prepares that failed holding their slot were never retried. Kay9: review
-        // them again. A review whose publication was verified posted, so it keeps its stage and is not redone.
+        // them again.
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-reset-retry-{Guid.NewGuid():N}.db");
         try
         {
@@ -713,8 +708,6 @@ public sealed class SlotReaperTests
                 seeded["reviewIdempotencyKey"] = "reviewd-key";
                 seeded["reviewInputId"] = "input-1";
             }
-            if (verified)
-                seeded["verifiedPublication"] = new JsonObject { ["comments"] = 3 };
             await store.SetAsync(attemptKey, seeded, CancellationToken.None);
             var handler = new FakeHttpMessageHandler()
                 .OnJson(HttpMethod.Post, "/freeze", """{"frozen":true}""")
@@ -725,9 +718,61 @@ public sealed class SlotReaperTests
 
             results.Should().ContainSingle(r => r.Status == "reclaimed");
             var attempt = (await store.GetAsync<JsonObject>(attemptKey))!;
-            attempt["stage"]!.GetValue<string>().Should().Be(expectedStage);
-            PrSelection.IsSettled(JsonSerializer.SerializeToElement(attempt)).Should().Be(pickOffersItAgain);
-            attempt["resetCount"]!.GetValue<int>().Should().Be(resetsAfter);
+            attempt["stage"]!.GetValue<string>().Should().Be("failed-released");
+            PrSelection.IsSettled(JsonSerializer.SerializeToElement(attempt)).Should().BeTrue();
+            attempt["resetCount"]!.GetValue<int>().Should().Be(2);
+        }
+        finally
+        {
+            ReviewdSqlitePools.Clear(database);
+            File.Delete(database);
+        }
+    }
+
+    [Theory]
+    // The runner saves verify-completed before the verify result: a crash in between still posted the review.
+    [InlineData("verify-completed", false)]
+    [InlineData("commit-pending", true)]
+    [InlineData("commit-completed", true)]
+    // A commit whose response was lost goes back to verify-pending to replay under its id; it is still verified.
+    [InlineData("verify-pending", true)]
+    public async Task Reaper_holds_a_verified_review_whose_archive_commit_has_not_completed(string stage, bool verified)
+    {
+        // Seen on the ADO runner (MCQdbDEV #11441): the reaper reset a verified review before its archive commit, and
+        // nothing could write the archive after the reset. Such a slot stays held, untouched, with a reason the batch
+        // logs on every sweep, until an operator finishes the commit or discards it.
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-held-verified-{Guid.NewGuid():N}.db");
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await connection.OpenAsync();
+            var (ownerKey, store) = await SeedLapsedClaimAsync(connection, 5);
+            var attemptKey =
+                $"reviewd/review-attempt/{PrCommands.ParseRepo("O365Exchange/Weve_DA/Nova").NormalizedKey}/100";
+            var seeded = (await store.GetAsync<JsonObject>(attemptKey))!;
+            seeded["stage"] = stage;
+            seeded["reviewInputId"] = "input-1";
+            seeded["confirmationInputId"] = "input-2";
+            if (verified)
+                seeded["verifiedPublication"] = new JsonObject { ["comments"] = 3 };
+            await store.SetAsync(attemptKey, seeded, CancellationToken.None);
+            var ownerBefore = (await store.GetAsync<JsonObject>(ownerKey))!.ToJsonString();
+            var attemptBefore = (await store.GetAsync<JsonObject>(attemptKey))!.ToJsonString();
+            // A host that would answer every call: the hold must come before any of them.
+            var handler = new FakeHttpMessageHandler()
+                .OnJson(HttpMethod.Post, "/freeze", """{"frozen":true}""")
+                .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+                .OnJson(HttpMethod.Get, "/subagents?recursive=true", EmptyTree);
+
+            var (results, discards) = await SweepAsync(connection, handler);
+
+            var held = results.Should().ContainSingle().Which;
+            held.Status.Should().Be("held");
+            held.Detail.Should().Contain(stage).And.Contain("operator");
+            discards.Should().Be(0, "the reset would discard the slot the archive is written from");
+            handler.Requests.Should().BeEmpty("a held slot is not even frozen");
+            (await store.GetAsync<JsonObject>(ownerKey))!.ToJsonString().Should().Be(ownerBefore);
+            (await store.GetAsync<JsonObject>(attemptKey))!.ToJsonString().Should().Be(attemptBefore);
         }
         finally
         {
@@ -1146,20 +1191,21 @@ public sealed class SlotReaperTests
     }
 
     [Fact]
-    public async Task A_verified_review_stranded_by_a_head_move_frees_its_slot_without_being_redone()
+    public async Task An_operator_discard_frees_a_held_verified_review_without_it_being_redone()
     {
         // Seen on the ADO runner (MCQdbDEV #11441): the review posted and verified, the artifact commit was deferred
-        // (verify-pending), and the PR head moved before it resumed. The attempt can never resume and its native
-        // marker no longer matched, so a plain reclaim refused. Once the lease has been lapsed 30 minutes the reaper
-        // forces the slot back, keeps the verified stage, and the new head is admitted as a fresh review.
+        // (verify-pending), and the PR head moved before it resumed, so its native marker no longer matched. The reaper
+        // holds such a slot. An operator who gives up on the archive discards it with reclaim-slot --discard-verified:
+        // the slot is forced back as the sweep would force it, the verified stage is kept, and the new head is admitted
+        // as a fresh review.
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-stranded-{Guid.NewGuid():N}.db");
         try
         {
             using var connection = PrThreadBindings.Connection(database);
             await connection.OpenAsync();
+            var repo = PrCommands.ParseRepo("O365Exchange/Weve_DA/Nova");
             var (ownerKey, store) = await SeedLapsedClaimAsync(connection, 0);
-            var attemptKey =
-                $"reviewd/review-attempt/{PrCommands.ParseRepo("O365Exchange/Weve_DA/Nova").NormalizedKey}/100";
+            var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/100";
             var seeded = (await store.GetAsync<JsonObject>(attemptKey))!;
             seeded["stage"] = "verify-pending";
             seeded["reviewInputId"] = "input-1";
@@ -1171,20 +1217,76 @@ public sealed class SlotReaperTests
                 .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
                 .OnJson(HttpMethod.Get, "/subagents?recursive=true", Tree("completed"));
             var calls = new List<JsonObject>();
-
-            var (results, _) = await SweepAsync(
+            var (swept, _) = await SweepAsync(connection, handler, calls);
+            swept.Should().ContainSingle(r => r.Status == "held");
+            calls.Should().BeEmpty();
+            var options = CliOptions.Parse([
+                "review",
+                "reclaim-slot",
+                "--repo",
+                repo.DisplayName,
+                "--pr",
+                "100",
+                "--slot",
+                "0",
+                "--db",
+                database,
+                "--workspace",
+                "workspace",
+                "--session",
+                "session",
+                "--discard-verified",
+                "--execute",
+            ]);
+            var (held, token, _) = await SlotReaper.PrepareAsync(
                 connection,
-                handler,
-                calls,
-                ["owner marker held by claim other for PR 100"]
+                repo,
+                "100",
+                0,
+                "workspace",
+                CancellationToken.None
+            );
+            using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+
+            var result = await SlotReaper.ReclaimOneAsync(
+                connection,
+                new LmStreamingS2SClient(http, null, null, null),
+                (_, args, _, _) =>
+                {
+                    calls.Add(args.DeepClone().AsObject());
+                    return Task.FromResult(
+                        new JsonObject
+                        {
+                            ["claimToken"] = args["claimToken"]!.DeepClone(),
+                            ["cleanBaselineVerified"] = true,
+                            ["forced"] = new JsonArray("owner marker held by claim other for PR 100"),
+                        }
+                    );
+                },
+                repo,
+                "100",
+                0,
+                "workspace",
+                held!,
+                token!,
+                execute: options.Has("execute"),
+                CancellationToken.None,
+                await SlotReaper.IsForceDueAsync(
+                    connection,
+                    "workspace",
+                    repo,
+                    0,
+                    token!,
+                    DateTimeOffset.UtcNow,
+                    CancellationToken.None
+                ),
+                delay: (_, _) => Task.CompletedTask,
+                discardVerified: options.Has("discard-verified")
             );
 
             calls.Should().ContainSingle().Which["force"]!.GetValue<bool>().Should().BeTrue();
-            results
-                .Should()
-                .ContainSingle(r => r.Status == "reclaimed")
-                .Which.Detail.Should()
-                .Be("forced: owner marker held by claim other for PR 100");
+            result.Status.Should().Be("reclaimed");
+            result.Detail.Should().Be("forced: owner marker held by claim other for PR 100");
             (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("released");
             var attempt = (await store.GetAsync<JsonObject>(attemptKey))!;
             attempt["stage"]!.GetValue<string>().Should().Be("verify-pending");

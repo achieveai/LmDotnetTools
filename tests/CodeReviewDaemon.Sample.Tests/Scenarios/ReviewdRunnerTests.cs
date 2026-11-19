@@ -5819,8 +5819,8 @@ public sealed class ReviewdRunnerTests
     }
 
     // The sweep resets the slot while the commit runs, and the commit then lands. Its result is final: the attempt and
-    // the review-run row both record the verified archive, so its head is never reviewed again. Only the cleanup after
-    // it is refused, since the reset already cleaned the slot and released the owner.
+    // the review-run row both record the verified archive, so its head is never reviewed again. No cleanup follows, since
+    // the reset already cleaned the slot and released the owner, and the attempt reads as released so its lane is free.
     [Fact]
     public async Task A_commit_that_lands_after_its_claim_was_lost_keeps_its_result_and_skips_cleanup()
     {
@@ -5921,13 +5921,15 @@ public sealed class ReviewdRunnerTests
                     _ => Task.CompletedTask
                 );
 
-            await run.Should().ThrowAsync<InvalidOperationException>().WithMessage("*Slot claim changed*");
+            (await run()).Should().Be(0, "the archive landed, so the review is done");
             phases.Should().EndWith("commit").And.NotContain("cleanup", "the reset already cleaned the slot");
             foreach (var key in new[] { attemptKey, $"reviewd/review-run/{repo.NormalizedKey}/17" })
             {
                 var row = (await store.GetAsync<JsonObject>(key))!;
                 row["stage"]!.GetValue<string>().Should().Be("completed-verified", key);
                 row["artifactCommit"]!["commit"]!.GetValue<string>().Should().Be(new string('c', 40), key);
+                // Owned would keep the lane from being reused until a later cleanup was refused.
+                row["cleanupState"]!.GetValue<string>().Should().Be("released", key);
             }
             (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("released");
         }

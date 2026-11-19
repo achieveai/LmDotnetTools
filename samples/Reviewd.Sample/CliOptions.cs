@@ -95,7 +95,17 @@ internal sealed class CliOptions
                 "execute",
             ],
             "review reconcile-slot" => ["repo", "pr", "db", "evidence", "execute"],
-            "review reclaim-slot" => ["repo", "pr", "slot", "db", "workspace", "session", "execute"],
+            "review reclaim-slot" =>
+            [
+                "repo",
+                "pr",
+                "slot",
+                "db",
+                "workspace",
+                "session",
+                "execute",
+                "discard-verified",
+            ],
             "review reap-slots" => ["db", "workspace", "session", "include-undated", "execute"],
             "review capacity" => ["repos", "db", "workspace", "session", "evidence"],
             "review slots" => ["repo", "repos", "db", "workspace", "slots"],
@@ -173,7 +183,7 @@ internal sealed class CliOptions
             }
 
             var value = "true";
-            if (name is not ("wait" or "execute" or "resume" or "cleanup-only" or "rejudge"))
+            if (name is not ("wait" or "execute" or "resume" or "cleanup-only" or "rejudge" or "discard-verified"))
             {
                 if (++i >= commandArgs.Length || commandArgs[i].StartsWith("--", StringComparison.Ordinal))
                 {

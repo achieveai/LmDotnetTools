@@ -82,7 +82,9 @@ internal static class ReclaimSlotCommand
             execute,
             ct,
             force,
-            recheck: recheck
+            recheck: recheck,
+            // Only an operator discards a verified review that has no archive commit; the review stays on the PR.
+            discardVerified: options.Has("discard-verified")
         );
         Console.WriteLine(JsonSerializer.Serialize(result));
         return 0;
