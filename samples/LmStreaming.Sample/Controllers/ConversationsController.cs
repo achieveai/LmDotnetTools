@@ -482,7 +482,8 @@ public class ConversationsController(
                 var propertiesBuilder =
                     existing?.Properties?.ToBuilder() ?? ImmutableDictionary.CreateBuilder<string, object>();
 
-                propertiesBuilder[MultiTurnAgentPool.ProviderPropertyKey] = request.ProviderId;
+                // Stored trimmed: every later reader (the pool, the release route) sees the id that was checked.
+                propertiesBuilder[MultiTurnAgentPool.ProviderPropertyKey] = request.ProviderId.Trim();
                 propertiesBuilder[MultiTurnAgentPool.WorkspacePropertyKey] = request.WorkspaceId;
                 propertiesBuilder[MultiTurnAgentPool.ModePropertyKey] = request.ModeId;
                 if (workingDirectory is not null)
@@ -2474,31 +2475,50 @@ public class ConversationsController(
             }
         }
 
-        // The pooled agent holds the sandbox's session id in its tools, so it goes first. Busy covers a run in
+        // The pooled agent holds the sandbox's session id in its tools, so it goes first, and only when the idle
+        // sweep would unload it too: a rebuilt agent loses work only this process holds. Busy covers a run in
         // progress as well as accepted input no run has taken yet, decided under the pool's lock.
-        if (
-            agentPool.TryGetHandoffState(threadId, out var handoff)
-            && await agentPool.TryReleaseIdleAgentAsync(threadId, handoff)
-                == MultiTurnAgentPool.AgentReleaseOutcome.Busy
-        )
+        if (agentPool.TryGetHandoffState(threadId, out var handoff))
         {
-            return ReleaseWhileRunning(threadId, "the conversation has work in hand");
+            switch (await agentPool.TryUnloadAgentAsync(threadId, handoff, ct))
+            {
+                case MultiTurnAgentPool.AgentReleaseOutcome.Busy:
+                    return ReleaseWhileRunning(threadId, "the conversation has work in hand");
+                case MultiTurnAgentPool.AgentReleaseOutcome.HoldsWork:
+                    return ReleaseWhileRunning(threadId, HoldsWorkReason);
+                case MultiTurnAgentPool.AgentReleaseOutcome.Released:
+                case MultiTurnAgentPool.AgentReleaseOutcome.NotPooled:
+                case MultiTurnAgentPool.AgentReleaseOutcome.Replaced:
+                default:
+                    // Gone, or already replaced: TryRunWhileNotPooled below refuses a replacement.
+                    break;
+            }
         }
 
         Func<Task>? commitMove = movedTo is null
             ? null
-            : () =>
-                store.UpdateMetadataAsync(
-                    threadId,
-                    existing =>
-                        existing! with
-                        {
-                            Properties = (existing.Properties ?? ImmutableDictionary<string, object>.Empty)
-                                .SetItem(ConversationWorkingDirectory.PropertyKey, movedTo)
-                                .SetItem(ConversationDedicatedSandbox.PropertyKey, true),
-                        },
-                    CancellationToken.None
-                );
+            : async () =>
+            {
+                try
+                {
+                    await store.UpdateMetadataAsync(
+                        threadId,
+                        existing =>
+                            existing! with
+                            {
+                                Properties = (existing.Properties ?? ImmutableDictionary<string, object>.Empty)
+                                    .SetItem(ConversationWorkingDirectory.PropertyKey, movedTo)
+                                    .SetItem(ConversationDedicatedSandbox.PropertyKey, true),
+                            },
+                        CancellationToken.None
+                    );
+                }
+                catch (Exception ex)
+                {
+                    // Told apart from a gateway failure below: the sandbox is already gone here.
+                    throw new MoveNotStoredException(ex);
+                }
+            };
         Task? release = null;
         if (
             !agentPool.TryRunWhileNotPooled(
@@ -2540,6 +2560,27 @@ public class ConversationsController(
                 }
             );
         }
+        catch (MoveNotStoredException ex)
+        {
+            // The DELETE was confirmed, then the store refused the new directory. The thread keeps its old one and
+            // owns no sandbox, so a retry deletes nothing and stores the move again.
+            logger.LogError(
+                ex.InnerException,
+                "Released the dedicated sandbox of thread {ThreadId}, but storing its move to {MovedTo} failed",
+                threadId,
+                movedTo
+            );
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new
+                {
+                    error = "sandbox_release_failed",
+                    code = "sandbox_release_failed",
+                    detail = "The sandbox was deleted, but the new working directory was not stored. Retry the release.",
+                    threadId,
+                }
+            );
+        }
 
         var workingDirectory =
             await ConversationWorkingDirectory.ReadAsync(store, threadId)
@@ -2553,6 +2594,15 @@ public class ConversationsController(
         );
         return Ok(new ReleaseSandboxResponse { WorkingDirectoryRelPath = workingDirectory });
     }
+
+    /// <summary>The release route's commit could not store the move after the sandbox was confirmed gone.</summary>
+    private sealed class MoveNotStoredException(Exception inner)
+        : Exception("The conversation's new working directory could not be stored.", inner);
+
+    /// <summary>The release route's 409 reason when the agent is idle but holds work a rebuild would lose.</summary>
+    internal const string HoldsWorkReason =
+        "the conversation holds work only this host keeps: a parked or unanswered call, an armed wait, a sub-agent "
+        + "or a background task";
 
     private ConflictObjectResult ReleaseWhileRunning(string threadId, string reason)
     {
@@ -2651,6 +2701,12 @@ public class ConversationsController(
     /// describes the source's own runs and starts empty on the fork. The headless flag
     /// (<see cref="ConversationClientTools.PropertyKey"/>) is deliberately not carried: a fork is a new
     /// conversation someone continues by hand, so it gets the client tools back.
+    /// <para>
+    /// The sandbox switches are carried too: the working directory, the dedicated flag and read-only egress. A
+    /// fork of a dedicated thread is dedicated as well, so it gets a sandbox of its own, jailed to the same
+    /// directory, and never shares its source's sandbox (the sandbox key includes the owning thread). Sandboxes are
+    /// never shared; the workspace and its files are.
+    /// </para>
     /// </summary>
     private static readonly string[] ForkCarriedPropertyKeys =
     [
@@ -2661,6 +2717,9 @@ public class ConversationsController(
         ConversationSubAgentModel.PropertyKey,
         ConversationSandboxEnv.PropertyKey,
         ConversationRootReasoningEffort.PropertyKey,
+        ConversationWorkingDirectory.PropertyKey,
+        ConversationDedicatedSandbox.PropertyKey,
+        ConversationReadOnlyEgress.PropertyKey,
     ];
 
     /// <summary>
@@ -3666,6 +3725,7 @@ public class ConversationsController(
 
             case MultiTurnAgentPool.AgentReleaseOutcome.NotPooled:
             case MultiTurnAgentPool.AgentReleaseOutcome.Replaced:
+            case MultiTurnAgentPool.AgentReleaseOutcome.HoldsWork: // only TryUnloadAgentAsync answers it
             default:
                 // Either way the entry this method reasoned about is gone, and the next caller through
                 // gets its own look at whatever is there now.

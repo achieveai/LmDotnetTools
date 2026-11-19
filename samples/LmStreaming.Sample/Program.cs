@@ -1155,6 +1155,12 @@ try
                     && !caps.BrowserDebugTools;
                 var sandboxRegistry = sp.GetRequiredService<SandboxSessionRegistry>();
                 var sandboxLifetime = sp.GetRequiredService<SandboxGatewayLifetime>();
+                // A sandbox release that moves this thread (POST sandbox/release) commits its new directory and
+                // dedicated flag only after the old sandbox is gone. Wait for it before reading either, so an agent
+                // admitted during the move builds in the new directory. This covers a shared thread becoming
+                // dedicated too: it owns no sandbox yet, but the move is keyed by the thread. Sync-over-async like
+                // the reads below: the pool's agent-factory delegate is synchronous (GetOrCreateAgent is sync).
+                sandboxRegistry.WaitForOwnerMoveAsync(threadId).GetAwaiter().GetResult();
                 var requestedWorkingDirectory = ConversationWorkingDirectory
                     .ReadAsync(sp.GetRequiredService<IConversationStore>(), threadId)
                     .GetAwaiter()

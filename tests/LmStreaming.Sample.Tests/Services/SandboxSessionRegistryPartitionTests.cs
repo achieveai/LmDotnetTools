@@ -255,12 +255,7 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
         var (registry, calls) = CreateRegistry();
         var aRef = OwnedRef("thread-a", "PRs/r-7");
         var a = await registry.GetOrCreateSessionAsync(aRef);
-        Logger.LogInformation(
-            "Owner {Owner} in {Directory} has sandbox {SessionId}",
-            "thread-a",
-            "PRs/r-7",
-            a.SessionId
-        );
+        Logger.LogDebug("Owner {Owner} in {Directory} has sandbox {SessionId}", "thread-a", "PRs/r-7", a.SessionId);
 
         calls.FailDeletes = true;
         var refused = () => registry.ReleaseOwnedSessionsAsync("thread-a");
@@ -430,11 +425,126 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
         }
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_sandbox_a_refused_owner_release_left_retiring_is_stopped_by_a_workspace_release_or_destroy(
+        bool release
+    )
+    {
+        // A refused DELETE leaves the owner's sandbox out of its slot but still running on the workspace. A backup
+        // restore needs the workspace free, so the workspace's own release must find it there.
+        var (registry, calls) = CreateRegistry();
+        var a = await registry.GetOrCreateSessionAsync(OwnedRef("thread-a", "PRs/r-7"));
+        calls.FailDeletes = true;
+        await registry
+            .ReleaseOwnedSessionsAsync("thread-a")
+            .Invoking(task => task)
+            .Should()
+            .ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
+        Logger.LogDebug(
+            "After the refused release: slot {Slot}, tracked {Tracked}",
+            registry.TryGetExistingSession("ws-1", false, "thread-a")?.SessionId,
+            registry.TryGetSessionById(a.SessionId, out _)
+        );
+        registry.TryGetExistingSession("ws-1", false, "thread-a").Should().BeNull("it is retiring, out of its slot");
+        registry.TryGetSessionById(a.SessionId, out _).Should().BeTrue("it is still tracked");
+        calls.FailDeletes = false;
+
+        if (release)
+        {
+            await registry.ReleaseWorkspaceSessionsAsync("ws-1", DefaultAppId);
+        }
+        else
+        {
+            await registry.DestroyWorkspaceSessionAsync("ws-1");
+        }
+
+        LogCalls(calls);
+        calls.DeletedSessionIds.Should().Equal(a.SessionId);
+        registry.TryGetSessionById(a.SessionId, out _).Should().BeFalse();
+        await registry.ReleaseOwnedSessionsAsync("thread-a");
+        calls.DeleteAttempts.Should().Be(2, "nothing is left for the owner's next release");
+    }
+
+    [Theory]
+    [InlineData("the DELETE is held")]
+    [InlineData("the owner has no sandbox and the commit is held")]
+    [InlineData("the gateway refuses the DELETE")]
+    public async Task A_send_admitted_while_a_move_commits_builds_in_the_directory_the_move_leaves(string when)
+    {
+        // What the host does for a turn: wait for the owner's move, read the stored directory, then resolve the
+        // sandbox with it. A move that commits during the wait must be what the send reads.
+        var (registry, calls) = CreateRegistry();
+        var stored = "PRs/r-7";
+        var ownsSandbox = when != "the owner has no sandbox and the commit is held";
+        var refused = when == "the gateway refuses the DELETE";
+        SandboxSession? old = null;
+        if (ownsSandbox)
+        {
+            old = await registry.GetOrCreateSessionAsync(OwnedRef("thread-a", stored));
+        }
+
+        var deleteGate = calls.HoldDeletes();
+        var commitGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var commitStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = registry.ReleaseOwnedSessionsAsync(
+            "thread-a",
+            async () =>
+            {
+                commitStarted.SetResult();
+                await commitGate.Task;
+                stored = "PRs/r-9";
+            }
+        );
+        if (ownsSandbox)
+        {
+            await calls.WaitForDeleteStartedAsync();
+        }
+        else
+        {
+            await commitStarted.Task.WaitAsync(Patience);
+        }
+
+        var send = SendAsync();
+        await Task.Delay(50);
+        Logger.LogDebug("Send done before the move ended ({When}): {Done}", when, send.IsCompleted);
+        send.IsCompleted.Should().BeFalse("the send waits for the move");
+        calls.FailDeletes = refused;
+        deleteGate.SetResult();
+        commitGate.SetResult();
+        if (refused)
+        {
+            await release
+                .Invoking(task => task.WaitAsync(Patience))
+                .Should()
+                .ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
+        }
+        else
+        {
+            await release.WaitAsync(Patience);
+        }
+
+        var session = await send.WaitAsync(Patience);
+        LogCalls(calls);
+
+        var expected = refused ? "PRs/r-7" : "PRs/r-9";
+        session.WorkspaceWorkingDir.Should().Be(expected, "the send reads what the move left stored");
+        WorkingDirSent(calls.PostBodies[^1]).Should().Be(expected);
+        session.SessionId.Should().NotBe(old?.SessionId, "a sandbox being released is never handed out again");
+
+        async Task<SandboxSession> SendAsync()
+        {
+            await registry.WaitForOwnerMoveAsync("thread-a");
+            return await registry.GetOrCreateSessionAsync(OwnedRef("thread-a", stored));
+        }
+    }
+
     private static WorkspaceRef OwnedRef(string owner, string directory) =>
         new("ws-1", WorkingDir: directory, OwnerThreadId: owner);
 
     private void LogCalls(CallLog calls) =>
-        Logger.LogInformation(
+        Logger.LogDebug(
             "Gateway saw creates {Creates}, delete attempts {DeleteAttempts} (at most {MaxInFlight} at once), "
                 + "confirmed deletes {Deletes}",
             calls.PostCount,
@@ -495,7 +605,7 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
 
         var registryHandler = new DeleteGatingHandler(
             calls,
-            req =>
+            async req =>
             {
                 var path = req.RequestUri!.AbsolutePath;
 
@@ -504,7 +614,7 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
                 if (req.Method == HttpMethod.Post && path.EndsWith("/sandboxes", StringComparison.Ordinal))
                 {
                     var appId = req.Headers.GetValues("X-Sbx-App-Id").Single();
-                    var ordinal = calls.RecordPost(appId, req.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+                    var ordinal = calls.RecordPost(appId, await req.Content!.ReadAsStringAsync());
                     var sessionId = $"sess-{ordinal}";
                     calls.MarkCreated(sessionId);
                     // Echoes a requested working directory, as the gateway does: the SDK refuses a create whose
@@ -733,7 +843,7 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
     }
 
     /// <summary>Answers like <see cref="StubHandler"/>, but lets a test hold DELETEs and count them.</summary>
-    private sealed class DeleteGatingHandler(CallLog calls, Func<HttpRequestMessage, HttpResponseMessage> respond)
+    private sealed class DeleteGatingHandler(CallLog calls, Func<HttpRequestMessage, Task<HttpResponseMessage>> respond)
         : HttpMessageHandler
     {
         protected override async Task<HttpResponseMessage> SendAsync(
@@ -743,13 +853,13 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
         {
             if (request.Method != HttpMethod.Delete)
             {
-                return respond(request);
+                return await respond(request);
             }
 
             try
             {
                 await calls.BeginDeleteAsync();
-                return respond(request);
+                return await respond(request);
             }
             finally
             {

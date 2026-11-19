@@ -328,6 +328,14 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
 
         /// <summary>The entry has work in hand: a run in progress, or an accepted-but-unstarted input.</summary>
         Busy,
+
+        /// <summary>
+        /// The entry is not running, but holds work whose runtime half lives only in this process, so the idle
+        /// sweep would keep it loaded too: a parked or unanswered deferred call, an armed <c>Wait</c>, a live
+        /// sub-agent, or a background task that has not reported its end. Returned only by
+        /// <see cref="TryUnloadAgentAsync"/>. Nothing was disposed.
+        /// </summary>
+        HoldsWork,
     }
 
     /// <summary>
@@ -1692,6 +1700,33 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// </summary>
     internal Func<string, Task>? BeforeUnloadLockForTest { get; set; }
 
+    /// <summary>
+    /// The idle sweep's unlocked read: whether <paramref name="loop"/> has a run in progress, a background task
+    /// that has not reported its end, or live work of its own or in its sub-agent tree. Re-taken under the lock by
+    /// <see cref="HoldsLiveWorkUnderLock"/>. See <see cref="UnloadIdleAgentsAsync"/> for why each counts.
+    /// </summary>
+    private async ValueTask<bool> HoldsLiveWorkAsync(
+        string threadId,
+        AgentEntry entry,
+        MultiTurnAgentLoop loop,
+        CancellationToken ct
+    ) =>
+        IsEntryInProgress(entry)
+        || _bindingSink?.HasPendingBackgroundTask(threadId) == true
+        || await loop.HasLiveWorkAsync(ct).ConfigureAwait(false);
+
+    /// <summary>
+    /// The idle sweep's decision under the per-thread lock. MUST be called under that lock. The loop's own work
+    /// and the background task are read again, as a run that slipped in after <see cref="HoldsLiveWorkAsync"/> may
+    /// have left either behind. Sub-agents are quiesced last, as that closes them to new messages: one accepted
+    /// after the unlocked read would otherwise be killed by the disposal that follows a <see langword="false"/>.
+    /// </summary>
+    private bool HoldsLiveWorkUnderLock(string threadId, AgentEntry entry, MultiTurnAgentLoop loop) =>
+        IsBusyUnderLock(entry)
+        || loop.HasOwnLiveWork
+        || _bindingSink?.HasPendingBackgroundTask(threadId) == true
+        || (loop.SubAgentManager is { } manager && !manager.TryQuiesce());
+
     private static bool IsEntryInProgress(AgentEntry entry)
     {
         var hasRunId = !string.IsNullOrWhiteSpace(entry.Agent.CurrentRunId);
@@ -2102,12 +2137,50 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     /// being torn down.
     /// </para>
     /// </remarks>
-    public async ValueTask<AgentReleaseOutcome> TryReleaseIdleAgentAsync(string threadId, AgentHandoffState observed)
+    public ValueTask<AgentReleaseOutcome> TryReleaseIdleAgentAsync(string threadId, AgentHandoffState observed)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrEmpty(threadId);
+        ArgumentNullException.ThrowIfNull(observed);
+        return ReleaseObservedEntryAsync(threadId, observed, heldWorkSeen: false, checkHeldWork: false);
+    }
+
+    /// <summary>
+    /// As <see cref="TryReleaseIdleAgentAsync"/>, but releases the entry only when the idle sweep
+    /// (<see cref="UnloadIdleAgentsAsync"/>) would unload it too, and answers
+    /// <see cref="AgentReleaseOutcome.HoldsWork"/> when the sweep would keep it for work only this process holds.
+    /// </summary>
+    /// <remarks>
+    /// For a caller that unloads a conversation to change what it is rebuilt from (its sandbox): an agent rebuilt
+    /// from the store loses that work, exactly as after a host restart. The work is read with the sweep's own two
+    /// checks (<see cref="HoldsLiveWorkAsync"/> before the lock, <see cref="HoldsLiveWorkUnderLock"/> under it).
+    /// Agent types other than <see cref="MultiTurnAgentLoop"/> expose no such work, so for them this is
+    /// <see cref="TryReleaseIdleAgentAsync"/>.
+    /// </remarks>
+    public async ValueTask<AgentReleaseOutcome> TryUnloadAgentAsync(
+        string threadId,
+        AgentHandoffState observed,
+        CancellationToken ct = default
+    )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrEmpty(threadId);
         ArgumentNullException.ThrowIfNull(observed);
 
+        var heldWorkSeen =
+            observed.EntryToken is AgentEntry { Agent: MultiTurnAgentLoop loop } entry
+            && await HoldsLiveWorkAsync(threadId, entry, loop, ct).ConfigureAwait(false);
+        return await ReleaseObservedEntryAsync(threadId, observed, heldWorkSeen, checkHeldWork: true)
+            .ConfigureAwait(false);
+    }
+
+    private async ValueTask<AgentReleaseOutcome> ReleaseObservedEntryAsync(
+        string threadId,
+        AgentHandoffState observed,
+        bool heldWorkSeen,
+        bool checkHeldWork
+    )
+    {
         AgentEntry removed;
         var lockObj = _creationLocks.GetOrAdd(threadId, static _ => new object());
         lock (lockObj)
@@ -2125,6 +2198,15 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             if (IsBusyUnderLock(entry))
             {
                 return AgentReleaseOutcome.Busy;
+            }
+
+            if (
+                checkHeldWork
+                && entry.Agent is MultiTurnAgentLoop loop
+                && (heldWorkSeen || HoldsLiveWorkUnderLock(threadId, entry, loop))
+            )
+            {
+                return AgentReleaseOutcome.HoldsWork;
             }
 
             // The keyed overload, so a removal that lost a race to a concurrent RemoveAgentAsync
@@ -2249,11 +2331,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             // Observed on every sweep, not only once the clock runs out, so the idle window counts from
             // when the work ENDED (to within one sweep). Otherwise a run that kept the clock going would
             // be unloaded the moment it finished, under a client about to send its next turn.
-            if (
-                IsEntryInProgress(entry)
-                || _bindingSink?.HasPendingBackgroundTask(threadId) == true
-                || await loop.HasLiveWorkAsync(ct).ConfigureAwait(false)
-            )
+            if (await HoldsLiveWorkAsync(threadId, entry, loop, ct).ConfigureAwait(false))
             {
                 MarkUsed(entry);
                 continue;
@@ -2281,16 +2359,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
                     continue;
                 }
 
-                // The loop's own work and the background task are read again here, as a run that slipped in
-                // after the reads may have left either behind. Quiesced last, as it closes the sub-agents to
-                // new messages: one accepted after the reads above would otherwise be killed by the disposal
-                // below.
-                if (
-                    IsBusyUnderLock(entry)
-                    || loop.HasOwnLiveWork
-                    || _bindingSink?.HasPendingBackgroundTask(threadId) == true
-                    || (loop.SubAgentManager is { } manager && !manager.TryQuiesce())
-                )
+                if (HoldsLiveWorkUnderLock(threadId, entry, loop))
                 {
                     MarkUsed(entry);
                     continue;

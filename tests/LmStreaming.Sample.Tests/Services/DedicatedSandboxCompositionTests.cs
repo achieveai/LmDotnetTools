@@ -220,6 +220,25 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task A_padded_provider_id_is_checked_as_the_pool_reads_it_and_stored_trimmed()
+    {
+        // The pool trims a provider id before it looks it up, so " codex " runs as codex, which cannot enforce a
+        // directory. The check must see it the same way, and what is stored must be what was checked.
+        await using var fixture = await StartAsync();
+
+        using var cli = await fixture.ProvisionOverHttpAsync("PRs/r-7", dedicated: true, providerId: " codex ");
+        using var padded = await fixture.ProvisionOverHttpAsync("PRs/r-8", dedicated: true, providerId: " test ");
+
+        cli.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await cli.Content.ReadAsStringAsync()).Should().Contain("working_directory_invalid");
+        padded.StatusCode.Should().Be(HttpStatusCode.OK);
+        var threads = await fixture.Store.ListThreadsAsync();
+        threads.Should().ContainSingle("the refused provision stores nothing");
+        var metadata = await fixture.Store.LoadMetadataAsync(threads[0].ThreadId);
+        metadata!.Properties![MultiTurnAgentPool.ProviderPropertyKey].ToString().Should().Be("test");
+    }
+
+    [Fact]
     public async Task The_capabilities_route_reports_dedicated_sandboxes_on_a_host_with_a_sandbox_registry()
     {
         await using var fixture = await StartAsync();
@@ -275,7 +294,7 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         fixture.Gateway.FailDeletes = true;
         gate.SetResult();
         using var refused = await post;
-        Logger.LogInformation(
+        Logger.LogDebug(
             "Release of {ThreadId} answered {Status} after {Attempts} DELETE attempt(s)",
             a,
             refused.StatusCode,
@@ -300,6 +319,132 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         fixture.Gateway.Deletes.Should().BeEquivalentTo([old, fixture.Gateway.Creates[1].SessionId]);
         _ = fixture.BuildAgent(a);
         WorkingDir(fixture.Gateway.Creates[2].Body).Should().Be("PRs/r-9");
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_turn_admitted_while_a_release_moves_the_thread_builds_in_the_new_directory(bool wasDedicated)
+    {
+        // The route unloads the agent, then deletes the sandbox and only then stores the new directory. A turn that
+        // arrives in between builds a new agent at once; it must read what the release commits, not what it replaces.
+        await using var fixture = await StartAsync();
+        string a;
+        if (wasDedicated)
+        {
+            a = await fixture.ProvisionAsync("PRs/r-7");
+            _ = fixture.BuildAgent(a);
+        }
+        else
+        {
+            // A shared-sandbox thread becoming dedicated. It also owns a sandbox here, so the release has a DELETE
+            // to hold while the turn arrives.
+            a = await fixture.ProvisionAsync(null, dedicated: false);
+            _ = fixture.BuildAgent(a);
+            _ = await fixture.Registry.GetOrCreateSessionAsync(
+                new WorkspaceRef(fixture.WorkspaceId, WorkingDir: "PRs/r-7", OwnerThreadId: a)
+            );
+        }
+
+        var before = fixture.Gateway.Creates.Count;
+        var gate = fixture.Gateway.HoldDeletes();
+        var post = fixture.ReleaseAsync(a, "PRs/r-9");
+        await fixture.Gateway.WaitForDeleteStartedAsync();
+        // The agent's removal may start that DELETE before the route queues its move; admit the turn only once the
+        // move is queued, or the route would rightly refuse with "a new turn took the conversation".
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (fixture.Registry.WaitForOwnerMoveAsync(a).IsCompleted && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(10);
+        }
+
+        var turn = Task.Run(() => fixture.BuildAgent(a));
+        await Task.Delay(100);
+        Logger.LogDebug(
+            "Turn for {ThreadId} done before the DELETE answered: {Done}; release done: {Released}",
+            a,
+            turn.IsCompleted,
+            post.IsCompleted
+        );
+        turn.IsCompleted.Should().BeFalse("the turn waits for the move to commit");
+        gate.SetResult();
+        using var response = await post;
+        _ = await turn;
+        fixture.LogGateway();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var created = fixture.Gateway.Creates.Skip(before).ToList();
+        created.Should().ContainSingle("the turn creates exactly one sandbox, after the move");
+        WorkingDir(created[0].Body).Should().Be("PRs/r-9", "the old directory must not be cached in the new agent");
+        var own = fixture.Registry.TryGetExistingSession(fixture.WorkspaceId, readOnlyEgress: false, a);
+        own.Should().NotBeNull("the turn runs in the thread's own sandbox");
+        own!.SessionId.Should().Be(created[0].SessionId);
+        own.WorkspaceWorkingDir.Should().Be("PRs/r-9");
+        fixture.Registry.GetThreads(created[0].SessionId).Should().Equal(a);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_fork_of_a_dedicated_thread_gets_its_own_sandbox_jailed_to_the_same_directory(
+        bool readOnlyEgress
+    )
+    {
+        // Sandboxes are never shared; workspaces are. The fork works in its source's directory, from its own sandbox.
+        await using var fixture = await StartAsync();
+        var a = await fixture.ProvisionAsync(
+            "PRs/r-7",
+            properties: readOnlyEgress
+                ? new Dictionary<string, object> { [ConversationReadOnlyEgress.PropertyKey] = true }
+                : null
+        );
+        await fixture.Store.AppendMessagesAsync(
+            a,
+            [
+                MessagePersistenceConverter.ToPersistedMessage(
+                    new TextMessage { Role = Role.User, Text = "review r-7" },
+                    a,
+                    "run-1"
+                ),
+                MessagePersistenceConverter.ToPersistedMessage(
+                    new TextMessage { Role = Role.Assistant, Text = "two findings" },
+                    a,
+                    "run-1"
+                ),
+            ]
+        );
+        _ = fixture.BuildAgent(a);
+        var parent = fixture.Gateway.Creates.Single().SessionId;
+
+        using var response = await fixture.Client.PostAsJsonAsync(
+            $"/api/conversations/{a}/fork",
+            new ForkConversationRequest { AfterRunId = "run-1" }
+        );
+        var body = await response.Content.ReadAsStringAsync();
+        Logger.LogDebug("Fork of {ThreadId} answered {Status}: {Body}", a, (int)response.StatusCode, body);
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        var fork = JsonSerializer.Deserialize<ForkConversationResponse>(body, JsonSerializerOptions.Web)!.ThreadId;
+        (await ConversationDedicatedSandbox.ReadAsync(fixture.Store, fork)).Should().BeTrue();
+        (await ConversationWorkingDirectory.ReadAsync(fixture.Store, fork)).Should().Be("PRs/r-7");
+        (await ConversationReadOnlyEgress.ReadAsync(fixture.Store, fork)).Should().Be(readOnlyEgress);
+
+        _ = fixture.BuildAgent(fork);
+        fixture.LogGateway();
+
+        fixture.Gateway.Creates.Should().HaveCount(2, "the fork must not share its source's sandbox");
+        var created = fixture.Gateway.Creates[1];
+        created.SessionId.Should().NotBe(parent);
+        WorkingDir(created.Body).Should().Be("PRs/r-7");
+        var own = fixture.Registry.TryGetExistingSession(fixture.WorkspaceId, readOnlyEgress, fork);
+        own.Should().NotBeNull("the fork runs in a sandbox of its own");
+        own!.SessionId.Should().Be(created.SessionId);
+        own.OwnerThreadId.Should().Be(fork);
+        own.ReadOnlyEgress.Should().Be(readOnlyEgress);
+        fixture.Registry.TryGetExistingSession(fixture.WorkspaceId, readOnlyEgress, a)!.SessionId.Should().Be(parent);
+        fixture
+            .Registry.TryGetExistingSession(fixture.WorkspaceId, readOnlyEgress, null)
+            .Should()
+            .BeNull("neither conversation runs in the shared sandbox");
     }
 
     [Fact]
@@ -336,8 +481,12 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         (await ConversationWorkingDirectory.ReadAsync(fixture.Store, a)).Should().Be("slots/r-1/PRs/r-7");
     }
 
-    [Fact]
-    public async Task The_release_route_refuses_to_jail_a_conversation_whose_provider_cannot_enforce_a_directory()
+    [Theory]
+    [InlineData("claude")]
+    [InlineData(" claude ")] // stored padded by a host from before provision trimmed it
+    public async Task The_release_route_refuses_to_jail_a_conversation_whose_provider_cannot_enforce_a_directory(
+        string provider
+    )
     {
         // A conversation from before dedicated sandboxes, on a CLI provider: moved into a dedicated sandbox, its next
         // build would refuse the working directory, so the move is refused up front and nothing is stored.
@@ -345,7 +494,7 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         var legacy = await fixture.ProvisionAsync(
             null,
             dedicated: false,
-            properties: new Dictionary<string, object> { [MultiTurnAgentPool.ProviderPropertyKey] = "claude" }
+            properties: new Dictionary<string, object> { [MultiTurnAgentPool.ProviderPropertyKey] = provider }
         );
 
         using var response = await fixture.ReleaseAsync(legacy, "PRs/r-9");
@@ -444,12 +593,15 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         {
             string a;
             string workspaceId;
+            OwnedSandboxGateway firstGateway;
             await using (var first = await StartAsync(root: root))
             {
                 workspaceId = first.WorkspaceId;
+                firstGateway = first.Gateway;
                 a = await first.ProvisionAsync("PRs/r-7");
                 _ = first.BuildAgent(a);
                 AssertOwnedAndJailed(first, a, "the first build");
+                var firstSession = first.Gateway.Creates.Single().SessionId;
 
                 // Idle unload: the agent leaves the pool; the next turn rebuilds it from the stored metadata.
                 first.Pool.TryGetHandoffState(a, out var handoff).Should().BeTrue();
@@ -457,10 +609,26 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
                     .Should()
                     .Be(MultiTurnAgentPool.AgentReleaseOutcome.Released);
                 first.Pool.ActiveAgentCount.Should().Be(0);
+                (await first.Gateway.NextDeleteAsync())
+                    .Should()
+                    .Be(firstSession, "the unloaded agent's own sandbox goes with it");
                 _ = first.BuildAgent(a);
                 AssertOwnedAndJailed(first, a, "the rebuild after an idle unload");
+                first.Gateway.Creates.Should().HaveCount(2, "the rebuild makes exactly one more sandbox");
+                first.Gateway.Creates[1].SessionId.Should().NotBe(firstSession);
+                first.Gateway.Deletes.Should().Equal(firstSession);
                 first.Gateway.Creates.Should().OnlyContain(create => WorkingDir(create.Body) == "PRs/r-7");
             }
+
+            // A graceful shutdown deletes the sandbox the stopped host still held; the next host makes its own.
+            // The test host disposes its container on the app's own thread, after the factory's dispose returns,
+            // so wait for that DELETE rather than read the list at once.
+            (await firstGateway.NextDeleteAsync())
+                .Should()
+                .Be(firstGateway.Creates[1].SessionId, "shutdown deletes the sandbox the host still held");
+            firstGateway
+                .Deletes.Should()
+                .BeEquivalentTo(firstGateway.Creates.Select(create => create.SessionId), "shutdown deletes it");
 
             // Restart: a new host, registry and pool over the same stores. Only the stored metadata carries the
             // flag and the directory now.
@@ -482,7 +650,7 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
     {
         var own = fixture.Registry.TryGetExistingSession(fixture.WorkspaceId, readOnlyEgress: false, threadId);
         var shared = fixture.Registry.TryGetExistingSession(fixture.WorkspaceId, readOnlyEgress: false, null);
-        Logger.LogInformation(
+        Logger.LogDebug(
             "After {When}: thread {ThreadId} has sandbox {SessionId} (owner {Owner}, jail {Jail}); shared slot {Shared}",
             when,
             threadId,
@@ -534,14 +702,23 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         {
             var gateway = new OwnedSandboxGateway();
             var fixture = new Fixture(gateway, new FakeGatewayWebAppFactory(gateway, AppId, root: root), logger);
-            fixture.WorkspaceId =
-                workspaceId
-                ?? (
-                    await fixture
-                        ._host.Services.GetRequiredService<IWorkspaceStore>()
-                        .CreateAsync(new WorkspaceCreate { Name = "Reviews", WorkingDir = workspaceWorkingDir })
-                ).Id;
-            logger.LogInformation(
+            try
+            {
+                fixture.WorkspaceId =
+                    workspaceId
+                    ?? (
+                        await fixture
+                            ._host.Services.GetRequiredService<IWorkspaceStore>()
+                            .CreateAsync(new WorkspaceCreate { Name = "Reviews", WorkingDir = workspaceWorkingDir })
+                    ).Id;
+            }
+            catch
+            {
+                // The caller never gets the fixture to dispose, so a host that started and then failed goes here.
+                await fixture.DisposeAsync();
+                throw;
+            }
+            logger.LogDebug(
                 "Host up: app {AppId}, workspace {WorkspaceId} with working directory {WorkspaceWorkingDir}, stores in {Root}",
                 AppId,
                 fixture.WorkspaceId,
@@ -583,7 +760,7 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
                     Properties = stored,
                 }
             );
-            _logger.LogInformation(
+            _logger.LogDebug(
                 "Stored thread {ThreadId}: directory {WorkingDirectory}, dedicated {Dedicated}, extra {Extra}",
                 threadId,
                 workingDirectory,
@@ -597,13 +774,17 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         public IMultiTurnAgent BuildAgent(string threadId) =>
             Pool.GetOrCreateAgent(threadId, WorkspaceMode, "test", null, requestedWorkspaceId: WorkspaceId);
 
-        public Task<HttpResponseMessage> ProvisionOverHttpAsync(string? directory, bool dedicated) =>
+        public Task<HttpResponseMessage> ProvisionOverHttpAsync(
+            string? directory,
+            bool dedicated,
+            string providerId = "test"
+        ) =>
             Client.PostAsJsonAsync(
                 "/api/conversations",
                 new ProvisionConversationRequest
                 {
                     WorkspaceId = WorkspaceId,
-                    ProviderId = "test",
+                    ProviderId = providerId,
                     ModeId = SystemChatModes.WorkspaceAgentModeId,
                     WorkingDirectoryRelPath = directory,
                     DedicatedSandbox = dedicated,
@@ -616,7 +797,7 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
                 $"/api/conversations/{threadId}/sandbox/release",
                 new ReleaseSandboxRequest { WorkingDirectoryRelPath = directory }
             );
-            _logger.LogInformation(
+            _logger.LogDebug(
                 "Release of {ThreadId} to {Directory} answered {Status}: {Body}",
                 threadId,
                 directory,
@@ -627,7 +808,7 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         }
 
         public void LogGateway() =>
-            _logger.LogInformation(
+            _logger.LogDebug(
                 "Gateway saw creates {Creates} ({Directories}), delete attempts {DeleteAttempts}, confirmed deletes {Deletes}",
                 Gateway.Creates.Select(create => create.SessionId),
                 Gateway.Creates.Select(create => WorkingDir(create.Body)),
@@ -640,7 +821,7 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
             LogGateway();
             Client.Dispose();
             await _host.DisposeAsync();
-            _logger.LogInformation("Host stopped; gateway saw confirmed deletes {Deletes}", Gateway.Deletes);
+            _logger.LogDebug("Host stopped; gateway saw confirmed deletes {Deletes}", Gateway.Deletes);
         }
     }
 }

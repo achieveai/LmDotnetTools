@@ -108,6 +108,34 @@ public sealed partial class SandboxSessionRegistry
         return ct.CanBeCanceled ? release.WaitAsync(ct) : release;
     }
 
+    /// <summary>
+    /// Waits until no release that commits a change for <paramref name="threadId"/> is running, so a caller that reads
+    /// the owner's committed state next (its working directory, say) reads the outcome, not the state the release is
+    /// replacing. Completes at once when none is running. A failed release committed nothing, so its failure is not
+    /// rethrown here.
+    /// </summary>
+    /// <remarks>
+    /// Covers a thread that owns no sandbox yet too (a shared-sandbox thread moving to a dedicated one): the fence is
+    /// keyed by the thread, not by its sessions.
+    /// </remarks>
+    public async Task WaitForOwnerMoveAsync(string threadId, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
+        if (!_ownerFences.TryGetValue(threadId, out var fence))
+        {
+            return;
+        }
+
+        try
+        {
+            await fence.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            // A failed release committed nothing: what was there before still holds.
+        }
+    }
+
     private async Task RunOwnerReleaseAsync(string threadId, Task previous, Func<Task>? afterRetired)
     {
         try

@@ -115,13 +115,99 @@ public sealed class SandboxReleaseRouteTests : LoggingTestBase
             new ReleaseSandboxRequest { WorkingDirectoryRelPath = "PRs/r-9" },
             CancellationToken.None
         );
-        Logger.LogInformation("Release without a registry answered {Result}", Describe(result));
+        Logger.LogDebug("Release without a registry answered {Result}", Describe(result));
 
         var refusal = result.Should().BeOfType<BadRequestObjectResult>().Subject;
         var body = JsonSerializer.Serialize(refusal.Value);
         body.Should().Contain("dedicated_sandbox_required").And.Contain("no sandbox registry");
         (await store.LoadMetadataAsync(ThreadId)).Should().BeEquivalentTo(before);
         pool.GetOrCreateAgent(ThreadId, WorkspaceMode).Should().BeSameAs(agent);
+    }
+
+    [Fact]
+    public async Task The_release_route_refuses_an_idle_conversation_parked_on_a_question_and_deletes_nothing()
+    {
+        // No run is in progress, so the plain idle release would dispose the agent and orphan the question. The
+        // route refuses whatever the idle sweep would keep loaded.
+        var gateway = new OwnedSandboxGateway();
+        await using var registry = gateway.CreateRegistry(LoggerFactory, "lm-release-route-test");
+        await using var pool = await ConversationsControllerTests.CreatePoolWithParkedAskUserQuestionAsync(
+            ThreadId,
+            "tc_colour"
+        );
+        await Wait.UntilAsync(
+            () => !pool.IsRunInProgress(ThreadId) && pool.GetOutstandingInputCountForTest(ThreadId) == 0,
+            "the run parked and its input was retired"
+        );
+        (await pool.HasPendingAskUserQuestionAsync(ThreadId)).Should().BeTrue();
+        pool.TryGetHandoffState(ThreadId, out var before).Should().BeTrue();
+        var store = await SeedAsync("PRs/r-7");
+        var session = await registry.GetOrCreateSessionAsync(OwnedRef());
+        var controller = CreateController(store, pool, registry);
+
+        var result = await controller.ReleaseSandbox(
+            ThreadId,
+            new ReleaseSandboxRequest { WorkingDirectoryRelPath = "PRs/r-9" },
+            CancellationToken.None
+        );
+        Log(result, gateway);
+
+        var conflict = result.Should().BeOfType<ConflictObjectResult>().Subject;
+        JsonSerializer
+            .Serialize(conflict.Value)
+            .Should()
+            .Contain("sandbox_release_while_running")
+            .And.Contain("work only this host keeps", "a parked call is not a run, so the reason differs from Busy");
+        pool.TryGetHandoffState(ThreadId, out var after).Should().BeTrue("the agent stays loaded");
+        after.EntryToken.Should().BeSameAs(before.EntryToken);
+        (await pool.HasPendingAskUserQuestionAsync(ThreadId)).Should().BeTrue("the question is not orphaned");
+        registry
+            .TryGetExistingSession(SandboxSessionRegistry.DefaultWorkspaceId, false, ThreadId)
+            .Should()
+            .BeSameAs(session);
+        gateway.DeleteAttempts.Should().Be(0);
+        (await ConversationWorkingDirectory.ReadAsync(store, ThreadId)).Should().Be("PRs/r-7");
+    }
+
+    [Fact]
+    public async Task A_move_the_store_refuses_after_the_delete_answers_503_and_a_retry_stores_it()
+    {
+        var gateway = new OwnedSandboxGateway();
+        await using var registry = gateway.CreateRegistry(LoggerFactory, "lm-release-route-test");
+        await using var pool = ConversationsControllerTests.CreatePool();
+        var store = new MetadataFaultStore(await SeedAsync("PRs/r-7"));
+        var session = await registry.GetOrCreateSessionAsync(OwnedRef());
+        var controller = CreateController(store, pool, registry);
+        store.FailUpdates = true;
+
+        var refused = await controller.ReleaseSandbox(
+            ThreadId,
+            new ReleaseSandboxRequest { WorkingDirectoryRelPath = "PRs/r-9" },
+            CancellationToken.None
+        );
+        Log(refused, gateway);
+
+        var failure = refused.Should().BeOfType<ObjectResult>().Subject;
+        failure.StatusCode.Should().Be(503);
+        JsonSerializer
+            .Serialize(failure.Value)
+            .Should()
+            .Contain("sandbox_release_failed")
+            .And.Contain("was not stored");
+        gateway.Deletes.Should().Equal(session.SessionId);
+        (await ConversationWorkingDirectory.ReadAsync(store, ThreadId)).Should().Be("PRs/r-7", "nothing moved");
+
+        store.FailUpdates = false;
+        var retried = await controller.ReleaseSandbox(
+            ThreadId,
+            new ReleaseSandboxRequest { WorkingDirectoryRelPath = "PRs/r-9" },
+            CancellationToken.None
+        );
+        Log(retried, gateway);
+
+        retried.Should().BeOfType<OkObjectResult>();
+        (await ConversationWorkingDirectory.ReadAsync(store, ThreadId)).Should().Be("PRs/r-9");
+        gateway.DeleteAttempts.Should().Be(1, "the retry has no sandbox left to delete");
     }
 
     private static WorkspaceRef OwnedRef() =>
@@ -142,7 +228,7 @@ public sealed class SandboxReleaseRouteTests : LoggingTestBase
                     .Add(ConversationDedicatedSandbox.PropertyKey, true),
             }
         );
-        Logger.LogInformation("Seeded dedicated thread {ThreadId} in {Directory}", ThreadId, directory);
+        Logger.LogDebug("Seeded dedicated thread {ThreadId} in {Directory}", ThreadId, directory);
         return store;
     }
 
@@ -159,7 +245,7 @@ public sealed class SandboxReleaseRouteTests : LoggingTestBase
         );
 
     private void Log(IActionResult result, OwnedSandboxGateway gateway) =>
-        Logger.LogInformation(
+        Logger.LogDebug(
             "Release answered {Result}; gateway saw {Creates} create(s), {DeleteAttempts} delete attempt(s)",
             Describe(result),
             gateway.Creates.Count,
@@ -170,4 +256,52 @@ public sealed class SandboxReleaseRouteTests : LoggingTestBase
         result is ObjectResult objectResult
             ? $"{objectResult.StatusCode} {JsonSerializer.Serialize(objectResult.Value)}"
             : result.GetType().Name;
+
+    /// <summary>Forwards to <paramref name="inner"/>; its metadata updates fail while <see cref="FailUpdates"/> is set.</summary>
+    private sealed class MetadataFaultStore(IConversationStore inner) : IConversationStore
+    {
+        public volatile bool FailUpdates;
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default
+        ) =>
+            FailUpdates
+                ? throw new IOException("simulated metadata write failure")
+                : inner.UpdateMetadataAsync(threadId, update, ct);
+
+        public Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default
+        ) => inner.AppendMessagesAsync(threadId, messages, ct);
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => inner.LoadMessagesAsync(threadId, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            inner.LoadMetadataAsync(threadId, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            ConversationListOptions? options = null,
+            CancellationToken ct = default
+        ) => inner.ListThreadsAsync(limit, offset, options, ct);
+    }
 }

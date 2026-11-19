@@ -1,5 +1,8 @@
 using System.Collections.Immutable;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using LmStreaming.Sample.Services;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace LmStreaming.Sample.Tests.Services;
 
@@ -9,9 +12,12 @@ namespace LmStreaming.Sample.Tests.Services;
 /// absence as off, and refuse anything else rather than read it as off. An in-memory store keeps the stored object
 /// as it is, so each branch is reached on purpose.
 /// </summary>
-public class FailClosedThreadSwitchTests
+public class FailClosedThreadSwitchTests : LoggingTestBase
 {
     private const string ThreadId = "thread-switch";
+
+    public FailClosedThreadSwitchTests(ITestOutputHelper output)
+        : base(output) { }
 
     public static TheoryData<string, object, bool> Readable =>
         new()
@@ -46,7 +52,10 @@ public class FailClosedThreadSwitchTests
     {
         var store = await SeedAsync(key, stored);
 
-        (await ReadAsync(key, store, ThreadId)).Should().Be(expected);
+        var read = await ReadAsync(key, store, ThreadId);
+
+        Logger.LogDebug("{Key} stored as {Stored} ({Type}) read as {Read}", key, stored, stored.GetType().Name, read);
+        read.Should().Be(expected);
     }
 
     [Theory]
@@ -58,8 +67,12 @@ public class FailClosedThreadSwitchTests
             which == "dedicated" ? ConversationDedicatedSandbox.PropertyKey : ConversationReadOnlyEgress.PropertyKey;
         var store = await SeedAsync(key: null, stored: null);
 
-        (await ReadAsync(key, store, ThreadId)).Should().BeFalse();
-        (await ReadAsync(key, store, "thread-unknown")).Should().BeFalse();
+        var absent = await ReadAsync(key, store, ThreadId);
+        var unknown = await ReadAsync(key, store, "thread-unknown");
+
+        Logger.LogDebug("{Key}: absent read as {Absent}, unknown thread read as {Unknown}", key, absent, unknown);
+        absent.Should().BeFalse();
+        unknown.Should().BeFalse();
     }
 
     [Theory]
@@ -75,6 +88,7 @@ public class FailClosedThreadSwitchTests
         var read = () => ReadAsync(key, store, ThreadId);
 
         var refusal = (await read.Should().ThrowAsync<InvalidOperationException>()).Which.Message;
+        Logger.LogDebug("{Key} stored as {Kind} was refused: {Refusal}", key, kind, refusal);
         refusal.Should().Contain(key).And.Contain(kind).And.Contain("refusing to build its agent");
         refusal
             .Should()
@@ -88,7 +102,7 @@ public class FailClosedThreadSwitchTests
             ? ConversationDedicatedSandbox.ReadAsync(store, threadId)
             : ConversationReadOnlyEgress.ReadAsync(store, threadId);
 
-    private static async Task<InMemoryConversationStore> SeedAsync(string? key, object? stored)
+    private async Task<InMemoryConversationStore> SeedAsync(string? key, object? stored)
     {
         var properties = ImmutableDictionary<string, object>.Empty.Add(MultiTurnAgentPool.WorkspacePropertyKey, "ws-1");
         if (key is not null)
@@ -106,6 +120,7 @@ public class FailClosedThreadSwitchTests
                 Properties = properties,
             }
         );
+        Logger.LogDebug("Seeded {ThreadId} with {Key} = {Stored}", ThreadId, key, stored);
         return store;
     }
 }
