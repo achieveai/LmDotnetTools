@@ -194,6 +194,98 @@ public class SandboxSessionRegistryPartitionTests
         registry.TryGetSessionById(readOnly.SessionId, out _).Should().BeFalse();
     }
 
+    [Fact]
+    public async Task Each_owner_gets_its_own_sandbox_apart_from_the_shared_one_and_jailed_to_its_directory()
+    {
+        // Every review conversation sits on the same workspace and app id, so only the owner part of the key keeps
+        // one review out of another's sandbox, and out of the shared one that can write the whole workspace.
+        var (registry, calls) = CreateRegistry();
+        var aRef = new WorkspaceRef("ws-1", WorkingDir: "slots/r-1/PRs/r-7", OwnerThreadId: "thread-a");
+
+        var shared = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1"));
+        var a = await registry.GetOrCreateSessionAsync(aRef);
+        var b = await registry.GetOrCreateSessionAsync(
+            new WorkspaceRef("ws-1", WorkingDir: "slots/r-2/PRs/r-8", OwnerThreadId: "thread-b")
+        );
+
+        new[] { shared.SessionId, a.SessionId, b.SessionId }.Should().OnlyHaveUniqueItems();
+        shared.OwnerThreadId.Should().BeNull();
+        a.OwnerThreadId.Should().Be("thread-a");
+        a.WorkspaceWorkingDir.Should().Be("slots/r-1/PRs/r-7");
+        b.WorkspaceWorkingDir.Should().Be("slots/r-2/PRs/r-8");
+        WorkingDirSent(calls.PostBodies[0]).Should().BeNull();
+        WorkingDirSent(calls.PostBodies[1]).Should().Be("slots/r-1/PRs/r-7");
+        (await registry.GetOrCreateSessionAsync(aRef))
+            .SessionId.Should()
+            .Be(a.SessionId, "the owner's next turn reuses its own sandbox");
+        calls.PostCount.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task Releasing_an_owner_deletes_only_its_sandbox_and_its_next_turn_gets_a_fresh_one()
+    {
+        var (registry, calls) = CreateRegistry();
+        var aRef = new WorkspaceRef("ws-1", WorkingDir: "PRs/r-7", OwnerThreadId: "thread-a");
+        var shared = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1"));
+        var a = await registry.GetOrCreateSessionAsync(aRef);
+        var b = await registry.GetOrCreateSessionAsync(
+            new WorkspaceRef("ws-1", WorkingDir: "PRs/r-8", OwnerThreadId: "thread-b")
+        );
+
+        await registry.ReleaseOwnedSessionsAsync("thread-a");
+        await registry.ReleaseOwnedSessionsAsync("thread-a"); // nothing left: a no-op, not a second DELETE
+
+        calls.DeletedSessionIds.Should().Equal(a.SessionId);
+        registry.TryGetSessionById(a.SessionId, out _).Should().BeFalse();
+        registry.TryGetSessionById(shared.SessionId, out _).Should().BeTrue();
+        registry.TryGetSessionById(b.SessionId, out _).Should().BeTrue();
+        (await registry.GetOrCreateSessionAsync(aRef)).SessionId.Should().NotBe(a.SessionId);
+    }
+
+    [Fact]
+    public async Task A_release_the_gateway_refuses_throws_and_keeps_the_sandbox_tracked_for_a_retry()
+    {
+        var (registry, calls) = CreateRegistry();
+        var aRef = new WorkspaceRef("ws-1", WorkingDir: "PRs/r-7", OwnerThreadId: "thread-a");
+        var a = await registry.GetOrCreateSessionAsync(aRef);
+
+        calls.FailDeletes = true;
+        var refused = () => registry.ReleaseOwnedSessionsAsync("thread-a");
+        await refused.Should().ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
+
+        (await registry.GetOrCreateSessionAsync(aRef)).SessionId.Should().Be(a.SessionId, "it is still alive");
+        calls.FailDeletes = false;
+        await registry.ReleaseOwnedSessionsAsync("thread-a");
+        calls.DeletedSessionIds.Should().Equal(a.SessionId);
+    }
+
+    [Fact]
+    public async Task A_dedicated_sandbox_the_gateway_evicted_comes_back_with_its_owner_and_working_dir()
+    {
+        // The reload hook rebuilds the ref from the workspace catalog, which knows neither the owner nor the
+        // conversation's directory. Unpinned, the recreate would land in the shared sandbox, writable everywhere.
+        var (registry, calls) = CreateRegistry(
+            reloadWorkspaceRef: (workspaceId, _) => Task.FromResult<WorkspaceRef?>(new WorkspaceRef(workspaceId))
+        );
+        var aRef = new WorkspaceRef("ws-1", WorkingDir: "PRs/r-7", OwnerThreadId: "thread-a");
+        var first = await registry.GetOrCreateSessionAsync(aRef);
+
+        calls.Evict(first.SessionId);
+        var live = await registry.GetOrCreateLiveSessionAsync(aRef);
+
+        live.SessionId.Should().NotBe(first.SessionId);
+        live.OwnerThreadId.Should().Be("thread-a");
+        live.WorkspaceWorkingDir.Should().Be("PRs/r-7");
+        WorkingDirSent(calls.PostBodies[1]).Should().Be("PRs/r-7");
+        registry.TryGetExistingSession("ws-1").Should().BeNull("the recreate must not take the shared slot");
+    }
+
+    private static string? WorkingDirSent(string createBody)
+    {
+        using var document = JsonDocument.Parse(createBody);
+        return document.RootElement.TryGetProperty("working_dir", out var dir) ? dir.GetString() : null;
+    }
+
     private static IReadOnlyList<string> AdoMethods(string createBody)
     {
         using var document = JsonDocument.Parse(createBody);
@@ -210,7 +302,10 @@ public class SandboxSessionRegistryPartitionTests
         ];
     }
 
-    private static (SandboxSessionRegistry Registry, CallLog Calls) CreateRegistry(AuthOptions? auth = null)
+    private static (SandboxSessionRegistry Registry, CallLog Calls) CreateRegistry(
+        AuthOptions? auth = null,
+        Func<string, CancellationToken, Task<WorkspaceRef?>>? reloadWorkspaceRef = null
+    )
     {
         var calls = new CallLog();
 
@@ -226,9 +321,15 @@ public class SandboxSessionRegistryPartitionTests
                 var ordinal = calls.RecordPost(appId, req.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
                 var sessionId = $"sess-{ordinal}";
                 calls.MarkCreated(sessionId);
+                // Echoes a requested working directory, as the gateway does: the SDK refuses a create whose
+                // reply does not acknowledge it.
+                using var request = JsonDocument.Parse(calls.PostBodies[^1]);
+                var workingDir = request.RootElement.TryGetProperty("working_dir", out var dir)
+                    ? $", \"working_dir\": \"{dir.GetString()}\""
+                    : string.Empty;
                 var responseBody = $$"""
                     { "session_id": "{{sessionId}}", "container_id": "c-{{ordinal}}",
-                      "volumes": { "workspace": { "container_path": "/workspace", "read_only": false } } }
+                      "volumes": { "workspace": { "container_path": "/workspace", "read_only": false{{workingDir}} } } }
                     """;
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
@@ -256,6 +357,10 @@ public class SandboxSessionRegistryPartitionTests
             if (req.Method == HttpMethod.Delete && path.Contains("/sandboxes/", StringComparison.Ordinal))
             {
                 var id = path[(path.LastIndexOf('/') + 1)..];
+                if (calls.FailDeletes)
+                {
+                    return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+                }
                 calls.RecordDelete(id);
                 return new HttpResponseMessage(HttpStatusCode.OK);
             }
@@ -288,7 +393,8 @@ public class SandboxSessionRegistryPartitionTests
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
                 NullLogger<SessionSecretStore>.Instance
-            )
+            ),
+            reloadWorkspaceRef: reloadWorkspaceRef
         );
 
         return (registry, calls);
@@ -303,6 +409,9 @@ public class SandboxSessionRegistryPartitionTests
         private readonly List<string> _deletedSessionIds = [];
         private readonly HashSet<string> _created = new(StringComparer.Ordinal);
         private readonly HashSet<string> _evicted = new(StringComparer.Ordinal);
+
+        /// <summary>When set, every DELETE answers 500 and deletes nothing.</summary>
+        public volatile bool FailDeletes;
 
         public int PostCount
         {

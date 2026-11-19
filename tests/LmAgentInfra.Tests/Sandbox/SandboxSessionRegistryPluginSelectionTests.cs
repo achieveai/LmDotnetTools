@@ -208,7 +208,7 @@ public class SandboxSessionRegistryPluginSelectionTests
         elapsed.Stop();
 
         snapshot.Partitions.Should().ContainSingle().Which.Key.AppId.Should().Be("app-a");
-        snapshot.Unsettled.Should().ContainSingle().Which.Should().Be(("ws-1", "app-b", false));
+        snapshot.Unsettled.Should().ContainSingle().Which.Should().Be(("ws-1", "app-b", false, null));
         elapsed.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1), "a zero budget must not wait at all");
 
         gateway.ReleaseCreates();
@@ -294,6 +294,34 @@ public class SandboxSessionRegistryPluginSelectionTests
         );
 
         candidate.ReadOnlyEgress.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task CreatePluginSelectionCandidateAsync_DedicatedPartition_KeepsItsOwnerAndItsJail()
+    {
+        // The migration's ref comes from the workspace catalog, which knows neither the owning conversation nor its
+        // directory. Unpinned, a plugin change would swap a sandbox writable everywhere into a review's jailed slot.
+        await using var registry = CreateRegistryWithFakeGateway(out var gateway);
+        _ = await registry.GetOrCreateSessionAsync(
+            new WorkspaceRef("ws-1", WorkingDir: "slots/r-1/PRs/r-7", OwnerThreadId: "thread-a")
+        );
+        var partition = registry.SnapshotPluginSelectionPartitions("ws-1").Single();
+        partition.Key.OwnerThreadId.Should().Be("thread-a");
+
+        var candidate = await registry.CreatePluginSelectionCandidateAsync(
+            new WorkspaceRef("ws-1", PluginSelection: [new SandboxPluginRef("official", "code-review")]),
+            partition,
+            CancellationToken.None
+        );
+
+        candidate.OwnerThreadId.Should().Be("thread-a");
+        candidate.WorkspaceWorkingDir.Should().Be("slots/r-1/PRs/r-7");
+        JsonDocument
+            .Parse(gateway.Requests.Last(r => r.Method == HttpMethod.Post).Body!)
+            .RootElement.GetProperty("working_dir")
+            .GetString()
+            .Should()
+            .Be("slots/r-1/PRs/r-7");
     }
 
     [Fact]
@@ -848,9 +876,15 @@ public class SandboxSessionRegistryPluginSelectionTests
             }
 
             var resolution = omitPluginResolution ? string.Empty : ResolutionPrefix + RequestedField(body) + " }";
+            // Echoes a requested working directory, as the gateway does: the SDK refuses a create whose reply does
+            // not acknowledge it.
+            var workingDir =
+                body is not null && JsonDocument.Parse(body).RootElement.TryGetProperty("working_dir", out var dir)
+                    ? $", \"working_dir\": \"{dir.GetString()}\""
+                    : string.Empty;
             var responseBody = $$"""
                 { "session_id": "sess-{{created}}", "container_id": "c-{{created}}",
-                  "volumes": { "workspace": { "container_path": "/workspace", "read_only": false } }{{resolution}} }
+                  "volumes": { "workspace": { "container_path": "/workspace", "read_only": false{{workingDir}} } }{{resolution}} }
                 """;
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
