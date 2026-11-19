@@ -285,7 +285,8 @@ internal sealed class LmStreamingS2SClient
     /// <paramref name="dedicatedSandbox"/> asks the host for a sandbox of this thread's own, jailed to
     /// <paramref name="workingDirectory"/>: the agent can write only there and reads the rest of the workspace.
     /// A contract like <c>readOnlyEgress</c>: a host that predates it would run the thread in the workspace's
-    /// shared sandbox, writable everywhere, so an unacknowledged reply deletes the thread and throws.
+    /// shared sandbox, writable everywhere, so an unacknowledged reply throws after a best-effort delete of the
+    /// thread. A failed delete is swallowed, so the thread may outlive the error.
     /// </summary>
     public async Task<string> ProvisionAsync(
         string workspaceId,
@@ -302,7 +303,9 @@ internal sealed class LmStreamingS2SClient
     )
     {
         if (dedicatedSandbox && workingDirectory is null)
+        {
             throw new ArgumentException("A dedicated sandbox needs a working directory.", nameof(workingDirectory));
+        }
         if (workingDirectory is not null)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(workingDirectory);
@@ -310,7 +313,9 @@ internal sealed class LmStreamingS2SClient
             await EnsureWorkingDirectoryContractAsync(ct);
         }
         if (dedicatedSandbox)
+        {
             await EnsureDedicatedSandboxContractAsync(ct);
+        }
         using var response = await ExecuteAsync(
             HttpMethod.Post,
             "api/conversations",
@@ -559,6 +564,11 @@ internal sealed class LmStreamingS2SClient
     /// Deletes the thread's own sandbox container; its workspace files stay. With
     /// <paramref name="workingDirectory"/> the thread's next turn is jailed there instead, and a thread that ran in
     /// the workspace's shared sandbox becomes a dedicated one. The host refuses (409) while the thread runs.
+    /// <para>
+    /// A refusal throws <see cref="ReviewHostContractException"/> naming the status and, when it is one of
+    /// <see cref="KnownReleaseRefusals"/>, the host's code. The rest of the host's body is never carried: the runner
+    /// writes this error to its log, and an upstream body there is arbitrary text from another service.
+    /// </para>
     /// </summary>
     public async Task ReleaseSandboxAsync(string threadId, string? workingDirectory, CancellationToken ct)
     {
@@ -570,21 +580,32 @@ internal sealed class LmStreamingS2SClient
         );
         if (!response.IsSuccessStatusCode)
         {
-            var detail = await response.Content.ReadAsStringAsync(ct);
+            var code = TryReadStringProperty(await response.Content.ReadAsStringAsync(ct), "code");
+            var known = code is not null && KnownReleaseRefusals.Contains(code) ? $", {code}" : "";
             throw new ReviewHostContractException(
-                $"The review host refused to release the sandbox of '{threadId}' "
-                    + $"({(int)response.StatusCode}); no prompt was sent. Host response: {detail}"
+                $"The review host refused to release the sandbox of '{threadId}' ({(int)response.StatusCode}{known})."
             );
         }
         if (workingDirectory is not null)
         {
             var body = await response.Content.ReadAsStringAsync(ct);
-            if (ReadStringProperty(body, "workingDirectoryRelPath") != workingDirectory)
+            if (TryReadStringProperty(body, "workingDirectoryRelPath") != workingDirectory)
+            {
                 throw new ReviewHostContractException(
-                    $"The review host did not move '{threadId}' to '{workingDirectory}'; no prompt was sent."
+                    $"The review host did not move '{threadId}' to '{workingDirectory}'."
                 );
+            }
         }
     }
+
+    /// <summary>The sandbox release refusal codes the host documents; any other code is dropped from the error.</summary>
+    internal static readonly IReadOnlySet<string> KnownReleaseRefusals = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "sandbox_release_while_running",
+        "sandbox_release_failed",
+        "dedicated_sandbox_required",
+        "working_directory_invalid",
+    };
 
     /// <summary>
     /// Whether the host takes manual compaction requests (<c>manualCompaction</c> on

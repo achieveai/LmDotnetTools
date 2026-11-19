@@ -1092,6 +1092,7 @@ internal static class ReviewRunner
                     ct
                 );
                 receipt["threadId"] = thread;
+                receipt["sandboxDirectory"] = reviewDirectory;
                 await SaveAsync();
                 await PrThreadBindings.SetAsync(database, repo, pr, thread, ct);
             }
@@ -1099,8 +1100,10 @@ internal static class ReviewRunner
             {
                 // A continued conversation last wrote another slot's PR folder, or ran in the shared sandbox from
                 // before dedicated ones. Move it here and give it a fresh sandbox before anything is sent; a refusal
-                // stops the review. Once a send was attempted, this move already happened in that run.
+                // stops the review. The receipt records the move, so a resume of this attempt knows it happened.
                 await client.ReleaseSandboxAsync(thread, reviewDirectory, ct);
+                receipt["sandboxDirectory"] = reviewDirectory;
+                await SaveAsync();
             }
             var revision = args["head"]!.GetValue<string>();
             if (!verificationResume)
@@ -1210,12 +1213,34 @@ internal static class ReviewRunner
                 await SaveAsync();
             }
             else
+            {
+                // An attempt retained from before dedicated sandboxes has no record of a move: its review ran in the
+                // workspace's shared sandbox, writable everywhere. Its confirmation must not run there, so the thread
+                // moves to its PR folder first, once its review turn is over and the thread is idle. The host refuses
+                // a thread that is still running (409), so an active review is never released; any refusal stops
+                // the run here, before the confirmation, and leaves the attempt retained for its next resume.
+                if (resume && receipt["sandboxDirectory"]?.GetValue<string>() != reviewDirectory)
+                {
+                    await WaitAsync(
+                        client,
+                        thread!,
+                        null,
+                        LeasedDelayAsync,
+                        ct,
+                        maxBusyReads: ReviewBusyReads,
+                        probe: abandoned
+                    );
+                    await client.ReleaseSandboxAsync(thread!, reviewDirectory, ct);
+                    receipt["sandboxDirectory"] = reviewDirectory;
+                    await SaveAsync();
+                }
                 // A confirmation that finds a verified blocker the posted summary missed now corrects the verdict on the PR:
                 // 12 judged reviews posted an approval while their own confirmation said REQUEST_CHANGES or BLOCKED.
                 await SendAndWaitAsync(
                     "confirmation",
                     "Can you confirm if the PR feedback and replies to any discussion where you could add value have been posted. Audit and report existing publication receipts; do not post duplicates. Report your final verdict on the PR, with a brief rationale and any unresolved blockers. If the review is incomplete or blocked, state that explicitly rather than inferring approval. If this review verified a medium or high issue, or a failing required check this PR caused, that the summary you posted does not list as a blocker, reply in that summary thread now (on GitHub, a new PR comment): first \"REQUEST_CHANGES (replaces the verdict above)\", then each such blocker in one short line; record the reply in publication_receipts.json. Waiting for reviewer votes, approvals or policies is not such a blocker. You MUST return a non-empty final text response. End your response with a standalone line in exactly this format: verdict: <APPROVE | APPROVE_WITH_COMMENTS | REQUEST_CHANGES | BLOCKED | INCOMPLETE>. Choose exactly one value, do not leave the placeholder, and put nothing after this verdict line."
                 );
+            }
             args["summaryThreads"] = await PriorSummaryThreadsAsync(connection, repo, pr, ct);
             receipt["verifiedPublication"] = await StepAsync("verify");
             await WaitAsync(
@@ -1261,7 +1286,9 @@ internal static class ReviewRunner
             }
             catch (Exception releaseFailure) when (!ct.IsCancellationRequested)
             {
-                Console.Error.WriteLine($"Sandbox release of {thread} failed: {releaseFailure.Message}");
+                // Type and stack say where it failed. The client's errors carry no host response body, so neither
+                // does this line.
+                Console.Error.WriteLine($"Sandbox release of {thread} failed: {releaseFailure}");
             }
             Console.WriteLine(receipt.ToJsonString());
             return 0;
