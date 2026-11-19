@@ -21,17 +21,24 @@ internal sealed class FakeGatewayWebAppFactory : WebApplicationFactory<Program>
     private readonly HttpMessageHandler _gateway;
     private readonly string _appId;
     private readonly IReadOnlyDictionary<string, string> _settings;
+    private readonly bool _ownsRoot;
 
     /// <param name="gateway">Answers every sandbox gateway call: creates, deletes, liveness and operations.</param>
     /// <param name="appId">The host's sandbox gateway app id.</param>
     /// <param name="settings">Further host settings, such as egress rules.</param>
+    /// <param name="root">
+    /// The stores' directory, to boot a host over the stores an earlier one left (a restart). The caller then owns
+    /// and deletes it. Null for a fresh directory this factory owns.
+    /// </param>
     public FakeGatewayWebAppFactory(
         HttpMessageHandler gateway,
         string appId,
-        IReadOnlyDictionary<string, string>? settings = null
+        IReadOnlyDictionary<string, string>? settings = null,
+        string? root = null
     )
     {
-        Root = Path.Combine(Path.GetTempPath(), "lmstreaming-sandbox-composition", Guid.NewGuid().ToString("N"));
+        _ownsRoot = root is null;
+        Root = root ?? NewRoot();
         _ = Directory.CreateDirectory(Root);
         _gateway = gateway;
         _appId = appId;
@@ -39,8 +46,12 @@ internal sealed class FakeGatewayWebAppFactory : WebApplicationFactory<Program>
         Environment.SetEnvironmentVariable("LM_PROVIDER_MODE", "test");
     }
 
-    /// <summary>The temp directory holding the stores; deleted on disposal.</summary>
+    /// <summary>The temp directory holding the stores; deleted on disposal when this factory made it.</summary>
     public string Root { get; }
+
+    /// <summary>A fresh temp directory path for the stores.</summary>
+    public static string NewRoot() =>
+        Path.Combine(Path.GetTempPath(), "lmstreaming-sandbox-composition", Guid.NewGuid().ToString("N"));
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -92,7 +103,10 @@ internal sealed class FakeGatewayWebAppFactory : WebApplicationFactory<Program>
     {
         await base.DisposeAsync();
         Environment.SetEnvironmentVariable("LM_PROVIDER_MODE", null);
-        DetachedStoreTeardown.Purge(Root);
+        if (_ownsRoot)
+        {
+            DetachedStoreTeardown.Purge(Root);
+        }
     }
 
     private sealed class EmptyCatalogClient : IMarketplaceCatalogClient

@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Reflection;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using LmStreaming.Sample.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -435,10 +436,74 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         fixture.Pool.ActiveAgentCount.Should().Be(0);
     }
 
+    [Fact]
+    public async Task A_dedicated_thread_reloaded_after_an_agent_unload_or_a_host_restart_gets_its_own_jailed_sandbox_again()
+    {
+        var root = FakeGatewayWebAppFactory.NewRoot();
+        try
+        {
+            string a;
+            string workspaceId;
+            await using (var first = await StartAsync(root: root))
+            {
+                workspaceId = first.WorkspaceId;
+                a = await first.ProvisionAsync("PRs/r-7");
+                _ = first.BuildAgent(a);
+                AssertOwnedAndJailed(first, a, "the first build");
+
+                // Idle unload: the agent leaves the pool; the next turn rebuilds it from the stored metadata.
+                first.Pool.TryGetHandoffState(a, out var handoff).Should().BeTrue();
+                (await first.Pool.TryReleaseIdleAgentAsync(a, handoff))
+                    .Should()
+                    .Be(MultiTurnAgentPool.AgentReleaseOutcome.Released);
+                first.Pool.ActiveAgentCount.Should().Be(0);
+                _ = first.BuildAgent(a);
+                AssertOwnedAndJailed(first, a, "the rebuild after an idle unload");
+                first.Gateway.Creates.Should().OnlyContain(create => WorkingDir(create.Body) == "PRs/r-7");
+            }
+
+            // Restart: a new host, registry and pool over the same stores. Only the stored metadata carries the
+            // flag and the directory now.
+            await using var second = await StartAsync(root: root, workspaceId: workspaceId);
+            (await ConversationDedicatedSandbox.ReadAsync(second.Store, a)).Should().BeTrue();
+            (await ConversationWorkingDirectory.ReadAsync(second.Store, a)).Should().Be("PRs/r-7");
+            _ = second.BuildAgent(a);
+            AssertOwnedAndJailed(second, a, "the rebuild after a host restart");
+            second.Gateway.Creates.Should().ContainSingle();
+            WorkingDir(second.Gateway.Creates[0].Body).Should().Be("PRs/r-7");
+        }
+        finally
+        {
+            DetachedStoreTeardown.Purge(root);
+        }
+    }
+
+    private void AssertOwnedAndJailed(Fixture fixture, string threadId, string when)
+    {
+        var own = fixture.Registry.TryGetExistingSession(fixture.WorkspaceId, readOnlyEgress: false, threadId);
+        var shared = fixture.Registry.TryGetExistingSession(fixture.WorkspaceId, readOnlyEgress: false, null);
+        Logger.LogInformation(
+            "After {When}: thread {ThreadId} has sandbox {SessionId} (owner {Owner}, jail {Jail}); shared slot {Shared}",
+            when,
+            threadId,
+            own?.SessionId,
+            own?.OwnerThreadId,
+            own?.WorkspaceWorkingDir,
+            shared?.SessionId
+        );
+        own.Should().NotBeNull($"{when} resolves the thread's own sandbox");
+        own!.OwnerThreadId.Should().Be(threadId, when);
+        own.WorkspaceWorkingDir.Should().Be("PRs/r-7", when);
+        shared.Should().BeNull($"{when} must not fall back to the shared sandbox");
+    }
+
     private static string? WorkingDir(string createBody) => OwnedSandboxGateway.WorkingDir(createBody);
 
-    private Task<Fixture> StartAsync(string? workspaceWorkingDir = null) =>
-        Fixture.StartAsync(Logger, workspaceWorkingDir);
+    private Task<Fixture> StartAsync(
+        string? workspaceWorkingDir = null,
+        string? root = null,
+        string? workspaceId = null
+    ) => Fixture.StartAsync(Logger, workspaceWorkingDir, root, workspaceId);
 
     private sealed class Fixture : IAsyncDisposable
     {
@@ -460,15 +525,22 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         public SandboxSessionRegistry Registry => _host.Services.GetRequiredService<SandboxSessionRegistry>();
         public IConversationStore Store => _host.Services.GetRequiredService<IConversationStore>();
 
-        public static async Task<Fixture> StartAsync(ILogger logger, string? workspaceWorkingDir)
+        public static async Task<Fixture> StartAsync(
+            ILogger logger,
+            string? workspaceWorkingDir,
+            string? root = null,
+            string? workspaceId = null
+        )
         {
             var gateway = new OwnedSandboxGateway();
-            var fixture = new Fixture(gateway, new FakeGatewayWebAppFactory(gateway, AppId), logger);
-            fixture.WorkspaceId = (
-                await fixture
-                    ._host.Services.GetRequiredService<IWorkspaceStore>()
-                    .CreateAsync(new WorkspaceCreate { Name = "Reviews", WorkingDir = workspaceWorkingDir })
-            ).Id;
+            var fixture = new Fixture(gateway, new FakeGatewayWebAppFactory(gateway, AppId, root: root), logger);
+            fixture.WorkspaceId =
+                workspaceId
+                ?? (
+                    await fixture
+                        ._host.Services.GetRequiredService<IWorkspaceStore>()
+                        .CreateAsync(new WorkspaceCreate { Name = "Reviews", WorkingDir = workspaceWorkingDir })
+                ).Id;
             logger.LogInformation(
                 "Host up: app {AppId}, workspace {WorkspaceId} with working directory {WorkspaceWorkingDir}, stores in {Root}",
                 AppId,
