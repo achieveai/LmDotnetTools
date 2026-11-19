@@ -219,30 +219,45 @@ internal static class ReviewBatch
                 execute: true,
                 ct
             );
-            var reclaimed = results.Where(result => result.Status == "reclaimed").ToList();
-            if (reclaimed.Count > 0)
-                Console.Error.WriteLine(
-                    $"Reaper reclaimed {reclaimed.Count} lapsed-lease slot(s): "
-                        + string.Join(", ", reclaimed.Select(result => $"{result.Repo}#{result.Pr}/slot{result.Slot}"))
-                );
-            // Every result here is an owner whose lease lapsed. A forced reclaim names what it overrode; a skip is a
-            // slot still blocked (usually on active host agents) and is said on every sweep: a silent skip hid a jam 8 hours.
-            foreach (var forced in reclaimed.Where(result => result.Detail is not null))
-                Console.Error.WriteLine(
-                    $"Reaper forced lapsed-lease slot {forced.Repo}#{forced.Pr}/slot{forced.Slot}: {forced.Detail}"
-                );
-            foreach (var skipped in results.Where(result => result.Status == "skipped"))
-                Console.Error.WriteLine(
-                    $"Reaper waiting on lapsed-lease slot {skipped.Repo}#{skipped.Pr}/slot{skipped.Slot}: {skipped.Detail}"
-                );
-            foreach (var held in results.Where(result => result.Status == "held"))
-                Console.Error.WriteLine(
-                    $"Reaper holding lapsed-lease slot {held.Repo}#{held.Pr}/slot{held.Slot}: {held.Detail}"
-                );
+            LogSweep(results);
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
             Console.Error.WriteLine($"Reaper sweep skipped: {ex.Message}.");
+        }
+    }
+
+    /// <summary>What one batch sweep tells the operator, on stderr.</summary>
+    internal static void LogSweep(IReadOnlyList<SlotReaper.ReclaimResult> results)
+    {
+        var reclaimed = results.Where(result => result.Status == "reclaimed").ToList();
+        if (reclaimed.Count > 0)
+        {
+            Console.Error.WriteLine(
+                $"Reaper reclaimed {reclaimed.Count} lapsed-lease slot(s): "
+                    + string.Join(", ", reclaimed.Select(result => $"{result.Repo}#{result.Pr}/slot{result.Slot}"))
+            );
+        }
+        // Every result here is an owner whose lease lapsed. A forced reclaim names what it overrode; a skip is a
+        // slot still blocked (usually on active host agents) and is said on every sweep: a silent skip hid a jam 8 hours.
+        foreach (var forced in reclaimed.Where(result => result.Detail is not null))
+        {
+            Console.Error.WriteLine(
+                $"Reaper forced lapsed-lease slot {forced.Repo}#{forced.Pr}/slot{forced.Slot}: {forced.Detail}"
+            );
+        }
+        foreach (var skipped in results.Where(result => result.Status == "skipped"))
+        {
+            Console.Error.WriteLine(
+                $"Reaper waiting on lapsed-lease slot {skipped.Repo}#{skipped.Pr}/slot{skipped.Slot}: {skipped.Detail}"
+            );
+        }
+        // A held slot is a verified review with no archive: said on every sweep until an operator acts.
+        foreach (var held in results.Where(result => result.Status == "held"))
+        {
+            Console.Error.WriteLine(
+                $"Reaper holding lapsed-lease slot {held.Repo}#{held.Pr}/slot{held.Slot}: {held.Detail}"
+            );
         }
     }
 

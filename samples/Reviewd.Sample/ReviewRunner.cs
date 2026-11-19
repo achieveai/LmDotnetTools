@@ -212,10 +212,12 @@ internal static class ReviewRunner
         string phase,
         JsonObject args,
         string operation,
-        CancellationToken ct
+        CancellationToken ct,
+        string? fence = null
     )
     {
-        // The renewal shares the connection, so it stops before the caller writes again.
+        // The renewal shares the connection, so it stops before the caller writes again. A reaper's reset renews under
+        // its own fence (SlotRelease.ResetFence); a lane renews only an unfenced claim.
         using var stepDone = CancellationTokenSource.CreateLinkedTokenSource(ct);
         (string Before, string After)? renewed = null;
         var stopped = false;
@@ -276,8 +278,13 @@ internal static class ReviewRunner
                     // next save checks the claim and stops before it sends or commits (SlotClaimLostException).
                     try
                     {
-                        if (await SlotRelease.RenewAsync(connection, ownerKey, claimToken, token) is { } lease)
+                        if (
+                            await SlotRelease.RenewAsync(connection, ownerKey, claimToken, token, fence: fence) is
+                            { } lease
+                        )
+                        {
                             renewed = (renewed?.Before ?? lease.Before, lease.After);
+                        }
                     }
                     catch (Exception failure)
                         when (failure is not OperationCanceledException || !token.IsCancellationRequested)
@@ -1290,10 +1297,6 @@ internal static class ReviewRunner
             receipt["stage"] = "completed-verified";
             receipt["reviewedHeadSha"] = args["head"]!.DeepClone();
             receipt["finishedAt"] = DateTimeOffset.UtcNow;
-            // The reset that took the claim already cleaned and released the slot, so the attempt says so and frees its
-            // lane now, instead of reading as owned until a later cleanup is refused.
-            if (commitClaimLost)
-                receipt["cleanupState"] = "released";
             using (var transaction = connection.BeginTransaction())
             {
                 using var completion = connection.CreateCommand();
@@ -1307,12 +1310,16 @@ internal static class ReviewRunner
                 transaction.Commit();
             }
             if (commitClaimLost)
+            {
                 Console.Error.WriteLine(
                     $"{repo.DisplayName} #{pr}: the commit landed after a reset took slot claim {claimToken}; "
                         + "kept its result, no cleanup (the reset cleaned the slot)."
                 );
+            }
             else
+            {
                 await CleanupAsync();
+            }
             Console.WriteLine(receipt.ToJsonString());
             return 0;
         }
@@ -1337,6 +1344,7 @@ internal static class ReviewRunner
                 var pending = receipt.DeepClone().AsObject();
                 receipt["stage"] = "failed-released";
                 receipt["admissionRefused"] = failure.Message;
+                var releaseFailed = false;
                 try
                 {
                     await SlotRelease.ReleaseAsync(
@@ -1350,18 +1358,33 @@ internal static class ReviewRunner
                 }
                 catch (Exception releaseFailure)
                 {
+                    // Logged first: the save below can fail too, and this is the only record of why the lane is held.
+                    Console.Error.WriteLine($"Claim release held its lane: {releaseFailure.Message}");
+                    pending["cleanupError"] = releaseFailure.Message;
                     // A sweep that reset the slot first owns the record: neither overwrite it nor blame the PR.
-                    if (!await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, CancellationToken.None))
+                    if (
+                        !await SlotRelease.SaveOwnedAsync(
+                            connection,
+                            ownerKey,
+                            claimToken,
+                            attemptKey,
+                            pending,
+                            CancellationToken.None
+                        )
+                    )
+                    {
                         throw new SlotClaimLostException(
                             $"Slot claim {claimToken} was lost before the refused prepare released it ({releaseFailure.Message}); the attempt is left as reset."
                         );
-                    pending["cleanupError"] = releaseFailure.Message;
-                    await store.SetAsync(attemptKey, pending, CancellationToken.None);
-                    Console.Error.WriteLine($"Claim release held its lane: {releaseFailure.Message}");
+                    }
+                    releaseFailed = true;
+                }
+                // A claim the release left held is not a slot to pass over: the run ends with prepare's own error, and
+                // the attempt keeps the claim with its cleanupError for an operator.
+                if (prepareRefused || releaseFailed)
+                {
                     throw;
                 }
-                if (prepareRefused)
-                    throw;
                 throw new SlotUnavailableException($"Native slot is not idle: {failure.Message}");
             }
             if (
@@ -1387,19 +1410,36 @@ internal static class ReviewRunner
             // A cancel or DB error in a wait skips that wait's claim check, so check it here: a sweep that reset the
             // slot meanwhile recorded its own attempt, and retaining this receipt would overwrite it. A receipt this run
             // released itself (a settled prepare failure's cleanup) has no claim left by design; its failure stands.
-            if (
-                receipt["cleanupState"]?.GetValue<string>() != "released"
-                && !await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, CancellationToken.None)
+            // The check and the save are one transaction, so a reset cannot release the claim between them. A commit that
+            // landed is final whatever the claim: its first save found the claim gone or never ran (a cancel, a failed
+            // write), so it is kept here, released, since the reset already cleaned the slot.
+            if (receipt["cleanupState"]?.GetValue<string>() == "released")
+            {
+                await store.SetAsync(attemptKey, receipt, CancellationToken.None);
+            }
+            else if (
+                !await SlotRelease.SaveOwnedAsync(
+                    connection,
+                    ownerKey,
+                    claimToken,
+                    attemptKey,
+                    receipt,
+                    CancellationToken.None
+                )
             )
             {
-                Console.Error.WriteLine(
-                    $"{repo.DisplayName} #{pr}: slot claim {claimToken} was lost after {failure.Message} Stopped; the attempt is left as reset."
-                );
-                throw new SlotClaimLostException(
-                    $"Slot claim {claimToken} was lost while the run failed ({failure.Message}); the attempt was not retained."
-                );
+                if (!CommitLanded(receipt))
+                {
+                    Console.Error.WriteLine(
+                        $"{repo.DisplayName} #{pr}: slot claim {claimToken} was lost after {failure.Message} Stopped; the attempt is left as reset."
+                    );
+                    throw new SlotClaimLostException(
+                        $"Slot claim {claimToken} was lost while the run failed ({failure.Message}); the attempt was not retained."
+                    );
+                }
+                receipt["cleanupState"] = "released";
+                await store.SetAsync(attemptKey, receipt, CancellationToken.None);
             }
-            await store.SetAsync(attemptKey, receipt, CancellationToken.None);
             Console.Error.WriteLine(
                 $"Review stopped at {receipt["stage"]}; retained {attemptKey}. No automatic retry or cleanup."
             );
@@ -1414,18 +1454,26 @@ internal static class ReviewRunner
         async Task SaveAsync(bool claimRequired = true)
         {
             // Extend the slot lease on every progress checkpoint so a live review is never mistaken for a dead one
-            // by the reaper. A lost claim means a sweep reset the slot under this run (its renewals failed for longer
-            // than the lease), so the run stops here, before it sends or commits on the reset slot, and does not
-            // overwrite the attempt the reset recorded. Only the save after a successful commit goes on: that result
-            // is final, and no cleanup follows it.
-            if (!await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, ct))
+            // by the reaper. The claim check, the renewal and the save are one transaction, so a reset never lands
+            // between them. A lost claim (released, or fenced by a reset in progress) means a sweep reset the slot
+            // under this run (its renewals failed for longer than the lease), so the run stops here, before it sends
+            // or commits on the reset slot, and does not overwrite the attempt the reset recorded.
+            if (await SlotRelease.SaveOwnedAsync(connection, ownerKey, claimToken, attemptKey, receipt, ct))
             {
-                if (claimRequired)
-                    throw new SlotClaimLostException(
-                        $"Slot claim {claimToken} was lost, so {receipt["stage"]} was not saved; the slot was reset under this run."
-                    );
-                commitClaimLost = true;
+                return;
             }
+            if (claimRequired)
+            {
+                throw new SlotClaimLostException(
+                    $"Slot claim {claimToken} was lost, so {receipt["stage"]} was not saved; the slot was reset under this run."
+                );
+            }
+            // Only the save after a successful commit goes on: that result is final, and no cleanup follows it. The
+            // reset already cleaned and released the slot, so the attempt reads as released from this first write on;
+            // a stop before the completion must not leave it owned, which neither a sweep (its owner is released)
+            // nor a resume (its stage) would clear.
+            commitClaimLost = true;
+            receipt["cleanupState"] = "released";
             await store.SetAsync(attemptKey, receipt, ct);
         }
         async Task CleanupAsync()
@@ -1519,11 +1567,26 @@ internal static class ReviewRunner
                     $"{repo.DisplayName} #{pr}: commit, operation {operation}, failed: {refused.Message}"
                 );
                 if (CommitResponseLost(refused))
+                {
                     receipt[CommitReplay] = operation;
+                }
                 else if (refused is SettledSandboxException)
+                {
                     receipt.Remove(CommitReplay);
+                }
                 receipt["stage"] = "verify-pending";
-                await SaveAsync();
+                try
+                {
+                    await SaveAsync();
+                }
+                // The commit's own error stays the run's outcome, so the batch still classifies it; the failed save is
+                // said here, and the run's failure path saves the same receipt again. A lost claim still stops the run.
+                catch (Exception saveFailure) when (saveFailure is not SlotClaimLostException)
+                {
+                    Console.Error.WriteLine(
+                        $"{repo.DisplayName} #{pr}: commit, operation {operation}, replay state not saved: {saveFailure.Message}"
+                    );
+                }
                 throw;
             }
             catch (SettledSandboxException) when (phase == "commit")
@@ -1533,7 +1596,11 @@ internal static class ReviewRunner
                 throw;
             }
             if (phase == "commit")
+            {
                 receipt.Remove(CommitReplay);
+                // Saved with its stage, so a stop before the completion still has the result that finishes it.
+                receipt["artifactCommit"] = result.DeepClone();
+            }
             receipt["stage"] = phase + "-completed";
             await SaveAsync(claimRequired: phase != "commit");
             return result;
@@ -1668,6 +1735,12 @@ internal static class ReviewRunner
                 or "confirmation-running"
                 or "confirmation-completed"
                 or "verify-pending";
+
+    /// <summary>True for a receipt whose archive commit landed: its result is final whatever happens to the claim.</summary>
+    internal static bool CommitLanded(JsonNode receipt) =>
+        receipt["stage"]?.GetValue<string>() is "commit-completed" or "completed-verified"
+        && receipt["artifactCommit"]?["status"]?.GetValue<string>() is "committed" or "unchanged"
+        && receipt["artifactCommit"]?["commit"]?.GetValue<string>() is { Length: 40 };
 
     internal static bool CanRetryPreparation(JsonNode attempt, string session) =>
         attempt["stage"]?.GetValue<string>() == "prepare-failed-before-reset"

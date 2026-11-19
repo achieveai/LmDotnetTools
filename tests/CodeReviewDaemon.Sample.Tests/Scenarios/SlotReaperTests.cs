@@ -348,10 +348,11 @@ public sealed class SlotReaperTests
 
     // A review whose claim lapsed two hours ago and whose root conversation is idle: the only question
     // left for the reaper is whether anything below the root is still working.
-    private static async Task<(string OwnerKey, SqliteKvStore Store)> SeedLapsedClaimAsync(
+    internal static async Task<(string OwnerKey, SqliteKvStore Store)> SeedLapsedClaimAsync(
         Microsoft.Data.Sqlite.SqliteConnection connection,
         int slot,
-        TimeSpan? claimedAgo = null
+        TimeSpan? claimedAgo = null,
+        string pr = "100"
     )
     {
         var repo = PrCommands.ParseRepo("O365Exchange/Weve_DA/Nova");
@@ -360,7 +361,7 @@ public sealed class SlotReaperTests
         var receipt = new JsonObject
         {
             ["repository"] = repo.DisplayName,
-            ["prId"] = "100",
+            ["prId"] = pr,
             ["slot"] = slot,
             ["workspaceId"] = "workspace",
             ["sessionId"] = "dead-session",
@@ -372,14 +373,14 @@ public sealed class SlotReaperTests
             ownerKey,
             receipt,
             null,
-            $"reviewd/review-attempt/{repo.NormalizedKey}/100",
+            $"reviewd/review-attempt/{repo.NormalizedKey}/{pr}",
             CancellationToken.None,
             DateTimeOffset.UtcNow - (claimedAgo ?? TimeSpan.FromHours(2))
         );
         var attempt = receipt.DeepClone().AsObject();
         attempt["claimToken"] = token;
         attempt["cleanupState"] = "owned";
-        await store.SetAsync($"reviewd/review-attempt/{repo.NormalizedKey}/100", attempt, CancellationToken.None);
+        await store.SetAsync($"reviewd/review-attempt/{repo.NormalizedKey}/{pr}", attempt, CancellationToken.None);
         return (ownerKey, store);
     }
 
@@ -734,6 +735,9 @@ public sealed class SlotReaperTests
     [InlineData("verify-completed", false)]
     [InlineData("commit-pending", true)]
     [InlineData("commit-completed", true)]
+    // The stage alone holds too: a verified stage with no publication recorded.
+    [InlineData("commit-pending", false)]
+    [InlineData("commit-completed", false)]
     // A commit whose response was lost goes back to verify-pending to replay under its id; it is still verified.
     [InlineData("verify-pending", true)]
     public async Task Reaper_holds_a_verified_review_whose_archive_commit_has_not_completed(string stage, bool verified)
@@ -1182,6 +1186,188 @@ public sealed class SlotReaperTests
                 .Which.Detail.Should()
                 .Be("forced: owner marker already released");
             (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("released");
+        }
+        finally
+        {
+            ReviewdSqlitePools.Clear(database);
+            File.Delete(database);
+        }
+    }
+
+    [Fact]
+    public async Task A_lane_cannot_save_or_renew_while_a_reset_runs_and_the_reset_still_renews_under_its_fence()
+    {
+        // The lane's renewals failed for longer than the lease, but it still runs on its token. Once the reaper starts
+        // the reset, the lane's save and heartbeat are refused, so a verify that finishes now cannot record progress
+        // the reset then discards; the reset's own renewals keep the lease alive so another sweep leaves it alone.
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-reset-fence-{Guid.NewGuid():N}.db");
+        var previousInterval = ReviewRunner.LeaseRenewInterval;
+        ReviewRunner.LeaseRenewInterval = TimeSpan.FromMilliseconds(20);
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await connection.OpenAsync();
+            using var lane = PrThreadBindings.Connection(database);
+            await lane.OpenAsync();
+            var (ownerKey, store) = await SeedLapsedClaimAsync(connection, 3);
+            var attemptKey =
+                $"reviewd/review-attempt/{PrCommands.ParseRepo("O365Exchange/Weve_DA/Nova").NormalizedKey}/100";
+            var seeded = (await store.GetAsync<JsonObject>(attemptKey))!;
+            seeded["stage"] = "verify-pending";
+            await store.SetAsync(attemptKey, seeded, CancellationToken.None);
+            var token = seeded["claimToken"]!.GetValue<string>();
+            var lapsed = (await store.GetAsync<JsonObject>(ownerKey))!["leaseExpiresAt"]!.GetValue<DateTimeOffset>();
+            var handler = new FakeHttpMessageHandler()
+                .OnJson(HttpMethod.Post, "/freeze", """{"frozen":true}""")
+                .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+                .OnJson(HttpMethod.Get, "/subagents?recursive=true", EmptyTree);
+            using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+            bool? laneSaved = null;
+            bool? laneRenewed = null;
+            JsonObject? fencedOwner = null;
+
+            var result = await SlotReaper.ReclaimOneAsync(
+                connection,
+                new LmStreamingS2SClient(http, null, null, null),
+                async (phase, args, _, ct) =>
+                {
+                    // The renewals' own step-activity and step-stop calls run beside the reset; only the reset acts.
+                    if (phase != "cleanup")
+                    {
+                        return [];
+                    }
+                    var verified = seeded.DeepClone().AsObject();
+                    verified["stage"] = "verify-completed";
+                    laneSaved = await SlotRelease.SaveOwnedAsync(lane, ownerKey, token, attemptKey, verified, ct);
+                    laneRenewed = await SlotRelease.HeartbeatAsync(lane, ownerKey, token, ct);
+                    // The reset's own renewal runs under its fence and moves the lapsed lease forward.
+                    var lanes = new SqliteKvStore(lane);
+                    var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+                    while (
+                        (fencedOwner = (await lanes.GetAsync<JsonObject>(ownerKey, ct))!)[
+                            "leaseExpiresAt"
+                        ]!.GetValue<DateTimeOffset>() <= DateTimeOffset.UtcNow
+                        && DateTimeOffset.UtcNow < deadline
+                    )
+                    {
+                        await Task.Delay(10, ct);
+                    }
+                    return new JsonObject
+                    {
+                        ["claimToken"] = args["claimToken"]!.DeepClone(),
+                        ["cleanBaselineVerified"] = true,
+                        ["forced"] = new JsonArray(),
+                    };
+                },
+                PrCommands.ParseRepo("O365Exchange/Weve_DA/Nova"),
+                "100",
+                3,
+                "workspace",
+                seeded,
+                token,
+                execute: true,
+                CancellationToken.None,
+                delay: (_, _) => Task.CompletedTask
+            );
+
+            laneSaved.Should().BeFalse("the reset fenced the claim");
+            laneRenewed.Should().BeFalse("the reset fenced the claim");
+            fencedOwner!["state"]!.GetValue<string>().Should().Be("owned");
+            fencedOwner[SlotRelease.ResetFence].Should().NotBeNull();
+            fencedOwner["leaseExpiresAt"]!
+                .GetValue<DateTimeOffset>()
+                .Should()
+                .BeAfter(lapsed, "the reset renewed under its fence");
+            result.Status.Should().Be("reclaimed");
+            var attempt = (await store.GetAsync<JsonObject>(attemptKey))!;
+            attempt["stage"]!.GetValue<string>().Should().Be("failed-released");
+            attempt["stageBeforeReclaim"]!
+                .GetValue<string>()
+                .Should()
+                .Be("verify-pending", "the lane's save was refused");
+            attempt["cleanupState"]!.GetValue<string>().Should().Be("released");
+            var owner = (await store.GetAsync<JsonObject>(ownerKey))!;
+            owner["state"]!.GetValue<string>().Should().Be("released");
+            owner[SlotRelease.ResetFence].Should().BeNull("the release lifts the fence");
+        }
+        finally
+        {
+            ReviewRunner.LeaseRenewInterval = previousInterval;
+            ReviewdSqlitePools.Clear(database);
+            File.Delete(database);
+        }
+    }
+
+    [Fact]
+    public async Task A_lane_save_after_the_reapers_last_recheck_leaves_the_slot_to_the_lane()
+    {
+        // The lane saves between the reaper's last recheck and its fence: the fence is set only on the owner row the
+        // recheck approved and only over the attempt the reaper read, so the reaper backs off and the lane's save stands.
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-fence-race-{Guid.NewGuid():N}.db");
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await connection.OpenAsync();
+            using var lane = PrThreadBindings.Connection(database);
+            await lane.OpenAsync();
+            var (ownerKey, store) = await SeedLapsedClaimAsync(connection, 4);
+            var attemptKey =
+                $"reviewd/review-attempt/{PrCommands.ParseRepo("O365Exchange/Weve_DA/Nova").NormalizedKey}/100";
+            var seeded = (await store.GetAsync<JsonObject>(attemptKey))!;
+            seeded["stage"] = "verify-pending";
+            await store.SetAsync(attemptKey, seeded, CancellationToken.None);
+            var token = seeded["claimToken"]!.GetValue<string>();
+            var handler = new FakeHttpMessageHandler()
+                .OnJson(HttpMethod.Post, "/freeze", """{"frozen":true}""")
+                .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+                .OnJson(HttpMethod.Get, "/subagents?recursive=true", EmptyTree);
+            using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+            var resets = 0;
+            var rechecks = 0;
+            var verified = seeded.DeepClone().AsObject();
+            verified["stage"] = "verify-completed";
+
+            var result = await SlotReaper.ReclaimOneAsync(
+                connection,
+                new LmStreamingS2SClient(http, null, null, null),
+                (_, _, _, _) =>
+                {
+                    resets++;
+                    return Task.FromResult(new JsonObject());
+                },
+                PrCommands.ParseRepo("O365Exchange/Weve_DA/Nova"),
+                "100",
+                4,
+                "workspace",
+                seeded,
+                token,
+                execute: true,
+                CancellationToken.None,
+                delay: (_, _) => Task.CompletedTask,
+                recheck: async ct =>
+                {
+                    // The second recheck is the last one before the fence: the lane saves right after it passes.
+                    if (++rechecks == 2)
+                    {
+                        (await SlotRelease.SaveOwnedAsync(lane, ownerKey, token, attemptKey, verified, ct))
+                            .Should()
+                            .BeTrue();
+                    }
+                    return false;
+                }
+            );
+
+            rechecks.Should().Be(2);
+            result.Status.Should().Be("skipped");
+            result.Detail.Should().Contain("owner changed");
+            resets.Should().Be(0);
+            (await store.GetAsync<JsonObject>(attemptKey))!["stage"]!
+                .GetValue<string>()
+                .Should()
+                .Be("verify-completed");
+            var owner = (await store.GetAsync<JsonObject>(ownerKey))!;
+            owner["state"]!.GetValue<string>().Should().Be("owned");
+            owner[SlotRelease.ResetFence].Should().BeNull("a reaper that backs off leaves no fence");
         }
         finally
         {

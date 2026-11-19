@@ -5906,6 +5906,18 @@ public sealed class ReviewdRunnerTests
                     },
                 }
             );
+            // Every write of the attempt, so a stop right after any of them is checked, not only the final row.
+            using (var log = connection.CreateCommand())
+            {
+                log.CommandText = $"""
+                    CREATE TABLE attempt_writes(value TEXT);
+                    CREATE TRIGGER log_attempt_insert AFTER INSERT ON cache WHEN NEW.key = '{attemptKey}'
+                    BEGIN INSERT INTO attempt_writes VALUES (NEW.value); END;
+                    CREATE TRIGGER log_attempt_update AFTER UPDATE ON cache WHEN NEW.key = '{attemptKey}'
+                    BEGIN INSERT INTO attempt_writes VALUES (NEW.value); END;
+                    """;
+                _ = await log.ExecuteNonQueryAsync();
+            }
             async Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token)
             {
                 phases.Add(phase);
@@ -5954,6 +5966,25 @@ public sealed class ReviewdRunnerTests
                 row["cleanupState"]!.GetValue<string>().Should().Be("released", key);
             }
             (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("released");
+            // From the first write after the commit landed, the attempt reads as released: a stop before the completion
+            // must not leave it owned, which neither a sweep (its owner is released) nor a resume (its stage) would clear.
+            var written = new List<JsonNode>();
+            using (var read = connection.CreateCommand())
+            {
+                read.CommandText = "SELECT value FROM attempt_writes";
+                using var rows = await read.ExecuteReaderAsync();
+                while (await rows.ReadAsync())
+                {
+                    written.Add(JsonNode.Parse(rows.GetString(0))!);
+                }
+            }
+            var landed = written.Where(w => w["artifactCommit"] is not null).ToList();
+            landed.Should().NotBeEmpty();
+            landed[0]["stage"]!.GetValue<string>().Should().Be("commit-completed", "the commit's own save comes first");
+            landed
+                .Select(w => w["cleanupState"]?.GetValue<string>())
+                .Should()
+                .AllBe("released", "the first write after the commit landed is already released");
         }
         finally
         {

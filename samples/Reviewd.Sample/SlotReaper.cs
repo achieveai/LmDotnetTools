@@ -105,6 +105,7 @@ internal static class SlotReaper
         // archive for good (seen on the ADO runner, MCQdbDEV #11441). The slot stays held, untouched and said on every
         // sweep; the alarm reports it as held and an operator finishes the commit or discards the slot.
         if (!discardVerified && HoldsUnarchivedReview(attempt))
+        {
             return new ReclaimResult(
                 repo.DisplayName,
                 pr,
@@ -115,6 +116,7 @@ internal static class SlotReaper
                 Detail: $"verified review at {attempt["stage"]?.GetValue<string>()} has no archive commit; held for an "
                     + "operator to finish the commit or discard the slot (README: A held verified review)."
             );
+        }
         var abandoned = new AbandonedChildProbe($"Reaper {repo.DisplayName}#{pr}/slot{slot}", reads);
         var head =
             attempt["headSha"]?.GetValue<string>()
@@ -227,16 +229,40 @@ internal static class SlotReaper
                 return new ReclaimResult(repo.DisplayName, pr, slot, threadId, freezeState, "would-reclaim");
             }
 
-            if (!await StillOursAsync())
+            var ownerKey = SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot);
+            var operation = Guid.NewGuid().ToString("N");
+            // Read before the recheck, so the fence below lands only on the row the recheck approved.
+            var seen = await ReadRawAsync(connection, ownerKey, ct);
+            if (seen is null || !await StillOursAsync())
             {
+                await RestoreIfFrozenAsync();
+                return Moved(freezeState);
+            }
+            // Fence the claim before the reset discards anything. A lane whose renewals failed can still be running on
+            // this token: from here its saves are refused, so a verify that finishes now cannot record progress the
+            // reset then discards. The attempt is read in the same transaction; one that changed since the reaper read
+            // it (the lane saved first) is left alone, and so is an owner row that changed.
+            var fence = await SlotRelease.FenceAsync(connection, ownerKey, claimToken, seen, operation, attemptKey, ct);
+            if (fence is not { } fenced || fenced.Attempt?.ToJsonString() != attempt.ToJsonString())
+            {
+                if (fence is { } unused)
+                {
+                    _ = await SlotRelease.UnfenceAsync(
+                        connection,
+                        ownerKey,
+                        unused.Fenced,
+                        seen,
+                        CancellationToken.None
+                    );
+                }
                 await RestoreIfFrozenAsync();
                 return Moved(freezeState);
             }
 
             // 3) Discard-reset the native slot (release the owner marker, discard the prepared slot/pool run). The reset
-            //    renews the lease while it runs, so another reaper reading the same lapsed lease leaves the slot alone.
-            var ownerKey = SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot);
-            var operation = Guid.NewGuid().ToString("N");
+            //    renews the lease under its fence while it runs, so another reaper reading the same lapsed lease leaves
+            //    the slot alone. A reset that fails keeps the fence: the slot may be half discarded, so only the next
+            //    sweep's reset may continue on it.
             var args = new JsonObject
             {
                 ["org"] = repo.OrgOrOwner,
@@ -260,7 +286,8 @@ internal static class SlotReaper
                 "cleanup",
                 args,
                 operation,
-                ct
+                ct,
+                fence: operation
             );
             if (
                 result["claimToken"]?.GetValue<string>() != claimToken
@@ -289,7 +316,7 @@ internal static class SlotReaper
                 attempt["stage"] = "failed-released";
                 attempt["resetCount"] = (attempt["resetCount"]?.GetValue<int>() ?? 0) + 1;
             }
-            await SlotRelease.ReleaseAsync(connection, ownerKey, claimToken, attemptKey, attempt, ct);
+            await SlotRelease.ReleaseAsync(connection, ownerKey, claimToken, attemptKey, attempt, ct, fence: operation);
 
             var forced = overrides is not null
                 ? "forced: " + string.Join("; ", overrides.Select(o => o!.GetValue<string>()))
@@ -542,9 +569,27 @@ internal static class SlotReaper
     /// </summary>
     public static async Task<int> RunAsync(CliOptions options, ReviewdConfig config, CancellationToken ct)
     {
+        var session = options.Required("session");
+        using var sandboxClient = config.CreateSandboxClient(TimeSpan.FromMinutes(10));
+        return await RunAsync(
+            options,
+            config.CreateS2SClient(),
+            (phase, args, operation, token) =>
+                ReviewRunner.ExecuteSandboxAsync(sandboxClient, session, phase, args, operation, token),
+            ct
+        );
+    }
+
+    /// <summary><c>review reap-slots</c> on an injected host client and sandbox, so its output is testable.</summary>
+    internal static async Task<int> RunAsync(
+        CliOptions options,
+        LmStreamingS2SClient client,
+        SandboxExecutor sandbox,
+        CancellationToken ct
+    )
+    {
         var database = options.Required("db");
         var workspace = options.Required("workspace");
-        var session = options.Required("session");
         var execute = options.Has("execute");
         var undatedExpired = options.Has("include-undated");
 
@@ -556,11 +601,6 @@ internal static class SlotReaper
             }.ToString()
         );
         await connection.OpenAsync(ct);
-
-        var client = config.CreateS2SClient();
-        using var sandboxClient = config.CreateSandboxClient(TimeSpan.FromMinutes(10));
-        SandboxExecutor sandbox = (phase, args, operation, token) =>
-            ReviewRunner.ExecuteSandboxAsync(sandboxClient, session, phase, args, operation, token);
 
         var results = await SweepAsync(
             connection,
@@ -589,11 +629,14 @@ internal static class SlotReaper
         return 0;
     }
 
-    private static async Task<JsonObject?> ReadAsync(SqliteConnection connection, string key, CancellationToken ct)
+    private static async Task<JsonObject?> ReadAsync(SqliteConnection connection, string key, CancellationToken ct) =>
+        await ReadRawAsync(connection, key, ct) is { } raw ? JsonNode.Parse(raw)?.AsObject() : null;
+
+    private static async Task<string?> ReadRawAsync(SqliteConnection connection, string key, CancellationToken ct)
     {
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT value FROM cache WHERE key=@key";
         _ = command.Parameters.AddWithValue("@key", key);
-        return await command.ExecuteScalarAsync(ct) is string raw ? JsonNode.Parse(raw)?.AsObject() : null;
+        return await command.ExecuteScalarAsync(ct) as string;
     }
 }

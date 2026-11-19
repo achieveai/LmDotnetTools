@@ -31,6 +31,19 @@ internal static class SlotRelease
     internal const string OwnerKeyPrefix = "reviewd/slot-owner/";
 
     /// <summary>
+    ///     Set on an owned row by the reaper's reset (<see cref="FenceAsync"/>) before it discards the slot. While it is
+    ///     set, only that reset renews or releases the claim: a lane on the same token can no longer save, so it cannot
+    ///     record progress (a verify that finished after the reaper's last owner check) that the reset then discards.
+    /// </summary>
+    internal const string ResetFence = "resetOperation";
+
+    // The claim this caller may act on: the exact token, still owned, and fenced by this caller's reset or by none.
+    private static bool Holds(JsonNode? claim, string token, string? fence) =>
+        claim?["claimToken"]?.GetValue<string>() == token
+        && claim["state"]?.GetValue<string>() == "owned"
+        && claim[ResetFence]?.GetValue<string>() == fence;
+
+    /// <summary>
     ///     Claims the slot owner row and saves <paramref name="owner"/>, stamped with the claim token and
     ///     <c>cleanupState</c>, as the attempt at <paramref name="attemptKey"/> in the same transaction. A crash
     ///     can therefore never leave a durable claim whose attempt reconcile-slot cannot find.
@@ -127,13 +140,18 @@ internal static class SlotRelease
         DateTimeOffset? nowUtc = null
     ) => await RenewAsync(connection, key, token, ct, nowUtc) is not null;
 
-    /// <summary>The heartbeat, returning the owner row it replaced and the row it wrote (null when it wrote none).</summary>
-    internal static async Task<(string Before, string After)?> RenewAsync(
+    /// <summary>
+    ///     Saves <paramref name="attempt"/> only while the owner row still holds <paramref name="token"/> unfenced, and
+    ///     renews the lease, in one transaction. A reset that releases or fences the claim can therefore never land
+    ///     between the check and the write. Returns false, writing nothing, when the claim is gone.
+    /// </summary>
+    internal static async Task<bool> SaveOwnedAsync(
         SqliteConnection connection,
         string key,
         string token,
-        CancellationToken ct,
-        DateTimeOffset? nowUtc = null
+        string attemptKey,
+        JsonObject attempt,
+        CancellationToken ct
     )
     {
         using var transaction = connection.BeginTransaction();
@@ -143,9 +161,130 @@ internal static class SlotRelease
         read.Parameters.AddWithValue("@key", key);
         var raw = await read.ExecuteScalarAsync(ct) as string;
         var claim = raw is null ? null : JsonNode.Parse(raw)!.AsObject();
-        if (claim?["claimToken"]?.GetValue<string>() != token || claim["state"]?.GetValue<string>() != "owned")
+        if (!Holds(claim, token, null))
+        {
+            return false;
+        }
+        claim!["leaseExpiresAt"] = DateTimeOffset.UtcNow + DefaultLeaseWindow;
+        var renewed = claim.ToJsonString();
+        using var write = connection.CreateCommand();
+        write.Transaction = transaction;
+        write.CommandText = "UPDATE cache SET value=@value WHERE key=@key AND value=@old";
+        write.Parameters.AddWithValue("@key", key);
+        write.Parameters.AddWithValue("@old", raw!);
+        write.Parameters.AddWithValue("@value", renewed);
+        if (await write.ExecuteNonQueryAsync(ct) != 1)
+        {
+            return false;
+        }
+        // Written only while the owner row is still the one just renewed, so nothing that changes it first goes unseen.
+        using var save = connection.CreateCommand();
+        save.Transaction = transaction;
+        save.CommandText =
+            "INSERT INTO cache(key,value) SELECT @attempt,@value WHERE (SELECT value FROM cache WHERE key=@key)=@renewed "
+            + "ON CONFLICT(key) DO UPDATE SET value=excluded.value";
+        save.Parameters.AddWithValue("@attempt", attemptKey);
+        save.Parameters.AddWithValue("@value", attempt.ToJsonString());
+        save.Parameters.AddWithValue("@key", key);
+        save.Parameters.AddWithValue("@renewed", renewed);
+        if (await save.ExecuteNonQueryAsync(ct) != 1)
+        {
+            // Whatever changed the owner row inside this transaction stands; only this caller's attempt is withheld.
+            transaction.Commit();
+            return false;
+        }
+        transaction.Commit();
+        return true;
+    }
+
+    /// <summary>
+    ///     Fences the claim for a reset (<see cref="ResetFence"/>): a CAS on <paramref name="seen"/>, the exact owner row
+    ///     the reaper last checked, that reads the attempt in the same transaction. Returns the fenced row and that
+    ///     attempt, or null when the row changed or no longer holds <paramref name="token"/>. The lease is left as it was,
+    ///     so a reset that fails still puts back the lapsed lease the next sweep retries.
+    /// </summary>
+    internal static async Task<(string Fenced, JsonObject? Attempt)?> FenceAsync(
+        SqliteConnection connection,
+        string key,
+        string token,
+        string seen,
+        string operation,
+        string attemptKey,
+        CancellationToken ct
+    )
+    {
+        using var transaction = connection.BeginTransaction();
+        using var read = connection.CreateCommand();
+        read.Transaction = transaction;
+        read.CommandText = "SELECT value FROM cache WHERE key=@key";
+        read.Parameters.AddWithValue("@key", key);
+        var raw = await read.ExecuteScalarAsync(ct) as string;
+        var claim = raw is null ? null : JsonNode.Parse(raw)!.AsObject();
+        if (
+            raw != seen
+            || claim?["claimToken"]?.GetValue<string>() != token
+            || claim["state"]?.GetValue<string>() != "owned"
+        )
+        {
             return null;
-        claim["leaseExpiresAt"] = (nowUtc ?? DateTimeOffset.UtcNow) + DefaultLeaseWindow;
+        }
+        claim[ResetFence] = operation;
+        var fenced = claim.ToJsonString();
+        using var write = connection.CreateCommand();
+        write.Transaction = transaction;
+        write.CommandText = "UPDATE cache SET value=@value WHERE key=@key AND value=@old";
+        write.Parameters.AddWithValue("@key", key);
+        write.Parameters.AddWithValue("@old", raw);
+        write.Parameters.AddWithValue("@value", fenced);
+        if (await write.ExecuteNonQueryAsync(ct) != 1)
+        {
+            return null;
+        }
+        read.Parameters["@key"].Value = attemptKey;
+        var attempt = await read.ExecuteScalarAsync(ct) is string text ? JsonNode.Parse(text)?.AsObject() : null;
+        transaction.Commit();
+        return (fenced, attempt);
+    }
+
+    /// <summary>Lifts a fence the reset will not use: a CAS from <paramref name="fenced"/> back to <paramref name="seen"/>.</summary>
+    internal static async Task<bool> UnfenceAsync(
+        SqliteConnection connection,
+        string key,
+        string fenced,
+        string seen,
+        CancellationToken ct
+    )
+    {
+        using var write = connection.CreateCommand();
+        write.CommandText = "UPDATE cache SET value=@value WHERE key=@key AND value=@old";
+        write.Parameters.AddWithValue("@key", key);
+        write.Parameters.AddWithValue("@old", fenced);
+        write.Parameters.AddWithValue("@value", seen);
+        return await write.ExecuteNonQueryAsync(ct) == 1;
+    }
+
+    /// <summary>The heartbeat, returning the owner row it replaced and the row it wrote (null when it wrote none).</summary>
+    internal static async Task<(string Before, string After)?> RenewAsync(
+        SqliteConnection connection,
+        string key,
+        string token,
+        CancellationToken ct,
+        DateTimeOffset? nowUtc = null,
+        string? fence = null
+    )
+    {
+        using var transaction = connection.BeginTransaction();
+        using var read = connection.CreateCommand();
+        read.Transaction = transaction;
+        read.CommandText = "SELECT value FROM cache WHERE key=@key";
+        read.Parameters.AddWithValue("@key", key);
+        var raw = await read.ExecuteScalarAsync(ct) as string;
+        var claim = raw is null ? null : JsonNode.Parse(raw)!.AsObject();
+        if (!Holds(claim, token, fence))
+        {
+            return null;
+        }
+        claim!["leaseExpiresAt"] = (nowUtc ?? DateTimeOffset.UtcNow) + DefaultLeaseWindow;
         var renewed = claim.ToJsonString();
         using var write = connection.CreateCommand();
         write.Transaction = transaction;
@@ -196,7 +335,7 @@ internal static class SlotRelease
         read.Parameters.AddWithValue("@key", key);
         var current = await read.ExecuteScalarAsync(ct) as string;
         var claim = current is null ? null : JsonNode.Parse(current);
-        if (claim?["claimToken"]?.GetValue<string>() != token || claim["state"]?.GetValue<string>() != "owned")
+        if (!Holds(claim, token, null))
             throw new InvalidOperationException("Slot claim changed; no cleanup or release allowed.");
     }
 
@@ -207,7 +346,8 @@ internal static class SlotRelease
         string attemptKey,
         JsonObject attempt,
         CancellationToken ct,
-        IReadOnlyList<string>? adoptedHistory = null
+        IReadOnlyList<string>? adoptedHistory = null,
+        string? fence = null
     )
     {
         using var transaction = connection.BeginTransaction();
@@ -217,9 +357,10 @@ internal static class SlotRelease
         read.Parameters.AddWithValue("@key", key);
         var raw = await read.ExecuteScalarAsync(ct) as string;
         var claim = raw is null ? null : JsonNode.Parse(raw)!.AsObject();
-        if (claim?["claimToken"]?.GetValue<string>() != token || claim["state"]?.GetValue<string>() != "owned")
+        if (!Holds(claim, token, fence))
             throw new InvalidOperationException("Slot claim changed; exact-token release refused.");
-        claim["state"] = "released";
+        claim!["state"] = "released";
+        claim.Remove(ResetFence);
         // Stage the released receipt; the caller's object changes only after the commit below.
         var released = attempt.DeepClone().AsObject();
         released["cleanupState"] = "released";
