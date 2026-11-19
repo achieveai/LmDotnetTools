@@ -1799,6 +1799,20 @@ public sealed class ReviewdRunnerTests
         await batch.ExecuteAsync();
         batch.Runs.Should().Equal("1:fresh", "2:fresh", "3:fresh");
         batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
+
+        // A run the shutdown cancels mid-launch says nothing about the PR: it is not counted as a failure nor held for
+        // it, but left launching for the restart to settle as an interrupted launch.
+        using var cancelled = new BatchFixture(0);
+        cancelled.OnRun = () =>
+        {
+            cancelled.Cancellation.Cancel();
+            throw new OperationCanceledException(cancelled.Cancellation.Token);
+        };
+        await cancelled.ExecuteAsync();
+        cancelled.Runs.Should().Equal("1:fresh");
+        var entry = cancelled.Entries().Single(value => value["pr"]!.GetValue<string>() == "1");
+        entry["status"]!.GetValue<string>().Should().Be("launching");
+        entry["failures"]!.GetValue<int>().Should().Be(0, "a shutdown is not a failure of the PR");
     }
 
     [Fact]
@@ -2029,9 +2043,11 @@ public sealed class ReviewdRunnerTests
         batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
     }
 
+    // "fresh": a fresh run refused before its claim (a variant run's pin reads come first), so no attempt row exists.
     [Theory]
     [InlineData("eligibility")]
     [InlineData("resume")]
+    [InlineData("fresh")]
     public async Task Batch_backs_off_gateway_capacity_without_holding_the_pr(string refusedAt)
     {
         using var batch = new BatchFixture(0);
@@ -2050,7 +2066,12 @@ public sealed class ReviewdRunnerTests
         void Refuse(string pr)
         {
             if (pr == "1" && ++refusals <= 7)
-                throw new SandboxException(SandboxErrorKind.Unavailable, "operation_concurrency_limit", 503);
+            {
+                throw new SandboxException(SandboxErrorKind.Unavailable, "operation_concurrency_limit", 503)
+                {
+                    ErrorCode = "operation_concurrency_limit",
+                };
+            }
         }
         batch.Eligibility = pr =>
         {
@@ -2058,13 +2079,59 @@ public sealed class ReviewdRunnerTests
                 Refuse(pr);
             return BatchFixture.Live(pr);
         };
-        if (refusedAt == "resume")
+        if (refusedAt is "resume" or "fresh")
+        {
             batch.OnRun = () => Refuse(batch.Runs[^1].Split(':')[0]);
+        }
         await batch.ExecuteAsync();
         refusals.Should().Be(8);
         batch.Runs.Should().Contain(refusedAt == "resume" ? "1:resume" : "1:fresh");
         batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
         batch.Entries().First()["failures"]!.GetValue<int>().Should().Be(0);
+    }
+
+    // A run's other 503 before its claim (a failed workspace restore, not the gateway's capacity limit), fresh or
+    // resumed (a variant run's pin reads come first either way), is not held at once, but each one counts, so the PR
+    // is held at the retry cap instead of retrying forever.
+    [Theory]
+    [InlineData("fresh")]
+    [InlineData("resume")]
+    public async Task Batch_counts_a_runs_other_gateway_503_before_its_claim_and_holds_it_at_the_cap(string run)
+    {
+        using var batch = new BatchFixture(0);
+        if (run == "resume")
+        {
+            batch.PutAttempt(
+                "1",
+                new JsonObject
+                {
+                    ["slot"] = 0,
+                    ["stage"] = "review-running",
+                    ["reviewInputId"] = "original",
+                    ["mergeSha"] = new string('b', 40),
+                }
+            );
+        }
+        var refusals = 0;
+        batch.OnRun = () =>
+        {
+            if (batch.Runs[^1] != $"1:{run}")
+            {
+                return;
+            }
+            refusals++;
+            throw new SandboxException(SandboxErrorKind.Unavailable, "workspace restore failed", 503)
+            {
+                ErrorCode = "workspace_restore_failed",
+            };
+        };
+
+        await batch.ExecuteAsync();
+
+        refusals.Should().Be(5, "each refusal counts toward the lane's five retries");
+        var entry = batch.Entries().Single(value => value["pr"]!.GetValue<string>() == "1");
+        entry["status"]!.GetValue<string>().Should().Be("held");
+        entry["capacityRetries"].Should().BeNull("it never backed off as capacity");
     }
 
     [Theory]

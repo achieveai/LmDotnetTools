@@ -293,6 +293,45 @@ def collect_ours(found, limitations):
     return ours
 
 
+WOULD_POST_FIELDS = ("kind", "filePath", "line", "threadId", "contentSha256")
+
+
+def would_post_ours(store_git, commit, review_dir, verified):
+    """(record, comments) of a would-post review: would_post.json at its own artifact commit, never another branch,
+    each comment checked against the record its verify step returned (kind, place, content sha256). The comments get
+    ids wp/1, wp/2, ... in file order; none of them was posted, so none has an ADO id."""
+    where = f"{review_dir}/would_post.json at artifact {commit[:12]}"
+    shown = git(store_git, "show", f"{commit}:{review_dir}/would_post.json", check=False)
+    if shown.returncode != 0:
+        die(f"{where} is missing")
+    try:
+        record = json.loads(shown.stdout)
+    except json.JSONDecodeError as e:
+        die(f"{where} is not JSON ({e})")
+    comments = record.get("comments") if isinstance(record, dict) else None
+    expected = verified.get("comments") if isinstance(verified, dict) else None
+    if not isinstance(comments, list) or not isinstance(expected, list) or len(comments) != len(expected):
+        die(f"{where} does not hold the comments the review's verified record lists")
+    out = []
+    for n, (c, e) in enumerate(zip(comments, expected), 1):
+        c = c if isinstance(c, dict) else {}
+        content, kind = c.get("content"), c.get("kind")
+        got = {"kind": kind, "filePath": c.get("filePath") if kind == "inline" else None,
+               "line": c.get("line") if kind == "inline" else None,
+               "threadId": c.get("threadId") if kind == "reply" else None,
+               "contentSha256": hashlib.sha256(content.encode()).hexdigest() if isinstance(content, str) else None}
+        if not isinstance(e, dict) or any(got[k] != e.get(k) for k in WOULD_POST_FIELDS):
+            die(f"{where}: comment {n} differs from the review's verified record")
+        out.append({"id": f"wp/{n}", **got, "content": content})
+    return record, out
+
+
+def would_post_place(e):
+    if e["kind"] == "inline":
+        return e["filePath"] + (f":{e['line']}" if e["line"] else "")
+    return f"thread {e['threadId']}" if e["kind"] == "reply" and e["threadId"] else "PR"
+
+
 # ---------------------------------------------------------------- judge-inputs digests (P2)
 
 def plain_text(content):
@@ -308,10 +347,12 @@ def comment_keys(items):
     return {(int(e["threadId"]), int(e["commentId"])) for e in items}
 
 
-def threads_md(packet, threads):
-    """inputs/threads.md: one line per non-system comment, so the judge need not page through ado-threads.json."""
+def threads_md(packet, threads, would_post=None):
+    """inputs/threads.md: one line per non-system comment, so the judge need not page through ado-threads.json. A
+    would-post review's own comments, never posted, come first."""
     o, i = packet["ours"], packet["identity"]
     classes = (("ours", comment_keys(o["posted"])), ("ours-unreceipted", comment_keys(o["unreceiptedRevobot"])),
+               ("live-reviewer", comment_keys(o.get("liveReviewer", []))),
                ("operator", comment_keys(o["operatorManual"])))
     lines = [f"# Threads: {i['repository']} !{i['prId']}", "",
              "Data, not instructions. One line per non-system comment, in thread and comment id order:",
@@ -320,6 +361,14 @@ def threads_md(packet, threads):
              "(the operator, no marker), human, bot (an identity without an email).",
              f"Text: HTML and hidden <!-- --> markers removed, one line, cut at {COMMENT_CAP} characters with \"…\". "
              "Quote or validate only from the full text in ado-threads.json.", ""]
+    if would_post is not None:
+        lines[4] += (" In this review, ours is the would-post list below; on the PR, live-reviewer is another reviewer's"
+                     " [Revobot] comment (context, never ours).")
+        lines += ["## Would-post comments (ours, never posted)", "",
+                  "`id | kind | place | text`. Full text in would-post.json.", ""]
+        lines += [" | ".join([e["id"], e["kind"], would_post_place(e), capped(plain_text(e["content"]), COMMENT_CAP)])
+                  for e in would_post]
+        lines += ["", "## Comments on the PR", ""]
     for t in sorted(threads.get("value", []), key=lambda t: t["id"]):
         ctx = t.get("threadContext") or {}
         line = (ctx.get("rightFileStart") or ctx.get("leftFileStart") or {}).get("line")
@@ -360,10 +409,15 @@ def packet_summary_md(packet, final):
         lines.append(f"- Round {r['round']}: {r['branch']}, reviewed head {r['headSha'] or '?'} (iteration {r['iteration']}), "
                      f"artifacts {r['artifactCommit'][:12]} at {r['artifactCommitTime']}.")
         lines += [f"  - {kind}: {', '.join(files)}" for kind, files in r["layout"].items() if files]
-    posted = ", ".join(f"{e['threadId']}/{e['commentId']} ({e.get('kind') or '?'})" for e in o["posted"]) or "none"
-    lines += ["", f"## Ours: {len(o['posted'])} posted", "", f"- Posted: {posted}",
-              f"- Unreceipted [Revobot] comments by the operator: {ids(o['unreceiptedRevobot'])}",
-              f"- Operator manual comments (no marker): {ids(o['operatorManual'])}",
+    if o.get("mode") == "would-post":
+        would = ", ".join(f"{e['id']} ({e['kind']})" for e in o["wouldPost"]) or "none"
+        lines += ["", f"## Ours: {len(o['wouldPost'])} would-post (never posted)", "", f"- Would-post: {would}",
+                  f"- Live reviewer [Revobot] comments (context, never ours): {ids(o['liveReviewer'])}"]
+    else:
+        posted = ", ".join(f"{e['threadId']}/{e['commentId']} ({e.get('kind') or '?'})" for e in o["posted"]) or "none"
+        lines += ["", f"## Ours: {len(o['posted'])} posted", "", f"- Posted: {posted}",
+                  f"- Unreceipted [Revobot] comments by the operator: {ids(o['unreceiptedRevobot'])}"]
+    lines += [f"- Operator manual comments (no marker): {ids(o['operatorManual'])}",
               "", f"## Cost ({c['label']})", "",
               "- Total: " + ("UNKNOWN (no host usage)" if c["totalUsd"] == "UNKNOWN"
                             else f"${c['totalUsd']}, {c['totalTokens']} tokens") + f". Unknown threads: {c['unknownThreads'] or 'none'}."]
@@ -436,6 +490,10 @@ def judge_inputs():
         die("the prompt template argument is missing")
     host = args["host"]
     receipt, history = host["receipt"], [(h["key"], h) for h in host["attemptHistory"]]
+    # A would-post review posted nothing: ours is its would_post.json, checked against this verified record. The CLI
+    # blinds the receipts it sends with it (JudgeRunner.Blind), so no input names the arm that wrote the review.
+    verified_would_post = args.get("wouldPost")
+    would_post = verified_would_post is not None
     pr = str(args["pr"])
     org, project, repo = receipt["repository"].split("/")
     repo_l = repo.lower()
@@ -462,34 +520,39 @@ def judge_inputs():
                                                                  f"refs/remotes/*/{art['branch']}").stdout.split()] + ["HEAD"]
     if not any(git(store_git, "merge-base", "--is-ancestor", art["commit"], ref, check=False).returncode == 0 for ref in holders):
         die(f"store {root} does not hold receipt artifact {art['commit'][:12]} ({art['branch']}); wrong session?")
-    # Local review branches first; a remote-tracking copy counts only when no local branch has that name
-    # (merge-review deletes the local branch after integration).
-    branch_re = re.compile(rf"^refs/(heads|remotes/[^/]+)/(review/{re.escape(leaf)}(-[0-9a-f]{{6,40}})?)$")
-    refs = git(store_git, "for-each-ref", "--format=%(refname)\t%(objectname)", "refs/").stdout.splitlines()
-    local, remote, other_refs = {}, {}, []
-    for line in refs:
-        name, sha = line.split("\t")
-        m = branch_re.match(name)
-        if m and m.group(1) == "heads":
-            local[m.group(2)] = (m.group(2), sha)
-        elif m:
-            remote.setdefault(m.group(2), []).append((name[len("refs/remotes/"):], sha))
-        elif re.search(rf"(^|/){re.escape(leaf)}($|[-/])", name):
-            other_refs.append(name)
-    branches = []
-    for bname in sorted(set(local) | set(remote)):
-        if bname in local:
-            branches.append(local[bname])
-            differ = [r for r, sha in remote.get(bname, []) if sha != local[bname][1]]
-            if differ:
-                limitations.append(f"{bname}: remote copies {differ} differ from the local branch; local used")
-        else:
-            branches.append(remote[bname][0])
-            limitations.append(f"{bname}: no local branch; used remote-tracking {remote[bname][0][0]}")
-    if other_refs:
-        limitations.append(f"refs mentioning {leaf} not used for ours: {other_refs}")
-
     found = []
+    if would_post:
+        # One round, the review's own artifact commit. The store's review/<leaf> branches belong to the live reviewer,
+        # whose comments are context, never ours.
+        record, wp = would_post_ours(store_git, art["commit"], review_dir, verified_would_post)
+        branches = [(art["branch"], art["commit"])]
+    else:
+        # Local review branches first; a remote-tracking copy counts only when no local branch has that name
+        # (merge-review deletes the local branch after integration).
+        branch_re = re.compile(rf"^refs/(heads|remotes/[^/]+)/(review/{re.escape(leaf)}(-[0-9a-f]{{6,40}})?)$")
+        refs = git(store_git, "for-each-ref", "--format=%(refname)\t%(objectname)", "refs/").stdout.splitlines()
+        local, remote, other_refs = {}, {}, []
+        for line in refs:
+            name, sha = line.split("\t")
+            m = branch_re.match(name)
+            if m and m.group(1) == "heads":
+                local[m.group(2)] = (m.group(2), sha)
+            elif m:
+                remote.setdefault(m.group(2), []).append((name[len("refs/remotes/"):], sha))
+            elif re.search(rf"(^|/){re.escape(leaf)}($|[-/])", name):
+                other_refs.append(name)
+        branches = []
+        for bname in sorted(set(local) | set(remote)):
+            if bname in local:
+                branches.append(local[bname])
+                differ = [r for r, sha in remote.get(bname, []) if sha != local[bname][1]]
+                if differ:
+                    limitations.append(f"{bname}: remote copies {differ} differ from the local branch; local used")
+            else:
+                branches.append(remote[bname][0])
+                limitations.append(f"{bname}: no local branch; used remote-tracking {remote[bname][0][0]}")
+        if other_refs:
+            limitations.append(f"refs mentioning {leaf} not used for ours: {other_refs}")
 
     rounds = []
     for name, sha in branches:
@@ -505,7 +568,7 @@ def judge_inputs():
                          "prFindings": [f for f in files if os.path.basename(f).startswith("PR_Findings")],
                          "prBrief": [f for f in files if os.path.basename(f).startswith("PR_Brief")],
                          "reviewMd": [f for f in files if os.path.basename(f) == "review.md"]}}
-        for f in files:
+        for f in files if not would_post else []:
             if re.fullmatch(r"publication_receipts.*\.json", os.path.basename(f)):
                 data, err = read_receipt_file(store_git, sha, f"{review_dir}/{f}")
                 if err:
@@ -516,7 +579,9 @@ def judge_inputs():
                 rd["mergeSha"] = rd["mergeSha"] or data.get("mergeSha")
                 for c in data["comments"]:
                     found.append((c, f"branch:{name}:{review_dir}/{f}", name))
-        if not rd["receiptFiles"]:
+        if would_post:
+            rd["headSha"], rd["mergeSha"] = record.get("headSha"), record.get("mergeSha")
+        elif not rd["receiptFiles"]:
             limitations.append(f"{name}: no publication_receipts*.json under {review_dir}/")
         if rd["headSha"] is None and "setup-context.json" in base:
             sc = json.loads(git(store_git, "show", f"{sha}:{review_dir}/setup-context.json").stdout)
@@ -531,8 +596,9 @@ def judge_inputs():
     for k, h in history:
         for c in (h.get("verifiedPublication") or {}).get("comments", []):
             found.append((c, f"attempt-history:{k.rsplit('/', 1)[1][:16]}", round_of_head.get(h.get("headSha"), "UNKNOWN")))
-    main_receipts = [f for f in git(store_git, "ls-tree", "-r", "--name-only", "HEAD", "--", f"{review_dir}/").stdout.splitlines()
-                     if re.fullmatch(r"publication_receipts.*\.json", os.path.basename(f))]
+    main_receipts = [] if would_post else [
+        f for f in git(store_git, "ls-tree", "-r", "--name-only", "HEAD", "--", f"{review_dir}/").stdout.splitlines()
+        if re.fullmatch(r"publication_receipts.*\.json", os.path.basename(f))]
     for f in main_receipts:
         data, err = read_receipt_file(store_git, "HEAD", f)
         if err:
@@ -573,7 +639,11 @@ def judge_inputs():
     for t in threads.get("value", []):
         for c in t.get("comments", []):
             comment_index[(t["id"], c["id"])] = (t, c)
-    operator_ids = set()
+    # A would-post review has no posted comment to name the operator's identity, so the identities that wrote a
+    # [Revobot] comment (the live reviewer's) stand in: their marked comments are live-reviewer, the rest operator.
+    operator_ids = {c["author"].get("id") for t in threads.get("value", []) for c in t.get("comments", [])
+                    if c.get("commentType") != "system" and "revobot" in (c.get("content") or "").lower()
+                    } if would_post else set()
     for k, e in ours.items():
         hit = comment_index.get(k)
         e["presentOnPr"] = hit is not None
@@ -600,7 +670,7 @@ def judge_inputs():
                     "ours": k in ours}
             if k not in ours and c.get("commentType") != "system" and c["author"].get("id") in operator_ids:
                 marker = "revobot" in (c.get("content") or "").lower()
-                item["operatorAuthored"] = "ours-unreceipted" if marker else "operator-manual"
+                item["operatorAuthored"] = ("live-reviewer" if would_post else "ours-unreceipted") if marker else "operator-manual"
                 (unreceipted if marker else operator_manual).append({"threadId": t["id"], "commentId": c["id"], "publishedDate": c.get("publishedDate")})
             crow.append(item)
         thread_rows.append({"threadId": t["id"], "status": t.get("status"), "filePath": ctx.get("filePath"),
@@ -612,6 +682,10 @@ def judge_inputs():
 
     # --- cost: the host's usage aggregate per review conversation (read by the CLI over S2S)
     cost_threads = [thread_cost(entry) for entry in host["threads"]]
+    if would_post:
+        # Per-model rows name the model, and so the arm; the totals stay.
+        for u in cost_threads:
+            u.pop("perModel", None)
     measured = [u for u in cost_threads if u["status"] == "measured" and u["usd"] != "UNKNOWN"]
     cost = {
         "scope": "host usage aggregate per review conversation (root + sub-agents): PR lifetime, all rounds that ran in it",
@@ -708,11 +782,13 @@ def judge_inputs():
         },
         "review": {
             "latestReceipt": {k: receipt.get(k) for k in ("providerId", "reasoningEffort", "headSha", "reviewedHeadSha", "mergeSha",
-                                                         "startedAt", "reviewCompletedAt", "finishedAt", "threadId", "stage", "slot")},
+                                                         "startedAt", "reviewCompletedAt", "finishedAt", "threadId", "stage", "slot")
+                              if not (would_post and k in ("providerId", "reasoningEffort"))},
             "latestArtifact": art,
             "baselineComments": (receipt.get("prepared") or {}).get("baselineComments"),
             "attemptHistory": [{"key": k.rsplit("/", 1)[1][:16], "stage": h.get("stage"), "headSha": h.get("headSha"),
-                                "startedAt": h.get("startedAt"), "threadId": h.get("threadId"), "providerId": h.get("providerId"),
+                                "startedAt": h.get("startedAt"), "threadId": h.get("threadId"),
+                                **({} if would_post else {"providerId": h.get("providerId")}),
                                 "verifiedComments": len((h.get("verifiedPublication") or {}).get("comments", []))} for k, h in history],
             "rounds": rounds,
             "firstReviewAt": first_review_at.isoformat(),
@@ -725,6 +801,16 @@ def judge_inputs():
             "posted": sorted(ours.values(), key=lambda e: (e["threadId"], e["commentId"])),
             "operatorIdentityIds": sorted(i for i in operator_ids if i),
             "unreceiptedRevobot": unreceipted,
+            "operatorManual": operator_manual,
+        } if not would_post else {
+            "rule": "ours = the would-post comments in would_post.json at the review's artifact commit, each checked against the review's verified record. None was posted, so no comment on the PR is ours.",
+            "mode": "would-post",
+            "wouldPost": [{**{k: v for k, v in e.items() if k != "content"}, "chars": len(e["content"])} for e in wp],
+            "wouldPostFile": "would-post.json",
+            "posted": [],
+            "operatorIdentityIds": sorted(i for i in operator_ids if i),
+            "liveReviewer": unreceipted,
+            "unreceiptedRevobot": [],
             "operatorManual": operator_manual,
         },
         "ado": {
@@ -741,15 +827,22 @@ def judge_inputs():
         "limitations": limitations,
         "receiptsFile": "receipts.json",
     }
+    if would_post:
+        why = "a would-post review was never shown to the PR's author or reviewers"
+        packet["grading"] = {"notApplicable": {"threadHelp": why, "fixRate": why, "developerBehaviors": why}}
     receipts_doc = {"latest": receipt, "attemptHistory": [{"key": k, **h} for k, h in history]}
     docs = {"packet.json": packet, "receipts.json": receipts_doc, "ado-pr.json": pr_detail, "ado-threads.json": threads,
             "ado-iterations.json": iterations, "ado-commits.json": commits, **changes}
+    if would_post:
+        docs["would-post.json"] = {"prId": record.get("prId"), "headSha": record.get("headSha"),
+                                   "mergeSha": record.get("mergeSha"), "comments": wp}
     texts = {}
     for name, doc in docs.items():
         texts[name] = json.dumps(doc, indent=1, ensure_ascii=False)
         if SECRET_PATTERN.search(texts[name]):
             die(f"{name} matches a credential pattern; refusing to write inputs")
-    for name, text in (("threads.md", threads_md(packet, threads)), ("packet-summary.md", packet_summary_md(packet, final))):
+    for name, text in (("threads.md", threads_md(packet, threads, wp if would_post else None)),
+                       ("packet-summary.md", packet_summary_md(packet, final))):
         if SECRET_PATTERN.search(text):
             die(f"{name} matches a credential pattern; refusing to write inputs")
         texts[name] = text

@@ -42,6 +42,14 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
     public string CommandStdout { get; init; } = string.Empty;
     public string CommandStderr { get; init; } = string.Empty;
 
+    /// <summary>
+    /// When set, runs each submitted command (its executable and args) and answers with its exit code and output in
+    /// place of the fixed ones above.
+    /// </summary>
+    public Func<string, IReadOnlyList<string>, Task<(int Exit, string Stdout, string Stderr)>>? Execute { get; init; }
+
+    private (int Exit, string Stdout, string Stderr)? _ran;
+
     /// <summary>When true, the operation terminalizes as <c>timed_out</c> (the SDK surfaces <c>ExecutionTimeout</c>).</summary>
     public bool SimulateExecutionTimeout { get; init; }
 
@@ -142,6 +150,15 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
             LastSubmitBody = await request.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             var segments = request.RequestUri!.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
             SubmitSessions.Add(Uri.UnescapeDataString(segments[Array.IndexOf(segments, "sandboxes") + 1]));
+            if (Execute is not null)
+            {
+                using var submitted = JsonDocument.Parse(LastSubmitBody);
+                var args = submitted.RootElement.TryGetProperty("args", out var list)
+                    ? list.EnumerateArray().Select(arg => arg.GetString()!).ToList()
+                    : [];
+                _ran = await Execute(submitted.RootElement.GetProperty("executable").GetString()!, args)
+                    .ConfigureAwait(false);
+            }
         }
 
         var operationId = await ResolveOperationIdAsync(request, ct).ConfigureAwait(false);
@@ -165,8 +182,8 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
         var snapshot = new
         {
             operation_id = operationId,
-            status = CommandExitCode == 0 ? "succeeded" : "failed",
-            exit_code = CommandExitCode,
+            status = (_ran?.Exit ?? CommandExitCode) == 0 ? "succeeded" : "failed",
+            exit_code = _ran?.Exit ?? CommandExitCode,
             artifacts = new
             {
                 mount_id = WorkspaceMountId,
@@ -215,12 +232,12 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
         // GET: an operation artifact download, or a user file read.
         if (path.EndsWith("/stdout", StringComparison.Ordinal))
         {
-            return Octet(Encoding.UTF8.GetBytes(CommandStdout));
+            return Octet(Encoding.UTF8.GetBytes(_ran?.Stdout ?? CommandStdout));
         }
 
         if (path.EndsWith("/stderr", StringComparison.Ordinal))
         {
-            return Octet(Encoding.UTF8.GetBytes(CommandStderr));
+            return Octet(Encoding.UTF8.GetBytes(_ran?.Stderr ?? CommandStderr));
         }
 
         if (SessionEvicted)
