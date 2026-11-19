@@ -913,6 +913,9 @@ internal static class ReviewRunner
         }
         await client.EnsureHostContractAsync(ct);
         await client.EnsureWorkingDirectoryContractAsync(ct);
+        // Every review runs in a sandbox of its own that can write only its PR folder. A host without that would put
+        // it in the workspace's shared sandbox, writable everywhere, so the review is refused before the claim.
+        await client.EnsureDedicatedSandboxContractAsync(ct);
         if (thread is not null)
         {
             if (!cleanupOnly)
@@ -1070,6 +1073,7 @@ internal static class ReviewRunner
             }
             else
                 await sandbox("inspect-prepared", args, Guid.NewGuid().ToString("N"), ct);
+            var reviewDirectory = setup["reviewDirectory"]!.GetValue<string>();
             if (thread is null)
             {
                 receipt["stage"] = "provision-pending";
@@ -1081,13 +1085,22 @@ internal static class ReviewRunner
                     null,
                     null,
                     reasoningEffort,
-                    ".",
+                    reviewDirectory,
                     disableClientTools: true,
+                    readOnlyEgress: false,
+                    dedicatedSandbox: true,
                     ct
                 );
                 receipt["threadId"] = thread;
                 await SaveAsync();
                 await PrThreadBindings.SetAsync(database, repo, pr, thread, ct);
+            }
+            else if (receipt["reviewInputId"] is null && receipt["reviewIdempotencyKey"] is null)
+            {
+                // A continued conversation last wrote another slot's PR folder, or ran in the shared sandbox from
+                // before dedicated ones. Move it here and give it a fresh sandbox before anything is sent; a refusal
+                // stops the review. Once a send was attempted, this move already happened in that run.
+                await client.ReleaseSandboxAsync(thread, reviewDirectory, ct);
             }
             var revision = args["head"]!.GetValue<string>();
             if (!verificationResume)
@@ -1239,6 +1252,17 @@ internal static class ReviewRunner
                 transaction.Commit();
             }
             await CleanupAsync();
+            // The review is done with its sandbox: its container goes, its files stay, and the next review of this PR
+            // gets a fresh one. Best effort, and only here: owner cleanup stays read-only against the host, and the
+            // host deletes an idle conversation's sandbox when it unloads it anyway.
+            try
+            {
+                await client.ReleaseSandboxAsync(thread!, null, ct);
+            }
+            catch (Exception releaseFailure) when (!ct.IsCancellationRequested)
+            {
+                Console.Error.WriteLine($"Sandbox release of {thread} failed: {releaseFailure.Message}");
+            }
             Console.WriteLine(receipt.ToJsonString());
             return 0;
         }

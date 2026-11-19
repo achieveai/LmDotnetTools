@@ -49,7 +49,7 @@ public sealed class ReviewdAutoSlotTests : IDisposable
                     return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
                     {
                         Content = new StringContent(
-                            """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}""",
+                            """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}""",
                             System.Text.Encoding.UTF8,
                             "application/json"
                         ),
