@@ -1799,6 +1799,20 @@ public sealed class ReviewdRunnerTests
         await batch.ExecuteAsync();
         batch.Runs.Should().Equal("1:fresh", "2:fresh", "3:fresh");
         batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
+
+        // A run the shutdown cancels mid-launch says nothing about the PR: it is not counted as a failure nor held for
+        // it, but left launching for the restart to settle as an interrupted launch.
+        using var cancelled = new BatchFixture(0);
+        cancelled.OnRun = () =>
+        {
+            cancelled.Cancellation.Cancel();
+            throw new OperationCanceledException(cancelled.Cancellation.Token);
+        };
+        await cancelled.ExecuteAsync();
+        cancelled.Runs.Should().Equal("1:fresh");
+        var entry = cancelled.Entries().Single(value => value["pr"]!.GetValue<string>() == "1");
+        entry["status"]!.GetValue<string>().Should().Be("launching");
+        entry["failures"]!.GetValue<int>().Should().Be(0, "a shutdown is not a failure of the PR");
     }
 
     [Fact]
