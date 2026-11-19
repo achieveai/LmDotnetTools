@@ -10,97 +10,91 @@ namespace Reviewd.Sample;
 internal static class ReviewBatch
 {
     public static Task<int> RunAsync(CliOptions options, ReviewdConfig config, CancellationToken ct) =>
-        AuthCommands.RunAsync(
-            options,
-            config,
-            ct,
-            async token =>
-            {
-                if (!options.Has("execute"))
-                    throw new InvalidOperationException("review batch requires --execute; no state was changed.");
-                // A variant arm's workspace and mode must be the ones variant up built for its manifest. Each run
-                // checks again before it provisions, the clone's and the alias's commits included.
-                if (await ShadowArm.ResolveAsync(options, options.Required("provider"), token) is { } arm)
-                {
-                    await arm.CheckProvisionedAsync(
-                        config.CreateS2SClient(),
-                        options.Required("workspace"),
-                        options.Get("mode") ?? config.ModeId,
-                        reviewRepoHead: null,
-                        aliasSha: null,
-                        token
-                    );
-                    await CheckResumesAsync(
-                        options.Required("db"),
-                        arm,
-                        options.Get("mode") ?? config.ModeId,
-                        options.Required("provider"),
-                        options.Get("reasoning-effort"),
-                        token
-                    );
-                }
-                // Startup sweep: reclaim any slot a prior (crashed) batch left owned — including legacy
-                // owners claimed before leasing existed — so restarting the batch always clears jams.
-                await SweepSlotsAsync(options, config, undatedExpired: true, token);
-                // Periodic sweep on its own timer: a slot whose owner's lease lapsed stays held until the reaper
-                // frees it, and the queue keeps it out of use until then.
-                var reaper = SweepPeriodicallyAsync(
-                    cancellation => SweepSlotsAsync(options, config, undatedExpired: false, cancellation),
-                    (delay, cancellation) => Task.Delay(delay, cancellation),
-                    token
-                );
-                // One batch per workspace and database. A batch that holds it is waited out, not raced.
-                using (
-                    var lease = await AcquireBatchLeaseAsync(
-                        () =>
-                            ReviewRunner.AcquireLease(options.Required("db"), "batch/" + options.Required("workspace")),
-                        (delay, cancellation) => Task.Delay(delay, cancellation),
-                        token
-                    )
-                )
-                {
-                    string? unreadable = null;
-                    await ScheduleAsync(
-                        options,
-                        config,
-                        async cancellation =>
-                        {
-                            var (text, error) = await TryReadSelectionAsync(
-                                options.Required("selection"),
-                                cancellation
-                            );
-                            if (text is null)
-                            {
-                                // Logged once per distinct error, not every poll, so a long outage stays readable.
-                                if (error != unreadable)
-                                    Console.Error.WriteLine($"Selection unreadable; retrying every 5 seconds: {error}");
-                                unreadable = error;
-                                return null;
-                            }
-                            if (unreadable is not null)
-                                Console.Error.WriteLine("Selection readable again.");
-                            unreadable = null;
-                            return text;
-                        },
-                        async (text, cancellation) =>
-                        {
-                            _ = ValidateAgePolicy(options, JsonNode.Parse(text)!.AsObject());
-                            await ClaimAsync(options.Required("db"), SlotRelease.Digest(text), text, cancellation);
-                            _ = config.CreateS2SClient();
-                        },
-                        (repo, pr, slot, head, cancellation) =>
-                            ReviewRunner.CheckEligibilityAsync(options, config, repo, pr, slot, head, cancellation),
-                        run => ReviewRunner.RunAsync(run, config, CancellationToken.None),
-                        EnsureNoDaemon,
-                        (delay, cancellation) => Task.Delay(delay, cancellation),
-                        () => DateTimeOffset.UtcNow,
-                        untilIdle: false,
-                        token
-                    );
-                }
-                await reaper;
-            }
+        AuthCommands.RunAsync(options, config, ct, token => RunBatchAsync(options, config, token));
+
+    /// <summary>The batch itself, which <see cref="RunAsync"/> runs beside the OAuth callback.</summary>
+    internal static async Task RunBatchAsync(CliOptions options, ReviewdConfig config, CancellationToken token)
+    {
+        if (!options.Has("execute"))
+            throw new InvalidOperationException("review batch requires --execute; no state was changed.");
+        // A variant arm's workspace and mode must be the ones variant up built for its manifest. Each run
+        // checks again before it provisions, the clone's and the alias's commits included.
+        if (await ShadowArm.ResolveAsync(options, options.Required("provider"), token) is { } arm)
+        {
+            await arm.CheckProvisionedAsync(
+                config.CreateS2SClient(),
+                options.Required("workspace"),
+                options.Get("mode") ?? config.ModeId,
+                reviewRepoHead: null,
+                aliasSha: null,
+                token
+            );
+            await CheckResumesAsync(
+                options.Required("db"),
+                arm,
+                options.Get("mode") ?? config.ModeId,
+                options.Required("provider"),
+                options.Get("reasoning-effort"),
+                token
+            );
+        }
+        // Startup sweep: reclaim any slot a prior (crashed) batch left owned — including legacy
+        // owners claimed before leasing existed — so restarting the batch always clears jams.
+        await SweepSlotsAsync(options, config, undatedExpired: true, token);
+        // Periodic sweep on its own timer: a slot whose owner's lease lapsed stays held until the reaper
+        // frees it, and the queue keeps it out of use until then.
+        var reaper = SweepPeriodicallyAsync(
+            cancellation => SweepSlotsAsync(options, config, undatedExpired: false, cancellation),
+            (delay, cancellation) => Task.Delay(delay, cancellation),
+            token
         );
+        // One batch per workspace and database. A batch that holds it is waited out, not raced.
+        using (
+            var lease = await AcquireBatchLeaseAsync(
+                () => ReviewRunner.AcquireLease(options.Required("db"), "batch/" + options.Required("workspace")),
+                (delay, cancellation) => Task.Delay(delay, cancellation),
+                token
+            )
+        )
+        {
+            string? unreadable = null;
+            await ScheduleAsync(
+                options,
+                config,
+                async cancellation =>
+                {
+                    var (text, error) = await TryReadSelectionAsync(options.Required("selection"), cancellation);
+                    if (text is null)
+                    {
+                        // Logged once per distinct error, not every poll, so a long outage stays readable.
+                        if (error != unreadable)
+                            Console.Error.WriteLine($"Selection unreadable; retrying every 5 seconds: {error}");
+                        unreadable = error;
+                        return null;
+                    }
+                    if (unreadable is not null)
+                        Console.Error.WriteLine("Selection readable again.");
+                    unreadable = null;
+                    return text;
+                },
+                async (text, cancellation) =>
+                {
+                    _ = ValidateAgePolicy(options, JsonNode.Parse(text)!.AsObject());
+                    await ClaimAsync(options.Required("db"), SlotRelease.Digest(text), text, cancellation);
+                    _ = config.CreateS2SClient();
+                },
+                (repo, pr, slot, head, cancellation) =>
+                    ReviewRunner.CheckEligibilityAsync(options, config, repo, pr, slot, head, cancellation),
+                run => ReviewRunner.RunAsync(run, config, CancellationToken.None),
+                EnsureNoDaemon,
+                (delay, cancellation) => Task.Delay(delay, cancellation),
+                () => DateTimeOffset.UtcNow,
+                untilIdle: false,
+                token
+            );
+        }
+        await reaper;
+    }
 
     // A lease held by another batch, or a lock file this user cannot open yet, is retried like an unreadable
     // selection: logged once per distinct error. Scheduling starts only once the lease is held.

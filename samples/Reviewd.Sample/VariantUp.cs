@@ -199,6 +199,18 @@ internal static class VariantUp
             );
         }
         var modeId = await client.EnsureChatModeAsync(manifest.ModeName!, mode, ct);
+        // The host binds the mode's top-level names in any letter case, but stores a nested value as it parses it: a
+        // nested name in another letter case, or a number written as a string, comes back otherwise. Every run compares
+        // the stored mode with the file and would refuse this arm, so it is refused here, where the file can be fixed.
+        var unstored = ShadowArm.ModeDifferences(mode, await client.GetChatModeAsync(modeId, ct));
+        if (unstored.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"The host stored mode {modeId} differently from {manifest.ModeFile} in {string.Join(", ", unstored)}, so "
+                    + "every run of this arm would be refused. Write nested names in the host's letter case and numbers "
+                    + "as numbers, then run variant up again."
+            );
+        }
         var workspace = existing is null
             ? await client.CreateWorkspaceAsync(name, manifest.ReviewRepoDirectory!, marketplaces, ct, selection)
             : await client.UpdateWorkspaceAsync(

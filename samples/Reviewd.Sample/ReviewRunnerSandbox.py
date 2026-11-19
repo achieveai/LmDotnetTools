@@ -169,11 +169,15 @@ if phase in ('step-activity', 'step-stop'):
     raise SystemExit(0)
 if phase == 'review-repo-head':
     # The commit the workspace's review repository has checked out: a variant run records its manifest's commit only
-    # when it is this one. Read-only, so it runs in a shadow run's read-only session like every other step.
+    # when it is this one. Read-only, so it runs in a shadow run's read-only session like every other step. Also the
+    # commit's KnowledgeBase/ tree, which the receipt records so arms judged with different knowledge can be told
+    # apart (null when the commit has none).
     head = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=root, capture_output=True, text=True)
     if head.returncode:
         raise SystemExit('git rev-parse HEAD failed in the workspace repository: ' + head.stderr.strip())
-    print(json.dumps({'head': head.stdout.strip()}))
+    tree = subprocess.run(['git', 'rev-parse', '--verify', '--quiet', 'HEAD:KnowledgeBase'], cwd=root,
+                          capture_output=True, text=True)
+    print(json.dumps({'head': head.stdout.strip(), 'knowledgeBaseTree': tree.stdout.strip() or None}))
     raise SystemExit(0)
 mark = marks / f"{args.get('stepOperation')}.agents"
 # Only a step the client can name, in the workspace repository, records a heartbeat a later step-stop can find.

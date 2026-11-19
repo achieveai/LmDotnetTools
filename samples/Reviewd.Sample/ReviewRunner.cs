@@ -511,6 +511,25 @@ internal static class ReviewRunner
         }
     }
 
+    /// <summary>
+    ///     Runs a pre-claim gateway read. A gateway that did not answer says nothing about the PR, so the review is
+    ///     deferred and the batch retries it with backoff instead of holding it. A commit that differs, or a refused
+    ///     credential, still refuses the run.
+    /// </summary>
+    internal static async Task<T> DeferIfUnanswered<T>(string what, Func<Task<T>> read)
+    {
+        try
+        {
+            return await read();
+        }
+        catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.TransportTimeout)
+        {
+            throw new ReviewDeferredException(
+                $"The gateway did not answer reading {what}: {ex.Message} Retry deferred."
+            );
+        }
+    }
+
     internal static Task<int> RunAsync(
         CliOptions options,
         ReviewdConfig config,
@@ -569,6 +588,8 @@ internal static class ReviewRunner
         var arm = await ShadowArm.ResolveAsync(options, provider, ct);
         // And the workspace and mode are the ones variant up built for that manifest (host reads only), with the
         // manifest's commit checked out in the review-repo clone (a read-only step, run only by an executing run).
+        // The clone read also gives the KnowledgeBase tree the receipt records.
+        JsonObject? clone = null;
         if (arm is not null)
         {
             await arm.CheckProvisionedAsync(
@@ -577,17 +598,26 @@ internal static class ReviewRunner
                 mode,
                 options.Has("execute")
                     ? async token =>
-                        (await sandbox("review-repo-head", [], Guid.NewGuid().ToString("N"), token))["head"]
+                        (
+                            clone = await DeferIfUnanswered(
+                                "the review-repo clone's commit",
+                                () => sandbox("review-repo-head", [], Guid.NewGuid().ToString("N"), token)
+                            )
+                        )["head"]
                             ?.GetValue<string>()
                     : null,
                 options.Has("execute")
-                    ? async (alias, token) =>
-                    {
-                        using var gateway = config.CreateSandboxClient();
-                        return (await gateway.ListAppMarketplacesAsync(token))
-                            .SingleOrDefault(registered => registered.Alias == alias)
-                            ?.ResolvedSha;
-                    }
+                    ? (alias, token) =>
+                        DeferIfUnanswered(
+                            $"marketplace alias {alias}",
+                            async () =>
+                            {
+                                using var gateway = config.CreateSandboxClient();
+                                return (await gateway.ListAppMarketplacesAsync(token))
+                                    .SingleOrDefault(registered => registered.Alias == alias)
+                                    ?.ResolvedSha;
+                            }
+                        )
                     : null,
                 ct
             );
@@ -1141,7 +1171,11 @@ internal static class ReviewRunner
         {
             receipt["shadow"] = true;
             receipt["postSessionId"] = options.Required("post-session");
-            receipt["provenance"] = arm!.Provenance(mode, provider, reasoningEffort);
+            var provenance = arm!.Provenance(mode, provider, reasoningEffort);
+            // Only an executing run gets here, and it checked the clone's and the alias's commits above.
+            provenance[ShadowArm.PinsVerified] = true;
+            provenance["knowledgeBaseTree"] = clone?["knowledgeBaseTree"]?.DeepClone();
+            receipt["provenance"] = provenance;
         }
         if (variant is not null)
         {

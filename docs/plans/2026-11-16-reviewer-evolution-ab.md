@@ -27,7 +27,8 @@
 >   shadows open PRs. Build item 5 adds historical heads.
 >
 > **Slice 2 as built** (`variant up`, arm checks, judging shadow reviews): build items 1, 3 and the judge half of 6.
-> - The manifest, as `variant up` reads it (paths relative to the manifest; `sha`s are 40-character commits):
+> - The manifest, as `variant up` reads it (`mode.file` and `taskPrompt` are paths relative to the manifest;
+>   `reviewRepo.directory` is the workspace directory name, used as written; `sha`s are 40-character commits):
 >   ```json
 >   { "id": "b-007",
 >     "reviewRepo": {"repo": "AchieveAi_reviews", "ref": "exp/b-007", "sha": "<commit>", "directory": "exp-b"},
@@ -41,8 +42,9 @@
 >   It never moves the clone: it refuses one in `reviewRepo.directory` that is not at `reviewRepo.sha`, or whose
 >   `KnowledgeBase/` tree differs from the champion commit's, before it changes anything. Then it registers the alias at
 >   `plugins.sha`, creates or replaces the mode (a replace clears every field the file omits), and creates or updates
->   workspace `variant-<id>`, taking `code-reviewer` from the alias only. `--champion` is given per run: every arm of
->   an experiment must pass the same one, and the operator owns that.
+>   workspace `variant-<id>`, taking `code-reviewer` from the alias only. `--champion` is given per run, but an
+>   experiment has one champion: every arm must pass the same one. Each receipt records its clone's `KnowledgeBase/`
+>   tree id (`knowledgeBaseTree`), so `compare` can refuse arms whose trees differ.
 > - Run it, with the workspace and mode `variant up` printed:
 >   `sandbox create --workspace <directory> --callback <url> --read-only-egress --read-repos <org/project/repo,...>`,
 >   then `review batch --selection <json> --db <arm db> --session <session> --workspace <workspace> --provider <provider>
@@ -67,7 +69,7 @@ per PR, and given a recorded promote / park decision.
 1. **One arm = one variant manifest.** It pins every lever: review-repo branch, `ClaudePlugins` ref, chat mode, task prompt, model.
    `reviewd variant up` turns it into its own workspace. Champion and challenger are built the same way. (See "How an arm is built".)
 2. **Shadow reviews.** Both arms review in shadow: never post (read-only egress), save would-post comments in each arm's own `--db` (receipts record `shadow` and `variant`).
-3. **Blind, frozen judge.** Every arm is judged from the champion's store, with the same prompt, model and knowledge base, and labels hidden.
+3. **Blind, frozen judge.** One champion per experiment: every arm reviews and is judged with the champion's knowledge base (its own clone must hold the same `KnowledgeBase/` tree), with the same prompt and model, and labels hidden.
 4. **A/A pilot first.** The champion's manifest, run twice on ~12 merged PRs. It measures noise and cost, which sets the sample size.
 5. **First A/B, two ideas:** (H1) feed the knowledge base into reviews, which today read none of it; (H2) one skill edit, drawn from judge misses. Then H1+H2.
 6. **Evolve loop driven by `experimentation:research`** (checked: it helps, see Reference). Each round:
@@ -228,9 +230,9 @@ The baseline before slice 1, kept as approved. Slice 1 changed the "A/B in Revie
 3. `--task-prompt-file`: the inline task prompt and `ReviewQualityRules` become a template; its SHA goes in the receipt.
 4. Receipt provenance: the manifest hash plus every SHA (store, plugin, mode, task prompt), the Reviewd code commit, model, effort, and the experiment record id.
 5. Historical head for merged PRs (`--at-head <sha>`). The slot hides refs newer than the review time.
-6. `judge run --variant <id>`: judge from the champion store, read `would_post.json`, hide arm labels.
+6. `judge run --variant <id>`: judge in the arm's workspace, whose `KnowledgeBase/` equals the champion's; read `would_post.json`, hide arm labels.
 7. Knowledge-base injection as a mode + task-prompt variant (H1); fix the `/workspace/store` path.
-8. `compare` command: paired table + bootstrap from `judgment.json` files → a study evidence record.
+8. `compare` command: paired table + bootstrap from `judgment.json` files → a study evidence record. It refuses arms whose receipts record different `knowledgeBaseTree`s.
 
 ### Study store
 - `.experimentation/reviewer-evolution/` in the review store (private, next to the judgments), managed with `research-store.mjs`. Assumption; easy to move.

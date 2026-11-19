@@ -146,10 +146,7 @@ internal sealed record ShadowArm(
             }
             if (manifest.ModeFile is { } file)
             {
-                var differing = ModePayload!
-                    .Where(field => !JsonNode.DeepEquals(WithoutNulls(field.Value), WithoutNulls(stored[field.Key])))
-                    .Select(field => field.Key)
-                    .ToList();
+                var differing = ModeDifferences(ModePayload!, stored);
                 if (differing.Count > 0)
                 {
                     throw Mismatch($"mode {modeId} differs from {file} in {string.Join(", ", differing)}");
@@ -183,6 +180,17 @@ internal sealed record ShadowArm(
     }
 
     // The host may write an unset field as null or leave it out; both mean unset.
+    /// <summary>
+    ///     The fields of mode body <paramref name="payload"/> whose value the host's <paramref name="stored"/> mode does
+    ///     not hold, ignoring unset fields. Both variant up, after it saves the mode, and every run compare this way.
+    /// </summary>
+    internal static List<string> ModeDifferences(JsonObject payload, JsonNode stored) =>
+        [
+            .. payload
+                .Where(field => !JsonNode.DeepEquals(WithoutNulls(field.Value), WithoutNulls(stored[field.Key])))
+                .Select(field => field.Key),
+        ];
+
     private static JsonNode? WithoutNulls(JsonNode? node) =>
         node switch
         {
@@ -200,6 +208,16 @@ internal sealed record ShadowArm(
     /// </summary>
     internal string? ResumeMismatch(JsonObject sent, string mode, string provider, string? effort)
     {
+        // A resume keeps the attempt's reviewer and the plugin commit its sandbox mounted. Only an attempt whose start
+        // checked the clone's and the alias's commits is known to have mounted the manifest's.
+        if (
+            (Manifest?.ReviewRepoSha ?? Manifest?.PluginSha) is not null
+            && sent[PinsVerified]?.ToJsonString() != "true"
+        )
+        {
+            return "This attempt started before a run checked its manifest's clone and alias commits, so its reviewer "
+                + "may have mounted another plugin commit. Release it and review the PR again.";
+        }
         foreach (var (field, value) in Provenance(mode, provider, effort))
         {
             if (
@@ -213,6 +231,12 @@ internal sealed record ShadowArm(
         }
         return null;
     }
+
+    /// <summary>
+    ///     The provenance field a run sets when its start checked the manifest's clone and alias commits, before it
+    ///     provisioned the reviewer.
+    /// </summary>
+    internal const string PinsVerified = "pinsVerified";
 
     /// <summary>The receipt's record of what produced the review (plan build item 4).</summary>
     internal JsonObject Provenance(string mode, string provider, string? effort) =>
