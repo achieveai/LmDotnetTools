@@ -421,6 +421,30 @@ public class ConversationsController(
             );
         }
 
+        // ...and that directory becomes its write jail, so it must lie inside the workspace's own one, as building
+        // the agent will check. Refused here, before anything is stored or acknowledged.
+        if (request.DedicatedSandbox)
+        {
+            try
+            {
+                workingDirectory = ConversationDedicatedSandbox.ResolveWorkingDir(
+                    workingDirectory!,
+                    workspace.WorkingDir
+                );
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(
+                    new
+                    {
+                        error = "working_directory_invalid",
+                        code = "working_directory_invalid",
+                        detail = ex.Message,
+                    }
+                );
+            }
+        }
+
         // Fail loudly rather than store a bit nothing would enforce: only a sandbox-backed mode on a host
         // with a sandbox registry gives the thread a sandbox whose egress the flag narrows.
         if (
@@ -2364,10 +2388,23 @@ public class ConversationsController(
     /// works in. Only the container goes: the workspace files and the conversation, history included, stay, and its
     /// next turn gets a fresh sandbox. A conversation that still runs in the workspace's shared sandbox becomes a
     /// dedicated one when a directory is given, so a conversation from before dedicated sandboxes can be continued
-    /// jailed; the shared sandbox itself is never deleted. 400 for such a conversation without a directory or for a
-    /// bad directory, 409 while it has work in hand, 503 when the gateway did not confirm the delete (retry: the
-    /// sandbox stays tracked).
+    /// jailed; the shared sandbox itself is never deleted.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 400 for a shared-sandbox conversation without a directory, a host without a sandbox registry, or a directory
+    /// that is malformed, outside the workspace's own working directory, or unsupported by the conversation's
+    /// provider and mode. 409 while it has work in hand, or when a new turn took it during the release. 503 when the
+    /// gateway did not confirm the delete: nothing was moved, and the sandbox stays tracked, so a retry deletes it.
+    /// Every refusal comes before anything changes.
+    /// </para>
+    /// <para>
+    /// The release is taken while no agent of the conversation is loaded, under the pool's lock, so it deletes only
+    /// sandboxes no live agent holds, and the move is stored only after the gateway confirms the delete; until then
+    /// the conversation's next sandbox is held back, so it is always created from the stored directory. This awaits
+    /// the delete an agent removal already started, so 200 means the gateway confirmed it.
+    /// </para>
+    /// </remarks>
     [HttpPost("{threadId}/sandbox/release")]
     public async Task<IActionResult> ReleaseSandbox(
         string threadId,
@@ -2385,12 +2422,26 @@ public class ConversationsController(
             return denied;
         }
 
+        var metadata = await store.LoadMetadataAsync(threadId, ct);
+        if (metadata is null)
+        {
+            return UnknownThread(threadId);
+        }
+
+        if (sandboxSessionRegistry is null)
+        {
+            return BadRequest(
+                new
+                {
+                    error = "dedicated_sandbox_required",
+                    code = "dedicated_sandbox_required",
+                    detail = "This host has no sandbox registry, so no conversation on it has a sandbox to release.",
+                }
+            );
+        }
+
         var dedicated = await ConversationDedicatedSandbox.ReadAsync(store, threadId, ct);
-        if (
-            sandboxSessionRegistry is null
-            || (!dedicated && request?.WorkingDirectoryRelPath is null)
-            || (!dedicated && await store.LoadMetadataAsync(threadId, ct) is null)
-        )
+        if (!dedicated && request?.WorkingDirectoryRelPath is null)
         {
             return BadRequest(
                 new
@@ -2408,9 +2459,9 @@ public class ConversationsController(
         {
             try
             {
-                movedTo = ConversationWorkingDirectory.Validate(requested);
+                movedTo = await ValidateDedicatedWorkingDirectoryAsync(metadata, requested, ct);
             }
-            catch (ArgumentException ex)
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
             {
                 return BadRequest(
                     new
@@ -2423,60 +2474,61 @@ public class ConversationsController(
             }
         }
 
-        if (agentPool.GetRunStateInfo(threadId).IsInProgress)
+        // The pooled agent holds the sandbox's session id in its tools, so it goes first. Busy covers a run in
+        // progress as well as accepted input no run has taken yet, decided under the pool's lock.
+        if (
+            agentPool.TryGetHandoffState(threadId, out var handoff)
+            && await agentPool.TryReleaseIdleAgentAsync(threadId, handoff)
+                == MultiTurnAgentPool.AgentReleaseOutcome.Busy
+        )
         {
-            return Conflict(
-                new
-                {
-                    error = "Cannot release the sandbox while a run is in progress.",
-                    code = "sandbox_release_while_running",
+            return ReleaseWhileRunning(threadId, "the conversation has work in hand");
+        }
+
+        Func<Task>? commitMove = movedTo is null
+            ? null
+            : () =>
+                store.UpdateMetadataAsync(
                     threadId,
-                }
-            );
-        }
-
-        // The directory is moved before the agent goes, so whatever builds the next agent already reads it. If the
-        // agent turns out to be busy below, the move simply waits for that next build.
-        if (movedTo is not null)
-        {
-            await store.UpdateMetadataAsync(
-                threadId,
-                existing =>
-                    existing! with
-                    {
-                        Properties = (existing.Properties ?? ImmutableDictionary<string, object>.Empty)
-                            .SetItem(ConversationWorkingDirectory.PropertyKey, movedTo)
-                            .SetItem(ConversationDedicatedSandbox.PropertyKey, true),
-                    },
-                ct
-            );
-        }
-
-        // The pooled agent holds the sandbox's session id in its tools, so it goes first; its removal also starts a
-        // best-effort release, which the awaited one below confirms.
-        if (agentPool.TryGetHandoffState(threadId, out var handoff))
-        {
-            var outcome = await agentPool.TryReleaseIdleAgentAsync(threadId, handoff);
-            if (outcome == MultiTurnAgentPool.AgentReleaseOutcome.Busy)
-            {
-                return Conflict(
-                    new
-                    {
-                        error = "Cannot release the sandbox while the conversation has work in hand.",
-                        code = "sandbox_release_while_running",
-                        threadId,
-                    }
+                    existing =>
+                        existing! with
+                        {
+                            Properties = (existing.Properties ?? ImmutableDictionary<string, object>.Empty)
+                                .SetItem(ConversationWorkingDirectory.PropertyKey, movedTo)
+                                .SetItem(ConversationDedicatedSandbox.PropertyKey, true),
+                        },
+                    CancellationToken.None
                 );
-            }
+        Task? release = null;
+        if (
+            !agentPool.TryRunWhileNotPooled(
+                threadId,
+                () =>
+                    release = sandboxSessionRegistry.ReleaseOwnedSessionsAsync(
+                        threadId,
+                        commitMove,
+                        CancellationToken.None
+                    )
+            )
+        )
+        {
+            // A turn rebuilt the agent while the old one was disposed. It already holds a sandbox, so neither that
+            // sandbox nor the directory it was built for may change under it.
+            return ReleaseWhileRunning(threadId, "a new turn took the conversation");
         }
 
         try
         {
-            await sandboxSessionRegistry.ReleaseOwnedSessionsAsync(threadId, ct);
+            await release!.WaitAsync(ct);
         }
         catch (AchieveAi.LmDotnetTools.Sandbox.SandboxException ex)
         {
-            logger.LogWarning(ex, "Releasing the dedicated sandbox of thread {ThreadId} failed", threadId);
+            logger.LogWarning(
+                ex,
+                "Releasing the dedicated sandbox of thread {ThreadId} failed; directory move {MovedTo} not stored",
+                threadId,
+                movedTo
+            );
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
                 new
@@ -2489,16 +2541,70 @@ public class ConversationsController(
             );
         }
 
-        return Ok(
-            new ReleaseSandboxResponse
+        var workingDirectory =
+            await ConversationWorkingDirectory.ReadAsync(store, threadId)
+            ?? throw new InvalidOperationException(
+                $"Thread '{threadId}' has a dedicated sandbox but no working directory."
+            );
+        logger.LogInformation(
+            "Released the dedicated sandbox of thread {ThreadId}; its next sandbox works in {WorkingDirectory}",
+            threadId,
+            workingDirectory
+        );
+        return Ok(new ReleaseSandboxResponse { WorkingDirectoryRelPath = workingDirectory });
+    }
+
+    private ConflictObjectResult ReleaseWhileRunning(string threadId, string reason)
+    {
+        logger.LogInformation("Sandbox release for thread {ThreadId} refused: {Reason}", threadId, reason);
+        return Conflict(
+            new
             {
-                WorkingDirectoryRelPath =
-                    await ConversationWorkingDirectory.ReadAsync(store, threadId)
-                    ?? throw new InvalidOperationException(
-                        $"Thread '{threadId}' has a dedicated sandbox but no working directory."
-                    ),
+                error = $"Cannot release the sandbox: {reason}.",
+                code = "sandbox_release_while_running",
+                threadId,
             }
         );
+    }
+
+    /// <summary>
+    /// Checks a directory a conversation's dedicated sandbox would work in, exactly as building its agent will:
+    /// its syntax, the support of the conversation's provider and mode, and containment in its workspace's own
+    /// working directory. Returns the normalized directory.
+    /// </summary>
+    /// <exception cref="ArgumentException">Malformed, or unsupported by the provider or mode.</exception>
+    /// <exception cref="InvalidOperationException">Outside the workspace's working directory.</exception>
+    private async Task<string> ValidateDedicatedWorkingDirectoryAsync(
+        ThreadMetadata metadata,
+        string requested,
+        CancellationToken ct
+    )
+    {
+        var directory = ConversationWorkingDirectory.Validate(requested);
+
+        // The provider and mode the agent would be built with, resolved as the pool resolves them.
+        var providerId = PropertyString(metadata, MultiTurnAgentPool.ProviderPropertyKey);
+        if (string.IsNullOrWhiteSpace(providerId))
+        {
+            providerId = providerRegistry.DefaultProviderId;
+        }
+
+        var mode =
+            await modeStore.GetModeAsync(
+                PropertyString(metadata, MultiTurnAgentPool.ModePropertyKey) ?? SystemChatModes.DefaultModeId,
+                ct
+            ) ?? await modeStore.GetModeAsync(SystemChatModes.DefaultModeId, ct);
+        ConversationWorkingDirectory.EnsureSupported(
+            providerId,
+            mode is not null && ModeCapabilities.Resolve(mode.EnabledCapabilityTools).NeedsSandbox
+        );
+
+        var workspaceId = PropertyString(metadata, MultiTurnAgentPool.WorkspacePropertyKey);
+        var workspace = await workspaceStore.GetAsync(
+            string.IsNullOrWhiteSpace(workspaceId) ? SandboxSessionRegistry.DefaultWorkspaceId : workspaceId,
+            ct
+        );
+        return ConversationDedicatedSandbox.ResolveWorkingDir(directory, workspace?.WorkingDir);
     }
 
     /// <summary>

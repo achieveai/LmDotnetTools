@@ -1,15 +1,13 @@
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Net;
 using System.Net.Http.Json;
-using System.Text;
-using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
+using System.Reflection;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using LmStreaming.Sample.Services;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace LmStreaming.Sample.Tests.Services;
 
@@ -21,32 +19,32 @@ namespace LmStreaming.Sample.Tests.Services;
 /// Composition-root on purpose, like <see cref="ReadOnlyEgressCompositionTests"/>: the flag is read and put on the
 /// workspace ref inside <c>Program.cs</c>'s pool agent factory, and an omission there is silent (the thread simply
 /// shares the workspace's sandbox, writable everywhere). Only the sandbox gateway and the marketplace catalog are
-/// faked; the registry, the pool, the factory, the controller and the stores are the production types.
+/// faked (<see cref="FakeGatewayWebAppFactory"/>); the registry, the pool, the factory, the controllers and the
+/// stores are the production types.
 /// </remarks>
-public sealed class DedicatedSandboxCompositionTests
+public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
 {
+    private const string AppId = "lm-dedicated-sandbox-test";
+
     private static readonly AgentProfile WorkspaceMode = SystemChatModes.GetById(SystemChatModes.WorkspaceAgentModeId)!;
     private static readonly AgentProfile WorkflowAuthorMode = SystemChatModes.GetById(
         SystemChatModes.WorkflowAuthorModeId
     )!;
 
+    public DedicatedSandboxCompositionTests(ITestOutputHelper output)
+        : base(output) { }
+
     [Fact]
     public async Task Each_dedicated_thread_gets_its_own_jailed_sandbox_and_keeps_it_across_a_mode_switch()
     {
-        await using var fixture = await Fixture.StartAsync();
+        await using var fixture = await StartAsync();
         var a = await fixture.ProvisionAsync("slots/r-1/PRs/r-7");
         var b = await fixture.ProvisionAsync("slots/r-2/PRs/r-8");
         var shared = $"lane-{Guid.NewGuid():N}";
 
         foreach (var threadId in new[] { shared, a, b })
         {
-            _ = fixture.Pool.GetOrCreateAgent(
-                threadId,
-                WorkspaceMode,
-                "test",
-                null,
-                requestedWorkspaceId: fixture.WorkspaceId
-            );
+            _ = fixture.BuildAgent(threadId);
         }
 
         fixture.Gateway.Creates.Should().HaveCount(3, "no thread may share another's sandbox");
@@ -69,18 +67,12 @@ public sealed class DedicatedSandboxCompositionTests
     [Fact]
     public async Task Removing_a_dedicated_threads_agent_deletes_its_sandbox_but_not_the_shared_one()
     {
-        await using var fixture = await Fixture.StartAsync();
+        await using var fixture = await StartAsync();
         var a = await fixture.ProvisionAsync("PRs/r-7");
         var shared = $"lane-{Guid.NewGuid():N}";
         foreach (var threadId in new[] { shared, a })
         {
-            _ = fixture.Pool.GetOrCreateAgent(
-                threadId,
-                WorkspaceMode,
-                "test",
-                null,
-                requestedWorkspaceId: fixture.WorkspaceId
-            );
+            _ = fixture.BuildAgent(threadId);
         }
 
         await fixture.Pool.RemoveAgentAsync(a);
@@ -91,17 +83,30 @@ public sealed class DedicatedSandboxCompositionTests
     }
 
     [Fact]
-    public async Task The_release_route_deletes_the_sandbox_moves_the_directory_and_the_next_turn_gets_a_fresh_one()
+    public async Task The_release_route_deletes_the_sandbox_moves_the_directory_keeps_the_history_and_the_next_turn_gets_a_fresh_one()
     {
-        await using var fixture = await Fixture.StartAsync();
+        await using var fixture = await StartAsync();
         var a = await fixture.ProvisionAsync("slots/r-1/PRs/r-7");
-        _ = fixture.Pool.GetOrCreateAgent(a, WorkspaceMode, "test", null, requestedWorkspaceId: fixture.WorkspaceId);
+        await fixture.Store.AppendMessagesAsync(
+            a,
+            [
+                MessagePersistenceConverter.ToPersistedMessage(
+                    new TextMessage { Role = Role.User, Text = "review r-7" },
+                    a,
+                    "run-1"
+                ),
+                MessagePersistenceConverter.ToPersistedMessage(
+                    new TextMessage { Role = Role.Assistant, Text = "two findings" },
+                    a,
+                    "run-1"
+                ),
+            ]
+        );
+        var history = (await fixture.Store.LoadMessagesAsync(a)).Select(message => message.MessageJson).ToList();
+        _ = fixture.BuildAgent(a);
         var first = fixture.Gateway.Creates.Single().SessionId;
 
-        using var response = await fixture.Client.PostAsJsonAsync(
-            $"/api/conversations/{a}/sandbox/release",
-            new ReleaseSandboxRequest { WorkingDirectoryRelPath = "slots/r-3/PRs/r-7" }
-        );
+        using var response = await fixture.ReleaseAsync(a, "slots/r-3/PRs/r-7");
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         (await response.Content.ReadFromJsonAsync<ReleaseSandboxResponse>())!
@@ -109,8 +114,12 @@ public sealed class DedicatedSandboxCompositionTests
             .Be("slots/r-3/PRs/r-7");
         fixture.Gateway.Deletes.Should().Equal(first);
         fixture.Pool.ActiveAgentCount.Should().Be(0, "the agent held the deleted sandbox's session id");
+        (await fixture.Store.LoadMessagesAsync(a))
+            .Select(message => message.MessageJson)
+            .Should()
+            .Equal(history, "only the container goes; the conversation keeps its history");
 
-        _ = fixture.Pool.GetOrCreateAgent(a, WorkspaceMode, "test", null, requestedWorkspaceId: fixture.WorkspaceId);
+        _ = fixture.BuildAgent(a);
 
         fixture.Gateway.Creates.Should().HaveCount(2);
         WorkingDir(fixture.Gateway.Creates[1].Body).Should().Be("slots/r-3/PRs/r-7");
@@ -119,20 +128,11 @@ public sealed class DedicatedSandboxCompositionTests
     [Fact]
     public async Task The_release_route_refuses_a_thread_without_a_dedicated_sandbox()
     {
-        await using var fixture = await Fixture.StartAsync();
-        var shared = $"lane-{Guid.NewGuid():N}";
-        _ = fixture.Pool.GetOrCreateAgent(
-            shared,
-            WorkspaceMode,
-            "test",
-            null,
-            requestedWorkspaceId: fixture.WorkspaceId
-        );
+        await using var fixture = await StartAsync();
+        var shared = await fixture.ProvisionAsync(null, dedicated: false);
+        _ = fixture.BuildAgent(shared);
 
-        using var response = await fixture.Client.PostAsJsonAsync(
-            $"/api/conversations/{shared}/sandbox/release",
-            new ReleaseSandboxRequest()
-        );
+        using var response = await fixture.ReleaseAsync(shared, directory: null);
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await response.Content.ReadAsStringAsync()).Should().Contain("dedicated_sandbox_required");
@@ -144,282 +144,431 @@ public sealed class DedicatedSandboxCompositionTests
     {
         // A review conversation from before dedicated sandboxes runs in the workspace's shared sandbox. Continuing it
         // must not keep it there, writable everywhere, nor delete the sandbox other threads still use.
-        await using var fixture = await Fixture.StartAsync();
+        await using var fixture = await StartAsync();
         // Without a directory: a shared-sandbox directory is resolved by a command this fake gateway does not
         // serve, and the conversion does not read the old directory anyway.
         var legacy = await fixture.ProvisionAsync(null, dedicated: false);
-        _ = fixture.Pool.GetOrCreateAgent(
-            legacy,
-            WorkspaceMode,
-            "test",
-            null,
-            requestedWorkspaceId: fixture.WorkspaceId
-        );
+        _ = fixture.BuildAgent(legacy);
         var shared = fixture.Gateway.Creates.Single();
         WorkingDir(shared.Body).Should().BeNull();
 
-        using var response = await fixture.Client.PostAsJsonAsync(
-            $"/api/conversations/{legacy}/sandbox/release",
-            new ReleaseSandboxRequest { WorkingDirectoryRelPath = "slots/r-3/PRs/r-7" }
-        );
+        using var response = await fixture.ReleaseAsync(legacy, "slots/r-3/PRs/r-7");
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         fixture.Gateway.Deletes.Should().BeEmpty("the shared sandbox serves other threads");
         fixture.Pool.ActiveAgentCount.Should().Be(0, "the agent held the shared sandbox's session id");
-        _ = fixture.Pool.GetOrCreateAgent(
-            legacy,
-            WorkspaceMode,
-            "test",
-            null,
-            requestedWorkspaceId: fixture.WorkspaceId
-        );
+        _ = fixture.BuildAgent(legacy);
         fixture.Gateway.Creates.Should().HaveCount(2);
         WorkingDir(fixture.Gateway.Creates[1].Body).Should().Be("slots/r-3/PRs/r-7");
         fixture.Registry.GetThreads(fixture.Gateway.Creates[1].SessionId).Should().Equal(legacy);
     }
 
-    private static string? WorkingDir(string createBody)
+    [Fact]
+    public async Task Provisioning_a_dedicated_sandbox_over_http_stores_and_acknowledges_it_and_jails_the_first_sandbox()
     {
-        using var document = JsonDocument.Parse(createBody);
-        return document.RootElement.TryGetProperty("working_dir", out var dir) ? dir.GetString() : null;
+        await using var fixture = await StartAsync();
+
+        using var response = await fixture.ProvisionOverHttpAsync("PRs/r-7", dedicated: true);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var reply = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        reply.RootElement.GetProperty("dedicatedSandboxAccepted").GetBoolean().Should().BeTrue();
+        var threadId = reply.RootElement.GetProperty("threadId").GetString()!;
+        (await ConversationDedicatedSandbox.ReadAsync(fixture.Store, threadId)).Should().BeTrue();
+
+        _ = fixture.BuildAgent(threadId);
+
+        WorkingDir(fixture.Gateway.Creates.Single().Body).Should().Be("PRs/r-7");
+        fixture.Registry.GetThreads(fixture.Gateway.Creates.Single().SessionId).Should().Equal(threadId);
+        fixture
+            .Registry.TryGetSessionById(fixture.Gateway.Creates.Single().SessionId, out var session)
+            .Should()
+            .BeTrue();
+        session!.OwnerThreadId.Should().Be(threadId);
     }
+
+    [Fact]
+    public async Task Provisioning_a_dedicated_sandbox_without_a_directory_is_refused_before_anything_is_stored()
+    {
+        await using var fixture = await StartAsync();
+
+        using var response = await fixture.ProvisionOverHttpAsync(directory: null, dedicated: true);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("working_directory_invalid");
+        (await fixture.Store.ListThreadsAsync()).Should().BeEmpty("a refused provision stores no thread");
+        fixture.Gateway.Creates.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Provisioning_refuses_a_directory_outside_the_workspaces_own_and_accepts_one_inside()
+    {
+        // "slots/r-10" shares the text prefix "slots/r-1" but is a sibling, not a descendant.
+        await using var fixture = await StartAsync(workspaceWorkingDir: "slots/r-1");
+
+        using var outside = await fixture.ProvisionOverHttpAsync("slots/r-10/PRs/r-7", dedicated: true);
+        using var inside = await fixture.ProvisionOverHttpAsync("slots/r-1/PRs/r-7", dedicated: true);
+
+        outside.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await outside.Content.ReadAsStringAsync()).Should().Contain("working_directory_invalid");
+        inside.StatusCode.Should().Be(HttpStatusCode.OK);
+        var threads = await fixture.Store.ListThreadsAsync();
+        threads.Should().ContainSingle("only the inside directory was stored");
+        _ = fixture.BuildAgent(threads[0].ThreadId);
+        fixture.Gateway.Creates.Select(create => WorkingDir(create.Body)).Should().Equal("slots/r-1/PRs/r-7");
+    }
+
+    [Fact]
+    public async Task The_capabilities_route_reports_dedicated_sandboxes_on_a_host_with_a_sandbox_registry()
+    {
+        await using var fixture = await StartAsync();
+
+        using var response = await fixture.Client.GetAsync("/api/conversations/capabilities");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var reply = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        // The wire name the companion client gates dedicated operation on.
+        reply.RootElement.GetProperty("dedicatedSandbox").ValueKind.Should().Be(JsonValueKind.True);
+    }
+
+    [Fact]
+    public async Task The_release_route_refuses_while_accepted_input_waits_and_changes_nothing()
+    {
+        await using var fixture = await StartAsync();
+        var a = await fixture.ProvisionAsync("PRs/r-7");
+        var agent = fixture.BuildAgent(a);
+        var session = fixture.Gateway.Creates.Single().SessionId;
+        // A send was accepted and no run has taken it yet.
+        ((IInputAcceptanceObserver)fixture.Pool)
+            .OnInputAccepted(a, "input-1", agent)
+            .Should()
+            .BeTrue();
+
+        using var response = await fixture.ReleaseAsync(a, "PRs/r-9");
+
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await response.Content.ReadAsStringAsync())
+            .Should()
+            .Contain("sandbox_release_while_running")
+            .And.Contain("work in hand", "the pool reports the waiting input as Busy");
+        fixture.BuildAgent(a).Should().BeSameAs(agent, "the agent with work in hand stays");
+        fixture.Registry.TryGetExistingSession(fixture.WorkspaceId, false, a)!.SessionId.Should().Be(session);
+        fixture.Gateway.DeleteAttempts.Should().Be(0);
+        (await ConversationWorkingDirectory.ReadAsync(fixture.Store, a)).Should().Be("PRs/r-7");
+    }
+
+    [Fact]
+    public async Task A_refused_delete_held_in_flight_answers_503_moves_nothing_and_a_retry_completes_the_release()
+    {
+        await using var fixture = await StartAsync();
+        var a = await fixture.ProvisionAsync("PRs/r-7");
+        _ = fixture.BuildAgent(a);
+        var old = fixture.Gateway.Creates.Single().SessionId;
+        var gate = fixture.Gateway.HoldDeletes();
+
+        // Removing the agent starts a release of its sandbox; the route must report that DELETE's outcome.
+        var post = fixture.ReleaseAsync(a, "PRs/r-9");
+        await fixture.Gateway.WaitForDeleteStartedAsync();
+        await Task.Delay(100);
+        post.IsCompleted.Should().BeFalse("the route answers only once the gateway has answered the DELETE");
+        fixture.Gateway.FailDeletes = true;
+        gate.SetResult();
+        using var refused = await post;
+        Logger.LogInformation(
+            "Release of {ThreadId} answered {Status} after {Attempts} DELETE attempt(s)",
+            a,
+            refused.StatusCode,
+            fixture.Gateway.DeleteAttempts
+        );
+
+        refused.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        (await refused.Content.ReadAsStringAsync()).Should().Contain("sandbox_release_failed");
+        (await ConversationWorkingDirectory.ReadAsync(fixture.Store, a)).Should().Be("PRs/r-7", "nothing is moved");
+
+        // The next turn: a fresh sandbox, never the one still being retired, in the directory still stored.
+        _ = fixture.BuildAgent(a);
+        fixture.Gateway.Creates.Should().HaveCount(2);
+        fixture.Gateway.Creates[1].SessionId.Should().NotBe(old);
+        WorkingDir(fixture.Gateway.Creates[1].Body).Should().Be("PRs/r-7");
+
+        fixture.Gateway.FailDeletes = false;
+        using var retried = await fixture.ReleaseAsync(a, "PRs/r-9");
+        fixture.LogGateway();
+
+        retried.StatusCode.Should().Be(HttpStatusCode.OK);
+        fixture.Gateway.Deletes.Should().BeEquivalentTo([old, fixture.Gateway.Creates[1].SessionId]);
+        _ = fixture.BuildAgent(a);
+        WorkingDir(fixture.Gateway.Creates[2].Body).Should().Be("PRs/r-9");
+    }
+
+    [Fact]
+    public async Task The_release_route_answers_404_for_an_unknown_thread_and_changes_nothing()
+    {
+        await using var fixture = await StartAsync();
+        var unknown = $"review-{Guid.NewGuid():N}";
+
+        using var response = await fixture.ReleaseAsync(unknown, "PRs/r-9");
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("unknown_thread");
+        (await fixture.Store.LoadMetadataAsync(unknown)).Should().BeNull("a refused release stores nothing");
+        fixture.Gateway.DeleteAttempts.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("../x")]
+    [InlineData("/abs")]
+    [InlineData("")]
+    [InlineData("slots/r-10/PRs/r-7")] // outside the workspace's own working directory
+    public async Task The_release_route_refuses_a_bad_directory_before_anything_changes(string directory)
+    {
+        await using var fixture = await StartAsync(workspaceWorkingDir: "slots/r-1");
+        var a = await fixture.ProvisionAsync("slots/r-1/PRs/r-7");
+        var agent = fixture.BuildAgent(a);
+
+        using var response = await fixture.ReleaseAsync(a, directory);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("working_directory_invalid");
+        fixture.BuildAgent(a).Should().BeSameAs(agent, "a refused release unloads nothing");
+        fixture.Gateway.DeleteAttempts.Should().Be(0);
+        (await ConversationWorkingDirectory.ReadAsync(fixture.Store, a)).Should().Be("slots/r-1/PRs/r-7");
+    }
+
+    [Fact]
+    public async Task The_release_route_refuses_to_jail_a_conversation_whose_provider_cannot_enforce_a_directory()
+    {
+        // A conversation from before dedicated sandboxes, on a CLI provider: moved into a dedicated sandbox, its next
+        // build would refuse the working directory, so the move is refused up front and nothing is stored.
+        await using var fixture = await StartAsync();
+        var legacy = await fixture.ProvisionAsync(
+            null,
+            dedicated: false,
+            properties: new Dictionary<string, object> { [MultiTurnAgentPool.ProviderPropertyKey] = "claude" }
+        );
+
+        using var response = await fixture.ReleaseAsync(legacy, "PRs/r-9");
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("working_directory_invalid");
+        (await ConversationWorkingDirectory.ReadAsync(fixture.Store, legacy)).Should().BeNull();
+        (await ConversationDedicatedSandbox.ReadAsync(fixture.Store, legacy)).Should().BeFalse();
+        fixture.Gateway.DeleteAttempts.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task A_thread_whose_dedicated_flag_is_stored_false_runs_in_the_shared_sandbox()
+    {
+        await using var fixture = await StartAsync();
+        var a = await fixture.ProvisionAsync(
+            null,
+            dedicated: false,
+            properties: new Dictionary<string, object> { [ConversationDedicatedSandbox.PropertyKey] = false }
+        );
+
+        _ = fixture.BuildAgent(a);
+
+        var create = fixture.Gateway.Creates.Single();
+        WorkingDir(create.Body).Should().BeNull();
+        fixture.Registry.TryGetSessionById(create.SessionId, out var session).Should().BeTrue();
+        session!.OwnerThreadId.Should().BeNull("false is the shared sandbox");
+        fixture.Registry.TryGetExistingSession(fixture.WorkspaceId, false)!.SessionId.Should().Be(create.SessionId);
+    }
+
+    [Theory]
+    [InlineData("string")]
+    [InlineData("null")]
+    [InlineData("object")]
+    public async Task A_thread_with_an_unreadable_dedicated_flag_gets_no_agent_and_no_sandbox(string kind)
+    {
+        await using var fixture = await StartAsync();
+        object malformed = kind switch
+        {
+            "string" => "true",
+            "null" => null!,
+            _ => new Dictionary<string, string> { ["enabled"] = "true" },
+        };
+        var a = await fixture.ProvisionAsync(
+            "PRs/r-7",
+            dedicated: false,
+            properties: new Dictionary<string, object> { [ConversationDedicatedSandbox.PropertyKey] = malformed }
+        );
+
+        var build = () => fixture.BuildAgent(a);
+
+        build.Should().Throw<Exception>().Which.ToString().Should().Contain("refusing to build its agent");
+        fixture.Gateway.Creates.Should().BeEmpty("an unreadable flag must not fall back to the shared sandbox");
+        fixture.Pool.ActiveAgentCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task A_session_of_another_owner_in_the_threads_slot_refuses_to_build_its_agent()
+    {
+        // Defence in depth at the one place a thread is handed a sandbox: whatever the registry returns, a thread
+        // never runs in a sandbox jailed to another conversation's directory.
+        await using var fixture = await StartAsync();
+        var a = await fixture.ProvisionAsync("PRs/r-7");
+        var intruder = new SandboxSession(
+            fixture.WorkspaceId,
+            "sess-intruder",
+            ".",
+            "/host/intruder",
+            WorkspaceWorkingDir: "PRs/r-8",
+            OwnerThreadId: "thread-b"
+        );
+        var slots =
+            (ConcurrentDictionary<(string, string, bool, string?), Lazy<Task<SandboxSession>>>)
+                typeof(SandboxSessionRegistry)
+                    .GetField("_sessions", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .GetValue(fixture.Registry)!;
+        slots[(fixture.WorkspaceId, AppId, false, a)] = new Lazy<Task<SandboxSession>>(Task.FromResult(intruder));
+
+        var build = () => fixture.BuildAgent(a);
+
+        build
+            .Should()
+            .Throw<Exception>()
+            .Which.ToString()
+            .Should()
+            .Contain($"asked for the sandbox of owner '{a}'")
+            .And.Contain("sess-intruder");
+        fixture.Pool.ActiveAgentCount.Should().Be(0);
+    }
+
+    private static string? WorkingDir(string createBody) => OwnedSandboxGateway.WorkingDir(createBody);
+
+    private Task<Fixture> StartAsync(string? workspaceWorkingDir = null) =>
+        Fixture.StartAsync(Logger, workspaceWorkingDir);
 
     private sealed class Fixture : IAsyncDisposable
     {
-        private readonly string _root;
-        private readonly DedicatedSandboxWebAppFactory _host;
+        private readonly FakeGatewayWebAppFactory _host;
+        private readonly ILogger _logger;
 
-        private Fixture(string root, RecordingSandboxGateway gateway, DedicatedSandboxWebAppFactory host)
+        private Fixture(OwnedSandboxGateway gateway, FakeGatewayWebAppFactory host, ILogger logger)
         {
-            _root = root;
             Gateway = gateway;
             _host = host;
+            _logger = logger;
             Client = host.CreateClient();
         }
 
-        public RecordingSandboxGateway Gateway { get; }
+        public OwnedSandboxGateway Gateway { get; }
         public HttpClient Client { get; }
         public string WorkspaceId { get; private set; } = string.Empty;
         public MultiTurnAgentPool Pool => _host.Services.GetRequiredService<MultiTurnAgentPool>();
         public SandboxSessionRegistry Registry => _host.Services.GetRequiredService<SandboxSessionRegistry>();
+        public IConversationStore Store => _host.Services.GetRequiredService<IConversationStore>();
 
-        public static async Task<Fixture> StartAsync()
+        public static async Task<Fixture> StartAsync(ILogger logger, string? workspaceWorkingDir)
         {
-            var root = Path.Combine(Path.GetTempPath(), "lmstreaming-dedicated-sandbox", Guid.NewGuid().ToString("N"));
-            _ = Directory.CreateDirectory(root);
-            var gateway = new RecordingSandboxGateway();
-            var fixture = new Fixture(root, gateway, new DedicatedSandboxWebAppFactory(root, gateway));
+            var gateway = new OwnedSandboxGateway();
+            var fixture = new Fixture(gateway, new FakeGatewayWebAppFactory(gateway, AppId), logger);
             fixture.WorkspaceId = (
                 await fixture
                     ._host.Services.GetRequiredService<IWorkspaceStore>()
-                    .CreateAsync(new WorkspaceCreate { Name = "Reviews" })
+                    .CreateAsync(new WorkspaceCreate { Name = "Reviews", WorkingDir = workspaceWorkingDir })
             ).Id;
+            logger.LogInformation(
+                "Host up: app {AppId}, workspace {WorkspaceId} with working directory {WorkspaceWorkingDir}, stores in {Root}",
+                AppId,
+                fixture.WorkspaceId,
+                workspaceWorkingDir,
+                fixture._host.Root
+            );
             return fixture;
         }
 
-        /// <summary>Stores a thread exactly as the provision route stores a dedicated one.</summary>
-        public async Task<string> ProvisionAsync(string? workingDirectory, bool dedicated = true)
+        /// <summary>Stores a thread exactly as the provision route stores one, plus any extra properties.</summary>
+        public async Task<string> ProvisionAsync(
+            string? workingDirectory,
+            bool dedicated = true,
+            IReadOnlyDictionary<string, object>? properties = null
+        )
         {
             var threadId = $"review-{Guid.NewGuid():N}";
-            var properties = ImmutableDictionary<string, object>.Empty.Add(
+            var stored = ImmutableDictionary<string, object>.Empty.Add(
                 MultiTurnAgentPool.WorkspacePropertyKey,
                 WorkspaceId
             );
             if (workingDirectory is not null)
             {
-                properties = properties.Add(ConversationWorkingDirectory.PropertyKey, workingDirectory);
+                stored = stored.Add(ConversationWorkingDirectory.PropertyKey, workingDirectory);
             }
-            await _host
-                .Services.GetRequiredService<IConversationStore>()
-                .UpdateMetadataAsync(
-                    threadId,
-                    _ => new ThreadMetadata
-                    {
-                        ThreadId = threadId,
-                        LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                        Properties = dedicated
-                            ? properties.Add(ConversationDedicatedSandbox.PropertyKey, true)
-                            : properties,
-                    }
-                );
+
+            if (dedicated)
+            {
+                stored = stored.Add(ConversationDedicatedSandbox.PropertyKey, true);
+            }
+
+            stored = stored.SetItems(properties ?? ImmutableDictionary<string, object>.Empty);
+            await Store.UpdateMetadataAsync(
+                threadId,
+                _ => new ThreadMetadata
+                {
+                    ThreadId = threadId,
+                    LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    Properties = stored,
+                }
+            );
+            _logger.LogInformation(
+                "Stored thread {ThreadId}: directory {WorkingDirectory}, dedicated {Dedicated}, extra {Extra}",
+                threadId,
+                workingDirectory,
+                dedicated,
+                properties?.Keys
+            );
             return threadId;
         }
 
+        /// <summary>Builds (or returns) the thread's agent, as a turn does.</summary>
+        public IMultiTurnAgent BuildAgent(string threadId) =>
+            Pool.GetOrCreateAgent(threadId, WorkspaceMode, "test", null, requestedWorkspaceId: WorkspaceId);
+
+        public Task<HttpResponseMessage> ProvisionOverHttpAsync(string? directory, bool dedicated) =>
+            Client.PostAsJsonAsync(
+                "/api/conversations",
+                new ProvisionConversationRequest
+                {
+                    WorkspaceId = WorkspaceId,
+                    ProviderId = "test",
+                    ModeId = SystemChatModes.WorkspaceAgentModeId,
+                    WorkingDirectoryRelPath = directory,
+                    DedicatedSandbox = dedicated,
+                }
+            );
+
+        public async Task<HttpResponseMessage> ReleaseAsync(string threadId, string? directory)
+        {
+            var response = await Client.PostAsJsonAsync(
+                $"/api/conversations/{threadId}/sandbox/release",
+                new ReleaseSandboxRequest { WorkingDirectoryRelPath = directory }
+            );
+            _logger.LogInformation(
+                "Release of {ThreadId} to {Directory} answered {Status}: {Body}",
+                threadId,
+                directory,
+                (int)response.StatusCode,
+                await response.Content.ReadAsStringAsync()
+            );
+            return response;
+        }
+
+        public void LogGateway() =>
+            _logger.LogInformation(
+                "Gateway saw creates {Creates} ({Directories}), delete attempts {DeleteAttempts}, confirmed deletes {Deletes}",
+                Gateway.Creates.Select(create => create.SessionId),
+                Gateway.Creates.Select(create => WorkingDir(create.Body)),
+                Gateway.DeleteAttempts,
+                Gateway.Deletes
+            );
+
         public async ValueTask DisposeAsync()
         {
+            LogGateway();
             Client.Dispose();
             await _host.DisposeAsync();
-            DetachedStoreTeardown.Purge(_root);
-        }
-    }
-
-    /// <summary>Boots the real <c>Program</c> host with the sandbox gateway swapped for an in-memory fake.</summary>
-    private sealed class DedicatedSandboxWebAppFactory : WebApplicationFactory<Program>
-    {
-        private readonly string _root;
-        private readonly HttpMessageHandler _gateway;
-
-        public DedicatedSandboxWebAppFactory(string root, HttpMessageHandler gateway)
-        {
-            _root = root;
-            _gateway = gateway;
-            Environment.SetEnvironmentVariable("LM_PROVIDER_MODE", "test");
-        }
-
-        protected override void ConfigureWebHost(IWebHostBuilder builder)
-        {
-            builder.UseEnvironment("Production");
-            // Never dialled: the gateway and sandbox MCP transports are both faked below.
-            builder.UseSetting("SandboxGateway:BaseUrl", "http://127.0.0.1:1");
-            builder.UseSetting("SandboxGateway:AutoSpawn", "false");
-            builder.UseSetting("SandboxGateway:AppId", "lm-dedicated-sandbox-test");
-            builder.UseSetting("SandboxGateway:WorkspaceBasePath", Path.Combine(_root, "workspace-base"));
-
-            builder.ConfigureTestServices(services =>
-            {
-                services.RemoveAll<IConversationStore>();
-                services.AddSingleton<IConversationStore>(
-                    new FileConversationStore(Path.Combine(_root, "conversations"))
-                );
-                services.RemoveAll<IWorkspaceStore>();
-                services.AddSingleton<IWorkspaceStore>(new FileWorkspaceStore(Path.Combine(_root, "workspaces")));
-                services.RemoveAll<IMarketplaceCatalogClient>();
-                services.AddSingleton<IMarketplaceCatalogClient>(new EmptyCatalogClient());
-                // The sandbox MCP tools are not under test. Fail their connect at once.
-                services.AddKeyedSingleton<HttpMessageHandler>(
-                    Program.SandboxMcpTransportHandlerKey,
-                    new UnreachableMcpHandler()
-                );
-
-                services.RemoveAll<SandboxGatewayLifetime>();
-                services.AddSingleton(sp => new SandboxGatewayLifetime(
-                    sp.GetRequiredService<SandboxGatewayOptions>(),
-                    sp.GetRequiredService<ILogger<SandboxGatewayLifetime>>(),
-                    new HttpClient(_gateway, disposeHandler: false)
-                ));
-                services.RemoveAll<SandboxSessionRegistry>();
-                services.AddSingleton(sp => new SandboxSessionRegistry(
-                    sp.GetRequiredService<SandboxGatewayLifetime>(),
-                    sp.GetRequiredService<SandboxGatewayOptions>(),
-                    sp.GetRequiredService<ILogger<SandboxSessionRegistry>>(),
-                    new HttpClient(_gateway, disposeHandler: false),
-                    sp.GetRequiredService<AuthOptions>(),
-                    sp.GetRequiredService<SessionSecretStore>()
-                ));
-            });
-        }
-
-        protected override void Dispose(bool disposing)
-        {
-            base.Dispose(disposing);
-            if (disposing)
-            {
-                Environment.SetEnvironmentVariable("LM_PROVIDER_MODE", null);
-            }
-        }
-    }
-
-    private sealed class EmptyCatalogClient : IMarketplaceCatalogClient
-    {
-        public Task<MarketplaceCatalog> GetCatalogAsync(
-            IReadOnlyList<string>? marketplaces = null,
-            CancellationToken ct = default
-        ) => Task.FromResult(new MarketplaceCatalog([], []) { Capabilities = new MarketplaceCapabilities(true) });
-    }
-
-    private sealed class UnreachableMcpHandler : HttpMessageHandler
-    {
-        protected override Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request,
-            CancellationToken cancellationToken
-        ) => throw new HttpRequestException("The sandbox MCP endpoint is not faked in this test.");
-    }
-
-    /// <summary>
-    /// In-memory sandbox gateway that records each create's session id and request body and each delete, and
-    /// acknowledges a requested working directory as the real gateway does.
-    /// </summary>
-    private sealed class RecordingSandboxGateway : HttpMessageHandler
-    {
-        private readonly object _gate = new();
-        private readonly List<(string SessionId, string Body)> _creates = [];
-        private readonly List<string> _deletes = [];
-        private readonly SemaphoreSlim _deleted = new(0);
-
-        public IReadOnlyList<(string SessionId, string Body)> Creates
-        {
-            get
-            {
-                lock (_gate)
-                {
-                    return [.. _creates];
-                }
-            }
-        }
-
-        public IReadOnlyList<string> Deletes
-        {
-            get
-            {
-                lock (_gate)
-                {
-                    return [.. _deletes];
-                }
-            }
-        }
-
-        /// <summary>Waits for the next delete (a removed agent releases its sandbox in the background).</summary>
-        public async Task<string> NextDeleteAsync()
-        {
-            (await _deleted.WaitAsync(TimeSpan.FromSeconds(10))).Should().BeTrue("a delete was expected");
-            lock (_gate)
-            {
-                return _deletes[^1];
-            }
-        }
-
-        protected override async Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request,
-            CancellationToken cancellationToken
-        )
-        {
-            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
-            if (request.Method == HttpMethod.Delete && path.Contains("/sandboxes/", StringComparison.Ordinal))
-            {
-                lock (_gate)
-                {
-                    _deletes.Add(path[(path.LastIndexOf('/') + 1)..]);
-                }
-                _ = _deleted.Release();
-                return new HttpResponseMessage(HttpStatusCode.OK);
-            }
-
-            if (request.Method != HttpMethod.Post || !path.EndsWith("/sandboxes", StringComparison.Ordinal))
-            {
-                // Health probes, liveness GETs, operations and the boot-time context-file reads.
-                return new HttpResponseMessage(HttpStatusCode.OK);
-            }
-
-            var body = await request.Content!.ReadAsStringAsync(cancellationToken);
-            string sessionId;
-            lock (_gate)
-            {
-                sessionId = $"sess-{_creates.Count + 1}";
-                _creates.Add((sessionId, body));
-            }
-
-            var workingDir = WorkingDir(body) is { } dir ? $", \"working_dir\": \"{dir}\"" : string.Empty;
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent(
-                    $$"""
-                    { "session_id": "{{sessionId}}", "container_id": "c-{{sessionId}}",
-                      "volumes": { "workspace": { "container_path": "/workspace", "read_only": false{{workingDir}} } } }
-                    """,
-                    Encoding.UTF8,
-                    "application/json"
-                ),
-            };
+            _logger.LogInformation("Host stopped; gateway saw confirmed deletes {Deletes}", Gateway.Deletes);
         }
     }
 }

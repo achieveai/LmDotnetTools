@@ -1,4 +1,3 @@
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
@@ -29,33 +28,8 @@ public static class ConversationDedicatedSandbox
     /// because reading it as false would put the thread in the shared sandbox, writable everywhere.
     /// </summary>
     /// <exception cref="InvalidOperationException">The stored value is not a boolean.</exception>
-    public static async Task<bool> ReadAsync(IConversationStore store, string threadId, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(store);
-
-        if (string.IsNullOrWhiteSpace(threadId))
-        {
-            return false;
-        }
-
-        var metadata = await store.LoadMetadataAsync(threadId, ct).ConfigureAwait(false);
-        if (metadata?.Properties is not { } properties || !properties.TryGetValue(PropertyKey, out var raw))
-        {
-            return false;
-        }
-
-        return raw switch
-        {
-            bool value => value,
-            JsonElement { ValueKind: JsonValueKind.True } => true,
-            JsonElement { ValueKind: JsonValueKind.False } => false,
-            _ => throw new InvalidOperationException(
-                $"Conversation '{threadId}' has an unreadable '{PropertyKey}' value "
-                    + $"({(raw is JsonElement element ? element.ValueKind.ToString() : raw?.GetType().Name ?? "null")}); "
-                    + "refusing to build its agent rather than run it in the shared sandbox."
-            ),
-        };
-    }
+    public static Task<bool> ReadAsync(IConversationStore store, string threadId, CancellationToken ct = default) =>
+        ThreadPropertyValue.ReadFailClosedBoolAsync(store, threadId, PropertyKey, "run it in the shared sandbox", ct);
 
     /// <summary>
     /// The gateway working directory for a dedicated sandbox. A workspace that sets its own working directory has

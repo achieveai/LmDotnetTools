@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.Sandbox;
 using Microsoft.Extensions.Logging.Abstractions;
+using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Tests.Sandbox;
 
@@ -16,8 +17,10 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Tests.Sandbox;
 /// observe changes until every candidate exists, and a failure anywhere before the swap leaves the
 /// original sessions serving traffic.
 /// </summary>
-public class SandboxSessionRegistryPluginSelectionTests
+public class SandboxSessionRegistryPluginSelectionTests(ITestOutputHelper output)
 {
+    private readonly ITestOutputHelper _output = output;
+
     private const string GatewayBaseUrl = "http://localhost:3000";
 
     /// <summary>The gateway header carrying the calling app's identity, stamped by the SDK client.</summary>
@@ -322,6 +325,20 @@ public class SandboxSessionRegistryPluginSelectionTests
             .GetString()
             .Should()
             .Be("slots/r-1/PRs/r-7");
+
+        // Committed: the owner's reusable slot now serves the candidate, still jailed, and the shared slot is
+        // untouched.
+        registry.SwapPluginSelectionSessions([(partition, candidate)]).Should().BeEmpty();
+        var committed = registry.TryGetExistingSession("ws-1", readOnlyEgress: false, ownerThreadId: "thread-a");
+        _output.WriteLine(
+            $"Owner thread-a: partition {partition.Session.SessionId} -> candidate {candidate.SessionId}; slot now "
+                + $"{committed?.SessionId} (owner {committed?.OwnerThreadId}, jail {committed?.WorkspaceWorkingDir}); "
+                + $"gateway calls: {string.Join(", ", gateway.Requests.Select(r => $"{r.Method} {r.Path}"))}"
+        );
+        committed.Should().BeSameAs(candidate);
+        committed!.OwnerThreadId.Should().Be("thread-a");
+        committed.WorkspaceWorkingDir.Should().Be("slots/r-1/PRs/r-7");
+        registry.TryGetExistingSession("ws-1", readOnlyEgress: false).Should().BeNull();
     }
 
     [Fact]

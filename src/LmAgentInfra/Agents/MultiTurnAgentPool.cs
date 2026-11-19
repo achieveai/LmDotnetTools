@@ -2148,6 +2148,35 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     }
 
     /// <summary>
+    /// Runs <paramref name="action"/> only while no agent is pooled for <paramref name="threadId"/>, under the
+    /// per-thread lock agent creation takes, so no agent for the thread can be admitted while it runs. Returns
+    /// <see langword="false"/>, without running it, when one is pooled.
+    /// </summary>
+    /// <remarks>
+    /// For a caller that must change what the thread's next agent is built from (its sandbox, its settings) only when
+    /// no agent built from the old state is live. <paramref name="action"/> must be short and must not block: every
+    /// creation and hand-out for the thread waits on this lock.
+    /// </remarks>
+    public bool TryRunWhileNotPooled(string threadId, Action action)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrEmpty(threadId);
+        ArgumentNullException.ThrowIfNull(action);
+
+        var lockObj = _creationLocks.GetOrAdd(threadId, static _ => new object());
+        lock (lockObj)
+        {
+            if (_agents.ContainsKey(threadId))
+            {
+                return false;
+            }
+
+            action();
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Unloads every pooled conversation that has been idle for at least <paramref name="idleAfter"/>,
     /// so only conversations with work in hand stay in memory (#830). An unloaded conversation is
     /// rebuilt from the store by the next request for it, exactly as after a host restart.
