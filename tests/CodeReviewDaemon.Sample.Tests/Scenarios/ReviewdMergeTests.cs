@@ -250,7 +250,7 @@ public sealed class ReviewdMergeTests
             string json;
             if (path.EndsWith("capabilities", StringComparison.Ordinal))
                 json =
-                    """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}""";
+                    """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}""";
             else if (path == "/api/conversations" && request.Method == HttpMethod.Post)
             {
                 _threads.Add("thread" + ++Provisions);

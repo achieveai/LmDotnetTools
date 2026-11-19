@@ -22,6 +22,19 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
         Func<HttpRequestMessage, HttpResponseMessage> respond
     )
     {
+        _routes.Add(new Route(predicate, request => Task.FromResult(respond(request))));
+        return this;
+    }
+
+    /// <summary>
+    /// Registers an asynchronous handler, for a response that reads the request body or otherwise awaits. The body
+    /// is already buffered when it runs, so reading it again is safe.
+    /// </summary>
+    public FakeHttpMessageHandler OnAsync(
+        Func<HttpRequestMessage, bool> predicate,
+        Func<HttpRequestMessage, Task<HttpResponseMessage>> respond
+    )
+    {
         _routes.Add(new Route(predicate, respond));
         return this;
     }
@@ -119,7 +132,7 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
         {
             if (route.Predicate(request))
             {
-                return route.Respond(request);
+                return await route.Respond(request);
             }
         }
 
@@ -137,7 +150,7 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
 
     private sealed record Route(
         Func<HttpRequestMessage, bool> Predicate,
-        Func<HttpRequestMessage, HttpResponseMessage> Respond
+        Func<HttpRequestMessage, Task<HttpResponseMessage>> Respond
     );
 
     /// <summary>A single observed outgoing request.</summary>

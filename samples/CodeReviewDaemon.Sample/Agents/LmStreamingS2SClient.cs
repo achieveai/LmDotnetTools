@@ -255,7 +255,7 @@ internal sealed class LmStreamingS2SClient
     /// ignores it and would give the thread full egress, so a reply without <c>readOnlyEgressAccepted: true</c>
     /// deletes the thread (best effort) and throws <see cref="ReviewHostContractException"/>.
     /// </summary>
-    public async Task<string> ProvisionAsync(
+    public Task<string> ProvisionAsync(
         string workspaceId,
         string providerId,
         string modeId,
@@ -266,13 +266,55 @@ internal sealed class LmStreamingS2SClient
         bool disableClientTools,
         bool readOnlyEgress,
         CancellationToken ct
+    ) =>
+        ProvisionAsync(
+            workspaceId,
+            providerId,
+            modeId,
+            systemPromptAppendix,
+            subAgentModelId,
+            reasoningEffort,
+            workingDirectory,
+            disableClientTools,
+            readOnlyEgress,
+            dedicatedSandbox: false,
+            ct
+        );
+
+    /// <summary>
+    /// <paramref name="dedicatedSandbox"/> asks the host for a sandbox of this thread's own, jailed to
+    /// <paramref name="workingDirectory"/>: the agent can write only there and reads the rest of the workspace.
+    /// A contract like <c>readOnlyEgress</c>: a host that predates it would run the thread in the workspace's
+    /// shared sandbox, writable everywhere, so an unacknowledged reply throws after a best-effort delete of the
+    /// thread. A failed delete is swallowed, so the thread may outlive the error.
+    /// </summary>
+    public async Task<string> ProvisionAsync(
+        string workspaceId,
+        string providerId,
+        string modeId,
+        string? systemPromptAppendix,
+        string? subAgentModelId,
+        string? reasoningEffort,
+        string? workingDirectory,
+        bool disableClientTools,
+        bool readOnlyEgress,
+        bool dedicatedSandbox,
+        CancellationToken ct
     )
     {
+        if (dedicatedSandbox && workingDirectory is null)
+        {
+            throw new ArgumentException("A dedicated sandbox needs a working directory.", nameof(workingDirectory));
+        }
         if (workingDirectory is not null)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(workingDirectory);
             _ = new AchieveAi.LmDotnetTools.Sandbox.SandboxCommand(["pwd"], workingDirectory);
             await EnsureWorkingDirectoryContractAsync(ct);
+        }
+        if (dedicatedSandbox)
+        {
+            await EnsureDedicatedSandboxContractAsync(ct);
         }
         using var response = await ExecuteAsync(
             HttpMethod.Post,
@@ -290,6 +332,7 @@ internal sealed class LmStreamingS2SClient
                 WorkingDirectoryRelPath = workingDirectory,
                 DisableClientTools = disableClientTools,
                 ReadOnlyEgress = readOnlyEgress,
+                DedicatedSandbox = dedicatedSandbox,
             },
             ct
         );
@@ -331,6 +374,9 @@ internal sealed class LmStreamingS2SClient
                     + $"'{reasoningEffort}'. Upgrade the review host before running this review."
             : readOnlyEgress && !ReadBoolProperty(body, "readOnlyEgressAccepted")
                 ? $"The LmStreaming review host at {_baseUrl} did not acknowledge requested read-only egress; "
+                    + $"thread '{threadId}' was not used and its delete was attempted. Upgrade the review host first."
+            : dedicatedSandbox && !ReadBoolProperty(body, "dedicatedSandboxAccepted")
+                ? $"The LmStreaming review host at {_baseUrl} did not acknowledge a dedicated sandbox; "
                     + $"thread '{threadId}' was not used and its delete was attempted. Upgrade the review host first."
             : null;
         if (unacknowledged is not null)
@@ -490,6 +536,76 @@ internal sealed class LmStreamingS2SClient
             );
         }
     }
+
+    /// <summary>
+    /// Fails closed unless the host advertises <c>dedicatedSandbox</c>: per-thread sandboxes jailed to the
+    /// thread's working directory, and the <c>sandbox/release</c> route. Read, never probed by a send.
+    /// </summary>
+    public async Task EnsureDedicatedSandboxContractAsync(CancellationToken ct)
+    {
+        using var response = await ExecuteAsync(HttpMethod.Get, "api/conversations/capabilities", body: null, ct);
+        if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
+        {
+            throw new ReviewHostContractException(
+                "The review host predates dedicated sandboxes. Upgrade it before reviewing; no prompt was sent."
+            );
+        }
+        _ = response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (!ReadBoolProperty(body, "dedicatedSandbox"))
+        {
+            throw new ReviewHostContractException(
+                "The review host does not advertise dedicated sandboxes. No conversation or prompt was created."
+            );
+        }
+    }
+
+    /// <summary>
+    /// Deletes the thread's own sandbox container; its workspace files stay. With
+    /// <paramref name="workingDirectory"/> the thread's next turn is jailed there instead, and a thread that ran in
+    /// the workspace's shared sandbox becomes a dedicated one. The host refuses (409) while the thread runs.
+    /// <para>
+    /// A refusal throws <see cref="ReviewHostContractException"/> naming the status and, when it is one of
+    /// <see cref="KnownReleaseRefusals"/>, the host's code. The rest of the host's body is never carried: the runner
+    /// writes this error to its log, and an upstream body there is arbitrary text from another service.
+    /// </para>
+    /// </summary>
+    public async Task ReleaseSandboxAsync(string threadId, string? workingDirectory, CancellationToken ct)
+    {
+        using var response = await ExecuteAsync(
+            HttpMethod.Post,
+            $"api/conversations/{Uri.EscapeDataString(threadId)}/sandbox/release",
+            new { WorkingDirectoryRelPath = workingDirectory },
+            ct
+        );
+        if (!response.IsSuccessStatusCode)
+        {
+            var code = TryReadStringProperty(await response.Content.ReadAsStringAsync(ct), "code");
+            var known = code is not null && KnownReleaseRefusals.Contains(code) ? $", {code}" : "";
+            throw new ReviewHostContractException(
+                $"The review host refused to release the sandbox of '{threadId}' ({(int)response.StatusCode}{known})."
+            );
+        }
+        if (workingDirectory is not null)
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
+            if (TryReadStringProperty(body, "workingDirectoryRelPath") != workingDirectory)
+            {
+                throw new ReviewHostContractException(
+                    $"The review host did not move '{threadId}' to '{workingDirectory}'."
+                );
+            }
+        }
+    }
+
+    /// <summary>The sandbox release refusal codes the host documents; any other code is dropped from the error.</summary>
+    internal static readonly IReadOnlySet<string> KnownReleaseRefusals = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "sandbox_release_while_running",
+        "sandbox_release_failed",
+        "dedicated_sandbox_required",
+        "working_directory_invalid",
+    };
 
     /// <summary>
     /// Whether the host takes manual compaction requests (<c>manualCompaction</c> on
