@@ -1591,10 +1591,12 @@ public sealed class ReviewdRunnerTests
     [Theory]
     [InlineData("resume")]
     [InlineData("slot-not-idle")]
+    [InlineData("slot-claim-lost")]
     public async Task Batch_does_not_count_failures_that_say_nothing_about_the_pr(string kind)
     {
         // Seen live: a review whose input was lost re-verified on every resume, five times; only a fresh admission can
-        // replace it, so quarantining it would skip a PR that would pass. A held slot fails every PR the same way.
+        // replace it, so quarantining it would skip a PR that would pass. A held slot fails every PR the same way, and
+        // a sweep that reset the slot under a fresh run (a 503 wait outlasting the lease) says nothing about the PR.
         using var batch = new BatchFixture(0);
         batch.PutAttempt(
             "1",
@@ -1620,9 +1622,16 @@ public sealed class ReviewdRunnerTests
             if (!batch.Runs[^1].StartsWith("1:", StringComparison.Ordinal))
                 return Task.CompletedTask;
             batch.AdvanceSeconds((int)ReviewBatch.QuarantineSpacing.TotalSeconds);
-            throw kind == "resume"
-                ? new InvalidOperationException($"Sandbox verify failed (exit 1, operation {Guid.NewGuid():N}).")
-                : new ReviewRunner.SlotUnavailableException("Native slot is not idle: orphaned owner marker.");
+            throw kind switch
+            {
+                "resume" => new InvalidOperationException(
+                    $"Sandbox verify failed (exit 1, operation {Guid.NewGuid():N})."
+                ),
+                "slot-claim-lost" => new ReviewRunner.SlotClaimLostException(
+                    "Slot claim fresh-claim was lost while review send waited out a 503; not resent."
+                ),
+                _ => new ReviewRunner.SlotUnavailableException("Native slot is not idle: orphaned owner marker."),
+            };
         };
 
         await batch.ExecuteAsync();
@@ -4335,9 +4344,12 @@ public sealed class ReviewdRunnerTests
     }
 
     // A sweep that resets the slot while the send waits out a 503 has handed the slot on: the resend must not go out
-    // on it, and the run must not overwrite the attempt the reset recorded.
-    [Fact]
-    public async Task A_503_resend_is_not_sent_once_a_sweep_reset_the_slot_during_the_wait()
+    // on it, and the run must not overwrite the attempt the reset recorded, even when the wait is then cancelled
+    // (or its DB read fails) and the run stops on that error instead of reaching the claim check before the resend.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_503_resend_is_not_sent_once_a_sweep_reset_the_slot_during_the_wait(bool waitCancelled)
     {
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-send503-lost-{Guid.NewGuid():N}.db");
         var repo = PrCommands.ParseRepo("org/project/Nova");
@@ -4452,6 +4464,8 @@ public sealed class ReviewdRunnerTests
                             attempt,
                             token
                         );
+                        if (waitCancelled)
+                            throw new OperationCanceledException("The wait was cancelled after the reset.");
                     },
                     () => now
                 );
