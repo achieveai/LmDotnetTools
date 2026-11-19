@@ -10,6 +10,7 @@ using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using FluentAssertions;
 using LmMultiTurn.Tests.Lifecycle;
 using Microsoft.Extensions.Logging;
@@ -1156,6 +1157,112 @@ public class MultiTurnAgentLoopTests
                 )
             )
             .Returns(Task.FromResult(ToAsyncEnumerable(messages)));
+    }
+
+    [Fact]
+    public async Task Run_completion_is_published_only_once_the_runs_rows_are_in_the_store()
+    {
+        // A sub-agent roster reports a child finished from its RunCompletedMessage, and the focus view then
+        // replays the child's transcript from the store. A slow store write used to lose that race: the
+        // completion went out while every row was still being saved, and the replay came back empty.
+        const string ThreadId = "held-append-thread";
+        SetupMockAgentResponse([new TextMessage { Text = "answer", Role = Role.Assistant }]);
+        var store = new HeldAppendStore(new InMemoryConversationStore());
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            new FunctionRegistry(),
+            ThreadId,
+            store: store
+        );
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        _ = loop.RunAsync(cts.Token);
+
+        var rowsAtCompletion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var run = Task.Run(
+            async () =>
+            {
+                var input = new UserInput([new TextMessage { Text = "hi", Role = Role.User }]);
+                await foreach (var msg in loop.ExecuteRunAsync(input, cts.Token))
+                {
+                    if (msg is RunCompletedMessage)
+                    {
+                        var rows = await store.Inner.LoadMessagesAsync(ThreadId, cts.Token);
+                        _ = rowsAtCompletion.TrySetResult(rows.Count);
+                    }
+                }
+            },
+            cts.Token
+        );
+
+        await store.FirstAppendHeld.WaitAsync(cts.Token);
+
+        // Unfixed, the completion follows within moments of the held write; fixed, it never comes while held.
+        _ = await Task.WhenAny(rowsAtCompletion.Task, Task.Delay(TimeSpan.FromMilliseconds(250), cts.Token));
+        var completedWhileHeld = rowsAtCompletion.Task.IsCompleted;
+        store.Release();
+        var rowsSeen = await rowsAtCompletion.Task.WaitAsync(cts.Token);
+        await run;
+
+        completedWhileHeld.Should().BeFalse("the run must not report completion while its rows are unsaved");
+        rowsSeen.Should().BeGreaterThan(0, "a subscriber that sees the completion must find the run's rows saved");
+        await cts.CancelAsync();
+    }
+
+    /// <summary>Holds every <c>AppendMessagesAsync</c> open until released, like a store on a slow disk.</summary>
+    private sealed class HeldAppendStore(InMemoryConversationStore inner) : IConversationStore
+    {
+        private readonly TaskCompletionSource _held = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public InMemoryConversationStore Inner => inner;
+
+        public Task FirstAppendHeld => _held.Task;
+
+        public void Release() => _release.TrySetResult();
+
+        public async Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default
+        )
+        {
+            _ = _held.TrySetResult();
+            await _release.Task.WaitAsync(ct);
+            await inner.AppendMessagesAsync(threadId, messages, ct);
+        }
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default
+        ) => inner.LoadMessagesAsync(threadId, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default
+        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
+            inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            inner.LoadMetadataAsync(threadId, ct);
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default
+        ) => inner.UpdateMetadataAsync(threadId, update, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            ConversationListOptions? options = null,
+            CancellationToken ct = default
+        ) => inner.ListThreadsAsync(limit, offset, options, ct);
     }
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(

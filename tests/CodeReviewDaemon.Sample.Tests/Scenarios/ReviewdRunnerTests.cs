@@ -2923,9 +2923,12 @@ public sealed class ReviewdRunnerTests
         private readonly List<(int At, TaskCompletionSource Done)> _tickWaiters = [];
 
         // A live tick: real time, 5 ms, so a test sees many scheduling passes quickly.
-        public async Task LiveTick(CancellationToken token)
+        public Task LiveTick(CancellationToken token) => Task.Delay(TimeSpan.FromMilliseconds(5), token);
+
+        // A tick is one scheduling pass, counted where the pass starts: reading the selection. The admission watcher
+        // waits on the same 5-second delay, so counting delays let a slow pass see none of a short window.
+        private void PassStarted()
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(5), token);
             lock (_tickWaiters)
             {
                 _ticks++;
@@ -2937,6 +2940,7 @@ public sealed class ReviewdRunnerTests
             }
         }
 
+        // Once `count` more passes have started, the first `count - 1` of them ran whole after this call.
         public Task AfterTicks(int count)
         {
             lock (_tickWaiters)
@@ -3015,7 +3019,11 @@ public sealed class ReviewdRunnerTests
                     .. MaxAgeHours is null ? [] : new string[] { "--max-age-hours", MaxAgeHours },
                 ]),
                 _config,
-                _ => Task.FromResult<string?>(_selection),
+                _ =>
+                {
+                    PassStarted();
+                    return Task.FromResult<string?>(_selection);
+                },
                 async (text, _) =>
                 {
                     Prepares++;

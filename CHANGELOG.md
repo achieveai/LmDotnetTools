@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Anthropic requests keep a screenshot's tool-result text.** When a tool result's `ContentBlocks` hold images but no
+  text block, `AnthropicRequest` now puts the result's `Result` text first in the `tool_result` array, on all four paths
+  (standalone, aggregate, plural and provider-server composite results). `MultiTurnAgentLoop` re-attaches only a
+  result's images, and the array replaces the string, so before this the model got the image and never the text beside
+  it (for example a browser handle). A blank `Result` adds nothing; blocks with their own text are sent unchanged. The
+  OpenAI mappers already sent both.
+
+- **A run reports completion only once its transcript rows are saved.** `MultiTurnAgentBase` saved each history row
+  without waiting and published `RunCompletedMessage` while those saves could still be in flight. A sub-agent's roster
+  marks the child finished from that message, so a focus view that then replayed the child's transcript could read an
+  empty or partial one. Completion now waits for the row saves already issued (with compaction on, the ordered saver is
+  drained, which stops at a row that keeps failing). A slow store delays completion by the time its writes take.
+
+- **`ToolOutputSpillOptions.TimeProvider`.** The clock `SaveTimeout` is measured on; defaults to `TimeProvider.System`.
+
 - **Auth webhook: managed OAuth and predefined-key allows are cached host-wide.** `AuthWebhookResponse` gains an optional
   `cache_scope` field, left out of the JSON when null. Managed OAuth and predefined-key allows now send
   `cache_scope: "host"`, so a gateway from v0.1.20 reuses one allow for every method and path on the same host and port
