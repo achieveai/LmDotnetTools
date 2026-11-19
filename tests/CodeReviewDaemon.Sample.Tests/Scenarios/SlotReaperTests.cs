@@ -758,7 +758,9 @@ public sealed class SlotReaperTests
             seeded["reviewInputId"] = "input-1";
             seeded["confirmationInputId"] = "input-2";
             if (verified)
+            {
                 seeded["verifiedPublication"] = new JsonObject { ["comments"] = 3 };
+            }
             await store.SetAsync(attemptKey, seeded, CancellationToken.None);
             var ownerBefore = (await store.GetAsync<JsonObject>(ownerKey))!.ToJsonString();
             var attemptBefore = (await store.GetAsync<JsonObject>(attemptKey))!.ToJsonString();
