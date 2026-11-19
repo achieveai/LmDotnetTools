@@ -2029,9 +2029,11 @@ public sealed class ReviewdRunnerTests
         batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
     }
 
+    // "fresh": a fresh run refused before its claim (a variant run's pin reads come first), so no attempt row exists.
     [Theory]
     [InlineData("eligibility")]
     [InlineData("resume")]
+    [InlineData("fresh")]
     public async Task Batch_backs_off_gateway_capacity_without_holding_the_pr(string refusedAt)
     {
         using var batch = new BatchFixture(0);
@@ -2058,7 +2060,7 @@ public sealed class ReviewdRunnerTests
                 Refuse(pr);
             return BatchFixture.Live(pr);
         };
-        if (refusedAt == "resume")
+        if (refusedAt is "resume" or "fresh")
             batch.OnRun = () => Refuse(batch.Runs[^1].Split(':')[0]);
         await batch.ExecuteAsync();
         refusals.Should().Be(8);

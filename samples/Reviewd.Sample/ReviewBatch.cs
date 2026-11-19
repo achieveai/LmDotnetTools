@@ -1216,22 +1216,26 @@ internal static class ReviewBatch
             catch (Exception ex)
             {
                 var retained = await ReadAsync(database, AttemptKey(entry));
-                // The claim writes the attempt row, so a host timeout or connection failure that left the row
-                // as it was before launch failed before the claim: it left nothing behind and says nothing
-                // about the PR. Retry it with backoff. Holding it parked nine PRs whose conversation lookup
-                // timed out. The row may predate this launch (an earlier head's released review). An earlier
-                // conversation still running (or a busy hierarchy read) defers the review the same way.
-                var transientBeforeClaim =
-                    retained?.ToJsonString() == attemptBeforeLaunch
-                    && ex
-                        is HttpRequestException
-                            or TimeoutException
-                            or TaskCanceledException
-                            or ReviewRunner.ReviewDeferredException;
                 // A gateway at its operation limit says nothing about the PR: a restart resumes every owner at
                 // once and briefly exceeds it. Back off without spending the PR's retries, or admitted reviews
                 // are held and their slots wait for the reaper.
                 var capacity = ex is SandboxException { Kind: SandboxErrorKind.Unavailable, StatusCode: 503 };
+                // The claim writes the attempt row, so a host timeout or connection failure that left the row
+                // as it was before launch failed before the claim: it left nothing behind and says nothing
+                // about the PR. Retry it with backoff. Holding it parked nine PRs whose conversation lookup
+                // timed out. The row may predate this launch (an earlier head's released review). An earlier
+                // conversation still running (or a busy hierarchy read) defers the review the same way, and so
+                // does a gateway at capacity (a variant run's pin reads come before the claim).
+                var transientBeforeClaim =
+                    retained?.ToJsonString() == attemptBeforeLaunch
+                    && (
+                        capacity
+                        || ex
+                            is HttpRequestException
+                                or TimeoutException
+                                or TaskCanceledException
+                                or ReviewRunner.ReviewDeferredException
+                    );
                 // A fresh admission that fails says something about the PR, so it is counted. One that released
                 // its slot quarantines now; one still owning its slot is held below, and once the reaper frees the
                 // slot the pre-launch check skips it, so a quarantine never strands an owned slot (seen live: a

@@ -1166,11 +1166,14 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     }
 
     // The step a run reads the clone with: the embedded ReviewRunnerSandbox.py over a real repo gives the head and the
-    // commit's KnowledgeBase tree, which the receipt records, or null for a commit with no KnowledgeBase.
+    // commit's KnowledgeBase tree, which the receipt records, or null for a commit with no KnowledgeBase. A replacement
+    // ref cannot change the recorded tree, and a tree git cannot read refuses the step instead of reading as absent.
     [SkippableTheory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task The_clone_read_gives_the_head_and_its_KnowledgeBase_tree(bool withKnowledge)
+    [InlineData("knowledge")]
+    [InlineData("none")]
+    [InlineData("replaced")]
+    [InlineData("damaged")]
+    public async Task The_clone_read_gives_the_head_and_its_KnowledgeBase_tree(string clone)
     {
         var python = await ReviewdSummaryReplyTests.FindPythonAsync();
         Skip.If(python is null, "no Python interpreter on PATH, so the sandbox step cannot be run");
@@ -1181,13 +1184,31 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         await GitAsync(root, "config", "user.name", "t");
         await GitAsync(root, "config", "commit.gpgsign", "false");
         await File.WriteAllTextAsync(Path.Combine(root, "src", "a.cs"), "a\n");
-        if (withKnowledge)
+        if (clone != "none")
         {
             Directory.CreateDirectory(Path.Combine(root, "KnowledgeBase"));
             await File.WriteAllTextAsync(Path.Combine(root, "KnowledgeBase", "a.md"), "a\n");
         }
         await GitAsync(root, "add", "-A");
         await GitAsync(root, "commit", "-q", "-m", "store");
+        var head = await GitAsync(root, "rev-parse", "HEAD");
+        var knowledge = clone == "none" ? null : await GitAsync(root, "rev-parse", "HEAD:KnowledgeBase");
+        if (clone == "replaced")
+        {
+            // Another commit with other knowledge stands in for the head wherever git honours replacement refs.
+            await File.WriteAllTextAsync(Path.Combine(root, "KnowledgeBase", "a.md"), "b\n");
+            await GitAsync(root, "commit", "-q", "-am", "other");
+            var other = await GitAsync(root, "rev-parse", "HEAD");
+            await GitAsync(root, "checkout", "-q", head);
+            await GitAsync(root, "replace", head, other);
+        }
+        if (clone == "damaged")
+        {
+            var rootTree = await GitAsync(root, "rev-parse", "HEAD^{tree}");
+            var loose = Path.Combine(root, ".git", "objects", rootTree[..2], rootTree[2..]);
+            File.SetAttributes(loose, FileAttributes.Normal);
+            File.Delete(loose);
+        }
         var script = Path.Combine(_files, "sandbox.py");
         using (
             var resource = typeof(ReviewRunner).Assembly.GetManifestResourceStream(
@@ -1213,18 +1234,19 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         var error = await process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync();
 
-        process.ExitCode.Should().Be(0, error);
-        var read = JsonNode.Parse(await output)!;
-        read["head"]!.GetValue<string>().Should().Be(await GitAsync(root, "rev-parse", "HEAD"));
-        if (withKnowledge)
+        if (clone == "damaged")
         {
-            read["knowledgeBaseTree"]!
-                .GetValue<string>()
-                .Should()
-                .Be(await GitAsync(root, "rev-parse", "HEAD:KnowledgeBase"));
+            process.ExitCode.Should().NotBe(0);
+            error.Should().Contain("git ls-tree failed reading KnowledgeBase");
+            (await output).Should().BeEmpty();
             return;
         }
-        read["knowledgeBaseTree"].Should().BeNull();
+        process.ExitCode.Should().Be(0, error);
+        var read = await output;
+        JsonNode
+            .DeepEquals(JsonNode.Parse(read), new JsonObject { ["head"] = head, ["knowledgeBaseTree"] = knowledge })
+            .Should()
+            .BeTrue(read);
     }
 
     // A resume keeps its reviewer and the plugin commit its sandbox mounted. An attempt whose start did not check the
@@ -1271,7 +1293,13 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
 
         if (checkedAtStart)
         {
-            error?.Message.Should().NotContain("started before a run checked", "its start checked the pins");
+            // Past the arm check, the runner's next resume check (identity) refuses this bare attempt row: that exact
+            // outcome, and nothing earlier.
+            error
+                .Should()
+                .BeOfType<InvalidOperationException>()
+                .Which.Message.Should()
+                .Be("Resume identity, admission or current PR does not match the retained attempt.");
             return;
         }
         error
@@ -1285,24 +1313,33 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "nothing is provisioned or sent");
     }
 
-    // A gateway that does not answer the alias lookup says nothing about the PR or the arm: the review is deferred,
-    // which the batch retries with backoff (ReviewdRunnerTests' two-timeouts batch case), not refused or held.
-    [Fact]
-    public async Task A_gateway_that_does_not_answer_the_alias_lookup_defers_the_review_until_it_does()
+    // A gateway that does not answer the clone's head read or the alias lookup says nothing about the PR or the arm:
+    // the review is deferred, which the batch retries with backoff, not refused or held.
+    [Theory]
+    [InlineData("the review-repo clone's commit")]
+    [InlineData("marketplace alias cr-b-007")]
+    public async Task A_gateway_that_does_not_answer_a_pin_read_defers_the_review_until_it_does(string read)
     {
         Directory.CreateDirectory(_files);
         await File.WriteAllTextAsync(Path.Combine(_files, "mode.json"), """{"systemPrompt":"Review as b-007."}""");
         await SnapshotAsync();
         var handler = ArmHost();
         var flags = Variant("b-007", ArmManifest);
-        _aliasTimeouts = 2;
+        if (read.StartsWith("marketplace", StringComparison.Ordinal))
+        {
+            _aliasTimeouts = 2;
+        }
+        else
+        {
+            _headTimeouts = 2;
+        }
 
         var run = () => RunAsync(handler, [], ["--shadow", "--mode", "mode-1", .. flags]);
 
         for (var unanswered = 0; unanswered < 2; unanswered++)
         {
             (await run.Should().ThrowAsync<ReviewRunner.ReviewDeferredException>()).WithMessage(
-                "The gateway did not answer reading marketplace alias cr-b-007: *Retry deferred."
+                $"The gateway did not answer reading {read}: *Retry deferred."
             );
         }
         handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "a deferred review sends nothing");
@@ -1849,27 +1886,31 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             };
     }
 
-    // The host stores a nested mode value as it parses it, so a nested name in another letter case comes back otherwise
-    // and every run would refuse the arm. variant up reads the saved mode back and refuses it, naming the field.
+    // The host stores a mode value as it parses it: a number written as a string comes back as a number, and every run
+    // would refuse the arm, so variant up reads the saved mode back and refuses it, naming the field. A nested name in
+    // another letter case is bound by the host and stored in its own (tiers.Caps.Skill as caps.skill): that arm builds.
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Variant_up_refuses_a_mode_the_host_stores_otherwise_than_its_file(bool storedOtherwise)
+    [InlineData("""{"caps":{"skill":3}}""", """{"caps":{"skill":3}}""", true)]
+    [InlineData("""{"Caps":{"Skill":3}}""", """{"caps":{"skill":3}}""", true)]
+    [InlineData("""{"caps":{"skill":"3"}}""", """{"caps":{"skill":3}}""", false)]
+    public async Task Variant_up_refuses_a_mode_the_host_stores_otherwise_than_its_file(
+        string fileTiers,
+        string storedTiers,
+        bool builds
+    )
     {
         var handler = VariantHost(
-            stored: storedOtherwise
-                ? """{"id":"mode-1","name":"code-review-b-007","systemPrompt":"Review as b-007.","tiers":{"caps":{"turns":3}}}"""
-                : null
+            stored: $$"""{"id":"mode-1","name":"code-review-b-007","systemPrompt":"Review as b-007.","tiers":{{storedTiers}}}"""
         );
 
         var up = () =>
             VariantUpAsync(
                 handler,
                 new string('2', 40),
-                modeFile: """{"systemPrompt":"Review as b-007.","tiers":{"Caps":{"turns":3}}}"""
+                modeFile: $$"""{"systemPrompt":"Review as b-007.","tiers":{{fileTiers}}}"""
             );
 
-        if (!storedOtherwise)
+        if (builds)
         {
             (await up()).Result.Should().ContainKey("modeId");
             return;
@@ -2937,6 +2978,9 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     // How many alias lookups the scripted gateway leaves unanswered before it answers.
     private int _aliasTimeouts;
 
+    // How many review-repo-head steps the scripted gateway leaves unanswered before it answers.
+    private int _headTimeouts;
+
     private async Task<int> RunAsync(
         FakeHttpMessageHandler handler,
         List<(string Phase, JsonObject Args)> phases,
@@ -2999,6 +3043,10 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token)
         {
             phases.Add((phase, args.DeepClone().AsObject()));
+            if (phase == "review-repo-head" && _headTimeouts-- > 0)
+            {
+                throw new SandboxException(SandboxErrorKind.TransportTimeout, "The gateway did not answer in time.");
+            }
             return Task.FromResult(
                 phase switch
                 {

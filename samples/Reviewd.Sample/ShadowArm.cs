@@ -179,28 +179,37 @@ internal sealed record ShadowArm(
         }
     }
 
-    // The host may write an unset field as null or leave it out; both mean unset.
     /// <summary>
     ///     The fields of mode body <paramref name="payload"/> whose value the host's <paramref name="stored"/> mode does
     ///     not hold, ignoring unset fields. Both variant up, after it saves the mode, and every run compare this way.
     /// </summary>
     internal static List<string> ModeDifferences(JsonObject payload, JsonNode stored) =>
-        [
-            .. payload
-                .Where(field => !JsonNode.DeepEquals(WithoutNulls(field.Value), WithoutNulls(stored[field.Key])))
-                .Select(field => field.Key),
-        ];
+        [.. payload.Where(field => !SameModeValue(field.Value, stored[field.Key])).Select(field => field.Key)];
 
-    private static JsonNode? WithoutNulls(JsonNode? node) =>
-        node switch
+    // The host binds a mode's names in any letter case and stores its own (tiers.Caps.Skill comes back as
+    // caps.skill), and may write an unset field as null or leave it out; both mean unset. Values compare exactly, so a
+    // number written as a string, or a field the host does not keep, still differs.
+    private static bool SameModeValue(JsonNode? file, JsonNode? stored) =>
+        (file, stored) switch
         {
-            JsonObject obj => new JsonObject(
-                obj.Where(p => p.Value is not null).Select(p => KeyValuePair.Create(p.Key, WithoutNulls(p.Value)))
-            ),
-            JsonArray array => new JsonArray([.. array.Select(WithoutNulls)]),
-            null => null,
-            _ => node.DeepClone(),
+            (JsonObject a, JsonObject b) => SameModeFields(a, b),
+            (JsonArray a, JsonArray b) => a.Count == b.Count
+                && a.Zip(b).All(pair => SameModeValue(pair.First, pair.Second)),
+            (JsonObject or JsonArray, _) or (_, JsonObject or JsonArray) => false,
+            _ => JsonNode.DeepEquals(file, stored),
         };
+
+    private static bool SameModeFields(JsonObject file, JsonObject stored)
+    {
+        var set = stored.Where(p => p.Value is not null).ToList();
+        var written = file.Where(p => p.Value is not null).ToList();
+        return written.Count == set.Count
+            && written.All(field =>
+                set.Where(p => string.Equals(p.Key, field.Key, StringComparison.OrdinalIgnoreCase)).ToList()
+                    is [var match]
+                && SameModeValue(field.Value, match.Value)
+            );
+    }
 
     /// <summary>
     ///     Why a resume of an attempt that recorded <paramref name="sent"/> as its provenance may not run as this arm, or
