@@ -1235,10 +1235,10 @@ internal static class ReviewBatch
                             or TaskCanceledException
                             or ReviewRunner.ReviewDeferredException
                             or SandboxException { StatusCode: 503 };
-                // There, only a gateway that says it is at capacity backs off uncounted. Another 503 (a workspace
-                // restore or image pull that failed) is retried and counted, so it is held at the retry cap
-                // instead of retrying forever.
-                if (launchedFresh && beforeClaim && !ReviewRunner.RefusedAtCapacity(ex))
+                // There, for a fresh run or a resume alike, only a gateway that says it is at capacity backs off
+                // uncounted. Another 503 (a workspace restore or image pull that failed, a marketplace store that
+                // is down) is retried and counted, so it is held at the retry cap instead of retrying forever.
+                if (launched && beforeClaim && !ReviewRunner.RefusedAtCapacity(ex))
                 {
                     capacity = false;
                 }

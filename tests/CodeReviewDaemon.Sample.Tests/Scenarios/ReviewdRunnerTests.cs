@@ -2052,10 +2052,12 @@ public sealed class ReviewdRunnerTests
         void Refuse(string pr)
         {
             if (pr == "1" && ++refusals <= 7)
+            {
                 throw new SandboxException(SandboxErrorKind.Unavailable, "operation_concurrency_limit", 503)
                 {
                     ErrorCode = "operation_concurrency_limit",
                 };
+            }
         }
         batch.Eligibility = pr =>
         {
@@ -2074,16 +2076,32 @@ public sealed class ReviewdRunnerTests
         batch.Entries().First()["failures"]!.GetValue<int>().Should().Be(0);
     }
 
-    // A fresh run's other 503 before its claim (a failed workspace restore, not the gateway's capacity limit) is not
-    // held at once, but each one counts, so the PR is held at the retry cap instead of retrying forever.
-    [Fact]
-    public async Task Batch_counts_a_fresh_runs_other_gateway_503_before_its_claim_and_holds_it_at_the_cap()
+    // A run's other 503 before its claim (a failed workspace restore, not the gateway's capacity limit), fresh or
+    // resumed (a variant run's pin reads come first either way), is not held at once, but each one counts, so the PR
+    // is held at the retry cap instead of retrying forever.
+    [Theory]
+    [InlineData("fresh")]
+    [InlineData("resume")]
+    public async Task Batch_counts_a_runs_other_gateway_503_before_its_claim_and_holds_it_at_the_cap(string run)
     {
         using var batch = new BatchFixture(0);
+        if (run == "resume")
+        {
+            batch.PutAttempt(
+                "1",
+                new JsonObject
+                {
+                    ["slot"] = 0,
+                    ["stage"] = "review-running",
+                    ["reviewInputId"] = "original",
+                    ["mergeSha"] = new string('b', 40),
+                }
+            );
+        }
         var refusals = 0;
         batch.OnRun = () =>
         {
-            if (batch.Runs[^1] != "1:fresh")
+            if (batch.Runs[^1] != $"1:{run}")
             {
                 return;
             }
