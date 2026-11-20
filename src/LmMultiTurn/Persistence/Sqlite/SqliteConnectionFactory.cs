@@ -7,10 +7,26 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 /// Uses Microsoft.Data.Sqlite's built-in connection pooling with a semaphore
 /// to limit maximum concurrent connections.
 /// </summary>
+/// <remarks>
+/// Reads and writes draw on separate permits. SQLite lets one writer in at a time, and Microsoft.Data.Sqlite waits
+/// for a busy write lock by sleeping the calling thread, so a writer queued on the lock used to hold a pooled permit
+/// and a thread for up to its 30 s timeout. With every permit held that way, a one-millisecond read waited a minute.
+/// Writes now queue on <see cref="GetWriteConnectionAsync"/>'s single permit, asynchronously and holding nothing, and
+/// reads keep their own permits.
+/// </remarks>
 public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
 {
+    /// <summary>
+    /// How long a write waits, in seconds, for a write lock that something outside this factory holds (another
+    /// process, or another factory on the same file) before it fails with "database is locked". Writes through this
+    /// factory never wait on each other's lock: they queue on the write permit first. Short, because the wait sleeps a
+    /// thread and holds the write permit, so every other write queues behind it.
+    /// </summary>
+    internal const int WriteBusyTimeoutSeconds = 5;
+
     private readonly string _connectionString;
     private readonly SemaphoreSlim _semaphore;
+    private readonly SemaphoreSlim _writeSemaphore = new(1, 1);
     private readonly int _maxConnections;
     private bool _disposed;
     private bool _walModeSet;
@@ -30,7 +46,10 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
     /// Initializes a new instance of the <see cref="SqliteConnectionFactory"/> class.
     /// </summary>
     /// <param name="databasePath">Path to the SQLite database file.</param>
-    /// <param name="maxConnections">Maximum number of concurrent connections (default: 5).</param>
+    /// <param name="maxConnections">
+    /// Maximum number of concurrent connections from <see cref="GetConnectionAsync"/> (default: 5).
+    /// <see cref="GetWriteConnectionAsync"/> has one more, of its own.
+    /// </param>
     public SqliteConnectionFactory(string databasePath, int maxConnections = 5)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
@@ -76,11 +95,18 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
         }.ToString();
 
     /// <inheritdoc />
-    public async Task<SqliteConnection> GetConnectionAsync(CancellationToken ct = default)
+    public Task<SqliteConnection> GetConnectionAsync(CancellationToken ct = default) =>
+        OpenAsync(_semaphore, busyTimeoutSeconds: null, ct);
+
+    /// <inheritdoc />
+    public Task<SqliteConnection> GetWriteConnectionAsync(CancellationToken ct = default) =>
+        OpenAsync(_writeSemaphore, WriteBusyTimeoutSeconds, ct);
+
+    private async Task<SqliteConnection> OpenAsync(SemaphoreSlim permits, int? busyTimeoutSeconds, CancellationToken ct)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        await _semaphore.WaitAsync(ct).ConfigureAwait(false);
+        await permits.WaitAsync(ct).ConfigureAwait(false);
 
         PooledConnection? connection = null;
         try
@@ -89,7 +115,14 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
             // to the wrapper would mean closing it — which returns its handle to the pool — and opening a
             // second one, so for a moment a handle this call is responsible for is available to another
             // thread.
-            connection = new PooledConnection(_connectionString, _semaphore);
+            connection = new PooledConnection(_connectionString, permits);
+            if (busyTimeoutSeconds is { } seconds)
+            {
+                // Microsoft.Data.Sqlite's own busy wait: every command and BEGIN on this connection retries a
+                // locked database for this long. It belongs to this connection object, not the pooled handle.
+                connection.DefaultTimeout = seconds;
+            }
+
             ct.ThrowIfCancellationRequested();
             lock (PoolGate)
             {
@@ -109,7 +142,7 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
             // out one more than the factory is allowed to.
             if (connection is null)
             {
-                _ = _semaphore.Release();
+                _ = permits.Release();
             }
             else
             {
@@ -174,7 +207,10 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
             await _semaphore.WaitAsync().ConfigureAwait(false);
         }
 
+        await _writeSemaphore.WaitAsync().ConfigureAwait(false);
+
         _semaphore.Dispose();
+        _writeSemaphore.Dispose();
         _walModeLock.Dispose();
     }
 

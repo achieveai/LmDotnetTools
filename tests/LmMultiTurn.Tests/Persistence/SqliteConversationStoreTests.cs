@@ -1188,8 +1188,9 @@ public class SqliteConversationStoreTests : IAsyncLifetime
             );
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-            var queued = store.UpdateMetadataAsync("thread-b", _ => CreateTestMetadata("thread-b"));
-            queued.IsCompleted.Should().BeFalse("the holder still has the metadata lock");
+            // Same thread: metadata locks are per thread, so only a writer to thread-a queues behind the holder.
+            var queued = store.UpdateMetadataAsync("thread-a", _ => CreateTestMetadata("thread-a"));
+            queued.IsCompleted.Should().BeFalse("the holder still has thread-a's metadata lock");
 
             await store.DisposeAsync();
             release.Set();

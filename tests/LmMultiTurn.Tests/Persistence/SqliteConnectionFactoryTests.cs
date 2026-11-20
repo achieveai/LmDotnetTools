@@ -301,6 +301,38 @@ public class SqliteConnectionFactoryTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task The_write_connection_has_its_own_permit_and_a_short_busy_timeout()
+    {
+        // One read permit. A write that took it, as every write did before the split, would leave the read below
+        // waiting for as long as the write held it.
+        await using var factory = new SqliteConnectionFactory(Path.Combine(_root, "split.db"), maxConnections: 1);
+
+        // A token, not WaitAsync: a wait WaitAsync gave up on would still take its permit later, and nothing would
+        // return it, so a failure here would hang the factory's disposal instead of failing the test.
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await using (var write = await factory.GetWriteConnectionAsync(timeout.Token))
+        {
+            await using var read = await factory.GetConnectionAsync(timeout.Token);
+
+            write
+                .DefaultTimeout.Should()
+                .Be(
+                    SqliteConnectionFactory.WriteBusyTimeoutSeconds,
+                    "a write that waits on a foreign lock sleeps a thread and holds the write permit, so it waits briefly"
+                );
+            read.DefaultTimeout.Should().Be(30, "reads keep Microsoft.Data.Sqlite's default");
+
+            // A second write queues for the one write permit, and gets it once the first is disposed.
+            var second = factory.GetWriteConnectionAsync(timeout.Token);
+            await Task.Delay(100);
+            var queued = !second.IsCompleted;
+            await write.DisposeAsync();
+            await using var secondConnection = await second;
+            queued.Should().BeTrue("only one write connection is out at a time");
+        }
+    }
+
     private static async Task<string?> PragmaAsync(SqliteConnection connection, string name)
     {
         using var command = connection.CreateCommand();

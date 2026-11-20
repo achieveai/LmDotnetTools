@@ -707,8 +707,13 @@ try
         conversationDbDir ?? AppContext.BaseDirectory,
         "conversations.parent-child-index.json"
     );
+    // Eight read connections; writes queue for one more of their own, so a write burst no longer takes them.
     _ = builder.Services.AddSingleton(sp => new SqliteConversationStoreLifetime(
-        new SqliteConversationStore(conversationDbPath, sp.GetRequiredService<ILogger<SqliteConversationStore>>())
+        new SqliteConversationStore(
+            conversationDbPath,
+            sp.GetRequiredService<ILogger<SqliteConversationStore>>(),
+            maxConnections: 8
+        )
     ));
     _ = builder.Services.AddSingleton(sp => new IndexedConversationStore(
         sp.GetRequiredService<SqliteConversationStoreLifetime>().Store,

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Text.Json;
@@ -33,7 +34,10 @@ public sealed class SqliteConversationStore
     private readonly bool _ownsFactory;
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _schemaLock = new(1, 1);
-    private readonly SemaphoreSlim _metadataWriteLock = new(1, 1);
+
+    // One per thread id, so a metadata write waits only for writes to the same thread. SQLite compares thread_id
+    // bytewise, hence Ordinal.
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _metadataWriteLocks = new(StringComparer.Ordinal);
     private bool _schemaInitialized;
     private bool _disposed;
 
@@ -110,7 +114,7 @@ public sealed class SqliteConversationStore
 
         var forkPoint = await ForkHistory.ForkPointAsync(this, threadId, ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
 
         // BEGIN IMMEDIATE, not deferred: the sequence is read (MAX) and then extended (INSERT) inside
         // this transaction, and two processes appending to the same thread must serialize on the
@@ -346,7 +350,7 @@ public sealed class SqliteConversationStore
         ArgumentNullException.ThrowIfNull(threadId);
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
 
         // BEGIN IMMEDIATE, like an append: the backfill reads MAX(seq) and then writes after it.
         using var transaction = connection.BeginTransaction(deferred: false);
@@ -370,7 +374,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
 
         // Preserve the existing timestamp and seq (neither is in the SET list) so load ordering stays
         // stable when a deferred placeholder is later resolved: a replacement is a mutation in place,
@@ -454,7 +458,8 @@ public sealed class SqliteConversationStore
         ArgumentNullException.ThrowIfNull(metadata);
 
         // Under the update's lock: a save landing between an update's read and write would be lost (#745).
-        await _metadataWriteLock.WaitAsync(ct).ConfigureAwait(false);
+        var metadataWriteLock = MetadataWriteLock(threadId);
+        await metadataWriteLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
@@ -462,16 +467,20 @@ public sealed class SqliteConversationStore
         }
         finally
         {
-            _ = _metadataWriteLock.Release();
+            _ = metadataWriteLock.Release();
         }
     }
 
-    /// <summary>Writes the row. The caller must hold <c>_metadataWriteLock</c>, which is not re-entrant.</summary>
+    /// <summary>The lock that orders metadata writes to <paramref name="threadId"/>. It is not re-entrant.</summary>
+    private SemaphoreSlim MetadataWriteLock(string threadId) =>
+        _metadataWriteLocks.GetOrAdd(threadId, static _ => new SemaphoreSlim(1, 1));
+
+    /// <summary>Writes the row. The caller must hold the thread's <see cref="MetadataWriteLock"/>.</summary>
     private async Task SaveMetadataCoreAsync(string threadId, ThreadMetadata metadata, CancellationToken ct)
     {
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
 
         // Serialize extensible fields to JSON
         var metadataJson = SerializeMetadataExtensions(metadata);
@@ -554,8 +563,9 @@ public sealed class SqliteConversationStore
         ArgumentNullException.ThrowIfNull(update);
 
         // Serialize the read-modify-write so concurrent property-bag updates for the same thread cannot
-        // clobber each other (matches the other stores' atomic UpdateMetadataAsync).
-        await _metadataWriteLock.WaitAsync(ct).ConfigureAwait(false);
+        // clobber each other (matches the other stores' atomic UpdateMetadataAsync). Other threads' writes go on.
+        var metadataWriteLock = MetadataWriteLock(threadId);
+        await metadataWriteLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             // A writer that was queued when the store was disposed must not write through a factory it may not own.
@@ -566,7 +576,7 @@ public sealed class SqliteConversationStore
         }
         finally
         {
-            _ = _metadataWriteLock.Release();
+            _ = metadataWriteLock.Release();
         }
     }
 
@@ -588,7 +598,7 @@ public sealed class SqliteConversationStore
         }
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
         using var transaction = connection.BeginTransaction(deferred: false);
         try
         {
@@ -632,7 +642,10 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
         await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
-        using var transaction = connection.BeginTransaction();
+
+        // Deferred: a read transaction, so both reads see one snapshot without taking the write lock. The
+        // parameterless BeginTransaction is BEGIN IMMEDIATE, which made this read queue behind every writer.
+        using var transaction = connection.BeginTransaction(deferred: true);
         try
         {
             int schemaVersion;
@@ -719,7 +732,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
 
         using var transaction = connection.BeginTransaction();
 
@@ -1347,7 +1360,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
         command.CommandText = "UPDATE thread_metadata SET tenant_id = $tenantId WHERE tenant_id IS NULL;";
@@ -1400,7 +1413,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
         var restriction = BuildThreadIdRestriction(command, threadIds);
@@ -1457,7 +1470,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
 
         var inputIdsJson = JsonSerializer.Serialize(entry.InputIds, JsonOptions);
 
@@ -1546,7 +1559,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -1576,7 +1589,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
 
         // DO NOTHING (rather than the upsert above) is what makes this a reservation: the PRIMARY KEY on
         // (thread_id, input_id) decides the winner inside SQLite, and the affected-row count reports the
@@ -1604,7 +1617,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -1650,7 +1663,7 @@ public sealed class SqliteConversationStore
     {
         ArgumentNullException.ThrowIfNull(acceptance);
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
 
         while (true)
         {
@@ -1693,7 +1706,7 @@ public sealed class SqliteConversationStore
     {
         ArgumentNullException.ThrowIfNull(acceptance);
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
             UPDATE input_acceptances
@@ -1714,7 +1727,7 @@ public sealed class SqliteConversationStore
     )
     {
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
             DELETE FROM input_acceptances
@@ -1777,7 +1790,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
 
@@ -1889,7 +1902,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
 
         using var command = connection.CreateCommand();
 
@@ -1927,7 +1940,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
 
         using var transaction = connection.BeginTransaction();
         try
@@ -2010,7 +2023,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
 
         using var transaction = connection.BeginTransaction();
         try
@@ -2093,7 +2106,7 @@ public sealed class SqliteConversationStore
 
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
 
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
 
         using var transaction = connection.BeginTransaction();
         try
@@ -2169,7 +2182,7 @@ public sealed class SqliteConversationStore
 
         _disposed = true;
 
-        // The two locks are not disposed: disposing a SemaphoreSlim orphans its queued waiters.
+        // The locks are not disposed: disposing a SemaphoreSlim orphans its queued waiters.
 
         if (_ownsFactory)
         {
@@ -2348,7 +2361,7 @@ public sealed class SqliteConversationStore
 
     private async Task BackfillListingColumnsAsync(CancellationToken ct)
     {
-        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
         if (await ListingBackfillCompletedAsync(connection, ct).ConfigureAwait(false))
         {
             return;
