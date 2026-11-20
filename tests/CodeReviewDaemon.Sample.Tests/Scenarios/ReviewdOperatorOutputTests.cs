@@ -66,6 +66,62 @@ public sealed class ReviewdOperatorOutputTests : IDisposable
             .And.Contain("attempt write failed");
     }
 
+    // A reset fences the claim as the commit runs, so the commit's result is kept owned for the next sweep, not left as
+    // the reset recorded it. The stop line sends the operator to the attempt and the slot owner instead of claiming the
+    // reset's record stands.
+    [Fact]
+    public async Task A_run_stopped_by_a_lost_claim_points_the_operator_at_the_attempt_and_owner()
+    {
+        await using var run = await ScriptedReviewRun.CreateAsync();
+        run.OnPhase = async (phase, _, _, _) =>
+        {
+            if (phase == "commit")
+            {
+                await run.ExecuteAsync(
+                    $"UPDATE cache SET value = json_set(value, '$.{SlotRelease.ResetFence}', 'reset') "
+                        + $"WHERE key = '{run.OwnerKey}';"
+                );
+            }
+            return null;
+        };
+
+        await FluentActions.Invoking(() => run.RunAsync()).Should().ThrowAsync<ReviewRunner.SlotClaimLostException>();
+
+        _err.ToString()
+            .Should()
+            .Contain("Stopped; inspect the retained attempt and slot owner for recovery.")
+            .And.NotContain("left as reset");
+        (await run.ReadAsync(run.AttemptKey))["cleanupState"]!.GetValue<string>().Should().Be("owned");
+    }
+
+    // A run canceled by its own shutdown logs that it was canceled, not that it failed; any other error, including a
+    // cancellation the run did not ask for, still reads as a failure.
+    [Theory]
+    [InlineData("shutdown", "run canceled at verify-pending: ")]
+    [InlineData("step-canceled", "run failed at verify-pending: ")]
+    public async Task A_canceled_run_is_logged_as_canceled_not_failed(string cause, string expected)
+    {
+        await using var run = await ScriptedReviewRun.CreateAsync();
+        run.OnPhase = async (phase, _, _, _) =>
+        {
+            if (phase != "verify")
+            {
+                return null;
+            }
+            if (cause == "shutdown")
+            {
+                await run.Cancellation.CancelAsync();
+            }
+            throw new OperationCanceledException("verify canceled");
+        };
+
+        await FluentActions.Invoking(() => run.RunAsync()).Should().ThrowAsync<OperationCanceledException>();
+
+        var logged = _err.ToString();
+        logged.Should().Contain(expected + "verify canceled");
+        logged.Should().NotContain(cause == "shutdown" ? "run failed at" : "run canceled at");
+    }
+
     // The commit landed, then the completion write fails, and so does the failure path's retained save of the landed
     // result: "released" when a reset had already released the claim (the receipt is saved as it is), "fenced" when a
     // reset still holds its fence (the landed result is kept owned). The run's own error is logged before that save, so

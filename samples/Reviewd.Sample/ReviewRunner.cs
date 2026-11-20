@@ -1444,7 +1444,10 @@ internal static class ReviewRunner
         {
             // The reset already released the slot and recorded the attempt (a review never verified becomes a failed
             // admission that pick offers again), so nothing is cleaned or saved over it.
-            Console.Error.WriteLine($"{repo.DisplayName} #{pr}: {lost.Message} Stopped; the attempt is left as reset.");
+            // Not "left as reset": a landed commit under a reset's fence is kept owned for the next sweep.
+            Console.Error.WriteLine(
+                $"{repo.DisplayName} #{pr}: {lost.Message} Stopped; inspect the retained attempt and slot owner for recovery."
+            );
             throw;
         }
         catch (Exception failure)
@@ -1527,7 +1530,10 @@ internal static class ReviewRunner
                 }
             }
             // Logged first: every save below can fail too, and this is the only record of the run's own error.
-            Console.Error.WriteLine($"{repo.DisplayName} #{pr}: run failed at {receipt["stage"]}: {failure.Message}");
+            var outcome = failure is OperationCanceledException && ct.IsCancellationRequested ? "canceled" : "failed";
+            Console.Error.WriteLine(
+                $"{repo.DisplayName} #{pr}: run {outcome} at {receipt["stage"]}: {failure.Message}"
+            );
             // Keep the pending phase and previous successful receipt so a live run can resume and finish
             // publication without redoing the review. The slot stays leased, so if this process dies the
             // lease reaper reclaims it within the lease window — retention never becomes a permanent block.

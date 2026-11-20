@@ -440,6 +440,19 @@ internal static class SlotRelease
         // Stage the released receipt; the caller's object changes only after the commit below.
         var released = attempt.DeepClone().AsObject();
         released["cleanupState"] = "released";
+        // A reset releases from the attempt it read when it fenced. A commit of the same claim can land after that, and
+        // its result is then saved under the fence (KeepLandedAsync). That result is final: keep it, not the older read.
+        read.Parameters["@key"].Value = attemptKey;
+        var current = await read.ExecuteScalarAsync(ct) is string saved ? JsonNode.Parse(saved)?.AsObject() : null;
+        var landed =
+            released["artifactCommit"] is null
+            && current?["claimToken"]?.GetValue<string>() == token
+            && current["artifactCommit"] is not null;
+        if (landed)
+        {
+            released["artifactCommit"] = current!["artifactCommit"]!.DeepClone();
+            released["stage"] = current["stage"]?.DeepClone();
+        }
         using var write = connection.CreateCommand();
         write.Transaction = transaction;
         write.CommandText = "UPDATE cache SET value=@value WHERE key=@key AND value=@old";
@@ -473,6 +486,11 @@ internal static class SlotRelease
         // Only a committed release may make the caller's attempt read as released. The runner's failure
         // path persists this object, and after a rollback the owner row is still held by this token.
         attempt["cleanupState"] = "released";
+        if (landed)
+        {
+            attempt["artifactCommit"] = released["artifactCommit"]!.DeepClone();
+            attempt["stage"] = released["stage"]?.DeepClone();
+        }
     }
 
     internal static bool Allows(JsonNode proof, string attempt, string newPr, string newSession)

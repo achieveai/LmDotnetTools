@@ -32,7 +32,7 @@ public sealed class ReviewdClaimLossTests
         {
             // The failure path's save does not renew, so the reset lands as the failure path logs, before that save.
             run.ExecuteWhenLogged(
-                line => line.Contains("run failed at verify-pending", StringComparison.Ordinal),
+                line => line.Contains(" at verify-pending: ", StringComparison.Ordinal),
                 run.ResetSql
             );
         }
@@ -206,6 +206,69 @@ public sealed class ReviewdClaimLossTests
         var archived = await run.ReadAsync(run.AttemptKey);
         archived["cleanupState"]!.GetValue<string>().Should().Be("released");
         archived["artifactCommit"]!["commit"]!.GetValue<string>().Should().Be(new string('c', 40));
+    }
+
+    // The commit lands after a reset released the slot and another run claimed it under a new token: in the commit's
+    // own save ("commit-save"), or after it, when the completion write then fails ("failure-path"). This run's result
+    // is kept as released, with its archive, since its claim is gone; the new owner is not touched and this run cleans
+    // nothing on a slot it no longer holds.
+    [Theory]
+    [InlineData("commit-save")]
+    [InlineData("failure-path")]
+    public async Task A_commit_that_lands_after_another_run_took_the_slot_is_kept_released_and_leaves_that_owner_alone(
+        string path
+    )
+    {
+        await using var run = await ScriptedReviewRun.CreateAsync();
+        var replace =
+            "UPDATE cache SET value = json_set(value, '$.claimToken', 'replacement-token', '$.state', 'owned') "
+            + $"WHERE key = '{run.OwnerKey}';";
+        if (path == "commit-save")
+        {
+            run.OnPhase = async (phase, _, _, _) =>
+            {
+                if (phase == "commit")
+                {
+                    await run.ExecuteAsync(replace);
+                }
+                return null;
+            };
+        }
+        else
+        {
+            await run.ExecuteAsync(
+                $"""
+                CREATE TRIGGER replace_after_commit_save AFTER UPDATE ON cache
+                WHEN NEW.key = '{run.AttemptKey}' AND json_extract(NEW.value, '$.stage') = 'commit-completed'
+                BEGIN {replace} END;
+                CREATE TRIGGER fail_completion BEFORE INSERT ON cache WHEN NEW.key = '{run.RunKey}'
+                BEGIN SELECT RAISE(ABORT, 'completion write failed'); END;
+                """
+            );
+        }
+
+        if (path == "commit-save")
+        {
+            // The landed result is final: the run completes it, without cleaning a slot it no longer holds.
+            (await run.RunAsync())
+                .Should()
+                .Be(0);
+            (await run.ReadAsync(run.RunKey))["cleanupState"]!.GetValue<string>().Should().Be("released");
+        }
+        else
+        {
+            var failure = await FluentActions.Invoking(() => run.RunAsync()).Should().ThrowAsync<SqliteException>();
+            failure.Which.Message.Should().Contain("completion write failed");
+        }
+        var kept = await run.ReadAsync(run.AttemptKey);
+        kept["stage"]!.GetValue<string>().Should().Be("completed-verified", "the commit landed");
+        kept["cleanupState"]!.GetValue<string>().Should().Be("released", "this run's claim is gone");
+        kept["artifactCommit"]!["commit"]!.GetValue<string>().Should().Be(new string('c', 40));
+        var owner = await run.ReadAsync(run.OwnerKey);
+        owner["claimToken"]!.GetValue<string>().Should().Be("replacement-token");
+        owner["state"]!.GetValue<string>().Should().Be("owned", "the new owner keeps its slot");
+        owner.ContainsKey(SlotRelease.ResetFence).Should().BeFalse();
+        run.Phases.Should().NotContain("cleanup", "the slot belongs to another run");
     }
 
     // The commit lands after a reset took the claim, and its first save after that is canceled or fails once. The

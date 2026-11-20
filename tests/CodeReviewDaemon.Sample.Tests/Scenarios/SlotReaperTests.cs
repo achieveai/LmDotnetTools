@@ -1639,6 +1639,98 @@ public sealed class SlotReaperTests
         }
     }
 
+    // An operator discards a slot held at commit-pending, and the lane's commit lands while that reset runs: the lane's
+    // save is refused by the fence, so it keeps its landed result (KeepLandedAsync), still owned. The reset's release
+    // was staged from the attempt it read when it fenced, before the commit landed. It must keep the landed archive,
+    // not put back that older read.
+    [Fact]
+    public async Task A_discard_keeps_a_commit_that_landed_under_its_fence()
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-landed-{Guid.NewGuid():N}.db");
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await connection.OpenAsync();
+            var repo = PrCommands.ParseRepo("O365Exchange/Weve_DA/Nova");
+            var (ownerKey, store) = await SeedLapsedClaimAsync(connection, 0);
+            var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/100";
+            var seeded = (await store.GetAsync<JsonObject>(attemptKey))!;
+            seeded["stage"] = "commit-pending";
+            seeded["verifiedPublication"] = new JsonObject { ["comments"] = 3 };
+            await store.SetAsync(attemptKey, seeded, CancellationToken.None);
+            var handler = new FakeHttpMessageHandler()
+                .OnJson(HttpMethod.Post, "/freeze", """{"frozen":true}""")
+                .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+                .OnJson(HttpMethod.Get, "/subagents?recursive=true", Tree("completed"));
+            var (held, token, _) = await SlotReaper.PrepareAsync(
+                connection,
+                repo,
+                "100",
+                0,
+                "workspace",
+                CancellationToken.None
+            );
+            using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+            var artifact = new JsonObject { ["status"] = "committed", ["commit"] = new string('c', 40) };
+            bool? keptReleased = null;
+
+            var result = await SlotReaper.ReclaimOneAsync(
+                connection,
+                new LmStreamingS2SClient(http, null, null, null),
+                async (phase, args, _, _) =>
+                {
+                    if (phase == "cleanup")
+                    {
+                        // The lane's commit lands now, under the reset's fence.
+                        var landed = (await store.GetAsync<JsonObject>(attemptKey))!;
+                        landed["stage"] = "commit-completed";
+                        landed["artifactCommit"] = artifact.DeepClone();
+                        keptReleased = await SlotRelease.KeepLandedAsync(
+                            connection,
+                            ownerKey,
+                            token!,
+                            attemptKey,
+                            landed,
+                            CancellationToken.None
+                        );
+                    }
+                    return new JsonObject
+                    {
+                        ["claimToken"] = args["claimToken"]!.DeepClone(),
+                        ["cleanBaselineVerified"] = true,
+                        ["forced"] = new JsonArray(),
+                    };
+                },
+                repo,
+                "100",
+                0,
+                "workspace",
+                held!,
+                token!,
+                execute: true,
+                CancellationToken.None,
+                false,
+                delay: (_, _) => Task.CompletedTask,
+                discardVerified: true
+            );
+
+            keptReleased.Should().BeFalse("the fenced owner still held the lane's token");
+            result.Status.Should().Be("reclaimed");
+            (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("released");
+            var attempt = (await store.GetAsync<JsonObject>(attemptKey))!;
+            attempt["artifactCommit"].Should().NotBeNull("the commit landed under the fence");
+            attempt["artifactCommit"]!["commit"]!.GetValue<string>().Should().Be(new string('c', 40), "it landed");
+            attempt["stage"]!.GetValue<string>().Should().Be("commit-completed");
+            attempt["cleanupState"]!.GetValue<string>().Should().Be("released");
+            attempt["reclaim"].Should().NotBeNull("the reset's own record is kept beside it");
+        }
+        finally
+        {
+            ReviewdSqlitePools.Clear(database);
+            File.Delete(database);
+        }
+    }
+
     [Theory]
     [InlineData(120, true, true)]
     [InlineData(40, true, false)] // the lease lapsed only 10 minutes ago
