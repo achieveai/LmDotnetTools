@@ -1,6 +1,7 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.Sandbox;
+using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Tests.Sandbox;
 
@@ -8,7 +9,7 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Tests.Sandbox;
 /// Read-only egress (a judge thread's sandbox) may only GET and HEAD ADO. Everything else in the policy, and the
 /// whole policy of a normal (lane) sandbox, must stay exactly as it is.
 /// </summary>
-public sealed class SandboxReadOnlyEgressPolicyTests
+public sealed class SandboxReadOnlyEgressPolicyTests(ITestOutputHelper output)
 {
     [Fact]
     public void ReadOnly_narrows_only_the_ado_rule_to_GET_and_HEAD_and_keeps_its_credential()
@@ -131,6 +132,164 @@ public sealed class SandboxReadOnlyEgressPolicyTests
         SandboxEgressPolicyCompiler.ValidateEffectivePrecedence(readOnly!).Should().BeEmpty();
     }
 
+    private static readonly string[] PrepareReads =
+    [
+        "/contoso/Weve%20DA/_git/Nova/git-upload-pack",
+        "/Contoso/_apis/wit/workitemsbatch",
+        "/Contoso/p-id/_apis/git/repositories/r-id/pullrequestquery",
+    ];
+
+    [Fact]
+    public void ReadOnly_post_paths_add_one_exact_path_POST_rule_beside_the_ado_rule_with_its_credential()
+    {
+        var (auth, options) = HostLikePolicy();
+
+        var (_, readOnly) = SandboxSessionRegistry.BuildAuthPolicy(
+            auth,
+            options,
+            "test-secret",
+            readOnlyEgress: true,
+            readOnlyAdoPostPaths: PrepareReads
+        );
+        var (_, withoutPaths) = SandboxSessionRegistry.BuildAuthPolicy(
+            auth,
+            options,
+            "test-secret",
+            readOnlyEgress: true
+        );
+
+        var ado = readOnly!.Single(rule => rule.Id == "ado");
+        var post = readOnly!.Single(rule => rule.Id == "ado-read-post");
+        post.Methods.Should().Equal("POST");
+        post.Paths.Should().Equal(PrepareReads);
+        post.AuthProvider.Should().Be(ado.AuthProvider).And.Be("ado-auth");
+        // Exact host, one priority ahead: the ado rule's wildcard hosts make it a broad allow that must come last.
+        post.Hosts.Should().Equal("dev.azure.com");
+        (post.Ports, post.RequiredScopes, post.Priority)
+            .Should()
+            .BeEquivalentTo((ado.Ports, ado.RequiredScopes, ado.Priority - 1));
+        ado.Methods.Should().Equal("GET", "HEAD");
+        // Every other rule is exactly the read-only policy without paths.
+        readOnly!
+            .Where(rule => rule.Id != "ado-read-post")
+            .Select(rule => Shape(rule))
+            .Should()
+            .Equal(withoutPaths!.Select(rule => Shape(rule)));
+        SandboxEgressPolicyCompiler.ValidateEffectivePrecedence(readOnly!).Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("any-method", "dev.azure.com", "", "", "ado-auth", true)]
+    [InlineData("explicit-post", "dev.azure.com", "POST", "", "ado-auth", true)]
+    [InlineData("any-host", "", "", "", "ado-auth", true)]
+    [InlineData("some-paths", "dev.azure.com", "", "/contoso/*", "ado-auth", false)]
+    [InlineData("no-credential", "dev.azure.com", "", "", "", false)]
+    [InlineData("not-dev-azure-com", "*.visualstudio.com", "", "", "ado-auth", false)]
+    [InlineData("no-post", "dev.azure.com", "GET,PATCH", "", "ado-auth", false)]
+    public void Only_an_ado_rule_with_a_credential_and_POST_on_every_dev_azure_com_path_gets_a_POST_sibling(
+        string id,
+        string hosts,
+        string methods,
+        string paths,
+        string authProvider,
+        bool sibling
+    )
+    {
+        // Config rules can name only configured providers, so these credentialed rules are built directly: each
+        // misses at most one of the sibling's conditions.
+        static string[] List(string csv) => csv.Split(',', StringSplitOptions.RemoveEmptyEntries);
+        var rules = new List<SandboxNetworkRule>
+        {
+            new(
+                id,
+                "allow",
+                List(hosts),
+                [443],
+                List(methods),
+                List(paths),
+                authProvider.Length > 0 ? authProvider : null,
+                [],
+                200
+            ),
+        };
+
+        SandboxSessionRegistry.NarrowAdoToReadOnly(rules, PrepareReads);
+
+        output.WriteLine(
+            "DEBUG narrowed {0}: "
+                + string.Join(
+                    "; ",
+                    rules.Select(rule => $"{rule.Id} [{string.Join(",", rule.Methods)}] {string.Join(",", rule.Paths)}")
+                ),
+            id
+        );
+        string[] expected = sibling ? [id + "-read-post"] : [];
+        rules.Where(rule => rule.Methods.Contains("POST")).Select(rule => rule.Id).Should().Equal(expected);
+    }
+
+    [Theory]
+    [InlineData("POST", "/contoso/Weve%20DA/_git/Nova/git-upload-pack", "allow")]
+    [InlineData("POST", "/Contoso/_apis/wit/workitemsbatch", "allow")]
+    [InlineData("POST", "/Contoso/p-id/_apis/git/repositories/r-id/pullrequestquery", "allow")]
+    [InlineData("GET", "/contoso/Weve%20DA/_git/Nova/info/refs", "allow")]
+    [InlineData("POST", "/contoso/Weve%20DA/_git/Nova/git-receive-pack", "deny")]
+    [InlineData("POST", "/contoso/Weve%20DA/_git/Other/git-upload-pack", "deny")]
+    [InlineData("POST", "/Contoso/p-id/_apis/git/repositories/r-id/pullRequests/1/threads", "deny")]
+    [InlineData("PATCH", "/contoso/Weve%20DA/_git/Nova/git-upload-pack", "deny")]
+    [InlineData("POST", "/contoso/weve%20da/_git/nova/git-upload-pack", "deny")]
+    public void A_read_only_sandbox_with_post_paths_may_fetch_and_query_but_never_push_or_post(
+        string method,
+        string path,
+        string decision
+    )
+    {
+        var (auth, options) = HostLikePolicy();
+        var (_, readOnly) = SandboxSessionRegistry.BuildAuthPolicy(
+            auth,
+            options,
+            "test-secret",
+            readOnlyEgress: true,
+            readOnlyAdoPostPaths: PrepareReads
+        );
+
+        FirstMatch(readOnly!, "dev.azure.com", 443, method, path).Should().Be(decision);
+    }
+
+    [Theory]
+    [InlineData("/contoso/p/_git/r/git-receive-pack")]
+    [InlineData("/contoso/p/_apis/git/repositories/r/pullRequests/1/threads")]
+    [InlineData("/contoso/p/_git/r/*")]
+    [InlineData("contoso/p/_git/r/git-upload-pack")]
+    [InlineData("/contoso/p/_git/../r/git-upload-pack")]
+    [InlineData("/contoso/p/r/git-upload-pack")]
+    [InlineData("/contoso/_apis/wit/workitemsbatch?x=1")]
+    public void Only_exact_read_endpoints_are_accepted_as_read_only_post_paths(string path)
+    {
+        var (auth, options) = HostLikePolicy();
+
+        var build = () =>
+            SandboxSessionRegistry.BuildAuthPolicy(
+                auth,
+                options,
+                "test-secret",
+                readOnlyEgress: true,
+                readOnlyAdoPostPaths: [path]
+            );
+
+        build.Should().Throw<ArgumentException>().WithMessage("*is not an exact read-only ADO POST path*");
+    }
+
+    [Fact]
+    public void Post_paths_need_read_only_egress()
+    {
+        var (auth, options) = HostLikePolicy();
+
+        var build = () =>
+            SandboxSessionRegistry.BuildAuthPolicy(auth, options, "test-secret", readOnlyAdoPostPaths: PrepareReads);
+
+        build.Should().Throw<ArgumentException>().WithMessage("Read-only ADO POST paths only apply*");
+    }
+
     /// <summary>The live host's rule shape: managed github and ado, a GET-only docs rule, and an any-method proxy.</summary>
     private static (AuthOptions Auth, SandboxGatewayOptions Options) HostLikePolicy()
     {
@@ -158,7 +317,13 @@ public sealed class SandboxReadOnlyEgressPolicyTests
     /// The gateway's evaluation: ascending priority, first rule whose host, port and method all match decides;
     /// no match is deny. Empty methods or <c>*</c> match any method, case-insensitively.
     /// </summary>
-    private static string FirstMatch(IReadOnlyList<SandboxNetworkRule> rules, string host, int port, string method) =>
+    private static string FirstMatch(
+        IReadOnlyList<SandboxNetworkRule> rules,
+        string host,
+        int port,
+        string method,
+        string path = "/"
+    ) =>
         rules
             .OrderBy(rule => rule.Priority)
             .FirstOrDefault(rule =>
@@ -168,9 +333,19 @@ public sealed class SandboxReadOnlyEgressPolicyTests
                     rule.Methods.Count == 0
                     || rule.Methods.Any(m => m == "*" || string.Equals(m, method, StringComparison.OrdinalIgnoreCase))
                 )
+                && (rule.Paths.Count == 0 || rule.Paths.Any(p => PathMatches(p, path)))
             )
             ?.Action
         ?? "deny";
+
+    /// <summary>The gateway path grammar: <c>*</c>, a trailing <c>/*</c> inclusive prefix, or an exact case-sensitive path.</summary>
+    private static bool PathMatches(string pattern, string path) =>
+        pattern == "*"
+        || (
+            pattern.EndsWith("/*", StringComparison.Ordinal)
+                ? path == pattern[..^2] || path.StartsWith(pattern[..^1], StringComparison.Ordinal)
+                : pattern == path
+        );
 
     private static string Shape(SandboxNetworkRule rule, bool withMethods = true) =>
         string.Join(

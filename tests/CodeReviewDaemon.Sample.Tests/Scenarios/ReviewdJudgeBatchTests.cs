@@ -1047,6 +1047,27 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             .Contain("- PRs: 1 to start, 1 review has no verified artifact commit.");
     }
 
+    // A shadow review (review run --shadow) posted nothing and judge run refuses it, so the scan counts it apart and
+    // never picks it; it would otherwise read as a verified review that found nothing.
+    [Fact]
+    public async Task A_shadow_review_is_counted_and_never_picked()
+    {
+        var (key, value) = Review("7002");
+        var shadow = JsonNode.Parse(value)!.AsObject();
+        shadow["shadow"] = true;
+        var alpha = Db(
+            "alpha",
+            Review("7001"),
+            (key, shadow.ToJsonString()),
+            Snapshot(("7001", "Merged", Now.AddDays(-2)), ("7002", "Merged", Now.AddDays(-1)))
+        );
+
+        var (scan, plan) = await PlanAsync(new FakeHttpMessageHandler(), [], Target("alpha", alpha));
+
+        plan.Select(entry => entry.Pick.Pr.Label).Should().Equal("Nova !7001");
+        scan.Counts.Should().BeEquivalentTo(new Dictionary<string, int> { ["Start"] = 1, ["shadow"] = 1 });
+    }
+
     [Fact]
     public void Shard_parses_i_of_n_and_the_cli_refuses_anything_else()
     {

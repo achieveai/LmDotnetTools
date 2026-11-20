@@ -22,6 +22,12 @@ internal static class ReclaimSlotCommand
         var workspace = options.Required("workspace");
         var session = options.Required("session");
         var execute = options.Has("execute");
+        await ReviewArm.RequireReadOnlySessionForShadowAsync(
+            database,
+            () => AuthCommands.LoadOptions(config, null).TokenStoreDir!,
+            session,
+            ct
+        );
 
         await using var connection = new SqliteConnection(
             new SqliteConnectionStringBuilder
