@@ -23,6 +23,9 @@ public static class ConversationDedicatedSandbox
     /// </summary>
     public const string PropertyKey = "sample.dedicatedSandbox";
 
+    /// <summary>The error code a route answers when a dedicated conversation asks for a mode it cannot have.</summary>
+    public const string ModeUnsupportedCode = "dedicated_sandbox_mode_unsupported";
+
     /// <summary>
     /// Whether the conversation was provisioned with a dedicated sandbox. Absence or a missing thread reads as
     /// false. Fails closed like <see cref="ConversationReadOnlyEgress.ReadAsync"/>: any non-boolean value throws,
@@ -32,21 +35,23 @@ public static class ConversationDedicatedSandbox
     public static Task<bool> ReadAsync(IConversationStore store, string threadId, CancellationToken ct = default) =>
         ThreadPropertyValue.ReadFailClosedBoolAsync(store, threadId, PropertyKey, "run it in the shared sandbox", ct);
 
-    /// <summary>The error code a route answers when a dedicated conversation asks for a mode it cannot have.</summary>
-    public const string ModeUnsupportedCode = "dedicated_sandbox_mode_unsupported";
-
     /// <summary>
     /// Why a dedicated conversation may not run in a mode with these capabilities, or null when it may. Mini App
-    /// debugging runs an app through the gateway's operations API, which the working-directory jail does not cover
-    /// (gateway ADR 0044), so it would let a jailed agent act outside its directory.
+    /// debugging runs an app, and browser debugging opens one, through the gateway's operations API, which the
+    /// working-directory jail does not cover (gateway ADR 0044). Either would let a jailed agent act outside its
+    /// directory, so a dedicated conversation gets neither tool.
     /// </summary>
     public static string? ModeRefusal(ModeCapabilities capabilities)
     {
         ArgumentNullException.ThrowIfNull(capabilities);
-        return capabilities.MiniAppDebugTools
-            ? "A conversation with a dedicated sandbox cannot use a mode with Mini App debugging: it runs apps "
-                + "through the gateway's operations API, which is not confined to the conversation's working directory."
+        var tool =
+            capabilities.MiniAppDebugTools ? "Mini App debugging"
+            : capabilities.BrowserDebugTools ? "browser debugging"
             : null;
+        return tool is null
+            ? null
+            : $"A conversation with a dedicated sandbox cannot use a mode with {tool}: it runs Mini Apps through the "
+                + "gateway's operations API, which is not confined to the conversation's working directory.";
     }
 
     /// <summary>

@@ -602,8 +602,8 @@ rest of the workspace is read-only to it (gateway ADR 0044). Sandboxes are never
   `workingDirectoryRelPath` deletes the sandbox and, only once the gateway confirms, stores the new directory.
   A shared-sandbox conversation released with a directory becomes dedicated. Answers:
   - `200` with the directory the next sandbox works in.
-  - `400` `dedicated_sandbox_required`, `working_directory_invalid` or `dedicated_sandbox_mode_unsupported`;
-    `404` `unknown_thread`.
+  - `400` `dedicated_sandbox_required`, `working_directory_invalid` or `dedicated_sandbox_mode_unsupported` (the
+    last two only for a release with a directory, a move); `404` `unknown_thread`.
   - `409` `sandbox_release_while_running`: a run or queued input, a new turn, or work only this host keeps (a
     parked or unanswered call, an armed wait, a sub-agent, a background task). Nothing changes.
   - `503` `sandbox_release_failed`: the gateway refused the DELETE (nothing moved), or the DELETE succeeded but the
@@ -613,8 +613,10 @@ rest of the workspace is read-only to it (gateway ADR 0044). Sandboxes are never
 - **What is not jailed.** Only the agent's tools are. Host-side calls (operations, the files API) see the whole
   workspace by the gateway's design.
 - **Mini Apps.** The host runs Mini Apps through operations, so outside the jail. A dedicated conversation
-  therefore never gets a mode with Mini App debugging: provision, mode switch and release answer `400`
-  `dedicated_sandbox_mode_unsupported`, and building the agent refuses it (a fork, or a mode edited later). Its
+  therefore never gets a mode with Mini App debugging or browser debugging (which opens a Mini App by id).
+  Provision, mode switch and a release with a directory (a move) answer `400` `dedicated_sandbox_mode_unsupported`;
+  a release without one only stops the sandbox and answers `200`. Building the agent refuses such a mode too (a
+  fork, or a mode edited later). Human browser launches are unchanged. The conversation's
   directory may not be the workspace root, `mini-web-apps` or inside it (`400` `working_directory_invalid`), so
   its agent can never write an app the host would run.
 - **Rollback.** Not supported. A host from before dedicated sandboxes ignores `sample.dedicatedSandbox` and runs

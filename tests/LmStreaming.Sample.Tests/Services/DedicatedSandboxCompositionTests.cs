@@ -766,13 +766,17 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         fixture.Gateway.DeleteAttempts.Should().Be(0);
     }
 
-    [Fact]
-    public async Task A_dedicated_conversation_is_refused_a_Mini_App_debugging_mode_at_provision_mode_switch_and_release()
+    [Theory]
+    [InlineData(ToolGroups.MiniAppDebug)]
+    [InlineData(ToolGroups.BrowserDebug)]
+    public async Task A_dedicated_conversation_is_refused_a_mode_that_serves_Mini_Apps_at_provision_mode_switch_and_release(
+        string toolGroup
+    )
     {
-        // Mini App debugging runs apps through the operations API, which the jail does not cover. Mini Apps are on
-        // here, so the refusal is the dedicated sandbox's and nothing else's.
-        await using var fixture = await StartAsync(configureServices: EnableMiniApps);
-        var miniAppMode = await fixture.CreateMiniAppDebugModeAsync();
+        // Mini App debugging runs apps, and browser debugging opens one by id, through the operations API, which the
+        // jail does not cover. Both are on here, so the refusal is the dedicated sandbox's and nothing else's.
+        await using var fixture = await StartAsync(configureServices: EnableMiniAppsAndBrowserDebug);
+        var miniAppMode = await fixture.CreateSandboxModeWithAsync(toolGroup);
 
         using var provisioned = await fixture.ProvisionOverHttpAsync(
             "PRs/r-7",
@@ -815,13 +819,17 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         fixture.Gateway.DeleteAttempts.Should().Be(0);
     }
 
-    [Fact]
-    public async Task A_dedicated_thread_in_a_Mini_App_debugging_mode_never_gets_an_agent_nor_does_its_fork()
+    [Theory]
+    [InlineData(ToolGroups.MiniAppDebug)]
+    [InlineData(ToolGroups.BrowserDebug)]
+    public async Task A_dedicated_thread_in_a_mode_that_serves_Mini_Apps_never_gets_an_agent_nor_does_its_fork(
+        string toolGroup
+    )
     {
-        // The routes refuse the mode, but a mode can gain Mini App debugging after a thread took it, and a fork copies
-        // its source's mode. The agent factory is the check every path goes through.
-        await using var fixture = await StartAsync(configureServices: EnableMiniApps);
-        var miniAppMode = await fixture.CreateMiniAppDebugModeAsync();
+        // The routes refuse the mode, but a mode can gain such a tool after a thread took it, and a fork copies its
+        // source's mode. The agent factory is the check every path goes through.
+        await using var fixture = await StartAsync(configureServices: EnableMiniAppsAndBrowserDebug);
+        var miniAppMode = await fixture.CreateSandboxModeWithAsync(toolGroup);
         var a = await fixture.ProvisionAsync(
             "PRs/r-7",
             properties: new Dictionary<string, object> { [MultiTurnAgentPool.ModePropertyKey] = miniAppMode.Id }
@@ -861,9 +869,53 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         fixture.Gateway.Creates.Should().BeEmpty("a refused build creates no sandbox");
     }
 
-    /// <summary>Mini Apps on, as a Development host has them (the test host runs as Production, where they are off).</summary>
-    private static void EnableMiniApps(IServiceCollection services)
+    [Fact]
+    public async Task A_mode_switch_reads_an_unreadable_dedicated_flag_as_dedicated_and_keeps_the_mode()
     {
+        // Read as false, a malformed flag would let a thread that may be dedicated into a mode that serves Mini Apps.
+        await using var fixture = await StartAsync(configureServices: EnableMiniAppsAndBrowserDebug);
+        var miniAppMode = await fixture.CreateSandboxModeWithAsync(ToolGroups.MiniAppDebug);
+        var a = await fixture.ProvisionAsync(
+            "PRs/r-7",
+            dedicated: false,
+            properties: new Dictionary<string, object>
+            {
+                [ConversationDedicatedSandbox.PropertyKey] = "yes",
+                [MultiTurnAgentPool.ModePropertyKey] = SystemChatModes.WorkspaceAgentModeId,
+            }
+        );
+
+        using var switched = await fixture.Client.PostAsJsonAsync(
+            $"/api/conversations/{a}/mode",
+            new SwitchModeRequest { ModeId = miniAppMode.Id }
+        );
+        var switchBody = await switched.Content.ReadAsStringAsync();
+        Logger.LogDebug("Mode switch of {ThreadId} answered {Status}: {Body}", a, (int)switched.StatusCode, switchBody);
+
+        switched.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        switchBody.Should().Contain(ConversationDedicatedSandbox.ModeUnsupportedCode);
+        var stored = await fixture.Store.LoadMetadataAsync(a);
+        stored!
+            .Properties![MultiTurnAgentPool.ModePropertyKey]
+            .ToString()
+            .Should()
+            .Be(SystemChatModes.WorkspaceAgentModeId, "a refused switch leaves the mode as it was");
+        fixture.Gateway.Creates.Should().BeEmpty("a refused switch builds nothing");
+    }
+
+    /// <summary>Mini Apps and browser debugging on. The test host runs as Production, where both are off.</summary>
+    private static void EnableMiniAppsAndBrowserDebug(IServiceCollection services)
+    {
+        services.RemoveAll<BrowserDebugOptions>();
+        services.AddSingleton(
+            new BrowserDebugOptions
+            {
+                Enabled = true,
+                PreviewOrigin = "https://preview.example.test",
+                GatewayAppId = AppId,
+                SigningSecret = new string('s', 32),
+            }
+        );
         services.RemoveAll<SandboxAppCatalog>();
         services.AddSingleton(
             SandboxAppCatalog.Load(
@@ -998,19 +1050,19 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
             return threadId;
         }
 
-        /// <summary>A stored mode with the sandbox tools and Mini App debugging.</summary>
-        public Task<ChatMode> CreateMiniAppDebugModeAsync() =>
+        /// <summary>A stored mode with the sandbox tools and every tool of <paramref name="toolGroup"/>.</summary>
+        public Task<ChatMode> CreateSandboxModeWithAsync(string toolGroup) =>
             _host
                 .Services.GetRequiredService<IChatModeStore>()
                 .CreateModeAsync(
                     new ChatModeCreateUpdate
                     {
-                        Name = "Mini App debugging",
+                        Name = $"Sandbox with {toolGroup}",
                         SystemPrompt = "Debug the app.",
                         EnabledCapabilityTools =
                         [
                             ToolGroups.Wildcard(ToolGroups.Sandbox),
-                            ToolGroups.Wildcard(ToolGroups.MiniAppDebug),
+                            ToolGroups.Wildcard(toolGroup),
                         ],
                     }
                 );
