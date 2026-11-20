@@ -441,7 +441,9 @@ internal static class SlotRelease
         var released = attempt.DeepClone().AsObject();
         released["cleanupState"] = "released";
         // A reset releases from the attempt it read when it fenced. A commit of the same claim can land after that, and
-        // its result is then saved under the fence (KeepLandedAsync). That result is final: keep it, not the older read.
+        // its result is then saved under the fence (KeepLandedAsync), or the run's completion saves it whole (stage,
+        // reviewedHeadSha, finishedAt). That result is final: every field it saved wins over the older read, and the
+        // release keeps only what it added itself (such as the reclaim record).
         read.Parameters["@key"].Value = attemptKey;
         var current = await read.ExecuteScalarAsync(ct) is string saved ? JsonNode.Parse(saved)?.AsObject() : null;
         var landed =
@@ -450,8 +452,11 @@ internal static class SlotRelease
             && current["artifactCommit"] is not null;
         if (landed)
         {
-            released["artifactCommit"] = current!["artifactCommit"]!.DeepClone();
-            released["stage"] = current["stage"]?.DeepClone();
+            foreach (var (name, value) in current!)
+            {
+                released[name] = value?.DeepClone();
+            }
+            released["cleanupState"] = "released";
         }
         using var write = connection.CreateCommand();
         write.Transaction = transaction;
@@ -488,8 +493,10 @@ internal static class SlotRelease
         attempt["cleanupState"] = "released";
         if (landed)
         {
-            attempt["artifactCommit"] = released["artifactCommit"]!.DeepClone();
-            attempt["stage"] = released["stage"]?.DeepClone();
+            foreach (var (name, value) in released)
+            {
+                attempt[name] = value?.DeepClone();
+            }
         }
     }
 

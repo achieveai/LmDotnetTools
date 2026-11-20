@@ -146,8 +146,11 @@ internal sealed class ScriptedReviewRun : IAsyncDisposable
     /// </summary>
     internal void ExecuteWhenLogged(Func<string, bool> match, string sql) => _onLogged.Add((match, sql));
 
-    /// <summary>One run. <paramref name="resume"/> passes <c>--resume</c>, as a new process resuming the attempt would.</summary>
-    internal async Task<int> RunAsync(bool resume = false)
+    /// <summary>
+    ///     One run. <paramref name="resume"/> passes <c>--resume</c>, as a new process resuming the attempt would;
+    ///     <paramref name="cancellation"/> replaces <see cref="Cancellation"/>, as that new process's own token.
+    /// </summary>
+    internal async Task<int> RunAsync(bool resume = false, CancellationToken? cancellation = null)
     {
         var handler = new FakeHttpMessageHandler()
             .OnJson(
@@ -215,7 +218,7 @@ internal sealed class ScriptedReviewRun : IAsyncDisposable
                 config,
                 new LmStreamingS2SClient(http, null, null, null),
                 SandboxAsync,
-                Cancellation.Token,
+                cancellation ?? Cancellation.Token,
                 _ => Task.CompletedTask
             );
         }

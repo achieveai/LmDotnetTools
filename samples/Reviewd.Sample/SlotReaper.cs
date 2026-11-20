@@ -129,6 +129,20 @@ internal static class SlotReaper
                     + "operator to finish the commit or discard the slot (README: A held verified review)."
             );
         }
+        // A commit that landed is finished from this slot (review finish-commit, then a resume re-verifies and writes the
+        // receipt). A discard resets the slot, after which nothing can verify the review, so it is refused.
+        if (
+            discardVerified
+            && attempt["stage"]?.GetValue<string>() == "commit-completed"
+            && ReviewRunner.CommitLanded(attempt)
+        )
+        {
+            throw new InvalidOperationException(
+                $"This review's commit landed; run `reviewd review finish-commit --repo {repo.DisplayName} --pr {pr} "
+                    + $"--slot {slot} --db <db> --workspace {workspace} --execute` to finish it, then resume it. "
+                    + "A discard would strand it: the review could never be finished."
+            );
+        }
         var abandoned = new AbandonedChildProbe($"Reaper {repo.DisplayName}#{pr}/slot{slot}", reads);
         var head =
             attempt["headSha"]?.GetValue<string>()

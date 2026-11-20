@@ -95,6 +95,7 @@ internal sealed class CliOptions
                 "execute",
             ],
             "review reconcile-slot" => ["repo", "pr", "db", "evidence", "execute"],
+            "review finish-commit" => ["repo", "pr", "slot", "db", "workspace", "execute"],
             "review reclaim-slot" =>
             [
                 "repo",

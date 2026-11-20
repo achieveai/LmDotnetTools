@@ -1693,11 +1693,11 @@ internal static class ReviewBatch
 
     private const string InterruptedLaunch = "Interrupted launch has no definitive non-admission evidence.";
 
-    private static bool Reusable(JsonNode attempt) =>
+    internal static bool Reusable(JsonNode attempt) =>
         attempt["cleanupState"]?.GetValue<string>() == "released"
         && attempt["claimToken"]?.GetValue<string>() is { Length: > 0 };
 
-    private static bool Resumable(JsonNode attempt) =>
+    internal static bool Resumable(JsonNode attempt) =>
         (attempt["stage"]?.GetValue<string>() == "failed-released" && Reusable(attempt))
         || (
             attempt["stage"]?.GetValue<string>() == "completed-verified"
@@ -1722,7 +1722,7 @@ internal static class ReviewBatch
             )
         );
 
-    private static bool Verified(JsonNode? receipt, JsonObject entry) =>
+    internal static bool Verified(JsonNode? receipt, JsonObject entry) =>
         receipt?["stage"]?.GetValue<string>() == "completed-verified"
         && receipt["reviewedHeadSha"]?.GetValue<string>() == entry["head"]!.GetValue<string>()
         && receipt["artifactCommit"]?["status"]?.GetValue<string>() is "committed" or "unchanged"
