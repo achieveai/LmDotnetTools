@@ -1243,6 +1243,13 @@ try
                             .GetResult()
                     )
                     {
+                        // Every way a dedicated thread gets an agent comes through here (provision, mode switch,
+                        // fork, a mode edited after the fact), so this is the check nothing can route around.
+                        if (ConversationDedicatedSandbox.ModeRefusal(caps) is { } modeRefusal)
+                        {
+                            throw new InvalidOperationException(modeRefusal);
+                        }
+
                         workspaceRef = workspaceRef with
                         {
                             OwnerThreadId = threadId,

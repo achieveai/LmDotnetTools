@@ -5,8 +5,11 @@ using System.Net.Http.Json;
 using System.Reflection;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
+using LmStreaming.Sample.SandboxApps;
 using LmStreaming.Sample.Services;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
 using Xunit.Abstractions;
@@ -729,12 +732,162 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         fixture.Gateway.Creates.Should().HaveCount(2, "the move costs exactly one new sandbox");
     }
 
+    [Theory]
+    [InlineData(".")] // the workspace root holds the Mini App directory
+    [InlineData("mini-web-apps")]
+    [InlineData("mini-web-apps/demo")]
+    [InlineData("./Mini-Web-Apps//demo/")] // normalized, and case-insensitive
+    public async Task A_dedicated_directory_that_is_holds_or_lies_inside_the_Mini_App_directory_is_refused(
+        string directory
+    )
+    {
+        // The host runs Mini Apps outside the jail (the operations API). An agent that could write one could act
+        // anywhere in the workspace, so no dedicated sandbox may be jailed where the apps live.
+        await using var fixture = await StartAsync();
+        var legacy = await fixture.ProvisionAsync(null, dedicated: false);
+
+        using var provisioned = await fixture.ProvisionOverHttpAsync(directory, dedicated: true);
+        using var released = await fixture.ReleaseAsync(legacy, directory);
+        var provisionBody = await provisioned.Content.ReadAsStringAsync();
+        Logger.LogDebug(
+            "Provision with {Directory} answered {Status}: {Body}",
+            directory,
+            (int)provisioned.StatusCode,
+            provisionBody
+        );
+
+        provisioned.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        provisionBody.Should().Contain("working_directory_invalid");
+        (await fixture.Store.ListThreadsAsync()).Should().ContainSingle("the refused provision stores nothing");
+        released.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await released.Content.ReadAsStringAsync()).Should().Contain("working_directory_invalid");
+        (await ConversationDedicatedSandbox.ReadAsync(fixture.Store, legacy)).Should().BeFalse();
+        (await ConversationWorkingDirectory.ReadAsync(fixture.Store, legacy)).Should().BeNull();
+        fixture.Gateway.DeleteAttempts.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task A_dedicated_conversation_is_refused_a_Mini_App_debugging_mode_at_provision_mode_switch_and_release()
+    {
+        // Mini App debugging runs apps through the operations API, which the jail does not cover. Mini Apps are on
+        // here, so the refusal is the dedicated sandbox's and nothing else's.
+        await using var fixture = await StartAsync(configureServices: EnableMiniApps);
+        var miniAppMode = await fixture.CreateMiniAppDebugModeAsync();
+
+        using var provisioned = await fixture.ProvisionOverHttpAsync(
+            "PRs/r-7",
+            dedicated: true,
+            modeId: miniAppMode.Id
+        );
+        var provisionBody = await provisioned.Content.ReadAsStringAsync();
+        Logger.LogDebug(
+            "Provision in {ModeId} answered {Status}: {Body}",
+            miniAppMode.Id,
+            (int)provisioned.StatusCode,
+            provisionBody
+        );
+        provisioned.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        provisionBody.Should().Contain(ConversationDedicatedSandbox.ModeUnsupportedCode);
+        (await fixture.Store.ListThreadsAsync()).Should().BeEmpty("the refused provision stores nothing");
+
+        var a = await fixture.ProvisionAsync("PRs/r-7");
+        var agent = fixture.BuildAgent(a);
+        using var switched = await fixture.Client.PostAsJsonAsync(
+            $"/api/conversations/{a}/mode",
+            new SwitchModeRequest { ModeId = miniAppMode.Id }
+        );
+        var switchBody = await switched.Content.ReadAsStringAsync();
+        Logger.LogDebug("Mode switch of {ThreadId} answered {Status}: {Body}", a, (int)switched.StatusCode, switchBody);
+        switched.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        switchBody.Should().Contain(ConversationDedicatedSandbox.ModeUnsupportedCode);
+        fixture.BuildAgent(a).Should().BeSameAs(agent, "a refused switch keeps the agent");
+
+        var shared = await fixture.ProvisionAsync(
+            null,
+            dedicated: false,
+            properties: new Dictionary<string, object> { [MultiTurnAgentPool.ModePropertyKey] = miniAppMode.Id }
+        );
+        using var released = await fixture.ReleaseAsync(shared, "PRs/r-9");
+        released.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await released.Content.ReadAsStringAsync()).Should().Contain(ConversationDedicatedSandbox.ModeUnsupportedCode);
+        (await ConversationDedicatedSandbox.ReadAsync(fixture.Store, shared)).Should().BeFalse();
+        fixture.Gateway.Creates.Should().ContainSingle("only the first dedicated thread got a sandbox");
+        fixture.Gateway.DeleteAttempts.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task A_dedicated_thread_in_a_Mini_App_debugging_mode_never_gets_an_agent_nor_does_its_fork()
+    {
+        // The routes refuse the mode, but a mode can gain Mini App debugging after a thread took it, and a fork copies
+        // its source's mode. The agent factory is the check every path goes through.
+        await using var fixture = await StartAsync(configureServices: EnableMiniApps);
+        var miniAppMode = await fixture.CreateMiniAppDebugModeAsync();
+        var a = await fixture.ProvisionAsync(
+            "PRs/r-7",
+            properties: new Dictionary<string, object> { [MultiTurnAgentPool.ModePropertyKey] = miniAppMode.Id }
+        );
+        await fixture.Store.AppendMessagesAsync(
+            a,
+            [
+                MessagePersistenceConverter.ToPersistedMessage(
+                    new TextMessage { Role = Role.User, Text = "debug the app" },
+                    a,
+                    "run-1"
+                ),
+            ]
+        );
+
+        using var forked = await fixture.Client.PostAsJsonAsync(
+            $"/api/conversations/{a}/fork",
+            new ForkConversationRequest { AfterRunId = "run-1" }
+        );
+        var forkBody = await forked.Content.ReadAsStringAsync();
+        Logger.LogDebug("Fork of {ThreadId} answered {Status}: {Body}", a, (int)forked.StatusCode, forkBody);
+        forked.StatusCode.Should().Be(HttpStatusCode.Created);
+        var fork = JsonSerializer.Deserialize<ForkConversationResponse>(forkBody, JsonSerializerOptions.Web)!.ThreadId;
+        (await ConversationDedicatedSandbox.ReadAsync(fixture.Store, fork)).Should().BeTrue();
+
+        foreach (var threadId in new[] { a, fork })
+        {
+            fixture
+                .Invoking(f =>
+                    f.Pool.GetOrCreateAgent(threadId, miniAppMode, "test", null, requestedWorkspaceId: f.WorkspaceId)
+                )
+                .Should()
+                .Throw<InvalidOperationException>()
+                .WithMessage("*not confined to the conversation's working directory*");
+        }
+
+        fixture.Gateway.Creates.Should().BeEmpty("a refused build creates no sandbox");
+    }
+
+    /// <summary>Mini Apps on, as a Development host has them (the test host runs as Production, where they are off).</summary>
+    private static void EnableMiniApps(IServiceCollection services)
+    {
+        services.RemoveAll<SandboxAppCatalog>();
+        services.AddSingleton(
+            SandboxAppCatalog.Load(
+                new ConfigurationBuilder()
+                    .AddInMemoryCollection(
+                        new Dictionary<string, string?>
+                        {
+                            ["SandboxApps:Enabled"] = "true",
+                            ["SandboxApps:SiteDomain"] = "example.test",
+                            ["SandboxApps:AppDomain"] = "apps.example.test",
+                        }
+                    )
+                    .Build()
+            )
+        );
+    }
+
     private Task<Fixture> StartAsync(
         string? workspaceWorkingDir = null,
         string? root = null,
         string? workspaceId = null,
-        TimeProvider? timeProvider = null
-    ) => Fixture.StartAsync(Logger, workspaceWorkingDir, root, workspaceId, timeProvider);
+        TimeProvider? timeProvider = null,
+        Action<IServiceCollection>? configureServices = null
+    ) => Fixture.StartAsync(Logger, workspaceWorkingDir, root, workspaceId, timeProvider, configureServices);
 
     private sealed class Fixture : IAsyncDisposable
     {
@@ -761,13 +914,20 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
             string? workspaceWorkingDir,
             string? root = null,
             string? workspaceId = null,
-            TimeProvider? timeProvider = null
+            TimeProvider? timeProvider = null,
+            Action<IServiceCollection>? configureServices = null
         )
         {
             var gateway = new OwnedSandboxGateway();
             var fixture = new Fixture(
                 gateway,
-                new FakeGatewayWebAppFactory(gateway, AppId, root: root, timeProvider: timeProvider),
+                new FakeGatewayWebAppFactory(
+                    gateway,
+                    AppId,
+                    root: root,
+                    timeProvider: timeProvider,
+                    configureServices: configureServices
+                ),
                 logger
             );
             try
@@ -838,6 +998,23 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
             return threadId;
         }
 
+        /// <summary>A stored mode with the sandbox tools and Mini App debugging.</summary>
+        public Task<ChatMode> CreateMiniAppDebugModeAsync() =>
+            _host
+                .Services.GetRequiredService<IChatModeStore>()
+                .CreateModeAsync(
+                    new ChatModeCreateUpdate
+                    {
+                        Name = "Mini App debugging",
+                        SystemPrompt = "Debug the app.",
+                        EnabledCapabilityTools =
+                        [
+                            ToolGroups.Wildcard(ToolGroups.Sandbox),
+                            ToolGroups.Wildcard(ToolGroups.MiniAppDebug),
+                        ],
+                    }
+                );
+
         /// <summary>Builds (or returns) the thread's agent, as a turn does.</summary>
         public IMultiTurnAgent BuildAgent(string threadId) =>
             Pool.GetOrCreateAgent(threadId, WorkspaceMode, "test", null, requestedWorkspaceId: WorkspaceId);
@@ -845,7 +1022,8 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         public Task<HttpResponseMessage> ProvisionOverHttpAsync(
             string? directory,
             bool dedicated,
-            string providerId = "test"
+            string providerId = "test",
+            string modeId = SystemChatModes.WorkspaceAgentModeId
         ) =>
             Client.PostAsJsonAsync(
                 "/api/conversations",
@@ -853,7 +1031,7 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
                 {
                     WorkspaceId = WorkspaceId,
                     ProviderId = providerId,
-                    ModeId = SystemChatModes.WorkspaceAgentModeId,
+                    ModeId = modeId,
                     WorkingDirectoryRelPath = directory,
                     DedicatedSandbox = dedicated,
                 }

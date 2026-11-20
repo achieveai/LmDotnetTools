@@ -443,6 +443,15 @@ public class ConversationsController(
                     }
                 );
             }
+
+            // Building the agent refuses it too; refused here, before anything is stored or acknowledged.
+            if (
+                ConversationDedicatedSandbox.ModeRefusal(ModeCapabilities.Resolve(mode.EnabledCapabilityTools)) is
+                { } modeRefusal
+            )
+            {
+                return DedicatedModeUnsupported(modeRefusal, threadId: null);
+            }
         }
 
         // Fail loudly rather than store a bit nothing would enforce: only a sandbox-backed mode on a host
@@ -2473,6 +2482,16 @@ public class ConversationsController(
                     }
                 );
             }
+
+            // Moving a thread into (or within) a dedicated sandbox keeps its mode, which must be one it may have.
+            if (
+                await ThreadModeAsync(metadata, ct) is { } threadMode
+                && ConversationDedicatedSandbox.ModeRefusal(ModeCapabilities.Resolve(threadMode.EnabledCapabilityTools))
+                    is { } modeRefusal
+            )
+            {
+                return DedicatedModeUnsupported(modeRefusal, threadId);
+            }
         }
 
         // The pooled agent holds the sandbox's session id in its tools, so it goes first, and only when the idle
@@ -2638,11 +2657,7 @@ public class ConversationsController(
             providerId = providerRegistry.DefaultProviderId;
         }
 
-        var mode =
-            await modeStore.GetModeAsync(
-                PropertyString(metadata, MultiTurnAgentPool.ModePropertyKey) ?? SystemChatModes.DefaultModeId,
-                ct
-            ) ?? await modeStore.GetModeAsync(SystemChatModes.DefaultModeId, ct);
+        var mode = await ThreadModeAsync(metadata, ct);
         ConversationWorkingDirectory.EnsureSupported(
             providerId,
             mode is not null && ModeCapabilities.Resolve(mode.EnabledCapabilityTools).NeedsSandbox
@@ -2655,6 +2670,26 @@ public class ConversationsController(
         );
         return ConversationDedicatedSandbox.ResolveWorkingDir(directory, workspace?.WorkingDir);
     }
+
+    /// <summary>The mode the thread's agent would be built with, resolved as the pool resolves it.</summary>
+    private async Task<ChatMode?> ThreadModeAsync(ThreadMetadata metadata, CancellationToken ct) =>
+        await modeStore.GetModeAsync(
+            PropertyString(metadata, MultiTurnAgentPool.ModePropertyKey) ?? SystemChatModes.DefaultModeId,
+            ct
+        ) ?? await modeStore.GetModeAsync(SystemChatModes.DefaultModeId, ct);
+
+    /// <summary>400 <see cref="ConversationDedicatedSandbox.ModeUnsupportedCode"/>: a dedicated conversation in a
+    /// mode it cannot have.</summary>
+    private BadRequestObjectResult DedicatedModeUnsupported(string detail, string? threadId) =>
+        BadRequest(
+            new
+            {
+                error = ConversationDedicatedSandbox.ModeUnsupportedCode,
+                code = ConversationDedicatedSandbox.ModeUnsupportedCode,
+                detail,
+                threadId,
+            }
+        );
 
     /// <summary>
     /// Deletes a conversation and evicts its agent. Closed to machine callers on an agent-owned thread:
@@ -3030,6 +3065,29 @@ public class ConversationsController(
                     : null;
             if (workspaceId is null || !await BuilderModeAvailableAsync(workspaceId, ct))
                 return NotFound();
+        }
+
+        // A dedicated conversation cannot enter a mode its agent factory would refuse. An unreadable flag fails
+        // closed, as the factory does.
+        if (
+            ConversationDedicatedSandbox.ModeRefusal(ModeCapabilities.Resolve(mode.EnabledCapabilityTools)) is
+            { } modeRefusal
+        )
+        {
+            bool dedicated;
+            try
+            {
+                dedicated = await ConversationDedicatedSandbox.ReadAsync(store, threadId, ct);
+            }
+            catch (InvalidOperationException)
+            {
+                dedicated = true;
+            }
+
+            if (dedicated)
+            {
+                return DedicatedModeUnsupported(modeRefusal, threadId);
+            }
         }
 
         var runState = agentPool.GetRunStateInfo(threadId);

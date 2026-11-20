@@ -23,6 +23,7 @@ internal sealed class FakeGatewayWebAppFactory : WebApplicationFactory<Program>
     private readonly IReadOnlyDictionary<string, string> _settings;
     private readonly bool _ownsRoot;
     private readonly TimeProvider? _timeProvider;
+    private readonly Action<IServiceCollection>? _configureServices;
 
     /// <param name="gateway">Answers every sandbox gateway call: creates, deletes, liveness and operations.</param>
     /// <param name="appId">The host's sandbox gateway app id.</param>
@@ -33,15 +34,18 @@ internal sealed class FakeGatewayWebAppFactory : WebApplicationFactory<Program>
     /// </param>
     /// <param name="timeProvider">The registry's clock (its liveness window), for a test that expires it. Null for
     /// the system clock.</param>
+    /// <param name="configureServices">Last word on the host's services, for a test that swaps one. Null for none.</param>
     public FakeGatewayWebAppFactory(
         HttpMessageHandler gateway,
         string appId,
         IReadOnlyDictionary<string, string>? settings = null,
         string? root = null,
-        TimeProvider? timeProvider = null
+        TimeProvider? timeProvider = null,
+        Action<IServiceCollection>? configureServices = null
     )
     {
         _timeProvider = timeProvider;
+        _configureServices = configureServices;
         _ownsRoot = root is null;
         Root = root ?? NewRoot();
         _ = Directory.CreateDirectory(Root);
@@ -102,6 +106,7 @@ internal sealed class FakeGatewayWebAppFactory : WebApplicationFactory<Program>
                 sp.GetRequiredService<SessionSecretStore>(),
                 timeProvider: _timeProvider
             ));
+            _configureServices?.Invoke(services);
         });
     }
 
