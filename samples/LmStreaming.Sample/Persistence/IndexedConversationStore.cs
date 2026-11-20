@@ -377,7 +377,18 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
                             queue.Enqueue(child);
                 }
             }
-            var root = await inner.LoadMetadataAsync(rootThreadId, ct);
+            // One store read for the root and every candidate when the store can batch: a read per child
+            // queued 2+N times for the store's few connections behind its writers. Otherwise each row is
+            // read as the walk reaches it, as before.
+            var batch = inner is IConversationMetadataBatchStore batchStore
+                ? await batchStore.LoadMetadataBatchAsync(
+                    [rootThreadId, .. candidates.Values.SelectMany(children => children)],
+                    ct
+                )
+                : null;
+            async Task<ThreadMetadata?> LoadAsync(string threadId) =>
+                batch is null ? await inner.LoadMetadataAsync(threadId, ct) : batch.GetValueOrDefault(threadId);
+            var root = await LoadAsync(rootThreadId);
             var scope = string.IsNullOrWhiteSpace(root?.TenantId)
                 ? null
                 : ConversationListScope.ForTenantIncludingUntenanted(root.TenantId);
@@ -394,7 +405,7 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
                 {
                     if (!discovered.Add(child))
                         continue;
-                    var row = await inner.LoadMetadataAsync(child, ct);
+                    var row = await LoadAsync(child);
                     if (row is null || (scope is not null && !scope.Admits(row)))
                         continue;
                     var node = SubAgentProvenance.TryProject(row, current.Parent);
