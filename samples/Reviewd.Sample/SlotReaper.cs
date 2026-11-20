@@ -58,13 +58,25 @@ internal static class SlotReaper
         var attempt = await ReadAsync(connection, attemptKey, ct);
         ReclaimResult Terminal(string status) => new(repo.DisplayName, pr, slot, null, "n/a", status);
         if (attempt is null)
+        {
             return (null, null, Terminal("no-attempt"));
+        }
+
         if (attempt["claimToken"]?.GetValue<string>() is not { Length: > 0 } token)
+        {
             return (null, null, Terminal("no-claim-token"));
+        }
+
         if (attempt["slot"]?.GetValue<int>() != slot || attempt["workspaceId"]?.GetValue<string>() != workspace)
+        {
             return (null, null, Terminal("slot-workspace-mismatch"));
+        }
+
         if (attempt["cleanupState"]?.GetValue<string>() == "released")
+        {
             return (null, null, Terminal("already-released"));
+        }
+
         return (attempt, token, null);
     }
 
@@ -131,6 +143,7 @@ internal static class SlotReaper
             threadId is { Length: > 0 }
             && await FindActivityAsync(client, threadId, delay, ct, abandoned) is { } liveActivity
         )
+        {
             return new ReclaimResult(
                 repo.DisplayName,
                 pr,
@@ -140,8 +153,12 @@ internal static class SlotReaper
                 "skipped",
                 Detail: $"{liveActivity}; left untouched (not frozen)."
             );
+        }
+
         if (!await StillOursAsync())
+        {
             return Moved("not-frozen");
+        }
 
         // 1) Freeze the conversation we own. Present == false means the host does not know it — not
         //    running there, which for a reclaim is the same end state as frozen.
@@ -151,7 +168,10 @@ internal static class SlotReaper
         {
             var frozen = await client.SetFrozenAsync(threadId, frozen: true, ct);
             if (frozen.Refusal is { } refusal)
+            {
                 throw new InvalidOperationException($"Host refused to freeze {threadId}: {refusal}.");
+            }
+
             freezeState =
                 !frozen.Present ? "absent-on-host"
                 : frozen.Frozen ? "frozen"
@@ -170,9 +190,15 @@ internal static class SlotReaper
         async Task<bool> StillOursAsync()
         {
             if (recheck is null)
+            {
                 return true;
+            }
+
             if (await recheck(ct) is not { } forceNow)
+            {
                 return false;
+            }
+
             force = forceNow;
             return true;
         }
@@ -215,10 +241,13 @@ internal static class SlotReaper
                 while (await FindActivityAsync(client, threadId!, delay, ct, abandoned) is { } activity)
                 {
                     if (DateTimeOffset.UtcNow >= deadline)
+                    {
                         throw new InvalidOperationException(
                             $"Conversation {threadId} did not quiesce within {QuiescenceDeadline.TotalSeconds:0}s of "
                                 + $"freezing ({activity}); slot not reclaimed."
                         );
+                    }
+
                     await Task.Delay(QuiescencePoll, ct);
                 }
             }
@@ -293,9 +322,11 @@ internal static class SlotReaper
                 result["claimToken"]?.GetValue<string>() != claimToken
                 || result["cleanBaselineVerified"]?.GetValue<bool>() != true
             )
+            {
                 throw new InvalidOperationException(
                     "Discard-reset postconditions were not verified; slot remains claimed."
                 );
+            }
 
             // 4) Release the SQLite owner on the exact claim token, stamping the attempt released. A forced reset keeps
             //    what it overrode on the attempt too, not just in the log.
@@ -422,7 +453,10 @@ internal static class SlotReaper
     {
         var root = await client.GetRunStateAsync(threadId, ct);
         if (root.IsInProgress || root.CurrentRunId is not null)
+        {
             return "Conversation is in progress";
+        }
+
         ReviewSubAgentTreeSnapshot? tree = null;
         var busyReads = 0;
         while (tree is null)
@@ -450,14 +484,19 @@ internal static class SlotReaper
         {
             root = await client.GetRunStateAsync(threadId, ct);
             if (root.IsInProgress || root.CurrentRunId is not null)
+            {
                 return "Conversation is in progress";
+            }
         }
         var now = DateTimeOffset.UtcNow;
         var active = tree.Nodes.Where(n => !ReviewRunner.IsSettledNode(n, now)).ToList();
         // The root is idle here and there is no input to wait on, so a caller that passes a probe lets abandoned
         // children settle (#956).
         if (active.Count > 0 && probe is not null && await probe.AllAbandonedAsync(client, threadId, active, now, ct))
+        {
             return null;
+        }
+
         return active.Count == 0
             ? null
             : $"{active.Count} descendant(s) still active ({string.Join(", ", active.Select(n => $"{n.AgentId}={n.Status}"))})";
@@ -494,17 +533,29 @@ internal static class SlotReaper
             while (await reader.ReadAsync(ct))
             {
                 if (JsonNode.Parse(reader.GetString(0)) is not JsonObject owner)
+                {
                     continue;
+                }
+
                 if (owner["workspaceId"]?.GetValue<string>() != workspace)
+                {
                     continue;
+                }
+
                 if (!SlotRelease.IsLeaseExpired(owner, now, undatedExpired))
+                {
                     continue;
+                }
+
                 if (
                     owner["repository"]?.GetValue<string>() is not { Length: > 0 } repository
                     || owner["prId"]?.GetValue<string>() is not { Length: > 0 } pr
                     || owner["slot"]?.GetValue<int>() is not { } slot
                 )
+                {
                     continue;
+                }
+
                 owners.Add((PrCommands.ParseRepo(repository), pr, slot, IsForceDue(owner, now)));
             }
         }

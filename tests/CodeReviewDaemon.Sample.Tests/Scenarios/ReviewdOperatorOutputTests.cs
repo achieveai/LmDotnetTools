@@ -36,7 +36,7 @@ public sealed class ReviewdOperatorOutputTests : IDisposable
     }
 
     // The release of a refused prepare's claim fails, and so does saving the attempt that records why. The release
-    // error is logged before that save, so the only record of why the lane is held is not lost with it.
+    // error is logged before that save, with prepare's own refusal, so neither is lost with it.
     [Fact]
     public async Task A_release_error_is_logged_before_the_save_that_records_it()
     {
@@ -58,9 +58,63 @@ public sealed class ReviewdOperatorOutputTests : IDisposable
             return null;
         };
 
-        await FluentActions.Invoking(run.RunAsync).Should().ThrowAsync<SqliteException>();
+        await FluentActions.Invoking(() => run.RunAsync()).Should().ThrowAsync<SqliteException>();
 
-        _err.ToString().Should().Contain("Claim release held its lane: ").And.Contain("attempt write failed");
+        _err.ToString()
+            .Should()
+            .Contain("Claim release held its lane after prepare refused (Native slot retains an owner.): ")
+            .And.Contain("attempt write failed");
+    }
+
+    // The commit landed, then the completion write fails, and so does the failure path's retained save of the landed
+    // result: "released" when a reset had already released the claim (the receipt is saved as it is), "fenced" when a
+    // reset still holds its fence (the landed result is kept owned). The run's own error is logged before that save, so
+    // the save's failure, which ends the run, does not hide it.
+    [Theory]
+    [InlineData("released")]
+    [InlineData("fenced")]
+    public async Task A_run_error_is_logged_before_the_retained_save_that_could_hide_it(string claim)
+    {
+        await using var run = await ScriptedReviewRun.CreateAsync();
+        await run.ExecuteAsync(
+            $"""
+            CREATE TRIGGER fail_completion BEFORE INSERT ON cache WHEN NEW.key = '{run.RunKey}'
+            BEGIN SELECT RAISE(ABORT, 'completion write failed'); END;
+            CREATE TRIGGER fail_retained_insert BEFORE INSERT ON cache
+            WHEN NEW.key = '{run.AttemptKey}' AND json_extract(NEW.value, '$.stage') = 'completed-verified'
+            BEGIN SELECT RAISE(ABORT, 'retained save failed'); END;
+            CREATE TRIGGER fail_retained_update BEFORE UPDATE ON cache
+            WHEN NEW.key = '{run.AttemptKey}' AND json_extract(NEW.value, '$.stage') = 'completed-verified'
+            BEGIN SELECT RAISE(ABORT, 'retained save failed'); END;
+            """
+        );
+        run.OnPhase = async (phase, args, _, token) =>
+        {
+            if (phase != "commit")
+            {
+                return null;
+            }
+            if (claim == "released")
+            {
+                await run.ResetAsync(args, token);
+            }
+            else
+            {
+                await run.ExecuteAsync(
+                    $"UPDATE cache SET value = json_set(value, '$.{SlotRelease.ResetFence}', 'reset') "
+                        + $"WHERE key = '{run.OwnerKey}';"
+                );
+            }
+            return null;
+        };
+
+        var failure = await FluentActions.Invoking(() => run.RunAsync()).Should().ThrowAsync<SqliteException>();
+
+        failure.Which.Message.Should().Contain("retained save failed");
+        _err.ToString().Should().Contain("run failed at completed-verified: ").And.Contain("completion write failed");
+        var attempt = await run.ReadAsync(run.AttemptKey);
+        attempt["stage"]!.GetValue<string>().Should().Be("commit-completed", "only the commit's own save landed");
+        attempt["cleanupState"]!.GetValue<string>().Should().Be(claim == "released" ? "released" : "owned");
     }
 
     // The commit's response is lost and the save of its replay id then fails (here, canceled). The run still ends with
@@ -82,7 +136,7 @@ public sealed class ReviewdOperatorOutputTests : IDisposable
             throw new SandboxException(SandboxErrorKind.TransportTimeout, "commit transport timeout (00:00:30).");
         };
 
-        var failure = await FluentActions.Invoking(run.RunAsync).Should().ThrowAsync<SandboxException>();
+        var failure = await FluentActions.Invoking(() => run.RunAsync()).Should().ThrowAsync<SandboxException>();
 
         failure.Which.Message.Should().Contain("commit transport timeout");
         _err.ToString()

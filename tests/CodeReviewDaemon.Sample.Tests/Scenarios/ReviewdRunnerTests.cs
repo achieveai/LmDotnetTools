@@ -125,14 +125,23 @@ public sealed class ReviewdRunnerTests
                 ["cleanupState"] = "pending",
             };
             if (scenario == "admitted")
+            {
                 attempt["reviewInputId"] = "input";
+            }
+
             if (scenario == "send-pending")
+            {
                 attempt["initialSend"] = "pending";
+            }
+
             var original = attempt.ToJsonString();
             var owner = attempt.DeepClone().AsObject();
             owner["state"] = "owned";
             if (scenario == "changed-claim")
+            {
                 owner["claimToken"] = "new-owner";
+            }
+
             await store.SetAsync(attemptKey, attempt);
             await store.SetAsync(ownerKey, owner);
             var native = attempt.DeepClone().AsObject();
@@ -184,7 +193,10 @@ public sealed class ReviewdRunnerTests
             var proofPath = Path.Combine(directory, "proof.json");
             await File.WriteAllTextAsync(proofPath, proof.ToJsonString());
             if (scenario == "existing-certificate")
+            {
                 await store.SetAsync(SlotRelease.Key(original), new JsonObject { ["retained"] = true });
+            }
+
             var options = CliOptions.Parse([
                 "review",
                 "reconcile-slot",
@@ -224,9 +236,13 @@ public sealed class ReviewdRunnerTests
                 (await store.GetAsync<JsonObject>(ownerKey))!.ToJsonString().Should().Be(owner.ToJsonString());
                 var certificate = await store.GetAsync<JsonObject>(SlotRelease.Key(original));
                 if (scenario == "existing-certificate")
+                {
                     certificate!["retained"]!.GetValue<bool>().Should().BeTrue();
+                }
                 else
+                {
                     certificate.Should().BeNull();
+                }
             }
             using var read = connection.CreateCommand();
             read.CommandText = "SELECT value FROM cache WHERE key=@key";
@@ -545,7 +561,10 @@ public sealed class ReviewdRunnerTests
                 _ =>
                 {
                     if (reads > 100)
+                    {
                         throw new TimeoutException("Still waiting.");
+                    }
+
                     now = now.AddMinutes(1);
                     return Task.CompletedTask;
                 },
@@ -658,7 +677,10 @@ public sealed class ReviewdRunnerTests
                 _ =>
                 {
                     if (++delays > 20)
+                    {
                         throw new TimeoutException("Still waiting on the child.");
+                    }
+
                     now = now.AddMinutes(1);
                     return Task.CompletedTask;
                 },
@@ -710,7 +732,10 @@ public sealed class ReviewdRunnerTests
                 _ =>
                 {
                     if (++delays > (int)ReviewRunner.NeverStartedGrace.TotalMinutes + 10)
+                    {
                         throw new TimeoutException("Still polling an input that will never start.");
+                    }
+
                     now = now.AddMinutes(1);
                     return Task.CompletedTask;
                 },
@@ -749,7 +774,10 @@ public sealed class ReviewdRunnerTests
             _ =>
             {
                 if (++delays > 120)
+                {
                     throw new TimeoutException("Still waiting on the child.");
+                }
+
                 now = now.AddMinutes(1);
                 return Task.CompletedTask;
             },
@@ -789,7 +817,10 @@ public sealed class ReviewdRunnerTests
                 _ =>
                 {
                     if (++delays > 20)
+                    {
                         throw new TimeoutException("Still waiting on the child.");
+                    }
+
                     now = now.AddMinutes(1);
                     return Task.CompletedTask;
                 },
@@ -833,7 +864,10 @@ public sealed class ReviewdRunnerTests
             _ =>
             {
                 if (++delays > 20)
+                {
                     throw new TimeoutException("Still waiting on the child.");
+                }
+
                 now = now.AddMinutes(1);
                 return Task.CompletedTask;
             },
@@ -879,7 +913,10 @@ public sealed class ReviewdRunnerTests
                 _ =>
                 {
                     if (++delays > 3)
+                    {
                         throw new TimeoutException("Still waiting on the child.");
+                    }
+
                     return Task.CompletedTask;
                 },
                 CancellationToken.None,
@@ -981,7 +1018,10 @@ public sealed class ReviewdRunnerTests
         {
             var payload = new JsonObject { ["role"] = rows[i].Role.ToLowerInvariant() };
             if (rows[i].CallId is { } id)
+            {
                 payload["tool_call_id"] = id.Length == 0 ? null : id;
+            }
+
             array.Add(
                 new JsonObject
                 {
@@ -1031,7 +1071,10 @@ public sealed class ReviewdRunnerTests
                 _ =>
                 {
                     if (++delays > 30)
+                    {
                         throw new TimeoutException("Still waiting.");
+                    }
+
                     now = now.AddMinutes(1);
                     return Task.CompletedTask;
                 },
@@ -1182,7 +1225,10 @@ public sealed class ReviewdRunnerTests
     public void Producer_scan_skips_exited_process_and_still_detects_later_competitor(string? competitor)
     {
         if (!OperatingSystem.IsLinux())
+        {
             return;
+        }
+
         var reads = new List<string>();
         var scan = () =>
             ReviewBatch.EnsureNoDaemon(
@@ -1191,14 +1237,22 @@ public sealed class ReviewdRunnerTests
                 {
                     reads.Add(path);
                     if (path == "/proc/11/cmdline")
+                    {
                         throw new IOException("No such process", 3);
+                    }
+
                     return CommandLine(competitor ?? "dotnet /app/Reviewd.Sample.dll");
                 }
             );
         if (competitor is not null)
+        {
             scan.Should().Throw<InvalidOperationException>().WithMessage("Competing daemon producer detected.");
+        }
         else
+        {
             scan.Should().NotThrow();
+        }
+
         reads.Should().Equal("/proc/11/cmdline", "/proc/12/cmdline");
     }
 
@@ -1218,12 +1272,19 @@ public sealed class ReviewdRunnerTests
     public void Producer_scan_counts_only_a_process_running_the_daemon(string commandLine, bool competes)
     {
         if (!OperatingSystem.IsLinux())
+        {
             return;
+        }
+
         var scan = () => ReviewBatch.EnsureNoDaemon(() => ["/proc/12"], _ => CommandLine(commandLine));
         if (competes)
+        {
             scan.Should().Throw<InvalidOperationException>().WithMessage("Competing daemon producer detected.");
+        }
         else
+        {
             scan.Should().NotThrow();
+        }
     }
 
     // /proc/<pid>/cmdline: each argument ends with a NUL.
@@ -1239,9 +1300,13 @@ public sealed class ReviewdRunnerTests
     {
         var scan = () => ReviewBatch.EnsureNoWindowsDaemon(() => ["svchost", name]);
         if (competing)
+        {
             scan.Should().Throw<InvalidOperationException>().WithMessage("Competing daemon producer detected.");
+        }
         else
+        {
             scan.Should().NotThrow();
+        }
     }
 
     [Theory]
@@ -1257,7 +1322,10 @@ public sealed class ReviewdRunnerTests
     public void Producer_scan_only_skips_missing_process_reads_and_fails_closed_otherwise(string failure)
     {
         if (!OperatingSystem.IsLinux())
+        {
             return;
+        }
+
         Exception error = failure switch
         {
             "file" => new FileNotFoundException(),
@@ -1277,7 +1345,10 @@ public sealed class ReviewdRunnerTests
                 _ =>
                 {
                     if (++reads == 1)
+                    {
                         throw error;
+                    }
+
                     return [];
                 }
             );
@@ -1300,7 +1371,10 @@ public sealed class ReviewdRunnerTests
         try
         {
             using (var connection = PrThreadBindings.Connection(database))
+            {
                 _ = new SqliteKvStore(connection);
+            }
+
             const string request = "{\"repositories\":{},\"lanes\":{}}";
             var digest = SlotRelease.Digest(request);
             (await ReviewBatch.ClaimAsync(database, digest, request, CancellationToken.None)).Should().BeTrue();
@@ -1407,9 +1481,13 @@ public sealed class ReviewdRunnerTests
                 effort,
             ]);
         if (effort is "low" or "medium" or "high" or "xhigh")
+        {
             parse().Get("reasoning-effort").Should().Be(effort);
+        }
         else
+        {
             parse.Should().Throw<ArgumentException>().WithMessage("*reasoning-effort must*");
+        }
     }
 
     [Fact]
@@ -1431,7 +1509,10 @@ public sealed class ReviewdRunnerTests
         {
             var live = BatchFixture.Live(pr);
             if (pr == "1" && ++checks == 1)
+            {
                 live.Remove("mergeSha");
+            }
+
             return live;
         };
         await batch.ExecuteAsync();
@@ -1542,7 +1623,10 @@ public sealed class ReviewdRunnerTests
         batch.OnRunAsync = () =>
         {
             if (batch.Runs[^1] != "1:fresh")
+            {
                 return Task.CompletedTask;
+            }
+
             batch.AdvanceSeconds((int)ReviewBatch.QuarantineSpacing.TotalSeconds);
             throw new InvalidOperationException(
                 identical || ++failures % 2 == 0
@@ -1592,6 +1676,9 @@ public sealed class ReviewdRunnerTests
     [InlineData("resume")]
     [InlineData("slot-not-idle")]
     [InlineData("slot-claim-lost")]
+    // Cleanup's own claim checks, run for real on a claim a reset fenced: the reset, not the PR, stopped the run.
+    [InlineData("cleanup-claim-check")]
+    [InlineData("release-claim-check")]
     public async Task Batch_does_not_count_failures_that_say_nothing_about_the_pr(string kind)
     {
         // Seen live: a review whose input was lost re-verified on every resume, five times; only a fresh admission can
@@ -1617,11 +1704,18 @@ public sealed class ReviewdRunnerTests
                     ["claimToken"] = "failed-claim",
                 }
         );
-        batch.OnRunAsync = () =>
+        batch.OnRunAsync = async () =>
         {
             if (!batch.Runs[^1].StartsWith("1:", StringComparison.Ordinal))
-                return Task.CompletedTask;
+            {
+                return;
+            }
+
             batch.AdvanceSeconds((int)ReviewBatch.QuarantineSpacing.TotalSeconds);
+            if (kind is "cleanup-claim-check" or "release-claim-check")
+            {
+                await FailAFencedClaimCheckAsync(kind == "release-claim-check");
+            }
             throw kind switch
             {
                 "resume" => new InvalidOperationException(
@@ -1641,6 +1735,27 @@ public sealed class ReviewdRunnerTests
         batch.Read(ReviewBatch.FailureKey(BatchFixture.Repo, "1")).Should().BeNull();
     }
 
+    // Runs cleanup's claim check (or the release's) on an owner a reset has fenced, and lets its exception escape.
+    private static async Task FailAFencedClaimCheckAsync(bool release)
+    {
+        await using var connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        using var seed = connection.CreateCommand();
+        seed.CommandText = $$"""
+            CREATE TABLE cache(key TEXT PRIMARY KEY, value TEXT);
+            INSERT INTO cache VALUES ('owner', '{"claimToken":"lane","state":"owned","{{SlotRelease.ResetFence}}":"reset"}');
+            """;
+        _ = await seed.ExecuteNonQueryAsync();
+        if (release)
+        {
+            await SlotRelease.ReleaseAsync(connection, "owner", "lane", "attempt", [], CancellationToken.None);
+        }
+        else
+        {
+            await SlotRelease.AssertCurrentAsync(connection, "owner", "lane", CancellationToken.None);
+        }
+    }
+
     [Fact]
     public async Task Batch_counts_a_failure_that_still_holds_its_slot()
     {
@@ -1650,7 +1765,10 @@ public sealed class ReviewdRunnerTests
         batch.OnRunAsync = () =>
         {
             if (batch.Runs[^1] != "1:fresh")
+            {
                 return Task.CompletedTask;
+            }
+
             batch.PutAttempt(
                 "1",
                 new JsonObject
@@ -1747,6 +1865,7 @@ public sealed class ReviewdRunnerTests
         // earlier head's released review, which must not turn the timeout into a hold either.
         using var batch = new BatchFixture(0);
         if (reviewedEarlierHead)
+        {
             batch.PutAttempt(
                 "1",
                 new JsonObject
@@ -1760,6 +1879,8 @@ public sealed class ReviewdRunnerTests
                     ["artifactCommit"] = new JsonObject { ["status"] = "committed", ["commit"] = new string('c', 40) },
                 }
             );
+        }
+
         batch.OnRunAsync = () =>
             batch.Runs.Count == 1
                 ? throw new TaskCanceledException(
@@ -1814,7 +1935,10 @@ public sealed class ReviewdRunnerTests
     public async Task Batch_proc_exit_guard_allows_following_queued_admission()
     {
         if (!OperatingSystem.IsLinux())
+        {
             return;
+        }
+
         using var batch = new BatchFixture(0);
         var checks = 0;
         batch.CheckProducer = () =>
@@ -1841,7 +1965,10 @@ public sealed class ReviewdRunnerTests
         batch.CheckProducer = () =>
         {
             if (++checks < 3)
+            {
                 return;
+            }
+
             throw new UnauthorizedAccessException("Producer inspection unavailable");
         };
         batch.WatchDelay = token => admitted.Task.WaitAsync(token);
@@ -1874,7 +2001,10 @@ public sealed class ReviewdRunnerTests
         state["entries"]![0]!["slot"] = 0;
         batch.Put(batch.StateKey, state);
         if (retainedAttempt)
+        {
             batch.PutAttempt("1", new JsonObject { ["slot"] = 0, ["stage"] = "prepare-pending" });
+        }
+
         var execute = () => batch.ExecuteAsync();
         await execute();
         // Slot 0 stays held; PRs 2 and 3 both run on slot 1 rather than wait behind it.
@@ -1941,6 +2071,7 @@ public sealed class ReviewdRunnerTests
         using var batch = new BatchFixture(0) { MaxAgeHours = "72" };
         batch.SetManifestAge(JsonValue.Create(72));
         if (scenario != "fresh")
+        {
             batch.PutAttempt(
                 "1",
                 new JsonObject
@@ -1959,6 +2090,8 @@ public sealed class ReviewdRunnerTests
                     ["readmittedAt"] = scenario == "readmitted" ? batch.Now.AddHours(-1).ToString("O") : null,
                 }
             );
+        }
+
         batch.Eligibility = pr =>
         {
             var live = BatchFixture.Live(pr);
@@ -1969,12 +2102,18 @@ public sealed class ReviewdRunnerTests
         batch.Entries().First()["status"]!.GetValue<string>().Should().Be(status);
         batch.Runs.Should().HaveCount(runs == 0 && (scenario is "fresh" or "failed-released") ? 2 : runs);
         if (scenario is "prepared" or "review-send-pending")
+        {
             batch.Read("reviewd/review-attempt/azure-devops/org/project/nova/1")!["cleanupState"]!
                 .GetValue<string>()
                 .Should()
                 .Be("owned");
+        }
+
         if (scenario is "fresh" or "failed-released")
+        {
             batch.Runs.Should().NotContain("1:fresh");
+        }
+
         batch.RunAges.Should().NotContain(age => age != "72");
     }
 
@@ -2012,9 +2151,13 @@ public sealed class ReviewdRunnerTests
         await batch.ExecuteAsync();
         batch.Entries().First()["status"]!.GetValue<string>().Should().Be(status);
         if (runs)
+        {
             batch.Runs.Should().Contain("1:fresh");
+        }
         else
+        {
             batch.Runs.Should().NotContain("1:fresh");
+        }
     }
 
     [Fact]
@@ -2045,6 +2188,7 @@ public sealed class ReviewdRunnerTests
     {
         using var batch = new BatchFixture(0);
         if (refusedAt == "resume")
+        {
             batch.PutAttempt(
                 "1",
                 new JsonObject
@@ -2055,20 +2199,30 @@ public sealed class ReviewdRunnerTests
                     ["mergeSha"] = new string('b', 40),
                 }
             );
+        }
+
         var refusals = 0;
         void Refuse(string pr)
         {
             if (pr == "1" && ++refusals <= 7)
+            {
                 throw new SandboxException(SandboxErrorKind.Unavailable, "operation_concurrency_limit", 503);
+            }
         }
         batch.Eligibility = pr =>
         {
             if (refusedAt == "eligibility")
+            {
                 Refuse(pr);
+            }
+
             return BatchFixture.Live(pr);
         };
         if (refusedAt == "resume")
+        {
             batch.OnRun = () => Refuse(batch.Runs[^1].Split(':')[0]);
+        }
+
         await batch.ExecuteAsync();
         refusals.Should().Be(8);
         batch.Runs.Should().Contain(refusedAt == "resume" ? "1:resume" : "1:fresh");
@@ -2107,10 +2261,12 @@ public sealed class ReviewdRunnerTests
         batch.OnRun = () =>
         {
             if (++refusals <= 7)
+            {
                 throw new SandboxException(SandboxErrorKind.Unavailable, "service unavailable", 503)
                 {
                     ErrorCode = errorCode,
                 };
+            }
         };
         await batch.ExecuteAsync();
         batch.Runs.Where(run => run.StartsWith("1:", StringComparison.Ordinal)).Should().HaveCount(runs);
@@ -2224,15 +2380,22 @@ public sealed class ReviewdRunnerTests
             var live = BatchFixture.Live(pr);
             live["mergeSha"] = new string('e', 40);
             if (moved == "head")
+            {
                 live["headSha"] = new string('d', 40);
+            }
+
             return live;
         };
         await batch.ExecuteAsync();
         batch.Entries().First()["status"]!.GetValue<string>().Should().Be(status);
         if (status == "verified")
+        {
             batch.Runs.Should().Contain("1:resume");
+        }
         else
+        {
             batch.Runs.Should().NotContain(value => value.StartsWith("1:", StringComparison.Ordinal));
+        }
     }
 
     [Fact]
@@ -2277,7 +2440,10 @@ public sealed class ReviewdRunnerTests
     {
         using var batch = new BatchFixture(0) { MaxAgeHours = option };
         if (manifest is not null)
+        {
             batch.SetManifestAge(JsonNode.Parse(manifest));
+        }
+
         var run = () => batch.ExecuteAsync();
         await run.Should().ThrowAsync<InvalidOperationException>().WithMessage("*exactly match*");
         batch.Runs.Should().BeEmpty();
@@ -2320,7 +2486,9 @@ public sealed class ReviewdRunnerTests
                 await release.Task;
             }
             else
+            {
                 secondStarted.SetResult();
+            }
         };
 
         var schedule = batch.RunLiveAsync();
@@ -2452,7 +2620,9 @@ public sealed class ReviewdRunnerTests
                 await release.Task;
             }
             else
+            {
                 secondStarted.TrySetResult();
+            }
         };
 
         var schedule = batch.RunLiveAsync();
@@ -2487,7 +2657,9 @@ public sealed class ReviewdRunnerTests
                 await release.Task;
             }
             else if (pr == "3")
+            {
                 thirdStarted.TrySetResult();
+            }
         };
 
         var schedule = batch.RunLiveAsync();
@@ -2518,7 +2690,10 @@ public sealed class ReviewdRunnerTests
         batch.Delete(batch.StateKey);
         var entries = queue["entries"]!.AsArray();
         for (var index = 0; index < entries.Count; index++)
+        {
             entries[index]!["slot"] = index % 2;
+        }
+
         entries[0]!["status"] = "launching";
         batch.Put(
             batch.RoundKey,
@@ -2554,7 +2729,10 @@ public sealed class ReviewdRunnerTests
         entries[0]!["slot"] = 0;
         var scope = queue["scope"]!.DeepClone();
         if (round == "another workspace")
+        {
             scope["workspace"] = "other";
+        }
+
         batch.Put(
             round == "another selection" ? "reviewd/batch-state/" + SlotRelease.Digest("{}") : batch.RoundKey,
             new JsonObject
@@ -2611,9 +2789,13 @@ public sealed class ReviewdRunnerTests
         batch.Restart();
         batch.PutAttempt("1", RetainedOwner(1, 'a'));
         if (otherRepoSelected)
+        {
             batch.Select(new JsonObject { [other] = new JsonArray(JsonValue.Create(0)) }, (other, "5", 'a'));
+        }
         else
+        {
             batch.Select([]);
+        }
         // This batch merges the new selection and stops before admitting anything; the next one starts from it.
         batch.Cancellation.Cancel();
         await batch.ExecuteAsync();
@@ -2643,9 +2825,13 @@ public sealed class ReviewdRunnerTests
         batch.OnRunHeadAsync = async (pr, head) =>
         {
             if (pr == "2")
+            {
                 otherStarted.TrySetResult();
+            }
             else if (head == 'b')
+            {
                 newStarted.TrySetResult();
+            }
             else
             {
                 oldStarted.TrySetResult();
@@ -2660,7 +2846,10 @@ public sealed class ReviewdRunnerTests
         await otherStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
         await batch.AfterTicks(6);
         lock (batch.Runs)
+        {
             batch.Events.Should().NotContain(e => e.Contains("1@b"), "the new head waits until the old one drains");
+        }
+
         release.SetResult();
         await newStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
         batch.Cancellation.Cancel();
@@ -2691,9 +2880,15 @@ public sealed class ReviewdRunnerTests
         batch.OnRunHeadAsync = async (pr, head) =>
         {
             if (pr == "1" && head == 'b')
+            {
                 newStarted.TrySetResult();
+            }
+
             if (pr != "1" || head != 'a' || oldRuns++ > 0)
+            {
                 return;
+            }
+
             oldStarted.TrySetResult();
             await release.Task;
             // Posted, but its verification was lost: the attempt keeps its slot and its head.
@@ -2722,7 +2917,10 @@ public sealed class ReviewdRunnerTests
 
         List<string> events;
         lock (batch.Runs)
+        {
             events = [.. batch.Events];
+        }
+
         events.Should().ContainInOrder("run 1@a:fresh", "run 1@a:resume", "check 1@b", "run 1@b:fresh");
         events.Should().Contain("run 2@a:fresh");
         events.IndexOf("check 1@b").Should().BeGreaterThan(events.IndexOf("run 1@a:resume"));
@@ -2747,7 +2945,9 @@ public sealed class ReviewdRunnerTests
                 await release.Task;
             }
             else
+            {
                 secondStarted.TrySetResult();
+            }
         };
 
         var schedule = batch.RunLiveAsync();
@@ -2784,9 +2984,14 @@ public sealed class ReviewdRunnerTests
         batch.Eligibility = pr =>
         {
             if (checks++ == 0)
+            {
                 batch.Put(ownerKey, owner);
+            }
             else
+            {
                 atRecheck = batch.Entries()[0];
+            }
+
             return BatchFixture.Live(pr);
         };
 
@@ -2815,7 +3020,10 @@ public sealed class ReviewdRunnerTests
         batch.OnRunPrAsync = pr =>
         {
             if (pr == "2")
+            {
                 secondStarted.TrySetResult();
+            }
+
             return Task.CompletedTask;
         };
 
@@ -2967,7 +3175,10 @@ public sealed class ReviewdRunnerTests
             while (!condition())
             {
                 if (DateTime.UtcNow > deadline)
+                {
                     throw new TimeoutException("The awaited batch state never arrived.");
+                }
+
                 await AfterTicks(1);
             }
         }
@@ -2975,9 +3186,13 @@ public sealed class ReviewdRunnerTests
         public BatchFixture(params int[] slots)
         {
             using (var connection = PrThreadBindings.Connection(_database))
+            {
                 _ = new SqliteKvStore(connection);
+            }
+
             var rows = new JsonArray();
             foreach (var pr in new[] { "1", "2", "3" })
+            {
                 rows.Add(
                     new JsonObject
                     {
@@ -2986,6 +3201,8 @@ public sealed class ReviewdRunnerTests
                         ["headSha"] = new string('a', 40),
                     }
                 );
+            }
+
             _selection = new JsonObject
             {
                 ["repositories"] = new JsonObject { [Repo] = rows },
@@ -3037,14 +3254,19 @@ public sealed class ReviewdRunnerTests
                 {
                     Prepares++;
                     if (Prepare is not null)
+                    {
                         await Prepare(text);
+                    }
                 },
                 (_, pr, _, head, token) =>
                 {
                     SchedulingToken = token;
                     LiveReads++;
                     lock (Runs)
+                    {
                         Events.Add($"check {pr}@{head[0]}");
+                    }
+
                     return Task.FromResult(Eligibility(pr));
                 },
                 async options =>
@@ -3061,7 +3283,10 @@ public sealed class ReviewdRunnerTests
                         && attempt!["headSha"]?.GetValue<string>() is { } reviewedHead
                         && reviewedHead != head
                     )
+                    {
                         throw new InvalidOperationException("Selected PR head changed; no action allowed.");
+                    }
+
                     lock (Runs)
                     {
                         Runs.Add(pr + (options.Has("resume") ? ":resume" : ":fresh"));
@@ -3073,11 +3298,20 @@ public sealed class ReviewdRunnerTests
                     await Task.Yield();
                     OnRun?.Invoke();
                     if (OnRunAsync is not null)
+                    {
                         await OnRunAsync();
+                    }
+
                     if (OnRunPrAsync is not null)
+                    {
                         await OnRunPrAsync(pr);
+                    }
+
                     if (OnRunHeadAsync is not null)
+                    {
                         await OnRunHeadAsync(pr, head[0]);
+                    }
+
                     var receipt = new JsonObject
                     {
                         ["slot"] = int.Parse(options.Required("slot")),
@@ -3099,7 +3333,9 @@ public sealed class ReviewdRunnerTests
                 async (duration, token) =>
                 {
                     if (duration == TimeSpan.FromSeconds(5))
+                    {
                         await WatchDelay(token);
+                    }
                     else
                     {
                         token.ThrowIfCancellationRequested();
@@ -3201,7 +3437,10 @@ public sealed class ReviewdRunnerTests
             using var command = connection.CreateCommand();
             command.CommandText = sql;
             foreach (var (name, value) in parameters)
+            {
                 command.Parameters.AddWithValue(name, value);
+            }
+
             command.ExecuteNonQuery();
         }
 
@@ -3210,6 +3449,7 @@ public sealed class ReviewdRunnerTests
         {
             var repositories = new JsonObject();
             foreach (var group in rows.GroupBy(row => row.Repo))
+            {
                 repositories[group.Key] = new JsonArray([
                     .. group.Select(row =>
                         (JsonNode)
@@ -3221,6 +3461,8 @@ public sealed class ReviewdRunnerTests
                             }
                     ),
                 ]);
+            }
+
             _selection = new JsonObject { ["repositories"] = repositories, ["lanes"] = lanes }.ToJsonString();
         }
 
@@ -3524,9 +3766,13 @@ public sealed class ReviewdRunnerTests
         batch.Put("reviewd/review-run/" + PrCommands.ParseRepo("org/project/Nova").NormalizedKey + "/1", released);
         await batch.ExecuteAsync();
         if (runs)
+        {
             batch.Runs.Should().Contain("1:fresh");
+        }
         else
+        {
             batch.Runs.Should().NotContain(run => run.StartsWith("1:", StringComparison.Ordinal));
+        }
     }
 
     private static async Task<string?> ReadRawAsync(Microsoft.Data.Sqlite.SqliteConnection connection, string key)
@@ -3638,21 +3884,36 @@ public sealed class ReviewdRunnerTests
                 ["prepared"] = new JsonObject { ["mergeSha"] = new string('b', 40) },
             };
             if (scenario == "confirmation")
+            {
                 attempt["confirmationInputId"] = "confirmation-input";
+            }
+
             if (scenario == "confirmation-pending")
+            {
                 attempt["confirmationIdempotencyKey"] = "pending-key";
+            }
+
             if (scenario == "wrong-session")
+            {
                 attempt["sessionId"] = "different-session";
+            }
+
             var original = attempt.ToJsonString();
             await store.SetAsync(attemptKey, attempt);
             await PrThreadBindings.SetAsync(database, repo, "17", "original", CancellationToken.None);
             var claim = attempt.DeepClone().AsObject();
             claim["state"] = "owned";
             if (scenario == "wrong-claim")
+            {
                 claim["claimToken"] = "other-token";
+            }
+
             await store.SetAsync(ownerKey, claim);
             if (scenario == "successful-receipt")
+            {
                 await store.SetAsync(receiptKey, new JsonObject { ["stage"] = "completed-verified" });
+            }
+
             var options = CliOptions.Parse([
                 "review",
                 "run",
@@ -3681,7 +3942,10 @@ public sealed class ReviewdRunnerTests
                 phase.Should().Be("cleanup");
                 args["head"]!.GetValue<string>().Should().Be(new string('a', 40));
                 if (scenario == "cleanup-failure")
+                {
                     throw new InvalidOperationException("Native reset refused");
+                }
+
                 return Task.FromResult(
                     new JsonObject
                     {
@@ -3702,11 +3966,18 @@ public sealed class ReviewdRunnerTests
                     _ => ++waits > 20 ? throw new TimeoutException("Descendant still active.") : Task.CompletedTask
                 );
             if (succeeds)
+            {
                 await run();
+            }
             else if (scenario is "running-descendant" or "unknown-descendant")
+            {
                 await run.Should().ThrowAsync<TimeoutException>();
+            }
             else
+            {
                 await run.Should().ThrowAsync<InvalidOperationException>();
+            }
+
             handler.Requests.Should().NotContain(r => r.Method != HttpMethod.Get);
             var after = (await store.GetAsync<JsonObject>(attemptKey))!;
             var owner = (await store.GetAsync<JsonObject>(ownerKey))!;
@@ -3744,7 +4015,10 @@ public sealed class ReviewdRunnerTests
                 owner.ToJsonString().Should().Be(claim.ToJsonString());
             }
             if (scenario != "successful-receipt")
+            {
                 (await store.GetAsync<JsonObject>(receiptKey)).Should().BeNull();
+            }
+
             (await PrThreadBindings.GetAsync(database, repo, "17", CancellationToken.None)).Should().Be("original");
         }
         finally
@@ -3847,7 +4121,10 @@ public sealed class ReviewdRunnerTests
                 }
                 // The watchdog is alive, so a quiet tick's step-stop finds nothing to stop.
                 if (phase == "step-stop")
+                {
                     return new JsonObject { ["stopped"] = false };
+                }
+
                 phase.Should().Be("cleanup");
                 // The cleanup has now run for over an hour: the lease it took when it started has lapsed past the
                 // reaper's force wait.
@@ -3913,7 +4190,9 @@ public sealed class ReviewdRunnerTests
             for (var deadline = DateTime.UtcNow.AddSeconds(5); DateTime.UtcNow < deadline; await Task.Delay(20))
             {
                 if (await condition())
+                {
                     return;
+                }
             }
         }
     }
@@ -3951,6 +4230,7 @@ public sealed class ReviewdRunnerTests
             async Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token)
             {
                 if (phase == "eligibility")
+                {
                     return new JsonObject
                     {
                         ["prId"] = "17",
@@ -3959,6 +4239,8 @@ public sealed class ReviewdRunnerTests
                         ["headSha"] = new string('a', 40),
                         ["createdAt"] = DateTimeOffset.UtcNow.ToString("O"),
                     };
+                }
+
                 phase.Should().Be("prepare");
                 var started = (await store.GetAsync<JsonObject>(ownerKey))![
                     "leaseExpiresAt"
@@ -3971,7 +4253,9 @@ public sealed class ReviewdRunnerTests
                         "leaseExpiresAt"
                     ]!.GetValue<DateTimeOffset>();
                     if (lease > started)
+                    {
                         throw new InvalidOperationException("lease renewed during prepare");
+                    }
                 }
                 throw new InvalidOperationException("lease never renewed during prepare");
             }
@@ -4100,7 +4384,10 @@ public sealed class ReviewdRunnerTests
             if (phase == "prepare")
             {
                 if (scenario == "setup-expired")
+                {
                     clock = now.AddSeconds(1);
+                }
+
                 return Task.FromResult(
                     new JsonObject
                     {
@@ -4131,6 +4418,7 @@ public sealed class ReviewdRunnerTests
                 }
             );
             if (scenario == "old-readmitted")
+            {
                 await store.SetAsync(
                     attemptKey,
                     new JsonObject
@@ -4146,6 +4434,8 @@ public sealed class ReviewdRunnerTests
                         ["readmittedAt"] = now.AddHours(-1).ToString("O"),
                     }
                 );
+            }
+
             var options = CliOptions.Parse([
                 "review",
                 "run",
@@ -4190,7 +4480,10 @@ public sealed class ReviewdRunnerTests
                 reads.Should().Be(2);
                 owner!["state"]!.GetValue<string>().Should().Be("owned");
                 if (scenario == "setup-expired")
+                {
                     attempt!["reviewIdempotencyKey"].Should().BeNull();
+                }
+
                 if (scenario == "old-readmitted")
                 {
                     // Both halves carry over, and the readmit time is kept rather than refreshed, so it still expires.
@@ -4452,7 +4745,10 @@ public sealed class ReviewdRunnerTests
                     {
                         // The first wait after the 503 is where the sweep resets the slot.
                         if (reset)
+                        {
                             return;
+                        }
+
                         reset = true;
                         var attempt = (await store.GetAsync<JsonObject>(attemptKey))!;
                         attempt["stage"] = "failed-released";
@@ -4465,7 +4761,9 @@ public sealed class ReviewdRunnerTests
                             token
                         );
                         if (waitCancelled)
+                        {
                             throw new OperationCanceledException("The wait was cancelled after the reset.");
+                        }
                     },
                     () => now
                 );
@@ -4865,15 +5163,22 @@ public sealed class ReviewdRunnerTests
             // A conversation that already ran the live head's review means another db reviewed this revision.
             var sameHead = priorHead == "aaaaaaaa";
             if (sameHead)
+            {
                 await run.Should()
                     .ThrowAsync<InvalidOperationException>()
                     .WithMessage("PR head was already reviewed by another run; skipped.");
+            }
             else if (running)
+            {
                 await run.Should().ThrowAsync<ReviewRunner.ReviewDeferredException>();
+            }
             else
+            {
                 (await run.Should().ThrowAsync<InvalidOperationException>())
                     .Which.Message.Should()
                     .NotBe("PR is not eligible for review.");
+            }
+
             handler
                 .Requests.Count(r =>
                     r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal)
@@ -5009,9 +5314,13 @@ public sealed class ReviewdRunnerTests
             // Only a conversation that holds an earlier review is told it has one.
             const string reReview = "This conversation already reviewed an earlier revision";
             if (history == "earlier-head")
+            {
                 sends[0].Body.Should().Contain(reReview);
+            }
             else
+            {
                 sends[0].Body.Should().NotContain(reReview);
+            }
         }
         finally
         {
@@ -5438,12 +5747,15 @@ public sealed class ReviewdRunnerTests
         Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token)
         {
             if (phase == "prepare" && refuse)
+            {
                 throw refusal == "not-idle"
                     ? new ReviewRunner.SlotNotIdleException("Native slot retains an owner.")
                     : new SandboxException(SandboxErrorKind.Unavailable, "refused", 503)
                     {
                         ErrorCode = "operation_capacity_exhausted",
                     };
+            }
+
             return Task.FromResult(
                 phase == "prepare"
                     ? new JsonObject
@@ -5993,6 +6305,122 @@ public sealed class ReviewdRunnerTests
         }
     }
 
+    // Cleanup fails after its renewals extended the lease. The step puts back the lease it found, here lapsed, and the
+    // failure path's retained save must not renew it again: a renewed lease would keep the next sweep off a slot that no
+    // run is watching for another lease window (Kay9: never hold a slot needlessly).
+    [Fact]
+    public async Task A_failed_cleanup_retains_its_attempt_without_renewing_the_lease_it_put_back()
+    {
+        var previousInterval = ReviewRunner.LeaseRenewInterval;
+        ReviewRunner.LeaseRenewInterval = TimeSpan.FromMilliseconds(50);
+        try
+        {
+            await using var run = await ScriptedReviewRun.CreateAsync();
+            var lapsed = DateTimeOffset.UtcNow.AddHours(-1);
+            run.OnPhase = async (phase, _, _, token) =>
+            {
+                if (phase != "cleanup")
+                {
+                    return null;
+                }
+                // The lease had lapsed by the time cleanup ran; cleanup's own renewals then extend it.
+                await run.ExecuteAsync(
+                    $"UPDATE cache SET value = json_set(value, '$.leaseExpiresAt', '{lapsed:O}') "
+                        + $"WHERE key = '{run.OwnerKey}';"
+                );
+                for (
+                    var deadline = DateTime.UtcNow.AddSeconds(5);
+                    DateTime.UtcNow < deadline;
+                    await Task.Delay(10, token)
+                )
+                {
+                    var lease = (await run.ReadAsync(run.OwnerKey))["leaseExpiresAt"]!.GetValue<DateTimeOffset>();
+                    if (lease > DateTimeOffset.UtcNow)
+                    {
+                        break;
+                    }
+                }
+                throw new ReviewRunner.SettledSandboxException("cleanup", "Sandbox cleanup failed (exit 1).");
+            };
+
+            await FluentActions
+                .Invoking(() => run.RunAsync())
+                .Should()
+                .ThrowAsync<ReviewRunner.SettledSandboxException>();
+
+            var owner = await run.ReadAsync(run.OwnerKey);
+            owner["state"]!.GetValue<string>().Should().Be("owned");
+            owner["leaseExpiresAt"]!
+                .GetValue<DateTimeOffset>()
+                .Should()
+                .Be(lapsed, "the retained save left the lease the failed cleanup put back");
+            var attempt = await run.ReadAsync(run.AttemptKey);
+            attempt["stage"]!.GetValue<string>().Should().Be("completed-verified");
+            attempt["cleanupState"]!.GetValue<string>().Should().Be("pending", "the failure was retained");
+        }
+        finally
+        {
+            ReviewRunner.LeaseRenewInterval = previousInterval;
+        }
+    }
+
+    // The commit runs but its response is lost, and the process stops. A new run resuming the attempt reads the saved
+    // operation id from the database and resubmits the commit under it, so the gateway reports the commit that already
+    // ran instead of running a second one beside it.
+    [Fact]
+    public async Task A_lost_commit_is_replayed_by_a_new_run_under_its_saved_id_and_lands_once()
+    {
+        await using var run = await ScriptedReviewRun.CreateAsync();
+        var submitted = new List<string>();
+        var ran = new HashSet<string>();
+        var loseResponse = true;
+        run.OnPhase = (phase, _, operation, _) =>
+        {
+            if (phase != "commit")
+            {
+                return Task.FromResult<JsonObject?>(null);
+            }
+            submitted.Add(operation);
+            // The gateway runs an operation id once; a resubmitted id reports that run's outcome.
+            ran.Add(operation);
+            if (loseResponse)
+            {
+                loseResponse = false;
+                throw new SandboxException(
+                    SandboxErrorKind.TransportTimeout,
+                    "Sandbox gateway request did not complete within the configured transport timeout (00:00:30)."
+                );
+            }
+            return Task.FromResult<JsonObject?>(ScriptedReviewRun.Committed());
+        };
+
+        await FluentActions.Invoking(() => run.RunAsync()).Should().ThrowAsync<SandboxException>();
+
+        var lost = submitted.Should().ContainSingle().Subject;
+        var held = await run.ReadAsync(run.AttemptKey);
+        held["stage"]!.GetValue<string>().Should().Be("verify-pending");
+        held[ReviewRunner.CommitReplay]!.GetValue<string>().Should().Be(lost);
+        // A new process: only the database and the host's conversation survive, and no pooled connection of the old one.
+        ReviewdSqlitePools.Clear(run.Database);
+        run.Phases.Clear();
+        run.HostListsThread = true;
+
+        (await run.RunAsync(resume: true)).Should().Be(0);
+
+        submitted.Should().Equal([lost, lost], "the new run resubmitted the saved id");
+        ran.Should().ContainSingle("the commit ran once; no second commit started beside it");
+        run.Phases.Should().ContainSingle(phase => phase == "commit");
+        run.Phases.Should().Contain("cleanup");
+        var finished = await run.ReadAsync(run.AttemptKey);
+        finished["stage"]!.GetValue<string>().Should().Be("completed-verified");
+        finished["commitOperationId"]!.GetValue<string>().Should().Be(lost);
+        finished.ContainsKey(ReviewRunner.CommitReplay).Should().BeFalse("the replayed commit settled");
+        (await run.ReadAsync(run.RunKey))["artifactCommit"]!["commit"]!
+            .GetValue<string>()
+            .Should()
+            .Be(new string('c', 40));
+    }
+
     [Fact]
     public void Commit_response_lost_is_only_an_ambiguous_transport_failure_never_a_settled_or_caller_one()
     {
@@ -6534,7 +6962,10 @@ public sealed class ReviewdRunnerTests
             }
             verifyThread = 7;
             foreach (var input in new[] { "reviewInputId", "confirmationInputId" })
+            {
                 recovered[input]!.GetValue<string>().Should().Be(verificationPending[input]!.GetValue<string>());
+            }
+
             foreach (var refusal in new[] { "missing-confirmation", "commit-pending", "changed-head" })
             {
                 var refused = verificationPending.DeepClone().AsObject();
@@ -6544,7 +6975,9 @@ public sealed class ReviewdRunnerTests
                     refused.Remove("confirmationIdempotencyKey");
                 }
                 else if (refusal == "commit-pending")
+                {
                     refused["stage"] = "commit-pending";
+                }
                 else
                 {
                     // A finished review now resumes on the head it reviewed (see
@@ -6581,7 +7014,10 @@ public sealed class ReviewdRunnerTests
             interrupted["headSha"] = new string('e', 40);
             interrupted["stage"] = "review-running";
             foreach (var field in new[] { "confirmationInputId", "confirmationIdempotencyKey", "confirmationResponse" })
+            {
                 interrupted.Remove(field);
+            }
+
             await store.SetAsync(attemptKey, interrupted);
             phases.Clear();
             var resume = CliOptions.Parse([
@@ -6690,14 +7126,22 @@ public sealed class ReviewdRunnerTests
                 commitOperations.Add(operation);
                 commitRequests.Add(args.ToJsonString());
                 if (refuseCommit)
+                {
                     throw new SandboxException(SandboxErrorKind.Unavailable, "refused", 503)
                     {
                         ErrorCode = "operation_capacity_exhausted",
                     };
+                }
+
                 if (retryableCommit is not null)
+                {
                     ReviewRunner.Settle("commit", 1, "", "review_common.ReviewError: " + retryableCommit, operation);
+                }
+
                 if (lostCommit is not null)
+                {
                     throw lostCommit;
+                }
             }
             var json = phase switch
             {
@@ -6757,7 +7201,10 @@ public sealed class ReviewdRunnerTests
                 {
                     // In "fresh", the target branch moves while the review runs.
                     if (++sends == 1 && path == "fresh")
+                    {
                         liveMerge = new string('e', 40);
+                    }
+
                     return Json($$"""{"inputId":"input{{sends}}","idempotencyKeyHonored":true}""");
                 }
             )
@@ -6857,7 +7304,10 @@ public sealed class ReviewdRunnerTests
                     : ["inspect-prepared", "inspect", "verify", "commit"];
             var expected = finishing.Select(phase => $"{phase} {reviewed} {prepared} finished").ToList();
             if (path == "fresh")
+            {
                 expected.InsertRange(0, ["prepare " + reviewed, $"inspect {reviewed} {prepared} reviewing"]);
+            }
+
             steps.Where(step => !step.StartsWith("cleanup", StringComparison.Ordinal)).Should().Equal(expected);
             sends.Should().Be(2, "the review is sent once and its confirmation once, never again on resume");
             if (path == "resume")
@@ -6911,7 +7361,10 @@ public sealed class ReviewdRunnerTests
             if (phase is "inspect" or "inspect-prepared" or "verify" or "commit")
             {
                 if (!finished && (liveHead != args["head"]!.GetValue<string>() || liveMerge != prepared))
+                {
                     throw new InvalidOperationException("PR source or prepared merge changed; no submission allowed.");
+                }
+
                 if (phase == "inspect" && sends == 1 && failConfirmationInspect)
                 {
                     failConfirmationInspect = false;
@@ -7075,7 +7528,10 @@ public sealed class ReviewdRunnerTests
                 }
             );
             if (bound)
+            {
                 await PrThreadBindings.SetAsync(database, repo, "17", "prior", CancellationToken.None);
+            }
+
             var options = CliOptions.Parse([
                 "review",
                 "run",
@@ -7181,6 +7637,7 @@ public sealed class ReviewdRunnerTests
             async store =>
             {
                 if (earlierReceipt)
+                {
                     await store.SetAsync(
                         $"reviewd/review-run/{PrCommands.ParseRepo("org/project/Nova").NormalizedKey}/17",
                         new JsonObject
@@ -7190,6 +7647,7 @@ public sealed class ReviewdRunnerTests
                             ["reviewCompletedAt"] = DateTimeOffset.UtcNow.AddHours(-1),
                         }
                     );
+                }
             },
             async (run, handler) =>
             {
@@ -7279,10 +7737,13 @@ public sealed class ReviewdRunnerTests
                 }
 
                 foreach (var attempt in new[] { "first", "retried" })
+                {
                     await FluentActions
                         .Awaiting(() => run(reads))
                         .Should()
                         .ThrowAsync<ReviewRunner.ReviewDeferredException>($"the {attempt} attempt sees a recent child");
+                }
+
                 handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "nothing is claimed or sent");
                 handler
                     .Requests.Count(r => r.Uri.AbsolutePath.EndsWith("/transcript", StringComparison.Ordinal))

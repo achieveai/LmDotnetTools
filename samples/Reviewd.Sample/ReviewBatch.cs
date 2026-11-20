@@ -17,7 +17,9 @@ internal static class ReviewBatch
             async token =>
             {
                 if (!options.Has("execute"))
+                {
                     throw new InvalidOperationException("review batch requires --execute; no state was changed.");
+                }
                 // Startup sweep: reclaim any slot a prior (crashed) batch left owned — including legacy
                 // owners claimed before leasing existed — so restarting the batch always clears jams.
                 await SweepSlotsAsync(options, config, undatedExpired: true, token);
@@ -52,12 +54,18 @@ internal static class ReviewBatch
                             {
                                 // Logged once per distinct error, not every poll, so a long outage stays readable.
                                 if (error != unreadable)
+                                {
                                     Console.Error.WriteLine($"Selection unreadable; retrying every 5 seconds: {error}");
+                                }
+
                                 unreadable = error;
                                 return null;
                             }
                             if (unreadable is not null)
+                            {
                                 Console.Error.WriteLine("Selection readable again.");
+                            }
+
                             unreadable = null;
                             return text;
                         },
@@ -99,7 +107,10 @@ internal static class ReviewBatch
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 if (ex.Message != leaseError)
+                {
                     Console.Error.WriteLine($"Batch lease unavailable; retrying every 5 seconds: {ex.Message}");
+                }
+
                 leaseError = ex.Message;
                 await delay(Tick, ct);
             }
@@ -141,9 +152,13 @@ internal static class ReviewBatch
     private static void EnsureNoDaemon()
     {
         if (OperatingSystem.IsWindows())
+        {
             EnsureNoWindowsDaemon(ProcessNames);
+        }
         else
+        {
             EnsureNoDaemon(() => Directory.EnumerateDirectories("/proc"), File.ReadAllBytes);
+        }
     }
 
     private static string[] ProcessNames()
@@ -156,7 +171,9 @@ internal static class ReviewBatch
         finally
         {
             foreach (var process in processes)
+            {
                 process.Dispose();
+            }
         }
     }
 
@@ -171,7 +188,9 @@ internal static class ReviewBatch
             processNames()
                 .Any(name => string.Equals(name, "CodeReviewDaemon.Sample", StringComparison.OrdinalIgnoreCase))
         )
+        {
             throw new InvalidOperationException("Competing daemon producer detected.");
+        }
     }
 
     /// <summary>
@@ -264,11 +283,17 @@ internal static class ReviewBatch
     internal static void EnsureNoDaemon(Func<IEnumerable<string>> enumerate, Func<string, byte[]> read)
     {
         if (!OperatingSystem.IsLinux())
+        {
             throw new PlatformNotSupportedException("Batch producer inspection currently requires Linux.");
+        }
+
         foreach (var directory in enumerate())
         {
             if (!int.TryParse(Path.GetFileName(directory), out _))
+            {
                 continue;
+            }
+
             byte[] commandLine;
             try
             {
@@ -288,7 +313,9 @@ internal static class ReviewBatch
                 continue;
             }
             if (RunsDaemon(System.Text.Encoding.UTF8.GetString(commandLine).Split('\0')))
+            {
                 throw new InvalidOperationException("Competing daemon producer detected.");
+            }
         }
     }
 
@@ -311,18 +338,31 @@ internal static class ReviewBatch
     private static bool RunsDaemon(IReadOnlyList<string> arguments)
     {
         if (arguments.Count == 0)
+        {
             return false;
+        }
+
         var program = Path.GetFileName(arguments[0]);
         if (program == "CodeReviewDaemon.Sample")
+        {
             return true;
+        }
+
         if (program != "dotnet")
+        {
             return false;
+        }
+
         for (var index = 1; index < arguments.Count; index++)
         {
             if (DotnetHostOptions.Contains(arguments[index]))
+            {
                 index++;
+            }
             else if (arguments[index].EndsWith(".dll", StringComparison.Ordinal))
+            {
                 return Path.GetFileName(arguments[index]) == "CodeReviewDaemon.Sample.dll";
+            }
         }
         return false;
     }
@@ -366,7 +406,10 @@ internal static class ReviewBatch
     )
     {
         if (!options.Has("execute"))
+        {
             throw new InvalidOperationException("review batch requires --execute.");
+        }
+
         var database = options.Required("db");
         var workspace = options.Required("workspace");
         var queueKey = QueueKey(workspace);
@@ -379,9 +422,15 @@ internal static class ReviewBatch
             ["mode"] = options.Get("mode") ?? config.ModeId,
         };
         if (options.Get("reasoning-effort") is { } reasoningEffort)
+        {
             scope["reasoningEffort"] = reasoningEffort;
+        }
+
         if (maxAgeHours is { } hours)
+        {
             scope["maxAgeHours"] = hours;
+        }
+
         JsonObject? state = null;
         using var writes = new SemaphoreSlim(1, 1);
         // Steps started here, by repo and slot. Only the loop below adds or removes them.
@@ -405,11 +454,16 @@ internal static class ReviewBatch
                 foreach (
                     var done in running.Where(pair => pair.Value.Step.IsCompleted).Select(pair => pair.Key).ToList()
                 )
+                {
                     running.Remove(done);
+                }
+
                 if (admitting is { IsCancellationRequested: true })
                 {
                     if (untilIdle || ct.IsCancellationRequested)
+                    {
                         break;
+                    }
                     // Suspended: admitted reviews finish, and admission resumes with the next selection.
                     blocked = merged;
                     admitting = null;
@@ -430,7 +484,10 @@ internal static class ReviewBatch
                     try
                     {
                         if (digest != merged)
+                        {
                             await prepare(text, ct);
+                        }
+
                         await MergeAsync(text, digest!);
                         merged = digest;
                         blocked = null;
@@ -448,9 +505,12 @@ internal static class ReviewBatch
                         // The selection was already accepted; only updating its queue failed. Retried next tick,
                         // with no admission until the queue is current again.
                         if (ex.Message != mergeError)
+                        {
                             Console.Error.WriteLine(
                                 $"Queue {queueKey} not updated; no admission until it is, retrying every 5 seconds: {ex.Message}"
                             );
+                        }
+
                         mergeError = ex.Message;
                         queueCurrent = false;
                     }
@@ -473,13 +533,18 @@ internal static class ReviewBatch
                     catch (Exception ex) when (!untilIdle && !ct.IsCancellationRequested)
                     {
                         if (ex.Message != admissionError)
+                        {
                             Console.Error.WriteLine($"Admission skipped; retrying every 5 seconds: {ex.Message}");
+                        }
+
                         admissionError = ex.Message;
                         queueCurrent = false;
                     }
                 }
                 if (running.Count > 0)
+                {
                     reportedIdle = null;
+                }
                 else if (
                     !untilIdle
                     && admitting is { IsCancellationRequested: false }
@@ -494,7 +559,10 @@ internal static class ReviewBatch
                     try
                     {
                         if (state!["idle"]?.GetValue<string>() != merged)
+                        {
                             await SaveAsync(() => state!["idle"] = merged);
+                        }
+
                         reportedIdle = merged;
                         Console.WriteLine(
                             "Batch scheduling finished: nothing left to start for this selection; polling for the next one. OAuth callback remains running."
@@ -508,14 +576,20 @@ internal static class ReviewBatch
                 if (untilIdle)
                 {
                     if (admitting is not { IsCancellationRequested: false })
+                    {
                         break;
+                    }
+
                     if (running.Count > 0)
                     {
                         await Task.WhenAny(running.Values.Select(value => value.Step));
                         continue;
                     }
                     if (NextRetry() is not { } retryAt)
+                    {
                         break;
+                    }
+
                     try
                     {
                         await delay(TimeSpan.FromSeconds(retryAt - now().ToUnixTimeSeconds()), admitting.Token);
@@ -540,10 +614,15 @@ internal static class ReviewBatch
             // SIGTERM and suspension stop admission only; reviews already started finish first.
             await Task.WhenAll(running.Values.Select(value => value.Step));
             foreach (var source in sessions)
+            {
                 await source.CancelAsync();
+            }
+
             await Task.WhenAll(watchers);
             foreach (var source in sessions)
+            {
                 source.Dispose();
+            }
         }
         Console.WriteLine("Batch scheduling finished. OAuth callback remains running.");
 
@@ -570,13 +649,18 @@ internal static class ReviewBatch
             var nowSeconds = now().ToUnixTimeSeconds();
             long? next = null;
             foreach (var entry in state?["entries"]?.AsArray() ?? [])
+            {
                 if (
                     entry!["status"]?.GetValue<string>() == "retry"
                     && entry["retryAt"]?.GetValue<long>() is { } at
                     && at > nowSeconds
                     && (next is null || at < next)
                 )
+                {
                     next = at;
+                }
+            }
+
             return next;
         }
 
@@ -599,7 +683,10 @@ internal static class ReviewBatch
                     || slots.Distinct().Count() != slots.Length
                     || slots.Any(slot => slot is < 0 or > 5)
                 )
+                {
                     throw new InvalidOperationException("Invalid batch lanes.");
+                }
+
                 lanes[repo] = new JsonArray([.. slots.Order().Select(slot => (JsonNode)JsonValue.Create(slot))]);
                 foreach (var row in repoRows!.AsArray())
                 {
@@ -613,7 +700,10 @@ internal static class ReviewBatch
                         || head.Length != 40
                         || !head.All(Uri.IsHexDigit)
                     )
+                    {
                         throw new InvalidOperationException("Invalid or duplicate selected PR.");
+                    }
+
                     rows.Add((repo, pr, head));
                 }
             }
@@ -626,12 +716,18 @@ internal static class ReviewBatch
                 var queue = state ?? await LoadQueueAsync(digest);
                 var same = queue["selection"]?.GetValue<string>() == digest;
                 if (same && !JsonNode.DeepEquals(queue["scope"], scope))
+                {
                     throw new InvalidOperationException(
                         "Persisted batch execution scope changed; no admission allowed."
                     );
+                }
+
                 var entries = queue["entries"]!.AsArray().Select(entry => entry!.AsObject()).ToList();
                 if (same && !startup && entries.All(entry => selected.Contains(Identity(entry))))
+                {
                     return;
+                }
+
                 var busy = running.Values.Select(value => value.Entry).ToHashSet(ReferenceEqualityComparer.Instance);
                 var next = new List<JsonObject>();
                 var classify = new List<JsonObject>();
@@ -639,7 +735,9 @@ internal static class ReviewBatch
                 {
                     next.AddRange(entries);
                     if (startup)
+                    {
                         classify.AddRange(entries);
+                    }
                 }
                 else
                 {
@@ -671,7 +769,10 @@ internal static class ReviewBatch
                 foreach (var entry in next.ToList())
                 {
                     if (selected.Contains(Identity(entry)) || busy.Contains(entry))
+                    {
                         continue;
+                    }
+
                     if (
                         await ReadAsync(database, AttemptKey(entry)) is { } retained
                         && !Reusable(retained)
@@ -682,14 +783,20 @@ internal static class ReviewBatch
                             || retained["headSha"]?.GetValue<string>() == entry["head"]!.GetValue<string>()
                         )
                     )
+                    {
                         continue;
+                    }
+
                     next.Remove(entry);
                 }
                 // A kept entry of a repo that left the selection keeps that repo's lanes, so it can still finish.
                 foreach (var repo in next.Select(entry => entry["repo"]!.GetValue<string>()).Distinct().ToList())
                 {
                     if (lanes.ContainsKey(repo))
+                    {
                         continue;
+                    }
+
                     var kept = queue["lanes"]?[repo] is JsonArray previous
                         ? previous.Select(value => value!.GetValue<int>())
                         : next.Where(entry => entry["repo"]!.GetValue<string>() == repo && entry["slot"] is not null)
@@ -699,14 +806,20 @@ internal static class ReviewBatch
                     ]);
                 }
                 foreach (var entry in classify)
+                {
                     await ClassifyAsync(entry);
+                }
+
                 queue["scope"] = scope.DeepClone();
                 queue["selection"] = digest;
                 queue["lanes"] = lanes;
                 var array = queue["entries"]!.AsArray();
                 array.Clear();
                 foreach (var entry in next)
+                {
                     array.Add(entry);
+                }
+
                 using (var connection = Connection(database, SqliteOpenMode.ReadWrite))
                 {
                     await connection.OpenAsync();
@@ -754,7 +867,10 @@ internal static class ReviewBatch
                     problem = "it is not valid JSON (" + ex.Message + ")";
                 }
                 if (problem.Length == 0)
+                {
                     return JsonNode.Parse(raw)!.AsObject();
+                }
+
                 throw new InvalidOperationException(
                     $"Batch queue {queueKey} is unusable: {problem}. A new selection alone cannot repair it; repair the row or move it aside. No admission until then."
                 );
@@ -767,6 +883,7 @@ internal static class ReviewBatch
                 && round["schemaVersion"]?.GetValue<int>() == 1
                 && round["scope"]?["workspace"]?.GetValue<string>() == workspace
             )
+            {
                 return new JsonObject
                 {
                     ["schemaVersion"] = 2,
@@ -775,6 +892,8 @@ internal static class ReviewBatch
                     ["lanes"] = new JsonObject(),
                     ["entries"] = round["entries"]!.DeepClone(),
                 };
+            }
+
             return new JsonObject
             {
                 ["schemaVersion"] = 2,
@@ -805,11 +924,16 @@ internal static class ReviewBatch
                 }
             }
             if (entry["status"]?.GetValue<string>() == "retired")
+            {
                 throw new InvalidOperationException(
                     "Retired batch owner lacks an exact reset certificate for this session."
                 );
+            }
+
             if (Verified(receipt, entry) && Verified(attempt, entry) && Reusable(attempt!))
+            {
                 entry["status"] = "verified";
+            }
             else if (entry["status"]?.GetValue<string>() == "launching" && attempt is null)
             {
                 entry["status"] = "held";
@@ -840,7 +964,10 @@ internal static class ReviewBatch
                 {
                     var status = entry["status"]!.GetValue<string>();
                     if (status is "verified" or "closed" or "stale" or "retired" or "age-excluded" or "quarantined")
+                    {
                         continue;
+                    }
+
                     var attempt = await ReadAsync(database, AttemptKey(entry));
                     var owned = attempt is not null && !Reusable(attempt) ? attempt["slot"]?.GetValue<int>() : null;
                     if (status is "held" or "closed-held")
@@ -850,15 +977,23 @@ internal static class ReviewBatch
                             entry["reason"]?.GetValue<string>() == InterruptedLaunch
                             && entry["slot"]?.GetValue<int>() is { } launchSlot
                         )
+                        {
                             held.Add(launchSlot);
+                        }
                         else if (owned is { } heldSlot)
+                        {
                             held.Add(heldSlot);
+                        }
+
                         continue;
                     }
                     // Two heads of one PR never run at once, and a new head waits while an earlier head in this queue
                     // still owns the PR's attempt: that head resumes, finishes and cleans up first.
                     if (runningPrs.Contains(entry["pr"]!.GetValue<string>()))
+                    {
                         continue;
+                    }
+
                     if (
                         attempt is not null
                         && !Reusable(attempt)
@@ -868,7 +1003,10 @@ internal static class ReviewBatch
                             Identity(other) == Identity(repo, entry["pr"]!.GetValue<string>(), ownerHead)
                         )
                     )
+                    {
                         continue;
+                    }
+
                     if (owned is not { } ownSlot)
                     {
                         fresh.Add(entry);
@@ -896,11 +1034,16 @@ internal static class ReviewBatch
                 foreach (var slot in slots)
                 {
                     if (held.Contains(slot) || stopped.ContainsKey((repo, slot)))
+                    {
                         continue;
+                    }
+
                     JsonObject? next;
                     if (pinned.TryGetValue(slot, out var owner))
+                    {
                         // A retained owner's slot waits for it, even through its backoff.
                         next = Due(owner) ? owner : null;
+                    }
                     else
                     {
                         // A slot claimed outside this queue is free only to the PR that holds it.
@@ -917,7 +1060,10 @@ internal static class ReviewBatch
                         );
                     }
                     if (next is null)
+                    {
                         continue;
+                    }
+
                     var pr = next["pr"]!.GetValue<string>();
                     fresh.RemoveAll(entry => entry["pr"]!.GetValue<string>() == pr);
                     running[(repo, slot)] = (next, pr, GuardStepAsync(repo, slot, next, source));
@@ -983,7 +1129,9 @@ internal static class ReviewBatch
                 && Reusable(attempt)
                 && attempt["reviewedHeadSha"]?.GetValue<string>() != entry["head"]!.GetValue<string>()
             )
+            {
                 attempt = null;
+            }
             // Likewise an attempt whose slot was released mid-review (reaper or reclaim-slot): its stage
             // stays, but once the PR advances it can never publish, so the new head is admitted fresh.
             if (
@@ -993,7 +1141,10 @@ internal static class ReviewBatch
                     entry["head"]!.GetValue<string>()
                 )
             )
+            {
                 attempt = null;
+            }
+
             if (attempt is not null && !Resumable(attempt))
             {
                 await SaveAsync(() =>
@@ -1026,7 +1177,10 @@ internal static class ReviewBatch
                     || live["isDraft"] is not JsonValue
                     || live["headSha"]?.GetValue<string>() is not { Length: 40 }
                 )
+                {
                     throw new InvalidOperationException("Live PR eligibility contract is incomplete.");
+                }
+
                 var cleanup = attempt?["stage"]?.GetValue<string>() == "completed-verified" && !Reusable(attempt);
                 if (!cleanup && live["status"]!.GetValue<string>() != "active")
                 {
@@ -1063,9 +1217,12 @@ internal static class ReviewBatch
                         )
                     )
                 )
+                {
                     throw new InvalidOperationException(
                         "PR draft or prepared merge is unavailable/changed; retry deferred."
                     );
+                }
+
                 if (
                     freshAdmission
                     && maxAgeHours is { } limit
@@ -1115,14 +1272,23 @@ internal static class ReviewBatch
                     "--execute",
                 };
                 if (options.Get("reasoning-effort") is { } effort)
+                {
                     arguments.AddRange(["--reasoning-effort", effort]);
+                }
+
                 if (maxAgeHours is { } maximumAge)
+                {
                     arguments.AddRange([
                         "--max-age-hours",
                         maximumAge.ToString(System.Globalization.CultureInfo.InvariantCulture),
                     ]);
+                }
+
                 if (attempt is not null && attempt["stage"]?.GetValue<string>() != "failed-released")
+                {
                     arguments.Add("--resume");
+                }
+
                 token.ThrowIfCancellationRequested();
                 if (!await ClaimSlotAsync(repo, slot, entry))
                 {
@@ -1143,7 +1309,10 @@ internal static class ReviewBatch
                 var receipt = await ReadAsync(database, ReceiptKey(entry));
                 var finished = await ReadAsync(database, AttemptKey(entry));
                 if (!Verified(receipt, entry) || !Verified(finished, entry) || !Reusable(finished!))
+                {
                     throw new InvalidOperationException("Batch receipt does not match the selected revision.");
+                }
+
                 await SaveAsync(() =>
                 {
                     entry["status"] = "verified";
@@ -1236,7 +1405,10 @@ internal static class ReviewBatch
                         launched
                         && ex is not (ReviewRunner.ReviewNotAdmittedException or ReviewRunner.ReviewDeferredException)
                     )
+                    {
                         HoldSlotAfterRepeatedFailures();
+                    }
+
                     return;
                 }
                 await SaveAsync(() =>
@@ -1245,7 +1417,10 @@ internal static class ReviewBatch
                     var backoff = capacity ? (entry["capacityRetries"]?.GetValue<int>() ?? 0) + 1 : failures;
                     entry["failures"] = failures;
                     if (capacity)
+                    {
                         entry["capacityRetries"] = backoff;
+                    }
+
                     entry["status"] = "retry";
                     entry["reason"] = ex.Message;
                     entry["retryAt"] = now()
@@ -1264,7 +1439,10 @@ internal static class ReviewBatch
             {
                 var holds = launchHolds.AddOrUpdate((repo, slot), 1, (_, count) => count + 1);
                 if (holds < MaxLaneRetries)
+                {
                     return;
+                }
+
                 stopped[(repo, slot)] = true;
                 Console.Error.WriteLine($"Lane {repo}/{slot} held: {holds} launches failed in a row.");
             }
@@ -1294,7 +1472,9 @@ internal static class ReviewBatch
                         && owner["state"]?.GetValue<string>() != "released"
                         && owner["prId"]?.GetValue<string>() != entry["pr"]!.GetValue<string>()
                     )
+                    {
                         return false;
+                    }
                 }
                 entry["status"] = "launching";
                 entry["slot"] = slot;
@@ -1330,7 +1510,10 @@ internal static class ReviewBatch
                     previous?["head"]?.GetValue<string>() == head
                     && previous["signature"]?.GetValue<string>() == signature;
                 if (same && previous!["at"]?.GetValue<DateTimeOffset>() is { } at && now() - at < QuarantineSpacing)
+                {
                     return previous["count"]!.GetValue<int>();
+                }
+
                 var count = same ? previous!["count"]!.GetValue<int>() + 1 : 1;
                 using var connection = Connection(database, SqliteOpenMode.ReadWrite);
                 await connection.OpenAsync();
@@ -1403,7 +1586,10 @@ internal static class ReviewBatch
         void Suspend(Exception ex)
         {
             if (admitting is not { IsCancellationRequested: false } source)
+            {
                 return;
+            }
+
             Console.Error.WriteLine(
                 $"Scheduling suspended: queue {queueKey} not saved: {ex.Message}. Admitted reviews finish; nothing new starts until the selection changes."
             );
@@ -1432,7 +1618,9 @@ internal static class ReviewBatch
     private static void NormalizeSlot(JsonObject entry, JsonNode? attempt)
     {
         if (attempt is not null && !Reusable(attempt) && attempt["slot"]?.GetValue<int>() is { } owned)
+        {
             entry["slot"] = owned;
+        }
         else if (
             entry["status"]?.GetValue<string>() != "launching"
             && !(
@@ -1440,7 +1628,9 @@ internal static class ReviewBatch
                 && entry["reason"]?.GetValue<string>() == InterruptedLaunch
             )
         )
+        {
             entry.Remove("slot");
+        }
     }
 
     private static int? MaxAgeHours(CliOptions options) =>
@@ -1459,9 +1649,11 @@ internal static class ReviewBatch
                 || manifestAge <= 0
                 || manifestAge != maxAgeHours
             )
+            {
                 throw new InvalidOperationException(
                     "Manifest creation-age policy must exactly match --max-age-hours; use a new immutable selection."
                 );
+            }
         }
         return maxAgeHours;
     }

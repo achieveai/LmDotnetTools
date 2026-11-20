@@ -32,7 +32,13 @@ internal sealed class ScriptedReviewRun : IAsyncDisposable
     internal CancellationTokenSource Cancellation { get; } = new();
 
     internal List<string> Phases { get; } = [];
+
+    /// <summary>The host lists the run's conversation, bound to its workspace, provider and mode, as it does for a resume.</summary>
+    internal bool HostListsThread { get; set; }
     internal Func<string, JsonObject, string, CancellationToken, Task<JsonObject?>>? OnPhase { get; set; }
+
+    // SQL run once, synchronously, when the run logs a matching line to stderr (see ExecuteWhenLogged).
+    private readonly List<(Func<string, bool> Match, string Sql)> _onLogged = [];
 
     private ScriptedReviewRun()
     {
@@ -101,27 +107,47 @@ internal sealed class ScriptedReviewRun : IAsyncDisposable
         );
 
     /// <summary>
-    ///     Fails the next plain write of the attempt row at <paramref name="stage"/> once, as a transient database error
-    ///     would. RAISE(FAIL) keeps the trigger's own delete, so only one write fails; a write inside a transaction that
-    ///     rolls back would fail again.
+    ///     Fails every write of the attempt row at <paramref name="stage"/>, as a transient database error would, until
+    ///     <see cref="EndAttemptWriteFailure"/> runs. The failure must outlast the write's own transaction: a trigger that
+    ///     counted its failures in the database would have the count rolled back with it.
     /// </summary>
-    internal Task FailNextAttemptWriteAsync(string stage) =>
+    internal Task FailAttemptWritesAsync(string stage) =>
         ExecuteAsync(
             $"""
-            CREATE TABLE fail_once(n INTEGER);
-            INSERT INTO fail_once VALUES (1);
             CREATE TRIGGER fail_attempt_insert BEFORE INSERT ON cache
             WHEN NEW.key = '{AttemptKey}' AND json_extract(NEW.value, '$.stage') = '{stage}'
-                AND EXISTS (SELECT 1 FROM fail_once)
-            BEGIN DELETE FROM fail_once; SELECT RAISE(FAIL, 'transient attempt write failure'); END;
+            BEGIN SELECT RAISE(ABORT, 'transient attempt write failure'); END;
             CREATE TRIGGER fail_attempt_update BEFORE UPDATE ON cache
             WHEN NEW.key = '{AttemptKey}' AND json_extract(NEW.value, '$.stage') = '{stage}'
-                AND EXISTS (SELECT 1 FROM fail_once)
-            BEGIN DELETE FROM fail_once; SELECT RAISE(FAIL, 'transient attempt write failure'); END;
+            BEGIN SELECT RAISE(ABORT, 'transient attempt write failure'); END;
             """
         );
 
-    internal async Task<int> RunAsync()
+    /// <summary>Ends <see cref="FailAttemptWritesAsync"/>: the next write of the attempt row succeeds.</summary>
+    internal const string EndAttemptWriteFailure =
+        "DROP TRIGGER fail_attempt_insert; DROP TRIGGER fail_attempt_update;";
+
+    /// <summary>A sweep's reset, as SQL: the owner released and unfenced, the attempt recorded as a reset admission.</summary>
+    internal string ResetSql =>
+        $"""
+            UPDATE cache SET value = json_remove(json_set(value, '$.state', 'released'), '$.{SlotRelease.ResetFence}')
+            WHERE key = '{OwnerKey}';
+            UPDATE cache SET value = json_set(value, '$.stage', 'failed-released', '$.cleanupState', 'released',
+                '$.resetCount', 1)
+            WHERE key = '{AttemptKey}';
+            """;
+
+    /// <summary>
+    ///     Runs <paramref name="sql"/> once, on the test's own connection, when the run writes a stderr line that
+    ///     <paramref name="match"/> accepts: the only point between two of the run's own writes that a test can reach,
+    ///     such as a failed save and the failure path's retained save that follows its log line. The run holds no
+    ///     transaction while it logs, so the SQL commits before the run's next write. Tests that use it share
+    ///     the console-capturing test collection, since stderr is process-wide.
+    /// </summary>
+    internal void ExecuteWhenLogged(Func<string, bool> match, string sql) => _onLogged.Add((match, sql));
+
+    /// <summary>One run. <paramref name="resume"/> passes <c>--resume</c>, as a new process resuming the attempt would.</summary>
+    internal async Task<int> RunAsync(bool resume = false)
     {
         var handler = new FakeHttpMessageHandler()
             .OnJson(
@@ -137,7 +163,19 @@ internal sealed class ScriptedReviewRun : IAsyncDisposable
                     Content = new StringContent("""{"threadId":"thread"}"""),
                 }
             )
-            .OnJson(HttpMethod.Get, "/api/conversations?", "[]")
+            .On(
+                request =>
+                    request.Method == HttpMethod.Get
+                    && request.RequestUri!.PathAndQuery.StartsWith("/api/conversations?", StringComparison.Ordinal),
+                _ => new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        HostListsThread
+                            ? """[{"threadId":"thread","title":"Nova-17","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1,"clientToolsDisabled":true}]"""
+                            : "[]"
+                    ),
+                }
+            )
             .OnJson(HttpMethod.Put, "/metadata", "{}")
             .OnJson(HttpMethod.Post, "/messages", """{"inputId":"input","idempotencyKeyHonored":true}""")
             .OnJson(HttpMethod.Get, "/status?", """{"status":"Completed","runId":"run","response":{"text":"done"}}""")
@@ -162,16 +200,64 @@ internal sealed class ScriptedReviewRun : IAsyncDisposable
             "workspace",
             "--provider",
             "test",
+            .. resume ? new[] { "--resume" } : [],
             "--execute",
         ]);
-        return await ReviewRunner.RunAsync(
-            options,
-            config,
-            new LmStreamingS2SClient(http, null, null, null),
-            SandboxAsync,
-            Cancellation.Token,
-            _ => Task.CompletedTask
-        );
+        var stderr = Console.Error;
+        if (_onLogged.Count > 0)
+        {
+            Console.SetError(new LoggedHook(stderr, OnLogged));
+        }
+        try
+        {
+            return await ReviewRunner.RunAsync(
+                options,
+                config,
+                new LmStreamingS2SClient(http, null, null, null),
+                SandboxAsync,
+                Cancellation.Token,
+                _ => Task.CompletedTask
+            );
+        }
+        finally
+        {
+            Console.SetError(stderr);
+        }
+    }
+
+    private void OnLogged(string line)
+    {
+        string? sql;
+        lock (_onLogged)
+        {
+            var index = _onLogged.FindIndex(hook => hook.Match(line));
+            if (index < 0)
+            {
+                return;
+            }
+            sql = _onLogged[index].Sql;
+            _onLogged.RemoveAt(index);
+        }
+        // Synchronous on purpose: the run is inside Console.Error.WriteLine, and its next write must see this one.
+        using var command = Connection.CreateCommand();
+        command.CommandText = sql;
+        _ = command.ExecuteNonQuery();
+    }
+
+    /// <summary>Passes every stderr write through, and reports each whole line written.</summary>
+    private sealed class LoggedHook(TextWriter inner, Action<string> onLine) : TextWriter
+    {
+        public override System.Text.Encoding Encoding => inner.Encoding;
+
+        public override void Write(char value) => inner.Write(value);
+
+        public override void Write(string? value) => inner.Write(value);
+
+        public override void WriteLine(string? value)
+        {
+            inner.WriteLine(value);
+            onLine(value ?? "");
+        }
     }
 
     private async Task<JsonObject> SandboxAsync(
