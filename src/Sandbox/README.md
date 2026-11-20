@@ -86,6 +86,7 @@ read-only). That sync covers:
   agents that requires no sandbox session.
 - **Session discovery:** `ListDiscoveredAsync(sessionId)` — a narrow read over the existing
   session-discovery REST endpoint; `ListDiscoveredAsync(sessionId, agentId)` narrows it to one agent.
+  It follows the gateway's `next_cursor` across pages and returns every row, oldest first.
 - **Per-agent state:** `ListAgentsAsync`, `DeleteAgentAsync`. See [Per-agent state](#per-agent-state).
 - **Command execution:** `ExecuteAsync(sessionId, command)` — run a non-interactive native command
   (an executable plus argv, no shell) in the sandbox via the gateway's direct operations API and get
