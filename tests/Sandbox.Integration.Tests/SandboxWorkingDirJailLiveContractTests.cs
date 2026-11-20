@@ -1,6 +1,9 @@
 using System.Text.RegularExpressions;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.Sandbox.Integration.Tests;
 
@@ -14,9 +17,14 @@ namespace AchieveAi.LmDotnetTools.Sandbox.Integration.Tests;
 /// files API) sees the whole workspace by the gateway's design, so it is what seeds the directories and reads the
 /// outcome here. No credentials beyond the suite's own <c>SANDBOX_*</c> variables are needed. A link the agent makes
 /// in its own directory must not carry a write out of it, to the workspace or to a read-only mount.
+/// <para>
+/// Logs (DEBUG) each workspace and session id, every tool result and the teardown, so a CI failure shows what the
+/// gateway answered. Never the app key: no log reads the client's credentials.
+/// </para>
 /// </remarks>
 [Collection(LiveGatewayCollection.Name)]
-public sealed class SandboxWorkingDirJailLiveContractTests(LiveGatewayFixture fixture)
+public sealed class SandboxWorkingDirJailLiveContractTests(LiveGatewayFixture fixture, ITestOutputHelper output)
+    : LoggingTestBase(output)
 {
     private const string Jail = "jail/a";
 
@@ -30,6 +38,7 @@ public sealed class SandboxWorkingDirJailLiveContractTests(LiveGatewayFixture fi
         // Both directories exist before the jailed sandbox starts, so a refusal below is the jail, not a missing
         // parent directory.
         var seeder = await client.CreateAsync(new SandboxCreateRequest(workspace));
+        Logger.LogDebug("Setup: seeding workspace {Workspace} from session {SessionId}", workspace, seeder.SessionId);
         try
         {
             await client.WriteTextFileAsync(seeder.SessionId, $"{Jail}/.keep", "");
@@ -37,11 +46,17 @@ public sealed class SandboxWorkingDirJailLiveContractTests(LiveGatewayFixture fi
         }
         finally
         {
-            await client.DeleteAsync(seeder.SessionId);
+            await DeleteSessionAsync(workspace, seeder.SessionId);
         }
 
         var jailed = await client.CreateAsync(new SandboxCreateRequest(workspace, workingDir: Jail));
         var sessionId = jailed.SessionId;
+        Logger.LogDebug(
+            "Setup: jailed session {SessionId} on workspace {Workspace}, working directory {WorkingDir}",
+            sessionId,
+            workspace,
+            jailed.WorkspaceWorkingDir
+        );
         try
         {
             jailed.WorkspaceWorkingDir.Should().Be(Jail, "the gateway acknowledges the jail it applied");
@@ -94,7 +109,7 @@ public sealed class SandboxWorkingDirJailLiveContractTests(LiveGatewayFixture fi
         }
         finally
         {
-            await client.DeleteAsync(sessionId);
+            await DeleteSessionAsync(workspace, sessionId);
         }
     }
 
@@ -106,6 +121,7 @@ public sealed class SandboxWorkingDirJailLiveContractTests(LiveGatewayFixture fi
         var workspace = "jail-" + Guid.NewGuid().ToString("N");
 
         var seeder = await client.CreateAsync(new SandboxCreateRequest(workspace));
+        Logger.LogDebug("Setup: seeding workspace {Workspace} from session {SessionId}", workspace, seeder.SessionId);
         try
         {
             await client.WriteTextFileAsync(seeder.SessionId, $"{Jail}/.keep", "");
@@ -113,11 +129,17 @@ public sealed class SandboxWorkingDirJailLiveContractTests(LiveGatewayFixture fi
         }
         finally
         {
-            await client.DeleteAsync(seeder.SessionId);
+            await DeleteSessionAsync(workspace, seeder.SessionId);
         }
 
         var jailed = await client.CreateAsync(new SandboxCreateRequest(workspace, workingDir: Jail));
         var sessionId = jailed.SessionId;
+        Logger.LogDebug(
+            "Setup: jailed session {SessionId} on workspace {Workspace}, working directory {WorkingDir}",
+            sessionId,
+            workspace,
+            jailed.WorkspaceWorkingDir
+        );
         try
         {
             // A read-only mount outside the workspace: a marketplace (PLUGINS_DIRS), as the agent itself sees it.
@@ -142,23 +164,29 @@ public sealed class SandboxWorkingDirJailLiveContractTests(LiveGatewayFixture fi
                 );
             }
 
+            Logger.LogDebug("Setup: read-only mount {ReadOnlyMount} in session {SessionId}", readOnlyMount, sessionId);
+
             // The agent links out of its own directory, which it may write: to a sibling directory, to a file in
-            // it, and to the read-only mount.
+            // it (twice: Write may replace its link, so Bash gets one of its own), and to the read-only mount.
             var (linkRefused, linkText) = await CallToolAsync(
                 sessionId,
                 "Bash",
                 new
                 {
                     command = $"cd /workspace/{Jail} && ln -s /workspace/jail/b out && "
-                        + $"ln -s /workspace/jail/b/victim.txt victim && ln -s {readOnlyMount} ro && echo linked",
+                        + "ln -s /workspace/jail/b/victim.txt victim && "
+                        + "ln -s /workspace/jail/b/victim.txt victim_bash && "
+                        + $"ln -s {readOnlyMount} ro && echo linked",
                 }
             );
             linkRefused.Should().BeFalse($"the agent may create links in its own directory: {linkText}");
             linkText.Should().Contain("linked");
 
             // Every path below is inside the jail as written; only the link takes it out. A write through a
-            // directory link must be refused. A write to the file link may instead replace the link itself (a write
+            // directory link must be refused. Write to the file link may instead replace the link itself (a write
             // through a temporary file and a rename), which leaves the file outside alone: the outcome check decides.
+            // Bash writes through its own link, checked to be one just before the redirect, so the outcome check
+            // shows that a shell following a link is held too.
             var writes = new (string Tool, object Arguments, bool MustRefuse)[]
             {
                 ("Write", new { file_path = $"/workspace/{Jail}/out/write.txt", content = "out\n" }, true),
@@ -168,12 +196,14 @@ public sealed class SandboxWorkingDirJailLiveContractTests(LiveGatewayFixture fi
                     "Bash",
                     new
                     {
-                        command = $"cd /workspace/{Jail}; echo out > out/bash.txt; echo overwritten > victim; "
-                            + "echo out > ro/bash.txt",
+                        command = $"cd /workspace/{Jail}; echo out > out/bash.txt; "
+                            + "if [ -L victim_bash ]; then echo link-before-write; echo bash-overwritten > victim_bash; "
+                            + "fi; echo out > ro/bash.txt; echo bash-done",
                     },
                     false
                 ),
             };
+            var bashWriteText = string.Empty;
             foreach (var (tool, arguments, mustRefuse) in writes)
             {
                 var (refused, text) = await CallToolAsync(sessionId, tool, arguments);
@@ -181,7 +211,14 @@ public sealed class SandboxWorkingDirJailLiveContractTests(LiveGatewayFixture fi
                 {
                     refused.Should().BeTrue($"a write through a link out of the jail is refused: {text}");
                 }
+
+                if (tool == "Bash")
+                {
+                    bashWriteText = text;
+                }
             }
+
+            bashWriteText.Should().Contain("link-before-write", "Bash must write through a link, not a plain file");
 
             var outside = await client.ExecuteAsync(
                 sessionId,
@@ -190,15 +227,24 @@ public sealed class SandboxWorkingDirJailLiveContractTests(LiveGatewayFixture fi
                     "-c",
                     "cd /workspace/jail/b; for f in write.txt bash.txt; "
                         + "do if [ -e \"$f\" ]; then echo \"present $f\"; else echo \"absent $f\"; fi; done; "
-                        + "echo \"victim $(cat victim.txt)\"",
+                        + "echo \"victim $(cat victim.txt)\"; "
+                        + $"if [ -L /workspace/{Jail}/victim_bash ]; then echo \"link victim_bash\"; fi",
                 ])
+            );
+            Logger.LogDebug(
+                "Outcome outside the jail of session {SessionId}: exit {ExitCode}, {StandardOutput}, {StandardError}",
+                sessionId,
+                outside.ExitCode,
+                outside.StandardOutput,
+                outside.StandardError
             );
             outside.ExitCode.Should().Be(0, outside.StandardError);
             outside
                 .StandardOutput.Should()
                 .Contain("absent write.txt")
                 .And.Contain("absent bash.txt")
-                .And.Contain("victim orig", "the file outside the jail is untouched");
+                .And.Contain("victim orig", "the file outside the jail is untouched by Write and by Bash")
+                .And.Contain("link victim_bash", "Bash's redirect went through the link and left it in place");
 
             var (_, mountText) = await CallToolAsync(
                 sessionId,
@@ -213,24 +259,38 @@ public sealed class SandboxWorkingDirJailLiveContractTests(LiveGatewayFixture fi
         }
         finally
         {
-            await client.DeleteAsync(sessionId);
+            await DeleteSessionAsync(workspace, sessionId);
         }
     }
 
     /// <summary>One MCP tool call as the default agent. A JSON-RPC error counts as a refusal, with its message.</summary>
-    private static async Task<(bool IsError, string Text)> CallToolAsync(
-        string sessionId,
-        string tool,
-        object arguments
-    )
+    private async Task<(bool IsError, string Text)> CallToolAsync(string sessionId, string tool, object arguments)
     {
+        (bool IsError, string Text) result;
         try
         {
-            return await SandboxMcpRpc.CallToolAsync(sessionId, agentId: null, tool, arguments);
+            result = await SandboxMcpRpc.CallToolAsync(sessionId, agentId: null, tool, arguments);
         }
         catch (InvalidOperationException ex)
         {
-            return (true, ex.Message);
+            result = (true, ex.Message);
         }
+
+        Logger.LogDebug(
+            "Tool {Tool} in session {SessionId} with {@Arguments}: refused {Refused}, answered {Text}",
+            tool,
+            sessionId,
+            arguments,
+            result.IsError,
+            result.Text
+        );
+        return result;
+    }
+
+    /// <summary>Deletes a session the test created, and logs it, so a failure shows what was torn down.</summary>
+    private async Task DeleteSessionAsync(string workspace, string sessionId)
+    {
+        Logger.LogDebug("Teardown: deleting session {SessionId} of workspace {Workspace}", sessionId, workspace);
+        await fixture.Client.DeleteAsync(sessionId);
     }
 }
