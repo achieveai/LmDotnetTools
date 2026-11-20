@@ -196,9 +196,9 @@ public sealed class ReviewdCapacityTests
 
             async Task<JsonObject> PreviewAsync(JsonObject supplied, string session = "new-session")
             {
-                // Pooled connections keep the file open; on Windows File.ReadAllBytes cannot open it then.
+                // Clearing the pools lets the last writer checkpoint, so the baseline holds every earlier write.
                 ReviewdSqlitePools.Clear(database);
-                var before = await File.ReadAllBytesAsync(database);
+                var before = await ReviewdDatabaseBytes.ReadAsync(database);
                 var report = await ReviewCapacity.PreviewAsync(
                     database,
                     "workspace",
@@ -208,7 +208,7 @@ public sealed class ReviewdCapacityTests
                     CancellationToken.None
                 );
                 ReviewdSqlitePools.Clear(database);
-                (await File.ReadAllBytesAsync(database)).Should().Equal(before);
+                (await ReviewdDatabaseBytes.ReadAsync(database)).Should().Equal(before);
                 report["previewOnly"]!.GetValue<bool>().Should().BeTrue();
                 report["boundary"]!
                     .GetValue<string>()
