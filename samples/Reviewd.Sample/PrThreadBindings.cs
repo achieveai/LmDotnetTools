@@ -54,8 +54,33 @@ internal static class PrThreadBindings
         await delete.ExecuteNonQueryAsync(ct);
     }
 
-    internal static SqliteConnection Connection(string database) =>
-        new(new SqliteConnectionStringBuilder { DataSource = database }.ToString());
+    /// <summary>
+    /// Opens Reviewd's database, creating it if it is missing, in WAL mode. This is the only open that may create the
+    /// file, so every database Reviewd makes starts in WAL. The mode is stored in the file, so on a database already
+    /// in WAL (the live ones) this is a no-op.
+    /// </summary>
+    /// <remarks>
+    /// A rollback-mode commit deletes its <c>-journal</c>. On Windows, an anti-virus scan holding that file makes the
+    /// delete fail; the commit then reports a disk I/O error and leaves a hot journal that every read-only connection
+    /// refuses with "attempt to write a readonly database". WAL never deletes a journal on commit.
+    /// </remarks>
+    internal static SqliteConnection Connection(string database)
+    {
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database }.ToString());
+        try
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA journal_mode=WAL";
+            _ = command.ExecuteScalar();
+            return connection;
+        }
+        catch
+        {
+            connection.Dispose();
+            throw;
+        }
+    }
 
     private static string Key(RepoIdentity repo, string prId) => $"reviewd/pr-thread/{repo.NormalizedKey}/{prId}";
 }
