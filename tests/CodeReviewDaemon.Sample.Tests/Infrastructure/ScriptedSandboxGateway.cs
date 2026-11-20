@@ -38,6 +38,15 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
     /// <summary>The workspace's <c>relative_path</c> the mount-resolution route reports; null when unset.</summary>
     public string? WorkspaceRelativePath { get; init; }
 
+    /// <summary>Every <c>POST .../operations</c> submit body, in order.</summary>
+    public List<string> SubmitBodies { get; } = [];
+
+    /// <summary>Every operation id released by a <c>DELETE .../operations/{id}</c>, in order.</summary>
+    public List<string> DeletedOperations { get; } = [];
+
+    /// <summary>When true, the stdout artifact download is cut mid-body, as a dropped connection is (<see cref="HttpIOException"/>).</summary>
+    public bool TruncateStdout { get; set; }
+
     public int CommandExitCode { get; init; }
     public string CommandStdout { get; init; } = string.Empty;
     public string CommandStderr { get; init; } = string.Empty;
@@ -134,6 +143,7 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
     /// <summary>
     /// Answers <c>POST .../operations</c> with a terminal snapshot (no poll needed), ECHOING the
     /// submitted <c>operation_id</c> so the SDK's correlation-id check passes (the SDK generates the id).
+    /// A <c>DELETE</c> is recorded in <see cref="DeletedOperations"/> and answered <c>204</c>.
     /// </summary>
     private async Task<HttpResponseMessage> RespondToOperationAsync(HttpRequestMessage request, CancellationToken ct)
     {
@@ -142,9 +152,16 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
             LastSubmitBody = await request.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             var segments = request.RequestUri!.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
             SubmitSessions.Add(Uri.UnescapeDataString(segments[Array.IndexOf(segments, "sandboxes") + 1]));
+            SubmitBodies.Add(LastSubmitBody);
         }
 
         var operationId = await ResolveOperationIdAsync(request, ct).ConfigureAwait(false);
+
+        if (request.Method == HttpMethod.Delete)
+        {
+            DeletedOperations.Add(operationId);
+            return new HttpResponseMessage(HttpStatusCode.NoContent);
+        }
 
         if (HangOperations)
         {
@@ -215,7 +232,12 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
         // GET: an operation artifact download, or a user file read.
         if (path.EndsWith("/stdout", StringComparison.Ordinal))
         {
-            return Octet(Encoding.UTF8.GetBytes(CommandStdout));
+            return TruncateStdout
+                ? new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StreamContent(new CutStream(Encoding.UTF8.GetBytes(CommandStdout))),
+                }
+                : Octet(Encoding.UTF8.GetBytes(CommandStdout));
         }
 
         if (path.EndsWith("/stderr", StringComparison.Ordinal))
@@ -285,6 +307,30 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
         }
 
         return string.Empty;
+    }
+
+    /// <summary>Serves the first half of its bytes, then fails the read the way a dropped connection does.</summary>
+    private sealed class CutStream(byte[] bytes) : MemoryStream(bytes[..(bytes.Length / 2)])
+    {
+        public override int Read(byte[] buffer, int offset, int count) =>
+            base.Read(buffer, offset, count) is > 0 and var read ? read : throw Cut();
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default
+        ) =>
+            await base.ReadAsync(buffer, cancellationToken).ConfigureAwait(false) is > 0 and var read
+                ? read
+                : throw Cut();
+
+        public override Task<int> ReadAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken
+        ) => ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+        private static HttpIOException Cut() => new(HttpRequestError.ResponseEnded, "The response ended prematurely.");
     }
 
     private static HttpResponseMessage Json(HttpStatusCode status, string body) =>
