@@ -127,6 +127,43 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         await act.Should().ThrowAsync<ArgumentNullException>().WithParameterName("messages");
     }
 
+    /// <summary>
+    /// An append reads the thread's messages only through the (thread_id, seq) index. Its legacy-row lookup,
+    /// served from idx_messages_thread_id, read every row of the thread under the write lock to find none:
+    /// 344-620 ms cold on a 5-7k-message thread, on every append.
+    /// </summary>
+    [Fact]
+    public async Task AppendMessagesAsync_ReadsTheThreadOnlyThroughTheSeqIndex()
+    {
+        var factory = new TracingConnectionFactory(new SqliteConnectionFactory(_databasePath));
+        await using (var store = new SqliteConversationStore(factory, ownsFactory: true))
+        {
+            await store.AppendMessagesAsync("thread-1", CreateTestMessages("thread-1", "run-1", 3));
+            factory.Statements.Clear();
+
+            await store.AppendMessagesAsync("thread-1", CreateTestMessages("thread-1", "run-2", 1));
+        }
+
+        var reads = factory.Statements.Where(sql => sql.Contains("FROM messages", StringComparison.Ordinal)).ToList();
+        reads.Should().HaveCount(3, "the watermark, the legacy-row lookup and the last message id");
+        await using var probe = new SqliteConnection($"Data Source={_databasePath}");
+        await probe.OpenAsync();
+        foreach (var sql in reads)
+        {
+            using var explain = probe.CreateCommand();
+            explain.CommandText = "EXPLAIN QUERY PLAN " + sql;
+            var plan = new List<string>();
+            await using var reader = await explain.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                plan.Add(reader.GetString(3));
+            }
+
+            plan.Should().Contain(step => step.Contains("idx_messages_thread_seq"), sql);
+            plan.Should().NotContain(step => step.Contains("idx_messages_thread_id"), sql);
+        }
+    }
+
     #endregion
 
     #region LoadMessagesAsync Tests
@@ -1297,6 +1334,31 @@ public class SqliteConversationStoreTests : IAsyncLifetime
             }
 
             return inner.GetConnectionAsync(ct);
+        }
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
+    }
+
+    /// <summary>Records every statement its connections run, with bound values written into the text.</summary>
+    private sealed class TracingConnectionFactory(ISqliteConnectionFactory inner) : ISqliteConnectionFactory
+    {
+        public List<string> Statements { get; } = [];
+
+        public async Task<SqliteConnection> GetConnectionAsync(CancellationToken ct = default)
+        {
+            var connection = await inner.GetConnectionAsync(ct);
+            SQLitePCL.raw.sqlite3_trace(
+                connection.Handle,
+                (_, sql) =>
+                {
+                    lock (Statements)
+                    {
+                        Statements.Add(sql.utf8_to_string());
+                    }
+                },
+                null
+            );
+            return connection;
         }
 
         public ValueTask DisposeAsync() => inner.DisposeAsync();

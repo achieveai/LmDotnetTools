@@ -716,6 +716,90 @@ public sealed class IndexedConversationStoreTests : IDisposable
         SqliteConnection.ClearAllPools();
     }
 
+    /// <summary>
+    /// A sub-agent read is one store read however many children there are. A read per child queued 2+N
+    /// times for the store's few connections behind its writers, which took 35-143 s for 64 children on a
+    /// loaded host. The batched read must find what the per-row walk finds: the same rows, filters, gaps and
+    /// order.
+    /// </summary>
+    [Fact]
+    public async Task ReadChildren_IsOneStoreRead_AndFindsWhatAPerRowWalkFinds()
+    {
+        Directory.CreateDirectory(_directory);
+        var path = Path.Combine(_directory, "batched.db");
+        var factory = new CountingConnectionFactory(new SqliteConnectionFactory(path));
+        var sqlite = new SqliteConversationStore(factory, ownsFactory: true);
+        try
+        {
+            var memory = new InMemoryConversationStore();
+            var batched = new IndexedConversationStore(sqlite, Path.Combine(_directory, "batched.index.json"));
+            var walked = new IndexedConversationStore(memory, Path.Combine(_directory, "walked.index.json"));
+            foreach (var store in new[] { batched, walked })
+            {
+                await store.SaveMetadataAsync(
+                    "root",
+                    new ThreadMetadata
+                    {
+                        ThreadId = "root",
+                        LastUpdated = 0,
+                        TenantId = "tenant",
+                    }
+                );
+                for (var i = 0; i < 12; i++)
+                    await store.SaveMetadataAsync($"subagent-{i:D2}", Child($"subagent-{i:D2}", "root", "tenant"));
+                await store.SaveMetadataAsync("subagent-untenanted", Child("subagent-untenanted", "root"));
+                await store.SaveMetadataAsync("subagent-foreign", Child("subagent-foreign", "root", "foreign"));
+                await store.SaveMetadataAsync(
+                    "subagent-under-foreign",
+                    Child("subagent-under-foreign", "subagent-foreign", "tenant")
+                );
+                await store.SaveMetadataAsync(
+                    "subagent-grandchild",
+                    Child("subagent-grandchild", "subagent-03", "tenant")
+                );
+                await store.SaveMetadataAsync("subagent-gone", Child("subagent-gone", "root", "tenant"));
+            }
+
+            // Gone from metadata while the index still lists it, as when a delete lands mid-read.
+            await sqlite.DeleteThreadAsync("subagent-gone");
+            await memory.DeleteThreadAsync("subagent-gone");
+
+            foreach (var (recursive, count) in new[] { (false, 13), (true, 14) })
+            {
+                var expected = await walked.ReadChildrenAsync("root", recursive);
+                expected.Should().HaveCount(count);
+                expected
+                    .Select(n => n.ThreadId)
+                    .Should()
+                    .NotContain(["subagent-foreign", "subagent-under-foreign", "subagent-gone"]);
+                factory.Acquisitions = 0;
+
+                var actual = await batched.ReadChildrenAsync("root", recursive);
+
+                factory.Acquisitions.Should().Be(1, "the root and every child are one store read");
+                actual.Should().BeEquivalentTo(expected, options => options.WithStrictOrdering());
+            }
+        }
+        finally
+        {
+            await sqlite.DisposeAsync();
+            SqliteConnectionFactory.ClearPool(path);
+        }
+    }
+
+    private sealed class CountingConnectionFactory(ISqliteConnectionFactory inner) : ISqliteConnectionFactory
+    {
+        public int Acquisitions { get; set; }
+
+        public Task<SqliteConnection> GetConnectionAsync(CancellationToken ct = default)
+        {
+            Acquisitions++;
+            return inner.GetConnectionAsync(ct);
+        }
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
+    }
+
     private static UsageRecord UsageAttempt(string attemptId, int inputTokens, long revision) =>
         new()
         {
