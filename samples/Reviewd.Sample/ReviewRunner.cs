@@ -1749,8 +1749,9 @@ internal static class ReviewRunner
     internal static readonly int ReviewBusyReads = (int)(TimeSpan.FromMinutes(10) / PollInterval);
 
     // A sub-agent tree read that runs past the S2S client's 120 s timeout is a slow host, not a failed wait (seen
-    // live: 64-143 s under lock contention on a 9 GB conversation store). Five in a row is the busy budget's ten
-    // minutes; each wait between them still renews the slot lease.
+    // live: 64-143 s under lock contention on a 9 GB conversation store). Five such reads in a row are retried and the
+    // sixth ends the wait: six 120 s reads and five polls, about 12.5 minutes, near the busy budget's ten. Each wait
+    // between them still renews the slot lease.
     internal const int MaxConsecutiveTreeTimeouts = 5;
 
     // A queued input starts within seconds of the conversation going idle. One still NotStarted while the
@@ -1820,7 +1821,7 @@ internal static class ReviewRunner
     ///     waits through <paramref name="busyDelay"/> when given, so a caller can tell a busy read from a full poll.
     ///     The wait gives up after <paramref name="maxBusyReads"/> busy tree reads in a row; a caller polling slower
     ///     than once a second passes fewer, so the budget stays about ten minutes. A tree read that runs past the
-    ///     client's timeout (not the wait's own cancel) waits the same way, up to <see cref="MaxConsecutiveTreeTimeouts"/>
+    ///     client's timeout (not the wait's own cancel) waits the same way, retried up to <see cref="MaxConsecutiveTreeTimeouts"/> times
     ///     in a row; any answered read resets both counts. A caller that passes
     ///     <paramref name="probe"/> lets a Running descendant it finds abandoned settle (see
     ///     <see cref="AbandonedChildProbe"/>); without one, Running never settles.
@@ -1868,7 +1869,7 @@ internal static class ReviewRunner
                 when (!ct.IsCancellationRequested && ++treeTimeouts <= MaxConsecutiveTreeTimeouts)
             {
                 Console.Error.WriteLine(
-                    $"Sub-agent tree read timed out ({treeTimeouts}/{MaxConsecutiveTreeTimeouts}): {timeout.Message} Reading again."
+                    $"Sub-agent tree read of thread {thread} timed out ({treeTimeouts}/{MaxConsecutiveTreeTimeouts}): {timeout.Message} Reading again."
                 );
                 candidate = null;
                 stalledSince = null;
