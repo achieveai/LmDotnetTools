@@ -505,6 +505,103 @@ public sealed class ReviewdRunnerTests
         handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get);
     }
 
+    // Seen live (2026-11-20): under lock contention on a 9 GB conversation store the host took up to 143 s to answer
+    // the sub-agent tree, past the client's 120 s timeout. The timeout is a cancellation the wait never asked for: a
+    // slow host, not a failed review. The wait reads again, a real HttpClient timeout here, and gives up only after
+    // MaxConsecutiveTreeTimeouts in a row.
+    [Theory]
+    [InlineData(2, true)]
+    [InlineData(ReviewRunner.MaxConsecutiveTreeTimeouts, true)]
+    [InlineData(ReviewRunner.MaxConsecutiveTreeTimeouts + 1, false)]
+    public async Task A_tree_read_that_times_out_is_read_again_within_its_own_budget(int timeouts, bool succeeds)
+    {
+        var host = new SlowTreeHost(read => read <= timeouts);
+        using var http = new HttpClient(host)
+        {
+            BaseAddress = new Uri("http://localhost/"),
+            Timeout = TimeSpan.FromMilliseconds(50),
+        };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        var delays = 0;
+
+        var run = () =>
+            ReviewRunner.WaitAsync(
+                client,
+                "thread",
+                null,
+                _ =>
+                {
+                    delays++;
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None,
+                maxBusyReads: ReviewRunner.ReviewBusyReads
+            );
+
+        if (succeeds)
+        {
+            await run();
+            host.TreeReads.Should().Be(timeouts + 2, "each timed-out read is followed by two idle snapshots");
+            delays.Should().Be(timeouts + 1);
+        }
+        else
+        {
+            await run.Should().ThrowAsync<TaskCanceledException>();
+            host.TreeReads.Should().Be(ReviewRunner.MaxConsecutiveTreeTimeouts + 1);
+        }
+    }
+
+    // The budget is for timeouts in a row: an answered read between two full runs of them starts it over.
+    [Fact]
+    public async Task An_answered_tree_read_resets_the_consecutive_timeout_budget()
+    {
+        const int Run = ReviewRunner.MaxConsecutiveTreeTimeouts;
+        var host = new SlowTreeHost(read => read <= Run || (read > Run + 1 && read <= (2 * Run) + 1));
+        using var http = new HttpClient(host)
+        {
+            BaseAddress = new Uri("http://localhost/"),
+            Timeout = TimeSpan.FromMilliseconds(50),
+        };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+
+        await ReviewRunner.WaitAsync(client, "thread", null, _ => Task.CompletedTask, CancellationToken.None);
+
+        host.TreeReads.Should()
+            .Be((2 * Run) + 3, "the timeouts drop the idle snapshot between them, so two more follow");
+    }
+
+    // A cancelled wait is not a slow host: it stops at once, without waiting a poll as if the read had timed out.
+    [Fact]
+    public async Task A_cancelled_wait_is_not_read_again_as_a_tree_timeout()
+    {
+        var host = new SlowTreeHost(_ => true);
+        using var http = new HttpClient(host)
+        {
+            BaseAddress = new Uri("http://localhost/"),
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var stop = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+        var delays = 0;
+
+        var run = () =>
+            ReviewRunner.WaitAsync(
+                client,
+                "thread",
+                null,
+                _ =>
+                {
+                    delays++;
+                    return Task.CompletedTask;
+                },
+                stop.Token
+            );
+
+        await run.Should().ThrowAsync<OperationCanceledException>();
+        host.TreeReads.Should().Be(1);
+        delays.Should().Be(0);
+    }
+
     // Seen live: a review parked on AskUserQuestion took the confirmation as its answer. The host ran it, but
     // never folded the input into a run, so the input read NotStarted on an idle thread for hours and the
     // batch, its slot and its whole store waited forever. The wait reports it lost, a type the runner catches
@@ -1637,6 +1734,46 @@ public sealed class ReviewdRunnerTests
         await batch.ExecuteAsync();
 
         batch.Runs.Should().Contain(kind == "resume" ? "1:resume" : "1:fresh");
+        batch.Entries()[0]["status"]!.GetValue<string>().Should().Be("held");
+        batch.Read(ReviewBatch.FailureKey(BatchFixture.Repo, "1")).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Batch_does_not_quarantine_a_pr_whose_review_host_read_timed_out()
+    {
+        // Seen live (2026-11-20): four PRs failed with "HttpClient.Timeout of 120 seconds elapsing" while the host's
+        // conversation store was under lock contention. The signature hides the number, so every such timeout on one
+        // head reads as the same failure. A slow host says nothing about the PR: it still gets the lane's retries,
+        // but it is never quarantined for it. Each run claims the slot (a new attempt row), so it is not the
+        // before-claim timeout that was already retried.
+        using var batch = new BatchFixture(0);
+        var claims = 0;
+        batch.OnRunAsync = () =>
+        {
+            if (batch.Runs[^1] != "1:fresh")
+            {
+                return Task.CompletedTask;
+            }
+            batch.PutAttempt(
+                "1",
+                new JsonObject
+                {
+                    ["slot"] = 0,
+                    ["stage"] = "failed-released",
+                    ["cleanupState"] = "released",
+                    ["claimToken"] = $"claim-{++claims}",
+                }
+            );
+            batch.AdvanceSeconds((int)ReviewBatch.QuarantineSpacing.TotalSeconds);
+            throw new TaskCanceledException(
+                "The request was canceled due to the configured HttpClient.Timeout of 120 seconds elapsing.",
+                new TimeoutException()
+            );
+        };
+
+        await batch.ExecuteAsync();
+
+        batch.Runs.Count(run => run == "1:fresh").Should().Be(5);
         batch.Entries()[0]["status"]!.GetValue<string>().Should().Be("held");
         batch.Read(ReviewBatch.FailureKey(BatchFixture.Repo, "1")).Should().BeNull();
     }
@@ -7492,4 +7629,37 @@ public sealed class ReviewdRunnerTests
 
     private static HttpResponseMessage Json(string value) =>
         new(HttpStatusCode.OK) { Content = new StringContent(value) };
+
+    // An idle thread whose sub-agent tree reads picked by `hangs` (numbered from 1) never answer, so the client's own
+    // timeout ends them.
+    private sealed class SlowTreeHost(Func<int, bool> hangs)
+        : DelegatingHandler(
+            new FakeHttpMessageHandler()
+                .OnJson(
+                    HttpMethod.Get,
+                    "/run-state",
+                    """{"threadId":"thread","isInProgress":false,"currentRunId":null}"""
+                )
+                .OnJson(HttpMethod.Get, "/subagents?recursive=true", """{"schemaVersion":1,"nodes":[]}""")
+        )
+    {
+        private int _treeReads;
+
+        public int TreeReads => _treeReads;
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
+        {
+            if (
+                request.RequestUri!.AbsolutePath.EndsWith("/subagents", StringComparison.Ordinal)
+                && hangs(Interlocked.Increment(ref _treeReads))
+            )
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            }
+            return await base.SendAsync(request, cancellationToken);
+        }
+    }
 }
