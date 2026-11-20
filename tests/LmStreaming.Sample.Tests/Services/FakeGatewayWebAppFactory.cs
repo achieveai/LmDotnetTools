@@ -22,6 +22,7 @@ internal sealed class FakeGatewayWebAppFactory : WebApplicationFactory<Program>
     private readonly string _appId;
     private readonly IReadOnlyDictionary<string, string> _settings;
     private readonly bool _ownsRoot;
+    private readonly TimeProvider? _timeProvider;
 
     /// <param name="gateway">Answers every sandbox gateway call: creates, deletes, liveness and operations.</param>
     /// <param name="appId">The host's sandbox gateway app id.</param>
@@ -30,13 +31,17 @@ internal sealed class FakeGatewayWebAppFactory : WebApplicationFactory<Program>
     /// The stores' directory, to boot a host over the stores an earlier one left (a restart). The caller then owns
     /// and deletes it. Null for a fresh directory this factory owns.
     /// </param>
+    /// <param name="timeProvider">The registry's clock (its liveness window), for a test that expires it. Null for
+    /// the system clock.</param>
     public FakeGatewayWebAppFactory(
         HttpMessageHandler gateway,
         string appId,
         IReadOnlyDictionary<string, string>? settings = null,
-        string? root = null
+        string? root = null,
+        TimeProvider? timeProvider = null
     )
     {
+        _timeProvider = timeProvider;
         _ownsRoot = root is null;
         Root = root ?? NewRoot();
         _ = Directory.CreateDirectory(Root);
@@ -94,7 +99,8 @@ internal sealed class FakeGatewayWebAppFactory : WebApplicationFactory<Program>
                 sp.GetRequiredService<ILogger<SandboxSessionRegistry>>(),
                 new HttpClient(_gateway, disposeHandler: false),
                 sp.GetRequiredService<AuthOptions>(),
-                sp.GetRequiredService<SessionSecretStore>()
+                sp.GetRequiredService<SessionSecretStore>(),
+                timeProvider: _timeProvider
             ));
         });
     }

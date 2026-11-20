@@ -7,7 +7,8 @@ namespace LmStreaming.Sample.Tests.Services;
 /// <summary>
 /// In-memory sandbox gateway for the dedicated-sandbox tests. Records each create's session id and request body,
 /// acknowledges a requested working directory as the real gateway does, and lets a test hold DELETEs (to act while
-/// one is in flight) and refuse them (500, nothing deleted). Every other call answers 200.
+/// one is in flight) and refuse them (500, nothing deleted). A liveness probe of a deleted session answers 404, as the
+/// real gateway does, and a test can hold probes. Every other call answers 200.
 /// </summary>
 internal sealed class OwnedSandboxGateway : HttpMessageHandler
 {
@@ -16,10 +17,13 @@ internal sealed class OwnedSandboxGateway : HttpMessageHandler
     private readonly object _gate = new();
     private readonly List<(string SessionId, string Body)> _creates = [];
     private readonly List<string> _deletes = [];
+    private readonly HashSet<string> _forgotten = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _deleted = new(0);
     private readonly SemaphoreSlim _deletesStarted = new(0);
     private TaskCompletionSource? _deleteGate;
     private int _deleteAttempts;
+    private readonly SemaphoreSlim _probesStarted = new(0);
+    private TaskCompletionSource? _probeGate;
 
     /// <summary>When set, every DELETE answers 500 and deletes nothing.</summary>
     public volatile bool FailDeletes;
@@ -57,6 +61,32 @@ internal sealed class OwnedSandboxGateway : HttpMessageHandler
         Volatile.Write(ref _deleteGate, gate);
         return gate;
     }
+
+    /// <summary>The gateway forgets <paramref name="sessionId"/> (an idle eviction): its probes answer 404.</summary>
+    public void Forget(string sessionId)
+    {
+        lock (_gate)
+        {
+            _ = _forgotten.Add(sessionId);
+        }
+    }
+
+    /// <summary>Holds every liveness probe (GET of one sandbox) until the returned gate is completed.</summary>
+    public TaskCompletionSource HoldProbes()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Only probes from now on count: earlier ones (an agent build's own) must not satisfy the next wait.
+        while (_probesStarted.Wait(0)) { }
+
+        Volatile.Write(ref _probeGate, gate);
+        return gate;
+    }
+
+    /// <summary>Waits until one more liveness probe has reached the gateway (held or not).</summary>
+    public async Task WaitForProbeStartedAsync() =>
+        (await _probesStarted.WaitAsync(Patience))
+            .Should()
+            .BeTrue("a liveness probe was expected to reach the gateway");
 
     /// <summary>Waits until one more DELETE has reached the gateway (held or not).</summary>
     public async Task WaitForDeleteStartedAsync() =>
@@ -134,6 +164,35 @@ internal sealed class OwnedSandboxGateway : HttpMessageHandler
 
             _ = _deleted.Release();
             return new HttpResponseMessage(HttpStatusCode.OK);
+        }
+
+        var sandboxes = path.LastIndexOf("/sandboxes/", StringComparison.Ordinal);
+        if (request.Method == HttpMethod.Get && sandboxes >= 0 && path.IndexOf('/', sandboxes + 11) < 0)
+        {
+            _ = _probesStarted.Release();
+            if (Volatile.Read(ref _probeGate) is { } probeGate)
+            {
+                await probeGate.Task.WaitAsync(cancellationToken);
+            }
+
+            var id = path[(sandboxes + 11)..];
+            bool deleted;
+            lock (_gate)
+            {
+                deleted = _deletes.Contains(id) || _forgotten.Contains(id);
+            }
+
+            // The body is what tells "this session is gone" from "no such route" to the SDK.
+            return deleted
+                ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                {
+                    Content = new StringContent(
+                        $$"""{ "code": 404, "error": "Session not found: {{id}}" }""",
+                        Encoding.UTF8,
+                        "application/json"
+                    ),
+                }
+                : new HttpResponseMessage(HttpStatusCode.OK);
         }
 
         if (request.Method != HttpMethod.Post || !path.EndsWith("/sandboxes", StringComparison.Ordinal))

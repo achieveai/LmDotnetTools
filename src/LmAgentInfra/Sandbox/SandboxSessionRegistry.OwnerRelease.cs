@@ -45,9 +45,15 @@ public sealed partial class SandboxSessionRegistry
 
     /// <summary>
     /// Per owner, a running release that commits a change (see
-    /// <see cref="ReleaseOwnedSessionsAsync(string, Func{Task}?, CancellationToken)"/>). The owner's creates wait for it.
+    /// <see cref="ReleaseOwnedSessionsAsync(string, string, Func{Task}, CancellationToken)"/>). The owner's creates wait for it.
     /// </summary>
     private readonly ConcurrentDictionary<string, Task> _ownerFences = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Per owner, the working directory its last committed move left. Set before that release ends, so every create
+    /// that waited for it, and every later one, reads it (see <see cref="ResolveOwnerMove"/>).
+    /// </summary>
+    private readonly ConcurrentDictionary<string, string> _ownerMovedTo = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Stops the dedicated sandboxes <paramref name="threadId"/> owns and confirms each is gone. Only the container
@@ -57,20 +63,49 @@ public sealed partial class SandboxSessionRegistry
     /// </summary>
     /// <exception cref="SandboxException">A sandbox could not be stopped; it is still tracked, so a retry deletes it.</exception>
     public Task ReleaseOwnedSessionsAsync(string threadId, CancellationToken ct = default) =>
-        ReleaseOwnedSessionsAsync(threadId, afterRetired: null, ct);
+        ReleaseOwnedSessionsCoreAsync(threadId, movedToWorkingDir: null, commit: null, ct);
 
     /// <summary>
     /// As <see cref="ReleaseOwnedSessionsAsync(string, CancellationToken)"/>, and then, only when every sandbox is
-    /// confirmed gone, runs <paramref name="afterRetired"/> (a caller's commit, such as a new working directory).
-    /// Until that release ends the owner's next sandbox is held back, so it is created from what was committed, or,
-    /// when the release fails, from what was there before.
+    /// confirmed gone, runs <paramref name="commit"/> (the caller storing <paramref name="movedToWorkingDir"/> as the
+    /// owner's working directory). Until that release ends the owner's next sandbox is held back, so it is created from
+    /// what was committed, or, when the release fails, from what was there before.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The take-out happens before this returns. Call it where no new agent for the owner can be admitted (the agent
     /// pool's per-thread lock), so the release covers exactly the sandboxes of the agents already gone.
+    /// </para>
+    /// <para>
+    /// Once committed, an owner create that still asks for another directory is re-resolved to
+    /// <paramref name="movedToWorkingDir"/>. Such a ref was captured before the move (by a refresh, a liveness
+    /// recreate or a tool call of an agent built earlier), and must not put the old directory back in the slot.
+    /// </para>
     /// </remarks>
+    /// <param name="threadId">The owner.</param>
+    /// <param name="movedToWorkingDir">The working directory <paramref name="commit"/> stores, in the form the
+    /// owner's <see cref="WorkspaceRef.WorkingDir"/> carries.</param>
+    /// <param name="commit">Stores the move. Runs only after every sandbox is confirmed gone.</param>
+    /// <param name="ct">Stops the caller waiting; the release itself runs to the end.</param>
     /// <exception cref="SandboxException">A sandbox could not be stopped; nothing was committed.</exception>
-    public Task ReleaseOwnedSessionsAsync(string threadId, Func<Task>? afterRetired, CancellationToken ct = default)
+    public Task ReleaseOwnedSessionsAsync(
+        string threadId,
+        string movedToWorkingDir,
+        Func<Task> commit,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(movedToWorkingDir);
+        ArgumentNullException.ThrowIfNull(commit);
+        return ReleaseOwnedSessionsCoreAsync(threadId, movedToWorkingDir, commit, ct);
+    }
+
+    private Task ReleaseOwnedSessionsCoreAsync(
+        string threadId,
+        string? movedToWorkingDir,
+        Func<Task>? commit,
+        CancellationToken ct
+    )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
@@ -91,9 +126,9 @@ public sealed partial class SandboxSessionRegistry
 
             var previous = _ownerReleaseTails.GetValueOrDefault(threadId) ?? Task.CompletedTask;
             // On the thread pool: the caller may hold a lock, and the deletes are I/O.
-            release = Task.Run(() => RunOwnerReleaseAsync(threadId, previous, afterRetired));
+            release = Task.Run(() => RunOwnerReleaseAsync(threadId, previous, movedToWorkingDir, commit));
             _ownerReleaseTails[threadId] = release;
-            if (afterRetired is not null)
+            if (commit is not null)
             {
                 _ownerFences[threadId] = release;
             }
@@ -136,7 +171,12 @@ public sealed partial class SandboxSessionRegistry
         }
     }
 
-    private async Task RunOwnerReleaseAsync(string threadId, Task previous, Func<Task>? afterRetired)
+    private async Task RunOwnerReleaseAsync(
+        string threadId,
+        Task previous,
+        string? movedToWorkingDir,
+        Func<Task>? commit
+    )
     {
         try
         {
@@ -168,10 +208,38 @@ public sealed partial class SandboxSessionRegistry
             throw ReleaseFailure(failures, $"of thread '{threadId}'", lastFailure);
         }
 
-        if (afterRetired is not null)
+        if (commit is not null)
         {
-            await afterRetired().ConfigureAwait(false);
+            await commit().ConfigureAwait(false);
+            // Before this release ends: the creates waiting on its fence re-resolve to it as soon as they wake.
+            _ownerMovedTo[threadId] = movedToWorkingDir!;
         }
+    }
+
+    /// <summary>
+    /// The owner create <paramref name="workspaceRef"/> should run: re-resolved to the directory the owner's last
+    /// committed move left when it asks for another. A ref with no owner, or an owner that never moved, is unchanged.
+    /// </summary>
+    /// <remarks>Call under <see cref="_ownerReleaseLock"/> with the slot lookup, so no take-out falls in between.</remarks>
+    private WorkspaceRef ResolveOwnerMove(WorkspaceRef workspaceRef)
+    {
+        if (
+            workspaceRef.OwnerThreadId is not { } owner
+            || !_ownerMovedTo.TryGetValue(owner, out var movedTo)
+            || string.Equals(workspaceRef.WorkingDir, movedTo, StringComparison.Ordinal)
+        )
+        {
+            return workspaceRef;
+        }
+
+        _logger.LogInformation(
+            "Sandbox create for owner {OwnerThreadId} asked for working directory {StaleWorkingDir}, captured before "
+                + "the owner moved; creating in {WorkingDir}",
+            owner,
+            workspaceRef.WorkingDir,
+            movedTo
+        );
+        return workspaceRef with { WorkingDir = movedTo };
     }
 
     /// <summary>

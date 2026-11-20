@@ -2524,11 +2524,14 @@ public class ConversationsController(
             !agentPool.TryRunWhileNotPooled(
                 threadId,
                 () =>
-                    release = sandboxSessionRegistry.ReleaseOwnedSessionsAsync(
-                        threadId,
-                        commitMove,
-                        CancellationToken.None
-                    )
+                    release = movedTo is null
+                        ? sandboxSessionRegistry.ReleaseOwnedSessionsAsync(threadId, CancellationToken.None)
+                        : sandboxSessionRegistry.ReleaseOwnedSessionsAsync(
+                            threadId,
+                            movedTo,
+                            commitMove!,
+                            CancellationToken.None
+                        )
             )
         )
         {
@@ -2594,10 +2597,6 @@ public class ConversationsController(
         );
         return Ok(new ReleaseSandboxResponse { WorkingDirectoryRelPath = workingDirectory });
     }
-
-    /// <summary>The release route's commit could not store the move after the sandbox was confirmed gone.</summary>
-    private sealed class MoveNotStoredException(Exception inner)
-        : Exception("The conversation's new working directory could not be stored.", inner);
 
     /// <summary>The release route's 409 reason when the agent is idle but holds work a rebuild would lose.</summary>
     internal const string HoldsWorkReason =
@@ -3599,8 +3598,9 @@ public class ConversationsController(
     /// </para>
     /// <para>
     /// The sandbox answer, recorded in <c>docs/deployment/AUTH_ENFORCE.md</c>: a grantee DOES inherit
-    /// the owner's sandbox, and this remark previously claimed the opposite. Releasing clears the pool
-    /// entry only, which never destroys the gateway session behind it; the recreate resolves the same
+    /// the owner's sandbox, and this remark previously claimed the opposite. For a thread on the
+    /// workspace's SHARED sandbox, releasing clears the pool entry only, which never destroys the
+    /// gateway session behind it; the recreate resolves the same
     /// workspace id back out of persisted metadata, and the session cache is keyed
     /// <c>(workspaceId, appId)</c>, and an interactive UI caller presents no credential of their own,
     /// so the registry resolves <c>credential ?? _defaultCredential</c> and keys on the CONFIGURED
@@ -3608,7 +3608,10 @@ public class ConversationsController(
     /// the same entry and get the same live session - same id, same host path. So this
     /// costs ZERO sandbox provisions (it is a cache hit) plus the pooled agent's in-memory-only state,
     /// and sharing a conversation today shares its filesystem. Whether that should be so is an open
-    /// product decision tracked in #417; this releases the agent, never the sandbox.
+    /// product decision tracked in #417; for a shared-sandbox thread this releases the agent, never the
+    /// sandbox. A thread with a DEDICATED sandbox differs: that sandbox is its agent's alone, so it goes
+    /// with the agent (the pool's ThreadRemoved handler deletes it), and the grantee's next turn gets a
+    /// fresh one jailed to the same working directory. Only the container goes; the files stay.
     /// </para>
     /// <para>
     /// The reads below are ONE look at one entry, and the release re-validates that same entry under

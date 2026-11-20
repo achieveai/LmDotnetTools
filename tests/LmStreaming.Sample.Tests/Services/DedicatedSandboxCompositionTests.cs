@@ -8,6 +8,7 @@ using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using LmStreaming.Sample.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Time.Testing;
 using Xunit.Abstractions;
 
 namespace LmStreaming.Sample.Tests.Services;
@@ -667,11 +668,73 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
 
     private static string? WorkingDir(string createBody) => OwnedSandboxGateway.WorkingDir(createBody);
 
+    [Fact]
+    public async Task A_refresh_in_flight_across_a_release_never_leaves_the_old_directory_for_the_next_send()
+    {
+        // A send refreshes the pooled agent's sandbox first, with the agent's ref, old directory included. Here the
+        // gateway has forgotten that sandbox, so the refresh recreates it, and the recreate reaches the registry while
+        // the release route's move is deleting: it waits for the move, then creates. That sandbox must be in the new
+        // directory, or the next send would get it (the slot is keyed without the directory).
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        await using var fixture = await StartAsync(timeProvider: clock);
+        var a = await fixture.ProvisionAsync("PRs/r-7");
+        _ = fixture.BuildAgent(a);
+        var first = fixture.Gateway.Creates.Single().SessionId;
+        clock.Advance(TimeSpan.FromMinutes(1)); // past the liveness window, so the refresh probes
+
+        var probeGate = fixture.Gateway.HoldProbes();
+        var refresh = fixture.Pool.EnsureCurrentAgentAsync(a);
+        await fixture.Gateway.WaitForProbeStartedAsync(); // the refresh holds the agent's old ref now
+        var deleteGate = fixture.Gateway.HoldDeletes();
+        var release = fixture.ReleaseAsync(a, "PRs/r-9");
+        await fixture.Gateway.WaitForDeleteStartedAsync(); // the move has begun: the old sandbox is out of its slot
+        fixture.Gateway.Forget(first);
+        probeGate.SetResult(); // 404: the refresh recreates from its old ref, and waits for the move
+
+        // The refresh must read its 404 before the DELETE completes: the DELETE's eviction would cancel a probe still
+        // in flight, and a cancelled probe reads as alive. The 404 path evicts the session itself first, and nothing
+        // else can while the DELETE is held.
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (fixture.Registry.TryGetSessionById(first, out _))
+        {
+            DateTime.UtcNow.Should().BeBefore(deadline, "the refresh was expected to read its 404");
+            await Task.Delay(10);
+        }
+
+        deleteGate.SetResult();
+        using (var released = await release)
+        {
+            released.StatusCode.Should().Be(HttpStatusCode.OK);
+        }
+
+        (await fixture.Gateway.NextDeleteAsync()).Should().Be(first);
+        var refreshed = await refresh
+            .Invoking(task => task.WaitAsync(TimeSpan.FromSeconds(10)))
+            .Should()
+            .ThrowAsync<AgentNotPooledException>();
+        Logger.LogDebug("The held refresh ended: {Outcome}", refreshed.Which.Message);
+
+        _ = fixture.BuildAgent(a); // the next send
+        fixture.LogGateway();
+        var own = fixture.Registry.TryGetExistingSession(fixture.WorkspaceId, readOnlyEgress: false, a);
+        own.Should().NotBeNull();
+        own!.WorkspaceWorkingDir.Should().Be("PRs/r-9", "the next send must not get a sandbox in the old directory");
+        fixture
+            .Gateway.Creates.Skip(1)
+            .Should()
+            .OnlyContain(
+                create => WorkingDir(create.Body) == "PRs/r-9",
+                "nothing is created in the old directory after the move"
+            );
+        fixture.Gateway.Creates.Should().HaveCount(2, "the move costs exactly one new sandbox");
+    }
+
     private Task<Fixture> StartAsync(
         string? workspaceWorkingDir = null,
         string? root = null,
-        string? workspaceId = null
-    ) => Fixture.StartAsync(Logger, workspaceWorkingDir, root, workspaceId);
+        string? workspaceId = null,
+        TimeProvider? timeProvider = null
+    ) => Fixture.StartAsync(Logger, workspaceWorkingDir, root, workspaceId, timeProvider);
 
     private sealed class Fixture : IAsyncDisposable
     {
@@ -697,11 +760,16 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
             ILogger logger,
             string? workspaceWorkingDir,
             string? root = null,
-            string? workspaceId = null
+            string? workspaceId = null,
+            TimeProvider? timeProvider = null
         )
         {
             var gateway = new OwnedSandboxGateway();
-            var fixture = new Fixture(gateway, new FakeGatewayWebAppFactory(gateway, AppId, root: root), logger);
+            var fixture = new Fixture(
+                gateway,
+                new FakeGatewayWebAppFactory(gateway, AppId, root: root, timeProvider: timeProvider),
+                logger
+            );
             try
             {
                 fixture.WorkspaceId =

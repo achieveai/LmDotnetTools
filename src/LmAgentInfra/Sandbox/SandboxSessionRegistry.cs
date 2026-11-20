@@ -1033,30 +1033,48 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         var effectiveCredential = credential ?? _defaultCredential;
         var key = (workspaceId, effectiveCredential.AppId, effectiveRef.ReadOnlyEgress, effectiveRef.OwnerThreadId);
 
-        // An owner release that moves the conversation (ReleaseOwnedSessionsAsync with a commit) holds the owner's
-        // next sandbox back until it is done, so that sandbox is created from the committed settings.
-        if (
-            effectiveRef.OwnerThreadId is { } owner
-            && _ownerFences.TryGetValue(owner, out var fence)
-            && !fence.IsCompleted
-        )
+        if (effectiveRef.OwnerThreadId is not { } owner)
         {
-            return GetOrCreateAfterOwnerFenceAsync(fence, workspaceRef, ct, credential);
+            return AwaitAndEvictOnFailureAsync(key, GetOrAddSlot(key, effectiveRef, effectiveCredential));
         }
 
+        // An owner's slot is looked up under the release lock, so an owner release's take-out falls wholly before
+        // this lookup (and then its fence holds this create back) or wholly after it (and then it takes out what this
+        // added). A release that moves the conversation holds the owner's next sandbox back until it is done, and a
+        // ref captured before that move is re-resolved to the directory it committed: either way the sandbox is
+        // created from the committed settings, whichever path asks (a fresh build, a refresh, a liveness recreate).
+        Task? fence;
+        Lazy<Task<SandboxSession>>? lazy = null;
+        lock (_ownerReleaseLock)
+        {
+            if (!_ownerFences.TryGetValue(owner, out fence) || fence.IsCompleted)
+            {
+                fence = null;
+                lazy = GetOrAddSlot(key, ResolveOwnerMove(effectiveRef), effectiveCredential);
+            }
+        }
+
+        return fence is not null
+            ? GetOrCreateAfterOwnerFenceAsync(fence, workspaceRef, ct, credential)
+            : AwaitAndEvictOnFailureAsync(key, lazy!);
+    }
+
+    /// <summary>The slot for <paramref name="key"/>, adding a creation from <paramref name="workspaceRef"/> when empty.</summary>
+    private Lazy<Task<SandboxSession>> GetOrAddSlot(
+        (string WorkspaceId, string AppId, bool ReadOnlyEgress, string? OwnerThreadId) key,
+        WorkspaceRef workspaceRef,
+        SandboxCredential credential
+    ) =>
         // Use CancellationToken.None inside the single-flight Lazy factory: the shared creation task
         // must not be poisoned by the first caller's request-scoped token being cancelled (e.g. that
         // caller disconnecting), which would otherwise fail it for all concurrent waiters.
-        var lazy = _sessions.GetOrAdd(
+        _sessions.GetOrAdd(
             key,
             _ => new Lazy<Task<SandboxSession>>(
-                () => CreateSessionAsync(effectiveRef, CancellationToken.None, effectiveCredential),
+                () => CreateSessionAsync(workspaceRef, CancellationToken.None, credential),
                 LazyThreadSafetyMode.ExecutionAndPublication
             )
         );
-
-        return AwaitAndEvictOnFailureAsync(key, lazy);
-    }
 
     /// <summary>
     /// Awaits the cached creation task. On failure the cached <see cref="Lazy{T}"/> is evicted so a

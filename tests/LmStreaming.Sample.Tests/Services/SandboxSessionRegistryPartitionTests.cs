@@ -386,6 +386,7 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
 
         var release = registry.ReleaseOwnedSessionsAsync(
             "thread-a",
+            "PRs/r-7",
             () =>
             {
                 postsWhenCommitted = calls.PostCount;
@@ -490,6 +491,7 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
         var commitStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = registry.ReleaseOwnedSessionsAsync(
             "thread-a",
+            "PRs/r-9",
             async () =>
             {
                 commitStarted.SetResult();
@@ -538,6 +540,66 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
             await registry.WaitForOwnerMoveAsync("thread-a");
             return await registry.GetOrCreateSessionAsync(OwnedRef("thread-a", stored));
         }
+    }
+
+    [Theory]
+    [InlineData("waits at the move's fence")]
+    [InlineData("arrives after the move")]
+    [InlineData("is a liveness recreate held across the move")]
+    public async Task A_create_from_a_ref_captured_before_a_move_builds_in_the_directory_the_move_committed(string how)
+    {
+        // A refresh, a liveness recreate or a tool call of an agent built before the move still carries the old
+        // directory. Created as asked, that sandbox would sit in the owner's slot (keyed without the directory), and
+        // the next send, which asks for the new directory, would get it.
+        var (registry, calls) = CreateRegistry();
+        var stale = OwnedRef("thread-a", "PRs/r-7");
+        var old = await registry.GetOrCreateSessionAsync(stale);
+        Task<SandboxSession>? early = null;
+        TaskCompletionSource? deleteGate = null;
+        TaskCompletionSource? probeGate = null;
+        if (how == "waits at the move's fence")
+        {
+            deleteGate = calls.HoldDeletes();
+        }
+        else if (how == "is a liveness recreate held across the move")
+        {
+            // Created without a probe, so this one probes, and is held there while the move runs.
+            probeGate = calls.HoldProbes();
+            early = registry.GetOrCreateLiveSessionAsync(stale);
+            await calls.WaitForProbeStartedAsync();
+        }
+
+        var release = registry.ReleaseOwnedSessionsAsync("thread-a", "PRs/r-9", () => Task.CompletedTask);
+        if (deleteGate is not null)
+        {
+            await calls.WaitForDeleteStartedAsync();
+            early = registry.GetOrCreateSessionAsync(stale);
+            deleteGate.SetResult();
+        }
+
+        await release.WaitAsync(Patience);
+        calls.Evict(old.SessionId); // the gateway forgets what it deleted
+        probeGate?.SetResult();
+        var resolved = await (early ?? registry.GetOrCreateSessionAsync(stale)).WaitAsync(Patience);
+        var next = await registry.GetOrCreateSessionAsync(OwnedRef("thread-a", "PRs/r-9"));
+        LogCalls(calls);
+        Logger.LogDebug(
+            "Stale create ({How}) got {SessionId} in {WorkingDir}; the next send got {NextSessionId}",
+            how,
+            resolved.SessionId,
+            resolved.WorkspaceWorkingDir,
+            next.SessionId
+        );
+
+        resolved.SessionId.Should().NotBe(old.SessionId, "the released sandbox is never handed out again");
+        resolved.WorkspaceWorkingDir.Should().Be("PRs/r-9", "a ref from before the move is re-resolved");
+        calls
+            .PostBodies.Skip(1)
+            .Select(WorkingDirSent)
+            .Should()
+            .AllBe("PRs/r-9", "every create after the first is the move's");
+        next.SessionId.Should().Be(resolved.SessionId, "the next send reuses the sandbox in the new directory");
+        calls.PostCount.Should().Be(2, "the move costs exactly one new sandbox");
     }
 
     private static WorkspaceRef OwnedRef(string owner, string directory) =>
@@ -637,6 +699,7 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
                 if (req.Method == HttpMethod.Get && path.Contains("/sandboxes/", StringComparison.Ordinal))
                 {
                     var id = path[(path.LastIndexOf('/') + 1)..];
+                    await calls.BeginProbeAsync();
                     return calls.IsAlive(id)
                         ? new HttpResponseMessage(HttpStatusCode.OK)
                         : new HttpResponseMessage(HttpStatusCode.NotFound)
@@ -721,6 +784,33 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
 
         /// <summary>The most DELETEs the gateway was answering at one time.</summary>
         public int MaxDeletesInFlight => Volatile.Read(ref _maxDeletesInFlight);
+
+        private readonly SemaphoreSlim _probesStarted = new(0);
+        private TaskCompletionSource? _probeGate;
+
+        /// <summary>Holds every liveness probe from now on until the returned source is completed.</summary>
+        public TaskCompletionSource HoldProbes()
+        {
+            var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            // Only probes from now on count: earlier ones must not satisfy the next wait.
+            while (_probesStarted.Wait(0)) { }
+
+            Volatile.Write(ref _probeGate, gate);
+            return gate;
+        }
+
+        public async Task WaitForProbeStartedAsync() =>
+            (await _probesStarted.WaitAsync(Patience)).Should().BeTrue("a liveness probe was expected");
+
+        /// <summary>Counts a liveness probe as begun and waits at the gate, if one is set.</summary>
+        public async Task BeginProbeAsync()
+        {
+            _ = _probesStarted.Release();
+            if (Volatile.Read(ref _probeGate) is { } gate)
+            {
+                await gate.Task;
+            }
+        }
 
         /// <summary>Holds every DELETE from now on until the returned source is completed.</summary>
         public TaskCompletionSource HoldDeletes()
