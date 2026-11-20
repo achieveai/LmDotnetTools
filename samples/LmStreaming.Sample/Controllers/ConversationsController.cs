@@ -1697,6 +1697,28 @@ public class ConversationsController(
         {
             return (null, PrincipalConflict(threadId, operation, ex));
         }
+        catch (DedicatedSandboxModeUnsupportedException ex)
+        {
+            // The thread's stored mode gained a tool a dedicated conversation may not have after it took the mode
+            // (the routes refuse every way in). A conflict with the thread's state, not a bad request.
+            logger.LogWarning(
+                "{Operation} for thread {ThreadId} refused: its mode is not allowed in a dedicated sandbox",
+                operation,
+                threadId
+            );
+            return (
+                null,
+                Conflict(
+                    new
+                    {
+                        error = ConversationDedicatedSandbox.ModeUnsupportedCode,
+                        code = ConversationDedicatedSandbox.ModeUnsupportedCode,
+                        detail = ex.Message,
+                        threadId,
+                    }
+                )
+            );
+        }
     }
 
     /// <summary>

@@ -1247,7 +1247,7 @@ try
                         // fork, a mode edited after the fact), so this is the check nothing can route around.
                         if (ConversationDedicatedSandbox.ModeRefusal(caps) is { } modeRefusal)
                         {
-                            throw new InvalidOperationException(modeRefusal);
+                            throw new DedicatedSandboxModeUnsupportedException(modeRefusal);
                         }
 
                         workspaceRef = workspaceRef with

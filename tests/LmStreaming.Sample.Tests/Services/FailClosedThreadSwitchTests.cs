@@ -38,6 +38,7 @@ public class FailClosedThreadSwitchTests : LoggingTestBase
             { ConversationDedicatedSandbox.PropertyKey, new Dictionary<string, string>(), "Dictionary" },
             { ConversationDedicatedSandbox.PropertyKey, JsonSerializer.SerializeToElement("true"), "String" },
             { ConversationDedicatedSandbox.PropertyKey, JsonSerializer.SerializeToElement((object?)null), "Null" },
+            { ConversationDedicatedSandbox.PropertyKey, JsonSerializer.SerializeToElement(1), "Number" },
             {
                 ConversationDedicatedSandbox.PropertyKey,
                 JsonSerializer.SerializeToElement(new { on = true }),

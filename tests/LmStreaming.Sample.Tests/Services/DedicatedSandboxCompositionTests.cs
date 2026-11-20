@@ -854,19 +854,114 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         forked.StatusCode.Should().Be(HttpStatusCode.Created);
         var fork = JsonSerializer.Deserialize<ForkConversationResponse>(forkBody, JsonSerializerOptions.Web)!.ThreadId;
         (await ConversationDedicatedSandbox.ReadAsync(fixture.Store, fork)).Should().BeTrue();
+        (await fixture.Store.LoadMetadataAsync(fork))!
+            .Properties![MultiTurnAgentPool.ModePropertyKey]
+            .ToString()
+            .Should()
+            .Be(miniAppMode.Id, "the fork stores its source's mode");
 
+        // A send builds each thread's agent from the mode it has stored, as a turn does.
         foreach (var threadId in new[] { a, fork })
         {
-            fixture
-                .Invoking(f =>
-                    f.Pool.GetOrCreateAgent(threadId, miniAppMode, "test", null, requestedWorkspaceId: f.WorkspaceId)
-                )
+            using var sent = await fixture.SendAsync(threadId);
+            sent.StatusCode.Should().Be(HttpStatusCode.Conflict, "the factory refuses the stored mode");
+            (await sent.Content.ReadAsStringAsync())
                 .Should()
-                .Throw<InvalidOperationException>()
-                .WithMessage("*not confined to the conversation's working directory*");
+                .Contain("\"code\":\"dedicated_sandbox_mode_unsupported\"");
         }
 
+        fixture
+            .Invoking(f => f.Pool.GetOrCreateAgent(a, miniAppMode, "test", null, requestedWorkspaceId: f.WorkspaceId))
+            .Should()
+            .Throw<DedicatedSandboxModeUnsupportedException>()
+            .WithMessage("*not confined to the conversation's working directory*");
         fixture.Gateway.Creates.Should().BeEmpty("a refused build creates no sandbox");
+    }
+
+    [Theory]
+    [InlineData(ToolGroups.MiniAppDebug)]
+    [InlineData(ToolGroups.BrowserDebug)]
+    public async Task A_stop_only_release_of_a_dedicated_thread_in_a_mode_that_serves_Mini_Apps_answers_200_and_its_next_send_is_still_refused(
+        string toolGroup
+    )
+    {
+        // A release without a directory moves nothing, so it does not check the mode; the factory still refuses.
+        await using var fixture = await StartAsync(configureServices: EnableMiniAppsAndBrowserDebug);
+        var miniAppMode = await fixture.CreateSandboxModeWithAsync(toolGroup);
+        var a = await fixture.ProvisionAsync(
+            "PRs/r-7",
+            properties: new Dictionary<string, object> { [MultiTurnAgentPool.ModePropertyKey] = miniAppMode.Id }
+        );
+
+        using var released = await fixture.ReleaseAsync(a, directory: null);
+        released.StatusCode.Should().Be(HttpStatusCode.OK, "a stop-only release moves nothing");
+        (await ConversationWorkingDirectory.ReadAsync(fixture.Store, a)).Should().Be("PRs/r-7");
+
+        using var sent = await fixture.SendAsync(a);
+        sent.StatusCode.Should().Be(HttpStatusCode.Conflict, "the next build is still refused");
+        (await sent.Content.ReadAsStringAsync()).Should().Contain(ConversationDedicatedSandbox.ModeUnsupportedCode);
+        fixture.Gateway.Creates.Should().BeEmpty("a refused build creates no sandbox");
+    }
+
+    [Theory]
+    [InlineData(ToolGroups.MiniAppDebug)]
+    [InlineData(ToolGroups.BrowserDebug)]
+    public async Task A_shared_thread_provisions_switches_into_and_builds_in_a_mode_that_serves_Mini_Apps(
+        string toolGroup
+    )
+    {
+        // Only a dedicated sandbox is jailed, so only a dedicated conversation is refused these tools.
+        await using var fixture = await StartAsync(configureServices: EnableMiniAppsAndBrowserDebug);
+        var miniAppMode = await fixture.CreateSandboxModeWithAsync(toolGroup);
+
+        using var provisioned = await fixture.ProvisionOverHttpAsync(null, dedicated: false, modeId: miniAppMode.Id);
+        var provisionBody = await provisioned.Content.ReadAsStringAsync();
+        Logger.LogDebug(
+            "Shared provision in {ModeId} answered {Status}: {Body}",
+            miniAppMode.Id,
+            (int)provisioned.StatusCode,
+            provisionBody
+        );
+        provisioned.StatusCode.Should().Be(HttpStatusCode.OK, "a shared conversation may take the mode");
+
+        var b = await fixture.ProvisionAsync(
+            null,
+            dedicated: false,
+            properties: new Dictionary<string, object>
+            {
+                [MultiTurnAgentPool.ModePropertyKey] = SystemChatModes.WorkspaceAgentModeId,
+            }
+        );
+        using var switched = await fixture.Client.PostAsJsonAsync(
+            $"/api/conversations/{b}/mode",
+            new SwitchModeRequest { ModeId = miniAppMode.Id }
+        );
+        var switchBody = await switched.Content.ReadAsStringAsync();
+        Logger.LogDebug(
+            "Shared switch of {ThreadId} answered {Status}: {Body}",
+            b,
+            (int)switched.StatusCode,
+            switchBody
+        );
+        switched.StatusCode.Should().Be(HttpStatusCode.OK, "a shared conversation may switch into the mode");
+        (await fixture.Store.LoadMetadataAsync(b))!
+            .Properties![MultiTurnAgentPool.ModePropertyKey]
+            .ToString()
+            .Should()
+            .Be(miniAppMode.Id);
+
+        var agent = fixture.Pool.GetOrCreateAgent(
+            b,
+            miniAppMode,
+            "test",
+            null,
+            requestedWorkspaceId: fixture.WorkspaceId
+        );
+        agent.Should().NotBeNull();
+        fixture
+            .Registry.TryGetExistingSession(fixture.WorkspaceId, readOnlyEgress: false, ownerThreadId: null)
+            .Should()
+            .NotBeNull("the shared thread's agent runs in the shared sandbox");
     }
 
     [Fact]
@@ -1088,6 +1183,22 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
                     DedicatedSandbox = dedicated,
                 }
             );
+
+        /// <summary>Sends a turn over REST, which builds the agent from the thread's stored mode.</summary>
+        public async Task<HttpResponseMessage> SendAsync(string threadId)
+        {
+            var response = await Client.PostAsJsonAsync(
+                $"/api/conversations/{threadId}/messages",
+                new SendMessageRequest { Text = "debug the app" }
+            );
+            _logger.LogDebug(
+                "Send to {ThreadId} answered {Status}: {Body}",
+                threadId,
+                (int)response.StatusCode,
+                await response.Content.ReadAsStringAsync()
+            );
+            return response;
+        }
 
         public async Task<HttpResponseMessage> ReleaseAsync(string threadId, string? directory)
         {

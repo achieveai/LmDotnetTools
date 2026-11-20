@@ -616,9 +616,12 @@ rest of the workspace is read-only to it (gateway ADR 0044). Sandboxes are never
   therefore never gets a mode with Mini App debugging or browser debugging (which opens a Mini App by id).
   Provision, mode switch and a release with a directory (a move) answer `400` `dedicated_sandbox_mode_unsupported`;
   a release without one only stops the sandbox and answers `200`. Building the agent refuses such a mode too (a
-  fork, or a mode edited later). Human browser launches are unchanged. The conversation's
-  directory may not be the workspace root, `mini-web-apps` or inside it (`400` `working_directory_invalid`), so
-  its agent can never write an app the host would run.
+  fork, or a mode edited later), so a send then answers `409` `dedicated_sandbox_mode_unsupported`. The
+  conversation's directory may not be the workspace root, `mini-web-apps` or inside it (`400`
+  `working_directory_invalid`), so its agent can never write an app the host would run.
+- **The owner's own Mini App launch stays open.** `POST /api/conversations/{threadId}/apps/{appId}/launch` works on
+  a dedicated conversation as on any other: it is the user, not the agent, who opens the app, and the app comes from
+  `mini-web-apps`, which the conversation's agent cannot write. Only the agent's tools are refused.
 - **Rollback.** Not supported. A host from before dedicated sandboxes ignores `sample.dedicatedSandbox` and runs
   such a conversation in the shared sandbox, writable everywhere. Do not roll a host with dedicated
   conversations back to such a build.
