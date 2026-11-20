@@ -548,7 +548,7 @@ public static class SqliteSchemaInitializer
     {
         ArgumentNullException.ThrowIfNull(connectionFactory);
 
-        await using var connection = await connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        await using var connection = await connectionFactory.GetWriteConnectionAsync(ct).ConfigureAwait(false);
         await InitializeSchemaAsync(connection, ct).ConfigureAwait(false);
     }
 }
