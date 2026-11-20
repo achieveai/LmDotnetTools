@@ -34,6 +34,8 @@ public sealed class ReviewdAutoSlotTests : IDisposable
 
     /// <summary>The gateway refuses every operation submit at its record limit.</summary>
     private bool _refuseAtCapacity;
+    private bool _settlePrepare;
+    private Func<Task>? _beforePrepare;
 
     /// <summary>The configured <c>Reviewd:LanesPerRepo</c>, when set.</summary>
     private int? _lanes;
@@ -287,6 +289,56 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         attempt["stage"]!.GetValue<string>().Should().Be("failed-released");
         attempt["cleanupState"]!.GetValue<string>().Should().Be("released");
         _phases.Should().Equal("prepare 17/2");
+    }
+
+    // A settled prepare failure cleans up and releases its own slot. The failure is the PR's own, so it surfaces as
+    // itself (the batch counts it toward quarantine), not as a lost claim, which the batch never counts.
+    [Fact]
+    public async Task A_settled_prepare_failure_surfaces_itself_after_its_own_cleanup_released_the_slot()
+    {
+        _settlePrepare = true;
+
+        var run = () => RunAsync("--slot", "2");
+
+        (await run.Should().ThrowAsync<ReviewRunner.SettledSandboxException>())
+            .Which.Should()
+            .NotBeOfType<ReviewRunner.SlotClaimLostException>();
+        _phases.Should().Equal("prepare 17/2", "cleanup 17/2");
+        (await GetAsync(OwnerKey(2)))!["state"]!.GetValue<string>().Should().Be("released");
+        var attempt = (await GetAsync(AttemptKey(17)))!;
+        attempt["stage"]!.GetValue<string>().Should().Be("failed-released");
+        attempt["cleanupState"]!.GetValue<string>().Should().Be("released");
+    }
+
+    // A sweep that reset the slot before a refused prepare released its claim owns the record: the release error
+    // neither overwrites the reset attempt nor counts against the PR.
+    [Fact]
+    public async Task A_refused_prepare_whose_slot_a_sweep_already_reset_leaves_the_reset_and_reports_a_lost_claim()
+    {
+        _notIdle.Add(2);
+        _beforePrepare = async () =>
+        {
+            var attempt = (await GetAsync(AttemptKey(17)))!;
+            attempt["stage"] = "failed-released";
+            attempt["swept"] = true;
+            using var connection = PrThreadBindings.Connection(_database);
+            connection.Open();
+            await SlotRelease.ReleaseAsync(
+                connection,
+                OwnerKey(2),
+                attempt["claimToken"]!.GetValue<string>(),
+                AttemptKey(17),
+                attempt,
+                CancellationToken.None
+            );
+        };
+
+        var run = () => RunAsync("--slot", "2");
+
+        await run.Should().ThrowAsync<ReviewRunner.SlotClaimLostException>();
+        var left = (await GetAsync(AttemptKey(17)))!;
+        left["swept"]!.GetValue<bool>().Should().BeTrue("the sweep's record is not overwritten");
+        left.ContainsKey("cleanupError").Should().BeFalse();
     }
 
     [Theory]
@@ -752,6 +804,54 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         var payload = JsonNode.Parse(body.RootElement.GetProperty("args")[3].GetString()!)!;
         payload["stepOperation"]!.GetValue<string>().Should().Be(operation);
         payload["pr"]!.GetValue<string>().Should().Be("7");
+    }
+
+    [Fact]
+    public async Task A_commit_whose_output_read_is_cut_is_lost_and_its_replay_resends_the_same_command()
+    {
+        // The connection drops while the SDK reads the finished commit's output. That reaches the runner as a plain
+        // IOException, which must count as a lost response so the attempt resumes at verify-pending. The replay under
+        // the same id must send the gateway the very same command (script, args, cwd and timeout), since the
+        // gateway replays only an identical request and refuses a changed one (409). The lost operation is never
+        // deleted: its record is what the replay reads, so only the settled replay releases it.
+        var gateway = new ScriptedSandboxGateway
+        {
+            CommandStdout = """{"status":"committed","commit":"cccccccccccccccccccccccccccccccccccccccc"}""",
+            TruncateStdout = true,
+        };
+        using var http = new HttpClient(gateway, disposeHandler: false);
+        using var sandbox = new SandboxClient(
+            new SandboxClientOptions(
+                new Uri("http://127.0.0.1:8080"),
+                "app",
+                "",
+                TimeSpan.FromMinutes(10),
+                TimeSpan.FromSeconds(30)
+            ),
+            http
+        );
+        var operation = Guid.NewGuid().ToString("N");
+        var args = new JsonObject { ["pr"] = "7", ["claimToken"] = "claim" };
+        Task<JsonObject> Commit() =>
+            ReviewRunner.ExecuteSandboxAsync(sandbox, "sess-1", "commit", args, operation, CancellationToken.None);
+
+        var cut = await FluentActions.Invoking(Commit).Should().ThrowAsync<IOException>();
+        ReviewRunner.CommitResponseLost(cut.Which).Should().BeTrue("the commit ran; only its output was lost");
+        gateway.DeletedOperations.Should().BeEmpty("the lost operation's record is what the replay reads");
+
+        gateway.TruncateStdout = false;
+        var replayed = await Commit();
+
+        replayed["commit"]!.GetValue<string>().Should().Be(new string('c', 40));
+        gateway.SubmitBodies.Should().HaveCount(2);
+        gateway.SubmitBodies[1].Should().Be(gateway.SubmitBodies[0]);
+        using var body = System.Text.Json.JsonDocument.Parse(gateway.SubmitBodies[0]);
+        body.RootElement.GetProperty("operation_id").GetString().Should().Be(operation);
+        gateway
+            .DeletedOperations.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Be(operation, "the settled replay is released");
     }
 
     [SkippableFact]
@@ -1263,6 +1363,10 @@ public sealed class ReviewdAutoSlotTests : IDisposable
                     ["evidencePreserved"] = true,
                 }
             );
+        if (phase == "prepare" && _beforePrepare is not null)
+            _beforePrepare().GetAwaiter().GetResult();
+        if (_settlePrepare && phase == "prepare")
+            throw new ReviewRunner.SettledSandboxException("prepare", "Sandbox prepare failed (exit 1).");
         if (_notIdle.Contains(slot))
             throw new ReviewRunner.SlotNotIdleException("Native slot retains an owner.");
         if (_refuseAtCapacity)
