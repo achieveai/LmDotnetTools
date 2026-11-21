@@ -151,7 +151,10 @@ internal static class ReviewRunner
         var workspace = await client.GetWorkspaceAsync(options.Required("workspace"), ct);
         var session = await sandbox.GetAsync(options.Required("session"), ct);
         if (!MatchesWorkspace(session.WorkspaceRelativePath, workspace.DirectoryRelPath))
+        {
             throw new InvalidOperationException("Sandbox session does not identify the selected host workspace.");
+        }
+
         return await ExecuteSandboxAsync(
             sandbox,
             options.Required("session"),
@@ -212,10 +215,12 @@ internal static class ReviewRunner
         string phase,
         JsonObject args,
         string operation,
-        CancellationToken ct
+        CancellationToken ct,
+        string? fence = null
     )
     {
-        // The renewal shares the connection, so it stops before the caller writes again.
+        // The renewal shares the connection, so it stops before the caller writes again. A reaper's reset renews under
+        // its own fence (SlotRelease.ResetFence); a lane renews only an unfenced claim.
         using var stepDone = CancellationTokenSource.CreateLinkedTokenSource(ct);
         (string Before, string After)? renewed = null;
         var stopped = false;
@@ -232,6 +237,7 @@ internal static class ReviewRunner
             stepDone.Cancel();
             await renewal;
             if ((phase == "cleanup" || stopped) && renewed is { } lease)
+            {
                 _ = await SlotRelease.RestoreLeaseAsync(
                     connection,
                     ownerKey,
@@ -239,6 +245,8 @@ internal static class ReviewRunner
                     lease.After,
                     CancellationToken.None
                 );
+            }
+
             throw;
         }
         finally
@@ -270,14 +278,21 @@ internal static class ReviewRunner
                         active = true;
                     }
                     if (!active && await StopStuckStepAsync())
+                    {
                         return;
+                    }
                     // A renewal that fails (a busy database) never stopped the step either; the next one retries.
                     // Failures that outlast the lease let a sweep reset the slot under the step, so the runner's
                     // next save checks the claim and stops before it sends or commits (SlotClaimLostException).
                     try
                     {
-                        if (await SlotRelease.RenewAsync(connection, ownerKey, claimToken, token) is { } lease)
+                        if (
+                            await SlotRelease.RenewAsync(connection, ownerKey, claimToken, token, fence: fence) is
+                            { } lease
+                        )
+                        {
                             renewed = (renewed?.Before ?? lease.Before, lease.After);
+                        }
                     }
                     catch (Exception failure)
                         when (failure is not OperationCanceledException || !token.IsCancellationRequested)
@@ -287,12 +302,14 @@ internal static class ReviewRunner
                     try
                     {
                         if (active)
+                        {
                             _ = await sandbox(
                                 "step-activity",
                                 new JsonObject { ["operation"] = operation },
                                 Guid.NewGuid().ToString("N"),
                                 token
                             );
+                        }
                     }
                     catch (Exception failure)
                         when (failure is not OperationCanceledException || !token.IsCancellationRequested)
@@ -321,7 +338,10 @@ internal static class ReviewRunner
                     bounded.Token
                 );
                 if (result["stopped"]?.GetValue<bool>() != true)
+                {
                     return false;
+                }
+
                 stopped = true;
                 Console.Error.WriteLine(
                     $"Step {operation} ({phase}) killed: its watchdog stopped beating and no agent is active. "
@@ -456,9 +476,12 @@ internal static class ReviewRunner
             && TryParseObject(output) is { } refusal
             && refusal["status"]?.GetValue<string>() == "slot-not-idle"
         )
+        {
             throw new SlotNotIdleException(
                 refusal["reason"]?.GetValue<string>() ?? "Native slot is not idle; nothing was prepared."
             );
+        }
+
         if (exitCode != 0)
         {
             // Surface the sandbox's own diagnostics (tail of stderr, falling back to stdout) so a failure
@@ -576,13 +599,22 @@ internal static class ReviewRunner
             && options.Get("head") is { } expectedHead
             && (finishedResume ? attempt!["headSha"] : current["HeadSha"])?.GetValue<string>() != expectedHead
         )
+        {
             throw new InvalidOperationException("Selected PR head changed; no action allowed.");
+        }
+
         if (resume && !cleanupOnly && attempt?["reasoningEffort"]?.GetValue<string>() != reasoningEffort)
+        {
             throw new InvalidOperationException(
                 "Requested reasoning effort differs from the retained attempt; no resume allowed."
             );
+        }
+
         if (cleanupOnly && !options.Has("execute"))
+        {
             throw new InvalidOperationException("Owner cleanup requires --execute; no adoption was performed.");
+        }
+
         var cleanupResume =
             (resume || cleanupOnly)
             && attempt?["stage"]?.GetValue<string>() == "completed-verified"
@@ -598,12 +630,18 @@ internal static class ReviewRunner
             && attempt["confirmationIdempotencyKey"] is null
             && successful is null;
         if (cleanupOnly && !cleanupResume && !failedCleanup)
+        {
             throw new InvalidOperationException(
                 "Cleanup-only requires a verified owner or an identified failed original review awaiting cleanup."
             );
+        }
+
         var verificationResume = resume && attempt?["stage"]?.GetValue<string>() == "verify-pending";
         if (resume && !options.Has("execute"))
+        {
             throw new InvalidOperationException("Resume requires --execute.");
+        }
+
         if (
             resume
             && attempt is not null
@@ -617,7 +655,10 @@ internal static class ReviewRunner
                 ) || (attempt["confirmationIdempotencyKey"] is not null && attempt["confirmationInputId"] is null)
             )
         )
+        {
             throw new InvalidOperationException("Confirmation admission is unresolved; no resend allowed.");
+        }
+
         if (
             resume
             && !cleanupResume
@@ -633,7 +674,10 @@ internal static class ReviewRunner
                     )
             )
         )
+        {
             throw new InvalidOperationException("Only identified admitted review or confirmation stages can resume.");
+        }
+
         var earlierHead =
             attempt is not null
             && !resume
@@ -679,12 +723,17 @@ internal static class ReviewRunner
                     continue;
                 }
                 if ((resume || cleanupOnly) && owner["prId"]?.GetValue<string>() == pr)
+                {
                     continue;
+                }
+
                 if (
                     owner["cleanupState"]?.GetValue<string>() == "released"
                     && owner["claimToken"]?.GetValue<string>() is { Length: > 0 }
                 )
+                {
                     continue;
+                }
                 // A successful receipt is review evidence, not a slot release. Its current attempt
                 // must certify owner cleanup; legacy successes require explicit cleanup-only adoption.
                 if (owner["stage"]?.GetValue<string>() == "completed-verified")
@@ -694,7 +743,9 @@ internal static class ReviewRunner
                         latest?["cleanupState"]?.GetValue<string>() == "released"
                         && latest["claimToken"]?.GetValue<string>() is { Length: > 0 }
                     )
+                    {
                         continue;
+                    }
                     // The PR's latest attempt may be a later review in another slot. This receipt still holds its
                     // own slot only while that slot's owner row carries the receipt's claim.
                     if (
@@ -705,18 +756,29 @@ internal static class ReviewRunner
                             || slotOwner["claimToken"]?.GetValue<string>() != receiptClaim
                         )
                     )
+                    {
                         continue;
+                    }
+
                     var adopted = await ReadAsync("reviewd/legacy-cleaned/" + SlotRelease.Digest(ownerText));
                     if (adopted?["cleanupState"]?.GetValue<string>() == "released")
+                    {
                         continue;
+                    }
+
                     if (cleanupOnly)
                     {
                         if (owner["threadId"]?.GetValue<string>() is { Length: > 0 } historicalThread)
+                        {
                             ownerThreads.Add(historicalThread);
+                        }
                         else
+                        {
                             throw new InvalidOperationException(
                                 "Legacy completed owner lacks an identified thread to drain."
                             );
+                        }
+
                         adoptedHistory.Add(ownerText);
                         continue;
                     }
@@ -727,10 +789,12 @@ internal static class ReviewRunner
                 }
                 var release = await ReadAsync(SlotRelease.Key(ownerText));
                 if (release is null || !SlotRelease.Allows(release, ownerText, pr, options.Required("session")))
+                {
                     throw new SlotUnavailableException(
                         "Selected slot has an incomplete review; no reset allowed.",
                         owner
                     );
+                }
             }
         }
         var boundThread = await PrThreadBindings.GetAsync(database, repo, pr, ct);
@@ -758,13 +822,17 @@ internal static class ReviewRunner
         {
             var match = await client.FindConversationByTitlePrefixAsync($"{repo.RepoName}-{pr}-", workspace, mode, ct);
             if (match is { ClientToolsDisabled: false })
+            {
                 questionThread ??= match.ThreadId;
+            }
             else if (match is not null)
             {
                 thread = match.ThreadId;
                 // Cache the host-resolved thread in this db for the fast path on subsequent steps.
                 if (boundThread is null)
+                {
                     await PrThreadBindings.SetAsync(database, repo, pr, thread, ct);
+                }
             }
         }
         // True when this review continues an existing conversation (prior revision of this PR) rather
@@ -796,7 +864,9 @@ internal static class ReviewRunner
         // Whatever keeps failing it, a head the reaper reset MaxResetRetries times waits for a new push. The batch can
         // admit a failed entry again without a new pick, so the runner holds the line too.
         if (resetsOfHead >= PrSelection.MaxResetRetries)
+        {
             throw new ReviewNotAdmittedException($"PR head was reset {resetsOfHead} times; skipped until a new push.");
+        }
         // A prior conversation without a receipt in THIS db is only a risk if it is still running: its
         // receipt may live in whichever db ran it. Ask the host, not our bookkeeping.
         // The host is also the cross-db record of what was already admitted: a conversation holding this exact
@@ -831,14 +901,18 @@ internal static class ReviewRunner
                     )
                 )
             )
+            {
                 throw new ReviewNotAdmittedException("PR head was already reviewed by another run; skipped.");
+            }
             // A conversation with no output (never sent, or sent and never answered) holds no earlier review, so the
             // prompt must not claim one.
             if (
                 headMatch.ThreadId == thread
                 && transcript.All(entry => entry.Role.Equals("User", StringComparison.OrdinalIgnoreCase))
             )
+            {
                 reusedConversation = false;
+            }
         }
         if (
             !resume
@@ -865,7 +939,10 @@ internal static class ReviewRunner
                 || (questionThread is not null && await TreeInFlightAsync(client, questionThread, now(), abandoned, ct))
             )
         )
+        {
             throw new ReviewDeferredException("An earlier conversation for this PR is still running; retry deferred.");
+        }
+
         if (
             resume
             && !cleanupResume
@@ -884,9 +961,12 @@ internal static class ReviewRunner
                 || attempt["reviewInputId"]?.GetValue<string>() is not { Length: > 0 }
             )
         )
+        {
             throw new InvalidOperationException(
                 "Resume identity, admission or current PR does not match the retained attempt."
             );
+        }
+
         if (
             cleanupResume
             && (
@@ -901,9 +981,12 @@ internal static class ReviewRunner
                     != attempt["artifactCommit"]?["commit"]?.GetValue<string>()
             )
         )
+        {
             throw new InvalidOperationException(
                 "Cleanup identity or retained artifact does not match the verified owner."
             );
+        }
+
         if (
             failedCleanup
             && (
@@ -916,7 +999,10 @@ internal static class ReviewRunner
                 || thread is null
             )
         )
+        {
             throw new InvalidOperationException("Failed cleanup identity differs from the retained original owner.");
+        }
+
         if (failedCleanup)
         {
             var original = await client.GetStatusByInputIdAsync(
@@ -925,9 +1011,11 @@ internal static class ReviewRunner
                 ct
             );
             if (!original.Status.Equals("Errored", StringComparison.OrdinalIgnoreCase))
+            {
                 throw new InvalidOperationException(
                     "Failed cleanup requires the exact original input to be Errored; no reset allowed."
                 );
+            }
         }
         var args = new JsonObject
         {
@@ -979,9 +1067,13 @@ internal static class ReviewRunner
                 // A fresh re-review of an existing conversation reconciles the provider instead of
                 // refusing: if the conversation runs a different model, switch it to the current one.
                 if (resume)
+                {
                     await client.EnsureConversationBindingAsync(thread, workspace, provider, mode, ct);
+                }
                 else
+                {
                     await client.EnsureConversationReusableAsync(thread, workspace, provider, mode, ct);
+                }
             }
             // This wait runs before the claim is re-taken, so a retained owner must renew its own lease here.
             // Otherwise the lease lapses while the old run finishes and the reaper reclaims a live review
@@ -1015,7 +1107,10 @@ internal static class ReviewRunner
                     is { } refusal
                         and not "not_freezable"
                 )
+                {
                     throw new InvalidOperationException($"Host refused to unfreeze {thread}: {refusal}.");
+                }
+
                 await WaitAsync(client, thread, null, delay, ct, maxBusyReads: ReviewBusyReads, probe: abandoned);
             }
         }
@@ -1025,7 +1120,10 @@ internal static class ReviewRunner
         }
         // Only validated admitted resumes and outgoing-owner cleanup bypass fresh-admission age checks.
         if (!resume && !cleanupOnly)
+        {
             await EnsureCreationAgeAsync();
+        }
+
         var receipt = new JsonObject
         {
             ["repository"] = repo.DisplayName,
@@ -1040,12 +1138,19 @@ internal static class ReviewRunner
             ["threadId"] = thread,
         };
         if (reasoningEffort is not null)
+        {
             receipt["reasoningEffort"] = reasoningEffort;
+        }
+
         if (selection is not null)
+        {
             receipt["slotSelection"] = selection.DeepClone();
+        }
         // Resets of one head add up across its retries, whatever ended each one.
         if (resetsOfHead > 0)
+        {
             receipt["resetCount"] = resetsOfHead;
+        }
         // A readmit stays with its head across retries too, so a retry is not refused for an age the readmit cleared.
         if (
             attempt?["readmittedHead"]?.GetValue<string>() is { } readmittedHead
@@ -1063,12 +1168,19 @@ internal static class ReviewRunner
             // A passed-over reset conversation is not this receipt's thread, so it is named for the next retry, and an
             // earlier retry's one is carried on.
             if ((resetThread != thread ? resetThread : attempt!["resetThreadId"]?.GetValue<string>()) is { } passedOver)
+            {
                 receipt["resetThreadId"] = passedOver;
+            }
         }
         if (resume || cleanupOnly)
+        {
             receipt = attempt!.DeepClone().AsObject();
+        }
+
         if (cleanupOnly && attempt!["claimToken"] is null)
+        {
             receipt["legacyCleanupAdoption"] = true;
+        }
         // Archive the attempt the claim below overwrites before claiming, so the overwrite is never
         // the only copy of it.
         if (resume || cleanupOnly || attempt?["stage"]?.GetValue<string>() == "failed-released" || earlierHead)
@@ -1097,7 +1209,9 @@ internal static class ReviewRunner
         {
             await PrThreadBindings.ClearAsync(database, repo, pr, boundThread, ct);
             if (thread is not null)
+            {
                 await PrThreadBindings.SetAsync(database, repo, pr, thread, ct);
+            }
         }
         // A model turn can outlast the lease window, so renew the lease on every wait poll too; otherwise
         // the reaper mistakes a live review for a dead one between checkpoints.
@@ -1108,6 +1222,8 @@ internal static class ReviewRunner
         }
         args["adopt"] = receipt["legacyCleanupAdoption"]?.GetValue<bool>() == true;
         var store = new SqliteKvStore(connection);
+        // Set when the save after a successful commit finds the claim gone: a reset released and cleaned the slot.
+        var commitClaimLost = false;
         try
         {
             if (cleanupResume || failedCleanup)
@@ -1127,7 +1243,10 @@ internal static class ReviewRunner
                 await SaveAsync();
             }
             else
+            {
                 await sandbox("inspect-prepared", args, Guid.NewGuid().ToString("N"), ct);
+            }
+
             if (thread is null)
             {
                 receipt["stage"] = "provision-pending";
@@ -1149,7 +1268,10 @@ internal static class ReviewRunner
             }
             var revision = args["head"]!.GetValue<string>();
             if (!verificationResume)
+            {
                 await client.UpdateMetadataAsync(thread, $"{repo.RepoName}-{pr}-{revision[..8]}", null, ct);
+            }
+
             var contextPath = "/workspace/" + setup["contextPath"]!.GetValue<string>();
             var directory = "/workspace/" + setup["reviewDirectory"]!.GetValue<string>();
             var github = repo.Provider == "github";
@@ -1241,7 +1363,9 @@ internal static class ReviewRunner
                 var existing = await WaitInputAsync("review", receipt["reviewInputId"]!.GetValue<string>());
                 receipt["reviewResponse"] = existing?.ResponseText;
                 if (receipt["confirmationInputId"] is null)
+                {
                     receipt["stage"] = "review-completed";
+                }
             }
             // From here the review is finished: a moved target branch or a new push no longer stops it.
             args["reviewFinished"] = true;
@@ -1255,12 +1379,14 @@ internal static class ReviewRunner
                 await SaveAsync();
             }
             else
+            {
                 // A confirmation that finds a verified blocker the posted summary missed now corrects the verdict on the PR:
                 // 12 judged reviews posted an approval while their own confirmation said REQUEST_CHANGES or BLOCKED.
                 await SendAndWaitAsync(
                     "confirmation",
                     "Can you confirm if the PR feedback and replies to any discussion where you could add value have been posted. Audit and report existing publication receipts; do not post duplicates. Report your final verdict on the PR, with a brief rationale and any unresolved blockers. If the review is incomplete or blocked, state that explicitly rather than inferring approval. If this review verified a medium or high issue, or a failing required check this PR caused, that the summary you posted does not list as a blocker, reply in that summary thread now (on GitHub, a new PR comment): first \"REQUEST_CHANGES (replaces the verdict above)\", then each such blocker in one short line; record the reply in publication_receipts.json. Waiting for reviewer votes, approvals or policies is not such a blocker. You MUST return a non-empty final text response. End your response with a standalone line in exactly this format: verdict: <APPROVE | APPROVE_WITH_COMMENTS | REQUEST_CHANGES | BLOCKED | INCOMPLETE>. Choose exactly one value, do not leave the placeholder, and put nothing after this verdict line."
                 );
+            }
             // Only verify reads the summary threads, and a re-verify can find more (the lost round's own, on ADO), so
             // they stay out of args: a commit resubmitted under a lost one's id must send the same request, or the
             // gateway refuses it (409 idempotency_conflict) and the attempt is held at commit-pending.
@@ -1300,7 +1426,17 @@ internal static class ReviewRunner
                 await completion.ExecuteNonQueryAsync(ct);
                 transaction.Commit();
             }
-            await CleanupAsync();
+            if (commitClaimLost)
+            {
+                Console.Error.WriteLine(
+                    $"{repo.DisplayName} #{pr}: the commit landed after a reset took slot claim {claimToken}; "
+                        + "kept its result, no cleanup (the reset cleaned the slot)."
+                );
+            }
+            else
+            {
+                await CleanupAsync();
+            }
             Console.WriteLine(receipt.ToJsonString());
             return 0;
         }
@@ -1308,7 +1444,10 @@ internal static class ReviewRunner
         {
             // The reset already released the slot and recorded the attempt (a review never verified becomes a failed
             // admission that pick offers again), so nothing is cleaned or saved over it.
-            Console.Error.WriteLine($"{repo.DisplayName} #{pr}: {lost.Message} Stopped; the attempt is left as reset.");
+            // Not "left as reset": a landed commit under a reset's fence is kept owned for the next sweep.
+            Console.Error.WriteLine(
+                $"{repo.DisplayName} #{pr}: {lost.Message} Stopped; inspect the retained attempt and slot owner for recovery."
+            );
             throw;
         }
         catch (Exception failure)
@@ -1325,6 +1464,7 @@ internal static class ReviewRunner
                 var pending = receipt.DeepClone().AsObject();
                 receipt["stage"] = "failed-released";
                 receipt["admissionRefused"] = failure.Message;
+                var releaseFailed = false;
                 try
                 {
                     await SlotRelease.ReleaseAsync(
@@ -1338,18 +1478,38 @@ internal static class ReviewRunner
                 }
                 catch (Exception releaseFailure)
                 {
-                    // A sweep that reset the slot first owns the record: neither overwrite it nor blame the PR.
-                    if (!await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, CancellationToken.None))
-                        throw new SlotClaimLostException(
-                            $"Slot claim {claimToken} was lost before the refused prepare released it ({releaseFailure.Message}); the attempt is left as reset."
-                        );
+                    // Logged first, with prepare's refusal: the save below can fail too, and this is the only record of
+                    // why the lane is held and of what prepare said.
+                    Console.Error.WriteLine(
+                        $"Claim release held its lane after prepare refused ({failure.Message}): {releaseFailure.Message}"
+                    );
                     pending["cleanupError"] = releaseFailure.Message;
-                    await store.SetAsync(attemptKey, pending, CancellationToken.None);
-                    Console.Error.WriteLine($"Claim release held its lane: {releaseFailure.Message}");
+                    // A sweep that reset the slot first owns the record: neither overwrite it nor blame the PR. The lease
+                    // is not renewed: nothing runs on this claim any more.
+                    if (
+                        !await SlotRelease.SaveOwnedAsync(
+                            connection,
+                            ownerKey,
+                            claimToken,
+                            attemptKey,
+                            pending,
+                            CancellationToken.None,
+                            renew: false
+                        )
+                    )
+                    {
+                        throw new SlotClaimLostException(
+                            $"Slot claim {claimToken} was lost before the refused prepare ({failure.Message}) released it ({releaseFailure.Message}); the attempt is left as reset."
+                        );
+                    }
+                    releaseFailed = true;
+                }
+                // A claim the release left held is not a slot to pass over: the run ends with prepare's own error, and
+                // the attempt keeps the claim with its cleanupError for an operator.
+                if (prepareRefused || releaseFailed)
+                {
                     throw;
                 }
-                if (prepareRefused)
-                    throw;
                 throw new SlotUnavailableException($"Native slot is not idle: {failure.Message}");
             }
             if (
@@ -1369,25 +1529,56 @@ internal static class ReviewRunner
                     Console.Error.WriteLine($"Owner recovery held its lane: {cleanupFailure.Message}");
                 }
             }
+            // Logged first: every save below can fail too, and this is the only record of the run's own error.
+            var outcome = failure is OperationCanceledException && ct.IsCancellationRequested ? "canceled" : "failed";
+            Console.Error.WriteLine(
+                $"{repo.DisplayName} #{pr}: run {outcome} at {receipt["stage"]}: {failure.Message}"
+            );
             // Keep the pending phase and previous successful receipt so a live run can resume and finish
             // publication without redoing the review. The slot stays leased, so if this process dies the
             // lease reaper reclaims it within the lease window — retention never becomes a permanent block.
             // A cancel or DB error in a wait skips that wait's claim check, so check it here: a sweep that reset the
             // slot meanwhile recorded its own attempt, and retaining this receipt would overwrite it. A receipt this run
             // released itself (a settled prepare failure's cleanup) has no claim left by design; its failure stands.
-            if (
-                receipt["cleanupState"]?.GetValue<string>() != "released"
-                && !await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, CancellationToken.None)
+            // The check and the save are one transaction, so a reset cannot release the claim between them, and the
+            // lease is not renewed: a failed cleanup or stopped step put back the lapsed lease the next sweep resets.
+            // A commit that landed is final whatever the claim: its first save found the claim gone or fenced, or never
+            // ran (a cancel, a failed write), so it is kept here. It reads as released only when a reset released the
+            // slot; under a reset's fence it stays owned, since that reset can still fail and leave the slot to a sweep.
+            if (receipt["cleanupState"]?.GetValue<string>() == "released")
+            {
+                await store.SetAsync(attemptKey, receipt, CancellationToken.None);
+            }
+            else if (
+                !await SlotRelease.SaveOwnedAsync(
+                    connection,
+                    ownerKey,
+                    claimToken,
+                    attemptKey,
+                    receipt,
+                    CancellationToken.None,
+                    renew: false
+                )
             )
             {
-                Console.Error.WriteLine(
-                    $"{repo.DisplayName} #{pr}: slot claim {claimToken} was lost after {failure.Message} Stopped; the attempt is left as reset."
-                );
-                throw new SlotClaimLostException(
-                    $"Slot claim {claimToken} was lost while the run failed ({failure.Message}); the attempt was not retained."
+                if (!CommitLanded(receipt))
+                {
+                    Console.Error.WriteLine(
+                        $"{repo.DisplayName} #{pr}: slot claim {claimToken} was lost after {failure.Message} Stopped; the attempt is left as reset."
+                    );
+                    throw new SlotClaimLostException(
+                        $"Slot claim {claimToken} was lost while the run failed ({failure.Message}); the attempt was not retained."
+                    );
+                }
+                _ = await SlotRelease.KeepLandedAsync(
+                    connection,
+                    ownerKey,
+                    claimToken,
+                    attemptKey,
+                    receipt,
+                    CancellationToken.None
                 );
             }
-            await store.SetAsync(attemptKey, receipt, CancellationToken.None);
             Console.Error.WriteLine(
                 $"Review stopped at {receipt["stage"]}; retained {attemptKey}. No automatic retry or cleanup."
             );
@@ -1402,25 +1593,46 @@ internal static class ReviewRunner
         async Task SaveAsync(bool claimRequired = true)
         {
             // Extend the slot lease on every progress checkpoint so a live review is never mistaken for a dead one
-            // by the reaper. A lost claim means a sweep reset the slot under this run (its renewals failed for longer
-            // than the lease), so the run stops here, before it sends or commits on the reset slot, and does not
-            // overwrite the attempt the reset recorded. Only the save after a successful commit goes on: that result
-            // is final, and the cleanup after it refuses the lost claim itself.
-            if (!await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, ct) && claimRequired)
+            // by the reaper. The claim check, the renewal and the save are one transaction, so a reset never lands
+            // between them. A lost claim (released, or fenced by a reset in progress) means a sweep reset the slot
+            // under this run (its renewals failed for longer than the lease), so the run stops here, before it sends
+            // or commits on the reset slot, and does not overwrite the attempt the reset recorded.
+            if (await SlotRelease.SaveOwnedAsync(connection, ownerKey, claimToken, attemptKey, receipt, ct))
+            {
+                return;
+            }
+            if (claimRequired)
+            {
                 throw new SlotClaimLostException(
                     $"Slot claim {claimToken} was lost, so {receipt["stage"]} was not saved; the slot was reset under this run."
                 );
-            await store.SetAsync(attemptKey, receipt, ct);
+            }
+            // Only the save after a successful commit goes on: that result is final. A reset that released the slot
+            // already cleaned it, so the attempt reads as released from this first write on and no cleanup follows; a
+            // stop before the completion must not leave it owned, which neither a sweep (its owner is released) nor a
+            // resume (its stage) would clear. A reset still holding its fence can fail, so then the attempt stays owned
+            // (cleanup finds the fence and stops) and the next sweep resets and releases the slot.
+            commitClaimLost = await SlotRelease.KeepLandedAsync(
+                connection,
+                ownerKey,
+                claimToken,
+                attemptKey,
+                receipt,
+                ct
+            );
         }
         async Task CleanupAsync()
         {
             // A dispatched reset can outlive this process. Pending cleanup is never replayed blindly.
             if (receipt["cleanupState"]?.GetValue<string>() == "pending")
+            {
                 throw new InvalidOperationException(
                     "Retained cleanup operation requires inspection before retry; slot remains claimed."
                 );
+            }
             // This is outgoing-owner cleanup. Review success stays committed even if drain/reset fails.
             if (thread is not null)
+            {
                 await WaitAsync(
                     client,
                     thread,
@@ -1430,6 +1642,8 @@ internal static class ReviewRunner
                     maxBusyReads: ReviewBusyReads,
                     probe: abandoned
                 );
+            }
+
             await SlotRelease.AssertCurrentAsync(connection, ownerKey, claimToken, ct);
             receipt["cleanupState"] = "pending";
             var operation = Guid.NewGuid().ToString("N");
@@ -1454,12 +1668,18 @@ internal static class ReviewRunner
                 || result["cleanBaselineVerified"]?.GetValue<bool>() != true
                 || result["evidencePreserved"]?.GetValue<bool>() != true
             )
+            {
                 throw new InvalidOperationException(
                     "Owner cleanup postconditions were not verified; slot remains claimed."
                 );
+            }
+
             receipt["cleanup"] = result;
             if (failedCleanup || args["failedPreparation"]?.GetValue<bool>() == true)
+            {
                 receipt["stage"] = "failed-released";
+            }
+
             await SlotRelease.ReleaseAsync(connection, ownerKey, claimToken, attemptKey, receipt, ct, adoptedHistory);
         }
         async Task<JsonObject> StepAsync(string phase, JsonObject? stepArgs = null)
@@ -1503,11 +1723,26 @@ internal static class ReviewRunner
                     $"{repo.DisplayName} #{pr}: commit, operation {operation}, failed: {refused.Message}"
                 );
                 if (CommitResponseLost(refused))
+                {
                     receipt[CommitReplay] = operation;
+                }
                 else if (refused is SettledSandboxException)
+                {
                     receipt.Remove(CommitReplay);
+                }
                 receipt["stage"] = "verify-pending";
-                await SaveAsync();
+                try
+                {
+                    await SaveAsync();
+                }
+                // The commit's own error stays the run's outcome, so the batch still classifies it; the failed save is
+                // said here, and the run's failure path saves the same receipt again. A lost claim still stops the run.
+                catch (Exception saveFailure) when (saveFailure is not SlotClaimLostException)
+                {
+                    Console.Error.WriteLine(
+                        $"{repo.DisplayName} #{pr}: commit, operation {operation}, replay state not saved: {saveFailure.Message}"
+                    );
+                }
                 throw;
             }
             catch (SettledSandboxException) when (phase == "commit")
@@ -1517,7 +1752,11 @@ internal static class ReviewRunner
                 throw;
             }
             if (phase == "commit")
+            {
                 receipt.Remove(CommitReplay);
+                // Saved with its stage, so a stop before the completion still has the result that finishes it.
+                receipt["artifactCommit"] = result.DeepClone();
+            }
             receipt["stage"] = phase + "-completed";
             await SaveAsync(claimRequired: phase != "commit");
             return result;
@@ -1529,7 +1768,10 @@ internal static class ReviewRunner
         async Task EnsureCreationAgeAsync()
         {
             if (maxAgeHours is not { } hours)
+            {
                 return;
+            }
+
             var live = await sandbox("eligibility", args, Guid.NewGuid().ToString("N"), ct);
             if (
                 live["prId"]?.GetValue<string>() != pr
@@ -1545,16 +1787,21 @@ internal static class ReviewRunner
                     attempt
                 )
             )
+            {
                 throw new InvalidOperationException(
                     "PR age (creation or last push) is outside the configured limit or unavailable; no fresh admission allowed."
                 );
+            }
         }
 
         async Task SendAndWaitAsync(string phase, string text)
         {
             await sandbox("inspect", args, Guid.NewGuid().ToString("N"), ct);
             if (phase == "review")
+            {
                 await EnsureCreationAgeAsync();
+            }
+
             var idempotency = "reviewd-" + Guid.NewGuid().ToString("N");
             receipt[phase + "IdempotencyKey"] = idempotency;
             receipt["stage"] = phase + "-send-pending";
@@ -1576,12 +1823,16 @@ internal static class ReviewRunner
                         $"{phase} send got 503 (attempt {sendAttempt}/{SendAttempts}); retrying with the same key."
                     );
                     for (var poll = 0; poll < SendRetryPolls; poll++)
+                    {
                         await LeasedDelayAsync(ct);
+                    }
                     // A sweep may have reset the slot during the wait; the resend must not go out on a reset slot.
                     if (!await SlotRelease.HeartbeatAsync(connection, ownerKey, claimToken, ct))
+                    {
                         throw new SlotClaimLostException(
                             $"Slot claim {claimToken} was lost while {phase} send waited out a 503; not resent."
                         );
+                    }
                 }
             }
             receipt[phase + "InputId"] = input;
@@ -1600,7 +1851,10 @@ internal static class ReviewRunner
         async Task<S2SStatusResult?> WaitInputAsync(string phase, string input)
         {
             if (receipt[phase + "Lost"]?.GetValue<bool>() == true)
+            {
                 return null;
+            }
+
             try
             {
                 return await WaitAsync(
@@ -1635,7 +1889,10 @@ internal static class ReviewRunner
         {
             var user = entry.Role.Equals("User", StringComparison.OrdinalIgnoreCase);
             if (prompted && !user)
+            {
                 return true;
+            }
+
             prompted |= user && entry.Body.Contains(head, StringComparison.Ordinal);
         }
         return false;
@@ -1652,6 +1909,12 @@ internal static class ReviewRunner
                 or "confirmation-running"
                 or "confirmation-completed"
                 or "verify-pending";
+
+    /// <summary>True for a receipt whose archive commit landed: its result is final whatever happens to the claim.</summary>
+    internal static bool CommitLanded(JsonNode receipt) =>
+        receipt["stage"]?.GetValue<string>() is "commit-completed" or "completed-verified"
+        && receipt["artifactCommit"]?["status"]?.GetValue<string>() is "committed" or "unchanged"
+        && receipt["artifactCommit"]?["commit"]?.GetValue<string>() is { Length: 40 };
 
     internal static bool CanRetryPreparation(JsonNode attempt, string session) =>
         attempt["stage"]?.GetValue<string>() == "prepare-failed-before-reset"
@@ -1693,7 +1956,10 @@ internal static class ReviewRunner
                     != true
                 || row["verifiedPublication"]?["comments"] is not JsonArray comments
             )
+            {
                 continue;
+            }
+
             foreach (var comment in comments)
             {
                 if (
@@ -1701,7 +1967,9 @@ internal static class ReviewRunner
                     && comment["threadId"] is JsonValue id
                     && id.TryGetValue<int>(out var threadId)
                 )
+                {
                     threads.Add(threadId);
+                }
             }
         }
         return [.. threads.Select(id => (JsonNode)id)];
@@ -1785,7 +2053,10 @@ internal static class ReviewRunner
     {
         var root = await client.GetRunStateAsync(thread, ct);
         if (root.IsInProgress)
+        {
             return true;
+        }
+
         try
         {
             var unsettled = (await client.GetSubAgentTreeAsync(thread, ct))
@@ -1840,7 +2111,10 @@ internal static class ReviewRunner
             var status = input is null ? null : await client.GetStatusByInputIdAsync(thread, input, ct);
             var global = await client.GetRunStateAsync(thread, ct);
             if (orphaned?.Invoke(status, global) == true)
+            {
                 throw new OrphanedRunException(status);
+            }
+
             ReviewSubAgentTreeSnapshot tree;
             try
             {
@@ -1880,12 +2154,17 @@ internal static class ReviewRunner
             {
                 stalledSince ??= now;
                 if (now - stalledSince >= NeverStartedGrace)
+                {
                     throw new LostInputException(
                         $"Input {input} never started: the conversation stayed idle with every sub-agent settled for {now - stalledSince:g}; nothing will run it."
                     );
+                }
             }
             else
+            {
                 stalledSince = null;
+            }
+
             var idle =
                 rootIdle
                 && (status is null || status.Status.Equals("completed", StringComparison.OrdinalIgnoreCase))

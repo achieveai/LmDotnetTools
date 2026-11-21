@@ -31,6 +31,19 @@ internal static class SlotRelease
     internal const string OwnerKeyPrefix = "reviewd/slot-owner/";
 
     /// <summary>
+    ///     Set on an owned row by the reaper's reset (<see cref="FenceAsync"/>) before it discards the slot. While it is
+    ///     set, only that reset renews or releases the claim: a lane on the same token can no longer save, so it cannot
+    ///     record progress (a verify that finished after the reaper's last owner check) that the reset then discards.
+    /// </summary>
+    internal const string ResetFence = "resetOperation";
+
+    // The claim this caller may act on: the exact token, still owned, and fenced by this caller's reset or by none.
+    private static bool Holds(JsonNode? claim, string token, string? fence) =>
+        claim?["claimToken"]?.GetValue<string>() == token
+        && claim["state"]?.GetValue<string>() == "owned"
+        && claim[ResetFence]?.GetValue<string>() == fence;
+
+    /// <summary>
     ///     Claims the slot owner row and saves <paramref name="owner"/>, stamped with the claim token and
     ///     <c>cleanupState</c>, as the attempt at <paramref name="attemptKey"/> in the same transaction. A crash
     ///     can therefore never leave a durable claim whose attempt reconcile-slot cannot find.
@@ -67,18 +80,24 @@ internal static class SlotRelease
                 || existing["prId"]?.GetValue<string>() != owner["prId"]?.GetValue<string>()
                 || existing["sessionId"]?.GetValue<string>() != owner["sessionId"]?.GetValue<string>()
             )
+            {
                 throw new ReviewRunner.SlotUnavailableException(
                     "Selected slot has a durable owner; no admission or reset allowed.",
                     existing
                 );
+            }
+
             token = retainedToken;
         }
         else
         {
             if (retainedToken is not null)
+            {
                 throw new InvalidOperationException(
                     "Retained claim is no longer current; no cleanup or replay allowed."
                 );
+            }
+
             token = Guid.NewGuid().ToString("N");
             var claim = owner.DeepClone().AsObject();
             claim["claimToken"] = token;
@@ -107,9 +126,15 @@ internal static class SlotRelease
     internal static bool IsLeaseExpired(JsonObject owner, DateTimeOffset now, bool undatedExpired = false)
     {
         if (owner["state"]?.GetValue<string>() != "owned")
+        {
             return false;
+        }
+
         if (owner["leaseExpiresAt"]?.GetValue<DateTimeOffset>() is { } expiry)
+        {
             return expiry <= now;
+        }
+
         return undatedExpired;
     }
 
@@ -127,13 +152,21 @@ internal static class SlotRelease
         DateTimeOffset? nowUtc = null
     ) => await RenewAsync(connection, key, token, ct, nowUtc) is not null;
 
-    /// <summary>The heartbeat, returning the owner row it replaced and the row it wrote (null when it wrote none).</summary>
-    internal static async Task<(string Before, string After)?> RenewAsync(
+    /// <summary>
+    ///     Saves <paramref name="attempt"/> only while the owner row still holds <paramref name="token"/> unfenced, and
+    ///     renews the lease, in one transaction. A reset that releases or fences the claim can therefore never land
+    ///     between the check and the write. Returns false, writing nothing, when the claim is gone. With
+    ///     <paramref name="renew"/> false the lease is left as it is, so a failed run's retained receipt does not extend
+    ///     the lease a failed step put back.
+    /// </summary>
+    internal static async Task<bool> SaveOwnedAsync(
         SqliteConnection connection,
         string key,
         string token,
+        string attemptKey,
+        JsonObject attempt,
         CancellationToken ct,
-        DateTimeOffset? nowUtc = null
+        bool renew = true
     )
     {
         using var transaction = connection.BeginTransaction();
@@ -143,9 +176,182 @@ internal static class SlotRelease
         read.Parameters.AddWithValue("@key", key);
         var raw = await read.ExecuteScalarAsync(ct) as string;
         var claim = raw is null ? null : JsonNode.Parse(raw)!.AsObject();
-        if (claim?["claimToken"]?.GetValue<string>() != token || claim["state"]?.GetValue<string>() != "owned")
+        if (!Holds(claim, token, null))
+        {
+            return false;
+        }
+        var renewed = raw!;
+        if (renew)
+        {
+            claim!["leaseExpiresAt"] = DateTimeOffset.UtcNow + DefaultLeaseWindow;
+            renewed = claim.ToJsonString();
+            using var write = connection.CreateCommand();
+            write.Transaction = transaction;
+            write.CommandText = "UPDATE cache SET value=@value WHERE key=@key AND value=@old";
+            write.Parameters.AddWithValue("@key", key);
+            write.Parameters.AddWithValue("@old", raw!);
+            write.Parameters.AddWithValue("@value", renewed);
+            if (await write.ExecuteNonQueryAsync(ct) != 1)
+            {
+                return false;
+            }
+        }
+        // Written only while the owner row is still the one checked (and renewed), so nothing that changes it first goes
+        // unseen.
+        using var save = connection.CreateCommand();
+        save.Transaction = transaction;
+        save.CommandText =
+            "INSERT INTO cache(key,value) SELECT @attempt,@value WHERE (SELECT value FROM cache WHERE key=@key)=@renewed "
+            + "ON CONFLICT(key) DO UPDATE SET value=excluded.value";
+        save.Parameters.AddWithValue("@attempt", attemptKey);
+        save.Parameters.AddWithValue("@value", attempt.ToJsonString());
+        save.Parameters.AddWithValue("@key", key);
+        save.Parameters.AddWithValue("@renewed", renewed);
+        if (await save.ExecuteNonQueryAsync(ct) != 1)
+        {
+            // Whatever changed the owner row inside this transaction stands; only this caller's attempt is withheld.
+            transaction.Commit();
+            return false;
+        }
+        transaction.Commit();
+        return true;
+    }
+
+    /// <summary>
+    ///     Keeps a landed commit's <paramref name="attempt"/> after <see cref="SaveOwnedAsync"/> refused it, in one
+    ///     transaction with the owner read. Only an owner that no longer holds <paramref name="token"/> was cleaned and
+    ///     released by a reset, so only then is the attempt stamped released (and true returned). An owner still holding
+    ///     it under a reset's fence (<see cref="ResetFence"/>) may belong to a reset that fails: the attempt stays
+    ///     unreleased, and the lease unrenewed, so the next sweep still resets and releases the slot.
+    /// </summary>
+    internal static async Task<bool> KeepLandedAsync(
+        SqliteConnection connection,
+        string key,
+        string token,
+        string attemptKey,
+        JsonObject attempt,
+        CancellationToken ct
+    )
+    {
+        using var transaction = connection.BeginTransaction();
+        using var read = connection.CreateCommand();
+        read.Transaction = transaction;
+        read.CommandText = "SELECT value FROM cache WHERE key=@key";
+        read.Parameters.AddWithValue("@key", key);
+        var claim = await read.ExecuteScalarAsync(ct) is string raw ? JsonNode.Parse(raw)?.AsObject() : null;
+        var released =
+            claim is null
+            || claim["claimToken"]?.GetValue<string>() != token
+            || claim["state"]?.GetValue<string>() != "owned";
+        var kept = attempt.DeepClone().AsObject();
+        if (released)
+        {
+            kept["cleanupState"] = "released";
+        }
+        using var save = connection.CreateCommand();
+        save.Transaction = transaction;
+        save.CommandText =
+            "INSERT INTO cache(key,value) VALUES(@key,@value) ON CONFLICT(key) DO UPDATE SET value=excluded.value";
+        save.Parameters.AddWithValue("@key", attemptKey);
+        save.Parameters.AddWithValue("@value", kept.ToJsonString());
+        await save.ExecuteNonQueryAsync(ct);
+        transaction.Commit();
+        // Like ReleaseAsync: only a committed write may make the caller's attempt read as released.
+        if (released)
+        {
+            attempt["cleanupState"] = "released";
+        }
+        return released;
+    }
+
+    /// <summary>
+    ///     Fences the claim for a reset (<see cref="ResetFence"/>): a CAS on <paramref name="seen"/>, the exact owner row
+    ///     the reaper last checked, that reads the attempt in the same transaction. Returns the fenced row and that
+    ///     attempt, or null when the row changed or no longer holds <paramref name="token"/>. The lease is left as it was,
+    ///     so a reset that fails still puts back the lapsed lease the next sweep retries.
+    /// </summary>
+    internal static async Task<(string Fenced, JsonObject? Attempt)?> FenceAsync(
+        SqliteConnection connection,
+        string key,
+        string token,
+        string seen,
+        string operation,
+        string attemptKey,
+        CancellationToken ct
+    )
+    {
+        using var transaction = connection.BeginTransaction();
+        using var read = connection.CreateCommand();
+        read.Transaction = transaction;
+        read.CommandText = "SELECT value FROM cache WHERE key=@key";
+        read.Parameters.AddWithValue("@key", key);
+        var raw = await read.ExecuteScalarAsync(ct) as string;
+        var claim = raw is null ? null : JsonNode.Parse(raw)!.AsObject();
+        if (
+            raw != seen
+            || claim?["claimToken"]?.GetValue<string>() != token
+            || claim["state"]?.GetValue<string>() != "owned"
+        )
+        {
             return null;
-        claim["leaseExpiresAt"] = (nowUtc ?? DateTimeOffset.UtcNow) + DefaultLeaseWindow;
+        }
+        claim[ResetFence] = operation;
+        var fenced = claim.ToJsonString();
+        using var write = connection.CreateCommand();
+        write.Transaction = transaction;
+        write.CommandText = "UPDATE cache SET value=@value WHERE key=@key AND value=@old";
+        write.Parameters.AddWithValue("@key", key);
+        write.Parameters.AddWithValue("@old", raw);
+        write.Parameters.AddWithValue("@value", fenced);
+        if (await write.ExecuteNonQueryAsync(ct) != 1)
+        {
+            return null;
+        }
+        read.Parameters["@key"].Value = attemptKey;
+        var attempt = await read.ExecuteScalarAsync(ct) is string text ? JsonNode.Parse(text)?.AsObject() : null;
+        transaction.Commit();
+        return (fenced, attempt);
+    }
+
+    /// <summary>Lifts a fence the reset will not use: a CAS from <paramref name="fenced"/> back to <paramref name="seen"/>.</summary>
+    internal static async Task<bool> UnfenceAsync(
+        SqliteConnection connection,
+        string key,
+        string fenced,
+        string seen,
+        CancellationToken ct
+    )
+    {
+        using var write = connection.CreateCommand();
+        write.CommandText = "UPDATE cache SET value=@value WHERE key=@key AND value=@old";
+        write.Parameters.AddWithValue("@key", key);
+        write.Parameters.AddWithValue("@old", fenced);
+        write.Parameters.AddWithValue("@value", seen);
+        return await write.ExecuteNonQueryAsync(ct) == 1;
+    }
+
+    /// <summary>The heartbeat, returning the owner row it replaced and the row it wrote (null when it wrote none).</summary>
+    internal static async Task<(string Before, string After)?> RenewAsync(
+        SqliteConnection connection,
+        string key,
+        string token,
+        CancellationToken ct,
+        DateTimeOffset? nowUtc = null,
+        string? fence = null
+    )
+    {
+        using var transaction = connection.BeginTransaction();
+        using var read = connection.CreateCommand();
+        read.Transaction = transaction;
+        read.CommandText = "SELECT value FROM cache WHERE key=@key";
+        read.Parameters.AddWithValue("@key", key);
+        var raw = await read.ExecuteScalarAsync(ct) as string;
+        var claim = raw is null ? null : JsonNode.Parse(raw)!.AsObject();
+        if (!Holds(claim, token, fence))
+        {
+            return null;
+        }
+        claim!["leaseExpiresAt"] = (nowUtc ?? DateTimeOffset.UtcNow) + DefaultLeaseWindow;
         var renewed = claim.ToJsonString();
         using var write = connection.CreateCommand();
         write.Transaction = transaction;
@@ -173,9 +379,14 @@ internal static class SlotRelease
     {
         var claim = JsonNode.Parse(written)!.AsObject();
         if (JsonNode.Parse(before)?["leaseExpiresAt"] is { } lease)
+        {
             claim["leaseExpiresAt"] = lease.DeepClone();
+        }
         else
+        {
             claim.Remove("leaseExpiresAt");
+        }
+
         using var write = connection.CreateCommand();
         write.CommandText = "UPDATE cache SET value=@value WHERE key=@key AND value=@old";
         write.Parameters.AddWithValue("@key", key);
@@ -196,8 +407,10 @@ internal static class SlotRelease
         read.Parameters.AddWithValue("@key", key);
         var current = await read.ExecuteScalarAsync(ct) as string;
         var claim = current is null ? null : JsonNode.Parse(current);
-        if (claim?["claimToken"]?.GetValue<string>() != token || claim["state"]?.GetValue<string>() != "owned")
-            throw new InvalidOperationException("Slot claim changed; no cleanup or release allowed.");
+        if (!Holds(claim, token, null))
+        {
+            throw new ReviewRunner.SlotClaimLostException("Slot claim changed; no cleanup or release allowed.");
+        }
     }
 
     internal static async Task ReleaseAsync(
@@ -207,7 +420,8 @@ internal static class SlotRelease
         string attemptKey,
         JsonObject attempt,
         CancellationToken ct,
-        IReadOnlyList<string>? adoptedHistory = null
+        IReadOnlyList<string>? adoptedHistory = null,
+        string? fence = null
     )
     {
         using var transaction = connection.BeginTransaction();
@@ -217,12 +431,28 @@ internal static class SlotRelease
         read.Parameters.AddWithValue("@key", key);
         var raw = await read.ExecuteScalarAsync(ct) as string;
         var claim = raw is null ? null : JsonNode.Parse(raw)!.AsObject();
-        if (claim?["claimToken"]?.GetValue<string>() != token || claim["state"]?.GetValue<string>() != "owned")
-            throw new InvalidOperationException("Slot claim changed; exact-token release refused.");
-        claim["state"] = "released";
+        if (!Holds(claim, token, fence))
+        {
+            throw new ReviewRunner.SlotClaimLostException("Slot claim changed; exact-token release refused.");
+        }
+        claim!["state"] = "released";
+        claim.Remove(ResetFence);
         // Stage the released receipt; the caller's object changes only after the commit below.
         var released = attempt.DeepClone().AsObject();
         released["cleanupState"] = "released";
+        // A reset releases from the attempt it read when it fenced. A commit of the same claim can land after that, and
+        // its result is then saved under the fence (KeepLandedAsync). That result is final: keep it, not the older read.
+        read.Parameters["@key"].Value = attemptKey;
+        var current = await read.ExecuteScalarAsync(ct) is string saved ? JsonNode.Parse(saved)?.AsObject() : null;
+        var landed =
+            released["artifactCommit"] is null
+            && current?["claimToken"]?.GetValue<string>() == token
+            && current["artifactCommit"] is not null;
+        if (landed)
+        {
+            released["artifactCommit"] = current!["artifactCommit"]!.DeepClone();
+            released["stage"] = current["stage"]?.DeepClone();
+        }
         using var write = connection.CreateCommand();
         write.Transaction = transaction;
         write.CommandText = "UPDATE cache SET value=@value WHERE key=@key AND value=@old";
@@ -230,7 +460,9 @@ internal static class SlotRelease
         write.Parameters.AddWithValue("@old", raw!);
         write.Parameters.AddWithValue("@value", claim.ToJsonString());
         if (await write.ExecuteNonQueryAsync(ct) != 1)
-            throw new InvalidOperationException("Slot claim changed during release.");
+        {
+            throw new ReviewRunner.SlotClaimLostException("Slot claim changed during release.");
+        }
         using var save = connection.CreateCommand();
         save.Transaction = transaction;
         save.CommandText =
@@ -254,6 +486,11 @@ internal static class SlotRelease
         // Only a committed release may make the caller's attempt read as released. The runner's failure
         // path persists this object, and after a rollback the owner row is still held by this token.
         attempt["cleanupState"] = "released";
+        if (landed)
+        {
+            attempt["artifactCommit"] = released["artifactCommit"]!.DeepClone();
+            attempt["stage"] = released["stage"]?.DeepClone();
+        }
     }
 
     internal static bool Allows(JsonNode proof, string attempt, string newPr, string newSession)
@@ -321,7 +558,10 @@ internal static class SlotRelease
         var evidence = proof["evidence"]!.AsArray().SingleOrDefault(item => item?["path"]?.GetValue<string>() == path);
         var bytes = await File.ReadAllBytesAsync(path, ct);
         if (evidence is null || Convert.ToHexString(SHA256.HashData(bytes)) != evidence["sha256"]?.GetValue<string>())
+        {
             throw new InvalidOperationException("Native idle receipt must be hash-bound evidence.");
+        }
+
         var receipt = JsonNode.Parse(bytes)!;
         if (
             !IsNeverAdmitted(owner)
@@ -344,14 +584,23 @@ internal static class SlotRelease
             || checkedAt > DateTimeOffset.UtcNow
             || DateTimeOffset.UtcNow - checkedAt > TimeSpan.FromMinutes(5)
         )
+        {
             throw new InvalidOperationException("Native idle evidence does not match this never-admitted attempt.");
+        }
+
         foreach (var field in new[] { "prepareOperationId", "cleanupOperationId" })
         {
             var id = owner[field]?.GetValue<string>();
             if (field == "prepareOperationId" && string.IsNullOrWhiteSpace(id))
+            {
                 throw new InvalidOperationException("Preparation operation is unidentified.");
+            }
+
             if (id is null)
+            {
                 continue;
+            }
+
             var operation = receipt["operations"]
                 ?.AsArray()
                 .SingleOrDefault(item => item?["operationId"]?.GetValue<string>() == id);
@@ -359,9 +608,11 @@ internal static class SlotRelease
                 operation?["status"]?.GetValue<string>() is not ("succeeded" or "failed")
                 || operation["exitCode"] is null
             )
+            {
                 throw new InvalidOperationException(
                     "Preparation and cleanup operations must be settled before release."
                 );
+            }
         }
     }
 
@@ -378,7 +629,10 @@ internal static class SlotRelease
                 evidence is null
                 || Convert.ToHexString(SHA256.HashData(bytes)) != evidence["sha256"]?.GetValue<string>()
             )
+            {
                 throw new InvalidOperationException("Reset and archive receipts must be hash-bound evidence.");
+            }
+
             return JsonNode.Parse(bytes)!;
         }
         var reset = await ReadReceiptAsync("resetReceiptPath");
@@ -398,7 +652,10 @@ internal static class SlotRelease
             || archive["files"] is not JsonArray { Count: > 0 }
             || archive["verified"]?.GetValue<bool>() != true
         )
+        {
             throw new InvalidOperationException("Reset/archive evidence does not match the retired attempt.");
+        }
+
         var archivedAt = archive["finishedAt"]!.GetValue<DateTimeOffset>();
         var retiredAt = reset["writersRetiredAt"]!.GetValue<DateTimeOffset>();
         var startedAt = reset["startedAt"]!.GetValue<DateTimeOffset>();
@@ -409,7 +666,9 @@ internal static class SlotRelease
             || startedAt > finishedAt
             || finishedAt > DateTimeOffset.UtcNow
         )
+        {
             throw new InvalidOperationException("Recovery evidence ordering is invalid.");
+        }
     }
 
     internal static async Task<int> RunAsync(CliOptions options, CancellationToken ct)
@@ -447,7 +706,10 @@ internal static class SlotRelease
             || proof["operatorReason"]?.GetValue<string>() is not { Length: > 0 }
             || (!retired && (owner["reviewInputId"] is not null || owner["confirmationInputId"] is not null))
         )
+        {
             throw new InvalidOperationException("Evidence does not certify this attempt for release.");
+        }
+
         using var prLease = options.Has("execute")
             ? ReviewRunner.AcquireLease(database, "pr/" + repo.NormalizedKey + "/" + pr)
             : null;
@@ -470,7 +732,9 @@ internal static class SlotRelease
                 || owner["reviewIdempotencyKey"] is null
                 || proof["failedBeforeAdmission"]?.GetValue<bool>() != true
             )
+            {
                 throw new InvalidOperationException("Send failure evidence does not match the retained attempt.");
+            }
         }
         // "selected" is the stage the claim commits with: nothing has been dispatched yet, so it
         // settles exactly like an interrupted prepare.
@@ -483,7 +747,10 @@ internal static class SlotRelease
                 || proof["preparationSettled"]?.GetValue<bool>() != true
             )
         )
+        {
             throw new InvalidOperationException("Preparation evidence does not match the retained attempt.");
+        }
+
         foreach (var item in proof["evidence"]!.AsArray())
         {
             var path = item!["path"]!.GetValue<string>();
@@ -491,12 +758,20 @@ internal static class SlotRelease
                 Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(path, ct)))
                 != item["sha256"]!.GetValue<string>()
             )
+            {
                 throw new InvalidOperationException("Evidence content changed.");
+            }
         }
         if (retired)
+        {
             await ValidateResetAsync(proof, owner, ct);
+        }
+
         if (nativeIdle)
+        {
             await ValidateNativeIdleAsync(proof, owner, ct);
+        }
+
         if (!options.Has("execute"))
         {
             Console.WriteLine(proof.ToJsonString());
@@ -505,7 +780,10 @@ internal static class SlotRelease
         using var transaction = connection.BeginTransaction();
         query.Transaction = transaction;
         if ((await query.ExecuteScalarAsync(ct) as string) != attempt)
+        {
             throw new InvalidOperationException("Attempt changed during reconciliation.");
+        }
+
         var ownerReleased = await ReleaseCertifiedOwnerAsync(
             connection,
             transaction,
@@ -550,11 +828,17 @@ internal static class SlotRelease
         var raw = await read.ExecuteScalarAsync(ct) as string;
         var claim = raw is null ? null : JsonNode.Parse(raw)?.AsObject();
         if (claim is null || claim["state"]?.GetValue<string>() == "released")
+        {
             return false;
+        }
+
         if (attemptToken is not { Length: > 0 } || claim["claimToken"]?.GetValue<string>() != attemptToken)
+        {
             throw new InvalidOperationException(
                 "Slot is owned by a different claim than the certified attempt; reconciliation refused."
             );
+        }
+
         claim["state"] = "released";
         using var write = connection.CreateCommand();
         write.Transaction = transaction;
@@ -563,7 +847,10 @@ internal static class SlotRelease
         write.Parameters.AddWithValue("@old", raw);
         write.Parameters.AddWithValue("@value", claim.ToJsonString());
         if (await write.ExecuteNonQueryAsync(ct) != 1)
+        {
             throw new InvalidOperationException("Slot claim changed during reconciliation.");
+        }
+
         return true;
     }
 }

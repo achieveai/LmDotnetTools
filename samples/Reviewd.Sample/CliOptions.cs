@@ -95,7 +95,17 @@ internal sealed class CliOptions
                 "execute",
             ],
             "review reconcile-slot" => ["repo", "pr", "db", "evidence", "execute"],
-            "review reclaim-slot" => ["repo", "pr", "slot", "db", "workspace", "session", "execute"],
+            "review reclaim-slot" =>
+            [
+                "repo",
+                "pr",
+                "slot",
+                "db",
+                "workspace",
+                "session",
+                "execute",
+                "discard-verified",
+            ],
             "review reap-slots" => ["db", "workspace", "session", "include-undated", "execute"],
             "review capacity" => ["repos", "db", "workspace", "session", "evidence"],
             "review slots" => ["repo", "repos", "db", "workspace", "slots"],
@@ -173,7 +183,7 @@ internal sealed class CliOptions
             }
 
             var value = "true";
-            if (name is not ("wait" or "execute" or "resume" or "cleanup-only" or "rejudge"))
+            if (name is not ("wait" or "execute" or "resume" or "cleanup-only" or "rejudge" or "discard-verified"))
             {
                 if (++i >= commandArgs.Length || commandArgs[i].StartsWith("--", StringComparison.Ordinal))
                 {
@@ -195,7 +205,9 @@ internal sealed class CliOptions
         }
 
         if (result.Get("reasoning-effort") is { } effort && effort is not ("low" or "medium" or "high" or "xhigh"))
+        {
             throw new ArgumentException("--reasoning-effort must be low, medium, high or xhigh.");
+        }
 
         if (result.Get("max-age-hours") is { } age)
         {
@@ -208,7 +220,10 @@ internal sealed class CliOptions
                 )
                 || hours <= 0
             )
+            {
                 throw new ArgumentException("--max-age-hours must be a positive integer.");
+            }
+
             result._values["max-age-hours"] = hours.ToString(System.Globalization.CultureInfo.InvariantCulture);
         }
 
@@ -355,12 +370,18 @@ internal sealed class CliOptions
     internal static int[] ReviewSlots(CliOptions options, int lanes = 6)
     {
         if (options.Get("slots") is not { } list)
+        {
             return [.. Enumerable.Range(0, lanes)];
+        }
+
         var slots = list.Split(',', StringSplitOptions.TrimEntries)
             .Select(value => int.TryParse(value, out var slot) && slot is >= 0 and <= 5 ? slot : -1)
             .ToArray();
         if (slots.Length == 0 || slots.Contains(-1) || slots.Distinct().Count() != slots.Length)
+        {
             throw new ArgumentException("--slots must be distinct comma-separated slots between 0 and 5.");
+        }
+
         return slots;
     }
 
@@ -369,13 +390,20 @@ internal sealed class CliOptions
     {
         var copy = new CliOptions { Command = Command, Argv = Argv };
         foreach (var (name, value) in _values)
+        {
             copy._values[name] = value;
+        }
+
         foreach (var (name, value) in changes)
         {
             if (value is null)
+            {
                 copy._values.Remove(name);
+            }
             else
+            {
                 copy._values[name] = value;
+            }
         }
         return copy;
     }

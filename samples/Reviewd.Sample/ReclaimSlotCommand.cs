@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.Sandbox;
+using CodeReviewDaemon.Sample.Agents;
 using Microsoft.Data.Sqlite;
 
 namespace Reviewd.Sample;
@@ -15,12 +17,45 @@ internal static class ReclaimSlotCommand
 {
     public static async Task<int> RunAsync(CliOptions options, ReviewdConfig config, CancellationToken ct)
     {
+        var session = options.Required("session");
+        SandboxClient? sandboxClient = null;
+        try
+        {
+            return await RunAsync(
+                options,
+                config.CreateS2SClient,
+                () =>
+                {
+                    sandboxClient = config.CreateSandboxClient(TimeSpan.FromMinutes(10));
+                    return (phase, args, operation, token) =>
+                        ReviewRunner.ExecuteSandboxAsync(sandboxClient, session, phase, args, operation, token);
+                },
+                ct
+            );
+        }
+        finally
+        {
+            sandboxClient?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// The command on an injected host client and sandbox, made only once a slot is to be reclaimed, so the real
+    /// command is testable.
+    /// </summary>
+    internal static async Task<int> RunAsync(
+        CliOptions options,
+        Func<LmStreamingS2SClient> createClient,
+        Func<SlotReaper.SandboxExecutor> createSandbox,
+        CancellationToken ct
+    )
+    {
         var repo = PrCommands.ParseRepo(options.Required("repo"));
         var pr = options.Required("pr");
         var slot = int.Parse(options.Required("slot"), CultureInfo.InvariantCulture);
         var database = options.Required("db");
         var workspace = options.Required("workspace");
-        var session = options.Required("session");
+        _ = options.Required("session");
         var execute = options.Has("execute");
 
         await using var connection = new SqliteConnection(
@@ -52,10 +87,8 @@ internal static class ReclaimSlotCommand
             return 0;
         }
 
-        var client = config.CreateS2SClient();
-        using var sandboxClient = config.CreateSandboxClient(TimeSpan.FromMinutes(10));
-        SlotReaper.SandboxExecutor sandbox = (phase, args, operation, token) =>
-            ReviewRunner.ExecuteSandboxAsync(sandboxClient, session, phase, args, operation, token);
+        var client = createClient();
+        var sandbox = createSandbox();
 
         // Forces through native records that disagree with ours exactly when the startup sweep would, and like the sweep
         // leaves the slot alone if its owner row changes before the freeze or the reset.
@@ -82,7 +115,9 @@ internal static class ReclaimSlotCommand
             execute,
             ct,
             force,
-            recheck: recheck
+            recheck: recheck,
+            // Only an operator discards a verified review that has no archive commit; the review stays on the PR.
+            discardVerified: options.Has("discard-verified")
         );
         Console.WriteLine(JsonSerializer.Serialize(result));
         return 0;
