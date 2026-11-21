@@ -2,7 +2,9 @@ using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Net;
 using System.Net.Http.Json;
+using System.Net.WebSockets;
 using System.Reflection;
+using System.Text;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using LmStreaming.Sample.SandboxApps;
@@ -12,6 +14,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
+using Serilog.Core;
+using Serilog.Events;
 using Xunit.Abstractions;
 
 namespace LmStreaming.Sample.Tests.Services;
@@ -906,6 +910,60 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
     [Theory]
     [InlineData(ToolGroups.MiniAppDebug)]
     [InlineData(ToolGroups.BrowserDebug)]
+    public async Task A_provider_switch_of_a_dedicated_thread_in_a_mode_that_serves_Mini_Apps_answers_409_and_builds_nothing(
+        string toolGroup
+    )
+    {
+        // A provider switch rebuilds the agent from the stored mode, so the factory refuses it as it refuses a send.
+        var logs = new WarningLogCapture();
+        await using var fixture = await StartAsync(configureServices: services => logs.AddTo(services));
+        var miniAppMode = await fixture.CreateSandboxModeWithAsync(toolGroup);
+        var a = await fixture.ProvisionAsync(
+            "PRs/r-7",
+            properties: new Dictionary<string, object> { [MultiTurnAgentPool.ModePropertyKey] = miniAppMode.Id }
+        );
+
+        using var switched = await fixture.Client.PostAsJsonAsync(
+            $"/api/conversations/{a}/provider",
+            new SwitchProviderRequest { ProviderId = "test" }
+        );
+        var body = await switched.Content.ReadAsStringAsync();
+        Logger.LogDebug("Provider switch of {ThreadId} answered {Status}: {Body}", a, (int)switched.StatusCode, body);
+
+        switched.StatusCode.Should().Be(HttpStatusCode.Conflict, "the same refusal a send gets, not a bare 500");
+        body.Should().Contain("\"code\":\"dedicated_sandbox_mode_unsupported\"");
+        fixture.Gateway.Creates.Should().BeEmpty("a refused build creates no sandbox");
+        logs.ShouldHoldTheRefusalFor(a);
+    }
+
+    [Theory]
+    [InlineData(ToolGroups.MiniAppDebug)]
+    [InlineData(ToolGroups.BrowserDebug)]
+    public async Task A_socket_to_a_dedicated_thread_in_a_mode_that_serves_Mini_Apps_gets_the_refusal_frame_before_it_closes(
+        string toolGroup
+    )
+    {
+        // The UI opens a socket on load, before any REST turn, so the socket must say why it closes.
+        var logs = new WarningLogCapture();
+        await using var fixture = await StartAsync(configureServices: services => logs.AddTo(services));
+        var miniAppMode = await fixture.CreateSandboxModeWithAsync(toolGroup);
+        var a = await fixture.ProvisionAsync(
+            "PRs/r-7",
+            properties: new Dictionary<string, object> { [MultiTurnAgentPool.ModePropertyKey] = miniAppMode.Id }
+        );
+
+        var (frames, closeStatus, closeDescription) = await fixture.ConnectUntilClosedAsync(a, miniAppMode.Id);
+
+        frames.Should().ContainSingle(frame => frame.Contains("\"code\":\"dedicated_sandbox_mode_unsupported\""));
+        closeStatus.Should().Be(WebSocketCloseStatus.NormalClosure);
+        closeDescription.Should().Be("Dedicated sandbox mode unsupported");
+        fixture.Gateway.Creates.Should().BeEmpty("a refused build creates no sandbox");
+        logs.ShouldHoldTheRefusalFor(a);
+    }
+
+    [Theory]
+    [InlineData(ToolGroups.MiniAppDebug)]
+    [InlineData(ToolGroups.BrowserDebug)]
     public async Task A_shared_thread_provisions_switches_into_and_builds_in_a_mode_that_serves_Mini_Apps(
         string toolGroup
     )
@@ -996,6 +1054,48 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
             .Should()
             .Be(SystemChatModes.WorkspaceAgentModeId, "a refused switch leaves the mode as it was");
         fixture.Gateway.Creates.Should().BeEmpty("a refused switch builds nothing");
+    }
+
+    /// <summary>
+    /// Records the host's warnings with their exceptions, so a test can pin that a refusal is logged with the
+    /// exception that caused it. The host's Serilog reads sinks from its services. Also turns Mini Apps and browser
+    /// debugging on.
+    /// </summary>
+    private sealed class WarningLogCapture : ILogEventSink
+    {
+        private readonly ConcurrentQueue<LogEvent> _events = new();
+
+        public void AddTo(IServiceCollection services)
+        {
+            EnableMiniAppsAndBrowserDebug(services);
+            services.AddSingleton<ILogEventSink>(this);
+        }
+
+        public void Emit(LogEvent logEvent)
+        {
+            if (logEvent.Level >= LogEventLevel.Warning)
+            {
+                _events.Enqueue(logEvent);
+            }
+        }
+
+        public void ShouldHoldTheRefusalFor(string threadId)
+        {
+            _events
+                .Where(logEvent => IsRefusalFor(logEvent, threadId))
+                .Should()
+                .NotBeEmpty("the refusal is logged with the exception that caused it");
+        }
+
+        private static bool IsRefusalFor(LogEvent logEvent, string threadId) =>
+            logEvent.MessageTemplate.Text.Contains(
+                "refused: its mode is not allowed in a dedicated sandbox",
+                StringComparison.Ordinal
+            )
+            && logEvent.Properties.TryGetValue("ThreadId", out var thread)
+            && thread is ScalarValue { Value: string loggedThreadId }
+            && loggedThreadId == threadId
+            && logEvent.Exception is DedicatedSandboxModeUnsupportedException;
     }
 
     /// <summary>Mini Apps and browser debugging on. The test host runs as Production, where both are off.</summary>
@@ -1198,6 +1298,46 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
                 await response.Content.ReadAsStringAsync()
             );
             return response;
+        }
+
+        /// <summary>Opens <c>/ws</c> as the UI does and reads every text frame until the server closes.</summary>
+        public async Task<(
+            IReadOnlyList<string> Frames,
+            WebSocketCloseStatus? CloseStatus,
+            string? CloseDescription
+        )> ConnectUntilClosedAsync(string threadId, string modeId)
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            using var socket = await _host
+                .Server.CreateWebSocketClient()
+                .ConnectAsync(new Uri(_host.Server.BaseAddress, $"/ws?threadId={threadId}&modeId={modeId}"), cts.Token);
+            var frames = new List<string>();
+            var buffer = new byte[16 * 1024];
+            var text = new StringBuilder();
+            while (true)
+            {
+                var received = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), cts.Token);
+                if (received.MessageType == WebSocketMessageType.Close)
+                {
+                    break;
+                }
+
+                _ = text.Append(Encoding.UTF8.GetString(buffer, 0, received.Count));
+                if (received.EndOfMessage)
+                {
+                    frames.Add(text.ToString());
+                    _ = text.Clear();
+                }
+            }
+
+            _logger.LogDebug(
+                "Socket to {ThreadId} got frames {Frames}, then closed {CloseStatus} {CloseDescription}",
+                threadId,
+                frames,
+                socket.CloseStatus,
+                socket.CloseStatusDescription
+            );
+            return (frames, socket.CloseStatus, socket.CloseStatusDescription);
         }
 
         public async Task<HttpResponseMessage> ReleaseAsync(string threadId, string? directory)

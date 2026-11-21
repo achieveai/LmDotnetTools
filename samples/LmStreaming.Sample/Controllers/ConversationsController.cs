@@ -1699,26 +1699,37 @@ public class ConversationsController(
         }
         catch (DedicatedSandboxModeUnsupportedException ex)
         {
-            // The thread's stored mode gained a tool a dedicated conversation may not have after it took the mode
-            // (the routes refuse every way in). A conflict with the thread's state, not a bad request.
-            logger.LogWarning(
-                "{Operation} for thread {ThreadId} refused: its mode is not allowed in a dedicated sandbox",
-                operation,
-                threadId
-            );
-            return (
-                null,
-                Conflict(
-                    new
-                    {
-                        error = ConversationDedicatedSandbox.ModeUnsupportedCode,
-                        code = ConversationDedicatedSandbox.ModeUnsupportedCode,
-                        detail = ex.Message,
-                        threadId,
-                    }
-                )
-            );
+            return (null, DedicatedModeConflict(threadId, operation, ex));
         }
+    }
+
+    /// <summary>
+    /// Answers the agent factory's refusal to build a dedicated thread in a mode that serves Mini Apps. Provision, mode
+    /// switch and a release that moves the directory refuse such a mode up front. No route refuses the rest: a fork
+    /// copies its source's mode, a stored mode can gain the tool after a thread took it, and a stop-only release
+    /// checks no mode. The factory refuses those builds. A conflict with the thread's state, not a bad request.
+    /// </summary>
+    private ObjectResult DedicatedModeConflict(
+        string threadId,
+        string operation,
+        DedicatedSandboxModeUnsupportedException ex
+    )
+    {
+        logger.LogWarning(
+            ex,
+            "{Operation} for thread {ThreadId} refused: its mode is not allowed in a dedicated sandbox",
+            operation,
+            threadId
+        );
+        return Conflict(
+            new
+            {
+                error = ConversationDedicatedSandbox.ModeUnsupportedCode,
+                code = ConversationDedicatedSandbox.ModeUnsupportedCode,
+                detail = ex.Message,
+                threadId,
+            }
+        );
     }
 
     /// <summary>
@@ -3431,6 +3442,10 @@ public class ConversationsController(
         catch (PrincipalConflictException ex)
         {
             return PrincipalConflict(threadId, "Provider switch", ex);
+        }
+        catch (DedicatedSandboxModeUnsupportedException ex)
+        {
+            return DedicatedModeConflict(threadId, "Provider switch", ex);
         }
         catch (ProviderUnavailableException ex)
         {

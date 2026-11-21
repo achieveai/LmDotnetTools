@@ -14,6 +14,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
+using LmStreaming.Sample.Services;
 using Serilog.Context;
 
 namespace LmStreaming.Sample.WebSocket;
@@ -441,6 +442,20 @@ public sealed class ChatWebSocketManager
                 );
 
                 await SendAgentReleasedAsync(connection, recordWriter, cancellationToken);
+                return;
+            }
+            catch (DedicatedSandboxModeUnsupportedException ex)
+            {
+                // A dedicated thread whose stored mode serves Mini Apps (a fork, or a mode edited after the
+                // thread took it): the factory refuses to build its agent. The REST routes answer this 409;
+                // without this catch the socket would close with no frame and the UI would just reconnect.
+                _logger.LogWarning(
+                    ex,
+                    "Connection setup for thread {ThreadId} refused: its mode is not allowed in a dedicated sandbox",
+                    threadId
+                );
+
+                await SendDedicatedModeUnsupportedErrorAsync(connection, ex, recordWriter, cancellationToken);
                 return;
             }
 
@@ -2004,6 +2019,43 @@ public sealed class ChatWebSocketManager
         await connection.TryCloseAsync(
             WebSocketCloseStatus.NormalClosure,
             "Principal conflict",
+            CancellationToken.None
+        );
+    }
+
+    /// <summary>
+    /// Sends the <c>dedicated_sandbox_mode_unsupported</c> error frame the REST routes answer with 409, then
+    /// closes. The message names only the refused tool group, never thread content.
+    /// </summary>
+    private async Task SendDedicatedModeUnsupportedErrorAsync(
+        RegisteredWebSocketConnection connection,
+        DedicatedSandboxModeUnsupportedException ex,
+        StreamWriter? recordWriter,
+        CancellationToken ct
+    )
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["$type"] = "error",
+            ["code"] = ConversationDedicatedSandbox.ModeUnsupportedCode,
+            ["message"] = ex.Message,
+        };
+        var json = JsonSerializer.Serialize(payload, _jsonOptions);
+
+        if (!await connection.TrySendTextAsync(json, ct))
+        {
+            return;
+        }
+
+        if (recordWriter != null)
+        {
+            await recordWriter.WriteLineAsync(json);
+            await recordWriter.FlushAsync();
+        }
+
+        await connection.TryCloseAsync(
+            WebSocketCloseStatus.NormalClosure,
+            "Dedicated sandbox mode unsupported",
             CancellationToken.None
         );
     }

@@ -621,7 +621,9 @@ rest of the workspace is read-only to it (gateway ADR 0044). Sandboxes are never
   `working_directory_invalid`), so its agent can never write an app the host would run.
 - **The owner's own Mini App launch stays open.** `POST /api/conversations/{threadId}/apps/{appId}/launch` works on
   a dedicated conversation as on any other: it is the user, not the agent, who opens the app, and the app comes from
-  `mini-web-apps`, which the conversation's agent cannot write. Only the agent's tools are refused.
+  `mini-web-apps`, which the conversation's agent cannot write. Only the agent's tools are refused. On every
+  conversation the launch finds its sandbox through the loaded agent, so after an idle unload it answers `409` until
+  the next turn loads the agent again.
 - **Rollback.** Not supported. A host from before dedicated sandboxes ignores `sample.dedicatedSandbox` and runs
   such a conversation in the shared sandbox, writable everywhere. Do not roll a host with dedicated
   conversations back to such a build.
