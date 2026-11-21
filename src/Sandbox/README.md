@@ -87,8 +87,9 @@ read-only). That sync covers:
   agents that requires no sandbox session.
 - **Session discovery:** `ListDiscoveredAsync(sessionId)` — a narrow read over the existing
   session-discovery REST endpoint; `ListDiscoveredAsync(sessionId, agentId)` narrows it to one agent.
-  It follows the gateway's `next_cursor` across pages and returns every readable row, oldest first
-  (the gateway skips rows it cannot read). Paging needs a gateway with commit `0ba1746` (gateway #285),
+  It follows the gateway's `next_cursor` across pages and returns every row the gateway could read,
+  oldest first (the gateway skips rows it cannot read); a row the gateway sends but the client cannot
+  parse fails the whole call with `SandboxErrorKind.Protocol`. Paging needs a gateway with commit `0ba1746` (gateway #285),
   which is in no tagged release yet (newest `v0.1.22`); an older gateway sends no `next_cursor`, so the
   call makes one request, as before.
 - **Per-agent state:** `ListAgentsAsync`, `DeleteAgentAsync`. See [Per-agent state](#per-agent-state).
