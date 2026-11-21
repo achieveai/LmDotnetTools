@@ -98,6 +98,10 @@ public sealed partial class SandboxClient
     /// workspace, over the existing session-discovery REST endpoint. V1: this is a narrow read of
     /// already-discovered items — it does not add proactive discovery or crawling.
     /// </summary>
+    /// <remarks>
+    /// Follows the gateway's <c>next_cursor</c> across every page and returns every readable row, oldest
+    /// first; a repeated cursor or more than 4096 pages is <see cref="SandboxErrorKind.Protocol"/>.
+    /// </remarks>
     public Task<IReadOnlyList<SandboxDiscoveredItem>> ListDiscoveredAsync(
         string sessionId,
         CancellationToken ct = default
@@ -107,6 +111,11 @@ public sealed partial class SandboxClient
     /// Lists discovered items for <paramref name="sessionId"/>, narrowed to the rows one agent has been
     /// notified of (gateway ADR 0040, <c>?agent_id=</c>).
     /// </summary>
+    /// <remarks>
+    /// Follows the gateway's <c>next_cursor</c> across every page, sending the same <c>agent_id</c> on each,
+    /// and returns every readable row, oldest first; a repeated cursor or more than 4096 pages is
+    /// <see cref="SandboxErrorKind.Protocol"/>.
+    /// </remarks>
     /// <param name="sessionId">The sandbox session.</param>
     /// <param name="agentId">
     /// <c>null</c> lists every row (no filter); <c>""</c> lists the rows the default (primary) agent was
@@ -125,10 +134,12 @@ public sealed partial class SandboxClient
             SandboxAgentId.ThrowIfInvalid(agentId, nameof(agentId));
         }
 
-        // The gateway pages /discovered (issue #285): `next_cursor` is always present, null at the end, and a
-        // page can be empty with a non-null cursor (it skipped unreadable rows), so the loop follows the
-        // cursor rather than stopping on an empty page. The same agent_id is sent on every page. Bounded the
-        // same two ways as the directory listing: a repeated cursor and the page cap are Protocol errors.
+        // A gateway that pages /discovered (gateway #285, commit 0ba1746; in no tagged release yet, newest
+        // v0.1.22) always sends `next_cursor`, null at the end, and a page can be empty with a non-null cursor
+        // (it skipped unreadable rows), so the loop follows the cursor rather than stopping on an empty page.
+        // The same agent_id is sent on every page. An older gateway sends no `next_cursor`, so this is one
+        // request, as before. Bounded the same two ways as the directory listing: a repeated cursor and the
+        // page cap are Protocol errors. Cancellation is checked first, so a cancel never loses to a guard.
         var operation = $"listing discovered items for session '{sessionId}'";
         var agentQuery = agentId is null ? null : $"agent_id={Uri.EscapeDataString(agentId)}";
         var result = new List<SandboxDiscoveredItem>();
@@ -137,6 +148,7 @@ public sealed partial class SandboxClient
         var pageCount = 0;
         do
         {
+            ct.ThrowIfCancellationRequested();
             if (++pageCount > MaxDiscoveredPages)
             {
                 throw new SandboxException(
@@ -150,6 +162,7 @@ public sealed partial class SandboxClient
             result.AddRange(items);
 
             cursor = string.IsNullOrEmpty(nextCursor) ? null : nextCursor;
+            ct.ThrowIfCancellationRequested();
             if (cursor is not null && !seenCursors.Add(cursor))
             {
                 throw new SandboxException(

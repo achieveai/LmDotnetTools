@@ -10,7 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Sandbox: `ListDiscoveredAsync` reads every page.** The gateway pages `/discovered` (gateway issue #285), and the
   client sent one request, so rows past the first page were missed. Both overloads now follow `next_cursor` as
   `?after=` until it is null, sending the same `agent_id` on every page and continuing through an empty page that
-  still has a cursor. A repeated cursor or more than 4096 pages is `SandboxErrorKind.Protocol`.
+  still has a cursor. A repeated cursor or more than 4096 pages is `SandboxErrorKind.Protocol`. It returns every
+  readable row (the gateway skips rows it cannot read). Paging needs a gateway with commit `0ba1746` (gateway #285),
+  which is in no tagged release yet (newest `v0.1.22`; CI pins image `0.1.21`). An older gateway sends no
+  `next_cursor`, so the call makes one request, as before.
 
 - **Anthropic requests keep a screenshot's tool-result text.** When a tool result's `ContentBlocks` hold images but no
   text block, `AnthropicRequest` now puts the result's `Result` text first in the `tool_result` array, on all four paths
