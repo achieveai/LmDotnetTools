@@ -21,6 +21,7 @@ public class SandboxControllerTests
 {
     private const string ThreadId = "thread-1";
     private const string JudgeThreadId = "thread-judge";
+    private const string DedicatedThreadId = "thread-dedicated";
     private const string BackupAppId = "app-a";
 
     [Fact]
@@ -260,6 +261,36 @@ public class SandboxControllerTests
         (await ReportedSessionIdAsync(fixture, ThreadId)).Should().Be(lane.SessionId);
     }
 
+    [Fact]
+    public async Task Get_ReportsADedicatedThreadsOwnSandbox_AloneOrBesideTheSharedOne_NeverTheSharedOne()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var shared = new WorkspaceRef(
+            fixture.Workspace.Id,
+            fixture.Workspace.DirectoryRelPath,
+            fixture.Workspace.Marketplaces
+        );
+
+        var owned = await fixture.Harness.Registry.GetOrCreateSessionAsync(
+            shared with
+            {
+                WorkingDir = "PRs/r-7",
+                OwnerThreadId = DedicatedThreadId,
+            }
+        );
+        (await ReportedSessionIdAsync(fixture, DedicatedThreadId))
+            .Should()
+            .Be(owned.SessionId, "the thread's own sandbox, with no shared one live");
+        (await ReportedSessionIdAsync(fixture, ThreadId)).Should().BeNull("the shared slot is still empty");
+
+        var lane = await fixture.Harness.Registry.GetOrCreateSessionAsync(shared);
+
+        (await ReportedSessionIdAsync(fixture, DedicatedThreadId))
+            .Should()
+            .Be(owned.SessionId, "never the workspace's shared sandbox");
+        (await ReportedSessionIdAsync(fixture, ThreadId)).Should().Be(lane.SessionId);
+    }
+
     /// <summary>The <c>session.sessionId</c> the inspector's sandbox panel shows for a thread, null when none.</summary>
     private static async Task<string?> ReportedSessionIdAsync(Fixture fixture, string threadId)
     {
@@ -339,6 +370,20 @@ public class SandboxControllerTests
                         Properties = ImmutableDictionary<string, object>
                             .Empty.Add(MultiTurnAgentPool.WorkspacePropertyKey, workspace.Id)
                             .Add(ConversationReadOnlyEgress.PropertyKey, true),
+                    }
+                );
+            // A conversation with a dedicated sandbox on the same workspace: a slot of its own too.
+            conversations
+                .Setup(x => x.LoadMetadataAsync(DedicatedThreadId, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(
+                    new ThreadMetadata
+                    {
+                        ThreadId = DedicatedThreadId,
+                        LastUpdated = 0,
+                        Properties = ImmutableDictionary<string, object>
+                            .Empty.Add(MultiTurnAgentPool.WorkspacePropertyKey, workspace.Id)
+                            .Add(ConversationWorkingDirectory.PropertyKey, "PRs/r-7")
+                            .Add(ConversationDedicatedSandbox.PropertyKey, true),
                     }
                 );
             var requests = new List<string>();
