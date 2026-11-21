@@ -1219,7 +1219,18 @@ internal static class ReviewBatch
                 // A gateway at its operation limit says nothing about the PR: a restart resumes every owner at
                 // once and briefly exceeds it. Back off without spending the PR's retries, or admitted reviews
                 // are held and their slots wait for the reaper.
-                var capacity = ex is SandboxException { Kind: SandboxErrorKind.Unavailable, StatusCode: 503 };
+                // A plain 503 while a lost commit awaits its replay is that commit's response lost again, not a
+                // refusal at the limit, so it counts toward the lane's retries. Each resume renews the lease, so
+                // backing it off without a bound kept the slot forever, out of the reaper's and the alarm's sight.
+                // A sandbox_busy refusal (the gateway quiescing) is refused before it runs, so it backs off like a
+                // capacity refusal here; RefusedAtCapacity stays narrower, so the commit keeps its replay id.
+                var capacity =
+                    ex is SandboxException { Kind: SandboxErrorKind.Unavailable, StatusCode: 503 } unavailable
+                    && (
+                        ReviewRunner.RefusedAtCapacity(ex)
+                        || unavailable.ErrorCode == "sandbox_busy"
+                        || retained?[ReviewRunner.CommitReplay]?.GetValue<string>() is not { Length: > 0 }
+                    );
                 // The claim writes the attempt row, so a host timeout or connection failure that left the row
                 // as it was before launch failed before the claim: it left nothing behind and says nothing
                 // about the PR. Retry it with backoff. Holding it parked nine PRs whose conversation lookup
@@ -1235,10 +1246,16 @@ internal static class ReviewBatch
                             or TaskCanceledException
                             or ReviewRunner.ReviewDeferredException
                             or SandboxException { StatusCode: 503 };
-                // There, for a fresh run or a resume alike, only a gateway that says it is at capacity backs off
-                // uncounted. Another 503 (a workspace restore or image pull that failed, a marketplace store that
-                // is down) is retried and counted, so it is held at the retry cap instead of retrying forever.
-                if (launched && beforeClaim && !ReviewRunner.RefusedAtCapacity(ex))
+                // There, for a fresh run or a resume alike, only a gateway that says it is at capacity, or busy
+                // quiescing (sandbox_busy), backs off uncounted. Another 503 (a workspace restore or image pull that
+                // failed, a marketplace store that is down) is retried and counted, so it is held at the retry cap
+                // instead of retrying forever.
+                if (
+                    launched
+                    && beforeClaim
+                    && !ReviewRunner.RefusedAtCapacity(ex)
+                    && ex is not SandboxException { ErrorCode: "sandbox_busy" }
+                )
                 {
                     capacity = false;
                 }
@@ -1248,12 +1265,18 @@ internal static class ReviewBatch
                 // prepare that timed out three times, each time holding its slot until the reaper freed it).
                 // A resume is not counted: it repeats one admission, which only a fresh admission can replace
                 // (seen live: a lost input re-verified five times). Neither is a held slot, which says nothing
-                // about the PR.
+                // about the PR. Nor is a lost claim: a sweep reset the slot under the run, which says nothing about
+                // the PR either.
                 var failedTimes =
                     launchedFresh
                     && !transientBeforeClaim
                     && !capacity
-                    && ex is not (ReviewRunner.ReviewNotAdmittedException or ReviewRunner.SlotUnavailableException)
+                    && ex
+                        is not (
+                            ReviewRunner.ReviewNotAdmittedException
+                            or ReviewRunner.SlotUnavailableException
+                            or ReviewRunner.SlotClaimLostException
+                        )
                         ? await RecordFailureAsync(entry, ex.Message)
                         : 0;
                 if (failedTimes >= QuarantineAfter && retained is not null && Reusable(retained))
