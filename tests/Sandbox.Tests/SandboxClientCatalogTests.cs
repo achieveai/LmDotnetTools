@@ -460,6 +460,25 @@ public class SandboxClientCatalogTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public async Task ListDiscoveredAsync_NullBodyOnALaterPage_ThrowsProtocol_NotATruncatedList()
+    {
+        // A 200 whose body is JSON null on page 2 must not end the walk silently with page 1's rows.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        OnDiscoveredPage(
+            handler,
+            "",
+            """{"discovered":[{"kind":"skill","name":"a","path":"/workspace/a/"}],"next_cursor":"1"}"""
+        );
+        OnDiscoveredPage(handler, "?after=1", "null");
+
+        var exception = await Record.ExceptionAsync(() => client.ListDiscoveredAsync("sess-1"));
+        LogOutcome(handler, exception);
+
+        exception.Should().BeOfType<SandboxException>().Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+        handler.Requests.Should().HaveCount(2);
+    }
+
+    [Fact]
     public async Task ListDiscoveredAsync_DefaultAgentFilter_IsSentOnEveryPage()
     {
         // agentId "" is the default (primary) agent: `agent_id=` with an empty value, on every page.

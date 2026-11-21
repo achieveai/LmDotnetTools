@@ -138,7 +138,7 @@ public sealed partial class SandboxClient
 
         // A gateway that pages /discovered (gateway #285, commit 0ba1746; in no tagged release yet, newest
         // v0.1.22) always sends `next_cursor`, null at the end. With gateway master's skipped-row cap
-        // (gateway #290, merge a0782ce) a page can also be empty with a non-null cursor (it skipped unreadable
+        // (gateway #290, commit 1a21e82) a page can also be empty with a non-null cursor (it skipped unreadable
         // rows); at 0ba1746 an empty page always ends the walk. The loop follows the cursor either way rather
         // than stopping on an empty page. The same agent_id is sent on every page. An older gateway sends no
         // `next_cursor`, so this is one request, as before. Bounded the same two ways as the directory
@@ -234,6 +234,17 @@ public sealed partial class SandboxClient
                 $"Sandbox gateway returned a malformed discovered-items response for session '{sessionId}'.",
                 (int)response.StatusCode,
                 ex
+            );
+        }
+
+        // A null body on a later page would otherwise end the walk silently with the rows read so far.
+        // The first page keeps its existing behavior (an empty list), which predates paging.
+        if (payload is null && after is not null)
+        {
+            throw new SandboxException(
+                SandboxErrorKind.Protocol,
+                $"Sandbox gateway returned an empty response for {operation} after cursor '{after}'.",
+                (int)response.StatusCode
             );
         }
 
