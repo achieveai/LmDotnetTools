@@ -16,7 +16,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 // connection refuses with "attempt to write a readonly database".
 public sealed class ReviewdDatabaseJournalTests : LoggingTestBase
 {
-    private static readonly string[] Sidecars = ["-journal", "-wal", "-shm"];
+    private static readonly string[] S_sidecars = ["-journal", "-wal", "-shm"];
 
     private readonly string _database = Path.Combine(Path.GetTempPath(), $"reviewd-journal-{Guid.NewGuid():N}.db");
 
@@ -24,7 +24,7 @@ public sealed class ReviewdDatabaseJournalTests : LoggingTestBase
         : base(output)
     {
         // The file name only: the temp folder's full path carries the user's account name.
-        Logger.LogInformation(
+        Logger.LogDebug(
             "Journal test setup: database {DatabaseFile} on {OS} ({Architecture}), SQLite {SqliteVersion}",
             Path.GetFileName(_database),
             RuntimeInformation.OSDescription,
@@ -100,12 +100,12 @@ public sealed class ReviewdDatabaseJournalTests : LoggingTestBase
         _ = Execute(writer, "BEGIN");
         Execute(writer, "UPDATE cache SET value='v2' WHERE key='k'").Should().Be(1);
         LogSidecars("inside the write transaction");
-        var held = Sidecars
+        var held = S_sidecars
             .Select(suffix => _database + suffix)
             .Where(File.Exists)
             .Select(path => new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
             .ToList();
-        Logger.LogInformation(
+        Logger.LogDebug(
             "Scanner holds {HeldCount} sidecars: {HeldFiles}",
             held.Count,
             held.Select(stream => Path.GetFileName(stream.Name)).ToArray()
@@ -130,7 +130,7 @@ public sealed class ReviewdDatabaseJournalTests : LoggingTestBase
         {
             ReviewdSqlitePools.Clear(_database);
             var files = Directory.GetFiles(Path.GetTempPath(), Path.GetFileName(_database) + "*");
-            Logger.LogInformation(
+            Logger.LogDebug(
                 "Journal test teardown deletes {FileCount} files: {Files}",
                 files.Length,
                 files.Select(Path.GetFileName).ToArray()
@@ -169,11 +169,11 @@ public sealed class ReviewdDatabaseJournalTests : LoggingTestBase
     // Which sidecars exist and how big they are; a leftover -journal is the hot journal that breaks read-only opens.
     private void LogSidecars(string stage)
     {
-        var state = Sidecars.ToDictionary(
+        var state = S_sidecars.ToDictionary(
             suffix => suffix,
             suffix => File.Exists(_database + suffix) ? new FileInfo(_database + suffix).Length : (long?)null
         );
-        Logger.LogInformation("Sidecars {Stage}: {@Sidecars} (null = absent)", stage, state);
+        Logger.LogDebug("Sidecars {Stage}: {@Sidecars} (null = absent)", stage, state);
     }
 
     private SqliteConnection ReadOnly() =>
