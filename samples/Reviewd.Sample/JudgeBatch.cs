@@ -52,7 +52,28 @@ internal static class JudgeBatch
         int MaxAgeDays,
         string PromptSha256,
         Shard? Shard = null
-    );
+    )
+    {
+        /// <summary>
+        ///     Whether a target's session was created read-only on this host. Only such a session judges a shadow
+        ///     review (judge run refuses any other), so a target without one counts its shadow reviews and skips them.
+        /// </summary>
+        public Func<string, bool> ReadOnlySession { get; init; } = _ => false;
+
+        /// <summary>
+        ///     The would-post prompt section a shadow review's judgment adds to the template. A judgment that recorded
+        ///     another one stopped under another prompt, as one with another template did.
+        /// </summary>
+        public string? WouldPostPromptSha256 { get; init; }
+
+        /// <summary>Whether <paramref name="identity"/> names this batch's prompt: the template and any would-post section.</summary>
+        public bool SamePrompt(JsonNode? identity) =>
+            identity?["promptTemplateSha256"]?.GetValue<string>() == PromptSha256
+            && (
+                identity["wouldPostPromptSha256"]?.GetValue<string>() is not { } wouldPost
+                || wouldPost == WouldPostPromptSha256
+            );
+    }
 
     /// <summary>
     ///     <c>--shard i/n</c>: the batch takes only the PRs whose number is i modulo n. n lanes over the same installs,
@@ -197,6 +218,7 @@ internal static class JudgeBatch
             Console.Error.WriteLine($"judge batch: cannot read --targets {targetsPath}: {failure.Message}");
             return 1;
         }
+        var tokenStore = new Lazy<string>(() => AuthCommands.LoadOptions(config, null).TokenStoreDir!);
         var settings = new Settings(
             options.GetDollars("max-usd") ?? JudgeRunner.DefaultMaxUsd,
             options.GetDollars("max-usd-per-day") ?? DefaultMaxUsdPerDay,
@@ -204,7 +226,11 @@ internal static class JudgeBatch
             options.GetCount("max-age-days") ?? DefaultMaxAgeDays,
             await JudgeRunner.EmbeddedPromptSha256Async(ct),
             Shard.Parse(options.Get("shard"))
-        );
+        )
+        {
+            ReadOnlySession = session => ReadOnlySessions.IsMarked(tokenStore.Value, session),
+            WouldPostPromptSha256 = await JudgeRunner.EmbeddedWouldPostPromptSha256Async(ct),
+        };
         var limit = options.GetCount("limit") ?? int.MaxValue;
         var stopFile = options.Get("stop-file");
         var (targets, broken) = ParseTargets(lines);
@@ -407,13 +433,11 @@ internal static class JudgeBatch
         var stage = latest["stage"]?.GetValue<string>() ?? "";
         if (JudgeRunner.ResumableStages.Contains(stage))
         {
-            var ours =
-                latest["identity"]?["promptTemplateSha256"]?.GetValue<string>() == settings.PromptSha256
-                && latest["caps"]?["maxUsd"] is not null;
+            var ours = settings.SamePrompt(latest["identity"]) && latest["caps"]?["maxUsd"] is not null;
             // A live run the batch cannot resume (another prompt, no stored cap) is only "Running now".
             if (inFlight && !ours)
                 return new(pr, Kind.Skip, "running");
-            if (latest["identity"]?["promptTemplateSha256"]?.GetValue<string>() != settings.PromptSha256)
+            if (!settings.SamePrompt(latest["identity"]))
                 return new(
                     pr,
                     Kind.NeedsYou,
@@ -841,7 +865,12 @@ internal static class JudgeBatch
 
         foreach (var (repository, prId, reviewStage, workspace, artifactCommit) in reviews)
         {
-            if (reviewStage != "completed-verified")
+            if (reviewStage == "shadow" && !settings.ReadOnlySession(target.Session))
+            {
+                Count(scan, "shadow");
+                continue;
+            }
+            if (reviewStage is not ("completed-verified" or "shadow"))
             {
                 Count(scan, "review-not-verified");
                 continue;
@@ -940,7 +969,10 @@ internal static class JudgeBatch
     {
         using var query = connection.CreateCommand();
         query.CommandText =
-            "SELECT json_extract(value,'$.repository'), json_extract(value,'$.prId'), json_extract(value,'$.stage'), "
+            // A verified shadow review reads as stage "shadow": judge run scores it only in a read-only session.
+            "SELECT json_extract(value,'$.repository'), json_extract(value,'$.prId'), "
+            + "CASE WHEN json_extract(value,'$.shadow') = 1 AND json_extract(value,'$.stage') = 'completed-verified' "
+            + "THEN 'shadow' ELSE json_extract(value,'$.stage') END, "
             + "json_extract(value,'$.workspaceId'), json_extract(value,'$.artifactCommit.commit') "
             + "FROM cache WHERE substr(key,1,length(@prefix))=@prefix";
         query.Parameters.AddWithValue("@prefix", "reviewd/review-run/");
@@ -1408,6 +1440,7 @@ internal static class JudgeBatch
         ("too-old", "merged too long ago"),
         ("skip-cooling", "skipped today (not completed)"),
         ("precondition-cooling", "waiting a day to retry"),
+        ("shadow", "shadow review (its target's session is not read-only)"),
         ("review-not-verified", "review not verified"),
         ("other-workspace", "in another workspace"),
         ("unsupported", "on GitHub (not supported)"),

@@ -8,9 +8,16 @@ namespace Reviewd.Sample;
 internal sealed class ReviewdConfig(IConfiguration configuration) : IDisposable
 {
     private HttpClient? _s2sTransport;
+    private HttpClient? _sandboxTransport;
     private ConversationListingCache? _listing;
 
     public IConfiguration Configuration { get; } = configuration;
+
+    /// <summary>
+    ///     The handler both the host and gateway clients send through, instead of the network. Tests set it to drive
+    ///     a command's real wrapper, client construction included, over scripted endpoints.
+    /// </summary>
+    internal HttpMessageHandler? Transport { get; init; }
     public string GatewayUrl =>
         Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY")
         ?? Configuration["SandboxGateway:BaseUrl"]
@@ -75,7 +82,10 @@ internal sealed class ReviewdConfig(IConfiguration configuration) : IDisposable
 
         // The conversation listing (title-prefix lookup) is paged and, with a large conversation store, a
         // page took 17-22s under a full batch; 30s timed out and held nine PRs before they were admitted.
-        _s2sTransport ??= new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
+        _s2sTransport ??= new HttpClient(
+            Transport ?? new HttpClientHandler { AllowAutoRedirect = false },
+            disposeHandler: Transport is null
+        )
         {
             BaseAddress = address,
             Timeout = TimeSpan.FromSeconds(120),
@@ -86,16 +96,26 @@ internal sealed class ReviewdConfig(IConfiguration configuration) : IDisposable
         return new LmStreamingS2SClient(_s2sTransport, S2SSecret, AppId, AppKey, _listing);
     }
 
-    public SandboxClient CreateSandboxClient(TimeSpan? executionTimeout = null) =>
-        new(
-            new SandboxClientOptions(
-                new Uri(GatewayUrl, UriKind.Absolute),
-                AppId,
-                AppKey ?? "",
-                executionTimeout ?? TimeSpan.FromMinutes(2),
-                TimeSpan.FromSeconds(30)
-            )
+    public SandboxClient CreateSandboxClient(TimeSpan? executionTimeout = null)
+    {
+        var options = new SandboxClientOptions(
+            new Uri(GatewayUrl, UriKind.Absolute),
+            AppId,
+            AppKey ?? "",
+            executionTimeout ?? TimeSpan.FromMinutes(2),
+            TimeSpan.FromSeconds(30)
         );
+        if (Transport is null)
+        {
+            return new SandboxClient(options);
+        }
+        _sandboxTransport ??= new HttpClient(Transport, disposeHandler: false);
+        return new SandboxClient(options, _sandboxTransport);
+    }
 
-    public void Dispose() => _s2sTransport?.Dispose();
+    public void Dispose()
+    {
+        _s2sTransport?.Dispose();
+        _sandboxTransport?.Dispose();
+    }
 }

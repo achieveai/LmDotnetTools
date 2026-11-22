@@ -377,32 +377,59 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
                             queue.Enqueue(child);
                 }
             }
-            var root = await inner.LoadMetadataAsync(rootThreadId, ct);
-            var scope = string.IsNullOrWhiteSpace(root?.TenantId)
-                ? null
-                : ConversationListScope.ForTenantIncludingUntenanted(root.TenantId);
+            // Breadth first, one level at a time: the root and its children, then the children of the nodes
+            // that level admitted, and so on. Each level is one store read when the store can batch, so a
+            // direct read takes one connection rather than 2+N queued behind the store's writers. A level
+            // holds only children of admitted nodes, so nothing below a rejected node is ever read.
             var found = new List<SubAgentSummary>();
             var discovered = new HashSet<string>(StringComparer.Ordinal) { rootThreadId };
-            var traversal = new Queue<(string Parent, int Depth)>();
-            traversal.Enqueue((rootThreadId, 0));
-            while (traversal.TryDequeue(out var current))
+            ConversationListScope? scope = null;
+            List<string> parents = [rootThreadId];
+            for (var depth = 0; parents.Count > 0; depth++)
             {
                 ct.ThrowIfCancellationRequested();
-                if (!candidates.TryGetValue(current.Parent, out var children))
-                    continue;
-                foreach (var child in children)
+                var level = new List<(string Parent, string Child)>();
+                foreach (var parent in parents)
                 {
-                    if (!discovered.Add(child))
-                        continue;
-                    var row = await inner.LoadMetadataAsync(child, ct);
+                    foreach (var child in candidates.GetValueOrDefault(parent) ?? [])
+                    {
+                        if (discovered.Add(child))
+                        {
+                            level.Add((parent, child));
+                        }
+                    }
+                }
+                if (depth > 0 && level.Count == 0)
+                {
+                    break;
+                }
+                var children = level.Select(pair => pair.Child);
+                var rows = await LoadRowsAsync(depth == 0 ? [rootThreadId, .. children] : [.. children], ct);
+                if (depth == 0)
+                {
+                    var root = rows.GetValueOrDefault(rootThreadId);
+                    scope = string.IsNullOrWhiteSpace(root?.TenantId)
+                        ? null
+                        : ConversationListScope.ForTenantIncludingUntenanted(root.TenantId);
+                }
+                parents = [];
+                foreach (var (parent, child) in level)
+                {
+                    var row = rows.GetValueOrDefault(child);
                     if (row is null || (scope is not null && !scope.Admits(row)))
+                    {
                         continue;
-                    var node = SubAgentProvenance.TryProject(row, current.Parent);
+                    }
+                    var node = SubAgentProvenance.TryProject(row, parent);
                     if (node is null)
+                    {
                         continue;
-                    found.Add(node with { Depth = current.Depth + 1 });
+                    }
+                    found.Add(node with { Depth = depth + 1 });
                     if (recursive)
-                        traversal.Enqueue((child, current.Depth + 1));
+                    {
+                        parents.Add(child);
+                    }
                 }
             }
             lock (_gate)
@@ -432,6 +459,28 @@ public sealed class IndexedConversationStore(IConversationStore inner, string in
             SnapshotEpoch = lastSnapshotEpoch,
             CurrentEpoch = lastCurrentEpoch,
         };
+    }
+
+    // Each row as LoadMetadataAsync returns it, keyed by id; a missing row is absent. One store read when the
+    // wrapped store can batch, a point read per id otherwise.
+    private async Task<IReadOnlyDictionary<string, ThreadMetadata>> LoadRowsAsync(
+        IReadOnlyCollection<string> threadIds,
+        CancellationToken ct
+    )
+    {
+        if (inner is IConversationMetadataBatchStore batch)
+        {
+            return await batch.LoadMetadataBatchAsync(threadIds, ct);
+        }
+        var rows = new Dictionary<string, ThreadMetadata>(StringComparer.Ordinal);
+        foreach (var threadId in threadIds)
+        {
+            if (await inner.LoadMetadataAsync(threadId, ct) is { } row)
+            {
+                rows[threadId] = row;
+            }
+        }
+        return rows;
     }
 
     public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>

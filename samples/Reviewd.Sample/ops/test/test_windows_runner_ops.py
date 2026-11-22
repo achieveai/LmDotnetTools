@@ -53,6 +53,24 @@ def completed(args, stdout="", returncode=0):
     return subprocess.CompletedProcess(args, returncode, stdout=stdout, stderr="")
 
 
+class PendingClosesTests(unittest.TestCase):
+    """ops/ado/judge-pending-closes.py, which picks the judgments the Windows judge tick closes."""
+
+    def test_a_shadow_judgment_is_never_pending(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        with sqlite3.connect(root / "reviews.db") as db:
+            db.execute("create table cache (key text primary key, value text)")
+            for pr, extra in ((1, {}), (2, {"shadow": True}), (3, {"shadow": False})):
+                db.execute("insert into cache values (?, ?)", (f"reviewd/judge-run/org/p/repo/{pr}/1", json.dumps(
+                    {"repository": "Org/P/Repo", "prId": str(pr), "stage": "completed", "outputStage": "final",
+                     **extra})))
+        result = subprocess.run([sys.executable, "-I", str(OPS / "ado" / "judge-pending-closes.py"),
+                                 str(root / "reviews.db"), str(root)], capture_output=True, text=True, check=True)
+        # The shadow judgment would only be refused by judge close, failing, alerting and using close capacity.
+        self.assertEqual(["Org/P/Repo	1	1", "Org/P/Repo	3	1"], result.stdout.splitlines())
+
+
 class AlarmTests(unittest.TestCase):
     def setUp(self):
         self.alarm = load_alarm()
