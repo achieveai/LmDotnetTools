@@ -1,6 +1,5 @@
 extern alias Reviewd;
 
-using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Text.Json.Nodes;
@@ -211,6 +210,8 @@ public sealed class ReviewdTreeTimeoutTests : LoggingTestBase
         using var http = host.Client();
         var client = new LmStreamingS2SClient(http, null, null, null);
 
+        // The judge's own clock, read before the wait exists, so it can only start before the judge stamps its own.
+        var started = DateTimeOffset.UtcNow;
         var wait = () =>
             JudgeRunner
                 .WaitForInputAsync(
@@ -231,20 +232,19 @@ public sealed class ReviewdTreeTimeoutTests : LoggingTestBase
                 )
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
-        var watch = Stopwatch.StartNew();
         (await wait.Should().ThrowAsync<InvalidOperationException>())
             .Which.Message.Should()
             .Contain("has not answered")
             .And.Contain("Rerun to resume the wait; nothing is resent.");
-        watch.Stop();
-        LogData("outcome", new { host.TreeReads, elapsedMs = watch.Elapsed.TotalMilliseconds });
+        var elapsed = DateTimeOffset.UtcNow - started;
+        LogData("outcome", new { host.TreeReads, elapsedMs = elapsed.TotalMilliseconds });
         host.TreeReads.Should()
             .BeGreaterThanOrEqualTo(
                 6,
                 "the shared wait spends its whole timeout budget before the outage loop sees one"
             );
-        watch
-            .Elapsed.Should()
+        elapsed
+            .Should()
             .BeGreaterThanOrEqualTo(
                 TimeSpan.FromMilliseconds(500),
                 "the judge gives up only once the host has been silent for its whole outage limit"
