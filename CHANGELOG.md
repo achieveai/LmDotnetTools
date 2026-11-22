@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **LmStreaming: a mode switch can no longer race a sandbox release into a refused dedicated thread, and a failed
+  workspace destroy no longer forgets a released sandbox.** The release route now checks the conversation's mode again
+  in the same step that stores the move (a compare-and-set on the stored mode id, up to three tries). A switch into a
+  Mini App debugging or browser debugging mode that lands during a shared-to-dedicated release now answers `400
+  dedicated_sandbox_mode_unsupported`, with nothing stored. Before, the release committed the move and every later send
+  answered `409`. A mode that keeps changing answers `503 sandbox_release_failed`. A mode switch that waited for such a
+  move now answers that `400` instead of a server error. `SandboxSessionRegistry.DestroyWorkspaceSessionAsync` keeps a
+  retiring dedicated sandbox tracked until the gateway confirms its DELETE. Before, a refused DELETE dropped it, so the
+  owner's next move committed while it still ran. The destroy stays best-effort and does not throw.
+
 - **LmStreaming: dedicated per-conversation sandboxes and a sandbox release route.** A conversation provisioned with
   `dedicatedSandbox: true` and a working directory gets its own sandbox, jailed to that directory by the gateway
   (ADR 0044); other conversations on the workspace keep sharing one. `GET /api/conversations/capabilities` reports

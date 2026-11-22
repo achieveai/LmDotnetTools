@@ -468,6 +468,53 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
         calls.DeleteAttempts.Should().Be(2, "nothing is left for the owner's next release");
     }
 
+    [Fact]
+    public async Task A_workspace_destroy_the_gateway_refuses_keeps_the_retiring_sandbox_so_the_owners_move_cannot_commit_past_it()
+    {
+        // The destroy is best-effort, so it does not throw. Forgetting the retiring sandbox anyway would let the
+        // owner's next move delete nothing, commit, and leave the old sandbox running untracked in the old directory.
+        var (registry, calls) = CreateRegistry();
+        var a = await registry.GetOrCreateSessionAsync(OwnedRef("thread-a", "PRs/r-7"));
+        calls.FailDeletes = true;
+        await registry
+            .ReleaseOwnedSessionsAsync("thread-a")
+            .Invoking(task => task)
+            .Should()
+            .ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
+
+        await registry.DestroyWorkspaceSessionAsync("ws-1");
+
+        LogCalls(calls);
+        Logger.LogDebug(
+            "After the refused destroy: tracked {Tracked}, delete attempts {Attempts}",
+            registry.TryGetSessionById(a.SessionId, out _),
+            calls.DeleteAttempts
+        );
+        calls.DeleteAttempts.Should().Be(2, "the destroy tried the retiring sandbox");
+        registry.TryGetSessionById(a.SessionId, out _).Should().BeTrue("its DELETE was never confirmed");
+        var committed = 0;
+        Task Commit()
+        {
+            committed++;
+            return Task.CompletedTask;
+        }
+
+        await registry
+            .ReleaseOwnedSessionsAsync("thread-a", "PRs/r-9", Commit)
+            .Invoking(task => task)
+            .Should()
+            .ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>("the old sandbox still runs");
+        committed.Should().Be(0, "a move commits only once the old sandbox is gone");
+
+        calls.FailDeletes = false;
+        await registry.ReleaseOwnedSessionsAsync("thread-a", "PRs/r-9", Commit);
+
+        LogCalls(calls);
+        calls.DeletedSessionIds.Should().Equal(a.SessionId);
+        committed.Should().Be(1);
+        registry.TryGetSessionById(a.SessionId, out _).Should().BeFalse();
+    }
+
     [Theory]
     [InlineData("the DELETE is held")]
     [InlineData("the owner has no sandbox and the commit is held")]

@@ -2130,7 +2130,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             await EvictSessionStateAsync(session).ConfigureAwait(false);
         }
 
-        // Released dedicated sandboxes whose DELETE was refused still run on this workspace.
+        // Released dedicated sandboxes whose DELETE was refused still run on this workspace. Each stays tracked until
+        // the gateway confirms it gone: forgotten after a refused DELETE, it would let the owner's next move commit
+        // while it still runs. The owner's next release, a workspace release and disposal retry it.
         foreach (var (retiring, key) in _retiringSessions.ToList())
         {
             if (
@@ -2142,23 +2144,21 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             }
 
             ct.ThrowIfCancellationRequested();
-            if (!_retiringSessions.TryRemove(retiring, out _))
-            {
-                continue;
-            }
-
-            SandboxSession session;
             try
             {
-                session = await retiring.Value.ConfigureAwait(false);
+                // A refusal is logged there and left tracked; this teardown stays best-effort.
+                _ = await TryDeleteRetiringAsync(retiring, key).ConfigureAwait(false);
             }
-            catch
+            catch (Exception ex)
             {
-                continue;
+                _logger.LogWarning(
+                    ex,
+                    "Deleting retiring sandbox of owner {OwnerThreadId} on workspace {WorkspaceId} failed; it stays "
+                        + "tracked for a retry",
+                    key.OwnerThreadId,
+                    workspaceId
+                );
             }
-
-            await DestroySessionAsync(session, CancellationToken.None).ConfigureAwait(false);
-            await EvictSessionStateAsync(session).ConfigureAwait(false);
         }
     }
 
