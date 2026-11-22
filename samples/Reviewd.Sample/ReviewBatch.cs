@@ -10,76 +10,91 @@ namespace Reviewd.Sample;
 internal static class ReviewBatch
 {
     public static Task<int> RunAsync(CliOptions options, ReviewdConfig config, CancellationToken ct) =>
-        AuthCommands.RunAsync(
-            options,
-            config,
-            ct,
-            async token =>
-            {
-                if (!options.Has("execute"))
-                    throw new InvalidOperationException("review batch requires --execute; no state was changed.");
-                // Startup sweep: reclaim any slot a prior (crashed) batch left owned — including legacy
-                // owners claimed before leasing existed — so restarting the batch always clears jams.
-                await SweepSlotsAsync(options, config, undatedExpired: true, token);
-                // Periodic sweep on its own timer: a slot whose owner's lease lapsed stays held until the reaper
-                // frees it, and the queue keeps it out of use until then.
-                var reaper = SweepPeriodicallyAsync(
-                    cancellation => SweepSlotsAsync(options, config, undatedExpired: false, cancellation),
-                    (delay, cancellation) => Task.Delay(delay, cancellation),
-                    token
-                );
-                // One batch per workspace and database. A batch that holds it is waited out, not raced.
-                using (
-                    var lease = await AcquireBatchLeaseAsync(
-                        () =>
-                            ReviewRunner.AcquireLease(options.Required("db"), "batch/" + options.Required("workspace")),
-                        (delay, cancellation) => Task.Delay(delay, cancellation),
-                        token
-                    )
-                )
-                {
-                    string? unreadable = null;
-                    await ScheduleAsync(
-                        options,
-                        config,
-                        async cancellation =>
-                        {
-                            var (text, error) = await TryReadSelectionAsync(
-                                options.Required("selection"),
-                                cancellation
-                            );
-                            if (text is null)
-                            {
-                                // Logged once per distinct error, not every poll, so a long outage stays readable.
-                                if (error != unreadable)
-                                    Console.Error.WriteLine($"Selection unreadable; retrying every 5 seconds: {error}");
-                                unreadable = error;
-                                return null;
-                            }
-                            if (unreadable is not null)
-                                Console.Error.WriteLine("Selection readable again.");
-                            unreadable = null;
-                            return text;
-                        },
-                        async (text, cancellation) =>
-                        {
-                            _ = ValidateAgePolicy(options, JsonNode.Parse(text)!.AsObject());
-                            await ClaimAsync(options.Required("db"), SlotRelease.Digest(text), text, cancellation);
-                            _ = config.CreateS2SClient();
-                        },
-                        (repo, pr, slot, head, cancellation) =>
-                            ReviewRunner.CheckEligibilityAsync(options, config, repo, pr, slot, head, cancellation),
-                        run => ReviewRunner.RunAsync(run, config, CancellationToken.None),
-                        EnsureNoDaemon,
-                        (delay, cancellation) => Task.Delay(delay, cancellation),
-                        () => DateTimeOffset.UtcNow,
-                        untilIdle: false,
-                        token
-                    );
-                }
-                await reaper;
-            }
+        AuthCommands.RunAsync(options, config, ct, token => RunBatchAsync(options, config, token));
+
+    /// <summary>The batch itself, which <see cref="RunAsync"/> runs beside the OAuth callback.</summary>
+    internal static async Task RunBatchAsync(CliOptions options, ReviewdConfig config, CancellationToken token)
+    {
+        if (!options.Has("execute"))
+            throw new InvalidOperationException("review batch requires --execute; no state was changed.");
+        // A variant arm's workspace and mode must be the ones variant up built for its manifest. Each run
+        // checks again before it provisions, the clone's and the alias's commits included.
+        if (await ShadowArm.ResolveAsync(options, options.Required("provider"), token) is { } arm)
+        {
+            await arm.CheckProvisionedAsync(
+                config.CreateS2SClient(),
+                options.Required("workspace"),
+                options.Get("mode") ?? config.ModeId,
+                reviewRepoHead: null,
+                aliasSha: null,
+                token
+            );
+            await CheckResumesAsync(
+                options.Required("db"),
+                arm,
+                options.Get("mode") ?? config.ModeId,
+                options.Required("provider"),
+                options.Get("reasoning-effort"),
+                token
+            );
+        }
+        // Startup sweep: reclaim any slot a prior (crashed) batch left owned — including legacy
+        // owners claimed before leasing existed — so restarting the batch always clears jams.
+        await SweepSlotsAsync(options, config, undatedExpired: true, token);
+        // Periodic sweep on its own timer: a slot whose owner's lease lapsed stays held until the reaper
+        // frees it, and the queue keeps it out of use until then.
+        var reaper = SweepPeriodicallyAsync(
+            cancellation => SweepSlotsAsync(options, config, undatedExpired: false, cancellation),
+            (delay, cancellation) => Task.Delay(delay, cancellation),
+            token
         );
+        // One batch per workspace and database. A batch that holds it is waited out, not raced.
+        using (
+            var lease = await AcquireBatchLeaseAsync(
+                () => ReviewRunner.AcquireLease(options.Required("db"), "batch/" + options.Required("workspace")),
+                (delay, cancellation) => Task.Delay(delay, cancellation),
+                token
+            )
+        )
+        {
+            string? unreadable = null;
+            await ScheduleAsync(
+                options,
+                config,
+                async cancellation =>
+                {
+                    var (text, error) = await TryReadSelectionAsync(options.Required("selection"), cancellation);
+                    if (text is null)
+                    {
+                        // Logged once per distinct error, not every poll, so a long outage stays readable.
+                        if (error != unreadable)
+                            Console.Error.WriteLine($"Selection unreadable; retrying every 5 seconds: {error}");
+                        unreadable = error;
+                        return null;
+                    }
+                    if (unreadable is not null)
+                        Console.Error.WriteLine("Selection readable again.");
+                    unreadable = null;
+                    return text;
+                },
+                async (text, cancellation) =>
+                {
+                    _ = ValidateAgePolicy(options, JsonNode.Parse(text)!.AsObject());
+                    await ClaimAsync(options.Required("db"), SlotRelease.Digest(text), text, cancellation);
+                    _ = config.CreateS2SClient();
+                },
+                (repo, pr, slot, head, cancellation) =>
+                    ReviewRunner.CheckEligibilityAsync(options, config, repo, pr, slot, head, cancellation),
+                run => ReviewRunner.RunAsync(run, config, CancellationToken.None),
+                EnsureNoDaemon,
+                (delay, cancellation) => Task.Delay(delay, cancellation),
+                () => DateTimeOffset.UtcNow,
+                untilIdle: false,
+                token
+            );
+        }
+        await reaper;
+    }
 
     // A lease held by another batch, or a lock file this user cannot open yet, is retried like an unreadable
     // selection: logged once per distinct error. Scheduling starts only once the lease is held.
@@ -180,9 +195,9 @@ internal static class ReviewBatch
     /// (with a busy timeout so it yields to in-flight reviews) and swallows any sweep-level error so a
     /// transient SQLite contention or host blip never stops the batch — the next sweep retries.
     /// <paramref name="undatedExpired"/> also reclaims legacy owners with no lease; used only at startup
-    /// when no review is running yet.
+    /// when no review is running yet. Returns why the sweep was skipped, or null.
     /// </summary>
-    private static async Task SweepSlotsAsync(
+    internal static async Task<string?> SweepSlotsAsync(
         CliOptions options,
         ReviewdConfig config,
         bool undatedExpired,
@@ -191,6 +206,16 @@ internal static class ReviewBatch
     {
         try
         {
+            // A shadow arm's reaper resets slots its agents wrote to, so it runs in the read-only session too. The
+            // arm is checked here, before any reset: a restart that drops --shadow and --post-session still names the
+            // shadow --db, and the batch's own arm check comes only after the startup sweep.
+            Func<string> tokenStoreDir = () => AuthCommands.LoadOptions(config, null).TokenStoreDir!;
+            var session = options.Get("post-session") ?? options.Required("session");
+            if (options.Has("post-session"))
+            {
+                ReadOnlySessions.Require(tokenStoreDir(), session);
+            }
+            await ReviewArm.RequireReadOnlySessionForShadowAsync(options.Required("db"), tokenStoreDir, session, ct);
             await using var connection = new SqliteConnection(
                 new SqliteConnectionStringBuilder
                 {
@@ -206,7 +231,6 @@ internal static class ReviewBatch
             }
             var client = config.CreateS2SClient();
             using var sandboxClient = config.CreateSandboxClient(TimeSpan.FromMinutes(10));
-            var session = options.Required("session");
             SlotReaper.SandboxExecutor sandbox = (phase, args, operation, token) =>
                 ReviewRunner.ExecuteSandboxAsync(sandboxClient, session, phase, args, operation, token);
             var results = await SlotReaper.SweepAsync(
@@ -235,10 +259,12 @@ internal static class ReviewBatch
                 Console.Error.WriteLine(
                     $"Reaper waiting on lapsed-lease slot {skipped.Repo}#{skipped.Pr}/slot{skipped.Slot}: {skipped.Detail}"
                 );
+            return null;
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
             Console.Error.WriteLine($"Reaper sweep skipped: {ex.Message}.");
+            return ex.Message;
         }
     }
 
@@ -363,6 +389,37 @@ internal static class ReviewBatch
             scope["reasoningEffort"] = reasoningEffort;
         if (maxAgeHours is { } hours)
             scope["maxAgeHours"] = hours;
+        // The arm is part of the scope: a restart that drops --shadow must not admit the saved queue as live reviews.
+        if (options.Has("shadow"))
+        {
+            scope["shadow"] = true;
+            scope["postSession"] = options.Required("post-session");
+        }
+        if (options.Get("variant") is { } variant)
+        {
+            scope["variant"] = variant;
+        }
+        // The arm's prompt and manifest are checked once here, so a bad one stops the batch instead of every run. The
+        // scope keeps their hashes: a restart with an edited prompt or manifest would run the queue as another arm.
+        // Short local reads, so like the check below they run even when the batch starts already canceled.
+        if (await ShadowArm.ResolveAsync(options, options.Required("provider"), CancellationToken.None) is { } arm)
+        {
+            scope["taskPromptSha256"] = arm.TemplateSha256;
+            if (arm.Manifest is { } manifest)
+            {
+                scope["manifestSha256"] = manifest.Sha256;
+                scope["experiment"] = arm.Experiment;
+            }
+        }
+        // Every run refuses another arm's --db, so a mismatched batch stops here instead of failing each PR. It is a
+        // short local read, so it runs even when the batch starts already canceled.
+        await ReviewArm.CheckAsync(
+            database,
+            options.Has("shadow"),
+            options.Get("variant"),
+            pin: true,
+            CancellationToken.None
+        );
         JsonObject? state = null;
         using var writes = new SemaphoreSlim(1, 1);
         // Steps started here, by repo and slot. Only the loop below adds or removes them.
@@ -1097,6 +1154,25 @@ internal static class ReviewBatch
                 };
                 if (options.Get("reasoning-effort") is { } effort)
                     arguments.AddRange(["--reasoning-effort", effort]);
+                if (options.Has("shadow"))
+                {
+                    arguments.AddRange(["--shadow", "--post-session", options.Required("post-session")]);
+                }
+                if (options.Get("variant") is { } variant)
+                {
+                    arguments.AddRange([
+                        "--variant",
+                        variant,
+                        "--manifest",
+                        options.Required("manifest"),
+                        "--experiment",
+                        options.Required("experiment"),
+                    ]);
+                }
+                if (options.Get("task-prompt-file") is { } taskPrompt)
+                {
+                    arguments.AddRange(["--task-prompt-file", taskPrompt]);
+                }
                 if (maxAgeHours is { } maximumAge)
                     arguments.AddRange([
                         "--max-age-hours",
@@ -1140,18 +1216,6 @@ internal static class ReviewBatch
             catch (Exception ex)
             {
                 var retained = await ReadAsync(database, AttemptKey(entry));
-                // The claim writes the attempt row, so a host timeout or connection failure that left the row
-                // as it was before launch failed before the claim: it left nothing behind and says nothing
-                // about the PR. Retry it with backoff. Holding it parked nine PRs whose conversation lookup
-                // timed out. The row may predate this launch (an earlier head's released review). An earlier
-                // conversation still running (or a busy hierarchy read) defers the review the same way.
-                var transientBeforeClaim =
-                    retained?.ToJsonString() == attemptBeforeLaunch
-                    && ex
-                        is HttpRequestException
-                            or TimeoutException
-                            or TaskCanceledException
-                            or ReviewRunner.ReviewDeferredException;
                 // A gateway at its operation limit says nothing about the PR: a restart resumes every owner at
                 // once and briefly exceeds it. Back off without spending the PR's retries, or admitted reviews
                 // are held and their slots wait for the reaper.
@@ -1167,6 +1231,34 @@ internal static class ReviewBatch
                         || unavailable.ErrorCode == "sandbox_busy"
                         || retained?[ReviewRunner.CommitReplay]?.GetValue<string>() is not { Length: > 0 }
                     );
+                // The claim writes the attempt row, so a host timeout or connection failure that left the row
+                // as it was before launch failed before the claim: it left nothing behind and says nothing
+                // about the PR. Retry it with backoff. Holding it parked nine PRs whose conversation lookup
+                // timed out. The row may predate this launch (an earlier head's released review). An earlier
+                // conversation still running (or a busy hierarchy read) defers the review the same way, and so
+                // does a gateway 503 (a variant run's pin reads come before the claim).
+                var beforeClaim = retained?.ToJsonString() == attemptBeforeLaunch;
+                var transientBeforeClaim =
+                    beforeClaim
+                    && ex
+                        is HttpRequestException
+                            or TimeoutException
+                            or TaskCanceledException
+                            or ReviewRunner.ReviewDeferredException
+                            or SandboxException { StatusCode: 503 };
+                // There, for a fresh run or a resume alike, only a gateway that says it is at capacity, or busy
+                // quiescing (sandbox_busy), backs off uncounted. Another 503 (a workspace restore or image pull that
+                // failed, a marketplace store that is down) is retried and counted, so it is held at the retry cap
+                // instead of retrying forever.
+                if (
+                    launched
+                    && beforeClaim
+                    && !ReviewRunner.RefusedAtCapacity(ex)
+                    && ex is not SandboxException { ErrorCode: "sandbox_busy" }
+                )
+                {
+                    capacity = false;
+                }
                 // A fresh admission that fails says something about the PR, so it is counted. One that released
                 // its slot quarantines now; one still owning its slot is held below, and once the reaper frees the
                 // slot the pre-launch check skips it, so a quarantine never strands an owned slot (seen live: a
@@ -1483,6 +1575,59 @@ internal static class ReviewBatch
         && failure["count"]?.GetValue<int>() >= QuarantineAfter;
 
     private const string InterruptedLaunch = "Interrupted launch has no definitive non-admission evidence.";
+
+    /// <summary>
+    ///     Refuses a shadow batch whose arm differs from the one an attempt it would resume started with. A restart
+    ///     resumes every attempt the database still owns, and each such resume would be refused, retried and then held
+    ///     with its slot. The arm is the task prompt, manifest, experiment and mode file
+    ///     (<see cref="ShadowArm.ResumeMismatch"/>). An attempt that released its slot is left out: it holds nothing,
+    ///     and a newer head admits it fresh.
+    /// </summary>
+    internal static async Task CheckResumesAsync(
+        string database,
+        ShadowArm arm,
+        string mode,
+        string provider,
+        string? effort,
+        CancellationToken ct
+    )
+    {
+        if (!File.Exists(database))
+        {
+            return;
+        }
+        var refused = new List<string>();
+        using (var connection = Connection(database, SqliteOpenMode.ReadOnly))
+        {
+            await connection.OpenAsync(ct);
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                "SELECT value FROM cache WHERE substr(key, 1, 23) = 'reviewd/review-attempt/' ORDER BY key";
+            using var reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                if (
+                    JsonNode.Parse(reader.GetString(0)) is JsonObject attempt
+                    && attempt["stage"]?.GetValue<string>() != "failed-released"
+                    && attempt["cleanupState"]?.GetValue<string>() != "released"
+                    && Resumable(attempt)
+                    && attempt["provenance"] is JsonObject sent
+                    && arm.ResumeMismatch(sent, mode, provider, effort) is { } mismatch
+                )
+                {
+                    refused.Add($"{attempt["repository"]} #{attempt["prId"]}: {mismatch}");
+                }
+            }
+        }
+        if (refused.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"This batch's arm differs from the one {refused.Count} retained attempt(s) started with, so none "
+                    + "could resume. Finish them with the arm they started with, or release them, then start the "
+                    + $"changed arm. {string.Join(" ", refused)}"
+            );
+        }
+    }
 
     private static bool Reusable(JsonNode attempt) =>
         attempt["cleanupState"]?.GetValue<string>() == "released"

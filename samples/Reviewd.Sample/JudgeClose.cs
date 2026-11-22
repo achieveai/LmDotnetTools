@@ -202,6 +202,11 @@ internal static class JudgeClose
             return Refuse(
                 n == 0 ? "no completed final judgment to close." : $"judgment {n} is not a completed final judgment."
             );
+        // A shadow review is an experiment arm: its judgment is a score, and the KnowledgeBase never learns from it.
+        if (receipt["shadow"]?.GetValue<bool>() == true)
+        {
+            return Refuse($"judgment {n} judged a shadow review; a shadow judgment is never closed into the store.");
+        }
         var dir = Text(receipt, "judgmentDir");
         if (!Regex.IsMatch(dir, @"^PRs/[A-Za-z0-9][A-Za-z0-9._-]*/judgment-\d+$"))
             return Refuse($"judgment {n} has no valid judgmentDir.");

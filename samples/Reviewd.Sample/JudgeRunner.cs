@@ -33,6 +33,9 @@ internal static class JudgeRunner
     internal const int NotCompletedExitCode = 4;
 
     private const string PromptResource = "Reviewd.Sample.Prompts.merged-judge.md";
+
+    // Appended to the template for a shadow review, whose comments were never posted (section 12 of the prompt).
+    private const string WouldPostResource = "Reviewd.Sample.Prompts.merged-judge-would-post.md";
     internal const string ScriptResource = "Reviewd.Sample.JudgeSandbox.py";
 
     // Linux limits each argv string to 128 KiB; the gateway passes argv through unchanged.
@@ -92,6 +95,26 @@ internal static class JudgeRunner
         "claimToken",
         "reviewIdempotencyKey",
         "confirmationIdempotencyKey",
+    ];
+
+    // A shadow review's receipts reach the judge with only these fields, so no input names the arm: its variant,
+    // experiment, provider, effort, sessions, task prompt and answers stay on the host. A field added to the receipt
+    // later stays out until it is listed here.
+    private static readonly string[] S_blindReceiptKeys =
+    [
+        "repository",
+        "prId",
+        "slot",
+        "headSha",
+        "reviewedHeadSha",
+        "mergeSha",
+        "startedAt",
+        "reviewCompletedAt",
+        "finishedAt",
+        "threadId",
+        "stage",
+        "artifactCommit",
+        "prepared",
     ];
 
     internal static readonly HashSet<string> ResumableStages =
@@ -202,6 +225,29 @@ internal static class JudgeRunner
             throw new InvalidOperationException(
                 $"Review receipt stage is {review["stage"]}, not completed-verified; only a verified review is judged."
             );
+        // A shadow review posted nothing: the judge scores the would_post.json its verify step checked, blind to the
+        // arm. The arm's agent could edit the store judge-inputs runs git in, so that runs only in a session created
+        // read-only on this host, where a planted hook or git config cannot post either.
+        // The prompt section for it is identified on its own, so the base template's sha (which judge batch matches)
+        // stays the same.
+        var shadow = review["shadow"]?.GetValue<bool>() == true;
+        string? wouldPostPrompt = null;
+        if (shadow)
+        {
+            if (review["wouldPost"]?["comments"] is not JsonArray)
+            {
+                throw new InvalidOperationException("Shadow review receipt has no verified would-post record.");
+            }
+            if (!ReadOnlySessions.IsMarked(AuthCommands.LoadOptions(config, null).TokenStoreDir!, session))
+            {
+                throw new InvalidOperationException(
+                    $"Review receipt is a shadow review: judge it in a session from sandbox create --read-only-egress; "
+                        + $"--session {session} is not one."
+                );
+            }
+            wouldPostPrompt = await ReadResourceAsync(WouldPostResource, ct);
+        }
+        var judgeTemplate = wouldPostPrompt is null ? template : template.TrimEnd() + "\n\n" + wouldPostPrompt;
         if (
             review["repository"]?.GetValue<string>()?.Equals(repo.DisplayName, StringComparison.OrdinalIgnoreCase)
                 != true
@@ -240,6 +286,10 @@ internal static class JudgeRunner
             ["effort"] = options.Get("reasoning-effort") ?? DefaultEffort,
             ["mode"] = options.Get("mode") ?? config.ModeId,
         };
+        if (wouldPostPrompt is not null)
+        {
+            identity["wouldPostPromptSha256"] = Sha256Hex(wouldPostPrompt);
+        }
 
         // ---- what an execute does now (the resume table)
         var latestN = judgments.Count == 0 ? 0 : judgments.Keys.Max();
@@ -415,6 +465,11 @@ internal static class JudgeRunner
                 ["phaseErrors"] = new JsonArray(),
                 ["startedAt"] = DateTimeOffset.UtcNow,
             };
+            // judge close refuses a judgment of a shadow review: the KnowledgeBase never learns from one.
+            if (shadow)
+            {
+                receipt["shadow"] = true;
+            }
             await SaveAsync();
             Console.Error.WriteLine($"{label}: judgment {n} inputs written to {built["judgmentRel"]}.");
             return await ContinueAsync();
@@ -811,10 +866,10 @@ internal static class JudgeRunner
         // Everything that can refuse a judgment before its thread exists is checked before the marker, the
         // judgment dir or a receipt is written, so a bad option never leaves a judgment that cannot be closed.
         Task PreflightAsync() =>
-            JudgeRunner.PreflightAsync(client, identity, template, review, repo.DisplayName, pr, ct);
+            JudgeRunner.PreflightAsync(client, identity, judgeTemplate, review, repo.DisplayName, pr, ct);
 
         string ComposePrompt(string judgmentRel) =>
-            JudgeRunner.ComposePrompt(template, repo.DisplayName, pr, judgmentRel);
+            JudgeRunner.ComposePrompt(judgeTemplate, repo.DisplayName, pr, judgmentRel);
 
         Task<string> SendAsync(string thread, string text, string key) =>
             SendWithKeyAsync(client, thread, text, key, WaitOutage, label, ct);
@@ -861,35 +916,36 @@ internal static class JudgeRunner
                 await JudgeBatch.RowsAsync(connection, "reviewd/judge-run/", ct),
                 judgePrefix
             );
-            var built = await JudgeSandboxAsync(
-                "judge-inputs",
-                new JsonObject
+            var inputs = new JsonObject
+            {
+                ["org"] = repo.OrgOrOwner,
+                ["project"] = repo.Project,
+                ["repo"] = repo.RepoName,
+                ["pr"] = pr,
+                ["minN"] = minN,
+                ["nonce"] = nonce,
+                ["dryRun"] = dryRun,
+                ["host"] = new JsonObject
                 {
-                    ["org"] = repo.OrgOrOwner,
-                    ["project"] = repo.Project,
-                    ["repo"] = repo.RepoName,
-                    ["pr"] = pr,
-                    ["minN"] = minN,
-                    ["nonce"] = nonce,
-                    ["dryRun"] = dryRun,
-                    ["host"] = new JsonObject
-                    {
-                        ["receiptKey"] = reviewKey,
-                        ["receipt"] = Strip(review),
-                        ["attemptHistory"] = new JsonArray([
-                            .. history.Select(h =>
-                            {
-                                var row = Strip(h.Row);
-                                row["key"] = h.Key;
-                                return (JsonNode)row;
-                            }),
-                        ]),
-                        ["threads"] = usage,
-                        ["priorJudgments"] = priorJudgments,
-                    },
+                    ["receiptKey"] = reviewKey,
+                    ["receipt"] = shadow ? Blind(review) : Strip(review),
+                    ["attemptHistory"] = new JsonArray([
+                        .. history.Select(h =>
+                        {
+                            var row = shadow ? Blind(h.Row) : Strip(h.Row);
+                            row["key"] = h.Key;
+                            return (JsonNode)row;
+                        }),
+                    ]),
+                    ["threads"] = usage,
+                    ["priorJudgments"] = priorJudgments,
                 },
-                template
-            );
+            };
+            if (shadow)
+            {
+                inputs["wouldPost"] = review["wouldPost"]!.DeepClone();
+            }
+            var built = await JudgeSandboxAsync("judge-inputs", inputs, judgeTemplate);
             switch (built["status"]?.GetValue<string>())
             {
                 case "ok":
@@ -1286,6 +1342,9 @@ internal static class JudgeRunner
     internal static async Task<string> EmbeddedPromptSha256Async(CancellationToken ct) =>
         Sha256Hex(await ReadResourceAsync(PromptResource, ct));
 
+    internal static async Task<string> EmbeddedWouldPostPromptSha256Async(CancellationToken ct) =>
+        Sha256Hex(await ReadResourceAsync(WouldPostResource, ct));
+
     private static void PrintOutcome(JsonObject receipt)
     {
         var compare = receipt["ado"]?["compare"];
@@ -1314,6 +1373,21 @@ internal static class JudgeRunner
     }
 
     /// <summary>A receipt row without its claim token or send keys, each long string cut to its last 4 KB.</summary>
+    /// <summary>A shadow review's receipt row as the judge sees it: stripped, and only <see cref="S_blindReceiptKeys" />.</summary>
+    internal static JsonObject Blind(JsonObject row)
+    {
+        var stripped = Strip(row);
+        var blind = new JsonObject();
+        foreach (var key in S_blindReceiptKeys)
+        {
+            if (stripped[key] is { } value)
+            {
+                blind[key] = value.DeepClone();
+            }
+        }
+        return blind;
+    }
+
     private static JsonObject Strip(JsonObject row)
     {
         var copy = row.DeepClone().AsObject();
@@ -1748,8 +1822,8 @@ internal static class JudgeRunner
 
     /// <summary>
     ///     Provisions the judge thread from the judgment's stored <paramref name="identity" />: headless, and with
-    ///     read-only egress, so its sandbox may only GET and HEAD ADO while the review lanes on the same workspace keep
-    ///     full egress. A host that does not acknowledge read-only egress gets the thread deleted and a
+    ///     read-only egress, so its sandbox may only GET and HEAD ADO and GitHub while the review lanes on the same
+    ///     workspace keep full egress. A host that does not acknowledge read-only egress gets the thread deleted and a
     ///     <see cref="ReviewHostContractException" />, which ends the judgment failed-precondition before any send.
     /// </summary>
     internal static Task<string> ProvisionJudgeThreadAsync(

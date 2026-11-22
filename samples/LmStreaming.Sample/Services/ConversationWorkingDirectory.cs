@@ -39,7 +39,8 @@ internal sealed class ConversationWorkingDirectory(string relativeDirectory, str
     {
         if (
             !needsSandbox
-            || providerId.ToLowerInvariant()
+            // Trimmed like the pool's own provider lookup, so a padded id cannot slip past as unknown.
+            || providerId.Trim().ToLowerInvariant()
                 is "copilot"
                     or "codex"
                     or "claude"

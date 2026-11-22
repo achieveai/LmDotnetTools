@@ -282,6 +282,15 @@ public record ProvisionConversationRequest
     /// <c>read_only_egress_unsupported</c>). Default false keeps today's egress. Not changeable after provision.
     /// </summary>
     public bool ReadOnlyEgress { get; init; }
+
+    /// <summary>
+    /// True for a thread that gets its own sandbox, never shared with another conversation, created with
+    /// <see cref="WorkingDirectoryRelPath"/> as the gateway working directory: the agent and its sub-agents write
+    /// only there, and the rest of the workspace is read-only to them. Requires a working directory and the same
+    /// support (else 400 <c>working_directory_invalid</c>). <c>POST api/conversations/{threadId}/sandbox/release</c>
+    /// deletes the sandbox and may move the directory. Default false keeps the shared workspace sandbox.
+    /// </summary>
+    public bool DedicatedSandbox { get; init; }
 }
 
 /// <summary>
@@ -304,6 +313,19 @@ public record ProvisionConversationResponse
     /// ignores it and would give the thread full egress.
     /// </summary>
     public bool ReadOnlyEgressAccepted { get; init; }
+
+    /// <summary>
+    /// True when the read-only egress this host stored also narrows GitHub to GET and HEAD. A caller that asked
+    /// for read-only egress must refuse a reply without it: an earlier host narrowed only ADO, so the thread could
+    /// still push to GitHub.
+    /// </summary>
+    public bool ReadOnlyGitHubAccepted { get; init; }
+
+    /// <summary>
+    /// True when this host stored <see cref="ProvisionConversationRequest.DedicatedSandbox"/>. A caller that asked
+    /// for one must refuse a reply without it: an older host would run the thread in the shared sandbox.
+    /// </summary>
+    public bool DedicatedSandboxAccepted { get; init; }
 }
 
 /// <summary>
@@ -357,6 +379,29 @@ public record ConversationCapabilitiesResponse
 
     /// <summary>Recognizes explicit conversation cwd; unsupported providers/tools fail closed.</summary>
     public bool ConversationWorkingDirectory { get; init; }
+
+    /// <summary>
+    /// True when <see cref="ProvisionConversationRequest.DedicatedSandbox"/> and
+    /// <c>POST api/conversations/{threadId}/sandbox/release</c> are supported.
+    /// </summary>
+    public bool DedicatedSandbox { get; init; }
+}
+
+/// <summary>Body of <c>POST api/conversations/{threadId}/sandbox/release</c>.</summary>
+public record ReleaseSandboxRequest
+{
+    /// <summary>
+    /// The working directory the conversation's next sandbox works in, relative to the workspace root, or
+    /// <see langword="null"/> to keep the current one.
+    /// </summary>
+    public string? WorkingDirectoryRelPath { get; init; }
+}
+
+/// <summary>Reply of <c>POST api/conversations/{threadId}/sandbox/release</c>.</summary>
+public record ReleaseSandboxResponse
+{
+    /// <summary>The working directory the conversation's next sandbox works in.</summary>
+    public required string WorkingDirectoryRelPath { get; init; }
 }
 
 /// <summary>Body of <c>POST api/conversations/{threadId}/compaction</c>.</summary>

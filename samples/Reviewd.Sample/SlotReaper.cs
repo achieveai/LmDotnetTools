@@ -522,6 +522,12 @@ internal static class SlotReaper
         var session = options.Required("session");
         var execute = options.Has("execute");
         var undatedExpired = options.Has("include-undated");
+        await ReviewArm.RequireReadOnlySessionForShadowAsync(
+            database,
+            () => AuthCommands.LoadOptions(config, null).TokenStoreDir!,
+            session,
+            ct
+        );
 
         await using var connection = new SqliteConnection(
             new SqliteConnectionStringBuilder
