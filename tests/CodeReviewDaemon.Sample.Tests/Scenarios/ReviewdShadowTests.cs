@@ -1,6 +1,9 @@
 extern alias Reviewd;
 
+using System.Diagnostics;
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.Misc.Storage;
@@ -26,6 +29,18 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     private static readonly string Head = new('a', 40);
     private readonly string _database = Path.Combine(Path.GetTempPath(), $"reviewd-shadow-{Guid.NewGuid():N}.db");
 
+    // Not "shadow": judge-inputs echoes its store path, and the blind-judge test bans the word from every input.
+    private readonly string _files = Path.Combine(Path.GetTempPath(), $"reviewd-variants-{Guid.NewGuid():N}");
+
+    /// <summary>The flags of variant arm <paramref name="id" />, with a manifest that pins only its id.</summary>
+    private string[] Variant(string id, string manifest = "")
+    {
+        Directory.CreateDirectory(_files);
+        var path = Path.Combine(_files, id + ".json");
+        File.WriteAllText(path, manifest.Length > 0 ? manifest : $$"""{"id":"{{id}}"}""");
+        return ["--variant", id, "--manifest", path, "--experiment", "exp-1"];
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -36,7 +51,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         await SnapshotAsync();
 
         // The scripted host reports the review Errored after the send; this test only checks how it got there.
-        var run = () => RunAsync(handler, phases, shadow ? ["--shadow", "--variant", "kb-h1"] : []);
+        var run = () => RunAsync(handler, phases, shadow ? ["--shadow", .. Variant("kb-h1")] : []);
         await run.Should().ThrowAsync<InvalidOperationException>();
 
         var provision = handler.Requests.Single(r =>
@@ -297,12 +312,12 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     {
         // The first run pins the database to its arm; a run from any other arm is refused before it touches the host.
         // null is a database from before the pin: it holds a live attempt and no marker.
-        static string[] Arm(string? arm) =>
+        string[] Arm(string? arm) =>
             arm switch
             {
                 null => [],
                 "" or "--shadow" => ["--shadow"],
-                _ => ["--shadow", .. arm.Split(' ')],
+                _ => ["--shadow", .. Variant(arm.Split(' ')[1])],
             };
         await SnapshotAsync();
         if (first is null)
@@ -453,7 +468,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     {
         using var batch = new ReviewdRunnerTests.BatchFixture(0, 1)
         {
-            Arm = ["--shadow", "--post-session", "read-only", "--variant", "kb-h1"],
+            Arm = ["--shadow", "--post-session", "read-only", .. Variant("kb-h1")],
         };
         batch.Cancellation.Cancel();
         await batch.ExecuteAsync();
@@ -490,7 +505,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             var arm in new[]
             {
                 Array.Empty<string>(),
-                ["--shadow", "--post-session", "read-only", "--variant", "kb-h2"],
+                ["--shadow", "--post-session", "read-only", .. Variant("kb-h2")],
                 ["--shadow", "--post-session", "read-only"],
             }
         )
@@ -538,7 +553,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     [Theory]
     [InlineData("--read-only-egress")]
     [InlineData("--read-repos org/project/Nova")]
-    public void A_read_only_session_names_the_repos_its_prepare_may_fetch_and_only_it_does(string flags)
+    public void Read_only_egress_and_read_repos_are_each_refused_without_the_other(string flags)
     {
         var parse = () =>
             CliOptions.Parse(["sandbox", "create", "--workspace", "w", "--callback", "http://h", .. flags.Split(' ')]);
@@ -1093,6 +1108,1309 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     }
 
     [Fact]
+    public async Task A_variant_run_sends_its_own_task_prompt_and_records_what_produced_the_review()
+    {
+        // The arm's template drops the quality rules for its own; the receipt names the prompt, manifest and build.
+        Directory.CreateDirectory(_files);
+        var template = Path.Combine(_files, "b-007.md");
+        await File.WriteAllTextAsync(
+            template,
+            "B-007 RULES. Review {{repo}} #{{pr}} at {{head}}; save {{directory}}/would_post.json."
+        );
+        var flags = Variant(
+            "b-007",
+            """{"id":"b-007","provider":"test","taskPrompt":"b-007.md","plugins":{"alias":"cr-b-007","sha":"1111111111111111111111111111111111111111"}}"""
+        );
+        var handler = Host()
+            .OnJson(
+                HttpMethod.Get,
+                "api/workspaces/workspace",
+                """{"id":"workspace","name":"variant-b-007","directoryRelPath":"exp-b","marketplaces":[],"pluginSelection":[{"marketplace":"cr-b-007","plugin":"code-reviewer"}]}"""
+            );
+        await SnapshotAsync();
+        _aliasSha = new string('1', 40);
+
+        var run = () => RunAsync(handler, [], ["--shadow", "--task-prompt-file", template, .. flags]);
+        await run.Should().ThrowAsync<InvalidOperationException>();
+
+        var send = handler.Requests.First(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal));
+        send.Body.Should().Contain("B-007 RULES. Review org/project/Nova #17 at " + Head);
+        send.Body.Should().NotContain("Review quality rules");
+        var provenance = (await AttemptAsync())["provenance"]!.AsObject();
+        provenance["taskPromptSha256"]!
+            .GetValue<string>()
+            .Should()
+            .Be(VariantManifest.Sha256Hex(await File.ReadAllTextAsync(template)));
+        provenance["manifestSha256"]!
+            .GetValue<string>()
+            .Should()
+            .Be(VariantManifest.Sha256Hex(await File.ReadAllBytesAsync(flags[3])));
+        provenance["experimentId"]!.GetValue<string>().Should().Be("exp-1");
+        provenance["pluginSha"]!.GetValue<string>().Should().Be(new string('1', 40));
+        provenance["mode"]!.GetValue<string>().Should().Be("workspace-agent");
+        provenance["reviewdBuild"]!.GetValue<string>().Should().NotBeNullOrEmpty();
+    }
+
+    [Theory]
+    [InlineData("""{"id":"other"}""", "*pins id other, but this run uses b-007.")]
+    [InlineData("""{"id":"b-007","provider":"claude"}""", "*pins provider claude, but this run uses test.")]
+    [InlineData("""{"id":"b-007","effort":"xhigh"}""", "*pins reasoning effort xhigh, but this run uses none.")]
+    [InlineData("""{"id":"b-007","taskPrompt":"b-007.md"}""", "*pins task prompt SHA-256*")]
+    [InlineData("""{"id":"b-007","plugins":{"sha":"main"}}""", "*plugins.sha*must be a 40-character commit SHA.")]
+    public async Task A_run_that_differs_from_its_manifest_is_refused_before_any_host_call(
+        string manifest,
+        string refusal
+    )
+    {
+        // The manifest's task prompt differs from the default one this run sends.
+        Directory.CreateDirectory(_files);
+        await File.WriteAllTextAsync(Path.Combine(_files, "b-007.md"), "Mine: {{directory}} {{head}}");
+        await SnapshotAsync();
+        var handler = new FakeHttpMessageHandler();
+
+        var run = () => RunAsync(handler, [], ["--shadow", .. Variant("b-007", manifest)]);
+
+        (await run.Should().ThrowAsync<ArgumentException>()).WithMessage(refusal);
+        handler.Requests.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("--task-prompt-file t.md", "--task-prompt-file sets a shadow review's task prompt and needs --shadow.")]
+    [InlineData(
+        "--shadow --post-session p --variant b --manifest m.json",
+        "--variant, --manifest and --experiment go*"
+    )]
+    [InlineData(
+        "--shadow --post-session p --manifest m.json --experiment e",
+        "--variant, --manifest and --experiment go*"
+    )]
+    [InlineData("--shadow --post-session p --variant b --manifest m --experiment a/b", "--experiment must be*")]
+    public void Task_prompt_manifest_and_experiment_belong_to_a_shadow_variant(string flags, string refusal)
+    {
+        foreach (var command in new[] { RunArguments, ["review", "batch", "--session", "session"] })
+        {
+            var parse = () => CliOptions.Parse([.. command, .. flags.Split(' ')]);
+
+            parse.Should().Throw<ArgumentException>().WithMessage(refusal);
+        }
+    }
+
+    [Theory]
+    [InlineData("Save {{directory}}/would_post.json for {{head}} on {{branch}}.", "*unknown placeholder {{branch}}*")]
+    [InlineData(
+        "Save {{directory}}/would_post.json for {{head}} of PR {{pr_number}}.",
+        "*unknown placeholder {{pr_number}}*"
+    )]
+    [InlineData(
+        "Save {{directory}}/would_post.json for {{head}} by {{reviewer2}}.",
+        "*unknown placeholder {{reviewer2}}*"
+    )]
+    [InlineData("Save {{directory}}/would_post.json for {{head}} of {{ pr }}.", "*unknown placeholder {{ pr }}*")]
+    [InlineData("Review {{pr}} at {{head}}.", "*must use {{directory}}.")]
+    [InlineData("Save {{directory}}/would_post.json.", "*must use {{head}}.")]
+    public async Task A_task_prompt_template_must_say_where_and_what_it_reviews(string template, string refusal)
+    {
+        Directory.CreateDirectory(_files);
+        var path = Path.Combine(_files, "t.md");
+        await File.WriteAllTextAsync(path, template);
+        await SnapshotAsync();
+        var handler = new FakeHttpMessageHandler();
+
+        var run = () => RunAsync(handler, [], ["--shadow", "--task-prompt-file", path]);
+
+        (await run.Should().ThrowAsync<ArgumentException>()).WithMessage(refusal);
+        handler.Requests.Should().BeEmpty();
+        ShadowTaskPrompt.Validate(ShadowTaskPrompt.Default, "default");
+    }
+
+    [Fact]
+    public async Task A_resume_must_send_the_task_prompt_its_attempt_started_with()
+    {
+        await SnapshotAsync();
+        await PutAsync(
+            $"reviewd/review-attempt/{Repo.NormalizedKey}/17",
+            new JsonObject
+            {
+                ["repository"] = Repo.DisplayName,
+                ["prId"] = "17",
+                ["slot"] = 2,
+                ["stage"] = "review-running",
+                ["threadId"] = "thread",
+                ["shadow"] = true,
+                ["provenance"] = new JsonObject { ["taskPromptSha256"] = new string('0', 64) },
+            }
+        );
+        var handler = new FakeHttpMessageHandler();
+
+        var run = () => RunAsync(handler, [], ["--shadow", "--resume"]);
+
+        (await run.Should().ThrowAsync<ArgumentException>()).WithMessage(
+            "This attempt was started with taskPromptSha256 0000*; a resume must use the same arm*"
+        );
+        handler.Requests.Should().BeEmpty();
+    }
+
+    // A manifest's pins are recorded on every receipt, so a run may only use the workspace and mode variant up built
+    // for that manifest; the host holds that binding.
+    [Theory]
+    [InlineData("directory", "workspace workspace uses directory exp-a, not exp-b")]
+    [InlineData("plugin", "workspace workspace takes code-reviewer from claude-plugins, not cr-b-007")]
+    [InlineData("mode name", "mode mode-1 is named 'code-review-a', not 'code-review-b-007'")]
+    [InlineData("mode setting", "mode mode-1 differs from * in systemPrompt, subAgentPrompt")]
+    [InlineData(
+        "clone head",
+        "the review-repo clone in exp-b is at 9999999999999999999999999999999999999999, not "
+            + "2222222222222222222222222222222222222222"
+    )]
+    [InlineData(
+        "alias commit",
+        "marketplace alias cr-b-007 resolves to 9999999999999999999999999999999999999999, not "
+            + "3333333333333333333333333333333333333333"
+    )]
+    [InlineData("none", null)]
+    [InlineData("mixed-case mode file", null)]
+    public async Task A_run_on_a_workspace_or_mode_not_built_for_its_manifest_is_refused_before_provisioning(
+        string mismatch,
+        string? refusal
+    )
+    {
+        Directory.CreateDirectory(_files);
+        // The host binds a field in any letter case, so a run checks the file's "SystemPrompt" as systemPrompt.
+        await File.WriteAllTextAsync(
+            Path.Combine(_files, "mode.json"),
+            mismatch == "mixed-case mode file"
+                ? """{"SystemPrompt":"Review as b-007."}"""
+                : """{"systemPrompt":"Review as b-007."}"""
+        );
+        if (mismatch == "clone head")
+        {
+            _reviewRepoHead = new string('9', 40);
+        }
+        if (mismatch == "alias commit")
+        {
+            _aliasSha = new string('9', 40);
+        }
+        await SnapshotAsync();
+        var handler = ArmHost(mismatch);
+
+        var phases = new List<(string Phase, JsonObject Args)>();
+
+        var run = () => RunAsync(handler, phases, ["--shadow", "--mode", "mode-1", .. Variant("b-007", ArmManifest)]);
+
+        if (refusal is null)
+        {
+            await run.Should().ThrowAsync<InvalidOperationException>("the scripted review never finishes");
+            handler
+                .Requests.Should()
+                .Contain(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations");
+            phases[0].Phase.Should().Be("review-repo-head", "the clone's commit is read before any other step");
+            // The receipt says its start checked the pins, so a resume may keep its reviewer, and records the
+            // KnowledgeBase the arm was reviewed with.
+            var provenance = (await AttemptAsync())["provenance"]!;
+            provenance[ShadowArm.PinsVerified]!.GetValue<bool>().Should().BeTrue();
+            provenance["knowledgeBaseTree"]!.GetValue<string>().Should().Be(new string('5', 40));
+            return;
+        }
+        (await run.Should().ThrowAsync<InvalidOperationException>()).WithMessage(
+            $"Manifest b-007 was not provisioned as this run's arm: {refusal}. Run variant up*"
+        );
+        handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "nothing is provisioned or sent");
+        phases.Select(p => p.Phase).Should().BeSubsetOf(["review-repo-head"], "only the read-only head step may run");
+    }
+
+    // A preview (no --execute) of a pinned arm checks the host's workspace and mode only: it reads neither the
+    // review-repo clone's commit nor the marketplace alias, and writes no arm pin and no attempt.
+    [Fact]
+    public async Task A_preview_of_a_pinned_arm_reads_no_clone_or_alias_and_pins_nothing()
+    {
+        await WriteArmModeFileAsync();
+        await SnapshotAsync();
+        var handler = ArmHost();
+        var phases = new List<(string Phase, JsonObject Args)>();
+
+        var exit = await RunAsync(
+            handler,
+            phases,
+            ["--shadow", "--mode", "mode-1", .. Variant("b-007", ArmManifest)],
+            execute: false
+        );
+
+        exit.Should().Be(0);
+        phases.Select(p => p.Phase).Should().NotContain("review-repo-head", "a preview never reads the clone");
+        _marketplaceReads.Should().Be(0, "a preview never resolves the marketplace alias");
+        handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "a preview sends only GET reads");
+        using var connection = PrThreadBindings.Connection(_database);
+        var store = new SqliteKvStore(connection);
+        (await store.GetAsync<JsonObject>(ReviewArm.Key)).Should().BeNull("a preview does not pin the --db");
+        (await store.GetAsync<JsonObject>($"reviewd/review-attempt/{Repo.NormalizedKey}/17"))
+            .Should()
+            .BeNull("a preview claims no attempt");
+    }
+
+    /// <summary>
+    ///     A host holding ArmManifest's workspace and mode as variant up builds them, but for <paramref name="mismatch"/>:
+    ///     directory, plugin, mode name or mode setting.
+    /// </summary>
+    private static FakeHttpMessageHandler ArmHost(string mismatch = "none")
+    {
+        var workspace = new JsonObject
+        {
+            ["id"] = "workspace",
+            ["name"] = "variant-b-007",
+            ["directoryRelPath"] = mismatch == "directory" ? "exp-a" : "exp-b",
+            ["marketplaces"] = new JsonArray(),
+            ["pluginSelection"] = new JsonArray(
+                new JsonObject
+                {
+                    ["marketplace"] = mismatch == "plugin" ? "claude-plugins" : "cr-b-007",
+                    ["plugin"] = "code-reviewer",
+                },
+                new JsonObject { ["marketplace"] = "sandbox-plugins", ["plugin"] = "review-setup" }
+            ),
+        };
+        // The host writes unset fields as null; the stored mode matches the file unless a setting was edited.
+        var mode = new JsonObject
+        {
+            ["id"] = "mode-1",
+            ["name"] = mismatch == "mode name" ? "code-review-a" : "code-review-b-007",
+            ["systemPrompt"] = mismatch == "mode setting" ? "Review as a." : "Review as b-007.",
+            ["subAgentPrompt"] = mismatch == "mode setting" ? "left over" : null,
+            ["isSystemDefined"] = false,
+        };
+        return Host()
+            .OnJson(HttpMethod.Get, "api/workspaces/workspace", workspace.ToJsonString())
+            .OnJson(HttpMethod.Get, "api/chat-modes/mode-1", mode.ToJsonString());
+    }
+
+    // The step a run reads the clone with: the embedded ReviewRunnerSandbox.py over a real repo gives the head and the
+    // commit's KnowledgeBase tree, which the receipt records, or null for a commit with no KnowledgeBase. A replacement
+    // ref cannot change the recorded tree, and a tree git cannot read refuses the step instead of reading as absent.
+    [SkippableTheory]
+    [InlineData("knowledge")]
+    [InlineData("none")]
+    [InlineData("replaced")]
+    [InlineData("damaged")]
+    public async Task The_clone_read_gives_the_head_and_its_KnowledgeBase_tree(string clone)
+    {
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox step cannot be run");
+        var root = Path.Combine(_files, "repo");
+        Directory.CreateDirectory(Path.Combine(root, "src"));
+        await GitAsync(root, "init", "-q", "-b", "main");
+        await GitAsync(root, "config", "user.email", "t@example.com");
+        await GitAsync(root, "config", "user.name", "t");
+        await GitAsync(root, "config", "commit.gpgsign", "false");
+        await File.WriteAllTextAsync(Path.Combine(root, "src", "a.cs"), "a\n");
+        if (clone != "none")
+        {
+            Directory.CreateDirectory(Path.Combine(root, "KnowledgeBase"));
+            await File.WriteAllTextAsync(Path.Combine(root, "KnowledgeBase", "a.md"), "a\n");
+        }
+        await GitAsync(root, "add", "-A");
+        await GitAsync(root, "commit", "-q", "-m", "store");
+        var head = await GitAsync(root, "rev-parse", "HEAD");
+        var knowledge = clone == "none" ? null : await GitAsync(root, "rev-parse", "HEAD:KnowledgeBase");
+        if (clone == "replaced")
+        {
+            // Another commit with other knowledge stands in for the head wherever git honours replacement refs.
+            await File.WriteAllTextAsync(Path.Combine(root, "KnowledgeBase", "a.md"), "b\n");
+            await GitAsync(root, "commit", "-q", "-am", "other");
+            var other = await GitAsync(root, "rev-parse", "HEAD");
+            await GitAsync(root, "checkout", "-q", head);
+            await GitAsync(root, "replace", head, other);
+        }
+        if (clone == "damaged")
+        {
+            var rootTree = await GitAsync(root, "rev-parse", "HEAD^{tree}");
+            var loose = Path.Combine(root, ".git", "objects", rootTree[..2], rootTree[2..]);
+            File.SetAttributes(loose, FileAttributes.Normal);
+            File.Delete(loose);
+        }
+        var script = Path.Combine(_files, "sandbox.py");
+        using (
+            var resource = typeof(ReviewRunner).Assembly.GetManifestResourceStream(
+                "Reviewd.Sample.ReviewRunnerSandbox.py"
+            )!
+        )
+        using (var file = File.Create(script))
+        {
+            await resource.CopyToAsync(file);
+        }
+        var start = new ProcessStartInfo(python!)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = root,
+        };
+        foreach (var argument in new[] { "-I", script, "review-repo-head", "{}" })
+        {
+            start.ArgumentList.Add(argument);
+        }
+        using var process = Process.Start(start)!;
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+
+        if (clone == "damaged")
+        {
+            process.ExitCode.Should().NotBe(0);
+            error.Should().Contain("git ls-tree failed reading KnowledgeBase");
+            (await output).Should().BeEmpty();
+            return;
+        }
+        process.ExitCode.Should().Be(0, error);
+        var read = await output;
+        JsonNode
+            .DeepEquals(JsonNode.Parse(read), new JsonObject { ["head"] = head, ["knowledgeBaseTree"] = knowledge })
+            .Should()
+            .BeTrue(read);
+    }
+
+    // A resume keeps its reviewer and the plugin commit its sandbox mounted. An attempt whose start did not check the
+    // clone's and the alias's commits (one started before runs did) may hold another, so it is not resumed as this arm.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_resume_of_an_attempt_whose_start_did_not_check_its_pins_is_refused(bool checkedAtStart)
+    {
+        await WriteArmModeFileAsync();
+        var flags = Variant("b-007", ArmManifest);
+        var arm = (
+            await ShadowArm.ResolveAsync(
+                CliOptions.Parse([.. RunArguments, "--shadow", "--post-session", "read-only", .. flags]),
+                "test",
+                CancellationToken.None
+            )
+        )!;
+        var provenance = arm.Provenance("mode-1", "test", null);
+        if (checkedAtStart)
+        {
+            provenance[ShadowArm.PinsVerified] = true;
+        }
+        await SnapshotAsync();
+        await PutAsync(
+            $"reviewd/review-attempt/{Repo.NormalizedKey}/17",
+            new JsonObject
+            {
+                ["repository"] = Repo.DisplayName,
+                ["prId"] = "17",
+                ["slot"] = 2,
+                ["stage"] = "review-running",
+                ["threadId"] = "thread",
+                ["shadow"] = true,
+                ["provenance"] = provenance,
+            }
+        );
+        var handler = ArmHost();
+
+        var error = await Record.ExceptionAsync(() =>
+            RunAsync(handler, [], ["--shadow", "--resume", "--mode", "mode-1", .. flags])
+        );
+
+        if (checkedAtStart)
+        {
+            // Past the arm check, the runner's next resume check (identity) refuses this bare attempt row: that exact
+            // outcome, and nothing earlier.
+            error
+                .Should()
+                .BeOfType<InvalidOperationException>()
+                .Which.Message.Should()
+                .Be("Resume identity, admission or current PR does not match the retained attempt.");
+            return;
+        }
+        error
+            .Should()
+            .BeOfType<ArgumentException>()
+            .Which.Message.Should()
+            .Be(
+                "This attempt started before a run checked its manifest's clone and alias commits, so its reviewer may "
+                    + "have mounted another plugin commit. Release it and review the PR again."
+            );
+        handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "nothing is provisioned or sent");
+    }
+
+    // A gateway that does not answer the clone's head read or the alias lookup says nothing about the PR or the arm:
+    // the review is deferred, which the batch retries with backoff, not refused or held.
+    [Theory]
+    [InlineData("the review-repo clone's commit")]
+    [InlineData("marketplace alias cr-b-007")]
+    public async Task A_gateway_that_does_not_answer_a_pin_read_defers_the_review_until_it_does(string read)
+    {
+        await WriteArmModeFileAsync();
+        await SnapshotAsync();
+        var handler = ArmHost();
+        var flags = Variant("b-007", ArmManifest);
+        if (read.StartsWith("marketplace", StringComparison.Ordinal))
+        {
+            _aliasTimeouts = 2;
+        }
+        else
+        {
+            _headTimeouts = 2;
+        }
+
+        var run = () => RunAsync(handler, [], ["--shadow", "--mode", "mode-1", .. flags]);
+
+        for (var unanswered = 0; unanswered < 2; unanswered++)
+        {
+            (await run.Should().ThrowAsync<ReviewRunner.ReviewDeferredException>()).WithMessage(
+                $"The gateway did not answer reading {read}: *Retry deferred."
+            );
+        }
+        handler
+            .Requests.Should()
+            .OnlyContain(r => r.Method == HttpMethod.Get, "a deferred review sends only GET reads");
+        await run.Should().ThrowAsync<InvalidOperationException>("the scripted review never finishes");
+        handler
+            .Requests.Should()
+            .Contain(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations");
+    }
+
+    // The SDK maps only HttpRequestException to a transport failure, so an answer cut mid-body (HttpIOException) or a
+    // connection reset while it is read (an IOException over a SocketException) reaches the run as an IOException.
+    // Before the claim neither pin read changes anything, so it defers the review like a read that got no answer.
+    [Theory]
+    [InlineData("the review-repo clone's commit", "cut")]
+    [InlineData("the review-repo clone's commit", "reset")]
+    [InlineData("marketplace alias cr-b-007", "cut")]
+    public async Task A_pin_read_ending_in_an_IOException_defers_the_review_until_a_read_succeeds(
+        string read,
+        string fault
+    )
+    {
+        await WriteArmModeFileAsync();
+        await SnapshotAsync();
+        var handler = ArmHost();
+        var flags = Variant("b-007", ArmManifest);
+        _pinReadFault = () =>
+            fault == "cut"
+                ? new HttpIOException(HttpRequestError.ResponseEnded, "The response ended prematurely.")
+                : new IOException(
+                    "Unable to read data from the transport connection.",
+                    new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionReset)
+                );
+        if (read.StartsWith("marketplace", StringComparison.Ordinal))
+        {
+            _aliasTimeouts = 2;
+        }
+        else
+        {
+            _headTimeouts = 2;
+        }
+
+        var run = () => RunAsync(handler, [], ["--shadow", "--mode", "mode-1", .. flags]);
+
+        for (var cut = 0; cut < 2; cut++)
+        {
+            (await run.Should().ThrowAsync<ReviewRunner.ReviewDeferredException>()).WithMessage(
+                $"The gateway's answer to {read} was cut: *Retry deferred."
+            );
+        }
+        handler
+            .Requests.Should()
+            .OnlyContain(r => r.Method == HttpMethod.Get, "a deferred review sends only GET reads");
+        await run.Should().ThrowAsync<InvalidOperationException>("the scripted review never finishes");
+        handler
+            .Requests.Should()
+            .Contain(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations");
+    }
+
+    // The mode file is read once: the hash the receipt and a resume record is of the very bytes the run checks, so an
+    // edit after the arm was resolved cannot make the host's mode pass for the file's hash.
+    [Fact]
+    public async Task A_run_checks_the_mode_file_bytes_it_hashed_even_if_the_file_changes_after()
+    {
+        Directory.CreateDirectory(_files);
+        var modeFile = Path.Combine(_files, "mode.json");
+        await File.WriteAllTextAsync(modeFile, """{"systemPrompt":"Review as b-007, v1."}""");
+        var flags = Variant("b-007", """{"id":"b-007","mode":{"name":"code-review-b-007","file":"mode.json"}}""");
+        var arm = (
+            await ShadowArm.ResolveAsync(
+                CliOptions.Parse([.. RunArguments, "--shadow", "--post-session", "read-only", .. flags]),
+                "test",
+                CancellationToken.None
+            )
+        )!;
+        // Edited (and rebuilt on the host) after the run resolved its arm.
+        await File.WriteAllTextAsync(modeFile, """{"systemPrompt":"Review as b-007, v2."}""");
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "api/chat-modes/mode-b",
+            """{"id":"mode-b","name":"code-review-b-007","systemPrompt":"Review as b-007, v2."}"""
+        );
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+
+        var check = () =>
+            arm.CheckProvisionedAsync(
+                new LmStreamingS2SClient(http, null, null, null),
+                "workspace",
+                "mode-b",
+                null,
+                null,
+                CancellationToken.None
+            );
+
+        arm.ModeFileSha256.Should().Be(VariantManifest.Sha256Hex("""{"systemPrompt":"Review as b-007, v1."}"""));
+        (await check.Should().ThrowAsync<InvalidOperationException>()).WithMessage(
+            "*mode mode-b differs from * in systemPrompt*"
+        );
+    }
+
+    // A resumed attempt finishes under the arm it started with: its manifest and its experiment, each on its own.
+    [Theory]
+    [InlineData("manifestSha256", "0000000000000000000000000000000000000000000000000000000000000000")]
+    [InlineData("experimentId", "exp-0")]
+    [InlineData("none", null)]
+    public async Task A_resume_must_use_the_manifest_and_experiment_its_attempt_started_with(
+        string changed,
+        string? started
+    )
+    {
+        var flags = Variant("b-007", """{"id":"b-007","provider":"test"}""");
+        var provenance = new JsonObject
+        {
+            ["taskPromptSha256"] = VariantManifest.Sha256Hex(ShadowTaskPrompt.Default),
+            ["experimentId"] = "exp-1",
+            ["manifestSha256"] = VariantManifest.Sha256Hex(await File.ReadAllBytesAsync(flags[3])),
+        };
+        // What this run is: a resume of an attempt that recorded anything else is refused.
+        var current = started is null ? null : provenance[changed]!.ToString();
+        if (started is not null)
+        {
+            provenance[changed] = started;
+        }
+        await SnapshotAsync();
+        await PutAsync(
+            $"reviewd/review-attempt/{Repo.NormalizedKey}/17",
+            new JsonObject
+            {
+                ["repository"] = Repo.DisplayName,
+                ["prId"] = "17",
+                ["slot"] = 2,
+                ["stage"] = "review-running",
+                ["threadId"] = "thread",
+                ["shadow"] = true,
+                ["provenance"] = provenance,
+            }
+        );
+        var handler = new FakeHttpMessageHandler();
+        var phases = new List<(string Phase, JsonObject Args)>();
+
+        var error = await Record.ExceptionAsync(() => RunAsync(handler, phases, ["--shadow", "--resume", .. flags]));
+
+        if (started is null)
+        {
+            error?.Message.Should().NotContain("a resume must use the same arm", "the same arm passes the check");
+            return;
+        }
+        error
+            .Should()
+            .BeOfType<ArgumentException>()
+            .Which.Message.Should()
+            .Be($"This attempt was started with {changed} {started}; a resume must use the same arm, not {current}.");
+        handler.Requests.Should().BeEmpty("nothing is provisioned or sent");
+        phases.Should().BeEmpty("no sandbox step runs");
+    }
+
+    // A restarted batch resumes every attempt it still owns; one whose arm changed is refused before it resumes any.
+    [Theory]
+    [InlineData("taskPromptSha256", "0000000000000000000000000000000000000000000000000000000000000000")]
+    [InlineData("manifestSha256", "0000000000000000000000000000000000000000000000000000000000000000")]
+    [InlineData("experimentId", "exp-0")]
+    [InlineData("none", null)]
+    public async Task A_restarted_batch_whose_arm_changed_is_refused_before_it_resumes_anything(
+        string changed,
+        string? started
+    )
+    {
+        var flags = Variant("b-007", """{"id":"b-007","provider":"test"}""");
+        var arm = (
+            await ShadowArm.ResolveAsync(
+                CliOptions.Parse([.. RunArguments, "--shadow", "--post-session", "read-only", .. flags]),
+                "test",
+                CancellationToken.None
+            )
+        )!;
+        var provenance = arm.Provenance("mode", "test", null);
+        if (started is not null)
+        {
+            provenance[changed] = started;
+        }
+        async Task Attempt(int pr, string stage, string cleanup)
+        {
+            await PutAsync(
+                $"reviewd/review-attempt/{Repo.NormalizedKey}/{pr}",
+                new JsonObject
+                {
+                    ["repository"] = Repo.DisplayName,
+                    ["prId"] = pr.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["stage"] = stage,
+                    ["reviewInputId"] = "input",
+                    ["claimToken"] = "claim",
+                    ["cleanupState"] = cleanup,
+                    ["shadow"] = true,
+                    ["provenance"] = provenance.DeepClone(),
+                }
+            );
+        }
+        await Attempt(17, "review-running", "owned");
+        // None of these resumes: a released slot holds nothing, and a failed or verified released attempt starts over.
+        await Attempt(18, "review-running", "released");
+        await Attempt(19, "failed-released", "released");
+        await Attempt(20, "completed-verified", "released");
+
+        var check = () => ReviewBatch.CheckResumesAsync(_database, arm, "mode", "test", null, CancellationToken.None);
+
+        if (started is null)
+        {
+            await check.Should().NotThrowAsync("every retained attempt started with this arm");
+            return;
+        }
+        var refusal = (await check.Should().ThrowAsync<InvalidOperationException>()).Which.Message;
+        refusal
+            .Should()
+            .StartWith(
+                "This batch's arm differs from the one 1 retained attempt(s) started with, so none could resume."
+            )
+            .And.Contain($"org/project/Nova #17: This attempt was started with {changed} {started};")
+            .And.NotContainAny("#18", "#19", "#20");
+    }
+
+    // The batch itself refuses at start, before its sweep, its lease or any review: deleting the start call fails this.
+    [Fact]
+    public async Task A_batch_started_with_another_arm_than_a_retained_attempt_refuses_before_anything_runs()
+    {
+        var flags = Variant("b-007", """{"id":"b-007","provider":"test"}""");
+        await PutAsync(
+            $"reviewd/review-attempt/{Repo.NormalizedKey}/17",
+            new JsonObject
+            {
+                ["repository"] = Repo.DisplayName,
+                ["prId"] = "17",
+                ["stage"] = "review-running",
+                ["reviewInputId"] = "input",
+                ["claimToken"] = "claim",
+                ["cleanupState"] = "owned",
+                ["shadow"] = true,
+                ["provenance"] = new JsonObject { ["taskPromptSha256"] = new string('0', 64) },
+            }
+        );
+        var host = new FakeHttpMessageHandler();
+        var gateway = new FakeHttpMessageHandler();
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build())
+        {
+            Transport = new HostAndGateway(host, gateway),
+        };
+        var options = CliOptions.Parse([
+            "review",
+            "batch",
+            "--selection",
+            Path.Combine(_files, "selection.json"),
+            "--db",
+            _database,
+            "--session",
+            "session",
+            "--workspace",
+            "workspace",
+            "--provider",
+            "test",
+            "--shadow",
+            "--post-session",
+            "read-only",
+            .. flags,
+            "--execute",
+        ]);
+        // A batch past its start would sweep and then wait on its selection: the deadline ends that, so a missing
+        // start check fails here instead of hanging.
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+
+        var start = () => ReviewBatch.RunBatchAsync(options, config, deadline.Token);
+
+        (await start.Should().ThrowAsync<InvalidOperationException>()).WithMessage(
+            "This batch's arm differs from the one 1 retained attempt(s) started with, so none could resume.*"
+        );
+        gateway.Requests.Should().BeEmpty("the startup sweep never ran");
+        host.Requests.Should().BeEmpty();
+    }
+
+    // The host binds a chat-mode field in any letter case; the client sends and checks each under the host's name.
+    [Fact]
+    public void A_mode_field_in_any_letter_case_goes_to_the_host_under_its_own_name()
+    {
+        var replaced = LmStreamingS2SClient.ChatModeReplacement(
+            JsonNode.Parse("""{"Name":"m","SystemPrompt":"p","SubAgentPrompt":"s","custom":1}""")!.AsObject()
+        );
+        var twice = () =>
+            LmStreamingS2SClient.ChatModeReplacement(
+                JsonNode.Parse("""{"subAgentPrompt":"a","SubAgentPrompt":"b"}""")!.AsObject()
+            );
+
+        replaced["name"]!.GetValue<string>().Should().Be("m");
+        replaced["systemPrompt"]!.GetValue<string>().Should().Be("p");
+        replaced["subAgentPrompt"]!.GetValue<string>().Should().Be("s");
+        replaced["custom"]!.GetValue<int>().Should().Be(1, "a field the host does not know is sent as written");
+        replaced.Select(field => field.Key).Should().NotContain(["Name", "SystemPrompt", "SubAgentPrompt"]);
+        twice
+            .Should()
+            .Throw<ArgumentException>()
+            .WithMessage("The chat mode sets subAgentPrompt twice, in different letter cases.");
+    }
+
+    // A rebuilt arm may change only its mode file; a resume must still finish under the mode its attempt started with.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_resume_must_use_the_mode_file_its_attempt_started_with(bool changed)
+    {
+        Directory.CreateDirectory(_files);
+        var modeFile = Path.Combine(_files, "mode-b.json");
+        await File.WriteAllTextAsync(modeFile, """{"systemPrompt":"Review as b-007, v1."}""");
+        var started = VariantManifest.Sha256Hex(await File.ReadAllBytesAsync(modeFile));
+        if (changed)
+        {
+            // Edited and rebuilt with variant up, so the host's mode matches the new file.
+            await File.WriteAllTextAsync(modeFile, """{"systemPrompt":"Review as b-007, v2."}""");
+        }
+        var flags = Variant("b-007", """{"id":"b-007","mode":{"name":"code-review-b-007","file":"mode-b.json"}}""");
+        await SnapshotAsync();
+        await PutAsync(
+            $"reviewd/review-attempt/{Repo.NormalizedKey}/17",
+            new JsonObject
+            {
+                ["repository"] = Repo.DisplayName,
+                ["prId"] = "17",
+                ["slot"] = 2,
+                ["stage"] = "review-running",
+                ["threadId"] = "thread",
+                ["shadow"] = true,
+                ["provenance"] = new JsonObject
+                {
+                    ["taskPromptSha256"] = VariantManifest.Sha256Hex(ShadowTaskPrompt.Default),
+                    ["experimentId"] = "exp-1",
+                    ["manifestSha256"] = VariantManifest.Sha256Hex(await File.ReadAllBytesAsync(flags[3])),
+                    ["modeFileSha256"] = started,
+                },
+            }
+        );
+        var stored = new JsonObject
+        {
+            ["id"] = "mode-b",
+            ["name"] = "code-review-b-007",
+            ["systemPrompt"] = changed ? "Review as b-007, v2." : "Review as b-007, v1.",
+        };
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "api/chat-modes/mode-b",
+            stored.ToJsonString()
+        );
+
+        var error = await Record.ExceptionAsync(() =>
+            RunAsync(handler, [], ["--shadow", "--resume", "--mode", "mode-b", .. flags])
+        );
+
+        if (changed)
+        {
+            error
+                .Should()
+                .BeOfType<ArgumentException>()
+                .Which.Message.Should()
+                .Match($"This attempt was started with modeFileSha256 {started}; a resume must use the same arm*");
+            handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "the host only read the mode");
+        }
+        else
+        {
+            error?.Message.Should().NotContain("modeFileSha256", "an unchanged mode file passes the identity check");
+        }
+    }
+
+    // A replaced mode must hold what a fresh one would: a field the mode file dropped is cleared, not kept.
+    [Fact]
+    public async Task Variant_up_replaces_an_existing_mode_with_exactly_what_a_fresh_one_holds()
+    {
+        var fresh = VariantHost();
+        var rebuilt = VariantHost(
+            """[{"id":"mode-1","name":"code-review-b-007","isSystemDefined":false,"subAgentPrompt":"old rule"}]"""
+        );
+
+        await VariantUpAsync(fresh, new string('2', 40));
+        await VariantUpAsync(rebuilt, new string('2', 40));
+
+        var created = JsonNode.Parse(
+            fresh.Requests.Single(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/chat-modes").Body!
+        )!;
+        var replaced = JsonNode.Parse(
+            rebuilt
+                .Requests.Single(r => r.Method == HttpMethod.Put && r.Uri.AbsolutePath == "/api/chat-modes/mode-1")
+                .Body!
+        )!;
+        rebuilt
+            .Requests.Should()
+            .NotContain(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/chat-modes");
+        JsonNode
+            .DeepEquals(replaced, created)
+            .Should()
+            .BeTrue($"{replaced.ToJsonString()} vs {created.ToJsonString()}");
+        var body = replaced.AsObject();
+        body["systemPrompt"]!.GetValue<string>().Should().Be("Review as b-007.");
+        // Written out, not read from the client's list, so a field dropped from that list fails here.
+        string[] optional =
+        [
+            "description",
+            "enabledTools",
+            "enabledBuiltInTools",
+            "enabledCapabilityTools",
+            "subAgentPrompt",
+            "subAgentPromptPlacement",
+            "subAgentRequiredTools",
+            "subAgentReasoningEffort",
+            "subAgentModelIntelligenceByType",
+            "defaultSubAgentModelIntelligence",
+            "env",
+            "tiers",
+        ];
+        body.Select(field => field.Key).Should().BeEquivalentTo(["name", "systemPrompt", .. optional]);
+        foreach (var field in optional)
+        {
+            body.ContainsKey(field).Should().BeTrue(field + " is sent");
+            body[field].Should().BeNull(field + " is cleared, as a fresh mode leaves it");
+        }
+    }
+
+    // The collector itself, over real git: the arm's KnowledgeBase/ tree is compared with the champion commit's.
+    [Fact]
+    public async Task Variant_up_compares_the_whole_KnowledgeBase_tree_with_the_champion_over_real_git()
+    {
+        var root = Path.Combine(_files, "clone");
+        Directory.CreateDirectory(Path.Combine(root, "KnowledgeBase"));
+        Directory.CreateDirectory(Path.Combine(root, "src"));
+        async Task<string> Commit(string message, params (string Path, string Text)[] files)
+        {
+            foreach (var (path, text) in files)
+            {
+                await File.WriteAllTextAsync(Path.Combine(root, path), text);
+            }
+            await GitAsync(root, "add", "-A");
+            await GitAsync(root, "commit", "-q", "-m", message);
+            return await GitAsync(root, "rev-parse", "HEAD");
+        }
+        await GitAsync(root, "init", "-q", "-b", "main");
+        await GitAsync(root, "config", "user.email", "t@example.com");
+        await GitAsync(root, "config", "user.name", "t");
+        await GitAsync(root, "config", "commit.gpgsign", "false");
+        var older = await Commit("older", ("KnowledgeBase/a.md", "a v1\n"), ("src/x.cs", "x v1\n"));
+        var champion = await Commit("champion", ("KnowledgeBase/a.md", "a v2\n"));
+        await GitAsync(root, "checkout", "-q", "-b", "arm-src");
+        var sourceOnly = await Commit("source", ("src/x.cs", "x v2\n"));
+        await GitAsync(root, "checkout", "-q", "-b", "arm-kb", champion);
+        var knowledge = await Commit("knowledge", ("KnowledgeBase/b.md", "b\n"));
+        VariantUp.Git git = async (what, arguments, _) =>
+        {
+            var (exit, output, error) = await RunGitAsync(root, arguments);
+            return exit == 0 ? output : throw new InvalidOperationException($"{what} failed: {error}");
+        };
+        async Task<VariantUp.Clone> At(string commit, string against)
+        {
+            await GitAsync(root, "checkout", "-q", commit);
+            return await VariantUp.ReadCloneAsync(git, against, CancellationToken.None);
+        }
+
+        var edits = await At(knowledge, champion);
+        var source = await At(sourceOnly, champion);
+        var ancestor = await At(older, champion);
+        var absent = () => At(knowledge, new string('f', 40));
+
+        edits.Head.Should().Be(knowledge);
+        edits.KnowledgeChanges.Should().Equal("KnowledgeBase/b.md");
+        source.KnowledgeChanges.Should().BeEmpty("a source-only arm holds the champion's KnowledgeBase");
+        ancestor
+            .KnowledgeChanges.Should()
+            .Equal(["KnowledgeBase/a.md"], "an older base forks with no delta of its own");
+        (await absent.Should().ThrowAsync<InvalidOperationException>()).WithMessage(
+            $"Comparing KnowledgeBase/ with champion {new string('f', 40)} (fetch it into the clone first) failed: *"
+        );
+    }
+
+    // variant up's own RunAsync: it opens a session on the arm's directory and reads the clone there with git (run
+    // here over a real repo). A champion the clone lacks is refused before any write; the champion's commit builds.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Variant_up_reads_the_clone_over_real_git_and_refuses_a_champion_it_lacks_before_any_write(
+        bool championPresent
+    )
+    {
+        var root = Path.Combine(_files, "clone");
+        Directory.CreateDirectory(Path.Combine(root, "KnowledgeBase"));
+        await GitAsync(root, "init", "-q", "-b", "main");
+        await GitAsync(root, "config", "user.email", "t@example.com");
+        await GitAsync(root, "config", "user.name", "t");
+        await GitAsync(root, "config", "commit.gpgsign", "false");
+        await File.WriteAllTextAsync(Path.Combine(root, "KnowledgeBase", "a.md"), "a\n");
+        await GitAsync(root, "add", "-A");
+        await GitAsync(root, "commit", "-q", "-m", "champion");
+        var head = await GitAsync(root, "rev-parse", "HEAD");
+        var champion = championPresent ? head : new string('f', 40);
+        await WriteArmModeFileAsync();
+        var flags = Variant("b-007", ArmManifest.Replace(new string('2', 40), head, StringComparison.Ordinal));
+        var host = VariantHost();
+        var gateway = new VariantGateway(
+            new ScriptedSandboxGateway
+            {
+                Execute = async (executable, arguments) =>
+                {
+                    executable.Should().Be("git");
+                    return await RunGitAsync(root, [.. arguments]);
+                },
+            }
+        );
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build())
+        {
+            Transport = new HostAndGateway(host, gateway),
+        };
+        var options = CliOptions.Parse([
+            "variant",
+            "up",
+            "--manifest",
+            flags[3],
+            "--experiment",
+            "exp-1",
+            "--from-workspace",
+            "base",
+            "--champion",
+            champion,
+            "--execute",
+        ]);
+
+        var up = () => VariantUp.RunAsync(options, config, CancellationToken.None);
+
+        if (championPresent)
+        {
+            (await up()).Should().Be(0);
+            gateway.Created.Should().Equal("exp-b");
+            gateway.Registered.Should().Equal("cr-b-007");
+            host.Requests.Should().Contain(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/workspaces");
+            return;
+        }
+        (await up.Should().ThrowAsync<InvalidOperationException>()).WithMessage(
+            $"Comparing KnowledgeBase/ with champion {champion} (fetch it into the clone first) failed in exp-b: *"
+        );
+        gateway.Created.Should().Equal("exp-b");
+        gateway.Registered.Should().BeEmpty("no alias is registered");
+        host.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "no mode or workspace was made");
+    }
+
+    /// <summary>
+    ///     A gateway for variant up: it opens sessions and registers marketplaces (each recorded), and sends everything
+    ///     else, the git commands included, to <paramref name="exec"/>.
+    /// </summary>
+    private sealed class VariantGateway(ScriptedSandboxGateway exec) : HttpMessageHandler
+    {
+        private readonly HttpMessageInvoker _exec = new(exec, disposeHandler: false);
+
+        public List<string> Created { get; } = [];
+        public List<string> Registered { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (request.Method == HttpMethod.Post && path == "/api/v1/sandboxes")
+            {
+                var create = JsonNode.Parse(await request.Content!.ReadAsStringAsync(cancellationToken))!;
+                Created.Add(create["workspace"]!.GetValue<string>());
+                return Json(new JsonObject { ["session_id"] = "sess-1", ["container_id"] = null });
+            }
+            if (request.Method == HttpMethod.Put && path.Contains("/apps/self/marketplaces/", StringComparison.Ordinal))
+            {
+                var register = JsonNode.Parse(await request.Content!.ReadAsStringAsync(cancellationToken))!;
+                var alias = Uri.UnescapeDataString(path[(path.LastIndexOf('/') + 1)..]);
+                Registered.Add(alias);
+                return Json(
+                    new JsonObject
+                    {
+                        ["app_id"] = "codereview-daemon",
+                        ["alias"] = alias,
+                        ["url"] = register["url"]!.DeepClone(),
+                        ["repo_key"] = "key",
+                        ["ref"] = register["ref"]?.DeepClone(),
+                        ["resolved_sha"] = register["ref"]?.DeepClone(),
+                        ["created_at"] = "2026-11-18T00:00:00Z",
+                        ["updated_at"] = "2026-11-18T00:00:00Z",
+                        ["last_error"] = null,
+                    }
+                );
+            }
+            return await _exec.SendAsync(request, cancellationToken);
+        }
+
+        private static HttpResponseMessage Json(JsonObject body) =>
+            new(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json"),
+            };
+    }
+
+    // The host stores a mode value as it parses it: a number written as a string comes back as a number, and a field or
+    // array element the file lacks would be one the run never asked for; every run would refuse such an arm, so
+    // variant up reads the saved mode back and refuses it, naming the field. A nested name in another letter case is
+    // bound by the host and stored in its own (tiers.Caps.Skill as caps.skill): that arm builds. An env name is data
+    // the host matches exactly, so FOO stored as foo differs.
+    [Theory]
+    [InlineData("tiers", """{"caps":{"skill":3}}""", """{"caps":{"skill":3}}""", true)]
+    [InlineData("tiers", """{"Caps":{"Skill":3}}""", """{"caps":{"skill":3}}""", true)]
+    [InlineData("tiers", """{"caps":{"skill":"3"}}""", """{"caps":{"skill":3}}""", false)]
+    [InlineData("tiers", """{"caps":{"skill":3}}""", """{"caps":{"skill":3,"agent":2}}""", false)]
+    [InlineData("tiers", """{"loaded":["skill:a"]}""", """{"loaded":["skill:a","skill:b"]}""", false)]
+    [InlineData("env", """{"FOO":"1"}""", """{"FOO":"1"}""", true)]
+    [InlineData("env", """{"FOO":"1"}""", """{"foo":"1"}""", false)]
+    public async Task Variant_up_refuses_a_mode_the_host_stores_otherwise_than_its_file(
+        string field,
+        string fileValue,
+        string storedValue,
+        bool builds
+    )
+    {
+        var handler = VariantHost(
+            stored: $$"""{"id":"mode-1","name":"code-review-b-007","systemPrompt":"Review as b-007.","{{field}}":{{storedValue}}}"""
+        );
+
+        var up = () =>
+            VariantUpAsync(
+                handler,
+                new string('2', 40),
+                modeFile: $$"""{"systemPrompt":"Review as b-007.","{{field}}":{{fileValue}}}"""
+            );
+
+        if (builds)
+        {
+            (await up()).Result.Should().ContainKey("modeId");
+            return;
+        }
+        (await up.Should().ThrowAsync<InvalidOperationException>()).WithMessage(
+            $"The host stored mode mode-1 differently from * in {field}, so every run of this arm would be refused.*"
+        );
+        handler
+            .Requests.Should()
+            .NotContain(
+                r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/workspaces",
+                "no workspace is made for a mode that runs would refuse"
+            );
+    }
+
+    private static readonly string S_champion = new('4', 40);
+
+    private const string ArmManifest = """
+        {"id":"b-007","reviewRepo":{"directory":"exp-b","ref":"exp/b-007","sha":"2222222222222222222222222222222222222222"},
+         "plugins":{"alias":"cr-b-007","url":"https://github.com/o/ClaudePlugins","sha":"3333333333333333333333333333333333333333"},
+         "mode":{"name":"code-review-b-007","file":"mode.json"},"provider":"test"}
+        """;
+
+    /// <summary>
+    ///     A host with the base workspace and no arm yet; the arm's mode and workspace are created. The saved mode reads
+    ///     back as the last create or replace sent it, unless <paramref name="stored"/> says what the host stored.
+    /// </summary>
+    private static FakeHttpMessageHandler VariantHost(string modes = "[]", string? stored = null)
+    {
+        var handler = new FakeHttpMessageHandler();
+        string Saved()
+        {
+            var sent = JsonNode
+                .Parse(
+                    handler
+                        .Requests.Last(r =>
+                            (r.Method == HttpMethod.Post || r.Method == HttpMethod.Put)
+                            && r.Uri.AbsolutePath.StartsWith("/api/chat-modes", StringComparison.Ordinal)
+                        )
+                        .Body!
+                )!
+                .AsObject();
+            sent["id"] = "mode-1";
+            return sent.ToJsonString();
+        }
+        return handler
+            .On(
+                request =>
+                    request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath == "/api/chat-modes/mode-1",
+                _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(stored ?? Saved()) }
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "api/workspaces/base",
+                """{"id":"base","name":"nova","directoryRelPath":"nova-reviews","marketplaces":["claude-plugins","sandbox-plugins"],"pluginSelection":[{"marketplace":"claude-plugins","plugin":"code-reviewer"},{"marketplace":"sandbox-plugins","plugin":"review-setup"}],"pluginsRevision":3}"""
+            )
+            .OnJson(
+                HttpMethod.Get,
+                "api/workspaces",
+                """[{"id":"base","name":"nova","directoryRelPath":"nova-reviews","marketplaces":[]}]"""
+            )
+            .OnJson(HttpMethod.Get, "api/chat-modes", modes)
+            .OnJson(HttpMethod.Post, "api/chat-modes", """{"id":"mode-1"}""")
+            .OnJson(HttpMethod.Put, "api/chat-modes/", """{"id":"mode-1"}""")
+            .OnJson(
+                HttpMethod.Post,
+                "api/workspaces",
+                """{"id":"ws-b","name":"variant-b-007","directoryRelPath":"exp-b","marketplaces":[]}"""
+            );
+    }
+
+    private async Task<(JsonObject Result, List<string> Calls)> VariantUpAsync(
+        FakeHttpMessageHandler handler,
+        string cloneSha,
+        bool execute = true,
+        string modeFile = """{"systemPrompt":"Review as b-007."}""",
+        params string[] knowledgeChanges
+    )
+    {
+        Directory.CreateDirectory(_files);
+        await File.WriteAllTextAsync(Path.Combine(_files, "mode.json"), modeFile);
+        var flags = Variant("b-007", ArmManifest);
+        var calls = new List<string>();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var options = CliOptions.Parse([
+            "variant",
+            "up",
+            "--manifest",
+            flags[3],
+            "--experiment",
+            "exp-1",
+            "--from-workspace",
+            "base",
+            "--champion",
+            S_champion,
+            .. execute ? new[] { "--execute" } : [],
+        ]);
+        var result = await VariantUp.RunCoreAsync(
+            options,
+            new LmStreamingS2SClient(http, null, null, null),
+            (alias, url, sha, _) =>
+            {
+                calls.Add($"register {alias} {url} {sha}");
+                return Task.FromResult(sha);
+            },
+            (directory, champion, _) =>
+            {
+                calls.Add($"head {directory} against {champion}");
+                return Task.FromResult(new VariantUp.Clone(cloneSha, knowledgeChanges));
+            },
+            CancellationToken.None
+        );
+        return (result, calls);
+    }
+
+    [Fact]
+    public async Task Variant_up_builds_the_arm_from_the_base_workspace_with_only_the_reviewer_from_its_alias()
+    {
+        var handler = VariantHost();
+
+        var (result, calls) = await VariantUpAsync(handler, new string('2', 40));
+
+        calls
+            .Should()
+            .Equal(
+                $"head exp-b against {S_champion}",
+                $"register cr-b-007 https://github.com/o/ClaudePlugins {new string('3', 40)}"
+            );
+        var mode = handler.Requests.Single(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/chat-modes");
+        JsonNode.Parse(mode.Body!)!["name"]!.GetValue<string>().Should().Be("code-review-b-007");
+        var created = JsonNode.Parse(
+            handler.Requests.Single(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/workspaces").Body!
+        )!;
+        created["name"]!.GetValue<string>().Should().Be("variant-b-007");
+        created["directoryRelPath"]!.GetValue<string>().Should().Be("exp-b");
+        created["marketplaces"]!
+            .AsArray()
+            .Select(m => m!.GetValue<string>())
+            .Should()
+            .Equal("claude-plugins", "sandbox-plugins", "cr-b-007");
+        created["pluginSelection"]!
+            .AsArray()
+            .Select(p => $"{p!["marketplace"]}/{p["plugin"]}")
+            .Should()
+            .Equal("cr-b-007/code-reviewer", "sandbox-plugins/review-setup");
+        result["workspaceId"]!.GetValue<string>().Should().Be("ws-b");
+        result["next"]!
+            .GetValue<string>()
+            .Should()
+            .Contain("--workspace ws-b --provider test --mode mode-1 --shadow")
+            .And.Contain("--variant b-007 --manifest ")
+            .And.Contain("--experiment exp-1")
+            .And.Contain("--read-only-egress --read-repos <org/project/repo,");
+        result["champion"]!.GetValue<string>().Should().Be(S_champion);
+    }
+
+    [Fact]
+    public async Task Variant_up_changes_nothing_when_the_clone_is_not_at_the_pinned_commit_or_on_a_preview()
+    {
+        var handler = VariantHost();
+
+        var preview = await VariantUpAsync(handler, new string('2', 40), execute: false);
+        var wrongClone = () => VariantUpAsync(handler, new string('9', 40));
+
+        preview.Calls.Should().BeEmpty();
+        preview.Result["preview"]!.GetValue<bool>().Should().BeTrue();
+        (await wrongClone.Should().ThrowAsync<InvalidOperationException>()).WithMessage(
+            $"The review-repo clone in exp-b is at {new string('9', 40)}, but manifest b-007 pins*"
+        );
+        handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get);
+    }
+
+    // An arm is reviewed and judged in its own workspace, with that workspace's KnowledgeBase, so an arm holding
+    // another one than the frozen champion would be judged with other knowledge.
+    [Fact]
+    public async Task Variant_up_refuses_an_arm_whose_commit_changes_the_KnowledgeBase_and_changes_nothing()
+    {
+        var handler = VariantHost();
+
+        var changed = () =>
+            VariantUpAsync(
+                handler,
+                new string('2', 40),
+                knowledgeChanges: ["KnowledgeBase/nova/a.md", "KnowledgeBase/_index.jsonl"]
+            );
+
+        (await changed.Should().ThrowAsync<InvalidOperationException>()).WithMessage(
+            $"Manifest b-007's commit holds a different KnowledgeBase/ from champion {S_champion} "
+                + "(KnowledgeBase/nova/a.md, KnowledgeBase/_index.jsonl). Every arm reviews and is judged with*"
+        );
+        handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "no mode or workspace was made");
+    }
+
+    [Fact]
+    public async Task Variant_up_needs_a_fully_pinned_manifest_and_an_experiment()
+    {
+        var manifest = Variant("b-007")[3];
+        string[] command =
+        [
+            "variant",
+            "up",
+            "--manifest",
+            manifest,
+            "--from-workspace",
+            "base",
+            "--champion",
+            S_champion,
+        ];
+        var noExperiment = () => CliOptions.Parse(command);
+        var unpinned = () =>
+            VariantUp.RunCoreAsync(
+                CliOptions.Parse([.. command, "--experiment", "exp-1", "--execute"]),
+                null!,
+                (_, _, _, _) => Task.FromResult(""),
+                (_, _, _) => Task.FromResult(new VariantUp.Clone("", [])),
+                CancellationToken.None
+            );
+
+        // An arm is never built outside an experiment record, nor from a manifest that leaves a layer unpinned.
+        noExperiment.Should().Throw<ArgumentException>().WithMessage("*--experiment*");
+        (await unpinned.Should().ThrowAsync<ArgumentException>()).WithMessage(
+            "Variant manifest b-007 must pin reviewRepo.directory, reviewRepo.sha, plugins.alias, plugins.url, "
+                + "plugins.sha, mode.name, mode.file for variant up."
+        );
+    }
+
+    [Fact]
     public void A_variant_needs_shadow()
     {
         var parse = () => CliOptions.Parse([.. RunArguments, "--variant", "kb-h1"]);
@@ -1158,7 +2476,18 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         foreach (var command in new[] { RunArguments, ["review", "batch"] })
         {
             var parse = () =>
-                CliOptions.Parse([.. command, "--shadow", "--post-session", "read-only", "--variant", label]);
+                CliOptions.Parse([
+                    .. command,
+                    "--shadow",
+                    "--post-session",
+                    "read-only",
+                    "--variant",
+                    label,
+                    "--manifest",
+                    "m.json",
+                    "--experiment",
+                    "e1",
+                ]);
             if (valid)
             {
                 parse().Get("variant").Should().Be(label);
@@ -1271,9 +2600,548 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             {
                 File.Delete(_database);
             }
+            if (Directory.Exists(_files))
+            {
+                // git writes its objects read-only, and Windows will not delete a read-only file.
+                foreach (var file in Directory.EnumerateFiles(_files, "*", SearchOption.AllDirectories))
+                {
+                    File.SetAttributes(file, FileAttributes.Normal);
+                }
+                Directory.Delete(_files, recursive: true);
+            }
         }
         base.Dispose(disposing);
     }
+
+    // Words that name the arm in ArmReceipt: none may reach the judge.
+    private static readonly string[] S_armLabels =
+    [
+        "shadow",
+        "b-007",
+        "exp-1",
+        "arm-provider-x",
+        "arm-post",
+        "arm-session",
+    ];
+
+    /// <summary>A verified shadow review's receipt, with every field that names its arm.</summary>
+    private static JsonObject ArmReceipt(JsonObject wouldPost, string commit) =>
+        new()
+        {
+            ["repository"] = Repo.DisplayName,
+            ["prId"] = "17",
+            ["slot"] = 2,
+            ["workspaceId"] = "workspace",
+            ["sessionId"] = "arm-session",
+            ["providerId"] = "arm-provider-x",
+            ["reasoningEffort"] = "high",
+            ["headSha"] = Head,
+            ["reviewedHeadSha"] = Head,
+            ["mergeSha"] = new string('e', 40),
+            ["startedAt"] = "2026-10-07T20:00:00Z",
+            ["finishedAt"] = "2026-10-07T21:00:00Z",
+            ["stage"] = "completed-verified",
+            ["threadId"] = "thread-arm",
+            ["shadow"] = true,
+            ["postSessionId"] = "arm-post",
+            ["variant"] = "b-007",
+            ["provenance"] = new JsonObject
+            {
+                ["provider"] = "arm-provider-x",
+                ["experimentId"] = "exp-1",
+                ["taskPromptSha256"] = new string('7', 64),
+            },
+            ["initialPrompt"] = "You are the SHADOW reviewer of arm b-007.",
+            ["reviewResponse"] = "Shadow review done.",
+            ["confirmationResponse"] = "verdict: APPROVE",
+            ["wouldPost"] = wouldPost.DeepClone(),
+            ["artifactCommit"] = new JsonObject
+            {
+                ["status"] = "committed",
+                ["commit"] = commit,
+                ["branch"] = "review/nova-17",
+                ["reviewDirectory"] = "PRs/nova-17",
+            },
+            ["prepared"] = new JsonObject
+            {
+                ["mergeSha"] = new string('e', 40),
+                ["reviewDirectory"] = "PRs/nova-17",
+                ["baselineComments"] = new JsonArray(),
+            },
+        };
+
+    // A shadow review is judged from what it would have posted, blind to its arm: judge run sends judge-inputs the
+    // review's verified would-post record, its receipts cut to their neutral fields, and the would-post prompt section.
+    // The arm's agent could edit the store that phase runs git in, so only a read-only session may run it.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_shadow_review_is_judged_blind_and_only_in_a_read_only_session(bool readOnly)
+    {
+        var store = Path.Combine(Path.GetTempPath(), $"reviewd-tokens-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(store);
+        try
+        {
+            if (readOnly)
+            {
+                await ReadOnlySessions.MarkAsync(store, "judge-session", "workspace", [Repo.DisplayName], default);
+            }
+            var wouldPost = new JsonObject
+            {
+                ["file"] = "would_post.json",
+                ["comments"] = new JsonArray(
+                    new JsonObject { ["kind"] = "summary", ["contentSha256"] = new string('c', 64) }
+                ),
+            };
+            await PutAsync($"reviewd/review-run/{Repo.NormalizedKey}/17", ArmReceipt(wouldPost, new string('d', 40)));
+            var retried = ArmReceipt(wouldPost, new string('d', 40));
+            retried["stage"] = "failed-released";
+            retried["threadId"] = "thread-old";
+            await PutAsync("reviewd/attempt-history/0123456789abcdef", retried);
+            var host = new FakeHttpMessageHandler()
+                .OnJson(
+                    HttpMethod.Get,
+                    "api/workspaces/workspace",
+                    """{"id":"workspace","name":"nova","directoryRelPath":"workspace","marketplaces":[]}"""
+                )
+                .OnJson(HttpMethod.Get, "api/providers", """{"providers":[{"id":"gpt-6.1-sol","available":true}]}""")
+                .OnJson(HttpMethod.Get, "api/chat-modes/workspace-agent", "{}")
+                .OnJson(HttpMethod.Get, "api/conversations/thread-arm/usage", "{}", HttpStatusCode.NotFound)
+                .OnJson(HttpMethod.Get, "api/conversations/thread-old/usage", "{}", HttpStatusCode.NotFound)
+                .OnCurrentReviewHostCapabilities();
+            var gateway = new ScriptedSandboxGateway
+            {
+                WorkspaceRelativePath = "workspace",
+                CommandStdout = """
+                    {"status":"ok","n":1,"judgmentRel":"PRs/nova-17/judgment-1","summaryMd":"summary",
+                     "before":{"path":"PRs/nova-17/judgment-1/before.json","sha256":"b"}}
+                    """,
+            };
+            using var config = HostConfig(store, new HostAndGateway(host, gateway));
+            string[] arguments =
+            [
+                "judge",
+                "run",
+                "--repo",
+                Repo.DisplayName,
+                "--pr",
+                "17",
+                "--db",
+                _database,
+                "--session",
+                "judge-session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "gpt-6.1-sol",
+                "--mode",
+                "workspace-agent",
+            ];
+
+            var exit = await JudgeRunner.RunAsync(CliOptions.Parse(arguments), config, default);
+
+            Logger.LogDebug(
+                "judge run exit {Exit}, read-only {ReadOnly}, submits to {Sessions}",
+                exit,
+                readOnly,
+                string.Join(",", gateway.SubmitSessions)
+            );
+            if (!readOnly)
+            {
+                exit.Should().Be(1);
+                gateway.SubmitSessions.Should().BeEmpty("nothing runs where the arm could make git post");
+                return;
+            }
+            exit.Should().Be(0);
+            gateway.SubmitSessions.Should().Equal("judge-session");
+            // The submit's args are ["-B", "-c", <script>, "judge-inputs", <args JSON>, <prompt template>].
+            var argv = JsonNode.Parse(gateway.LastSubmitBody!)!["args"]!
+                .AsArray()
+                .Select(a => a!.GetValue<string>())
+                .ToList();
+            var json = argv[argv.IndexOf("judge-inputs") + 1];
+            var template = argv[^1];
+            Logger.LogDebug("judge-inputs args {Args}", json);
+            foreach (var label in S_armLabels)
+            {
+                json.Should().NotContainEquivalentOf(label);
+                template.Should().NotContainEquivalentOf(label);
+            }
+            var args = JsonNode.Parse(json)!;
+            JsonNode.DeepEquals(args["wouldPost"], wouldPost).Should().BeTrue("judge-inputs checks ours against it");
+            args["host"]!["receipt"]!
+                .AsObject()
+                .Select(field => field.Key)
+                .Should()
+                .BeEquivalentTo(
+                    "repository",
+                    "prId",
+                    "slot",
+                    "headSha",
+                    "reviewedHeadSha",
+                    "mergeSha",
+                    "startedAt",
+                    "finishedAt",
+                    "threadId",
+                    "stage",
+                    "artifactCommit",
+                    "prepared"
+                );
+            args["host"]!["attemptHistory"]![0]!["threadId"]!.GetValue<string>().Should().Be("thread-old");
+            template.Should().Contain("## 12. A would-post review");
+
+            // An executed run records the judgment as a shadow one, so judge close refuses it. The section has its own
+            // identity field: the base template's sha, which judge batch matches, stays the embedded prompt's.
+            // (The scripted host cannot provision a judge, so the run then fails; the receipt is written before.)
+            await JudgeRunner.RunAsync(CliOptions.Parse([.. arguments, "--execute"]), config, default, leaseHeld: true);
+
+            var judgment = await ReceiptAsync($"reviewd/judge-run/{Repo.NormalizedKey}/17/1");
+            Logger.LogDebug("judgment receipt {Receipt}", judgment.ToJsonString());
+            judgment["shadow"]!.GetValue<bool>().Should().BeTrue();
+            judgment["identity"]!["promptTemplateSha256"]!
+                .GetValue<string>()
+                .Should()
+                .Be(await JudgeRunner.EmbeddedPromptSha256Async(default));
+            judgment["identity"]!["wouldPostPromptSha256"]!
+                .GetValue<string>()
+                .Should()
+                .Be(
+                    Convert.ToHexStringLower(
+                        SHA256.HashData(Encoding.UTF8.GetBytes(await ResourceAsync("merged-judge-would-post.md")))
+                    )
+                );
+        }
+        finally
+        {
+            Directory.Delete(store, recursive: true);
+        }
+    }
+
+    // judge-inputs over a real store and scripted ADO GETs: ours is the would_post.json at the review's own artifact
+    // commit, checked against its verified record, never a publication receipt on another review branch or on main; the
+    // live reviewer's [Revobot] comment is context of its own class; and no input file names the arm.
+    [SkippableFact]
+    public async Task Judge_inputs_of_a_would_post_review_give_its_comments_and_never_name_the_arm()
+    {
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no python3 on PATH");
+        var root = Path.Combine(_files, "store");
+        var comments = new (string Kind, string Content, string? File, int? Line, int? Thread)[]
+        {
+            ("summary", "Two issues: see inline.", null, null, null),
+            ("inline", "x can be null here.", "/src/A.cs", 12, null),
+            ("reply", "Thanks, the fix covers it.", null, null, 102),
+        };
+        var record = new JsonObject
+        {
+            ["prId"] = 17,
+            ["headSha"] = Head,
+            ["mergeSha"] = new string('e', 40),
+            ["comments"] = new JsonArray([
+                .. comments.Select(c =>
+                    (JsonNode)
+                        new JsonObject
+                        {
+                            ["kind"] = c.Kind,
+                            ["content"] = c.Content,
+                            ["filePath"] = c.File,
+                            ["line"] = c.Line,
+                            ["threadId"] = c.Thread,
+                        }
+                ),
+            ]),
+        };
+        JsonObject Verified(int tampered = 0) =>
+            new()
+            {
+                ["file"] = "would_post.json",
+                ["comments"] = new JsonArray([
+                    .. comments.Select(
+                        (c, i) =>
+                            (JsonNode)
+                                new JsonObject
+                                {
+                                    ["kind"] = c.Kind,
+                                    ["filePath"] = c.File,
+                                    ["line"] = c.Line,
+                                    ["threadId"] = c.Thread,
+                                    ["contentSha256"] = Convert.ToHexStringLower(
+                                        SHA256.HashData(
+                                            Encoding.UTF8.GetBytes(c.Content + (i + 1 == tampered ? "!" : ""))
+                                        )
+                                    ),
+                                }
+                    ),
+                ]),
+            };
+        // main and a live round's branch hold publication receipts naming the live reviewer's PR comment 101/1; the
+        // arm's own branch holds would_post.json.
+        Directory.CreateDirectory(Path.Combine(root, "PRs", "nova-17"));
+        await GitAsync(root, "init", "-q", "-b", "main");
+        await GitAsync(root, "config", "user.email", "t@example.com");
+        await GitAsync(root, "config", "user.name", "t");
+        await GitAsync(root, "config", "commit.gpgsign", "false");
+        File.WriteAllText(Path.Combine(root, "README.md"), "store\n");
+        await GitAsync(root, "add", "-A");
+        await GitAsync(root, "commit", "-q", "-m", "base");
+        await GitAsync(root, "checkout", "-q", "-b", "review/nova-17");
+        File.WriteAllText(Path.Combine(root, "PRs", "nova-17", "would_post.json"), record.ToJsonString());
+        File.WriteAllText(Path.Combine(root, "PRs", "nova-17", "review.md"), "# Review\n");
+        await GitAsync(root, "add", "-A");
+        await GitAsync(root, "commit", "-q", "-m", "arm review");
+        var artifact = await GitAsync(root, "rev-parse", "HEAD");
+        await GitAsync(root, "checkout", "-q", "main");
+        Directory.CreateDirectory(Path.Combine(root, "PRs", "nova-17"));
+        var live =
+            $$"""{"prId":17,"headSha":"{{Head}}","comments":[{"threadId":101,"commentId":1,"kind":"summary"}]}""";
+        File.WriteAllText(Path.Combine(root, "PRs", "nova-17", "publication_receipts.json"), live);
+        await GitAsync(root, "add", "-A");
+        await GitAsync(root, "commit", "-q", "-m", "live review");
+        await GitAsync(root, "branch", "review/nova-17-abcdef12");
+
+        var receipt = ArmReceipt(Verified(), artifact);
+        var usage = JsonNode.Parse(
+            """
+            [{"threadId":"thread-arm","foundVia":["receipt:latest"],"usage":{"preferredCostMicros":1230000,"totalTokens":1000,
+              "completeness":2,"perModel":[{"modelId":"arm-provider-x-large","preferredCostMicros":1230000,"totalTokens":1000}]}}]
+            """
+        )!;
+        JsonObject Args(int minN, string nonce, JsonObject verified) =>
+            new()
+            {
+                ["org"] = "org",
+                ["project"] = "project",
+                ["repo"] = "Nova",
+                ["pr"] = "17",
+                ["minN"] = minN,
+                ["nonce"] = nonce,
+                ["dryRun"] = false,
+                ["host"] = new JsonObject
+                {
+                    ["receiptKey"] = $"reviewd/review-run/{Repo.NormalizedKey}/17",
+                    ["receipt"] = JudgeRunner.Blind(receipt),
+                    ["attemptHistory"] = new JsonArray(),
+                    ["threads"] = usage.DeepClone(),
+                    ["priorJudgments"] = new JsonArray(),
+                },
+                ["wouldPost"] = verified,
+            };
+        var template =
+            await ResourceAsync("merged-judge.md") + "\n\n" + await ResourceAsync("merged-judge-would-post.md");
+
+        var built = await JudgeInputsAsync(python!, root, Args(1, new string('1', 32), Verified()), template);
+        var tampered = await JudgeInputsAsync(python!, root, Args(2, new string('2', 32), Verified(2)), template);
+
+        built.Exit.Should().Be(0, built.Error);
+        var inputs = Path.Combine(root, "PRs", "nova-17", "judgment-1", "inputs");
+        foreach (var file in Directory.EnumerateFiles(inputs, "*", SearchOption.AllDirectories))
+        {
+            var text = File.ReadAllText(file);
+            foreach (var label in S_armLabels)
+            {
+                text.Should().NotContainEquivalentOf(label, $"{Path.GetFileName(file)} must not name the arm");
+            }
+        }
+        var packet = JsonNode.Parse(File.ReadAllText(Path.Combine(inputs, "packet.json")))!;
+        var threads = File.ReadAllText(Path.Combine(inputs, "threads.md")).ReplaceLineEndings("\n");
+        Logger.LogDebug("packet ours {Ours}; threads.md {Threads}", packet["ours"]!.ToJsonString(), threads);
+        packet["ours"]!["mode"]!.GetValue<string>().Should().Be("would-post");
+        packet["ours"]!["posted"]!.AsArray().Should().BeEmpty("no comment on the PR is ours");
+        packet["ours"]!["wouldPost"]!
+            .AsArray()
+            .Select(e => $"{e!["id"]} {e["kind"]}")
+            .Should()
+            .Equal("wp/1 summary", "wp/2 inline", "wp/3 reply");
+        packet["review"]!["rounds"]!
+            .AsArray()
+            .Select(r => $"{r!["branch"]} {r["tip"]}")
+            .Should()
+            .Equal($"review/nova-17 {artifact}");
+        packet["grading"]!["notApplicable"]!
+            .AsObject()
+            .Select(p => p.Key)
+            .Should()
+            .Equal("threadHelp", "fixRate", "developerBehaviors");
+        packet["cost"]!["threads"]![0]!.AsObject().ContainsKey("perModel").Should().BeFalse();
+        // The per-comment rows the judge queries say the same: the live reviewer's comment is not ours.
+        packet["ado"]!["threads"]!
+            .AsArray()
+            .SelectMany(t =>
+                t!["comments"]!
+                    .AsArray()
+                    .Select(c =>
+                        $"{t["threadId"]}/{c!["commentId"]} {c["ours"]} {c["operatorAuthored"]?.GetValue<string>()}"
+                    )
+            )
+            .Should()
+            .Equal("101/1 false live-reviewer", "101/2 false operator-manual", "102/1 false ");
+        threads
+            .Split('\n')
+            .Where(line =>
+                line.StartsWith("wp/", StringComparison.Ordinal) || line.StartsWith("101/", StringComparison.Ordinal)
+            )
+            .Should()
+            .Equal(
+                "wp/1 | summary | PR | Two issues: see inline.",
+                "wp/2 | inline | /src/A.cs:12 | x can be null here.",
+                "wp/3 | reply | thread 102 | Thanks, the fix covers it.",
+                "101/1 | live-reviewer | active | PR | iter - | 2026-10-07T19:00Z | Op | [Revobot] live summary",
+                "101/2 | operator | active | PR | iter - | 2026-10-07T19:05Z | Op | manual note"
+            );
+        JsonNode.Parse(File.ReadAllText(Path.Combine(inputs, "would-post.json")))!["comments"]!
+            .AsArray()
+            .Select(c => c!["content"]!.GetValue<string>())
+            .Should()
+            .Equal(comments.Select(c => c.Content));
+        tampered.Exit.Should().Be(2);
+        tampered.Error.Should().Contain("comment 2 differs from the review's verified record");
+        Directory.Exists(Path.Combine(root, "PRs", "nova-17", "judgment-2")).Should().BeFalse("nothing is written");
+    }
+
+    private static async Task<string> ResourceAsync(string name)
+    {
+        using var stream = typeof(JudgeRunner).Assembly.GetManifestResourceStream($"Reviewd.Sample.Prompts.{name}")!;
+        using var reader = new StreamReader(stream);
+        return await reader.ReadToEndAsync();
+    }
+
+    private static async Task<(int Exit, string Output, string Error)> RunGitAsync(
+        string directory,
+        params string[] arguments
+    )
+    {
+        var start = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = directory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        foreach (var argument in arguments)
+        {
+            start.ArgumentList.Add(argument);
+        }
+        using var process = Process.Start(start)!;
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return (process.ExitCode, (await output).Trim(), (await error).Trim());
+    }
+
+    private static async Task<string> GitAsync(string directory, params string[] arguments)
+    {
+        var (exit, output, error) = await RunGitAsync(directory, arguments);
+        exit.Should().Be(0, error);
+        return output;
+    }
+
+    /// <summary>
+    ///     Runs the embedded JudgeSandbox.py's judge-inputs in <paramref name="root" /> with <paramref name="args" />,
+    ///     its ADO GETs answered from <see cref="AdoFixture" />.
+    /// </summary>
+    private static async Task<(int Exit, string Output, string Error)> JudgeInputsAsync(
+        string python,
+        string root,
+        JsonObject args,
+        string template
+    )
+    {
+        var script = Path.Combine(Path.GetTempPath(), $"judge-sandbox-{Guid.NewGuid():N}.py");
+        using (var resource = typeof(JudgeRunner).Assembly.GetManifestResourceStream("Reviewd.Sample.JudgeSandbox.py")!)
+        using (var file = File.Create(script))
+        {
+            await resource.CopyToAsync(file);
+        }
+        try
+        {
+            const string harness = """
+                import importlib.util, json, sys
+                from pathlib import Path
+                spec = importlib.util.spec_from_file_location("judge_sandbox", sys.argv[1])
+                sandbox = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(sandbox)
+                data = json.loads(sys.stdin.read())
+
+                class Transport:
+                    def request(self, method, path):
+                        assert method == "GET", method
+                        for key, body in data["ado"]:
+                            if key in path:
+                                return body
+                        raise AssertionError("unscripted GET " + path)
+
+                    def get_pages(self, path):
+                        return self.request("GET", path)
+
+                sandbox.ado = lambda: (None, Transport())
+                sandbox.phase, sandbox.args, sandbox.template = "judge-inputs", data["args"], data["template"]
+                sandbox.root = Path(sys.argv[2]).resolve()
+                sandbox.judge_inputs()
+                """;
+            var start = new ProcessStartInfo(python)
+            {
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                WorkingDirectory = root,
+            };
+            foreach (var argument in new[] { "-I", "-c", harness, script, root })
+            {
+                start.ArgumentList.Add(argument);
+            }
+            using var process = Process.Start(start)!;
+            await process.StandardInput.WriteAsync(
+                new JsonObject
+                {
+                    ["args"] = args,
+                    ["template"] = template,
+                    ["ado"] = AdoFixture(),
+                }.ToJsonString()
+            );
+            process.StandardInput.Close();
+            var output = process.StandardOutput.ReadToEndAsync();
+            var error = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            return (process.ExitCode, await output, error);
+        }
+        finally
+        {
+            File.Delete(script);
+        }
+    }
+
+    /// <summary>
+    ///     The ADO GETs of a completed Nova !17 reviewed at <see cref="Head" />, as (path fragment, response) pairs:
+    ///     a live [Revobot] summary and an operator note in thread 101, an author's fix comment in 102.
+    /// </summary>
+    private static JsonArray AdoFixture() =>
+        JsonNode
+            .Parse(
+                $$$"""
+                [
+                  ["pullRequests/17?includeWorkItemRefs", {"pullRequestId": 17, "status": "completed", "title": "Fix the filter",
+                    "createdBy": {"displayName": "Ana", "uniqueName": "ana@example.com"},
+                    "repository": {"id": "r-id", "name": "Nova", "project": {"id": "p-id", "name": "project"}},
+                    "creationDate": "2026-10-07T18:00:00Z", "closedDate": "2026-10-08T09:00:00Z",
+                    "sourceRefName": "refs/heads/fix", "targetRefName": "refs/heads/main",
+                    "lastMergeSourceCommit": {"commitId": "{{{Head}}}"}, "lastMergeCommit": {"commitId": "ffffffffffffffffffffffffffffffffffffffff"},
+                    "workItemRefs": []}],
+                  ["/threads?", {"count": 2, "value": [
+                    {"id": 101, "status": "active", "comments": [
+                      {"id": 1, "author": {"id": "op-id", "displayName": "Op", "uniqueName": "op@example.com"},
+                        "commentType": "text", "publishedDate": "2026-10-07T19:00:00Z", "content": "[Revobot] live summary"},
+                      {"id": 2, "author": {"id": "op-id", "displayName": "Op", "uniqueName": "op@example.com"},
+                        "commentType": "text", "publishedDate": "2026-10-07T19:05:00Z", "content": "manual note"}]},
+                    {"id": 102, "status": "fixed", "threadContext": {"filePath": "/src/A.cs", "rightFileStart": {"line": 12}},
+                      "comments": [{"id": 1, "author": {"id": "ana-id", "displayName": "Ana", "uniqueName": "ana@example.com"},
+                        "commentType": "text", "publishedDate": "2026-10-07T21:30:00Z", "content": "Fixed the null check"}]}]}],
+                  ["/iterations?", [{"id": 1, "sourceRefCommit": {"commitId": "{{{Head}}}"}, "createdDate": "2026-10-07T18:00:00Z",
+                    "author": {"displayName": "Ana"}}]],
+                  ["/commits?", []]
+                ]
+                """
+            )!
+            .AsArray();
 
     /// <summary>
     ///     A host config over <paramref name="store" />, with ADO (and, with <paramref name="github" />, GitHub) signed
@@ -1375,16 +3243,66 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
             .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
 
+    // The commit the scripted review-repo clone has checked out: ArmManifest's pin unless a test moves it.
+    private string _reviewRepoHead = new('2', 40);
+
+    // The commit the scripted gateway resolves alias cr-b-007 to: ArmManifest's pin unless a test moves it.
+    private string _aliasSha = new('3', 40);
+
+    // How many alias lookups the scripted gateway leaves unanswered before it answers.
+    private int _aliasTimeouts;
+
+    // How many review-repo-head steps the scripted gateway leaves unanswered before it answers.
+    private int _headTimeouts;
+
+    // What an unanswered review-repo-head step or alias lookup raises instead of the default timeout, when set.
+    private Func<Exception>? _pinReadFault;
+
+    // How many times a run read the scripted gateway's marketplace aliases.
+    private int _marketplaceReads;
+
     private async Task<int> RunAsync(
         FakeHttpMessageHandler handler,
         List<(string Phase, JsonObject Args)> phases,
         string[] extra,
         string postSession = "read-only",
-        Action<string, string>? beforeStep = null
+        Action<string, string>? beforeStep = null,
+        bool execute = true
     )
     {
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
-        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        // The scripted gateway lists alias cr-b-007 at _aliasSha, read when the run starts; the first _aliasTimeouts
+        // lookups get no answer.
+        var marketplaces = new JsonObject
+        {
+            ["marketplaces"] = new JsonArray(
+                new JsonObject
+                {
+                    ["app_id"] = "codereview-daemon",
+                    ["alias"] = "cr-b-007",
+                    ["url"] = "https://github.com/gautam-achieveai/ClaudePlugins",
+                    ["repo_key"] = "key",
+                    ["ref"] = "main",
+                    ["resolved_sha"] = _aliasSha,
+                    ["created_at"] = "2026-11-18T00:00:00Z",
+                    ["updated_at"] = "2026-11-18T00:00:00Z",
+                    ["last_error"] = null,
+                }
+            ),
+        }.ToJsonString();
+        var gateway = new FakeHttpMessageHandler().On(
+            request =>
+                request.Method == HttpMethod.Get
+                && request.RequestUri!.AbsolutePath.EndsWith("/apps/self/marketplaces", StringComparison.Ordinal),
+            _ =>
+            {
+                _marketplaceReads++;
+                return _aliasTimeouts-- > 0
+                    ? throw _pinReadFault?.Invoke() ?? new HttpRequestException("No connection could be made.")
+                    : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(marketplaces) };
+            }
+        );
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build()) { Transport = gateway };
         var options = CliOptions.Parse([
             "review",
             "run",
@@ -1404,7 +3322,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             "test",
             "--max-age-hours",
             "72",
-            "--execute",
+            .. execute ? new[] { "--execute" } : [],
             .. extra,
             .. extra.Contains("--shadow") ? new[] { "--post-session", postSession } : [],
         ]);
@@ -1412,6 +3330,11 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         {
             phases.Add((phase, args.DeepClone().AsObject()));
             beforeStep?.Invoke(phase, operation);
+            if (phase == "review-repo-head" && _headTimeouts-- > 0)
+            {
+                throw _pinReadFault?.Invoke()
+                    ?? new SandboxException(SandboxErrorKind.TransportTimeout, "The gateway did not answer in time.");
+            }
             return Task.FromResult(
                 phase switch
                 {
@@ -1429,6 +3352,11 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
                         ["contextPath"] = "context",
                         ["reviewDirectory"] = "reviews",
                         ["baselineComments"] = new JsonArray(),
+                    },
+                    "review-repo-head" => new JsonObject
+                    {
+                        ["head"] = _reviewRepoHead,
+                        ["knowledgeBaseTree"] = new string('5', 40),
                     },
                     "verify" => new JsonObject { ["file"] = "checked", ["comments"] = new JsonArray() },
                     "commit" => new JsonObject { ["status"] = "committed", ["commit"] = new string('c', 40) },
@@ -1451,6 +3379,13 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             _ => Task.CompletedTask,
             () => Now
         );
+    }
+
+    // ArmManifest's mode file, as variant up provisioned it.
+    private async Task WriteArmModeFileAsync()
+    {
+        Directory.CreateDirectory(_files);
+        await File.WriteAllTextAsync(Path.Combine(_files, "mode.json"), """{"systemPrompt":"Review as b-007."}""");
     }
 
     private Task SnapshotAsync() =>

@@ -1,6 +1,6 @@
 > Approved 2026-11-16 (ReviewPlan rev 3; standing approval: $300 pilot cap). Below is the approved plan, with
-> edits since approval where the build changed it: this note, key dot 2 (no variant key), build item 2, the
-> `review batch` line under "How an arm is built" (`--post-session`), and the line under "What exists today".
+> edits since approval where the build changed it: these notes, key dot 2 (no variant key), build item 2, the
+> manifest and the commands under "How an arm is built", and the line under "What exists today".
 >
 > **Slice 1 as built** (`review run|batch --shadow --variant`): the shadow half of build item 2 only.
 > - The receipt key does **not** gain the variant: about ten readers parse that key. Each arm runs on its own `--db`
@@ -24,9 +24,46 @@
 >   so a helper the agent edited cannot push the store branch (`git-receive-pack`) or write through the API.
 > - Verify checks `would_post.json` (recorded as `wouldPost`, never `verifiedPublication`), and refuses one over
 >   1 MiB, which commit would set aside; commit keeps the review branch local (no push).
-> - `judge run` refuses shadow receipts and `judge batch` counts them as `shadow` until item 6 lands.
+> - Slice 1 left shadow reviews unjudged (`judge run` refused them). Slice 2 judges them; see its note.
 > - Merged-PR replay is not supported yet: `review run` admits open PRs only (`PrSelection.cs`), so slice 1
 >   shadows open PRs. Build item 5 adds historical heads.
+>
+> **Slice 2 as built** (`variant up`, arm checks, judging shadow reviews): build items 1, 3 and the judge half of 6.
+> - The manifest, as `variant up` reads it (`mode.file` and `taskPrompt` are paths relative to the manifest;
+>   `reviewRepo.directory` is the workspace directory name, used as written; `sha`s are 40-character commits):
+>   ```json
+>   { "id": "b-007",
+>     "reviewRepo": {"repo": "AchieveAi_reviews", "ref": "exp/b-007", "sha": "<commit>", "directory": "exp-b"},
+>     "plugins": {"alias": "cr-b-007", "url": "https://github.com/gautam-achieveai/ClaudePlugins", "sha": "<commit>"},
+>     "mode": {"name": "code-review-b-007", "file": "modes/b-007.json"},
+>     "taskPrompt": "prompts/b-007.md", "provider": "<provider>", "effort": "xhigh" }
+>   ```
+>   The mode file is a JSON chat-mode body: `systemPrompt` and any optional field the host keeps, with names in any
+>   letter case (`env` and `subAgentModelIntelligenceByType` keys are data and match exactly). `variant up` reads the
+>   saved mode back and refuses a file the host stores otherwise (a field it does not keep, a number written as a
+>   string), because every run would refuse that arm.
+> - Build an arm (preview without `--execute`):
+>   `variant up --manifest <manifest> --experiment <id> --from-workspace <base workspace> --champion <commit> --execute`.
+>   It never moves the clone: it refuses one in `reviewRepo.directory` that is not at `reviewRepo.sha`, or whose
+>   `KnowledgeBase/` tree differs from the champion commit's, before it changes anything. Then it registers the alias at
+>   `plugins.sha`, creates or replaces the mode (a replace clears every field the file omits), and creates or updates
+>   workspace `variant-<id>`, taking `code-reviewer` from the alias only. `--champion` is given per run, but an
+>   experiment has one champion: every arm must pass the same one. Each receipt records its clone's `KnowledgeBase/`
+>   tree id (`knowledgeBaseTree`), so `compare` can refuse arms whose trees differ.
+> - Run it, with the workspace and mode `variant up` printed:
+>   `sandbox create --workspace <directory> --callback <url> --read-only-egress --read-repos <org/project/repo,...>`,
+>   then `review batch --selection <json> --db <arm db> --session <session> --workspace <workspace> --provider <provider>
+>   --mode <mode> [--reasoning-effort <effort>] --shadow --post-session <read-only session> --variant <id>
+>   --manifest <manifest> --experiment <id> [--task-prompt-file <file>] --execute`.
+> - Every run checks, on the host, that its workspace and mode are the ones `variant up` built for the manifest
+>   (directory, reviewer plugin source, mode name and settings) and, when it executes, that the clone is still at
+>   `reviewRepo.sha`. A resume must keep the arm it started with (task prompt, manifest, experiment, mode file), and a
+>   batch that would resume an attempt of another arm is refused at start.
+> - Judging: each arm is judged in its own workspace, so its `KnowledgeBase/` must equal the champion's (the tree check
+>   above) instead of the judge reading the champion's store. `judge run` scores a shadow review's `would_post.json`
+>   blind (arm labels stripped), only in a read-only session; `judge batch` skips a shadow review whose target session
+>   is not read-only. `judge close` refuses a shadow judgment and both judge ticks skip it: it is a score, never a
+>   lesson.
 # Plan: Reviewers that improve themselves, proven by blind A/B against the judge
 
 **Done when:** one challenger, generated from judge misses and bound to a `ClaudePlugins` branch, has been
@@ -37,7 +74,7 @@ per PR, and given a recorded promote / park decision.
 1. **One arm = one variant manifest.** It pins every lever: review-repo branch, `ClaudePlugins` ref, chat mode, task prompt, model.
    `reviewd variant up` turns it into its own workspace. Champion and challenger are built the same way. (See "How an arm is built".)
 2. **Shadow reviews.** Both arms review in shadow: never post (read-only egress), save would-post comments in each arm's own `--db` (receipts record `shadow` and `variant`).
-3. **Blind, frozen judge.** Every arm is judged from the champion's store, with the same prompt, model and knowledge base, and labels hidden.
+3. **Blind, frozen judge.** One champion per experiment: every arm reviews and is judged with the champion's knowledge base (its own clone must hold the same `KnowledgeBase/` tree), with the same prompt and model, and labels hidden.
 4. **A/A pilot first.** The champion's manifest, run twice on ~12 merged PRs. It measures noise and cost, which sets the sample size.
 5. **First A/B, two ideas:** (H1) feed the knowledge base into reviews, which today read none of it; (H2) one skill edit, drawn from judge misses. Then H1+H2.
 6. **Evolve loop driven by `experimentation:research`** (checked: it helps, see Reference). Each round:
@@ -122,9 +159,9 @@ A review today stacks 7 layers. Each one has a different home, so each needs its
 
 **The variant manifest** (one small JSON per arm, kept in the study store):
 ```json
-{ "id": "b-007", "reviewRepo": {"repo": "AchieveAi_reviews", "ref": "exp/b-007", "sha": "…"},
+{ "id": "b-007", "reviewRepo": {"repo": "AchieveAi_reviews", "ref": "exp/b-007", "sha": "…", "directory": "exp-b"},
   "plugins": {"alias": "cr-b-007", "url": "https://github.com/gautam-achieveai/ClaudePlugins", "sha": "…"},
-  "mode": {"id": "code-review-b-007", "file": "modes/b-007.yaml"},
+  "mode": {"name": "code-review-b-007", "file": "modes/b-007.json"},
   "taskPrompt": "prompts/b-007.md", "provider": "…", "effort": "xhigh" }
 ```
 
@@ -135,8 +172,8 @@ A review today stacks 7 layers. Each one has a different home, so each needs its
 4. Create or update the workspace: the clone directory, `[cr-<id>, sandbox-plugins]`, and `code-reviewer` enabled from the arm's alias only.
 5. Print the workspace id and the manifest hash.
 
-Then: `review batch --workspace <ws> --variant <id> --shadow --post-session <read-only session> --mode <mode> --task-prompt-file <file>`.
-The read-only session comes from `sandbox create --read-only-egress --read-repos <repos>` on the same workspace.
+As built, step 2 only checks the clone (the operator checks out `ref`), and step 5 also prints the mode id. The full
+`variant up`, `sandbox create` and `review batch` commands are in the "Slice 2 as built" note at the top.
 
 **Clones:** there are two experiment clones of each review repo, separate from the production store.
 - `exp-A` stays at `main`: the champion.
@@ -198,9 +235,9 @@ The baseline before slice 1, kept as approved. Slice 1 changed the "A/B in Revie
 3. `--task-prompt-file`: the inline task prompt and `ReviewQualityRules` become a template; its SHA goes in the receipt.
 4. Receipt provenance: the manifest hash plus every SHA (store, plugin, mode, task prompt), the Reviewd code commit, model, effort, and the experiment record id.
 5. Historical head for merged PRs (`--at-head <sha>`). The slot hides refs newer than the review time.
-6. `judge run --variant <id>`: judge from the champion store, read `would_post.json`, hide arm labels.
+6. `judge run --variant <id>`: judge in the arm's workspace, whose `KnowledgeBase/` equals the champion's; read `would_post.json`, hide arm labels.
 7. Knowledge-base injection as a mode + task-prompt variant (H1); fix the `/workspace/store` path.
-8. `compare` command: paired table + bootstrap from `judgment.json` files → a study evidence record.
+8. `compare` command: paired table + bootstrap from `judgment.json` files → a study evidence record. It refuses arms whose receipts record different `knowledgeBaseTree`s.
 
 ### Study store
 - `.experimentation/reviewer-evolution/` in the review store (private, next to the judgments), managed with `research-store.mjs`. Assumption; easy to move.
