@@ -1212,6 +1212,76 @@ public class WorkspacePluginSelectionServiceTests
         resolved.SessionId.Should().Be(built.Single(), "and the partition must now resolve to the reconciled session");
     }
 
+    [Fact]
+    public async Task ReconcilePass_RebuildsEachOwnersDedicatedSandbox_InItsOwnSlot_AndKeepsItsJail()
+    {
+        // Two conversations with dedicated sandboxes on one workspace, both still being created when the selection
+        // commits. The pass owes each its own partition: rebuilt with the owner and the jail it had, published in
+        // that owner's slot, never in the shared one nor the other owner's.
+        Func<Task>? deferred = null;
+        await using var h = CreateHarness(
+            settleBudget: TimeSpan.Zero,
+            postCommitScheduler: work =>
+            {
+                deferred = work;
+                return Task.CompletedTask;
+            }
+        );
+        var workspace = await SeedWorkspaceAsync(h, ["official"]);
+        var owners = new Dictionary<string, string> { ["thread-a"] = "PRs/r-7", ["thread-b"] = "PRs/r-8" };
+        WorkspaceRef OwnedRef(string owner) =>
+            new(
+                workspace.Id,
+                workspace.DirectoryRelPath,
+                workspace.Marketplaces,
+                WorkingDir: owners[owner],
+                OwnerThreadId: owner
+            );
+
+        h.Gateway.HoldCreatesFor("app-b");
+        var lateCreates = owners
+            .Keys.Select(owner =>
+                h.Registry.GetOrCreateSessionAsync(OwnedRef(owner), credential: CredentialFor("app-b"))
+            )
+            .ToList();
+        await h.Gateway.WaitForHeldCreatesAsync(2);
+
+        _ = await h.Service.ApplyPluginSelectionUpdateAsync(
+            workspace.Id,
+            Update(["official"], [SelectedPlugin], revision: 0)
+        );
+        h.Gateway.ReleaseCreatesFor("app-b");
+        var late = await Task.WhenAll(lateCreates);
+        var checkpoint = h.Gateway.CallCount;
+
+        await Task.Run(deferred!).WaitAsync(TimeSpan.FromSeconds(30));
+
+        var pass = h.Gateway.CallsSince(checkpoint);
+        pass.Where(call => call.Kind == GatewayCallKind.Create)
+            .Select(call => FakeGateway.RequestedWorkingDir(call.Body))
+            .Should()
+            .BeEquivalentTo(["PRs/r-7", "PRs/r-8"], "each owner's replacement is created in its own jail");
+        pass.Where(call => call.Kind == GatewayCallKind.Create)
+            .Should()
+            .AllSatisfy(call => ReadPluginSelection(call.Body).Should().Equal("official/code-review"));
+        pass.Where(call => call.Kind == GatewayCallKind.Delete)
+            .Select(call => call.SessionId)
+            .Should()
+            .BeEquivalentTo(late.Select(session => session.SessionId));
+        foreach (var owner in owners.Keys)
+        {
+            var resolved = await h.Registry.GetOrCreateSessionAsync(
+                OwnedRef(owner),
+                credential: CredentialFor("app-b")
+            );
+            resolved.OwnerThreadId.Should().Be(owner);
+            resolved.WorkspaceWorkingDir.Should().Be(owners[owner]);
+            late.Select(session => session.SessionId).Should().NotContain(resolved.SessionId);
+        }
+
+        h.Gateway.CallsSince(checkpoint).Should().HaveCount(pass.Count, "resolving the owners created nothing new");
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Harness
     // ---------------------------------------------------------------------------------------------
@@ -1975,9 +2045,12 @@ public class WorkspacePluginSelectionServiceTests
             }
 
             var resolution = omitPluginResolution ? string.Empty : ResolutionPrefix + RequestedField(body) + " }";
+            // Echoes a requested working directory, as the gateway does: the SDK refuses a create whose reply does
+            // not acknowledge it.
+            var workingDir = RequestedWorkingDir(body) is { } dir ? $", \"working_dir\": \"{dir}\"" : string.Empty;
             var responseBody = $$"""
                 { "session_id": "{{sessionId}}", "container_id": "c-{{ordinal}}",
-                  "volumes": { "workspace": { "container_path": "/workspace", "read_only": false } }{{resolution}} }
+                  "volumes": { "workspace": { "container_path": "/workspace", "read_only": false{{workingDir}} } }{{resolution}} }
                 """;
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
@@ -1993,6 +2066,18 @@ public class WorkspacePluginSelectionServiceTests
             }
 
             base.Dispose(disposing);
+        }
+
+        /// <summary>The <c>working_dir</c> a create body asked for, or null.</summary>
+        internal static string? RequestedWorkingDir(string body)
+        {
+            if (string.IsNullOrEmpty(body))
+            {
+                return null;
+            }
+
+            using var document = JsonDocument.Parse(body);
+            return document.RootElement.TryGetProperty("working_dir", out var dir) ? dir.GetString() : null;
         }
 
         /// <summary>

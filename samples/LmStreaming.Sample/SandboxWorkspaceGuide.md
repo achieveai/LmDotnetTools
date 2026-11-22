@@ -585,7 +585,48 @@ path** into the system prompt at runtime (the gateway reports it when the sessio
 ### Session lifetime
 
 The sandbox session is **app-wide** — shared across all tabs and conversations — and is
-**deleted when the app shuts down**.
+**deleted when the app shuts down**. A conversation with a dedicated sandbox (below) is the exception.
+
+### Dedicated sandboxes (per conversation)
+
+A conversation provisioned with `dedicatedSandbox: true` and a `workingDirectoryRelPath` gets a sandbox of its
+own. It is created with that directory as the gateway working directory, so the agent can write only there; the
+rest of the workspace is read-only to it (gateway ADR 0044). Sandboxes are never shared; the workspace is.
+
+- **Capability.** `GET /api/conversations/capabilities` reports `dedicatedSandbox: true` on a host with a sandbox
+  registry. It does not check the gateway version: an older gateway that ignores `working_dir` makes the create
+  fail, it does not fall back to a writable sandbox.
+- **Lifetime.** The sandbox goes when the conversation's agent goes (idle unload, delete) and when the app shuts
+  down. The next turn creates a fresh one with the stored directory.
+- **Release and move.** `POST /api/conversations/{threadId}/sandbox/release` with an optional
+  `workingDirectoryRelPath` deletes the sandbox and, only once the gateway confirms, stores the new directory.
+  A shared-sandbox conversation released with a directory becomes dedicated. Answers:
+  - `200` with the directory the next sandbox works in.
+  - `400` `dedicated_sandbox_required`, `working_directory_invalid` or `dedicated_sandbox_mode_unsupported` (the
+    last two only for a release with a directory, a move); `404` `unknown_thread`.
+  - `409` `sandbox_release_while_running`: a run or queued input, a new turn, or work only this host keeps (a
+    parked or unanswered call, an armed wait, a sub-agent, a background task). Nothing changes.
+  - `503` `sandbox_release_failed`: the gateway refused the DELETE (nothing moved), or the DELETE succeeded but the
+    new directory was not stored. Retry the release.
+- **Fork.** A fork carries the flag, the directory and read-only egress, and gets its own sandbox jailed to the
+  same directory.
+- **What is not jailed.** Only the agent's tools are. Host-side calls (operations, the files API) see the whole
+  workspace by the gateway's design.
+- **Mini Apps.** The host runs Mini Apps through operations, so outside the jail. A dedicated conversation
+  therefore never gets a mode with Mini App debugging or browser debugging (which opens a Mini App by id).
+  Provision, mode switch and a release with a directory (a move) answer `400` `dedicated_sandbox_mode_unsupported`;
+  a release without one only stops the sandbox and answers `200`. Building the agent refuses such a mode too (a
+  fork, or a mode edited later), so a send then answers `409` `dedicated_sandbox_mode_unsupported`. The
+  conversation's directory may not be the workspace root, `mini-web-apps` or inside it (`400`
+  `working_directory_invalid`), so its agent can never write an app the host would run.
+- **The owner's own Mini App launch stays open.** `POST /api/conversations/{threadId}/apps/{appId}/launch` works on
+  a dedicated conversation as on any other: it is the user, not the agent, who opens the app, and the app comes from
+  `mini-web-apps`, which the conversation's agent cannot write. Only the agent's tools are refused. On every
+  conversation the launch finds its sandbox through the loaded agent, so after an idle unload it answers `409` until
+  the next turn loads the agent again.
+- **Rollback.** Not supported. A host from before dedicated sandboxes ignores `sample.dedicatedSandbox` and runs
+  such a conversation in the shared sandbox, writable everywhere. Do not roll a host with dedicated
+  conversations back to such a build.
 
 ## Try it (manual test prompts)
 

@@ -1,5 +1,12 @@
 extern alias Reviewd;
 
+using System.Net;
+using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.Misc.Storage;
+using AchieveAi.LmDotnetTools.Sandbox;
+using CodeReviewDaemon.Sample.Agents;
+using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using Microsoft.Extensions.Configuration;
 using Reviewd::Reviewd.Sample;
 using BatchFixture = CodeReviewDaemon.Sample.Tests.Scenarios.ReviewdRunnerTests.BatchFixture;
 
@@ -191,5 +198,133 @@ public sealed class ReviewdBatchLogTests : IDisposable
                 canceled.Token
             );
         await wait.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    // The sweep resets the slot while the commit runs, and the commit's response is then lost. The save that would
+    // record the replay id throws on the lost claim, and the run ends with that, not the commit's own error, so the
+    // commit's error is logged before the save; logged after it, the only record of why the commit failed is gone.
+    [Fact]
+    public async Task A_commit_error_is_logged_even_when_the_lost_claim_stops_its_save()
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-lost-claim-log-{Guid.NewGuid():N}.db");
+        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/17";
+        var ownerKey = SlotRelease.OwnerKey("workspace", repo.NormalizedKey, 2);
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
+            )
+            .OnAsync(ReviewdRunnerTests.IsSandboxRelease, ReviewdRunnerTests.EchoSandboxReleaseAsync)
+            .On(
+                request =>
+                    request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
+                _ => new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{"threadId":"thread","dedicatedSandboxAccepted":true}"""),
+                }
+            )
+            .OnJson(HttpMethod.Get, "/api/conversations?", "[]")
+            .OnJson(HttpMethod.Put, "/metadata", "{}")
+            .OnJson(HttpMethod.Post, "/messages", """{"inputId":"input","idempotencyKeyHonored":true}""")
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"Completed","runId":"run","response":{"text":"done"}}""")
+            .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+        var client = new LmStreamingS2SClient(http, null, null, null);
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
+        var options = CliOptions.Parse([
+            "review",
+            "run",
+            "--repo",
+            repo.DisplayName,
+            "--pr",
+            "17",
+            "--slot",
+            "2",
+            "--db",
+            database,
+            "--session",
+            "session",
+            "--workspace",
+            "workspace",
+            "--provider",
+            "test",
+            "--execute",
+        ]);
+        string? commitOperation = null;
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            var store = new SqliteKvStore(connection);
+            await store.SetAsync(
+                $"reviewd/pr-snapshot/{repo.NormalizedKey}",
+                new JsonObject
+                {
+                    ["17"] = new JsonObject
+                    {
+                        ["Lifecycle"] = "Open",
+                        ["IsDraft"] = false,
+                        ["HeadSha"] = new string('a', 40),
+                    },
+                }
+            );
+            async Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token)
+            {
+                if (phase == "commit")
+                {
+                    commitOperation = operation;
+                    var attempt = (await store.GetAsync<JsonObject>(attemptKey))!;
+                    attempt["stage"] = "failed-released";
+                    await SlotRelease.ReleaseAsync(
+                        connection,
+                        ownerKey,
+                        args["claimToken"]!.GetValue<string>(),
+                        attemptKey,
+                        attempt,
+                        token
+                    );
+                    throw new SandboxException(
+                        SandboxErrorKind.TransportTimeout,
+                        "commit transport timeout (00:00:30)."
+                    );
+                }
+                return phase == "prepare"
+                    ? new JsonObject
+                    {
+                        ["mergeSha"] = new string('b', 40),
+                        ["contextPath"] = "context",
+                        ["reviewDirectory"] = "reviews",
+                        ["baselineComments"] = new JsonArray(),
+                    }
+                    : new JsonObject { ["ok"] = true };
+            }
+            var run = () =>
+                ReviewRunner.RunAsync(
+                    options,
+                    config,
+                    client,
+                    Sandbox,
+                    CancellationToken.None,
+                    _ => Task.CompletedTask
+                );
+
+            await run.Should().ThrowAsync<ReviewRunner.SlotClaimLostException>();
+            commitOperation.Should().NotBeNull();
+            _err.ToString()
+                .Should()
+                .Contain(
+                    $"{repo.DisplayName} #17: commit, operation {commitOperation}, failed: commit transport timeout (00:00:30)."
+                );
+            var left = (await store.GetAsync<JsonObject>(attemptKey))!;
+            left["stage"]!.GetValue<string>().Should().Be("failed-released", "the run saved nothing over the reset");
+            left.ContainsKey(ReviewRunner.CommitReplay).Should().BeFalse("the lost claim stopped the save");
+        }
+        finally
+        {
+            ReviewdSqlitePools.Clear(database);
+            File.Delete(database);
+        }
     }
 }
