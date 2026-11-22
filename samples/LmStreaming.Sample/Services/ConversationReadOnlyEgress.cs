@@ -33,31 +33,6 @@ public static class ConversationReadOnlyEgress
     /// </para>
     /// </summary>
     /// <exception cref="InvalidOperationException">The stored value is not a boolean.</exception>
-    public static async Task<bool> ReadAsync(IConversationStore store, string threadId, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(store);
-
-        if (string.IsNullOrWhiteSpace(threadId))
-        {
-            return false;
-        }
-
-        var metadata = await store.LoadMetadataAsync(threadId, ct).ConfigureAwait(false);
-        if (metadata?.Properties is not { } properties || !properties.TryGetValue(PropertyKey, out var raw))
-        {
-            return false;
-        }
-
-        return raw switch
-        {
-            bool value => value,
-            JsonElement { ValueKind: JsonValueKind.True } => true,
-            JsonElement { ValueKind: JsonValueKind.False } => false,
-            _ => throw new InvalidOperationException(
-                $"Conversation '{threadId}' has an unreadable '{PropertyKey}' value "
-                    + $"({(raw is JsonElement element ? element.ValueKind.ToString() : raw?.GetType().Name ?? "null")}); "
-                    + "refusing to build its agent rather than give it full egress."
-            ),
-        };
-    }
+    public static Task<bool> ReadAsync(IConversationStore store, string threadId, CancellationToken ct = default) =>
+        ThreadPropertyValue.ReadFailClosedBoolAsync(store, threadId, PropertyKey, "give it full egress", ct);
 }

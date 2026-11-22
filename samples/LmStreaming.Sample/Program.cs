@@ -1155,6 +1155,12 @@ try
                     && !caps.BrowserDebugTools;
                 var sandboxRegistry = sp.GetRequiredService<SandboxSessionRegistry>();
                 var sandboxLifetime = sp.GetRequiredService<SandboxGatewayLifetime>();
+                // A sandbox release that moves this thread (POST sandbox/release) commits its new directory and
+                // dedicated flag only after the old sandbox is gone. Wait for it before reading either, so an agent
+                // admitted during the move builds in the new directory. This covers a shared thread becoming
+                // dedicated too: it owns no sandbox yet, but the move is keyed by the thread. Sync-over-async like
+                // the reads below: the pool's agent-factory delegate is synchronous (GetOrCreateAgent is sync).
+                sandboxRegistry.WaitForOwnerMoveAsync(threadId).GetAwaiter().GetResult();
                 var requestedWorkingDirectory = ConversationWorkingDirectory
                     .ReadAsync(sp.GetRequiredService<IConversationStore>(), threadId)
                     .GetAwaiter()
@@ -1228,6 +1234,34 @@ try
                         Env = effectiveEnv,
                         ReadOnlyEgress = readOnlyEgress,
                     };
+                    // A dedicated sandbox is this thread's alone, and the gateway lets its agents write only in the
+                    // conversation's working directory. Read on every build, fail-closed, like read-only egress.
+                    if (
+                        ConversationDedicatedSandbox
+                            .ReadAsync(sp.GetRequiredService<IConversationStore>(), threadId)
+                            .GetAwaiter()
+                            .GetResult()
+                    )
+                    {
+                        // Every way a dedicated thread gets an agent comes through here (provision, mode switch,
+                        // fork, a mode edited after the fact), so this is the check nothing can route around.
+                        if (ConversationDedicatedSandbox.ModeRefusal(caps) is { } modeRefusal)
+                        {
+                            throw new DedicatedSandboxModeUnsupportedException(modeRefusal);
+                        }
+
+                        workspaceRef = workspaceRef with
+                        {
+                            OwnerThreadId = threadId,
+                            WorkingDir = ConversationDedicatedSandbox.ResolveWorkingDir(
+                                requestedWorkingDirectory
+                                    ?? throw new InvalidOperationException(
+                                        $"Thread '{threadId}' has a dedicated sandbox but no working directory."
+                                    ),
+                                workspace?.WorkingDir
+                            ),
+                        };
+                    }
                     if (workspace is not null)
                     {
                         try
@@ -1268,6 +1302,19 @@ try
                     // The one place a thread is handed a sandbox (the pool refresh rebuilds through here when
                     // the session changes). A read-only thread must never run in a full-write sandbox, nor a
                     // normal thread in a read-only one.
+                    if (
+                        !string.Equals(
+                            sandboxSession.OwnerThreadId,
+                            workspaceRef.OwnerThreadId,
+                            StringComparison.Ordinal
+                        )
+                    )
+                    {
+                        throw new InvalidOperationException(
+                            $"Thread '{threadId}' asked for the sandbox of owner '{workspaceRef.OwnerThreadId ?? "(shared)"}' "
+                                + $"but got session '{sandboxSession.SessionId}' of owner '{sandboxSession.OwnerThreadId ?? "(shared)"}'."
+                        );
+                    }
                     if (sandboxSession.ReadOnlyEgress != workspaceRef.ReadOnlyEgress)
                     {
                         throw new InvalidOperationException(
@@ -1280,12 +1327,15 @@ try
                         .CreateLogger("LmStreaming.Sample.SandboxBinding")
                         .LogInformation(
                             "Thread {ThreadId} bound to sandbox session {SessionId} (workspace {WorkspaceId}, "
-                                + "app {AppId}, read-only egress {ReadOnlyEgress})",
+                                + "app {AppId}, read-only egress {ReadOnlyEgress}, owner {OwnerThreadId}, "
+                                + "working dir {WorkingDir})",
                             threadId,
                             sandboxSession.SessionId,
                             effectiveWorkspaceId,
                             (callerCredential ?? sandboxRegistry.DefaultCredential).AppId,
-                            sandboxSession.ReadOnlyEgress
+                            sandboxSession.ReadOnlyEgress,
+                            sandboxSession.OwnerThreadId,
+                            sandboxSession.WorkspaceWorkingDir
                         );
                     // The effective credential is the caller's or the process default (never null) — used for
                     // gateway calls. The THIRD arg preserves the original caller's provenance (null for the
@@ -1318,7 +1368,10 @@ try
                         )
                         .GetAwaiter()
                         .GetResult();
-                    if (requestedWorkingDirectory is not null)
+                    // A dedicated sandbox needs no host-side cwd wrapper: the gateway already defaults its tools and
+                    // shells to the working directory and enforces it. The wrapper would also be wrong there: it runs
+                    // Bash through the operations API, which the gateway runs in the harness view, writable everywhere.
+                    if (requestedWorkingDirectory is not null && sandboxSession.OwnerThreadId is null)
                     {
                         conversationWorkingDirectory = ConversationWorkingDirectory
                             .ResolveAsync(sandboxRegistry, sandboxSession, requestedWorkingDirectory)
@@ -1335,8 +1388,9 @@ try
                     );
                     if (requestedWorkingDirectory is not null)
                     {
-                        wsSuffix +=
-                            $"\nConversation shell/file default working directory: {requestedWorkingDirectory} (relative to workspace root). This is not a filesystem jail. Background Bash and unsupported sandbox tools are refused.";
+                        wsSuffix += sandboxSession.OwnerThreadId is null
+                            ? $"\nConversation shell/file default working directory: {requestedWorkingDirectory} (relative to workspace root). This is not a filesystem jail. Background Bash and unsupported sandbox tools are refused."
+                            : $"\nConversation shell/file working directory: {requestedWorkingDirectory} (relative to workspace root). You can write only inside it; the rest of the workspace is read-only. Use /tmp for scratch files.";
                     }
 
                     // Seed any context files (CLAUDE.md / AGENTS.md) the gateway has already
@@ -3332,6 +3386,24 @@ try
             // and a session id we don't know about is a no-op. We don't have the sessionId in
             // hand, so the cleanest contract is to ask the registry to scrub.
             sandboxRegistryForCleanup.UnregisterThreadFromAllSessions(threadId);
+            // A dedicated sandbox is this thread's alone, so it goes with the loaded agent (idle unload included):
+            // the container only, never the workspace files. The next turn builds a fresh one. A failed delete
+            // stays tracked, so the release endpoint or the next removal retries it.
+            _ = sandboxRegistryForCleanup
+                .ReleaseOwnedSessionsAsync(threadId)
+                .ContinueWith(
+                    task =>
+                        loggerFactory
+                            .CreateLogger("LmStreaming.Sample.SandboxBinding")
+                            .LogWarning(
+                                task.Exception,
+                                "Could not delete the dedicated sandbox of removed thread {ThreadId}",
+                                threadId
+                            ),
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted,
+                    TaskScheduler.Default
+                );
             workflowRunRegistry.Remove(threadId);
             // Drop the remembered descendant graph too (#251): the pool is not a dependency of the
             // scanner (that would be a construction cycle), so invalidation is wired here instead.
