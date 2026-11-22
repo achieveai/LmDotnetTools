@@ -841,6 +841,11 @@ internal static class JudgeBatch
 
         foreach (var (repository, prId, reviewStage, workspace, artifactCommit) in reviews)
         {
+            if (reviewStage == "shadow")
+            {
+                Count(scan, "shadow");
+                continue;
+            }
             if (reviewStage != "completed-verified")
             {
                 Count(scan, "review-not-verified");
@@ -940,7 +945,9 @@ internal static class JudgeBatch
     {
         using var query = connection.CreateCommand();
         query.CommandText =
-            "SELECT json_extract(value,'$.repository'), json_extract(value,'$.prId'), json_extract(value,'$.stage'), "
+            // A shadow review reads as stage "shadow": it posted nothing, and judge run refuses it (JudgeRunner).
+            "SELECT json_extract(value,'$.repository'), json_extract(value,'$.prId'), "
+            + "CASE WHEN json_extract(value,'$.shadow') = 1 THEN 'shadow' ELSE json_extract(value,'$.stage') END, "
             + "json_extract(value,'$.workspaceId'), json_extract(value,'$.artifactCommit.commit') "
             + "FROM cache WHERE substr(key,1,length(@prefix))=@prefix";
         query.Parameters.AddWithValue("@prefix", "reviewd/review-run/");
@@ -1408,6 +1415,7 @@ internal static class JudgeBatch
         ("too-old", "merged too long ago"),
         ("skip-cooling", "skipped today (not completed)"),
         ("precondition-cooling", "waiting a day to retry"),
+        ("shadow", "shadow review (posted nothing; not judged yet)"),
         ("review-not-verified", "review not verified"),
         ("other-workspace", "in another workspace"),
         ("unsupported", "on GitHub (not supported)"),

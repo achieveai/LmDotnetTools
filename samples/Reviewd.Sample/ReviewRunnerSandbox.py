@@ -305,6 +305,43 @@ def github_verify(comments, read, baseline):
     return verified
 
 
+def verify_would_post(text, pr_id, head, merge):
+    # A shadow review's record of what it would have posted. Nothing is on the PR to read back, so this checks only
+    # that the record names the prepared revision and that each comment is well formed, with exactly one summary.
+    # A record over ARCHIVE_FILE_LIMIT would pass here and then be set aside by commit, so it is refused here.
+    if len(text.encode()) > ARCHIVE_FILE_LIMIT:
+        raise ReviewError('would_post.json is over 1 MiB, so the review archive would not keep it.')
+    record = json.loads(text)
+    if (not isinstance(record, dict) or str(record.get('prId')) != str(pr_id) or record.get('headSha') != head
+            or record.get('mergeSha') != merge):
+        raise ReviewError('would_post.json does not identify the prepared PR revision.')
+    comments = record.get('comments')
+    if not isinstance(comments, list) or not comments:
+        raise ReviewError('would_post.json must list the comments the review would post.')
+
+    def optional_id(value):
+        return value is None or (type(value) is int and value > 0)
+
+    checked = []
+    for comment in comments:
+        if (not isinstance(comment, dict) or comment.get('kind') not in ('summary', 'inline', 'reply')
+                or not isinstance(comment.get('content'), str) or not comment['content'].strip()):
+            raise ReviewError('would_post.json has a comment without a known kind or text.')
+        kind, file_path = comment['kind'], comment.get('filePath')
+        if kind == 'inline' and (not isinstance(file_path, str) or not file_path.strip()
+                                 or not optional_id(comment.get('line'))):
+            raise ReviewError('would_post.json has an inline comment without a file or a valid line.')
+        if kind == 'reply' and not optional_id(comment.get('threadId')):
+            raise ReviewError('would_post.json has a reply with an invalid thread id.')
+        checked.append({'kind': kind, 'filePath': file_path if kind == 'inline' else None,
+                        'line': comment.get('line') if kind == 'inline' else None,
+                        'threadId': comment.get('threadId') if kind == 'reply' else None,
+                        'contentSha256': hashlib.sha256(comment['content'].encode()).hexdigest()})
+    if sum(comment['kind'] == 'summary' for comment in checked) != 1:
+        raise ReviewError('would_post.json must hold exactly one summary.')
+    return {'file': 'would_post.json', 'comments': checked}
+
+
 def summary_reply(thread, posted, summary_threads):
     # A re-review of an already-summarized PR posts its summary as a reply in the earlier summary thread. Only
     # a thread an earlier verified round of this PR recorded as its summary counts, so a reply in any other
@@ -819,6 +856,12 @@ elif phase == 'cleanup':
             print(json.dumps({'claimToken': args['claimToken'], 'cleanBaselineVerified': True,
                               'evidencePreserved': preserved is not None, 'preservation': preserved, 'reset': result,
                               'forced': overrides}))
+elif phase == 'verify' and args.get('shadow'):
+    # A shadow review posts nothing (its conversation had read-only egress), so there is nothing on the PR to verify.
+    # Its record is would_post.json: check it names the prepared revision and holds well-formed would-post comments.
+    inspect_prepared()
+    print(json.dumps(verify_would_post(safe_path(outer, f'{directory}/would_post.json').read_bytes().decode(), pr,
+                                       args['head'], args['merge'])))
 elif phase == 'verify':
     inspect_prepared()
     receipt = read_receipt(lambda name: safe_path(outer, f'{directory}/{name}').read_text())
@@ -895,7 +938,9 @@ elif phase == 'commit':
         print(f'Kept {directory}/{receipt.name} as {len(parts)} receipts under the archive limit', file=sys.stderr)
     for note in set_aside_unarchivable(folder, quarantine):
         print(f"Set aside {directory}/{note['omitted']} ({note['kind']}); kept a note", file=sys.stderr)
+    # A shadow review commits to the local review branch only: its store is an experiment clone whose origin may be the
+    # live store, and a push would land beside (or on) the live review's branch.
     print(json.dumps(commit_review(root, repo, pr, slot, source_sha=args['head'],
-                                   expected_branch=expected_review_branch())))
+                                   expected_branch=expected_review_branch(), push=not args.get('shadow'))))
 else:
     raise ReviewError('Unknown review-runner sandbox phase.')

@@ -180,9 +180,9 @@ internal static class ReviewBatch
     /// (with a busy timeout so it yields to in-flight reviews) and swallows any sweep-level error so a
     /// transient SQLite contention or host blip never stops the batch — the next sweep retries.
     /// <paramref name="undatedExpired"/> also reclaims legacy owners with no lease; used only at startup
-    /// when no review is running yet.
+    /// when no review is running yet. Returns why the sweep was skipped, or null.
     /// </summary>
-    private static async Task SweepSlotsAsync(
+    internal static async Task<string?> SweepSlotsAsync(
         CliOptions options,
         ReviewdConfig config,
         bool undatedExpired,
@@ -191,6 +191,16 @@ internal static class ReviewBatch
     {
         try
         {
+            // A shadow arm's reaper resets slots its agents wrote to, so it runs in the read-only session too. The
+            // arm is checked here, before any reset: a restart that drops --shadow and --post-session still names the
+            // shadow --db, and the batch's own arm check comes only after the startup sweep.
+            Func<string> tokenStoreDir = () => AuthCommands.LoadOptions(config, null).TokenStoreDir!;
+            var session = options.Get("post-session") ?? options.Required("session");
+            if (options.Has("post-session"))
+            {
+                ReadOnlySessions.Require(tokenStoreDir(), session);
+            }
+            await ReviewArm.RequireReadOnlySessionForShadowAsync(options.Required("db"), tokenStoreDir, session, ct);
             await using var connection = new SqliteConnection(
                 new SqliteConnectionStringBuilder
                 {
@@ -206,7 +216,6 @@ internal static class ReviewBatch
             }
             var client = config.CreateS2SClient();
             using var sandboxClient = config.CreateSandboxClient(TimeSpan.FromMinutes(10));
-            var session = options.Required("session");
             SlotReaper.SandboxExecutor sandbox = (phase, args, operation, token) =>
                 ReviewRunner.ExecuteSandboxAsync(sandboxClient, session, phase, args, operation, token);
             var results = await SlotReaper.SweepAsync(
@@ -235,10 +244,12 @@ internal static class ReviewBatch
                 Console.Error.WriteLine(
                     $"Reaper waiting on lapsed-lease slot {skipped.Repo}#{skipped.Pr}/slot{skipped.Slot}: {skipped.Detail}"
                 );
+            return null;
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
             Console.Error.WriteLine($"Reaper sweep skipped: {ex.Message}.");
+            return ex.Message;
         }
     }
 
@@ -363,6 +374,25 @@ internal static class ReviewBatch
             scope["reasoningEffort"] = reasoningEffort;
         if (maxAgeHours is { } hours)
             scope["maxAgeHours"] = hours;
+        // The arm is part of the scope: a restart that drops --shadow must not admit the saved queue as live reviews.
+        if (options.Has("shadow"))
+        {
+            scope["shadow"] = true;
+            scope["postSession"] = options.Required("post-session");
+        }
+        if (options.Get("variant") is { } variant)
+        {
+            scope["variant"] = variant;
+        }
+        // Every run refuses another arm's --db, so a mismatched batch stops here instead of failing each PR. It is a
+        // short local read, so it runs even when the batch starts already canceled.
+        await ReviewArm.CheckAsync(
+            database,
+            options.Has("shadow"),
+            options.Get("variant"),
+            pin: true,
+            CancellationToken.None
+        );
         JsonObject? state = null;
         using var writes = new SemaphoreSlim(1, 1);
         // Steps started here, by repo and slot. Only the loop below adds or removes them.
@@ -1097,6 +1127,14 @@ internal static class ReviewBatch
                 };
                 if (options.Get("reasoning-effort") is { } effort)
                     arguments.AddRange(["--reasoning-effort", effort]);
+                if (options.Has("shadow"))
+                {
+                    arguments.AddRange(["--shadow", "--post-session", options.Required("post-session")]);
+                }
+                if (options.Get("variant") is { } variant)
+                {
+                    arguments.AddRange(["--variant", variant]);
+                }
                 if (maxAgeHours is { } maximumAge)
                     arguments.AddRange([
                         "--max-age-hours",

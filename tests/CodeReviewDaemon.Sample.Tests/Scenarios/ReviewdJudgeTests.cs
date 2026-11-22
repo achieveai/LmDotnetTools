@@ -474,7 +474,7 @@ public sealed class ReviewdJudgeTests
         var host = new FakeHttpMessageHandler().OnJson(
             HttpMethod.Post,
             "api/conversations",
-            """{"threadId":"thread-judge","reasoningEffortAccepted":true,"readOnlyEgressAccepted":true}"""
+            """{"threadId":"thread-judge","reasoningEffortAccepted":true,"readOnlyEgressAccepted":true,"readOnlyGitHubAccepted":true}"""
         );
         var identity = new JsonObject
         {

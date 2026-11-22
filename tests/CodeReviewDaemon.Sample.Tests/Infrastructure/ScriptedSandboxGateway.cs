@@ -32,6 +32,12 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
     /// <summary>The JSON body of the most recent <c>POST .../operations</c> submit, for wire-level assertions.</summary>
     public string? LastSubmitBody { get; private set; }
 
+    /// <summary>The session id of each <c>POST .../operations</c> submit, in order, read from the request path.</summary>
+    public List<string> SubmitSessions { get; } = [];
+
+    /// <summary>The workspace's <c>relative_path</c> the mount-resolution route reports; null when unset.</summary>
+    public string? WorkspaceRelativePath { get; init; }
+
     /// <summary>Every <c>POST .../operations</c> submit body, in order.</summary>
     public List<string> SubmitBodies { get; } = [];
 
@@ -102,7 +108,7 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
 
         if (request.Method == HttpMethod.Get && path.Contains("/sandboxes/", StringComparison.Ordinal))
         {
-            return ResolveWorkspaceMount();
+            return ResolveWorkspaceMount(WorkspaceRelativePath);
         }
 
         return new HttpResponseMessage(HttpStatusCode.NotImplemented)
@@ -112,7 +118,7 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
     }
 
     /// <summary>Answers <c>GET /api/v1/sandboxes/{id}</c> with a workspace volume carrying the mount id.</summary>
-    private static HttpResponseMessage ResolveWorkspaceMount() =>
+    private static HttpResponseMessage ResolveWorkspaceMount(string? relativePath) =>
         Json(
             HttpStatusCode.OK,
             JsonSerializer.Serialize(
@@ -127,6 +133,7 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
                             container_path = "/workspace",
                             read_only = false,
                             id = WorkspaceMountId,
+                            relative_path = relativePath,
                         },
                     },
                 }
@@ -143,6 +150,8 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
         if (request.Method == HttpMethod.Post && request.Content is not null)
         {
             LastSubmitBody = await request.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var segments = request.RequestUri!.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            SubmitSessions.Add(Uri.UnescapeDataString(segments[Array.IndexOf(segments, "sandboxes") + 1]));
             SubmitBodies.Add(LastSubmitBody);
         }
 

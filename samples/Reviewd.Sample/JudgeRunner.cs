@@ -202,6 +202,14 @@ internal static class JudgeRunner
             throw new InvalidOperationException(
                 $"Review receipt stage is {review["stage"]}, not completed-verified; only a verified review is judged."
             );
+        // A shadow review posted nothing; the judge scores posted comments, so it would read a shadow review as one
+        // that found nothing. Refused until the judge can score would_post.json instead.
+        if (review["shadow"]?.GetValue<bool>() == true)
+        {
+            throw new InvalidOperationException(
+                "Review receipt is a shadow review (nothing posted); the judge cannot score it yet."
+            );
+        }
         if (
             review["repository"]?.GetValue<string>()?.Equals(repo.DisplayName, StringComparison.OrdinalIgnoreCase)
                 != true
@@ -1748,8 +1756,8 @@ internal static class JudgeRunner
 
     /// <summary>
     ///     Provisions the judge thread from the judgment's stored <paramref name="identity" />: headless, and with
-    ///     read-only egress, so its sandbox may only GET and HEAD ADO while the review lanes on the same workspace keep
-    ///     full egress. A host that does not acknowledge read-only egress gets the thread deleted and a
+    ///     read-only egress, so its sandbox may only GET and HEAD ADO and GitHub while the review lanes on the same
+    ///     workspace keep full egress. A host that does not acknowledge read-only egress gets the thread deleted and a
     ///     <see cref="ReviewHostContractException" />, which ends the judgment failed-precondition before any send.
     /// </summary>
     internal static Task<string> ProvisionJudgeThreadAsync(

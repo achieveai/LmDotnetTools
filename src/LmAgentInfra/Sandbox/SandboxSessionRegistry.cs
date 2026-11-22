@@ -56,7 +56,7 @@ public sealed record SubAgentSessionBinding(MutableSubAgentTemplateSource Source
 /// <param name="ImageReport">The gateway's conformance report for the image, including its warnings.</param>
 /// <param name="WorkspaceWorkingDir">The workspace-relative working directory the gateway acknowledged (the
 /// only place agents can write; ADR 0044), or <see langword="null"/> when none is set.</param>
-/// <param name="ReadOnlyEgress">True when this session was created with read-only ADO egress (see
+/// <param name="ReadOnlyEgress">True when this session was created with read-only ADO and GitHub egress (see
 /// <see cref="WorkspaceRef.ReadOnlyEgress"/>): set from the same value that built its network rules.</param>
 /// <param name="OwnerThreadId">The one conversation this sandbox belongs to (see <see cref="WorkspaceRef.OwnerThreadId"/>),
 /// or <see langword="null"/> for the workspace's shared sandbox.</param>
@@ -105,8 +105,9 @@ public sealed record SandboxSession(
 /// for the gateway default. See <see cref="SandboxCreateRequest.Image"/>.</param>
 /// <param name="WorkingDir">Workspace-relative working directory for the sandbox, or <see langword="null"/> for
 /// none. When set, the rest of the workspace is read-only for agents. See <see cref="SandboxCreateRequest.WorkingDir"/>.</param>
-/// <param name="ReadOnlyEgress">True for a sandbox whose ADO egress may only read: every allow rule that reaches
-/// an ADO host keeps only GET and HEAD. Part of the session-cache key, so a read-only thread and a normal thread
+/// <param name="ReadOnlyEgress">True for a sandbox whose ADO and GitHub egress may only read: every allow rule that
+/// reaches an ADO or GitHub host keeps only GET and HEAD, so a GitHub fetch (a POST) is refused too. Part of the
+/// session-cache key, so a read-only thread and a normal thread
 /// on the same workspace and app id never share a sandbox. A conversation property, not workspace
 /// configuration: a ref rebuilt from the workspace catalog does not carry it, so every rebuild path pins it.</param>
 /// <param name="OwnerThreadId">The conversation that owns a dedicated sandbox, or <see langword="null"/> for the
@@ -1660,7 +1661,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
 
         if (workspaceRef.ReadOnlyEgress)
         {
-            // Rule ids and methods only: the evidence that this create asked for read-only ADO egress.
+            // Rule ids and methods only: the evidence that this create asked for read-only ADO and GitHub egress.
             _logger.LogInformation(
                 "Creating read-only-egress sandbox session for workspace {WorkspaceId} (app {AppId}); rules: {Rules}",
                 workspaceId,
@@ -3125,7 +3126,17 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         IReadOnlyList<SandboxAuthProvider>? Providers,
         IReadOnlyList<SandboxNetworkRule>? Network
     ) BuildAuthProviders(string sessionSecret, SandboxMcpSessionContext? mcpContext, bool readOnlyEgress) =>
-        BuildAuthPolicyCore(_authOptions, _options, sessionSecret, _predefinedKeys, mcpContext, readOnlyEgress);
+        // A read-only thread (a shadow review or a judge) may read GitHub but never write it: its agent can edit
+        // helpers that run with the session's credentials.
+        BuildAuthPolicyCore(
+            _authOptions,
+            _options,
+            sessionSecret,
+            _predefinedKeys,
+            mcpContext,
+            readOnlyEgress,
+            readOnlyGitHub: readOnlyEgress
+        );
 
     /// <summary>
     /// Builds the optional auth-provider and network blocks from managed OAuth providers,
@@ -3137,6 +3148,13 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// <param name="predefinedKeys">Optional runtime predefined egress keys.</param>
     /// <param name="readOnlyEgress">True to build read-only ADO egress: every allow rule that reaches an ADO
     /// host keeps only GET and HEAD. False (the default) builds exactly the rules every sandbox had before.</param>
+    /// <param name="readOnlyAdoPostPaths">With <paramref name="readOnlyEgress"/>, exact ADO paths that may still be
+    /// POSTed: only a repository's git fetch and two read-only queries (see <see cref="ReadOnlyAdoPostEndpoints"/>);
+    /// any other path is refused. None of them writes.</param>
+    /// <param name="readOnlyGitHub">With <paramref name="readOnlyEgress"/>, also narrow every allow rule that reaches
+    /// a GitHub host to GET and HEAD, so neither a push (<c>git-receive-pack</c>) nor an API write leaves the sandbox.
+    /// The path grammar cannot name one endpoint on every repository, and a git fetch (<c>git-upload-pack</c>) is a
+    /// POST too, so a GitHub fetch is refused as well. ADO is narrowed as <paramref name="readOnlyEgress"/> says.</param>
     /// <returns>The auth providers and network rules, with null for each empty block.</returns>
     public static (
         IReadOnlyList<SandboxAuthProvider>? Providers,
@@ -3146,18 +3164,76 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         SandboxGatewayOptions options,
         string sessionSecret,
         PredefinedKeyRegistry? predefinedKeys = null,
-        bool readOnlyEgress = false
+        bool readOnlyEgress = false,
+        IReadOnlyList<string>? readOnlyAdoPostPaths = null,
+        bool readOnlyGitHub = false
     )
     {
         ArgumentNullException.ThrowIfNull(options);
+        if (readOnlyGitHub && !readOnlyEgress)
+        {
+            throw new ArgumentException("Read-only GitHub only applies to read-only egress.", nameof(readOnlyGitHub));
+        }
+        if (readOnlyAdoPostPaths is { Count: > 0 })
+        {
+            if (!readOnlyEgress)
+            {
+                throw new ArgumentException(
+                    "Read-only ADO POST paths only apply to read-only egress.",
+                    nameof(readOnlyAdoPostPaths)
+                );
+            }
+            foreach (var path in readOnlyAdoPostPaths)
+            {
+                ValidateReadOnlyAdoPostPath(path);
+            }
+        }
         return BuildAuthPolicyCore(
             authOptions,
             options,
             sessionSecret,
             predefinedKeys,
             SandboxMcpConfiguration.Snapshot(options.Mcp, options.AppId),
-            readOnlyEgress
+            readOnlyEgress,
+            readOnlyAdoPostPaths,
+            readOnlyGitHub
         );
+    }
+
+    /// <summary>
+    /// The only ADO POST endpoints a read-only sandbox may keep, each granted at an exact path: a repository's git
+    /// fetch (<c>/{org}/{project}/_git/{repo}/git-upload-pack</c>; push is <c>git-receive-pack</c>), a work-item
+    /// batch read and a commit-to-PR query. They are POSTs only because their requests carry a body.
+    /// </summary>
+    public static readonly IReadOnlyList<string> ReadOnlyAdoPostEndpoints =
+    [
+        "/git-upload-pack",
+        "/_apis/wit/workitemsbatch",
+        "/pullrequestquery",
+    ];
+
+    private static void ValidateReadOnlyAdoPostPath(string path)
+    {
+        var exact =
+            path.StartsWith('/')
+            && path.IndexOfAny(['*', '?', '#', '\\', ' ']) < 0
+            && !path.Split('/').Any(segment => segment is "." or "..");
+        var endpoint = ReadOnlyAdoPostEndpoints.FirstOrDefault(suffix =>
+            path.EndsWith(suffix, StringComparison.Ordinal)
+        );
+        if (
+            !exact
+            || endpoint is null
+            || (endpoint == "/git-upload-pack" && !path.Contains("/_git/", StringComparison.Ordinal))
+        )
+        {
+            throw new ArgumentException(
+                $"'{path}' is not an exact read-only ADO POST path (allowed: "
+                    + string.Join(", ", ReadOnlyAdoPostEndpoints)
+                    + ").",
+                nameof(path)
+            );
+        }
     }
 
     private static (
@@ -3169,7 +3245,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         string sessionSecret,
         PredefinedKeyRegistry? predefinedKeys,
         SandboxMcpSessionContext? mcpContext,
-        bool readOnlyEgress
+        bool readOnlyEgress,
+        IReadOnlyList<string>? readOnlyAdoPostPaths = null,
+        bool readOnlyGitHub = false
     )
     {
         ArgumentNullException.ThrowIfNull(authOptions);
@@ -3413,7 +3491,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         // the managed `ado` rule, or any other allow rule that can reach an ADO host, is narrowed too.
         if (readOnlyEgress)
         {
-            NarrowAdoToReadOnly(rules);
+            NarrowToReadOnly(rules, readOnlyAdoPostPaths ?? [], readOnlyGitHub);
         }
 
         // Precedence over the EFFECTIVE (merged) rule set. The config-only check above cannot see the
@@ -3441,20 +3519,33 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// count as all. A rule left with no method is removed. Id, hosts, ports, paths, auth provider, scopes and
     /// priority are kept, so credential injection and precedence are unchanged. Deny rules are untouched. An
     /// allow-list rather than a deny rule: the gateway denies anything no rule allows, so a verb nobody listed
-    /// (or a rule added later) cannot slip through.
+    /// (or a rule added later) cannot slip through. With <paramref name="github"/>, a rule that can reach a GitHub
+    /// host (<c>OAuthProviderHosts.For("github")</c>) is narrowed the same way; the POST sibling below only ever
+    /// names <c>dev.azure.com</c>.
+    /// <para>
+    /// Each such rule that injects a credential, reaches <c>dev.azure.com</c> and allowed POST on every path also
+    /// gets a sibling, <c>{id}-read-post</c>, that allows POST only to <paramref name="postPaths"/> (exact, validated
+    /// read-only endpoints, all <c>dev.azure.com</c> paths) on exactly <c>dev.azure.com</c>, with the same ports,
+    /// credential and scopes. It sits one priority ahead of the rule: the rule's wildcard hosts make it a broad
+    /// allow, which must come after every credential rule it could match.
+    /// </para>
     /// </summary>
-    private static void NarrowAdoToReadOnly(List<SandboxNetworkRule> rules)
+    internal static void NarrowToReadOnly(
+        List<SandboxNetworkRule> rules,
+        IReadOnlyList<string> postPaths,
+        bool github = false
+    )
     {
-        var adoHosts = OAuthProviderHosts.For("ado");
+        string[] readOnlyHosts = [.. OAuthProviderHosts.For("ado"), .. github ? OAuthProviderHosts.For("github") : []];
         for (var index = rules.Count - 1; index >= 0; index--)
         {
             var rule = rules[index];
-            var reachesAdo =
+            var reaches =
                 rule.Hosts.Count == 0
                 || rule.Hosts.Any(host =>
-                    adoHosts.Any(adoHost => SandboxEgressPolicyCompiler.HostsOverlap(host, adoHost))
+                    readOnlyHosts.Any(narrowed => SandboxEgressPolicyCompiler.HostsOverlap(host, narrowed))
                 );
-            if (!string.Equals(rule.Action, "allow", StringComparison.OrdinalIgnoreCase) || !reachesAdo)
+            if (!string.Equals(rule.Action, "allow", StringComparison.OrdinalIgnoreCase) || !reaches)
             {
                 continue;
             }
@@ -3469,22 +3560,55 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             if (methods.Length == 0)
             {
                 rules.RemoveAt(index);
-                continue;
+            }
+            else
+            {
+                rules[index] = new SandboxNetworkRule(
+                    rule.Id,
+                    rule.Action,
+                    rule.Hosts,
+                    rule.Ports,
+                    methods,
+                    rule.Paths,
+                    rule.AuthProvider,
+                    rule.RequiredScopes,
+                    rule.Priority
+                );
             }
 
-            rules[index] = new SandboxNetworkRule(
-                rule.Id,
-                rule.Action,
-                rule.Hosts,
-                rule.Ports,
-                methods,
-                rule.Paths,
-                rule.AuthProvider,
-                rule.RequiredScopes,
-                rule.Priority
-            );
+            var anyPath = rule.Paths.Count == 0 || rule.Paths.Contains("*", StringComparer.Ordinal);
+            if (
+                postPaths.Count > 0
+                && rule.AuthProvider is not null
+                && anyPath
+                && (anyMethod || rule.Methods.Contains("POST", StringComparer.OrdinalIgnoreCase))
+                && (
+                    rule.Hosts.Count == 0
+                    || rule.Hosts.Any(host => SandboxEgressPolicyCompiler.HostsOverlap(host, ReadOnlyPostHost))
+                )
+            )
+            {
+                // Inserted before the rule, so the list stays in priority order.
+                rules.Insert(
+                    index,
+                    new SandboxNetworkRule(
+                        rule.Id + "-read-post",
+                        rule.Action,
+                        [ReadOnlyPostHost],
+                        rule.Ports,
+                        ["POST"],
+                        postPaths,
+                        rule.AuthProvider,
+                        rule.RequiredScopes,
+                        rule.Priority - 1
+                    )
+                );
+            }
         }
     }
+
+    /// <summary>The one host prepare's fetch and read queries go to; read-only POST paths are its paths.</summary>
+    private const string ReadOnlyPostHost = "dev.azure.com";
 
     /// <summary>
     /// Builds where the gateway delivers this session's events: the unified <c>webhook</c> block when
