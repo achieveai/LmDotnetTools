@@ -19,7 +19,8 @@
 >   workspace, so in a full-egress session those steps could be made to post. Read-only egress keeps ADO GET and
 >   HEAD, plus POST to exact paths only: each listed repo's git fetch (`git-upload-pack`; push is
 >   `git-receive-pack`) and prepare's two read queries (`workitemsbatch`, `pullrequestquery`), which would otherwise
->   fail into warnings and leave the shadow arm thinner context than the live one.
+>   fail into warnings and leave the shadow arm thinner context than the live one. GitHub keeps GET and HEAD only,
+>   so a helper the agent edited cannot push the store branch (`git-receive-pack`) or write through the API.
 > - Verify checks `would_post.json` (recorded as `wouldPost`, never `verifiedPublication`), and refuses one over
 >   1 MiB, which commit would set aside; commit keeps the review branch local (no push).
 > - `judge run` refuses shadow receipts and `judge batch` counts them as `shadow` until item 6 lands.

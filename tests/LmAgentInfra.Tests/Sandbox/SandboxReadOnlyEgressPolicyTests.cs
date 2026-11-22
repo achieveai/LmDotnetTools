@@ -213,7 +213,7 @@ public sealed class SandboxReadOnlyEgressPolicyTests(ITestOutputHelper output)
             ),
         };
 
-        SandboxSessionRegistry.NarrowAdoToReadOnly(rules, PrepareReads);
+        SandboxSessionRegistry.NarrowToReadOnly(rules, PrepareReads);
 
         output.WriteLine(
             "DEBUG narrowed {0}: "
@@ -277,6 +277,57 @@ public sealed class SandboxReadOnlyEgressPolicyTests(ITestOutputHelper output)
             );
 
         build.Should().Throw<ArgumentException>().WithMessage("*is not an exact read-only ADO POST path*");
+    }
+
+    [Theory]
+    [InlineData("github.com", "GET", "/org/store.git/info/refs", "allow", "allow")]
+    [InlineData("github.com", "POST", "/org/store.git/git-receive-pack", "deny", "allow")]
+    [InlineData("github.com", "POST", "/org/store/git-receive-pack", "deny", "allow")]
+    [InlineData("github.com", "POST", "/org/store.git/git-upload-pack", "deny", "allow")]
+    [InlineData("api.github.com", "GET", "/repos/org/store", "allow", "allow")]
+    [InlineData("api.github.com", "POST", "/repos/org/store/git/refs", "deny", "allow")]
+    [InlineData("api.github.com", "PATCH", "/repos/org/store/git/refs/heads/review", "deny", "allow")]
+    [InlineData("dev.azure.com", "POST", "/contoso/Weve%20DA/_git/Nova/git-upload-pack", "allow", "allow")]
+    [InlineData("dev.azure.com", "POST", "/contoso/Weve%20DA/_git/Nova/git-receive-pack", "deny", "deny")]
+    public void A_read_only_github_sandbox_may_read_github_but_never_push_or_write(
+        string host,
+        string method,
+        string path,
+        string readOnlyGitHub,
+        string readOnlyAdo
+    )
+    {
+        // A shadow agent can edit the helper that commits its archive, so its session must not be able to push the
+        // store branch, by git or through the API. The path grammar cannot name git-receive-pack on every repo, and a
+        // fetch is a POST too, so GitHub keeps GET and HEAD only. ADO's exact fetch and query paths stay.
+        var (auth, options) = HostLikePolicy();
+        IReadOnlyList<SandboxNetworkRule> Build(bool github) =>
+            SandboxSessionRegistry
+                .BuildAuthPolicy(
+                    auth,
+                    options,
+                    "test-secret",
+                    readOnlyEgress: true,
+                    readOnlyAdoPostPaths: PrepareReads,
+                    readOnlyGitHub: github
+                )
+                .Network!;
+
+        var github = Build(github: true);
+        output.WriteLine("DEBUG read-only github rules: {0}", string.Join("; ", github.Select(rule => Shape(rule))));
+
+        FirstMatch(github, host, 443, method, path).Should().Be(readOnlyGitHub);
+        FirstMatch(Build(github: false), host, 443, method, path).Should().Be(readOnlyAdo);
+    }
+
+    [Fact]
+    public void Read_only_github_needs_read_only_egress()
+    {
+        var (auth, options) = HostLikePolicy();
+
+        var build = () => SandboxSessionRegistry.BuildAuthPolicy(auth, options, "test-secret", readOnlyGitHub: true);
+
+        build.Should().Throw<ArgumentException>().WithMessage("Read-only GitHub only applies*");
     }
 
     [Fact]

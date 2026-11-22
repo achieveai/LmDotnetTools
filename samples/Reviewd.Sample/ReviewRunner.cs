@@ -643,8 +643,10 @@ internal static class ReviewRunner
             ? int.Parse(age, System.Globalization.CultureInfo.InvariantCulture)
             : (int?)null;
         // A shadow review is an A/B experiment arm: it reviews but never posts. The guarantee is the host's read-only
-        // egress (ADO keeps GET and HEAD only), not the prompt, and GitHub posts go through a route that keeps
-        // working under it, so a GitHub shadow could still post.
+        // egress, not the prompt. ADO keeps GET and HEAD, plus POST to exact paths only: each listed repo's git fetch
+        // (git-upload-pack; push is git-receive-pack) and prepare's two read queries (workitemsbatch,
+        // pullrequestquery). GitHub keeps GET and HEAD only, which blocks a GitHub fetch too, so --shadow stays
+        // Azure DevOps only.
         var shadow = options.Has("shadow");
         var variant = options.Get("variant");
         if (shadow && repo.Provider == "github")
@@ -898,6 +900,20 @@ internal static class ReviewRunner
                 shadow
                     ? "--shadow cannot resume a live (posting) review attempt."
                     : "A shadow review attempt can only be resumed with --shadow."
+            );
+        }
+        // A lost commit is resubmitted under its own operation id, which only the session it was sent in knows. In
+        // another post session the resubmit runs as a second commit, waits on the first one's slot lock, times out,
+        // and the attempt stays at commit-pending. So the replay must go through the saved post session.
+        if (
+            resume
+            && attempt?[CommitReplay]?.GetValue<string>() is { Length: > 0 }
+            && attempt["postSessionId"]?.GetValue<string>() is { } sentIn
+            && sentIn != options.Get("post-session")
+        )
+        {
+            throw new InvalidOperationException(
+                $"This attempt's lost commit can only be replayed through --post-session {sentIn}, the session it was sent in."
             );
         }
         if (shadow && !resume && !cleanupOnly)

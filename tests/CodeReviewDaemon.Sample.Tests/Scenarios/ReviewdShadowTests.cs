@@ -158,6 +158,73 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     }
 
     [Theory]
+    [InlineData(true, "another-read-only", true)]
+    [InlineData(true, "read-only", false)]
+    [InlineData(false, "another-read-only", false)]
+    public async Task A_lost_shadow_commit_resumes_only_through_the_post_session_it_was_sent_in(
+        bool lostCommit,
+        string postSession,
+        bool refused
+    )
+    {
+        // The gateway knows a lost commit's operation id only in the session it was sent in. Resumed through another
+        // post session, the resubmit runs as a second commit, times out on the first one's slot lock, and the
+        // attempt stays at commit-pending. Without a lost commit, any marked post session may resume.
+        await SnapshotAsync();
+        var attempt = new JsonObject
+        {
+            ["repository"] = Repo.DisplayName,
+            ["prId"] = "17",
+            ["slot"] = 2,
+            ["stage"] = "verify-pending",
+            ["confirmationInputId"] = "confirmation",
+            ["threadId"] = "thread",
+            ["shadow"] = true,
+            ["sessionId"] = "session",
+            ["postSessionId"] = "read-only",
+        };
+        if (lostCommit)
+        {
+            attempt[ReviewRunner.CommitReplay] = new string('d', 32);
+        }
+        await PutAsync($"reviewd/review-attempt/{Repo.NormalizedKey}/17", attempt);
+        var before = (await AttemptAsync()).ToJsonString();
+        var handler = new FakeHttpMessageHandler();
+        var phases = new List<(string Phase, JsonObject Args)>();
+
+        var run = () => RunAsync(handler, phases, ["--shadow", "--resume"], postSession);
+
+        var thrown = (await run.Should().ThrowAsync<Exception>()).Which;
+        Logger.LogDebug(
+            "Resume through {PostSession} with lost commit {LostCommit} threw {Type}: {Message}",
+            postSession,
+            lostCommit,
+            thrown.GetType().Name,
+            thrown.Message
+        );
+        if (refused)
+        {
+            thrown
+                .Should()
+                .BeOfType<InvalidOperationException>()
+                .Which.Message.Should()
+                .Be(
+                    "This attempt's lost commit can only be replayed through --post-session read-only, the session it was sent in."
+                );
+            handler.Requests.Should().BeEmpty();
+            phases.Should().BeEmpty();
+            (await AttemptAsync()).ToJsonString().Should().Be(before);
+        }
+        else
+        {
+            // Past this check, the resume stops at its identity check: this attempt names no review input.
+            thrown
+                .Message.Should()
+                .Be("Resume identity, admission or current PR does not match the retained attempt.");
+        }
+    }
+
+    [Theory]
     [InlineData(null, "--shadow", "This --db holds live reviews*")]
     [InlineData("--shadow", null, "This --db belongs to a shadow arm; the live reviewer needs*")]
     [InlineData("--variant kb-h1", "--variant kb-h2", "*shadow arm 'kb-h1'; shadow arm 'kb-h2' needs*")]
@@ -706,12 +773,13 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     {
         // Drives the production create (the policy it sends and the marker it writes) over a real SandboxClient: a
         // read-only session whose policy or marker was dropped, or whose marker named another session, would leave a
-        // shadow run either refused or posting with full egress.
+        // shadow run either refused or posting with full egress. GitHub is signed in too: a read-only session must not
+        // be able to push the store branch there.
         var store = Path.Combine(Path.GetTempPath(), $"reviewd-tokens-{Guid.NewGuid():N}");
         Directory.CreateDirectory(store);
         try
         {
-            using var config = HostConfig(store);
+            using var config = HostConfig(store, github: true);
             var gateway = new CreateGateway("s-created");
             using var http = new HttpClient(gateway, disposeHandler: false);
             using var sandbox = SandboxOver(http);
@@ -752,6 +820,9 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             var rules = JsonNode.Parse(gateway.CreateBody!)!["network"]!["rules"]!.AsArray();
             var ado = rules.Single(rule => rule!["id"]!.GetValue<string>() == "ado")!;
             var methods = ado["methods"]!.AsArray().Select(method => method!.GetValue<string>());
+            var githubMethods = rules.Single(rule => rule!["id"]!.GetValue<string>() == "github")!["methods"]!
+                .AsArray()
+                .Select(method => method!.GetValue<string>());
             var posts = rules
                 .Where(rule => rule!["methods"]!.AsArray().Any(method => method!.GetValue<string>() == "POST"))
                 .SelectMany(rule => rule!["paths"]!.AsArray().Select(path => path!.GetValue<string>()));
@@ -760,6 +831,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             {
                 asked.Should().Equal(Repo.DisplayName);
                 methods.Should().Equal("GET", "HEAD");
+                githubMethods.Should().Equal("GET", "HEAD");
                 posts.Should().Equal("/org/project/_git/Nova/git-upload-pack");
                 ReadOnlySessions.Require(store, "s-created", Repo.DisplayName);
             }
@@ -767,6 +839,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             {
                 asked.Should().BeEmpty();
                 methods.Should().BeEmpty();
+                githubMethods.Should().BeEmpty();
             }
         }
         finally
@@ -1088,19 +1161,18 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     }
 
     /// <summary>
-    ///     A host config over <paramref name="store" />, with ADO signed in, as the CLI loads it. With a
-    ///     <paramref name="transport" />, its host and gateway clients send through it.
+    ///     A host config over <paramref name="store" />, with ADO (and, with <paramref name="github" />, GitHub) signed
+    ///     in, as the CLI loads it. With a <paramref name="transport" />, its host and gateway clients send through it.
     /// </summary>
-    private static ReviewdConfig HostConfig(string store, HttpMessageHandler? transport = null)
+    private static ReviewdConfig HostConfig(string store, HttpMessageHandler? transport = null, bool github = false)
     {
         File.WriteAllText(Path.Combine(store, "msal-ado.bin"), "");
-        return new ReviewdConfig(
-            new ConfigurationBuilder()
-                .AddInMemoryCollection(
-                    new Dictionary<string, string?> { ["Auth:TokenStoreDir"] = store, ["Auth:Ado:ClientId"] = "c" }
-                )
-                .Build()
-        )
+        var settings = new Dictionary<string, string?> { ["Auth:TokenStoreDir"] = store, ["Auth:Ado:ClientId"] = "c" };
+        if (github)
+        {
+            settings["Auth:Github:ClientId"] = "g";
+        }
+        return new ReviewdConfig(new ConfigurationBuilder().AddInMemoryCollection(settings).Build())
         {
             Transport = transport,
         };
@@ -1189,7 +1261,8 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     private async Task<int> RunAsync(
         FakeHttpMessageHandler handler,
         List<(string Phase, JsonObject Args)> phases,
-        string[] extra
+        string[] extra,
+        string postSession = "read-only"
     )
     {
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
@@ -1215,7 +1288,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             "72",
             "--execute",
             .. extra,
-            .. extra.Contains("--shadow") ? new[] { "--post-session", "read-only" } : [],
+            .. extra.Contains("--shadow") ? new[] { "--post-session", postSession } : [],
         ]);
         Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token)
         {
