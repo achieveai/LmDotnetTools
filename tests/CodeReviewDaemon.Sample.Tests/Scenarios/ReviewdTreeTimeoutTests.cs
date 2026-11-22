@@ -16,7 +16,8 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// answer the sub-agent tree, past the S2S client's 120 s timeout. That timeout is a cancellation no wait asked for:
 /// a slow host, not a failed review. These pin how the shared wait (<see cref="ReviewRunner.WaitAsync"/>) reads
 /// again, how the judge and merge waits that share it behave, and that the batch never quarantines a PR for it.
-/// A timeout is scripted as the exception HttpClient throws for its own timeout, so no case races a wall clock.
+/// A timeout is scripted as the exception HttpClient throws for its own timeout, so no HTTP timeout waits on a real
+/// clock. Only the judge case uses real time: its outage limit is 100 ms of UtcNow, under a 5 s guard.
 /// </summary>
 public sealed class ReviewdTreeTimeoutTests : LoggingTestBase
 {
@@ -69,6 +70,14 @@ public sealed class ReviewdTreeTimeoutTests : LoggingTestBase
     [Fact]
     public async Task An_answered_tree_read_resets_the_consecutive_timeout_budget()
     {
+        LogTestStart(
+            new
+            {
+                timedOutReads = "1-5 and 7-11",
+                answeredReads = "6 and 12 on",
+                budget = 5,
+            }
+        );
         var host = new TreeHost(
             Logger,
             read => read is (>= 1 and <= 5) or (>= 7 and <= 11) ? TreeRead.TimeOut : TreeRead.Answer
@@ -94,6 +103,7 @@ public sealed class ReviewdTreeTimeoutTests : LoggingTestBase
     {
         LogTestStart(new { cancelAt });
         using var stop = new CancellationTokenSource();
+        var delayTokens = new List<CancellationToken>();
         var host = new TreeHost(
             Logger,
             read =>
@@ -119,6 +129,7 @@ public sealed class ReviewdTreeTimeoutTests : LoggingTestBase
                 token =>
                 {
                     delays++;
+                    delayTokens.Add(token);
                     if (cancelAt == "retry-delay")
                     {
                         stop.Cancel();
@@ -133,6 +144,8 @@ public sealed class ReviewdTreeTimeoutTests : LoggingTestBase
         LogData("outcome", new { host.TreeReads, delays });
         host.TreeReads.Should().Be(expectedReads);
         delays.Should().Be(expectedDelays);
+        // Without the wait's token a cancel during the delay would surface only at the next HTTP call.
+        delayTokens.Where(token => token != stop.Token).Should().BeEmpty("each delay waits on the wait's token");
     }
 
     // A timed-out tree read says nothing about whether the input runs, so the never-started grace restarts after it,
@@ -144,6 +157,17 @@ public sealed class ReviewdTreeTimeoutTests : LoggingTestBase
     {
         var start = DateTimeOffset.Parse("2026-11-20T05:00:00Z", CultureInfo.InvariantCulture);
         var now = start;
+        LogTestStart(
+            new
+            {
+                clockStart = start,
+                minutesPerDelay = 1,
+                notStartedPolls = "1-12",
+                timedOutTreeRead = 10,
+                completedFromPoll = 13,
+                grace = ReviewRunner.NeverStartedGrace,
+            }
+        );
         var host = new TreeHost(Logger, read => read == 10 ? TreeRead.TimeOut : TreeRead.Answer)
         {
             InputStatus = polls => polls < 13 ? "NotStarted" : "Completed",
@@ -172,6 +196,16 @@ public sealed class ReviewdTreeTimeoutTests : LoggingTestBase
     [Fact]
     public async Task A_judge_whose_tree_reads_keep_timing_out_gives_up_like_an_outage()
     {
+        LogTestStart(
+            new
+            {
+                input = "InProgress",
+                rootBusy = true,
+                treeReads = "all time out",
+                outageLimit = "100 ms of real UtcNow",
+                guard = "5 s",
+            }
+        );
         var host = new TreeHost(Logger, _ => TreeRead.TimeOut) { InputStatus = _ => "InProgress", RootBusy = true };
         using var http = host.Client();
         var client = new LmStreamingS2SClient(http, null, null, null);
@@ -217,6 +251,16 @@ public sealed class ReviewdTreeTimeoutTests : LoggingTestBase
         // but it is never quarantined for it. Each run claims the slot (a new attempt row), so it is not the
         // before-claim timeout that was already retried.
         using var batch = new ReviewdRunnerTests.BatchFixture(0);
+        LogTestStart(
+            new
+            {
+                pr = "1",
+                slots = new[] { 0 },
+                eachFreshRun = "claims, records a failed-released attempt, then throws the 120 s HttpClient timeout",
+                clockStepSeconds = (int)ReviewBatch.QuarantineSpacing.TotalSeconds,
+                quarantineAfter = ReviewBatch.QuarantineAfter,
+            }
+        );
         var claims = 0;
         batch.OnRunAsync = () =>
         {

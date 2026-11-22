@@ -6,10 +6,11 @@ using AchieveAi.LmDotnetTools.Misc.Storage;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Reviewd::Reviewd.Sample;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
-public sealed class ReviewdMergeTests
+public sealed class ReviewdMergeTests(ITestOutputHelper output)
 {
     [Fact]
     public async Task Wrong_merge_topology_with_conflicts_never_admits_a_resolver()
@@ -111,10 +112,16 @@ public sealed class ReviewdMergeTests
     [Fact]
     public async Task A_tree_read_that_times_out_keeps_reading_the_merge_input_without_a_resend()
     {
-        using var merge = new MergeFixture { TreeTimeouts = 2 };
+        using var merge = new MergeFixture { TreeTimeouts = 2, Log = output.WriteLine };
+        output.WriteLine(
+            $"Setup: the first {merge.TreeTimeouts} sub-agent tree reads throw the 120 s HttpClient timeout; later reads answer."
+        );
 
         (await merge.ExecuteAsync()).Should().Be(0);
 
+        output.WriteLine(
+            $"Outcome: treeReads={merge.TreeReads} sends={merge.Sends} provisions={merge.Provisions} stage={merge.ReadReceipt()?["stage"]}"
+        );
         merge.TreeReads.Should().BeGreaterThan(2, "the two timed-out reads were read again");
         merge.Sends.Should().Be(1);
         merge.Provisions.Should().Be(1);
@@ -172,6 +179,7 @@ public sealed class ReviewdMergeTests
         public bool AmbiguousSend { get; set; }
         public int TreeTimeouts { get; set; }
         public int TreeReads { get; private set; }
+        public Action<string>? Log { get; init; }
         public Func<int, JsonObject> Verification { get; set; } = _ => Facts(true, true);
         public Func<JsonObject> Live { get; set; } = () => Facts(true, true);
         private readonly HttpClient _http;
@@ -321,6 +329,7 @@ public sealed class ReviewdMergeTests
             {
                 if (++TreeReads <= TreeTimeouts)
                 {
+                    Log?.Invoke($"Tree read {TreeReads}: injected timeout {TreeReads}/{TreeTimeouts}");
                     throw new TaskCanceledException(
                         "The request was canceled due to the configured HttpClient.Timeout of 120 seconds elapsing.",
                         new TimeoutException("A task was canceled.")
