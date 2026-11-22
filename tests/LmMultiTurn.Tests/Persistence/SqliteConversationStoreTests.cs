@@ -1318,8 +1318,9 @@ public class SqliteConversationStoreTests : IAsyncLifetime
             );
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-            var queued = store.UpdateMetadataAsync("thread-b", _ => CreateTestMetadata("thread-b"));
-            queued.IsCompleted.Should().BeFalse("the holder still has the metadata lock");
+            // Same thread: metadata locks are per thread, so only a writer to thread-a queues behind the holder.
+            var queued = store.UpdateMetadataAsync("thread-a", _ => CreateTestMetadata("thread-a"));
+            queued.IsCompleted.Should().BeFalse("the holder still has thread-a's metadata lock");
 
             await store.DisposeAsync();
             release.Set();
@@ -1418,7 +1419,16 @@ public class SqliteConversationStoreTests : IAsyncLifetime
     {
         public bool FailNext { get; set; }
 
-        public Task<SqliteConnection> GetConnectionAsync(CancellationToken ct = default)
+        public Task<SqliteConnection> GetConnectionAsync(CancellationToken ct = default) =>
+            FailOr(inner.GetConnectionAsync, ct);
+
+        public Task<SqliteConnection> GetWriteConnectionAsync(CancellationToken ct = default) =>
+            FailOr(inner.GetWriteConnectionAsync, ct);
+
+        private Task<SqliteConnection> FailOr(
+            Func<CancellationToken, Task<SqliteConnection>> open,
+            CancellationToken ct
+        )
         {
             if (FailNext)
             {
@@ -1426,7 +1436,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
                 return Task.FromException<SqliteConnection>(new IOException("no connection"));
             }
 
-            return inner.GetConnectionAsync(ct);
+            return open(ct);
         }
 
         public ValueTask DisposeAsync() => inner.DisposeAsync();
