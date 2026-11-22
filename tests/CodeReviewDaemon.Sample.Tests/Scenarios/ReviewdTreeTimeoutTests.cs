@@ -1,5 +1,6 @@
 extern alias Reviewd;
 
+using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Text.Json.Nodes;
@@ -17,7 +18,7 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// a slow host, not a failed review. These pin how the shared wait (<see cref="ReviewRunner.WaitAsync"/>) reads
 /// again, how the judge and merge waits that share it behave, and that the batch never quarantines a PR for it.
 /// A timeout is scripted as the exception HttpClient throws for its own timeout, so no HTTP timeout waits on a real
-/// clock. Only the judge case uses real time: its outage limit is 100 ms of UtcNow, under a 5 s guard.
+/// clock. Only the judge case waits on real time: its outage limit is 500 ms of UtcNow, under a 5 s guard.
 /// </summary>
 public sealed class ReviewdTreeTimeoutTests : LoggingTestBase
 {
@@ -202,7 +203,7 @@ public sealed class ReviewdTreeTimeoutTests : LoggingTestBase
                 input = "InProgress",
                 rootBusy = true,
                 treeReads = "all time out",
-                outageLimit = "100 ms of real UtcNow",
+                outageLimit = "500 ms of real UtcNow",
                 guard = "5 s",
             }
         );
@@ -222,7 +223,7 @@ public sealed class ReviewdTreeTimeoutTests : LoggingTestBase
                     new JudgeRunner.HostOutage(
                         TimeSpan.FromMilliseconds(1),
                         TimeSpan.FromMilliseconds(4),
-                        TimeSpan.FromMilliseconds(100),
+                        TimeSpan.FromMilliseconds(500),
                         TimeSpan.FromSeconds(10)
                     ),
                     "judge #975",
@@ -230,15 +231,23 @@ public sealed class ReviewdTreeTimeoutTests : LoggingTestBase
                 )
                 .WaitAsync(TimeSpan.FromSeconds(5));
 
+        var watch = Stopwatch.StartNew();
         (await wait.Should().ThrowAsync<InvalidOperationException>())
             .Which.Message.Should()
             .Contain("has not answered")
             .And.Contain("Rerun to resume the wait; nothing is resent.");
-        LogData("outcome", new { host.TreeReads });
+        watch.Stop();
+        LogData("outcome", new { host.TreeReads, elapsedMs = watch.Elapsed.TotalMilliseconds });
         host.TreeReads.Should()
             .BeGreaterThanOrEqualTo(
                 6,
                 "the shared wait spends its whole timeout budget before the outage loop sees one"
+            );
+        watch
+            .Elapsed.Should()
+            .BeGreaterThanOrEqualTo(
+                TimeSpan.FromMilliseconds(500),
+                "the judge gives up only once the host has been silent for its whole outage limit"
             );
     }
 
