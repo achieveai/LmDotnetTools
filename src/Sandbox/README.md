@@ -47,7 +47,8 @@ silently skips) when that gateway is unavailable.
 
 Issue #187 named `SandboxedOstoolsMcpServer@c0dc9cfee3e3aeafd4c3d203ef7153255a990bb6` as the original
 baseline; it remains the pinned reference for the **catalog and session-discovery** wire shapes, which
-this SDK still speaks unchanged. It is *not* a runnable floor: the direct API did not exist at that
+this SDK still speaks unchanged, except that session discovery now also sends `after` and reads
+`next_cursor` (gateway #285; see *Session discovery* below). It is *not* a runnable floor: the direct API did not exist at that
 commit, so a gateway pinned there cannot serve this SDK's command or file operations. The image tag in
 the workflow is the operative pin.
 
@@ -86,6 +87,11 @@ read-only). That sync covers:
   agents that requires no sandbox session.
 - **Session discovery:** `ListDiscoveredAsync(sessionId)` — a narrow read over the existing
   session-discovery REST endpoint; `ListDiscoveredAsync(sessionId, agentId)` narrows it to one agent.
+  It follows the gateway's `next_cursor` across pages and returns every row the gateway could read,
+  oldest first (the gateway skips rows it cannot read); a row the gateway sends but the client cannot
+  parse fails the whole call with `SandboxErrorKind.Protocol`. Paging needs a gateway with commit `0ba1746` (gateway #285),
+  which is in no tagged release yet (newest `v0.1.22`); an older gateway sends no `next_cursor`, so the
+  call makes one request, as before.
 - **Per-agent state:** `ListAgentsAsync`, `DeleteAgentAsync`. See [Per-agent state](#per-agent-state).
 - **Command execution:** `ExecuteAsync(sessionId, command)` — run a non-interactive native command
   (an executable plus argv, no shell) in the sandbox via the gateway's direct operations API and get

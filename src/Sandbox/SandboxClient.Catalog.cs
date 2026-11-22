@@ -98,6 +98,11 @@ public sealed partial class SandboxClient
     /// workspace, over the existing session-discovery REST endpoint. V1: this is a narrow read of
     /// already-discovered items — it does not add proactive discovery or crawling.
     /// </summary>
+    /// <remarks>
+    /// Follows the gateway's <c>next_cursor</c> across every page and returns every row the gateway could
+    /// read, oldest first. A row the gateway sends but this client cannot parse fails the whole call with
+    /// <see cref="SandboxErrorKind.Protocol"/>, as do a repeated cursor and more than 4096 pages.
+    /// </remarks>
     public Task<IReadOnlyList<SandboxDiscoveredItem>> ListDiscoveredAsync(
         string sessionId,
         CancellationToken ct = default
@@ -107,6 +112,12 @@ public sealed partial class SandboxClient
     /// Lists discovered items for <paramref name="sessionId"/>, narrowed to the rows one agent has been
     /// notified of (gateway ADR 0040, <c>?agent_id=</c>).
     /// </summary>
+    /// <remarks>
+    /// Follows the gateway's <c>next_cursor</c> across every page, sending the same <c>agent_id</c> on each,
+    /// and returns every row the gateway could read, oldest first. A row the gateway sends but this client
+    /// cannot parse fails the whole call with <see cref="SandboxErrorKind.Protocol"/>, as do a repeated
+    /// cursor and more than 4096 pages.
+    /// </remarks>
     /// <param name="sessionId">The sandbox session.</param>
     /// <param name="agentId">
     /// <c>null</c> lists every row (no filter); <c>""</c> lists the rows the default (primary) agent was
@@ -125,7 +136,77 @@ public sealed partial class SandboxClient
             SandboxAgentId.ThrowIfInvalid(agentId, nameof(agentId));
         }
 
-        var query = agentId is null ? string.Empty : $"?agent_id={Uri.EscapeDataString(agentId)}";
+        // A gateway that pages /discovered (gateway #285, commit 0ba1746; in no tagged release yet, newest
+        // v0.1.22) always sends `next_cursor`, null at the end. With gateway master's skipped-row cap
+        // (gateway #290, commit 1a21e82) a page can also be empty with a non-null cursor (it skipped unreadable
+        // rows); at 0ba1746 an empty page always ends the walk. The loop follows the cursor either way rather
+        // than stopping on an empty page. The same agent_id is sent on every page. An older gateway sends no
+        // `next_cursor`, so this is one request, as before. Bounded the same two ways as the directory
+        // listing: a repeated cursor and the page cap are Protocol errors. Cancellation is checked before each
+        // page and after each read.
+        var operation = $"listing discovered items for session '{sessionId}'";
+        var agentQuery = agentId is null ? null : $"agent_id={Uri.EscapeDataString(agentId)}";
+        var result = new List<SandboxDiscoveredItem>();
+        var seenCursors = new HashSet<string>(StringComparer.Ordinal);
+        string? cursor = null;
+        var pageCount = 0;
+        do
+        {
+            ct.ThrowIfCancellationRequested();
+            if (++pageCount > MaxDiscoveredPages)
+            {
+                throw new SandboxException(
+                    SandboxErrorKind.Protocol,
+                    $"Sandbox gateway paginated {operation} past the {MaxDiscoveredPages}-page cap; refusing to loop unbounded."
+                );
+            }
+
+            var (items, nextCursor) = await ReadDiscoveredPageAsync(sessionId, agentQuery, cursor, operation, ct)
+                .ConfigureAwait(false);
+            result.AddRange(items);
+
+            cursor = string.IsNullOrEmpty(nextCursor) ? null : nextCursor;
+            ct.ThrowIfCancellationRequested();
+            if (cursor is not null && !seenCursors.Add(cursor))
+            {
+                throw new SandboxException(
+                    SandboxErrorKind.Protocol,
+                    $"Sandbox gateway returned a repeated pagination cursor for {operation}; refusing to loop."
+                );
+            }
+        } while (cursor is not null);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Defensive upper bound on <c>/discovered</c> pages. The seen-cursor guard already catches a repeated
+    /// cursor; this caps a gateway that emits fresh cursors forever. Generous — each gateway page is bounded
+    /// by a 16 MiB byte budget, not a small row count.
+    /// </summary>
+    private const int MaxDiscoveredPages = 4096;
+
+    /// <summary>Reads and maps one <c>/discovered</c> page; <c>after</c> is the previous page's cursor.</summary>
+    private async Task<(List<SandboxDiscoveredItem> Items, string? NextCursor)> ReadDiscoveredPageAsync(
+        string sessionId,
+        string? agentQuery,
+        string? after,
+        string operation,
+        CancellationToken ct
+    )
+    {
+        var queryParts = new List<string>(2);
+        if (agentQuery is not null)
+        {
+            queryParts.Add(agentQuery);
+        }
+
+        if (after is not null)
+        {
+            queryParts.Add($"after={Uri.EscapeDataString(after)}");
+        }
+
+        var query = queryParts.Count == 0 ? string.Empty : "?" + string.Join('&', queryParts);
         using var response = await SendRestAsync(
                 HttpMethod.Get,
                 $"api/v1/sandboxes/{Uri.EscapeDataString(sessionId)}/discovered{query}",
@@ -136,8 +217,7 @@ public sealed partial class SandboxClient
             .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw await MapErrorResponseAsync(response, $"listing discovered items for session '{sessionId}'", ct)
-                .ConfigureAwait(false);
+            throw await MapErrorResponseAsync(response, operation, ct).ConfigureAwait(false);
         }
 
         DiscoveredItemsResponseDto? payload;
@@ -157,9 +237,20 @@ public sealed partial class SandboxClient
             );
         }
 
+        // A null body on a later page would otherwise end the walk silently with the rows read so far.
+        // The first page keeps its existing behavior (an empty list), which predates paging.
+        if (payload is null && after is not null)
+        {
+            throw new SandboxException(
+                SandboxErrorKind.Protocol,
+                $"Sandbox gateway returned an empty response for {operation} after cursor '{after}'.",
+                (int)response.StatusCode
+            );
+        }
+
         if (payload?.Items is null)
         {
-            return [];
+            return ([], payload?.NextCursor);
         }
 
         // Same rationale as PreviewMarketplacesAsync above: DiscoveredItemDto's required fields
@@ -170,10 +261,9 @@ public sealed partial class SandboxClient
         // null-element rejection must both map to SandboxException(Protocol), not leak a raw
         // ArgumentException/NullReferenceException.
         var statusCode = (int)response.StatusCode;
-        var operation = $"listing discovered items for session '{sessionId}'";
         try
         {
-            return SelectNonNullOrThrow(
+            var items = SelectNonNullOrThrow(
                 payload.Items,
                 item => new SandboxDiscoveredItem(
                     item.Kind,
@@ -192,6 +282,7 @@ public sealed partial class SandboxClient
                 operation,
                 statusCode
             );
+            return (items, payload.NextCursor);
         }
         catch (ArgumentException ex)
         {

@@ -246,8 +246,11 @@ internal sealed record DiscoveredItemDto(
     [property: JsonPropertyName("notified")] bool? Notified = null
 );
 
+/// <c>GET .../discovered</c> response — one page, oldest row first (gateway issue #285).
+/// <c>next_cursor</c> is always present: the next request's <c>?after=</c>, or <c>null</c> at the end.
 internal sealed record DiscoveredItemsResponseDto(
-    [property: JsonPropertyName("discovered")] IReadOnlyList<DiscoveredItemDto>? Items
+    [property: JsonPropertyName("discovered")] IReadOnlyList<DiscoveredItemDto>? Items,
+    [property: JsonPropertyName("next_cursor")] string? NextCursor = null
 );
 
 // --- Marketplace preview REST contract ---

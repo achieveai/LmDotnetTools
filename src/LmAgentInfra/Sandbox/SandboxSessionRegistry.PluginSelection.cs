@@ -21,7 +21,7 @@ public sealed partial class SandboxSessionRegistry
     /// begins.
     /// </summary>
     /// <param name="Key">
-    /// The <c>(WorkspaceId, AppId, ReadOnlyEgress)</c> cache key this session is published under.
+    /// The <c>(WorkspaceId, AppId, ReadOnlyEgress, OwnerThreadId)</c> cache key this session is published under.
     /// </param>
     /// <param name="Entry">
     /// The exact cache slot observed at snapshot time. <see cref="SwapPluginSelectionSessions"/> uses it
@@ -37,7 +37,7 @@ public sealed partial class SandboxSessionRegistry
     /// creation falls back to the process default exactly as the original create did.
     /// </param>
     internal sealed record PluginSelectionPartition(
-        (string WorkspaceId, string AppId, bool ReadOnlyEgress) Key,
+        (string WorkspaceId, string AppId, bool ReadOnlyEgress, string? OwnerThreadId) Key,
         Lazy<Task<SandboxSession>> Entry,
         SandboxSession Session,
         SandboxCredential? Credential
@@ -113,7 +113,7 @@ public sealed partial class SandboxSessionRegistry
     /// </param>
     internal sealed record PluginSelectionSnapshot(
         IReadOnlyList<PluginSelectionPartition> Partitions,
-        IReadOnlyList<(string WorkspaceId, string AppId, bool ReadOnlyEgress)> Unsettled
+        IReadOnlyList<(string WorkspaceId, string AppId, bool ReadOnlyEgress, string? OwnerThreadId)> Unsettled
     );
 
     /// <summary>
@@ -197,7 +197,7 @@ public sealed partial class SandboxSessionRegistry
         // every materialized entry for this workspace is in exactly one of the two, whatever its
         // completion state. A materialized entry whose creation FAULTED is included and is harmless —
         // it has no session, so the reconcile pass's own capture simply will not see it.
-        var captured = new HashSet<(string WorkspaceId, string AppId, bool ReadOnlyEgress)>(
+        var captured = new HashSet<(string WorkspaceId, string AppId, bool ReadOnlyEgress, string? OwnerThreadId)>(
             partitions.Select(partition => partition.Key)
         );
 
@@ -336,6 +336,12 @@ public sealed partial class SandboxSessionRegistry
             // not carry the read-only bit, so an unpinned candidate for a read-only partition would be a
             // full-write sandbox swapped into the read-only slot.
             ReadOnlyEgress = partition.Key.ReadOnlyEgress,
+            // A dedicated sandbox keeps its owner and its own working directory (the catalog carries neither), so the
+            // candidate stays the owner's alone and stays write-jailed.
+            OwnerThreadId = partition.Key.OwnerThreadId,
+            WorkingDir = partition.Key.OwnerThreadId is null
+                ? newRef.WorkingDir
+                : partition.Session.WorkspaceWorkingDir,
         };
 
         var candidate = await CreateSessionAsync(candidateRef, ct, partition.Credential).ConfigureAwait(false);
