@@ -522,6 +522,7 @@ public class ConversationsController(
                 ThreadId = threadId,
                 ReasoningEffortAccepted = request.ReasoningEffort is not null,
                 ReadOnlyEgressAccepted = request.ReadOnlyEgress,
+                ReadOnlyGitHubAccepted = request.ReadOnlyEgress,
             }
         );
     }

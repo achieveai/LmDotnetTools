@@ -652,7 +652,7 @@ internal static class ReviewRunner
         if (shadow && repo.Provider == "github")
         {
             throw new ArgumentException(
-                "--shadow supports Azure DevOps repositories only: read-only egress cannot stop a GitHub post."
+                "--shadow supports Azure DevOps repositories only: read-only egress refuses a GitHub fetch."
             );
         }
         // Before anything is written: a shadow arm and the live reviewer never share a database.
@@ -1240,6 +1240,10 @@ internal static class ReviewRunner
         }
         if (resume || cleanupOnly)
             receipt = attempt!.DeepClone().AsObject();
+        // A shadow resume runs its steps in this run's --post-session, so a commit it loses is known only there. The
+        // check above keeps a lost commit's session; without one, the attempt moves to this session.
+        if (resume && shadow)
+            receipt["postSessionId"] = options.Required("post-session");
         if (cleanupOnly && attempt!["claimToken"] is null)
             receipt["legacyCleanupAdoption"] = true;
         // Archive the attempt the claim below overwrites before claiming, so the overwrite is never

@@ -56,7 +56,7 @@ public sealed record SubAgentSessionBinding(MutableSubAgentTemplateSource Source
 /// <param name="ImageReport">The gateway's conformance report for the image, including its warnings.</param>
 /// <param name="WorkspaceWorkingDir">The workspace-relative working directory the gateway acknowledged (the
 /// only place agents can write; ADR 0044), or <see langword="null"/> when none is set.</param>
-/// <param name="ReadOnlyEgress">True when this session was created with read-only ADO egress (see
+/// <param name="ReadOnlyEgress">True when this session was created with read-only ADO and GitHub egress (see
 /// <see cref="WorkspaceRef.ReadOnlyEgress"/>): set from the same value that built its network rules.</param>
 public sealed record SandboxSession(
     string WorkspaceId,
@@ -102,8 +102,9 @@ public sealed record SandboxSession(
 /// for the gateway default. See <see cref="SandboxCreateRequest.Image"/>.</param>
 /// <param name="WorkingDir">Workspace-relative working directory for the sandbox, or <see langword="null"/> for
 /// none. When set, the rest of the workspace is read-only for agents. See <see cref="SandboxCreateRequest.WorkingDir"/>.</param>
-/// <param name="ReadOnlyEgress">True for a sandbox whose ADO egress may only read: every allow rule that reaches
-/// an ADO host keeps only GET and HEAD. Part of the session-cache key, so a read-only thread and a normal thread
+/// <param name="ReadOnlyEgress">True for a sandbox whose ADO and GitHub egress may only read: every allow rule that
+/// reaches an ADO or GitHub host keeps only GET and HEAD, so a GitHub fetch (a POST) is refused too. Part of the
+/// session-cache key, so a read-only thread and a normal thread
 /// on the same workspace and app id never share a sandbox. A conversation property, not workspace
 /// configuration: a ref rebuilt from the workspace catalog does not carry it, so every rebuild path pins it.</param>
 public sealed record WorkspaceRef(
@@ -1600,7 +1601,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
 
         if (workspaceRef.ReadOnlyEgress)
         {
-            // Rule ids and methods only: the evidence that this create asked for read-only ADO egress.
+            // Rule ids and methods only: the evidence that this create asked for read-only ADO and GitHub egress.
             _logger.LogInformation(
                 "Creating read-only-egress sandbox session for workspace {WorkspaceId} (app {AppId}); rules: {Rules}",
                 workspaceId,
@@ -3017,7 +3018,17 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         IReadOnlyList<SandboxAuthProvider>? Providers,
         IReadOnlyList<SandboxNetworkRule>? Network
     ) BuildAuthProviders(string sessionSecret, SandboxMcpSessionContext? mcpContext, bool readOnlyEgress) =>
-        BuildAuthPolicyCore(_authOptions, _options, sessionSecret, _predefinedKeys, mcpContext, readOnlyEgress);
+        // A read-only thread (a shadow review or a judge) may read GitHub but never write it: its agent can edit
+        // helpers that run with the session's credentials.
+        BuildAuthPolicyCore(
+            _authOptions,
+            _options,
+            sessionSecret,
+            _predefinedKeys,
+            mcpContext,
+            readOnlyEgress,
+            readOnlyGitHub: readOnlyEgress
+        );
 
     /// <summary>
     /// Builds the optional auth-provider and network blocks from managed OAuth providers,

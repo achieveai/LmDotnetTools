@@ -109,7 +109,7 @@ internal static class ReviewArm
             {
                 throw new ArgumentException(
                     $"This --db belongs to a shadow arm, so --session {session} must be a session made by "
-                        + "sandbox create --read-only-egress on this host."
+                        + "sandbox create --read-only-egress on this host, by a build that also narrows GitHub."
                 );
             }
         }

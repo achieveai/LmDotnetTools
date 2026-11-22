@@ -304,6 +304,13 @@ public record ProvisionConversationResponse
     /// ignores it and would give the thread full egress.
     /// </summary>
     public bool ReadOnlyEgressAccepted { get; init; }
+
+    /// <summary>
+    /// True when the read-only egress this host stored also narrows GitHub to GET and HEAD. A caller that asked
+    /// for read-only egress must refuse a reply without it: an earlier host narrowed only ADO, so the thread could
+    /// still push to GitHub.
+    /// </summary>
+    public bool ReadOnlyGitHubAccepted { get; init; }
 }
 
 /// <summary>

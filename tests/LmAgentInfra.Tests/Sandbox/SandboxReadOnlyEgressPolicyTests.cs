@@ -327,7 +327,8 @@ public sealed class SandboxReadOnlyEgressPolicyTests(ITestOutputHelper output)
 
         var build = () => SandboxSessionRegistry.BuildAuthPolicy(auth, options, "test-secret", readOnlyGitHub: true);
 
-        build.Should().Throw<ArgumentException>().WithMessage("Read-only GitHub only applies*");
+        var refused = build.Should().Throw<ArgumentException>().WithMessage("Read-only GitHub only applies*").Which;
+        output.WriteLine("DEBUG read-only GitHub without read-only egress refused: {0}", refused.Message);
     }
 
     [Fact]

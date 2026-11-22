@@ -1756,8 +1756,8 @@ internal static class JudgeRunner
 
     /// <summary>
     ///     Provisions the judge thread from the judgment's stored <paramref name="identity" />: headless, and with
-    ///     read-only egress, so its sandbox may only GET and HEAD ADO while the review lanes on the same workspace keep
-    ///     full egress. A host that does not acknowledge read-only egress gets the thread deleted and a
+    ///     read-only egress, so its sandbox may only GET and HEAD ADO and GitHub while the review lanes on the same
+    ///     workspace keep full egress. A host that does not acknowledge read-only egress gets the thread deleted and a
     ///     <see cref="ReviewHostContractException" />, which ends the judgment failed-precondition before any send.
     /// </summary>
     internal static Task<string> ProvisionJudgeThreadAsync(
