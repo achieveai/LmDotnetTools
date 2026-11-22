@@ -716,6 +716,216 @@ public sealed class IndexedConversationStoreTests : IDisposable
         SqliteConnection.ClearAllPools();
     }
 
+    /// <summary>
+    /// A direct sub-agent read is one store read however many children there are, and a recursive one is one
+    /// read per level. A read per child queued 2+N times for the store's few connections behind its writers,
+    /// which took 35-143 s for 64 children on a loaded host. Both must find what the per-row walk finds: the
+    /// same rows, filters, gaps and order.
+    /// </summary>
+    [Fact]
+    public async Task ReadChildren_ReadsOneLevelPerStoreRead_AndFindsWhatAPerRowWalkFinds()
+    {
+        Directory.CreateDirectory(_directory);
+        var path = Path.Combine(_directory, "batched.db");
+        var factory = new CountingConnectionFactory(new SqliteConnectionFactory(path));
+        var sqlite = new SqliteConversationStore(factory, ownsFactory: true);
+        try
+        {
+            var memory = new InMemoryConversationStore();
+            var batched = new IndexedConversationStore(sqlite, Path.Combine(_directory, "batched.index.json"));
+            var walked = new IndexedConversationStore(memory, Path.Combine(_directory, "walked.index.json"));
+            foreach (var store in new[] { batched, walked })
+            {
+                await store.SaveMetadataAsync(
+                    "root",
+                    new ThreadMetadata
+                    {
+                        ThreadId = "root",
+                        LastUpdated = 0,
+                        TenantId = "tenant",
+                    }
+                );
+                for (var i = 0; i < 12; i++)
+                    await store.SaveMetadataAsync($"subagent-{i:D2}", Child($"subagent-{i:D2}", "root", "tenant"));
+                await store.SaveMetadataAsync("subagent-untenanted", Child("subagent-untenanted", "root"));
+                await store.SaveMetadataAsync("subagent-foreign", Child("subagent-foreign", "root", "foreign"));
+                await store.SaveMetadataAsync(
+                    "subagent-under-foreign",
+                    Child("subagent-under-foreign", "subagent-foreign", "tenant")
+                );
+                await store.SaveMetadataAsync(
+                    "subagent-grandchild",
+                    Child("subagent-grandchild", "subagent-03", "tenant")
+                );
+                await store.SaveMetadataAsync("subagent-gone", Child("subagent-gone", "root", "tenant"));
+            }
+
+            // Gone from metadata while the index still lists it, as when a delete lands mid-read.
+            await sqlite.DeleteThreadAsync("subagent-gone");
+            await memory.DeleteThreadAsync("subagent-gone");
+
+            // Recursive: the root with its children, then the one grandchild under an admitted child.
+            foreach (var (recursive, count, reads) in new[] { (false, 13, 1), (true, 14, 2) })
+            {
+                var expected = await walked.ReadChildrenAsync("root", recursive);
+                expected.Should().HaveCount(count);
+                expected
+                    .Select(n => n.ThreadId)
+                    .Should()
+                    .NotContain(["subagent-foreign", "subagent-under-foreign", "subagent-gone"]);
+                factory.Acquisitions = 0;
+
+                var actual = await batched.ReadChildrenAsync("root", recursive);
+
+                factory.Acquisitions.Should().Be(reads, "each level of the walk is one store read");
+                actual.Should().BeEquivalentTo(expected, options => options.WithStrictOrdering());
+            }
+        }
+        finally
+        {
+            await sqlite.DisposeAsync();
+            SqliteConnectionFactory.ClearPool(path);
+        }
+    }
+
+    /// <summary>
+    /// A recursive read never reads metadata below a node it rejected, as the per-row walk never did. The
+    /// foreign child itself is read, because reading it is how it is rejected; its subtree is not.
+    /// </summary>
+    [Fact]
+    public async Task ReadChildren_NeverReadsBelowARejectedNode()
+    {
+        var batching = new BatchingConversationStore(new InMemoryConversationStore());
+        var store = Create(batching);
+        await store.SaveMetadataAsync("root", Root("root", "tenant"));
+        await store.SaveMetadataAsync("subagent-kept", Child("subagent-kept", "root", "tenant"));
+        await store.SaveMetadataAsync("subagent-under-kept", Child("subagent-under-kept", "subagent-kept", "tenant"));
+        await store.SaveMetadataAsync("subagent-foreign", Child("subagent-foreign", "root", "foreign"));
+        await store.SaveMetadataAsync(
+            "subagent-under-foreign",
+            Child("subagent-under-foreign", "subagent-foreign", "tenant")
+        );
+        await store.SaveMetadataAsync("subagent-deeper", Child("subagent-deeper", "subagent-under-foreign", "tenant"));
+
+        var nodes = await store.ReadChildrenAsync("root", recursive: true);
+
+        nodes.Select(n => n.ThreadId).Should().Equal("subagent-kept", "subagent-under-kept");
+        var read = batching.Batches.SelectMany(ids => ids).ToList();
+        read.Should().Contain(["subagent-foreign", "subagent-under-kept"]);
+        read.Should().NotContain(["subagent-under-foreign", "subagent-deeper"]);
+    }
+
+    [Fact]
+    public async Task ReadChildren_PassesABatchFailureToTheCaller()
+    {
+        var batching = new BatchingConversationStore(new InMemoryConversationStore());
+        var store = Create(batching);
+        await store.SaveMetadataAsync("subagent-child", Child("subagent-child", "root"));
+        var failure = new IOException("batch read failed");
+        batching.OnBatch = (_, _) => Task.FromException(failure);
+
+        var act = () => store.ReadChildrenAsync("root", recursive: false);
+
+        (await act.Should().ThrowAsync<IOException>()).Which.Should().BeSameAs(failure);
+        batching.Batches.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task ReadChildren_CancelsAHeldBatchWithTheCallersToken()
+    {
+        var bound = TimeSpan.FromSeconds(10);
+        var batching = new BatchingConversationStore(new InMemoryConversationStore());
+        var store = Create(batching);
+        await store.SaveMetadataAsync("subagent-child", Child("subagent-child", "root"));
+        var held = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+        batching.OnBatch = async (_, token) =>
+        {
+            held.TrySetResult(token);
+            await Task.Delay(Timeout.Infinite, token);
+        };
+        using var cts = new CancellationTokenSource();
+
+        var read = store.ReadChildrenAsync("root", recursive: false, cts.Token);
+        (await held.Task.WaitAsync(bound)).Should().Be(cts.Token);
+        await cts.CancelAsync();
+
+        await read.Awaiting(pending => pending.WaitAsync(bound)).Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    /// <summary>
+    /// A batch held while the child moves to another parent returns rows that are already stale. The read
+    /// must notice the move and read again before it returns, so the old root no longer lists the child.
+    /// </summary>
+    [Fact]
+    public async Task ReadChildren_RereadsABatchThatAReparentOverlapped()
+    {
+        var bound = TimeSpan.FromSeconds(10);
+        var batching = new BatchingConversationStore(new InMemoryConversationStore());
+        var store = Create(batching);
+        await store.SaveMetadataAsync("subagent-child", Child("subagent-child", "root-a"));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        batching.OnBatch = async (call, _) =>
+        {
+            if (call == 1)
+            {
+                entered.TrySetResult();
+                await release.Task.WaitAsync(bound);
+            }
+        };
+
+        var read = store.ReadChildrenAsync("root-a", recursive: false);
+        await entered.Task.WaitAsync(bound);
+        await store.SaveMetadataAsync("subagent-child", Child("subagent-child", "root-b")).WaitAsync(bound);
+        release.TrySetResult();
+
+        (await read.WaitAsync(bound)).Should().BeEmpty("the stale batch is read again before the result returns");
+        batching.Batches.Should().HaveCount(2);
+        batching.Batches[0].Should().Contain("subagent-child", "the held batch read the child under root-a");
+        (await store.ReadChildrenAsync("root-b", recursive: false))
+            .Should()
+            .ContainSingle(n => n.ThreadId == "subagent-child");
+    }
+
+    [Fact]
+    public async Task ReadChildren_WithAMissingRoot_FindsWhatAPerRowWalkFinds()
+    {
+        var memory = new InMemoryConversationStore();
+        var batching = new BatchingConversationStore(memory);
+        var batched = new IndexedConversationStore(batching, Path.Combine(_directory, "batched.index.json"));
+        var walked = new IndexedConversationStore(memory, Path.Combine(_directory, "walked.index.json"));
+        await batched.SaveMetadataAsync("subagent-orphan", Child("subagent-orphan", "root-gone", "tenant"));
+        (await memory.LoadMetadataAsync("root-gone")).Should().BeNull();
+
+        var expected = await walked.ReadChildrenAsync("root-gone", recursive: false);
+        var actual = await batched.ReadChildrenAsync("root-gone", recursive: false);
+
+        expected.Should().ContainSingle(n => n.ThreadId == "subagent-orphan");
+        actual.Should().BeEquivalentTo(expected, options => options.WithStrictOrdering());
+        batching.Batches.Should().ContainSingle().Which.Should().Equal("root-gone", "subagent-orphan");
+    }
+
+    private static ThreadMetadata Root(string id, string tenant) =>
+        new()
+        {
+            ThreadId = id,
+            LastUpdated = 0,
+            TenantId = tenant,
+        };
+
+    private sealed class CountingConnectionFactory(ISqliteConnectionFactory inner) : ISqliteConnectionFactory
+    {
+        public int Acquisitions { get; set; }
+
+        public Task<SqliteConnection> GetConnectionAsync(CancellationToken ct = default)
+        {
+            Acquisitions++;
+            return inner.GetConnectionAsync(ct);
+        }
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
+    }
+
     private static UsageRecord UsageAttempt(string attemptId, int inputTokens, long revision) =>
         new()
         {
