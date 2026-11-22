@@ -202,7 +202,11 @@ public sealed class ReviewdAutoSlotTests : IDisposable
 
         (await RunAsync()).Should().Be(ReviewRunner.NoSlotExitCode);
 
-        (await ReadAllAsync()).Should().Equal(before);
+        // Its one write is the arm marker an executed run reserves before any read: no claim, attempt or lease.
+        var after = await ReadAllAsync();
+        after.Remove(ReviewArm.Key, out var arm).Should().BeTrue();
+        arm.Should().Be("""{"shadow":false,"variant":null}""");
+        after.Should().Equal(before);
         _phases.Should().BeEmpty();
         _handler.Requests.Should().BeEmpty();
     }

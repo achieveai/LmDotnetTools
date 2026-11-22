@@ -12,6 +12,7 @@
     <EmbeddedResource Include="MergeSandbox.py" />
     <EmbeddedResource Include="JudgeSandbox.py" />
     <EmbeddedResource Include="Prompts/merged-judge.md" LogicalName="Reviewd.Sample.Prompts.merged-judge.md" />
+    <EmbeddedResource Include="Prompts/merged-judge-would-post.md" LogicalName="Reviewd.Sample.Prompts.merged-judge-would-post.md" />
     <InternalsVisibleTo Include="CodeReviewDaemon.Sample.Tests" />
     <ProjectReference Include="../CodeReviewDaemon.Sample/CodeReviewDaemon.Sample.csproj" />
     <ProjectReference Include="../../src/Misc/AchieveAi.LmDotnetTools.Misc.csproj" />

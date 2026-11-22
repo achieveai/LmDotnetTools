@@ -18,6 +18,7 @@ public sealed class SqliteConversationStore
     : IConversationStore,
         IConversationListingStore,
         IConversationRelationStore,
+        IConversationMetadataBatchStore,
         IConversationThreadIdLookupStore,
         IConversationOwnershipStore,
         IConversationUsageStore,
@@ -215,12 +216,16 @@ public sealed class SqliteConversationStore
             );
         }
 
+        // Through the (thread_id, seq) index, which finds the null rows directly. Left to itself the
+        // planner serves the ORDER BY from idx_messages_thread_id instead and reads every row of the
+        // thread to test seq, which sits after message_json and so walks its overflow pages: hundreds
+        // of ms on a long thread, under the write lock, on every append, to find nothing.
         var legacyIds = new List<string>();
         using (var select = connection.CreateCommand())
         {
             select.Transaction = transaction;
             select.CommandText = """
-                SELECT id FROM messages
+                SELECT id FROM messages INDEXED BY idx_messages_thread_seq
                 WHERE thread_id = $thread_id AND seq IS NULL
                 ORDER BY timestamp ASC, message_order_idx ASC, rowid ASC;
                 """;
@@ -622,6 +627,42 @@ public sealed class SqliteConversationStore
 
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         return !await reader.ReadAsync(ct).ConfigureAwait(false) ? null : ReadMetadata(reader);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyDictionary<string, ThreadMetadata>> LoadMetadataBatchAsync(
+        IReadOnlyCollection<string> threadIds,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(threadIds);
+
+        var rows = new Dictionary<string, ThreadMetadata>(StringComparer.Ordinal);
+        if (threadIds.Count == 0)
+        {
+            return rows;
+        }
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT {MetadataColumns}
+            FROM thread_metadata
+            WHERE thread_id IN (SELECT value FROM json_each($ids));
+            """;
+        _ = command.Parameters.AddWithValue("$ids", JsonSerializer.Serialize(threadIds, JsonOptions));
+
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            var metadata = ReadMetadata(reader);
+            rows[metadata.ThreadId] = metadata;
+        }
+
+        return rows;
     }
 
     /// <inheritdoc />

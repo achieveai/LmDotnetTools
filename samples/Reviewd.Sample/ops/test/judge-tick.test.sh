@@ -212,15 +212,17 @@ python3 -I - "$R/reviewd.db" <<'PY'
 import json, sqlite3, sys
 db = sqlite3.connect(sys.argv[1])
 db.execute("CREATE TABLE cache (key TEXT PRIMARY KEY, value TEXT)")
-def receipt(pr, n, stage, output=None):
+def receipt(pr, n, stage, output=None, **extra):
     db.execute("INSERT INTO cache VALUES (?, ?)", (f"reviewd/judge-run/org/p/repo/{pr}/{n}", json.dumps(
-        {"repository": "Org/P Q/Repo", "prId": str(pr), "n": n, "stage": stage, "outputStage": output})))
+        {"repository": "Org/P Q/Repo", "prId": str(pr), "n": n, "stage": stage, "outputStage": output, **extra})))
 receipt(101, 1, "completed", "final")
 receipt(102, 1, "completed", "final"); receipt(102, 2, "sent")
 receipt(103, 1, "capped", "draft")
 receipt(104, 1, "completed", "final"); receipt(104, 2, "completed", "final")
 receipt(105, 1, "completed", "final")
 receipt(106, 1, "completed", "final")
+# A shadow review's judgment is a score: judge close would refuse it, so it is never tried.
+receipt(120, 1, "completed", "final", shadow=True)
 # Newest by number, not by row or key order: judgment 10 is stored first and sorts before 2.
 receipt(108, 10, "sent"); receipt(108, 2, "completed", "final")
 db.execute("INSERT INTO cache VALUES ('reviewd/pr-snapshot/org/p/repo/107', '{}')")

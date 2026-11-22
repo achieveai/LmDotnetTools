@@ -262,6 +262,12 @@ jobs:
       - name: Run the review daemon test project
         run: dotnet test tests/CodeReviewDaemon.Sample.Tests/CodeReviewDaemon.Sample.Tests.csproj
 
+      # The judge tick runs on the Linux judge hosts, and its test needs bash and python3, so it runs here. It fails
+      # on Windows for environmental reasons, which is why the Windows leg does not run it.
+      - name: Test the judge tick script
+        working-directory: samples/Reviewd.Sample
+        run: bash ops/test/judge-tick.test.sh
+
   clientapp-tests:
     name: ClientApp unit tests (vitest)
     runs-on: ubuntu-latest

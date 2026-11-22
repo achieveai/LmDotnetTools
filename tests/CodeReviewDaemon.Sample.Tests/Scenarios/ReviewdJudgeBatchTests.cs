@@ -20,7 +20,10 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
     private const string Repo = "O365Exchange/Weve_DA/Nova";
     private const string Workspace = "ws-1";
     private static readonly DateTimeOffset Now = DateTimeOffset.UtcNow;
-    private static readonly JudgeBatch.Settings Settings = new(5m, 30m, 4m, 7, "prompt-sha");
+    private static readonly JudgeBatch.Settings S_settings = new(5m, 30m, 4m, 7, "prompt-sha")
+    {
+        WouldPostPromptSha256 = "would-post-sha",
+    };
     private static readonly string RepoKey = PrCommands.ParseRepo(Repo).NormalizedKey;
     private readonly string _dir = Directory.CreateTempSubdirectory("judge-batch-").FullName;
 
@@ -55,7 +58,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
 
         // The JSON line names each unusable install with a plain cause (the tick alerts from it); the
         // markdown says the same, and the parser's text stays in stderr.
-        var summary = JudgeBatch.Summary(scan, plan, [], [], Settings, execute: false, "ok", 0, Now);
+        var summary = JudgeBatch.Summary(scan, plan, [], [], S_settings, execute: false, "ok", 0, Now);
         JsonNode.Parse(summary.TrimEnd().Split('\n')[^1])!["unusable"]!
             .ToJsonString()
             .Should()
@@ -139,7 +142,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         scan.NeedsYou.Select(note => note.ToString()).Should().BeEmpty("a live judge shows only under Running now");
         plan.Should().BeEmpty("the batch never resumes a run under another prompt");
         JudgeBatch
-            .Summary(scan, plan, [], [], Settings, execute: false, "ok", 0, Now)
+            .Summary(scan, plan, [], [], S_settings, execute: false, "ok", 0, Now)
             .Should()
             .Contain("Running now: Nova !7001.")
             .And.NotContain("resume it by hand");
@@ -238,7 +241,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
                 ),
                 inFlight,
                 Now,
-                Settings
+                S_settings
             );
         static string Row(JudgeBatch.Pick pick) => $"{pick.Kind} {pick.Reason}{(pick.Stored ? " (stored)" : "")}";
         JsonObject Stage(string stage, string? thread = "thread-1", double finishedHoursAgo = 1)
@@ -266,6 +269,17 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         var otherPrompt = Stage("judge-running");
         otherPrompt["identity"]!["promptTemplateSha256"] = "old-prompt";
         Row(Of([otherPrompt]))
+            .Should()
+            .Be(
+                "NeedsYou judgment 1 stopped in the judging step under another prompt; resume it by hand with the original prompt"
+            );
+        // A shadow review's judgment adds the would-post section, which is part of its prompt too.
+        var sameWouldPost = Stage("judge-running");
+        sameWouldPost["identity"]!["wouldPostPromptSha256"] = "would-post-sha";
+        Row(Of([sameWouldPost])).Should().Be("Resume resume judgment 1 from the judging step (stored)");
+        var otherWouldPost = Stage("judge-running");
+        otherWouldPost["identity"]!["wouldPostPromptSha256"] = "old-would-post";
+        Row(Of([otherWouldPost]))
             .Should()
             .Be(
                 "NeedsYou judgment 1 stopped in the judging step under another prompt; resume it by hand with the original prompt"
@@ -319,7 +333,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         }
 
         var lines = JudgeBatch
-            .Summary(scan, [], [], [], Settings, execute: true, "ok", 0, Now)
+            .Summary(scan, [], [], [], S_settings, execute: true, "ok", 0, Now)
             .ReplaceLineEndings("\n")
             .Split('\n');
 
@@ -353,7 +367,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         plan.Single().Wait.Should().BeNull();
         scan.Counts.Should().BeEquivalentTo(new Dictionary<string, int> { ["running"] = 1 });
         JudgeBatch
-            .Summary(scan, plan, [], [], Settings, execute: false, "ok", 0, Now)
+            .Summary(scan, plan, [], [], S_settings, execute: false, "ok", 0, Now)
             .Should()
             .Contain("- PRs: 1 running now.")
             .And.Contain("Running now: Nova !7001.")
@@ -368,7 +382,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         var (after, afterPlan) = await PlanAsync(idle, [], Target("alpha", alpha));
         after.Counts.Should().BeEquivalentTo(new Dictionary<string, int> { ["Resume"] = 1 });
         JudgeBatch
-            .Summary(after, afterPlan, [], [], Settings, execute: false, "ok", 0, Now)
+            .Summary(after, afterPlan, [], [], S_settings, execute: false, "ok", 0, Now)
             .Should()
             .Contain("- PRs: 1 to resume.")
             .And.Contain("- Nova !7001: resume (resume judgment 1 from the judging step); would run");
@@ -396,7 +410,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         scan.InFlight.Should().Equal("Nova !7001", "Nova !7002 (capped judge still settling)");
         scan.Guard.Spent24h.Should().Be(15m, "each cost the host would not give counts at its $5 cap");
         JudgeBatch
-            .Conclude(scan, plan, Settings, stopFile: null, latched: false, (0, "", null))
+            .Conclude(scan, plan, S_settings, stopFile: null, latched: false, (0, "", null))
             .Should()
             .Be((0, $"the host refused the batch's sign-in (HTTP {code}); see Needs you", null));
     }
@@ -418,7 +432,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
                 "Nova !7003 #1: cost not known; until it is, the daily cap counts its cost cap ($5.00)"
             );
         JudgeBatch
-            .Conclude(scan, plan, Settings, stopFile: null, latched: false, (0, "", null))
+            .Conclude(scan, plan, S_settings, stopFile: null, latched: false, (0, "", null))
             .Status.Should()
             .Be("ok");
     }
@@ -462,7 +476,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         scan.Receipts.Add(("Nova !7001", neverStarted));
 
         var rows = JudgeBatch
-            .Summary(scan, [], [], [], Settings, execute: true, "ok", 0, Now)
+            .Summary(scan, [], [], [], S_settings, execute: true, "ok", 0, Now)
             .ReplaceLineEndings("\n")
             .Split('\n')
             .Where(line =>
@@ -483,7 +497,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         var stop = Path.Combine(_dir, "STOPPED");
         File.WriteAllText(stop, "2026-10-22T22:17Z: 2 judgments in a row failed\n");
         JudgeBatch
-            .Conclude(new JudgeBatch.Scan(), [], Settings, stop, latched: true, (0, "", null))
+            .Conclude(new JudgeBatch.Scan(), [], S_settings, stop, latched: true, (0, "", null))
             .Status.Should()
             .Be(
                 "paused (2026-10-22T22:17Z: 2 judgments in a row failed). Judges already running still finish. "
@@ -491,7 +505,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             );
         File.WriteAllText(stop, "");
         JudgeBatch
-            .Conclude(new JudgeBatch.Scan(), [], Settings, stop, latched: true, (0, "", null))
+            .Conclude(new JudgeBatch.Scan(), [], S_settings, stop, latched: true, (0, "", null))
             .Status.Should()
             .Be($"paused. Judges already running still finish. To start new judges again, run: rm {stop}");
 
@@ -499,13 +513,13 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         var skipped = new JudgeBatch.Scan();
         skipped.Skipped.Add(("viva-pulse", "its folder is missing (check JUDGE_INSTALLS)"));
         JudgeBatch
-            .Conclude(skipped, [], Settings, stopFile: null, latched: false, (0, "", null))
+            .Conclude(skipped, [], S_settings, stopFile: null, latched: false, (0, "", null))
             .Status.Should()
             .Be("paused: 1 install unusable (see Needs you); judges already running still finish");
 
         // The average guard names a short cause; the tick puts it in the alert title.
         var costly = new JudgeBatch.Scan { Guard = new(0m, 4.5m, 10) };
-        var (exit, status, cause) = JudgeBatch.Conclude(costly, [], Settings, null, latched: false, (0, "", null));
+        var (exit, status, cause) = JudgeBatch.Conclude(costly, [], S_settings, null, latched: false, (0, "", null));
         (exit, status, cause)
             .Should()
             .Be(
@@ -516,7 +530,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
                 )
             );
         var json = JudgeBatch
-            .Summary(costly, [], [], [], Settings, execute: true, status, exit, Now, cause)
+            .Summary(costly, [], [], [], S_settings, execute: true, status, exit, Now, cause)
             .TrimEnd()
             .Split('\n')[^1];
         JsonNode.Parse(json)!["cause"]!.GetValue<string>().Should().Be("average cost too high");
@@ -537,7 +551,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
 
         var underCap = new JudgeBatch.Scan { Guard = new(28m, null, 0) };
         JudgeBatch
-            .Conclude(underCap, [(Start("1"), "cap")], Settings, null, latched: false, (0, "", null))
+            .Conclude(underCap, [(Start("1"), "cap")], S_settings, null, latched: false, (0, "", null))
             .Status.Should()
             .Be(noRoom);
 
@@ -546,7 +560,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             .Conclude(
                 overCap,
                 [(Start("1"), "waits: judge in flight on Nova !1")],
-                Settings,
+                S_settings,
                 null,
                 latched: false,
                 (0, "", null)
@@ -559,7 +573,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             .Conclude(
                 underCap,
                 [(Start("1"), null), (Start("2"), "cap")],
-                Settings,
+                S_settings,
                 null,
                 latched: false,
                 (0, "", null)
@@ -615,7 +629,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
     [Fact]
     public async Task A_stored_start_whose_send_never_landed_counts_once_against_the_day_cap()
     {
-        var defaults = Settings with { MaxUsd = 15m };
+        var defaults = S_settings with { MaxUsd = 15m };
         var pending = Receipt("send-pending", thread: "thread-pending", startedAt: Now.AddMinutes(-90));
         pending.Remove("judgeUsage");
         pending["caps"]!["maxUsd"] = 15m;
@@ -656,7 +670,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
     [Fact]
     public void The_status_is_never_ok_when_the_next_start_would_not_fit_the_daily_cap()
     {
-        var defaults = Settings with { MaxUsd = 15m };
+        var defaults = S_settings with { MaxUsd = 15m };
         var start = new JudgeBatch.Pick(
             new(Target("alpha", "alpha.db"), Repo, RepoKey, "2", [], "Merged", Now, null),
             JudgeBatch.Kind.Start,
@@ -699,7 +713,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             },
         ];
 
-        var summary = JudgeBatch.Summary(scan, [], actions, [], Settings, execute: true, "ok", 0, Now);
+        var summary = JudgeBatch.Summary(scan, [], actions, [], S_settings, execute: true, "ok", 0, Now);
 
         const string Misses =
             "missing system knowledge 5, review method (any repo) 1, review method (this repo) 4, "
@@ -881,7 +895,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             [.. plan.Select(entry => $"{entry.Pick.Kind} {entry.Pick.Pr.Pr}: {entry.Wait ?? "runs"}")];
 
         // Resumes oldest first, post-checks, then starts: beta (never judged) first, newest merge first, taking turns.
-        Rows(JudgeBatch.Plan(Scan(), [], latched: false, 0, int.MaxValue, Settings, Now))
+        Rows(JudgeBatch.Plan(Scan(), [], latched: false, 0, int.MaxValue, S_settings, Now))
             .Should()
             .Equal(
                 "Resume 6: runs",
@@ -893,11 +907,11 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             );
 
         // Day cap projected at each run's $5 cap: $20 spent leaves room for 2 of 3.
-        Rows(JudgeBatch.Plan(Scan(spent: 20m), [], latched: false, 0, int.MaxValue, Settings, Now))
+        Rows(JudgeBatch.Plan(Scan(spent: 20m), [], latched: false, 0, int.MaxValue, S_settings, Now))
             .Skip(3)
             .Should()
             .Equal("Start 2: runs", "Start 3: runs", "Start 1: cap");
-        Rows(JudgeBatch.Plan(Scan(), [], latched: false, 0, limit: 1, Settings, Now))
+        Rows(JudgeBatch.Plan(Scan(), [], latched: false, 0, limit: 1, S_settings, Now))
             .Skip(3)
             .Should()
             .Equal("Start 2: runs", "Start 3: limit", "Start 1: limit");
@@ -909,12 +923,12 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             var (plan, wait) in new[]
             {
                 (
-                    JudgeBatch.Plan(inFlight, [], latched: false, 0, int.MaxValue, Settings, Now),
+                    JudgeBatch.Plan(inFlight, [], latched: false, 0, int.MaxValue, S_settings, Now),
                     "waits: judge in flight on Nova !9"
                 ),
-                (JudgeBatch.Plan(Scan(), [], latched: true, 0, int.MaxValue, Settings, Now), "latched"),
+                (JudgeBatch.Plan(Scan(), [], latched: true, 0, int.MaxValue, S_settings, Now), "latched"),
                 (
-                    JudgeBatch.Plan(Scan(avg: 4.01m), [], latched: false, 0, int.MaxValue, Settings, Now),
+                    JudgeBatch.Plan(Scan(avg: 4.01m), [], latched: false, 0, int.MaxValue, S_settings, Now),
                     "average guard"
                 ),
             }
@@ -927,7 +941,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         // A pick this run already tried is not planned again.
         var tried = Scan();
         JudgeBatch
-            .Plan(tried, [tried.Picks[4].Pr.Id], latched: false, 0, int.MaxValue, Settings, Now)
+            .Plan(tried, [tried.Picks[4].Pr.Id], latched: false, 0, int.MaxValue, S_settings, Now)
             .Should()
             .NotContain(entry => entry.Pick.Pr.Pr == "5");
     }
@@ -956,7 +970,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         );
         var quiet = new FakeHttpMessageHandler();
 
-        var (odd, oddPlan) = await PlanAsync(quiet, [], Settings with { Shard = new(1, 2) }, Target("alpha", alpha));
+        var (odd, oddPlan) = await PlanAsync(quiet, [], S_settings with { Shard = new(1, 2) }, Target("alpha", alpha));
 
         odd.InFlight.Should().BeEmpty();
         odd.Guard.Spent24h.Should().Be(0m);
@@ -968,7 +982,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             .Equal(("Nova !7003", JudgeBatch.Kind.Start, null), ("Nova !7001", JudgeBatch.Kind.Start, null));
 
         var host = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "thread-even/run-state", Active);
-        var (even, evenPlan) = await PlanAsync(host, [], Settings with { Shard = new(0, 2) }, Target("alpha", alpha));
+        var (even, evenPlan) = await PlanAsync(host, [], S_settings with { Shard = new(0, 2) }, Target("alpha", alpha));
 
         even.InFlight.Should().Equal("Nova !7002");
         even.NeedsYou.Select(note => note.ToString()).Should().ContainMatch("*Nova !7004*not completed*");
@@ -1042,9 +1056,87 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         plan.Select(entry => entry.Pick.Pr.Label).Should().Equal("Nova !7001");
         scan.Counts.Should().BeEquivalentTo(new Dictionary<string, int> { ["Start"] = 1, ["no-artifact-commit"] = 1 });
         JudgeBatch
-            .Summary(scan, plan, [], [], Settings, execute: false, "ok", 0, Now)
+            .Summary(scan, plan, [], [], S_settings, execute: false, "ok", 0, Now)
             .Should()
             .Contain("- PRs: 1 to start, 1 review has no verified artifact commit.");
+    }
+
+    // A shadow review (review run --shadow) posted nothing: judge run scores its would-post comments, and only in a
+    // session created read-only on this host. So the scan picks it when its target's session is one, and otherwise
+    // counts it apart, where a judge run would only be refused.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_shadow_review_is_picked_only_for_a_target_whose_session_is_read_only(bool readOnly)
+    {
+        var (key, value) = Review("7002");
+        var shadow = JsonNode.Parse(value)!.AsObject();
+        shadow["shadow"] = true;
+        var alpha = Db(
+            "alpha",
+            Review("7001"),
+            (key, shadow.ToJsonString()),
+            Snapshot(("7001", "Merged", Now.AddDays(-2)), ("7002", "Merged", Now.AddDays(-1)))
+        );
+        var asked = new List<string>();
+        var settings = S_settings with
+        {
+            ReadOnlySession = session =>
+            {
+                asked.Add(session);
+                return readOnly;
+            },
+        };
+
+        var (scan, plan) = await PlanAsync(new FakeHttpMessageHandler(), [], settings, Target("alpha", alpha));
+
+        asked.Should().Equal("session-1");
+        if (readOnly)
+        {
+            plan.Select(entry => entry.Pick.Pr.Label).Should().BeEquivalentTo("Nova !7001", "Nova !7002");
+            scan.Counts.Should().BeEquivalentTo(new Dictionary<string, int> { ["Start"] = 2 });
+        }
+        else
+        {
+            plan.Select(entry => entry.Pick.Pr.Label).Should().Equal("Nova !7001");
+            scan.Counts.Should().BeEquivalentTo(new Dictionary<string, int> { ["Start"] = 1, ["shadow"] = 1 });
+        }
+    }
+
+    // Only a verified shadow review reads as stage "shadow" (the scan's SQL); one still running, waiting for verify or
+    // failed is not verified, so neither session kind picks it, and its live sibling is still planned.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_shadow_review_that_did_not_finish_verified_is_never_picked(bool readOnly)
+    {
+        static (string Key, string Value) Shadow(string pr, string stage)
+        {
+            var (key, value) = Review(pr);
+            var row = JsonNode.Parse(value)!.AsObject();
+            row["shadow"] = true;
+            row["stage"] = stage;
+            return (key, row.ToJsonString());
+        }
+        var alpha = Db(
+            "alpha",
+            Review("7001"),
+            Shadow("7003", "review-running"),
+            Shadow("7004", "verify-pending"),
+            Shadow("7005", "failed"),
+            Snapshot(
+                ("7001", "Merged", Now.AddDays(-2)),
+                ("7003", "Merged", Now.AddDays(-1)),
+                ("7004", "Merged", Now.AddDays(-1)),
+                ("7005", "Merged", Now.AddDays(-1))
+            )
+        );
+        var settings = S_settings with { ReadOnlySession = _ => readOnly };
+
+        var (scan, plan) = await PlanAsync(new FakeHttpMessageHandler(), [], settings, Target("alpha", alpha));
+
+        plan.Select(entry => entry.Pick.Pr.Label).Should().Equal("Nova !7001");
+        scan.Counts.Should().BeEquivalentTo(new Dictionary<string, int> { ["Start"] = 1, ["review-not-verified"] = 3 });
     }
 
     [Fact]
@@ -1123,7 +1215,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         FakeHttpMessageHandler host,
         List<(string Name, string Reason)> broken,
         params JudgeBatch.Target[] targets
-    ) => PlanAsync(host, broken, Settings, targets);
+    ) => PlanAsync(host, broken, S_settings, targets);
 
     private static async Task<(JudgeBatch.Scan Scan, List<(JudgeBatch.Pick Pick, string? Wait)> Plan)> PlanAsync(
         FakeHttpMessageHandler host,
@@ -1142,7 +1234,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
     {
         var (scan, plan) = await PlanAsync(host, [], Target("alpha", db));
         return JudgeBatch
-            .Summary(scan, plan, [], [], Settings, execute: false, "ok", 0, Now)
+            .Summary(scan, plan, [], [], S_settings, execute: false, "ok", 0, Now)
             .ReplaceLineEndings("\n")
             .Split('\n');
     }
@@ -1230,7 +1322,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
                 ["provider"] = "gpt-6.1-sol",
                 ["effort"] = "xhigh",
                 ["mode"] = "workspace-agent",
-                ["promptTemplateSha256"] = Settings.PromptSha256,
+                ["promptTemplateSha256"] = S_settings.PromptSha256,
             },
             ["caps"] = new JsonObject { ["maxUsd"] = 5m },
             ["judgeUsage"] = new JsonObject

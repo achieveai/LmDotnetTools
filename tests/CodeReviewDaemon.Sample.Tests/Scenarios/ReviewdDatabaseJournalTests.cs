@@ -70,6 +70,41 @@ public sealed class ReviewdDatabaseJournalTests : LoggingTestBase
         Read().Should().Be("v1");
     }
 
+    // A shadow arm's first executed run creates its own --db, so that create must go through the seam too. A live
+    // run's --db is never created: a mistyped path fails rather than starting empty.
+    [Fact]
+    public async Task A_shadow_arm_creates_its_database_in_wal_mode_and_a_live_run_creates_none()
+    {
+        var live = _database + "-live.db";
+
+        await ReviewArm.CheckAsync(_database, shadow: true, "challenger", pin: true, CancellationToken.None);
+
+        ReviewdSqlitePools.Clear(_database);
+        LogSidecars("after the shadow arm's first check");
+        JournalMode().Should().Be("wal");
+
+        var liveCheck = () => ReviewArm.CheckAsync(live, shadow: false, null, pin: true, CancellationToken.None);
+        var refused = await liveCheck.Should().ThrowAsync<SqliteException>();
+        Logger.LogDebug("A live check on a missing --db is refused: {Message}", refused.Which.Message);
+        File.Exists(live).Should().BeFalse("a live run must not start an empty database");
+    }
+
+    // The seam pools its handle. The arm check is a one-off, so it must not leave the shadow db open after the run.
+    [SkippableFact]
+    public async Task A_shadow_arm_check_leaves_no_handle_open_on_its_database()
+    {
+        Skip.IfNot(
+            OperatingSystem.IsWindows(),
+            "only Windows refuses an exclusive open of a file another handle holds"
+        );
+
+        await ReviewArm.CheckAsync(_database, shadow: true, "challenger", pin: true, CancellationToken.None);
+
+        LogSidecars("after the shadow arm's check");
+        var exclusive = () => new FileStream(_database, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        exclusive.Should().NotThrow("no pooled handle may still hold the database").Which.Dispose();
+    }
+
     // A read-only command (pr pick, capacity, the batch's reads) can be the first to open the database after every
     // writer has closed it, when SQLite has removed the -wal and -shm. It must still read.
     [Fact]

@@ -267,7 +267,7 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
                         return True
                     except ReviewError:
                         return False
-                scope = {'pr': 17, 'hashlib': hashlib, 'ReviewError': ReviewError, 'passes': passes}
+                scope = {'pr': 17, 'hashlib': hashlib, 'json': json, 'ReviewError': ReviewError, 'passes': passes}
                 exec(compile(ast.Module(lifted, []), 'rules', 'exec'), scope)
                 call = eval('lambda c: ' + expression, scope)
                 cases = json.loads(sys.stdin.read())
