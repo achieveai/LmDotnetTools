@@ -70,7 +70,10 @@ internal static class SandboxCommands
         }
         var secret = RandomNumberGenerator.GetHexString(64);
         // Read-only egress narrows every Azure DevOps rule to GET and HEAD (a shadow review's --post-session),
-        // plus POST to each listed repo's git fetch and prepare's two read queries, so prepare runs there too.
+        // plus POST to each listed repo's git fetch and prepare's two read queries, so prepare runs there too. It
+        // narrows every GitHub rule to GET and HEAD as well: the commit step imports the workspace's review_commit.py,
+        // which the shadow agent can edit to push the store branch. Shadow sources are ADO only, so nothing here
+        // fetches from GitHub.
         var readOnly = options.Has("read-only-egress");
         var readRepos = (options.Get("read-repos") ?? "")
             .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
@@ -86,7 +89,8 @@ internal static class SandboxCommands
             gateway,
             secret,
             readOnlyEgress: readOnly,
-            readOnlyAdoPostPaths: [.. readPaths.Distinct(StringComparer.Ordinal)]
+            readOnlyAdoPostPaths: [.. readPaths.Distinct(StringComparer.Ordinal)],
+            readOnlyGitHub: readOnly
         );
         var marketplaces = (options.Get("marketplaces") ?? "").Split(
             ',',
