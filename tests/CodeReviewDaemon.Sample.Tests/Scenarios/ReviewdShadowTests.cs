@@ -239,6 +239,70 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         }
     }
 
+    [Fact]
+    public async Task A_commit_lost_after_a_resume_moved_to_a_new_post_session_is_replayed_through_that_session()
+    {
+        // A resume with no lost commit may move to another post session. A commit it then loses is known to the
+        // gateway only in that session, so the attempt must name it; else every later restart through it is refused.
+        const string completed = """{"status":"Completed","runId":"run","response":{"text":"verdict: APPROVE"}}""";
+        var handler = Host(status: completed);
+        // A resume finds the conversation the first run provisioned in the host's list.
+        var resumed = Host(
+            """[{"threadId":"thread","title":"shadow-Nova-17-aaaaaaaa","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1,"clientToolsDisabled":true}]""",
+            status: completed
+        );
+        var phases = new List<(string Phase, JsonObject Args)>();
+        var commits = new List<string>();
+        Exception? commitFailure = new SandboxException(SandboxErrorKind.Unavailable, "busy", 503)
+        {
+            ErrorCode = "operation_capacity_exhausted",
+        };
+        void Commit(string phase, string operation)
+        {
+            if (phase != "commit")
+            {
+                return;
+            }
+            commits.Add(operation);
+            if (commitFailure is { } failure)
+            {
+                throw failure;
+            }
+        }
+        await SnapshotAsync();
+
+        // Refused at capacity: nothing was lost, so the attempt waits at verify-pending with no replay.
+        var first = () => RunAsync(handler, phases, ["--shadow"], "read-only", Commit);
+        await first.Should().ThrowAsync<SandboxException>();
+        (await AttemptAsync()).ContainsKey(ReviewRunner.CommitReplay).Should().BeFalse();
+
+        // The resume moves to another post session, and that session's commit response is lost.
+        commitFailure = new SandboxException(SandboxErrorKind.TransportTimeout, "transport timeout (00:00:30).");
+        var moved = () => RunAsync(resumed, phases, ["--shadow", "--resume"], "another-read-only", Commit);
+        await moved.Should().ThrowAsync<SandboxException>();
+        var lost = await AttemptAsync();
+        Logger.LogDebug(
+            "After the lost commit the attempt names post session {PostSession} and replay {Replay}",
+            lost["postSessionId"]?.ToJsonString(),
+            lost[ReviewRunner.CommitReplay]?.ToJsonString()
+        );
+        lost["postSessionId"]!.GetValue<string>().Should().Be("another-read-only");
+        lost[ReviewRunner.CommitReplay]!.GetValue<string>().Should().Be(commits[^1]);
+
+        // The first session no longer knows the commit; the session it was sent in replays it under its id.
+        var back = () => RunAsync(resumed, phases, ["--shadow", "--resume"], "read-only", Commit);
+        (await back.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should()
+            .Be(
+                "This attempt's lost commit can only be replayed through --post-session another-read-only, the session it was sent in."
+            );
+        commitFailure = null;
+        (await RunAsync(resumed, phases, ["--shadow", "--resume"], "another-read-only", Commit)).Should().Be(0);
+        commits.Should().HaveCount(3);
+        commits[2].Should().Be(commits[1], "the lost commit is resubmitted under its own operation id");
+        (await AttemptAsync()).ContainsKey(ReviewRunner.CommitReplay).Should().BeFalse();
+    }
+
     [Theory]
     [InlineData(null, "--shadow", "This --db holds live reviews*")]
     [InlineData("--shadow", null, "This --db belongs to a shadow arm; the live reviewer needs*")]
@@ -578,13 +642,64 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             // A marker written before markers listed their repos grants no fetch, so its session is refused.
             await File.WriteAllTextAsync(
                 Path.Combine(store, "read-only-sessions", "legacy.json"),
-                """{"sessionId":"legacy","workspace":"workspace"}"""
+                """{"sessionId":"legacy","workspace":"workspace","readOnlyGitHub":true}"""
             );
             var legacy = () => ReadOnlySessions.Require(store, "legacy", Repo.DisplayName);
             legacy
                 .Should()
                 .Throw<ArgumentException>()
                 .WithMessage("--post-session legacy cannot fetch org/project/Nova*");
+        }
+        finally
+        {
+            Directory.Delete(store, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("""{"sessionId":"s","readOnlyEgress":true,"readRepos":["org/project/Nova"]}""", false)]
+    [InlineData(
+        """{"sessionId":"s","readOnlyEgress":true,"readOnlyGitHub":false,"readRepos":["org/project/Nova"]}""",
+        false
+    )]
+    [InlineData(
+        """{"sessionId":"s","readOnlyEgress":true,"readOnlyGitHub":"true","readRepos":["org/project/Nova"]}""",
+        false
+    )]
+    [InlineData(
+        """{"sessionId":"s","readOnlyEgress":true,"readOnlyGitHub":true,"readRepos":["org/project/Nova"]}""",
+        true
+    )]
+    public async Task A_post_session_an_earlier_build_marked_is_refused_because_it_keeps_github_writes(
+        string marker,
+        bool accepted
+    )
+    {
+        // An earlier build narrowed only ADO, so its marked session can still push to GitHub. Only a marker that
+        // says GitHub was narrowed too is accepted, by a shadow run, a resume and a reap or reclaim alike.
+        var store = Path.Combine(Path.GetTempPath(), $"reviewd-tokens-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(store, "read-only-sessions"));
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(store, "read-only-sessions", "s.json"), marker);
+
+            var require = () => ReadOnlySessions.Require(store, "s", Repo.DisplayName);
+
+            Logger.LogDebug("Marker {Marker} reads as marked {Marked}", marker, ReadOnlySessions.IsMarked(store, "s"));
+            ReadOnlySessions.IsMarked(store, "s").Should().Be(accepted);
+            if (accepted)
+            {
+                require.Should().NotThrow();
+            }
+            else
+            {
+                require
+                    .Should()
+                    .Throw<ArgumentException>()
+                    .WithMessage(
+                        "--post-session s was created by an earlier build whose read-only egress kept GitHub*"
+                    );
+            }
         }
         finally
         {
@@ -3038,7 +3153,9 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
                     request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
                 _ => new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent("""{"threadId":"thread","readOnlyEgressAccepted":true}"""),
+                    Content = new StringContent(
+                        """{"threadId":"thread","readOnlyEgressAccepted":true,"readOnlyGitHubAccepted":true}"""
+                    ),
                 }
             )
             .OnJson(HttpMethod.Get, "/api/conversations?", conversations)
@@ -3064,7 +3181,8 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         FakeHttpMessageHandler handler,
         List<(string Phase, JsonObject Args)> phases,
         string[] extra,
-        string postSession = "read-only"
+        string postSession = "read-only",
+        Action<string, string>? beforeStep = null
     )
     {
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
@@ -3123,6 +3241,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken token)
         {
             phases.Add((phase, args.DeepClone().AsObject()));
+            beforeStep?.Invoke(phase, operation);
             if (phase == "review-repo-head" && _headTimeouts-- > 0)
             {
                 throw new SandboxException(SandboxErrorKind.TransportTimeout, "The gateway did not answer in time.");

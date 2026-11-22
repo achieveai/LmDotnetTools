@@ -251,10 +251,11 @@ internal sealed class LmStreamingS2SClient
         );
 
     /// <summary>
-    /// <paramref name="readOnlyEgress"/> asks the host for a thread whose sandbox may only read ADO (GET and
-    /// HEAD). Unlike <c>disableClientTools</c> this is a contract, not a hint: a host that predates the field
-    /// ignores it and would give the thread full egress, so a reply without <c>readOnlyEgressAccepted: true</c>
-    /// deletes the thread (best effort) and throws <see cref="ReviewHostContractException"/>.
+    /// <paramref name="readOnlyEgress"/> asks the host for a thread whose sandbox may only read ADO and GitHub (GET
+    /// and HEAD). Unlike <c>disableClientTools</c> this is a contract, not a hint: a host that predates the field
+    /// ignores it and would give the thread full egress, and an earlier host narrowed only ADO. So a reply without
+    /// both <c>readOnlyEgressAccepted: true</c> and <c>readOnlyGitHubAccepted: true</c> deletes the thread (best
+    /// effort) and throws <see cref="ReviewHostContractException"/>.
     /// </summary>
     public async Task<string> ProvisionAsync(
         string workspaceId,
@@ -332,6 +333,10 @@ internal sealed class LmStreamingS2SClient
                     + $"'{reasoningEffort}'. Upgrade the review host before running this review."
             : readOnlyEgress && !ReadBoolProperty(body, "readOnlyEgressAccepted")
                 ? $"The LmStreaming review host at {_baseUrl} did not acknowledge requested read-only egress; "
+                    + $"thread '{threadId}' was not used and its delete was attempted. Upgrade the review host first."
+            // An earlier host narrowed only ADO, so its read-only thread could still push to GitHub.
+            : readOnlyEgress && !ReadBoolProperty(body, "readOnlyGitHubAccepted")
+                ? $"The LmStreaming review host at {_baseUrl} did not acknowledge read-only GitHub egress; "
                     + $"thread '{threadId}' was not used and its delete was attempted. Upgrade the review host first."
             : null;
         if (unacknowledged is not null)

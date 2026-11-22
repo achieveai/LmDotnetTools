@@ -43,7 +43,9 @@ public sealed class SandboxController(
         // The thread's own slot: a read-only-egress thread (a judge) runs in a sandbox of its own, never the
         // normal one its workspace's other threads share.
         var readOnlyEgress = await ConversationReadOnlyEgress.ReadAsync(conversations, threadId, ct);
-        var session = registry.TryGetExistingSession(target.WorkspaceId!, readOnlyEgress);
+        // A conversation with a dedicated sandbox runs in a slot of its own too, never the workspace's shared one.
+        var owner = await ConversationDedicatedSandbox.ReadAsync(conversations, threadId, ct) ? threadId : null;
+        var session = registry.TryGetExistingSession(target.WorkspaceId!, readOnlyEgress, owner);
         return Ok(
             new
             {

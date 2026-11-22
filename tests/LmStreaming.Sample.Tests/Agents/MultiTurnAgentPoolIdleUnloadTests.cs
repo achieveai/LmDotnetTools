@@ -525,6 +525,77 @@ public class MultiTurnAgentPoolIdleUnloadTests
         (await pool.UnloadIdleAgentsAsync(IdleAfter)).Should().Be(0);
     }
 
+    [Theory]
+    [InlineData("an unanswered question")]
+    [InlineData("an armed wait")]
+    [InlineData("a running sub-agent")]
+    [InlineData("a pending background task")]
+    [InlineData("nothing")]
+    public async Task AnExplicitUnload_RefusesALoopTheSweepWouldKeep_AndReleasesAnIdleOne(string work)
+    {
+        // The sandbox release route unloads a conversation to rebuild it in a new sandbox. A rebuild loses what
+        // only this process holds, so the route may unload only what the idle sweep would unload. None of these
+        // is a run in progress, so the plain idle release (Busy only) would have disposed every one.
+        const string threadId = "thread-held";
+        var sink = new BackgroundTaskSink { PendingFor = work == "a pending background task" ? threadId : null };
+        var source = new ManualTriggerSource();
+        var requests = new StrongBox<int>();
+        MultiTurnAgentLoop Build(string id) =>
+            work switch
+            {
+                "an unanswered question" => new MultiTurnAgentLoop(
+                    AsksOnceThenAnswers(requests),
+                    new FunctionRegistry(),
+                    id
+                ),
+                "an armed wait" => WaitingLoop(id, "notify", source, requests),
+                "a running sub-agent" => new MultiTurnAgentLoop(
+                    BlockingProvider(),
+                    new FunctionRegistry(),
+                    id,
+                    subAgentOptions: WorkerTemplate()
+                ),
+                _ => IdleLoop(id),
+            };
+        await using var pool = new MultiTurnAgentPool(
+            context => new MultiTurnAgentPool.AgentCreationResult(Build(context.ThreadId)),
+            providerRegistry: null,
+            conversationStore: null,
+            NullLogger<MultiTurnAgentPool>.Instance,
+            bindingSink: sink
+        )
+        {
+            TimeProvider = NewClock(),
+        };
+        var loop = (MultiTurnAgentLoop)pool.GetOrCreateAgent(threadId, Mode);
+        if (work is "an unanswered question" or "an armed wait")
+        {
+            await DrainRunAsync(loop, "start");
+            await WaitUntilInputRetiredAsync(pool, threadId);
+        }
+        else if (work == "a running sub-agent")
+        {
+            _ = await loop.SubAgentManager!.SpawnAsync("worker", "long task", name: "alpha", runInBackground: true);
+        }
+
+        pool.TryGetHandoffState(threadId, out var state).Should().BeTrue();
+        state.IsBusy.Should().BeFalse("no run is in progress and no input waits");
+
+        var outcome = await pool.TryUnloadAgentAsync(threadId, state);
+
+        if (work == "nothing")
+        {
+            outcome.Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.Released);
+            pool.HasAgent(threadId).Should().BeFalse();
+        }
+        else
+        {
+            outcome.Should().Be(MultiTurnAgentPool.AgentReleaseOutcome.HoldsWork, $"the loop holds {work}");
+            pool.HasAgent(threadId).Should().BeTrue("nothing is disposed");
+            pool.GetOrCreateAgent(threadId, Mode).Should().BeSameAs(loop);
+        }
+    }
+
     [Fact]
     public async Task AnAcceptReportedByAnUnloadedAgent_IsRefused_ButAnUnknownAgentsIsNot()
     {

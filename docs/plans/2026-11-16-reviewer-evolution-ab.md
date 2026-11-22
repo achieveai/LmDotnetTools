@@ -8,7 +8,8 @@
 > - An executed run pins its `--db` to its arm (`reviewd/arm`, one insert, so a live and a shadow run that start
 >   together cannot both claim it); a run of another arm is refused there. A shadow arm also refuses an unpinned
 >   `--db` that already holds live reviews or a live batch queue. A batch keeps the arm in its queue scope.
-> - Shadow is Azure DevOps only: read-only egress cannot stop a GitHub post, so `--shadow` refuses GitHub.
+> - Shadow is Azure DevOps only: read-only egress refuses every GitHub POST, a git fetch included, so `--shadow`
+>   refuses GitHub.
 > - Shadow conversations are titled `shadow-{repo}-{pr}-{head8}` and skip both title lookups, so live and shadow
 >   never reuse each other's conversations and a shadow run reviews heads the live reviewer already did.
 > - Every shadow step, prepare included, runs in `--post-session`, a session made by

@@ -8,7 +8,8 @@ namespace Reviewd.Sample;
 ///     Sandbox sessions created with <c>sandbox create --read-only-egress --read-repos</c>, and the routing that sends
 ///     a shadow review's steps to one. The gateway does not report a session's network rules back, so creation leaves
 ///     a marker beside the session secrets on the host, where no sandbox can write it, naming the repos the session
-///     may fetch. A shadow run refuses a <c>--post-session</c> without that marker, or one that does not list its repo.
+///     may fetch. A shadow run refuses a <c>--post-session</c> without that marker, one that does not list its repo,
+///     and one an earlier build marked: that build narrowed only ADO, so its session can still push to GitHub.
 /// </summary>
 internal static partial class ReadOnlySessions
 {
@@ -38,6 +39,8 @@ internal static partial class ReadOnlySessions
                     sessionId,
                     workspace,
                     readOnlyEgress = true,
+                    // Its GitHub rules keep GET and HEAD only; a marker without this predates that.
+                    readOnlyGitHub = true,
                     readRepos,
                     createdAt = DateTimeOffset.UtcNow,
                 }
@@ -52,10 +55,18 @@ internal static partial class ReadOnlySessions
     /// </summary>
     internal static void Require(string tokenStoreDir, string sessionId, string? repo = null)
     {
-        if (!IsMarked(tokenStoreDir, sessionId))
+        var marker = Read(tokenStoreDir, sessionId);
+        if (marker is null)
         {
             throw new ArgumentException(
                 $"--post-session {sessionId} was not created by sandbox create --read-only-egress on this host."
+            );
+        }
+        if (!NarrowsGitHub(marker))
+        {
+            throw new ArgumentException(
+                $"--post-session {sessionId} was created by an earlier build whose read-only egress kept GitHub "
+                    + "writes; create a new one with sandbox create --read-only-egress."
             );
         }
         if (repo is null)
@@ -63,7 +74,6 @@ internal static partial class ReadOnlySessions
             return;
         }
         // ADO repo names are case-insensitive, so compare normalized identities: org/project/Nova is org/PROJECT/nova.
-        var marker = JsonNode.Parse(File.ReadAllText(MarkerPath(tokenStoreDir, sessionId))) as JsonObject;
         var repos = marker?["readRepos"] as JsonArray;
         var wanted = PrCommands.ParseRepo(repo).NormalizedKey;
         if (
@@ -80,9 +90,21 @@ internal static partial class ReadOnlySessions
         }
     }
 
-    /// <summary>True when <c>sandbox create --read-only-egress</c> on this host created <paramref name="sessionId" />.</summary>
+    /// <summary>
+    ///     True when <c>sandbox create --read-only-egress</c> on this host created <paramref name="sessionId" /> with
+    ///     GitHub narrowed too.
+    /// </summary>
     internal static bool IsMarked(string tokenStoreDir, string sessionId) =>
-        File.Exists(MarkerPath(tokenStoreDir, sessionId));
+        Read(tokenStoreDir, sessionId) is { } marker && NarrowsGitHub(marker);
+
+    private static JsonObject? Read(string tokenStoreDir, string sessionId)
+    {
+        var path = MarkerPath(tokenStoreDir, sessionId);
+        return File.Exists(path) ? JsonNode.Parse(File.ReadAllText(path)) as JsonObject ?? [] : null;
+    }
+
+    private static bool NarrowsGitHub(JsonObject marker) =>
+        marker["readOnlyGitHub"] is JsonValue value && value.TryGetValue(out bool narrowed) && narrowed;
 
     /// <summary>
     ///     Sends every step to <paramref name="postSession" /> when there is one, prepare included, else to

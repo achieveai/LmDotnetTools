@@ -15,7 +15,7 @@ public sealed class LmStreamingS2SClientReadOnlyEgressTests
         var handler = new FakeHttpMessageHandler().OnJson(
             HttpMethod.Post,
             "api/conversations",
-            """{"threadId":"thread-ro","readOnlyEgressAccepted":true}"""
+            """{"threadId":"thread-ro","readOnlyEgressAccepted":true,"readOnlyGitHubAccepted":true}"""
         );
 
         var thread = await ProvisionReadOnlyAsync(handler);
@@ -56,6 +56,24 @@ public sealed class LmStreamingS2SClientReadOnlyEgressTests
         var provision = () => ProvisionReadOnlyAsync(handler, reasoningEffort: "high");
 
         _ = await provision.Should().ThrowAsync<ReviewHostContractException>().WithMessage("*read-only egress*");
+        handler
+            .Requests.Should()
+            .ContainSingle(request => request.Method == HttpMethod.Delete)
+            .Which.Uri.AbsolutePath.Should()
+            .Be("/api/conversations/thread-old");
+    }
+
+    [Fact]
+    public async Task A_host_whose_read_only_egress_keeps_github_writes_gets_the_thread_deleted_and_a_contract_error()
+    {
+        // An earlier host narrowed only ADO: its read-only thread could still push to GitHub.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "api/conversations", """{"threadId":"thread-old","readOnlyEgressAccepted":true}""")
+            .OnJson(HttpMethod.Delete, "api/conversations/thread-old", "{}");
+
+        var provision = () => ProvisionReadOnlyAsync(handler);
+
+        _ = await provision.Should().ThrowAsync<ReviewHostContractException>().WithMessage("*read-only GitHub egress*");
         handler
             .Requests.Should()
             .ContainSingle(request => request.Method == HttpMethod.Delete)

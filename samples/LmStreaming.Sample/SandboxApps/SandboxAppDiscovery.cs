@@ -16,7 +16,8 @@ public sealed record MiniWebAppRecord(
 /// <summary>Discovers LLM-authored apps in the conversation's already-authorized workspace.</summary>
 public sealed class SandboxAppDiscovery(IWorkspaceFileBrowser browser)
 {
-    private const string AppsPath = "mini-web-apps";
+    /// <summary>The workspace-root directory apps live in. The host runs them through the gateway's operations API.</summary>
+    internal const string AppsPath = "mini-web-apps";
     private const long MaxManifestBytes = 8192;
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 

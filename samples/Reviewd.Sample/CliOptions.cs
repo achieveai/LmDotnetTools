@@ -576,7 +576,8 @@ internal sealed class CliOptions
         auth run [--listen <url>] [--callback <gateway-reachable-url>] -- <local-program> [args...]
         sandbox create --workspace <logical-leaf> --callback <gateway-reachable-url> [--marketplaces <csv>]
                        [--read-only-egress --read-repos <org/project/repo,...>]  (a review run --shadow --post-session:
-                       Azure DevOps GET/HEAD only, plus each listed repo's git fetch and prepare's two read queries)
+                       Azure DevOps and GitHub GET/HEAD only, plus each listed repo's git fetch and prepare's two read
+                       queries)
         sandbox exec --session <id> [--directory <relative-dir>] [--timeout <seconds>] -- <program> [args...]
         variant up --manifest <variant.json> --experiment <record-id> --from-workspace <base-workspace-id>
                    --champion <commit> [--execute]
