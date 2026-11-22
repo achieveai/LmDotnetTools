@@ -2008,6 +2008,12 @@ internal static class ReviewRunner
     // The same ten minutes at a review's PollInterval.
     internal static readonly int ReviewBusyReads = (int)(TimeSpan.FromMinutes(10) / PollInterval);
 
+    // A sub-agent tree read that runs past the S2S client's 120 s timeout is a slow host, not a failed wait (seen
+    // live: 64-143 s under lock contention on a 9 GB conversation store). Five such reads in a row are retried and the
+    // sixth ends the wait: six 120 s reads and five polls, about 12.5 minutes, near the busy budget's ten. Each wait
+    // between them still renews the slot lease.
+    internal const int MaxConsecutiveTreeTimeouts = 5;
+
     // A queued input starts within seconds of the conversation going idle. One still NotStarted while the
     // root is idle and every descendant has settled has nothing left that will run it: PR 221's confirmation
     // was folded into a parked run without its receipt, and the batch waited on it for four hours; a review
@@ -2074,7 +2080,9 @@ internal static class ReviewRunner
     ///     restart can read it for a moment, and the caller's check decides when the run is gone. A busy tree read
     ///     waits through <paramref name="busyDelay"/> when given, so a caller can tell a busy read from a full poll.
     ///     The wait gives up after <paramref name="maxBusyReads"/> busy tree reads in a row; a caller polling slower
-    ///     than once a second passes fewer, so the budget stays about ten minutes. A caller that passes
+    ///     than once a second passes fewer, so the budget stays about ten minutes. A tree read that runs past the
+    ///     client's timeout (not the wait's own cancel) waits the same way, retried up to <see cref="MaxConsecutiveTreeTimeouts"/> times
+    ///     in a row; any answered read resets both counts. A caller that passes
     ///     <paramref name="probe"/> lets a Running descendant it finds abandoned settle (see
     ///     <see cref="AbandonedChildProbe"/>); without one, Running never settles.
     /// </remarks>
@@ -2095,6 +2103,7 @@ internal static class ReviewRunner
         string? candidate = null;
         DateTimeOffset? stalledSince = null;
         var busyReads = 0;
+        var treeTimeouts = 0;
         while (true)
         {
             var status = input is null ? null : await client.GetStatusByInputIdAsync(thread, input, ct);
@@ -2114,7 +2123,21 @@ internal static class ReviewRunner
                 await (busyDelay ?? delay)(ct);
                 continue;
             }
+            // The client's own timeout, not this wait's token: the host was too slow to answer, so read again like a
+            // busy hierarchy. A cancelled wait still stops at once.
+            catch (TaskCanceledException timeout)
+                when (!ct.IsCancellationRequested && ++treeTimeouts <= MaxConsecutiveTreeTimeouts)
+            {
+                Console.Error.WriteLine(
+                    $"Sub-agent tree read of thread {thread} timed out ({treeTimeouts}/{MaxConsecutiveTreeTimeouts}): {timeout.Message} Reading again."
+                );
+                candidate = null;
+                stalledSince = null;
+                await (busyDelay ?? delay)(ct);
+                continue;
+            }
             busyReads = 0;
+            treeTimeouts = 0;
             if (
                 status is not null
                 && status.Status.ToLowerInvariant() is not ("completed" or "inprogress" or "notstarted")
