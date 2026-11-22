@@ -4483,7 +4483,7 @@ public sealed class ReviewdRunnerTests
 
     // A sweep that resets the slot while the send waits out a 503 has handed the slot on: the resend must not go out
     // on it, and the run must not overwrite the attempt the reset recorded, even when the wait is then cancelled
-    // (or its DB read fails) and the run stops on that error instead of reaching the claim check before the resend.
+    // and the run stops on that error instead of reaching the claim check before the resend.
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

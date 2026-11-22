@@ -553,7 +553,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     [Theory]
     [InlineData("--read-only-egress")]
     [InlineData("--read-repos org/project/Nova")]
-    public void A_read_only_session_names_the_repos_its_prepare_may_fetch_and_only_it_does(string flags)
+    public void Read_only_egress_and_read_repos_are_each_refused_without_the_other(string flags)
     {
         var parse = () =>
             CliOptions.Parse(["sandbox", "create", "--workspace", "w", "--callback", "http://h", .. flags.Split(' ')]);
@@ -1323,8 +1323,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     [Fact]
     public async Task A_preview_of_a_pinned_arm_reads_no_clone_or_alias_and_pins_nothing()
     {
-        Directory.CreateDirectory(_files);
-        await File.WriteAllTextAsync(Path.Combine(_files, "mode.json"), """{"systemPrompt":"Review as b-007."}""");
+        await WriteArmModeFileAsync();
         await SnapshotAsync();
         var handler = ArmHost();
         var phases = new List<(string Phase, JsonObject Args)>();
@@ -1339,7 +1338,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         exit.Should().Be(0);
         phases.Select(p => p.Phase).Should().NotContain("review-repo-head", "a preview never reads the clone");
         _marketplaceReads.Should().Be(0, "a preview never resolves the marketplace alias");
-        handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "a preview sends nothing");
+        handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "a preview sends only GET reads");
         using var connection = PrThreadBindings.Connection(_database);
         var store = new SqliteKvStore(connection);
         (await store.GetAsync<JsonObject>(ReviewArm.Key)).Should().BeNull("a preview does not pin the --db");
@@ -1474,8 +1473,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     [InlineData(true)]
     public async Task A_resume_of_an_attempt_whose_start_did_not_check_its_pins_is_refused(bool checkedAtStart)
     {
-        Directory.CreateDirectory(_files);
-        await File.WriteAllTextAsync(Path.Combine(_files, "mode.json"), """{"systemPrompt":"Review as b-007."}""");
+        await WriteArmModeFileAsync();
         var flags = Variant("b-007", ArmManifest);
         var arm = (
             await ShadowArm.ResolveAsync(
@@ -1538,8 +1536,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     [InlineData("marketplace alias cr-b-007")]
     public async Task A_gateway_that_does_not_answer_a_pin_read_defers_the_review_until_it_does(string read)
     {
-        Directory.CreateDirectory(_files);
-        await File.WriteAllTextAsync(Path.Combine(_files, "mode.json"), """{"systemPrompt":"Review as b-007."}""");
+        await WriteArmModeFileAsync();
         await SnapshotAsync();
         var handler = ArmHost();
         var flags = Variant("b-007", ArmManifest);
@@ -1560,7 +1557,9 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
                 $"The gateway did not answer reading {read}: *Retry deferred."
             );
         }
-        handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "a deferred review sends nothing");
+        handler
+            .Requests.Should()
+            .OnlyContain(r => r.Method == HttpMethod.Get, "a deferred review sends only GET reads");
         await run.Should().ThrowAsync<InvalidOperationException>("the scripted review never finishes");
         handler
             .Requests.Should()
@@ -1574,10 +1573,12 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     [InlineData("the review-repo clone's commit", "cut")]
     [InlineData("the review-repo clone's commit", "reset")]
     [InlineData("marketplace alias cr-b-007", "cut")]
-    public async Task A_pin_read_whose_answer_is_cut_defers_the_review_until_it_is_read_whole(string read, string fault)
+    public async Task A_pin_read_ending_in_an_IOException_defers_the_review_until_a_read_succeeds(
+        string read,
+        string fault
+    )
     {
-        Directory.CreateDirectory(_files);
-        await File.WriteAllTextAsync(Path.Combine(_files, "mode.json"), """{"systemPrompt":"Review as b-007."}""");
+        await WriteArmModeFileAsync();
         await SnapshotAsync();
         var handler = ArmHost();
         var flags = Variant("b-007", ArmManifest);
@@ -1605,7 +1606,9 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
                 $"The gateway's answer to {read} was cut: *Retry deferred."
             );
         }
-        handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "a deferred review sends nothing");
+        handler
+            .Requests.Should()
+            .OnlyContain(r => r.Method == HttpMethod.Get, "a deferred review sends only GET reads");
         await run.Should().ThrowAsync<InvalidOperationException>("the scripted review never finishes");
         handler
             .Requests.Should()
@@ -2047,7 +2050,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         await GitAsync(root, "commit", "-q", "-m", "champion");
         var head = await GitAsync(root, "rev-parse", "HEAD");
         var champion = championPresent ? head : new string('f', 40);
-        await File.WriteAllTextAsync(Path.Combine(_files, "mode.json"), """{"systemPrompt":"Review as b-007."}""");
+        await WriteArmModeFileAsync();
         var flags = Variant("b-007", ArmManifest.Replace(new string('2', 40), head, StringComparison.Ordinal));
         var host = VariantHost();
         var gateway = new VariantGateway(
@@ -3376,6 +3379,13 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             _ => Task.CompletedTask,
             () => Now
         );
+    }
+
+    // ArmManifest's mode file, as variant up provisioned it.
+    private async Task WriteArmModeFileAsync()
+    {
+        Directory.CreateDirectory(_files);
+        await File.WriteAllTextAsync(Path.Combine(_files, "mode.json"), """{"systemPrompt":"Review as b-007."}""");
     }
 
     private Task SnapshotAsync() =>
