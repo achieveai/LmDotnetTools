@@ -209,8 +209,23 @@ public class SqliteConnectionFactoryTests : IDisposable
         // With maxConnections = 1 the permit count is directly observable: a double-release would
         // have let this second, concurrent acquisition succeed while `final` is still alive.
         using var overCap = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
-        var acquireSecond = async () => await factory.GetConnectionAsync(overCap.Token);
+        var second = factory.GetConnectionAsync(overCap.Token);
 
+        // Bounded, so an acquisition that ignores its token fails the test instead of hanging it. Such an
+        // acquisition still takes `final`'s permit once `final` is disposed; dispose it then, or the factory's own
+        // disposal would wait forever for that permit.
+        if (await Task.WhenAny(second, Task.Delay(TimeSpan.FromSeconds(10))) != second)
+        {
+            _ = second.ContinueWith(
+                static task => task.Result.Dispose(),
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnRanToCompletion,
+                TaskScheduler.Default
+            );
+            Assert.Fail("an acquisition over the cap ignored its cancellation token and kept waiting");
+        }
+
+        var acquireSecond = async () => await second;
         await acquireSecond
             .Should()
             .ThrowAsync<OperationCanceledException>(
@@ -302,7 +317,7 @@ public class SqliteConnectionFactoryTests : IDisposable
     }
 
     [Fact]
-    public async Task The_write_connection_has_its_own_permit_and_a_short_busy_timeout()
+    public async Task The_write_connection_has_its_own_permit_and_the_default_busy_timeout()
     {
         // One read permit. A write that took it, as every write did before the split, would leave the read below
         // waiting for as long as the write held it.
@@ -315,11 +330,12 @@ public class SqliteConnectionFactoryTests : IDisposable
         {
             await using var read = await factory.GetConnectionAsync(timeout.Token);
 
+            // Literal 30, not a shared constant, so a change to either side fails here.
             write
                 .DefaultTimeout.Should()
                 .Be(
-                    SqliteConnectionFactory.WriteBusyTimeoutSeconds,
-                    "a write that waits on a foreign lock sleeps a thread and holds the write permit, so it waits briefly"
+                    30,
+                    "a shorter wait fails writes that a brief outside hold used to delay, and some callers drop the row"
                 );
             read.DefaultTimeout.Should().Be(30, "reads keep Microsoft.Data.Sqlite's default");
 

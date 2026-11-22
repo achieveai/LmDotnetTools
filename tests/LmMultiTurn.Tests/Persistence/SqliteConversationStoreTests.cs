@@ -1289,7 +1289,16 @@ public class SqliteConversationStoreTests : IAsyncLifetime
     {
         public bool FailNext { get; set; }
 
-        public Task<SqliteConnection> GetConnectionAsync(CancellationToken ct = default)
+        public Task<SqliteConnection> GetConnectionAsync(CancellationToken ct = default) =>
+            FailOr(inner.GetConnectionAsync, ct);
+
+        public Task<SqliteConnection> GetWriteConnectionAsync(CancellationToken ct = default) =>
+            FailOr(inner.GetWriteConnectionAsync, ct);
+
+        private Task<SqliteConnection> FailOr(
+            Func<CancellationToken, Task<SqliteConnection>> open,
+            CancellationToken ct
+        )
         {
             if (FailNext)
             {
@@ -1297,7 +1306,7 @@ public class SqliteConversationStoreTests : IAsyncLifetime
                 return Task.FromException<SqliteConnection>(new IOException("no connection"));
             }
 
-            return inner.GetConnectionAsync(ct);
+            return open(ct);
         }
 
         public ValueTask DisposeAsync() => inner.DisposeAsync();

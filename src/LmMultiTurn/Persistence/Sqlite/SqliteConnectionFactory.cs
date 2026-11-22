@@ -12,18 +12,12 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 /// for a busy write lock by sleeping the calling thread, so a writer queued on the lock used to hold a pooled permit
 /// and a thread for up to its 30 s timeout. With every permit held that way, a one-millisecond read waited a minute.
 /// Writes now queue on <see cref="GetWriteConnectionAsync"/>'s single permit, asynchronously and holding nothing, and
-/// reads keep their own permits.
+/// reads keep their own permits. Only the write holding that permit waits on the lock, and only for a holder outside
+/// this factory (another process, or another factory on the same file). It keeps the full 30 s wait: a shorter one
+/// would fail writes that a brief outside hold used to delay, and some callers drop a row whose save fails.
 /// </remarks>
 public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
 {
-    /// <summary>
-    /// How long a write waits, in seconds, for a write lock that something outside this factory holds (another
-    /// process, or another factory on the same file) before it fails with "database is locked". Writes through this
-    /// factory never wait on each other's lock: they queue on the write permit first. Short, because the wait sleeps a
-    /// thread and holds the write permit, so every other write queues behind it.
-    /// </summary>
-    internal const int WriteBusyTimeoutSeconds = 5;
-
     private readonly string _connectionString;
     private readonly SemaphoreSlim _semaphore;
     private readonly SemaphoreSlim _writeSemaphore = new(1, 1);
@@ -95,14 +89,13 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
         }.ToString();
 
     /// <inheritdoc />
-    public Task<SqliteConnection> GetConnectionAsync(CancellationToken ct = default) =>
-        OpenAsync(_semaphore, busyTimeoutSeconds: null, ct);
+    public Task<SqliteConnection> GetConnectionAsync(CancellationToken ct = default) => OpenAsync(_semaphore, ct);
 
     /// <inheritdoc />
     public Task<SqliteConnection> GetWriteConnectionAsync(CancellationToken ct = default) =>
-        OpenAsync(_writeSemaphore, WriteBusyTimeoutSeconds, ct);
+        OpenAsync(_writeSemaphore, ct);
 
-    private async Task<SqliteConnection> OpenAsync(SemaphoreSlim permits, int? busyTimeoutSeconds, CancellationToken ct)
+    private async Task<SqliteConnection> OpenAsync(SemaphoreSlim permits, CancellationToken ct)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
@@ -116,13 +109,6 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
             // second one, so for a moment a handle this call is responsible for is available to another
             // thread.
             connection = new PooledConnection(_connectionString, permits);
-            if (busyTimeoutSeconds is { } seconds)
-            {
-                // Microsoft.Data.Sqlite's own busy wait: every command and BEGIN on this connection retries a
-                // locked database for this long. It belongs to this connection object, not the pooled handle.
-                connection.DefaultTimeout = seconds;
-            }
-
             ct.ThrowIfCancellationRequested();
             lock (PoolGate)
             {

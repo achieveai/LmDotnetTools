@@ -211,6 +211,204 @@ public sealed class SqliteConversationStoreWriteQueueTests : IAsyncLifetime
             .Be("save");
     }
 
+    [Fact]
+    public async Task A_message_write_waits_out_a_foreign_write_lock_held_longer_than_five_seconds()
+    {
+        // Some callers drop a row whose save fails (MultiTurnAgentBase.PersistMessageAsync logs and moves on), so a
+        // write must wait out an outside hold as long as it did before writes had their own connection: 30 s.
+        await using var store = new SqliteConversationStore(_databasePath);
+        await store.AppendMessagesAsync("thread-m", [Message("thread-m", "before")]);
+
+        await using var holder = await HoldWriteLockAsync();
+        Task write;
+        try
+        {
+            // Task.Run: a write blocked on the lock sleeps whichever thread calls it.
+            write = Task.Run(() => store.AppendMessagesAsync("thread-m", [Message("thread-m", "during")]));
+            await Task.Delay(TimeSpan.FromSeconds(6));
+            write.IsCompleted.Should().BeFalse("the write is still waiting for the lock, not failed");
+        }
+        finally
+        {
+            await RollbackAsync(holder);
+        }
+
+        await write.WaitAsync(TimeSpan.FromSeconds(10));
+        (await store.LoadMessagesAsync("thread-m")).Select(m => m.Id).Should().Equal("before", "during");
+    }
+
+    [Fact]
+    public async Task Schema_initialization_waits_for_the_write_connection_and_leaves_reads_free()
+    {
+        await using var factory = new SqliteConnectionFactory(_databasePath, maxConnections: 1);
+        await using var store = new SqliteConversationStore(factory);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        Task<ThreadMetadata?> load;
+        await using (var held = await factory.GetWriteConnectionAsync(timeout.Token))
+        {
+            // The first call on a new store creates the schema.
+            load = store.LoadMetadataAsync("thread-s", timeout.Token);
+            await Task.Delay(Settle);
+            load.IsCompleted.Should().BeFalse("creating the schema is a write, so it queues for the write connection");
+
+            // The one read connection is free, and no table exists yet: the schema has not started without the
+            // write connection. Checked here because the listing backfill after it waits for that connection too.
+            await using var read = await factory.GetConnectionAsync(timeout.Token);
+            using var tables = read.CreateCommand();
+            tables.CommandText =
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'thread_metadata';";
+            Convert.ToInt64(await tables.ExecuteScalarAsync(timeout.Token)).Should().Be(0);
+        }
+
+        (await load.WaitAsync(Bound)).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Usage_load_reads_the_state_and_its_records_from_one_snapshot()
+    {
+        await using var store = new SqliteConversationStore(_databasePath);
+        var first = Usage("attempt-1");
+        var second = Usage("attempt-2");
+        await store.AppendUsageAsync(ConversationUsageAggregate.Fold("thread-u", [first], 1), [first]);
+
+        // A write commits between the two reads: a higher folded revision and a second record.
+        store.UsageStateReadForTest = () =>
+            store
+                .AppendUsageAsync(ConversationUsageAggregate.Fold("thread-u", [first, second], 2), [second])
+                .WaitAsync(Bound);
+
+        var snapshot = await store.LoadUsageAsync("thread-u").WaitAsync(TimeSpan.FromSeconds(10));
+        store.UsageStateReadForTest = null;
+
+        snapshot!.FoldedRevision.Should().Be(1);
+        snapshot.Records.Select(r => r.ProviderAttemptId).Should().Equal("attempt-1");
+
+        var after = await store.LoadUsageAsync("thread-u");
+        after!.FoldedRevision.Should().Be(2, "the write did commit; only the earlier snapshot leaves it out");
+        after.Records.Should().HaveCount(2);
+    }
+
+    [Theory]
+    [InlineData("save")]
+    [InlineData("update")]
+    public async Task A_metadata_write_queued_when_its_store_is_disposed_fails_and_writes_nothing(string kind)
+    {
+        // The factory outlives the store, as when a host shares one factory between stores.
+        await using var factory = new SqliteConnectionFactory(_databasePath);
+        var store = new SqliteConversationStore(factory);
+        await store.SaveMetadataAsync("thread-d", Metadata("thread-d", "initial"));
+
+        Task write;
+        await using (var held = await factory.GetWriteConnectionAsync())
+        {
+            write =
+                kind == "save"
+                    ? store.SaveMetadataAsync("thread-d", Metadata("thread-d", "late"))
+                    : store.UpdateMetadataAsync(
+                        "thread-d",
+                        existing => existing! with { Properties = existing.Properties!.SetItem("writer", "late") }
+                    );
+            await Task.Delay(Settle);
+            write.IsCompleted.Should().BeFalse("the write has passed its thread's gate and waits for the connection");
+
+            // A write to another thread does not hold this thread's gate, so disposal does not wait for it.
+            await store.DisposeAsync();
+        }
+
+        var awaitWrite = () => write.WaitAsync(Bound);
+        _ = await awaitWrite.Should().ThrowAsync<ObjectDisposedException>();
+
+        await using var reader = new SqliteConversationStore(factory);
+        (await reader.LoadMetadataAsync("thread-d"))!.Properties!["writer"].ToString().Should().Be("initial");
+    }
+
+    [Fact]
+    public async Task Metadata_gates_leave_with_their_last_writer()
+    {
+        await using var store = new SqliteConversationStore(_databasePath);
+        await store.SaveMetadataAsync("thread-1", Metadata("thread-1", "save"));
+        await store.SaveMetadataAsync("thread-2", Metadata("thread-2", "save"));
+        store.MetadataGateCount.Should().Be(0, "a thread with no write running keeps no gate");
+
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var release = new ManualResetEventSlim(false);
+        var update = Task.Run(() =>
+            store.UpdateMetadataAsync(
+                "thread-1",
+                existing =>
+                {
+                    entered.SetResult();
+                    _ = release.Wait(TimeSpan.FromSeconds(10));
+                    return existing!;
+                }
+            )
+        );
+        try
+        {
+            await entered.Task.WaitAsync(Bound);
+
+            // A second writer queues on the same gate and gives up; the gate stays for the writer still inside.
+            using var cancel = new CancellationTokenSource();
+            var cancelled = store.SaveMetadataAsync("thread-1", Metadata("thread-1", "cancelled"), cancel.Token);
+            cancel.Cancel();
+            var waitCancelled = () => cancelled.WaitAsync(Bound);
+            _ = await waitCancelled.Should().ThrowAsync<OperationCanceledException>();
+            store.MetadataGateCount.Should().Be(1);
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        await update.WaitAsync(Bound);
+        store.MetadataGateCount.Should().Be(0);
+    }
+
+    private async Task<SqliteConnection> HoldWriteLockAsync()
+    {
+        // The write lock, held from outside the store: another process, a backup, a checkpoint.
+        var holder = new SqliteConnection(
+            new SqliteConnectionStringBuilder { DataSource = _databasePath, Pooling = false }.ToString()
+        );
+        await holder.OpenAsync();
+        using var begin = holder.CreateCommand();
+        begin.CommandText = "BEGIN IMMEDIATE;";
+        _ = await begin.ExecuteNonQueryAsync();
+        return holder;
+    }
+
+    private static async Task RollbackAsync(SqliteConnection holder)
+    {
+        using var rollback = holder.CreateCommand();
+        rollback.CommandText = "ROLLBACK;";
+        _ = await rollback.ExecuteNonQueryAsync();
+    }
+
+    private static PersistedMessage Message(string threadId, string id) =>
+        new()
+        {
+            Id = id,
+            ThreadId = threadId,
+            RunId = "run-m",
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            MessageType = "TextMessage",
+            Role = "User",
+            MessageJson = $"{{\"text\": \"{id}\"}}",
+        };
+
+    private static UsageRecord Usage(string attemptId) =>
+        new()
+        {
+            LogicalCallId = attemptId,
+            ProviderAttemptId = attemptId,
+            RootConversationId = "thread-u",
+            RequestedModel = "model",
+            InputTokens = 10,
+            OutputTokens = 1,
+            Revision = 1,
+        };
+
     private static ThreadMetadata Metadata(string threadId, string writer) =>
         new()
         {
