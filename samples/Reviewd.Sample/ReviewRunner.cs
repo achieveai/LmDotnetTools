@@ -586,6 +586,13 @@ internal static class ReviewRunner
                 $"The gateway did not answer reading {what}: {ex.Message} Retry deferred."
             );
         }
+        // An answer cut mid-body (HttpIOException) or a connection reset while reading it (an IOException over a
+        // SocketException) reaches here as an IOException: the SDK maps only HttpRequestException to a transport
+        // failure. The read is read-only, so it is retried like an unanswered one.
+        catch (IOException ex)
+        {
+            throw new ReviewDeferredException($"The gateway's answer to {what} was cut: {ex.Message} Retry deferred.");
+        }
     }
 
     internal static Task<int> RunAsync(

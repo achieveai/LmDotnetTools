@@ -1318,6 +1318,36 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         phases.Select(p => p.Phase).Should().BeSubsetOf(["review-repo-head"], "only the read-only head step may run");
     }
 
+    // A preview (no --execute) of a pinned arm checks the host's workspace and mode only: it reads neither the
+    // review-repo clone's commit nor the marketplace alias, and writes no arm pin and no attempt.
+    [Fact]
+    public async Task A_preview_of_a_pinned_arm_reads_no_clone_or_alias_and_pins_nothing()
+    {
+        Directory.CreateDirectory(_files);
+        await File.WriteAllTextAsync(Path.Combine(_files, "mode.json"), """{"systemPrompt":"Review as b-007."}""");
+        await SnapshotAsync();
+        var handler = ArmHost();
+        var phases = new List<(string Phase, JsonObject Args)>();
+
+        var exit = await RunAsync(
+            handler,
+            phases,
+            ["--shadow", "--mode", "mode-1", .. Variant("b-007", ArmManifest)],
+            execute: false
+        );
+
+        exit.Should().Be(0);
+        phases.Select(p => p.Phase).Should().NotContain("review-repo-head", "a preview never reads the clone");
+        _marketplaceReads.Should().Be(0, "a preview never resolves the marketplace alias");
+        handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "a preview sends nothing");
+        using var connection = PrThreadBindings.Connection(_database);
+        var store = new SqliteKvStore(connection);
+        (await store.GetAsync<JsonObject>(ReviewArm.Key)).Should().BeNull("a preview does not pin the --db");
+        (await store.GetAsync<JsonObject>($"reviewd/review-attempt/{Repo.NormalizedKey}/17"))
+            .Should()
+            .BeNull("a preview claims no attempt");
+    }
+
     /// <summary>
     ///     A host holding ArmManifest's workspace and mode as variant up builds them, but for <paramref name="mismatch"/>:
     ///     directory, plugin, mode name or mode setting.
@@ -1528,6 +1558,51 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         {
             (await run.Should().ThrowAsync<ReviewRunner.ReviewDeferredException>()).WithMessage(
                 $"The gateway did not answer reading {read}: *Retry deferred."
+            );
+        }
+        handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "a deferred review sends nothing");
+        await run.Should().ThrowAsync<InvalidOperationException>("the scripted review never finishes");
+        handler
+            .Requests.Should()
+            .Contain(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations");
+    }
+
+    // The SDK maps only HttpRequestException to a transport failure, so an answer cut mid-body (HttpIOException) or a
+    // connection reset while it is read (an IOException over a SocketException) reaches the run as an IOException.
+    // Before the claim neither pin read changes anything, so it defers the review like a read that got no answer.
+    [Theory]
+    [InlineData("the review-repo clone's commit", "cut")]
+    [InlineData("the review-repo clone's commit", "reset")]
+    [InlineData("marketplace alias cr-b-007", "cut")]
+    public async Task A_pin_read_whose_answer_is_cut_defers_the_review_until_it_is_read_whole(string read, string fault)
+    {
+        Directory.CreateDirectory(_files);
+        await File.WriteAllTextAsync(Path.Combine(_files, "mode.json"), """{"systemPrompt":"Review as b-007."}""");
+        await SnapshotAsync();
+        var handler = ArmHost();
+        var flags = Variant("b-007", ArmManifest);
+        _pinReadFault = () =>
+            fault == "cut"
+                ? new HttpIOException(HttpRequestError.ResponseEnded, "The response ended prematurely.")
+                : new IOException(
+                    "Unable to read data from the transport connection.",
+                    new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionReset)
+                );
+        if (read.StartsWith("marketplace", StringComparison.Ordinal))
+        {
+            _aliasTimeouts = 2;
+        }
+        else
+        {
+            _headTimeouts = 2;
+        }
+
+        var run = () => RunAsync(handler, [], ["--shadow", "--mode", "mode-1", .. flags]);
+
+        for (var cut = 0; cut < 2; cut++)
+        {
+            (await run.Should().ThrowAsync<ReviewRunner.ReviewDeferredException>()).WithMessage(
+                $"The gateway's answer to {read} was cut: *Retry deferred."
             );
         }
         handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "a deferred review sends nothing");
@@ -3177,12 +3252,19 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     // How many review-repo-head steps the scripted gateway leaves unanswered before it answers.
     private int _headTimeouts;
 
+    // What an unanswered review-repo-head step or alias lookup raises instead of the default timeout, when set.
+    private Func<Exception>? _pinReadFault;
+
+    // How many times a run read the scripted gateway's marketplace aliases.
+    private int _marketplaceReads;
+
     private async Task<int> RunAsync(
         FakeHttpMessageHandler handler,
         List<(string Phase, JsonObject Args)> phases,
         string[] extra,
         string postSession = "read-only",
-        Action<string, string>? beforeStep = null
+        Action<string, string>? beforeStep = null,
+        bool execute = true
     )
     {
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
@@ -3210,9 +3292,12 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
                 request.Method == HttpMethod.Get
                 && request.RequestUri!.AbsolutePath.EndsWith("/apps/self/marketplaces", StringComparison.Ordinal),
             _ =>
-                _aliasTimeouts-- > 0
-                    ? throw new HttpRequestException("No connection could be made.")
-                    : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(marketplaces) }
+            {
+                _marketplaceReads++;
+                return _aliasTimeouts-- > 0
+                    ? throw _pinReadFault?.Invoke() ?? new HttpRequestException("No connection could be made.")
+                    : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(marketplaces) };
+            }
         );
         using var config = new ReviewdConfig(new ConfigurationBuilder().Build()) { Transport = gateway };
         var options = CliOptions.Parse([
@@ -3234,7 +3319,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             "test",
             "--max-age-hours",
             "72",
-            "--execute",
+            .. execute ? new[] { "--execute" } : [],
             .. extra,
             .. extra.Contains("--shadow") ? new[] { "--post-session", postSession } : [],
         ]);
@@ -3244,7 +3329,8 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             beforeStep?.Invoke(phase, operation);
             if (phase == "review-repo-head" && _headTimeouts-- > 0)
             {
-                throw new SandboxException(SandboxErrorKind.TransportTimeout, "The gateway did not answer in time.");
+                throw _pinReadFault?.Invoke()
+                    ?? new SandboxException(SandboxErrorKind.TransportTimeout, "The gateway did not answer in time.");
             }
             return Task.FromResult(
                 phase switch

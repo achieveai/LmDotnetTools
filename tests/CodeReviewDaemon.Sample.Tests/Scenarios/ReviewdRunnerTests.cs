@@ -2188,6 +2188,61 @@ public sealed class ReviewdRunnerTests
             .Be(status);
     }
 
+    // The same lost commit once its resumed verify step has started: as the runner does, each resume records its
+    // verify operation id before the 503, so the row changed and the pre-claim rule above does not decide. Only the
+    // replay check decides here: a plain 503 with a lost commit pending counts, one without backs off uncounted.
+    [Theory]
+    [InlineData(true, null, 5, "held")]
+    [InlineData(false, null, 8, "verified")]
+    [InlineData(true, "operation_capacity_exhausted", 8, "verified")]
+    [InlineData(true, "sandbox_busy", 8, "verified")]
+    public async Task Batch_counts_a_plain_503_on_a_lost_commit_after_its_verify_step_started(
+        bool lostCommit,
+        string? errorCode,
+        int runs,
+        string status
+    )
+    {
+        using var batch = new BatchFixture(0);
+        var key = "reviewd/review-attempt/" + PrCommands.ParseRepo(BatchFixture.Repo).NormalizedKey + "/1";
+        batch.PutAttempt(
+            "1",
+            new JsonObject
+            {
+                ["slot"] = 0,
+                ["stage"] = "verify-pending",
+                ["reviewInputId"] = "original",
+                ["confirmationInputId"] = "confirmation",
+                ["mergeSha"] = new string('b', 40),
+                [ReviewRunner.CommitReplay] = lostCommit ? "lost" : null,
+            }
+        );
+        var refusals = 0;
+        batch.OnRun = () =>
+        {
+            if (++refusals > 7)
+            {
+                return;
+            }
+            var attempt = batch.Read(key)!.AsObject();
+            attempt["verifyOperationId"] = $"verify-{refusals}";
+            batch.Put(key, attempt);
+            throw new SandboxException(SandboxErrorKind.Unavailable, "service unavailable", 503)
+            {
+                ErrorCode = errorCode,
+            };
+        };
+
+        await batch.ExecuteAsync();
+
+        batch.Runs.Where(run => run.StartsWith("1:", StringComparison.Ordinal)).Should().HaveCount(runs);
+        batch.Runs.Should().NotContain("1:fresh");
+        batch.Entries().Single(entry => entry["pr"]!.GetValue<string>() == "1")["status"]!
+            .GetValue<string>()
+            .Should()
+            .Be(status);
+    }
+
     [Theory]
     [InlineData("failed-released", "1:fresh")]
     [InlineData("review-running", null)]
