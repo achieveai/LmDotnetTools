@@ -21,14 +21,17 @@ internal static class ReviewArm
     /// </summary>
     internal static async Task CheckAsync(string database, bool shadow, string? variant, bool pin, CancellationToken ct)
     {
+        if (pin && shadow)
+        {
+            // Only a shadow arm may start a new database, and only through the open that creates every Reviewd
+            // database in WAL. A mistyped live --db must fail, not start empty.
+            PrThreadBindings.Connection(database).Dispose();
+        }
         using var connection = new SqliteConnection(
             new SqliteConnectionStringBuilder
             {
                 DataSource = database,
-                // Only a shadow arm may start a new database; a mistyped live --db must fail, not start empty.
-                Mode = pin
-                    ? (shadow ? SqliteOpenMode.ReadWriteCreate : SqliteOpenMode.ReadWrite)
-                    : SqliteOpenMode.ReadOnly,
+                Mode = pin ? SqliteOpenMode.ReadWrite : SqliteOpenMode.ReadOnly,
                 // A one-off check: a pooled handle would hold the file open after the run, under its own pool key.
                 Pooling = false,
             }.ToString()
