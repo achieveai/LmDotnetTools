@@ -87,6 +87,9 @@ public sealed class ChatWebSocketManager
     /// </summary>
     internal Func<string, CancellationToken, Task>? OutboundPumpGate { get; set; }
 
+    /// <summary>How long a refusal waits for the peer to answer its close before aborting the socket.</summary>
+    internal TimeSpan RefusalCloseTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
     /// <summary>
     /// <c>$type</c> discriminator for an inbound frame resolving a previously-deferred client-hosted tool
     /// call (issue #246: <c>AskUserQuestion</c>/other client-tool answers). Recognized on BOTH the
@@ -2047,17 +2050,43 @@ public sealed class ChatWebSocketManager
             return;
         }
 
-        if (recordWriter != null)
+        // The frame is out, so the close follows it whatever the recording does: a failed write must not leave the
+        // client without the reason the frame promised.
+        try
         {
-            await recordWriter.WriteLineAsync(json);
-            await recordWriter.FlushAsync();
+            if (recordWriter != null)
+            {
+                await recordWriter.WriteLineAsync(json);
+                await recordWriter.FlushAsync();
+            }
         }
+        finally
+        {
+            await CloseWithinAsync(connection, "Dedicated sandbox mode unsupported");
+        }
+    }
 
-        await connection.TryCloseAsync(
-            WebSocketCloseStatus.NormalClosure,
-            "Dedicated sandbox mode unsupported",
-            CancellationToken.None
-        );
+    /// <summary>
+    /// Closes normally, but gives up after <see cref="RefusalCloseTimeout"/>: a close waits for the peer's close frame,
+    /// and a peer that never sends one would hold this connection, and its registry record, open. On expiry the
+    /// socket is aborted so the caller's cleanup runs.
+    /// </summary>
+    private async Task CloseWithinAsync(RegisteredWebSocketConnection connection, string description)
+    {
+        using var timeout = new CancellationTokenSource(RefusalCloseTimeout);
+        try
+        {
+            await connection.TryCloseAsync(WebSocketCloseStatus.NormalClosure, description, timeout.Token);
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                "The peer of thread {ThreadId} did not answer the close within {Timeout}; aborting the socket",
+                connection.ThreadId,
+                RefusalCloseTimeout
+            );
+            connection.Abort();
+        }
     }
 
     private async Task SendCredentialConflictErrorAsync(

@@ -14,8 +14,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
-using Serilog.Core;
-using Serilog.Events;
 using Xunit.Abstractions;
 
 namespace LmStreaming.Sample.Tests.Services;
@@ -916,7 +914,11 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
     {
         // A provider switch rebuilds the agent from the stored mode, so the factory refuses it as it refuses a send.
         var logs = new WarningLogCapture();
-        await using var fixture = await StartAsync(configureServices: services => logs.AddTo(services));
+        await using var fixture = await StartAsync(configureServices: services =>
+        {
+            EnableMiniAppsAndBrowserDebug(services);
+            logs.AddTo(services);
+        });
         var miniAppMode = await fixture.CreateSandboxModeWithAsync(toolGroup);
         var a = await fixture.ProvisionAsync(
             "PRs/r-7",
@@ -945,7 +947,11 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
     {
         // The UI opens a socket on load, before any REST turn, so the socket must say why it closes.
         var logs = new WarningLogCapture();
-        await using var fixture = await StartAsync(configureServices: services => logs.AddTo(services));
+        await using var fixture = await StartAsync(configureServices: services =>
+        {
+            EnableMiniAppsAndBrowserDebug(services);
+            logs.AddTo(services);
+        });
         var miniAppMode = await fixture.CreateSandboxModeWithAsync(toolGroup);
         var a = await fixture.ProvisionAsync(
             "PRs/r-7",
@@ -954,7 +960,24 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
 
         var (frames, closeStatus, closeDescription) = await fixture.ConnectUntilClosedAsync(a, miniAppMode.Id);
 
-        frames.Should().ContainSingle(frame => frame.Contains("\"code\":\"dedicated_sandbox_mode_unsupported\""));
+        // The client dispatches on "$type" and shows "message", so both are pinned as sent, beside the code.
+        var label = toolGroup == ToolGroups.MiniAppDebug ? "Mini App debugging" : "browser debugging";
+        var refusal = frames
+            .Should()
+            .ContainSingle(frame => frame.Contains("\"code\":\"dedicated_sandbox_mode_unsupported\""))
+            .Which;
+        refusal.Should().Contain("\"$type\":\"error\"");
+        using (var sent = JsonDocument.Parse(refusal))
+        {
+            sent.RootElement.GetProperty("$type").GetString().Should().Be("error");
+            sent.RootElement.GetProperty("message")
+                .GetString()
+                .Should()
+                .Be(
+                    $"A conversation with a dedicated sandbox cannot use a mode with {label}: it runs Mini Apps through "
+                        + "the gateway's operations API, which is not confined to the conversation's working directory."
+                );
+        }
         closeStatus.Should().Be(WebSocketCloseStatus.NormalClosure);
         closeDescription.Should().Be("Dedicated sandbox mode unsupported");
         fixture.Gateway.Creates.Should().BeEmpty("a refused build creates no sandbox");
@@ -1054,48 +1077,6 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
             .Should()
             .Be(SystemChatModes.WorkspaceAgentModeId, "a refused switch leaves the mode as it was");
         fixture.Gateway.Creates.Should().BeEmpty("a refused switch builds nothing");
-    }
-
-    /// <summary>
-    /// Records the host's warnings with their exceptions, so a test can pin that a refusal is logged with the
-    /// exception that caused it. The host's Serilog reads sinks from its services. Also turns Mini Apps and browser
-    /// debugging on.
-    /// </summary>
-    private sealed class WarningLogCapture : ILogEventSink
-    {
-        private readonly ConcurrentQueue<LogEvent> _events = new();
-
-        public void AddTo(IServiceCollection services)
-        {
-            EnableMiniAppsAndBrowserDebug(services);
-            services.AddSingleton<ILogEventSink>(this);
-        }
-
-        public void Emit(LogEvent logEvent)
-        {
-            if (logEvent.Level >= LogEventLevel.Warning)
-            {
-                _events.Enqueue(logEvent);
-            }
-        }
-
-        public void ShouldHoldTheRefusalFor(string threadId)
-        {
-            _events
-                .Where(logEvent => IsRefusalFor(logEvent, threadId))
-                .Should()
-                .NotBeEmpty("the refusal is logged with the exception that caused it");
-        }
-
-        private static bool IsRefusalFor(LogEvent logEvent, string threadId) =>
-            logEvent.MessageTemplate.Text.Contains(
-                "refused: its mode is not allowed in a dedicated sandbox",
-                StringComparison.Ordinal
-            )
-            && logEvent.Properties.TryGetValue("ThreadId", out var thread)
-            && thread is ScalarValue { Value: string loggedThreadId }
-            && loggedThreadId == threadId
-            && logEvent.Exception is DedicatedSandboxModeUnsupportedException;
     }
 
     /// <summary>Mini Apps and browser debugging on. The test host runs as Production, where both are off.</summary>
