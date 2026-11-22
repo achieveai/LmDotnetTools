@@ -14,6 +14,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
+using LmStreaming.Sample.Services;
 using Serilog.Context;
 
 namespace LmStreaming.Sample.WebSocket;
@@ -85,6 +86,9 @@ public sealed class ChatWebSocketManager
     /// applies identically to both.
     /// </summary>
     internal Func<string, CancellationToken, Task>? OutboundPumpGate { get; set; }
+
+    /// <summary>How long a refusal waits for the peer to answer its close before aborting the socket.</summary>
+    internal TimeSpan RefusalCloseTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// <c>$type</c> discriminator for an inbound frame resolving a previously-deferred client-hosted tool
@@ -441,6 +445,20 @@ public sealed class ChatWebSocketManager
                 );
 
                 await SendAgentReleasedAsync(connection, recordWriter, cancellationToken);
+                return;
+            }
+            catch (DedicatedSandboxModeUnsupportedException ex)
+            {
+                // A dedicated thread whose stored mode serves Mini Apps (a fork, or a mode edited after the
+                // thread took it): the factory refuses to build its agent. The REST routes answer this 409;
+                // without this catch the socket would close with no frame and the UI would just reconnect.
+                _logger.LogWarning(
+                    ex,
+                    "Connection setup for thread {ThreadId} refused: its mode is not allowed in a dedicated sandbox",
+                    threadId
+                );
+
+                await SendDedicatedModeUnsupportedErrorAsync(connection, ex, recordWriter, cancellationToken);
                 return;
             }
 
@@ -2006,6 +2024,69 @@ public sealed class ChatWebSocketManager
             "Principal conflict",
             CancellationToken.None
         );
+    }
+
+    /// <summary>
+    /// Sends the <c>dedicated_sandbox_mode_unsupported</c> error frame the REST routes answer with 409, then
+    /// closes. The message names only the refused tool group, never thread content.
+    /// </summary>
+    private async Task SendDedicatedModeUnsupportedErrorAsync(
+        RegisteredWebSocketConnection connection,
+        DedicatedSandboxModeUnsupportedException ex,
+        StreamWriter? recordWriter,
+        CancellationToken ct
+    )
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["$type"] = "error",
+            ["code"] = ConversationDedicatedSandbox.ModeUnsupportedCode,
+            ["message"] = ex.Message,
+        };
+        var json = JsonSerializer.Serialize(payload, _jsonOptions);
+
+        if (!await connection.TrySendTextAsync(json, ct))
+        {
+            return;
+        }
+
+        // The frame is out, so the close follows it whatever the recording does: a failed write must not leave the
+        // client without the reason the frame promised.
+        try
+        {
+            if (recordWriter != null)
+            {
+                await recordWriter.WriteLineAsync(json);
+                await recordWriter.FlushAsync();
+            }
+        }
+        finally
+        {
+            await CloseWithinAsync(connection, "Dedicated sandbox mode unsupported");
+        }
+    }
+
+    /// <summary>
+    /// Closes normally, but gives up after <see cref="RefusalCloseTimeout"/>: a close waits for the peer's close frame,
+    /// and a peer that never sends one would hold this connection, and its registry record, open. On expiry the
+    /// socket is aborted so the caller's cleanup runs.
+    /// </summary>
+    private async Task CloseWithinAsync(RegisteredWebSocketConnection connection, string description)
+    {
+        using var timeout = new CancellationTokenSource(RefusalCloseTimeout);
+        try
+        {
+            await connection.TryCloseAsync(WebSocketCloseStatus.NormalClosure, description, timeout.Token);
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                "The peer of thread {ThreadId} did not answer the close within {Timeout}; aborting the socket",
+                connection.ThreadId,
+                RefusalCloseTimeout
+            );
+            connection.Abort();
+        }
     }
 
     private async Task SendCredentialConflictErrorAsync(

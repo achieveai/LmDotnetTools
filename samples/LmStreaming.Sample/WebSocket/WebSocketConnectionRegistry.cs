@@ -102,6 +102,16 @@ public sealed class RegisteredWebSocketConnection : IDisposable
         catch (InvalidOperationException) { }
     }
 
+    /// <summary>Aborts the underlying socket, for a close the peer never answered. Never throws.</summary>
+    public void Abort()
+    {
+        try
+        {
+            _socket.Abort();
+        }
+        catch (ObjectDisposedException) { }
+    }
+
     /// <summary>
     /// Disposes the send gate. Safe to call after the connection's read/write loops have ended; any
     /// in-flight <see cref="TrySendTextAsync"/> already swallows <see cref="ObjectDisposedException"/>.

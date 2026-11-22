@@ -58,6 +58,8 @@ public sealed record SubAgentSessionBinding(MutableSubAgentTemplateSource Source
 /// only place agents can write; ADR 0044), or <see langword="null"/> when none is set.</param>
 /// <param name="ReadOnlyEgress">True when this session was created with read-only ADO and GitHub egress (see
 /// <see cref="WorkspaceRef.ReadOnlyEgress"/>): set from the same value that built its network rules.</param>
+/// <param name="OwnerThreadId">The one conversation this sandbox belongs to (see <see cref="WorkspaceRef.OwnerThreadId"/>),
+/// or <see langword="null"/> for the workspace's shared sandbox.</param>
 public sealed record SandboxSession(
     string WorkspaceId,
     string SessionId,
@@ -69,7 +71,8 @@ public sealed record SandboxSession(
     string? ImageDigest = null,
     SandboxImageReport? ImageReport = null,
     string? WorkspaceWorkingDir = null,
-    bool ReadOnlyEgress = false
+    bool ReadOnlyEgress = false,
+    string? OwnerThreadId = null
 );
 
 /// <summary>
@@ -107,6 +110,11 @@ public sealed record SandboxSession(
 /// session-cache key, so a read-only thread and a normal thread
 /// on the same workspace and app id never share a sandbox. A conversation property, not workspace
 /// configuration: a ref rebuilt from the workspace catalog does not carry it, so every rebuild path pins it.</param>
+/// <param name="OwnerThreadId">The conversation that owns a dedicated sandbox, or <see langword="null"/> for the
+/// workspace's shared one. Part of the session-cache key, so no other conversation is ever handed this sandbox; it
+/// lives until <see cref="SandboxSessionRegistry.ReleaseOwnedSessionsAsync(string, CancellationToken)"/> deletes it. A conversation property
+/// like <paramref name="ReadOnlyEgress"/>, and pinned on every rebuild path together with its
+/// <paramref name="WorkingDir"/>.</param>
 public sealed record WorkspaceRef(
     string Id,
     string? DirectoryRelPath = null,
@@ -115,7 +123,8 @@ public sealed record WorkspaceRef(
     IReadOnlyDictionary<string, string>? Env = null,
     string? Image = null,
     string? WorkingDir = null,
-    bool ReadOnlyEgress = false
+    bool ReadOnlyEgress = false,
+    string? OwnerThreadId = null
 );
 
 /// <summary>
@@ -300,7 +309,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// ordinal equality, so no explicit comparer is needed.
     /// </summary>
     private readonly ConcurrentDictionary<
-        (string WorkspaceId, string AppId, bool ReadOnlyEgress),
+        (string WorkspaceId, string AppId, bool ReadOnlyEgress, string? OwnerThreadId),
         Lazy<Task<SandboxSession>>
     > _sessions = new();
 
@@ -503,7 +512,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// caller that noticed the eviction.
     /// </remarks>
     private readonly ConcurrentDictionary<
-        (string WorkspaceId, string AppId, bool ReadOnlyEgress),
+        (string WorkspaceId, string AppId, bool ReadOnlyEgress, string? OwnerThreadId),
         string
     > _replacedSessions = new();
 
@@ -978,10 +987,18 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// provisioned with read-only egress (<see cref="WorkspaceRef.ReadOnlyEgress"/>) runs in the read-only slot,
     /// so a reader answering for one thread passes that thread's flag.
     /// </summary>
-    public SandboxSession? TryGetExistingSession(string workspaceId, bool readOnlyEgress)
+    public SandboxSession? TryGetExistingSession(string workspaceId, bool readOnlyEgress) =>
+        TryGetExistingSession(workspaceId, readOnlyEgress, ownerThreadId: null);
+
+    /// <summary>
+    /// As <see cref="TryGetExistingSession(string, bool)"/>, for the slot of the conversation that owns a dedicated
+    /// sandbox (<see cref="WorkspaceRef.OwnerThreadId"/>), or the workspace's shared slot when
+    /// <paramref name="ownerThreadId"/> is <see langword="null"/>. Never creates one.
+    /// </summary>
+    public SandboxSession? TryGetExistingSession(string workspaceId, bool readOnlyEgress, string? ownerThreadId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
-        var key = (workspaceId, _defaultCredential.AppId, readOnlyEgress);
+        var key = (workspaceId, _defaultCredential.AppId, readOnlyEgress, ownerThreadId);
         return _sessions.TryGetValue(key, out var lazy) && lazy.IsValueCreated && lazy.Value.IsCompletedSuccessfully
             ? lazy.Value.Result
             : null;
@@ -1015,21 +1032,50 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         var workspaceId = string.IsNullOrWhiteSpace(workspaceRef.Id) ? DefaultWorkspaceId : workspaceRef.Id;
         var effectiveRef = workspaceRef with { Id = workspaceId };
         var effectiveCredential = credential ?? _defaultCredential;
-        var key = (workspaceId, effectiveCredential.AppId, effectiveRef.ReadOnlyEgress);
+        var key = (workspaceId, effectiveCredential.AppId, effectiveRef.ReadOnlyEgress, effectiveRef.OwnerThreadId);
 
+        if (effectiveRef.OwnerThreadId is not { } owner)
+        {
+            return AwaitAndEvictOnFailureAsync(key, GetOrAddSlot(key, effectiveRef, effectiveCredential));
+        }
+
+        // An owner's slot is looked up under the release lock, so an owner release's take-out falls wholly before
+        // this lookup (and then its fence holds this create back) or wholly after it (and then it takes out what this
+        // added). A release that moves the conversation holds the owner's next sandbox back until it is done, and a
+        // ref captured before that move is re-resolved to the directory it committed: either way the sandbox is
+        // created from the committed settings, whichever path asks (a fresh build, a refresh, a liveness recreate).
+        Task? fence;
+        Lazy<Task<SandboxSession>>? lazy = null;
+        lock (_ownerReleaseLock)
+        {
+            if (!_ownerFences.TryGetValue(owner, out fence) || fence.IsCompleted)
+            {
+                fence = null;
+                lazy = GetOrAddSlot(key, ResolveOwnerMove(effectiveRef), effectiveCredential);
+            }
+        }
+
+        return fence is not null
+            ? GetOrCreateAfterOwnerFenceAsync(fence, workspaceRef, ct, credential)
+            : AwaitAndEvictOnFailureAsync(key, lazy!);
+    }
+
+    /// <summary>The slot for <paramref name="key"/>, adding a creation from <paramref name="workspaceRef"/> when empty.</summary>
+    private Lazy<Task<SandboxSession>> GetOrAddSlot(
+        (string WorkspaceId, string AppId, bool ReadOnlyEgress, string? OwnerThreadId) key,
+        WorkspaceRef workspaceRef,
+        SandboxCredential credential
+    ) =>
         // Use CancellationToken.None inside the single-flight Lazy factory: the shared creation task
         // must not be poisoned by the first caller's request-scoped token being cancelled (e.g. that
         // caller disconnecting), which would otherwise fail it for all concurrent waiters.
-        var lazy = _sessions.GetOrAdd(
+        _sessions.GetOrAdd(
             key,
             _ => new Lazy<Task<SandboxSession>>(
-                () => CreateSessionAsync(effectiveRef, CancellationToken.None, effectiveCredential),
+                () => CreateSessionAsync(workspaceRef, CancellationToken.None, credential),
                 LazyThreadSafetyMode.ExecutionAndPublication
             )
         );
-
-        return AwaitAndEvictOnFailureAsync(key, lazy);
-    }
 
     /// <summary>
     /// Awaits the cached creation task. On failure the cached <see cref="Lazy{T}"/> is evicted so a
@@ -1039,7 +1085,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// creation itself.
     /// </summary>
     private async Task<SandboxSession> AwaitAndEvictOnFailureAsync(
-        (string WorkspaceId, string AppId, bool ReadOnlyEgress) key,
+        (string WorkspaceId, string AppId, bool ReadOnlyEgress, string? OwnerThreadId) key,
         Lazy<Task<SandboxSession>> lazy
     )
     {
@@ -1053,14 +1099,17 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             // Only evict the entry we own, in case another creation has since replaced it.
             _ = (
                 (ICollection<
-                    KeyValuePair<(string WorkspaceId, string AppId, bool ReadOnlyEgress), Lazy<Task<SandboxSession>>>
+                    KeyValuePair<
+                        (string WorkspaceId, string AppId, bool ReadOnlyEgress, string? OwnerThreadId),
+                        Lazy<Task<SandboxSession>>
+                    >
                 >)
                     _sessions
             ).Remove(
-                new KeyValuePair<(string WorkspaceId, string AppId, bool ReadOnlyEgress), Lazy<Task<SandboxSession>>>(
-                    key,
-                    lazy
-                )
+                new KeyValuePair<
+                    (string WorkspaceId, string AppId, bool ReadOnlyEgress, string? OwnerThreadId),
+                    Lazy<Task<SandboxSession>>
+                >(key, lazy)
             );
             throw;
         }
@@ -1255,19 +1304,27 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             }
         }
 
-        await InvalidateSessionAsync((workspaceId, effectiveCredential.AppId, effectiveRef.ReadOnlyEgress), session)
+        await InvalidateSessionAsync(
+                (workspaceId, effectiveCredential.AppId, effectiveRef.ReadOnlyEgress, effectiveRef.OwnerThreadId),
+                session
+            )
             .ConfigureAwait(false);
 
         // Pin the id: the recreate must land on the SAME (workspaceId, appId) partition that was just
         // invalidated, whatever id the store happens to echo back. Pin the read-only bit too: the reload
         // hook rebuilds the ref from the workspace catalog, which does not carry it, so an unpinned
         // recreate of a read-only session would ask for a full-write sandbox.
+        // A dedicated sandbox's owner and working directory are conversation settings the catalog does not carry
+        // either, so they are pinned the same way: unpinned, the recreate would land in the shared sandbox, writable
+        // everywhere.
         var refreshedRef = reloaded is null
             ? effectiveRef
             : reloaded with
             {
                 Id = workspaceId,
                 ReadOnlyEgress = effectiveRef.ReadOnlyEgress,
+                OwnerThreadId = effectiveRef.OwnerThreadId,
+                WorkingDir = effectiveRef.OwnerThreadId is null ? reloaded.WorkingDir : effectiveRef.WorkingDir,
             };
 
         return await GetOrCreateSessionAsync(refreshedRef, ct, effectiveCredential).ConfigureAwait(false);
@@ -1368,7 +1425,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// here), so no DELETE is issued.
     /// </summary>
     private async Task InvalidateSessionAsync(
-        (string WorkspaceId, string AppId, bool ReadOnlyEgress) key,
+        (string WorkspaceId, string AppId, bool ReadOnlyEgress, string? OwnerThreadId) key,
         SandboxSession session
     )
     {
@@ -1385,14 +1442,17 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         {
             _ = (
                 (ICollection<
-                    KeyValuePair<(string WorkspaceId, string AppId, bool ReadOnlyEgress), Lazy<Task<SandboxSession>>>
+                    KeyValuePair<
+                        (string WorkspaceId, string AppId, bool ReadOnlyEgress, string? OwnerThreadId),
+                        Lazy<Task<SandboxSession>>
+                    >
                 >)
                     _sessions
             ).Remove(
-                new KeyValuePair<(string WorkspaceId, string AppId, bool ReadOnlyEgress), Lazy<Task<SandboxSession>>>(
-                    key,
-                    lazy
-                )
+                new KeyValuePair<
+                    (string WorkspaceId, string AppId, bool ReadOnlyEgress, string? OwnerThreadId),
+                    Lazy<Task<SandboxSession>>
+                >(key, lazy)
             );
 
             // Only when this call actually freed the slot: the next create for it is this session's
@@ -1767,7 +1827,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 info.WorkspaceWorkingDir,
                 // The same value that built this create's network rules above, so the factory's
                 // session/thread check compares against what the gateway was actually sent.
-                workspaceRef.ReadOnlyEgress
+                workspaceRef.ReadOnlyEgress,
+                workspaceRef.OwnerThreadId
             );
 
             // The gateway session now exists remotely. Publish its maps and persist its secret as one
@@ -1840,7 +1901,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             if (_lifecycle.PublishesEvents)
             {
                 _ = _replacedSessions.TryRemove(
-                    (workspaceId, effectiveCredential.AppId, workspaceRef.ReadOnlyEgress),
+                    (workspaceId, effectiveCredential.AppId, workspaceRef.ReadOnlyEgress, workspaceRef.OwnerThreadId),
                     out var replacedSessionId
                 );
                 _unreportedCreations[session.SessionId] = new SandboxCreatedPayload
@@ -1920,13 +1981,24 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(appId);
 
-        var entries = _sessions
-            .Where(entry =>
-                entry.Key.WorkspaceId == workspaceId && string.Equals(entry.Key.AppId, appId, StringComparison.Ordinal)
-            )
-            .ToList();
+        bool Matches((string WorkspaceId, string AppId, bool ReadOnlyEgress, string? OwnerThreadId) key) =>
+            key.WorkspaceId == workspaceId && string.Equals(key.AppId, appId, StringComparison.Ordinal);
+
+        var entries = _sessions.Where(entry => Matches(entry.Key)).ToList();
         var failures = 0;
         SandboxException? lastFailure = null;
+
+        // A released dedicated sandbox whose DELETE is not confirmed yet still mounts the workspace.
+        foreach (var (retiring, key) in _retiringSessions.Where(entry => Matches(entry.Value)).ToList())
+        {
+            ct.ThrowIfCancellationRequested();
+            if (await TryDeleteRetiringAsync(retiring, key).ConfigureAwait(false) is { } refused)
+            {
+                failures++;
+                lastFailure = refused;
+            }
+        }
+
         foreach (var entry in entries)
         {
             ct.ThrowIfCancellationRequested();
@@ -1980,19 +2052,22 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
 
         if (lastFailure is not null)
         {
-            throw new SandboxException(
-                lastFailure.Kind,
-                $"{failures} sandbox(es) on workspace '{workspaceId}' could not be stopped: {lastFailure.Message}",
-                lastFailure.StatusCode,
-                lastFailure
-            )
-            {
-                ErrorCode = lastFailure.ErrorCode,
-                Retryable = lastFailure.Retryable,
-                RetryAfter = lastFailure.RetryAfter,
-            };
+            throw ReleaseFailure(failures, $"on workspace '{workspaceId}'", lastFailure);
         }
     }
+
+    private static SandboxException ReleaseFailure(int failures, string scope, SandboxException lastFailure) =>
+        new(
+            lastFailure.Kind,
+            $"{failures} sandbox(es) {scope} could not be stopped: {lastFailure.Message}",
+            lastFailure.StatusCode,
+            lastFailure
+        )
+        {
+            ErrorCode = lastFailure.ErrorCode,
+            Retryable = lastFailure.Retryable,
+            RetryAfter = lastFailure.RetryAfter,
+        };
 
     private async Task DestroyWorkspaceSessionsCoreAsync(string workspaceId, string? appId, CancellationToken ct)
     {
@@ -2055,6 +2130,37 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             // the same one InvalidateSessionAsync uses, so the two teardown paths can never diverge.
             await EvictSessionStateAsync(session).ConfigureAwait(false);
         }
+
+        // Released dedicated sandboxes whose DELETE was refused still run on this workspace.
+        foreach (var (retiring, key) in _retiringSessions.ToList())
+        {
+            if (
+                key.WorkspaceId != workspaceId
+                || (appId is not null && !string.Equals(key.AppId, appId, StringComparison.Ordinal))
+            )
+            {
+                continue;
+            }
+
+            ct.ThrowIfCancellationRequested();
+            if (!_retiringSessions.TryRemove(retiring, out _))
+            {
+                continue;
+            }
+
+            SandboxSession session;
+            try
+            {
+                session = await retiring.Value.ConfigureAwait(false);
+            }
+            catch
+            {
+                continue;
+            }
+
+            await DestroySessionAsync(session, CancellationToken.None).ConfigureAwait(false);
+            await EvictSessionStateAsync(session).ConfigureAwait(false);
+        }
     }
 
     /// <summary>
@@ -2072,7 +2178,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
 
         try
         {
-            foreach (var entry in _sessions.Values)
+            // Released dedicated sandboxes whose DELETE was never confirmed are still live, so they go too.
+            foreach (var entry in _sessions.Values.Concat(_retiringSessions.Keys))
             {
                 // Only destroy sessions that were actually created and completed successfully.
                 if (!entry.IsValueCreated || !entry.Value.IsCompletedSuccessfully)
@@ -2102,6 +2209,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             }
 
             _sessions.Clear();
+            _retiringSessions.Clear();
             _subAgentBindings.Clear();
             _sessionsById.Clear();
             _sessionVerifiedAtUtcTicks.Clear();

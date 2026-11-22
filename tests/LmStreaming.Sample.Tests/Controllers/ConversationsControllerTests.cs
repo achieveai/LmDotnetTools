@@ -800,7 +800,7 @@ public class ConversationsControllerTests
     /// single <c>AskUserQuestion</c> tool call, parking a deferred placeholder and ending the run.
     /// Patterned on <c>ChatWebSocketManagerClientToolResultTests.CreatePoolWithParkedAskUserQuestionAsync</c>.
     /// </summary>
-    private static async Task<MultiTurnAgentPool> CreatePoolWithParkedAskUserQuestionAsync(
+    internal static async Task<MultiTurnAgentPool> CreatePoolWithParkedAskUserQuestionAsync(
         string threadId,
         string toolCallId
     )

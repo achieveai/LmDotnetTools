@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
 namespace LmStreaming.Sample.Services;
 
@@ -43,4 +44,50 @@ internal static class ThreadPropertyValue
             JsonElement { ValueKind: JsonValueKind.String } element => element.GetString(),
             _ => null,
         };
+
+    /// <summary>
+    /// Reads a security switch stored as a boolean under <paramref name="key"/>: absence or a missing thread reads as
+    /// <see langword="false"/>. Accepts the <see cref="JsonElement"/> the production store hands back as well as the
+    /// in-memory <see cref="bool"/>. Fails closed: any other stored value throws, because reading an unreadable switch
+    /// as false would quietly drop the protection it stands for.
+    /// </summary>
+    /// <param name="store">The conversation store.</param>
+    /// <param name="threadId">The conversation.</param>
+    /// <param name="key">The property key the switch is stored under.</param>
+    /// <param name="refusal">What reading it as false would do, for the exception message.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <exception cref="InvalidOperationException">The stored value is not a boolean.</exception>
+    public static async Task<bool> ReadFailClosedBoolAsync(
+        IConversationStore store,
+        string threadId,
+        string key,
+        string refusal,
+        CancellationToken ct
+    )
+    {
+        ArgumentNullException.ThrowIfNull(store);
+
+        if (string.IsNullOrWhiteSpace(threadId))
+        {
+            return false;
+        }
+
+        var metadata = await store.LoadMetadataAsync(threadId, ct).ConfigureAwait(false);
+        if (metadata?.Properties is not { } properties || !properties.TryGetValue(key, out var raw))
+        {
+            return false;
+        }
+
+        return raw switch
+        {
+            bool value => value,
+            JsonElement { ValueKind: JsonValueKind.True } => true,
+            JsonElement { ValueKind: JsonValueKind.False } => false,
+            _ => throw new InvalidOperationException(
+                $"Conversation '{threadId}' has an unreadable '{key}' value "
+                    + $"({(raw is JsonElement element ? element.ValueKind.ToString() : raw?.GetType().Name ?? "null")}); "
+                    + $"refusing to build its agent rather than {refusal}."
+            ),
+        };
+    }
 }
