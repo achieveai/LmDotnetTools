@@ -89,6 +89,22 @@ public sealed class ReviewdDatabaseJournalTests : LoggingTestBase
         File.Exists(live).Should().BeFalse("a live run must not start an empty database");
     }
 
+    // The seam pools its handle. The arm check is a one-off, so it must not leave the shadow db open after the run.
+    [SkippableFact]
+    public async Task A_shadow_arm_check_leaves_no_handle_open_on_its_database()
+    {
+        Skip.IfNot(
+            OperatingSystem.IsWindows(),
+            "only Windows refuses an exclusive open of a file another handle holds"
+        );
+
+        await ReviewArm.CheckAsync(_database, shadow: true, "challenger", pin: true, CancellationToken.None);
+
+        LogSidecars("after the shadow arm's check");
+        var exclusive = () => new FileStream(_database, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        exclusive.Should().NotThrow("no pooled handle may still hold the database").Which.Dispose();
+    }
+
     // A read-only command (pr pick, capacity, the batch's reads) can be the first to open the database after every
     // writer has closed it, when SQLite has removed the -wal and -shm. It must still read.
     [Fact]
