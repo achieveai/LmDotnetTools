@@ -3322,7 +3322,11 @@ public sealed class ReviewdRunnerTests
             Cancellation.Dispose();
             _config.Dispose();
             ReviewdSqlitePools.Clear(_database);
-            File.Delete(_database);
+            // A read-only connection that closes last cannot checkpoint, so a WAL database can leave its sidecars.
+            foreach (var file in new[] { _database, _database + "-wal", _database + "-shm" })
+            {
+                File.Delete(file);
+            }
         }
     }
 

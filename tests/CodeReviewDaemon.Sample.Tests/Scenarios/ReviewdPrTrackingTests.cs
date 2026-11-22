@@ -259,7 +259,7 @@ public sealed class ReviewdPrTrackingTests
             var changed = (await store.GetAsync<Dictionary<string, PrCommands.PrObservation>>(key))!["17"];
             changed.LastCommentPostedAt.Should().Be(activity.LastCommentPostedAt);
             changed.LastChangedAt.Should().BeOnOrAfter(unchanged.LastChangedAt!.Value);
-            var before = await ReadSharedAsync(database);
+            var before = await ReviewdDatabaseBytes.ReadAsync(database);
             var failure = () =>
                 PrCommands.RunAsync(
                     options,
@@ -268,7 +268,7 @@ public sealed class ReviewdPrTrackingTests
                     (_, _, _) => throw new HttpRequestException("unavailable")
                 );
             await failure.Should().ThrowAsync<HttpRequestException>();
-            (await ReadSharedAsync(database)).Should().Equal(before);
+            (await ReviewdDatabaseBytes.ReadAsync(database)).Should().Equal(before);
             var multi = CliOptions.Parse([
                 "pr",
                 "check",
@@ -307,16 +307,6 @@ public sealed class ReviewdPrTrackingTests
             ReviewdSqlitePools.Clear(database);
             File.Delete(database);
         }
-    }
-
-    // The store connection is still open here, and on Windows File.ReadAllBytes (FileShare.Read)
-    // cannot open a file SQLite holds for writing.
-    private static async Task<byte[]> ReadSharedAsync(string path)
-    {
-        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        using var copy = new MemoryStream();
-        await stream.CopyToAsync(copy);
-        return copy.ToArray();
     }
 
     [Fact]
