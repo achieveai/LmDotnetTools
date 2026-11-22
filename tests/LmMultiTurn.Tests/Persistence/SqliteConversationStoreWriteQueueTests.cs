@@ -46,7 +46,8 @@ public sealed class SqliteConversationStoreWriteQueueTests : IAsyncLifetime
     {
         // Three read connections and twice as many writers: before the fix the writers took all three and slept in
         // SQLite's busy loop, so neither read below got a connection until the lock was released.
-        await using var store = new SqliteConversationStore(_databasePath, maxConnections: 3);
+        var factory = new WriteSignallingFactory(new SqliteConnectionFactory(_databasePath, maxConnections: 3));
+        await using var store = new SqliteConversationStore(factory, ownsFactory: true);
         var startedAt = DateTimeOffset.UtcNow;
         await store.RecordRunStartedAsync(
             new RunLifecycleState
@@ -79,6 +80,8 @@ public sealed class SqliteConversationStoreWriteQueueTests : IAsyncLifetime
             _ = await begin.ExecuteNonQueryAsync();
         }
 
+        var requestedBefore = factory.WritesRequested;
+        var openedBefore = factory.WritesOpened;
         var writes = new List<Task>();
         try
         {
@@ -97,7 +100,10 @@ public sealed class SqliteConversationStoreWriteQueueTests : IAsyncLifetime
                 writes.Add(Task.Run(() => store.UpsertRunLedgerAsync(entry)));
             }
 
-            await Task.Delay(Settle);
+            // Every writer has asked for the write connection, and one holds it and is waiting on the lock. Only then
+            // do the reads run, so a writer that had not started yet cannot make the check below pass.
+            await UntilAsync(() => factory.WritesRequested - requestedBefore == 6, "all six writers asked to write");
+            await UntilAsync(() => factory.WritesOpened - openedBefore == 1, "one writer holds the write connection");
 
             var runState = await store.LoadRunLifecycleAsync("run-read").WaitAsync(Bound);
             var usageState = await store.LoadUsageAsync("thread-read").WaitAsync(Bound);
@@ -216,8 +222,10 @@ public sealed class SqliteConversationStoreWriteQueueTests : IAsyncLifetime
     {
         // Some callers drop a row whose save fails (MultiTurnAgentBase.PersistMessageAsync logs and moves on), so a
         // write must wait out an outside hold as long as it did before writes had their own connection: 30 s.
-        await using var store = new SqliteConversationStore(_databasePath);
+        var factory = new WriteSignallingFactory(new SqliteConnectionFactory(_databasePath));
+        await using var store = new SqliteConversationStore(factory, ownsFactory: true);
         await store.AppendMessagesAsync("thread-m", [Message("thread-m", "before")]);
+        var openedBefore = factory.WritesOpened;
 
         await using var holder = await HoldWriteLockAsync();
         Task write;
@@ -225,6 +233,9 @@ public sealed class SqliteConversationStoreWriteQueueTests : IAsyncLifetime
         {
             // Task.Run: a write blocked on the lock sleeps whichever thread calls it.
             write = Task.Run(() => store.AppendMessagesAsync("thread-m", [Message("thread-m", "during")]));
+
+            // The six seconds start once the write holds its connection, so they are all spent waiting on the lock.
+            await UntilAsync(() => factory.WritesOpened - openedBefore == 1, "the write holds the write connection");
             await Task.Delay(TimeSpan.FromSeconds(6));
             write.IsCompleted.Should().BeFalse("the write is still waiting for the lock, not failed");
         }
@@ -363,6 +374,47 @@ public sealed class SqliteConversationStoreWriteQueueTests : IAsyncLifetime
 
         await update.WaitAsync(Bound);
         store.MetadataGateCount.Should().Be(0);
+    }
+
+    private static async Task UntilAsync(Func<bool> condition, string what)
+    {
+        var deadline = DateTime.UtcNow + Bound;
+        while (!condition())
+        {
+            if (DateTime.UtcNow > deadline)
+            {
+                throw new TimeoutException($"Timed out waiting until {what}.");
+            }
+
+            await Task.Delay(10);
+        }
+    }
+
+    /// <summary>
+    /// Counts the store's requests for the write connection, and the ones it got, so a test can wait until writers are
+    /// queued instead of guessing with a delay.
+    /// </summary>
+    private sealed class WriteSignallingFactory(ISqliteConnectionFactory inner) : ISqliteConnectionFactory
+    {
+        private int _requested;
+        private int _opened;
+
+        public int WritesRequested => Volatile.Read(ref _requested);
+
+        public int WritesOpened => Volatile.Read(ref _opened);
+
+        public Task<SqliteConnection> GetConnectionAsync(CancellationToken ct = default) =>
+            inner.GetConnectionAsync(ct);
+
+        public async Task<SqliteConnection> GetWriteConnectionAsync(CancellationToken ct = default)
+        {
+            _ = Interlocked.Increment(ref _requested);
+            var connection = await inner.GetWriteConnectionAsync(ct).ConfigureAwait(false);
+            _ = Interlocked.Increment(ref _opened);
+            return connection;
+        }
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
     }
 
     private async Task<SqliteConnection> HoldWriteLockAsync()

@@ -12,9 +12,11 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 /// for a busy write lock by sleeping the calling thread, so a writer queued on the lock used to hold a pooled permit
 /// and a thread for up to its 30 s timeout. With every permit held that way, a one-millisecond read waited a minute.
 /// Writes now queue on <see cref="GetWriteConnectionAsync"/>'s single permit, asynchronously and holding nothing, and
-/// reads keep their own permits. Only the write holding that permit waits on the lock, and only for a holder outside
-/// this factory (another process, or another factory on the same file). It keeps the full 30 s wait: a shorter one
-/// would fail writes that a brief outside hold used to delay, and some callers drop a row whose save fails.
+/// reads keep their own permits. Of the writes that use that permit, only the one holding it waits on the lock. It
+/// still waits for any writer that did not take the permit: another process, another factory on the same file, or a
+/// write made through <see cref="GetConnectionAsync"/>. The notify-wait, tenant and grant stores still write that way,
+/// so on a shared file their writers hold read permits while they wait on the lock. The write keeps the full 30 s
+/// wait: a shorter one would fail writes that a brief hold used to delay, and some callers drop a row whose save fails.
 /// </remarks>
 public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
 {
