@@ -288,8 +288,8 @@ public sealed class WorkspacePluginSelectionService : IWorkspacePluginSelectionS
         IReadOnlyList<SandboxSession> Uncommitted,
         IReadOnlyList<SandboxSession> Superseded,
         WorkspaceRef NewRef,
-        IReadOnlyList<(string WorkspaceId, string AppId, bool ReadOnlyEgress)> NeverSettled,
-        IReadOnlyList<(string WorkspaceId, string AppId, bool ReadOnlyEgress)> CasLost,
+        IReadOnlyList<(string WorkspaceId, string AppId, bool ReadOnlyEgress, string? OwnerThreadId)> NeverSettled,
+        IReadOnlyList<(string WorkspaceId, string AppId, bool ReadOnlyEgress, string? OwnerThreadId)> CasLost,
         int CommittedRevision
     );
 
@@ -648,7 +648,7 @@ public sealed class WorkspacePluginSelectionService : IWorkspacePluginSelectionS
                 return;
             }
 
-            var owed = new HashSet<(string WorkspaceId, string AppId, bool ReadOnlyEgress)>([
+            var owed = new HashSet<(string WorkspaceId, string AppId, bool ReadOnlyEgress, string? OwnerThreadId)>([
                 .. work.NeverSettled,
                 .. work.CasLost,
             ]);

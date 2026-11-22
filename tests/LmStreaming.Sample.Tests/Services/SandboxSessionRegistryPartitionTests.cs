@@ -1,5 +1,8 @@
 using System.Net;
 using System.Text;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 namespace LmStreaming.Sample.Tests.Services;
 
@@ -18,10 +21,14 @@ namespace LmStreaming.Sample.Tests.Services;
 /// id's session for it, not just the first one found, and leaves other workspaces untouched.
 /// </para>
 /// </summary>
-public class SandboxSessionRegistryPartitionTests
+public class SandboxSessionRegistryPartitionTests : LoggingTestBase
 {
     private const string GatewayBaseUrl = "http://localhost:3000";
     private const string DefaultAppId = "default-app";
+    private static readonly TimeSpan Patience = TimeSpan.FromSeconds(10);
+
+    public SandboxSessionRegistryPartitionTests(ITestOutputHelper output)
+        : base(output) { }
 
     [Fact]
     public async Task Different_credentials_for_the_same_workspace_create_distinct_sessions()
@@ -194,6 +201,447 @@ public class SandboxSessionRegistryPartitionTests
         registry.TryGetSessionById(readOnly.SessionId, out _).Should().BeFalse();
     }
 
+    [Fact]
+    public async Task Each_owner_gets_its_own_sandbox_apart_from_the_shared_one_and_jailed_to_its_directory()
+    {
+        // Every review conversation sits on the same workspace and app id, so only the owner part of the key keeps
+        // one review out of another's sandbox, and out of the shared one that can write the whole workspace.
+        var (registry, calls) = CreateRegistry();
+        var aRef = new WorkspaceRef("ws-1", WorkingDir: "slots/r-1/PRs/r-7", OwnerThreadId: "thread-a");
+
+        var shared = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1"));
+        var a = await registry.GetOrCreateSessionAsync(aRef);
+        var b = await registry.GetOrCreateSessionAsync(
+            new WorkspaceRef("ws-1", WorkingDir: "slots/r-2/PRs/r-8", OwnerThreadId: "thread-b")
+        );
+
+        new[] { shared.SessionId, a.SessionId, b.SessionId }.Should().OnlyHaveUniqueItems();
+        shared.OwnerThreadId.Should().BeNull();
+        a.OwnerThreadId.Should().Be("thread-a");
+        a.WorkspaceWorkingDir.Should().Be("slots/r-1/PRs/r-7");
+        b.WorkspaceWorkingDir.Should().Be("slots/r-2/PRs/r-8");
+        WorkingDirSent(calls.PostBodies[0]).Should().BeNull();
+        WorkingDirSent(calls.PostBodies[1]).Should().Be("slots/r-1/PRs/r-7");
+        (await registry.GetOrCreateSessionAsync(aRef))
+            .SessionId.Should()
+            .Be(a.SessionId, "the owner's next turn reuses its own sandbox");
+        calls.PostCount.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task Releasing_an_owner_deletes_only_its_sandbox_and_its_next_turn_gets_a_fresh_one()
+    {
+        var (registry, calls) = CreateRegistry();
+        var aRef = new WorkspaceRef("ws-1", WorkingDir: "PRs/r-7", OwnerThreadId: "thread-a");
+        var shared = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1"));
+        var a = await registry.GetOrCreateSessionAsync(aRef);
+        var b = await registry.GetOrCreateSessionAsync(
+            new WorkspaceRef("ws-1", WorkingDir: "PRs/r-8", OwnerThreadId: "thread-b")
+        );
+
+        await registry.ReleaseOwnedSessionsAsync("thread-a");
+        await registry.ReleaseOwnedSessionsAsync("thread-a"); // nothing left: a no-op, not a second DELETE
+
+        calls.DeletedSessionIds.Should().Equal(a.SessionId);
+        registry.TryGetSessionById(a.SessionId, out _).Should().BeFalse();
+        registry.TryGetSessionById(shared.SessionId, out _).Should().BeTrue();
+        registry.TryGetSessionById(b.SessionId, out _).Should().BeTrue();
+        (await registry.GetOrCreateSessionAsync(aRef)).SessionId.Should().NotBe(a.SessionId);
+    }
+
+    [Fact]
+    public async Task A_refused_release_throws_keeps_the_sandbox_tracked_and_never_hands_it_out_again()
+    {
+        var (registry, calls) = CreateRegistry();
+        var aRef = OwnedRef("thread-a", "PRs/r-7");
+        var a = await registry.GetOrCreateSessionAsync(aRef);
+        Logger.LogDebug("Owner {Owner} in {Directory} has sandbox {SessionId}", "thread-a", "PRs/r-7", a.SessionId);
+
+        calls.FailDeletes = true;
+        var refused = () => registry.ReleaseOwnedSessionsAsync("thread-a");
+        await refused.Should().ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
+
+        registry.TryGetSessionById(a.SessionId, out _).Should().BeTrue("a refused delete leaves it alive and tracked");
+        var next = await registry.GetOrCreateSessionAsync(aRef);
+        next.SessionId.Should().NotBe(a.SessionId, "a sandbox being released is never handed out again");
+        calls.FailDeletes = false;
+        await registry.ReleaseOwnedSessionsAsync("thread-a");
+        LogCalls(calls);
+        calls.DeletedSessionIds.Should().BeEquivalentTo([a.SessionId, next.SessionId]);
+    }
+
+    [Fact]
+    public async Task A_caller_that_stops_waiting_does_not_lose_the_sandbox_being_deleted()
+    {
+        var (registry, calls) = CreateRegistry();
+        var a = await registry.GetOrCreateSessionAsync(OwnedRef("thread-a", "PRs/r-7"));
+        var gate = calls.HoldDeletes();
+        using var cts = new CancellationTokenSource();
+
+        var release = registry.ReleaseOwnedSessionsAsync("thread-a", cts.Token);
+        await calls.WaitForDeleteStartedAsync();
+        await cts.CancelAsync();
+        await release.Invoking(task => task).Should().ThrowAsync<OperationCanceledException>();
+
+        // The gateway then refuses the DELETE the caller stopped waiting for.
+        calls.FailDeletes = true;
+        gate.SetResult();
+        await registry
+            .ReleaseOwnedSessionsAsync("thread-a")
+            .Invoking(task => task)
+            .Should()
+            .ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>(
+                "the next release waits for that one, then retries the same sandbox"
+            );
+        calls.FailDeletes = false;
+        await registry.ReleaseOwnedSessionsAsync("thread-a");
+        LogCalls(calls);
+
+        calls.DeletedSessionIds.Should().Equal(a.SessionId);
+        calls.DeleteAttempts.Should().Be(3);
+        registry.TryGetSessionById(a.SessionId, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task The_owner_resolved_while_its_old_sandbox_is_being_deleted_gets_a_fresh_one_the_delete_leaves_alone()
+    {
+        var (registry, calls) = CreateRegistry();
+        var aRef = OwnedRef("thread-a", "PRs/r-7");
+        var old = await registry.GetOrCreateSessionAsync(aRef);
+        var gate = calls.HoldDeletes();
+
+        var release = registry.ReleaseOwnedSessionsAsync("thread-a");
+        await calls.WaitForDeleteStartedAsync();
+        var fresh = await registry.GetOrCreateSessionAsync(aRef).WaitAsync(Patience);
+
+        release.IsCompleted.Should().BeFalse("the old sandbox's DELETE is still held");
+        fresh.SessionId.Should().NotBe(old.SessionId, "the sandbox being deleted must not be handed out");
+        gate.SetResult();
+        await release.WaitAsync(Patience);
+        LogCalls(calls);
+
+        calls.DeletedSessionIds.Should().Equal(old.SessionId);
+        (await registry.GetOrCreateSessionAsync(aRef)).SessionId.Should().Be(fresh.SessionId);
+        registry.TryGetSessionById(fresh.SessionId, out _).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task A_refused_release_racing_a_recreate_keeps_both_sandboxes_tracked_until_shutdown()
+    {
+        var (registry, calls) = CreateRegistry();
+        var aRef = OwnedRef("thread-a", "PRs/r-7");
+        var old = await registry.GetOrCreateSessionAsync(aRef);
+        var gate = calls.HoldDeletes();
+
+        var release = registry.ReleaseOwnedSessionsAsync("thread-a");
+        await calls.WaitForDeleteStartedAsync();
+        var fresh = await registry.GetOrCreateSessionAsync(aRef).WaitAsync(Patience);
+        calls.FailDeletes = true;
+        gate.SetResult();
+        await release.Invoking(task => task).Should().ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
+
+        calls.FailDeletes = false;
+        await registry.DisposeAsync();
+        LogCalls(calls);
+
+        calls.DeletedSessionIds.Should().BeEquivalentTo([old.SessionId, fresh.SessionId]);
+    }
+
+    [Fact]
+    public async Task A_second_release_waits_for_the_running_one_and_reports_the_gateways_answer()
+    {
+        // An agent removal starts a release nobody awaits; the release route then asks again. It must answer with
+        // what the gateway said about that DELETE, not with "nothing left to release" while the DELETE is in flight.
+        var (registry, calls) = CreateRegistry();
+        var a = await registry.GetOrCreateSessionAsync(OwnedRef("thread-a", "PRs/r-7"));
+        var gate = calls.HoldDeletes();
+
+        var first = registry.ReleaseOwnedSessionsAsync("thread-a");
+        await calls.WaitForDeleteStartedAsync();
+        var second = registry.ReleaseOwnedSessionsAsync("thread-a");
+        await Task.Delay(50);
+
+        second.IsCompleted.Should().BeFalse("the first release's DELETE is still held");
+        calls.FailDeletes = true;
+        gate.SetResult();
+        await first.Invoking(task => task).Should().ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
+        await second.Invoking(task => task).Should().ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
+        LogCalls(calls);
+
+        calls.DeleteAttempts.Should().Be(2, "the second release retries the sandbox the first could not delete");
+        calls.MaxDeletesInFlight.Should().Be(1, "releases of one owner never DELETE concurrently");
+        registry.TryGetSessionById(a.SessionId, out _).Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_release_with_a_commit_holds_the_owners_next_sandbox_until_it_is_done(bool gatewayDeletes)
+    {
+        var (registry, calls) = CreateRegistry();
+        var aRef = OwnedRef("thread-a", "PRs/r-7");
+        var old = await registry.GetOrCreateSessionAsync(aRef);
+        var gate = calls.HoldDeletes();
+        int? postsWhenCommitted = null;
+
+        var release = registry.ReleaseOwnedSessionsAsync(
+            "thread-a",
+            "PRs/r-7",
+            () =>
+            {
+                postsWhenCommitted = calls.PostCount;
+                return Task.CompletedTask;
+            }
+        );
+        await calls.WaitForDeleteStartedAsync();
+        var next = registry.GetOrCreateSessionAsync(aRef);
+        await Task.Delay(50);
+
+        next.IsCompleted.Should().BeFalse("the owner's next sandbox waits for the release that commits");
+        calls.FailDeletes = !gatewayDeletes;
+        gate.SetResult();
+        if (gatewayDeletes)
+        {
+            await release.WaitAsync(Patience);
+        }
+        else
+        {
+            await release
+                .Invoking(task => task.WaitAsync(Patience))
+                .Should()
+                .ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
+        }
+
+        var fresh = await next.WaitAsync(Patience);
+        LogCalls(calls);
+
+        fresh.SessionId.Should().NotBe(old.SessionId);
+        if (gatewayDeletes)
+        {
+            postsWhenCommitted.Should().Be(1, "the commit is stored before the next sandbox is created");
+        }
+        else
+        {
+            postsWhenCommitted.Should().BeNull("nothing is committed when the gateway refuses the delete");
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_sandbox_a_refused_owner_release_left_retiring_is_stopped_by_a_workspace_release_or_destroy(
+        bool release
+    )
+    {
+        // A refused DELETE leaves the owner's sandbox out of its slot but still running on the workspace. A backup
+        // restore needs the workspace free, so the workspace's own release must find it there.
+        var (registry, calls) = CreateRegistry();
+        var a = await registry.GetOrCreateSessionAsync(OwnedRef("thread-a", "PRs/r-7"));
+        calls.FailDeletes = true;
+        await registry
+            .ReleaseOwnedSessionsAsync("thread-a")
+            .Invoking(task => task)
+            .Should()
+            .ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
+        Logger.LogDebug(
+            "After the refused release: slot {Slot}, tracked {Tracked}",
+            registry.TryGetExistingSession("ws-1", false, "thread-a")?.SessionId,
+            registry.TryGetSessionById(a.SessionId, out _)
+        );
+        registry.TryGetExistingSession("ws-1", false, "thread-a").Should().BeNull("it is retiring, out of its slot");
+        registry.TryGetSessionById(a.SessionId, out _).Should().BeTrue("it is still tracked");
+        calls.FailDeletes = false;
+
+        if (release)
+        {
+            await registry.ReleaseWorkspaceSessionsAsync("ws-1", DefaultAppId);
+        }
+        else
+        {
+            await registry.DestroyWorkspaceSessionAsync("ws-1");
+        }
+
+        LogCalls(calls);
+        calls.DeletedSessionIds.Should().Equal(a.SessionId);
+        registry.TryGetSessionById(a.SessionId, out _).Should().BeFalse();
+        await registry.ReleaseOwnedSessionsAsync("thread-a");
+        calls.DeleteAttempts.Should().Be(2, "nothing is left for the owner's next release");
+    }
+
+    [Theory]
+    [InlineData("the DELETE is held")]
+    [InlineData("the owner has no sandbox and the commit is held")]
+    [InlineData("the gateway refuses the DELETE")]
+    public async Task A_send_admitted_while_a_move_commits_builds_in_the_directory_the_move_leaves(string when)
+    {
+        // What the host does for a turn: wait for the owner's move, read the stored directory, then resolve the
+        // sandbox with it. A move that commits during the wait must be what the send reads.
+        var (registry, calls) = CreateRegistry();
+        var stored = "PRs/r-7";
+        var ownsSandbox = when != "the owner has no sandbox and the commit is held";
+        var refused = when == "the gateway refuses the DELETE";
+        SandboxSession? old = null;
+        if (ownsSandbox)
+        {
+            old = await registry.GetOrCreateSessionAsync(OwnedRef("thread-a", stored));
+        }
+
+        var deleteGate = calls.HoldDeletes();
+        var commitGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var commitStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = registry.ReleaseOwnedSessionsAsync(
+            "thread-a",
+            "PRs/r-9",
+            async () =>
+            {
+                commitStarted.SetResult();
+                await commitGate.Task;
+                stored = "PRs/r-9";
+            }
+        );
+        if (ownsSandbox)
+        {
+            await calls.WaitForDeleteStartedAsync();
+        }
+        else
+        {
+            await commitStarted.Task.WaitAsync(Patience);
+        }
+
+        var send = SendAsync();
+        await Task.Delay(50);
+        Logger.LogDebug("Send done before the move ended ({When}): {Done}", when, send.IsCompleted);
+        send.IsCompleted.Should().BeFalse("the send waits for the move");
+        calls.FailDeletes = refused;
+        deleteGate.SetResult();
+        commitGate.SetResult();
+        if (refused)
+        {
+            await release
+                .Invoking(task => task.WaitAsync(Patience))
+                .Should()
+                .ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
+        }
+        else
+        {
+            await release.WaitAsync(Patience);
+        }
+
+        var session = await send.WaitAsync(Patience);
+        LogCalls(calls);
+
+        var expected = refused ? "PRs/r-7" : "PRs/r-9";
+        session.WorkspaceWorkingDir.Should().Be(expected, "the send reads what the move left stored");
+        WorkingDirSent(calls.PostBodies[^1]).Should().Be(expected);
+        session.SessionId.Should().NotBe(old?.SessionId, "a sandbox being released is never handed out again");
+
+        async Task<SandboxSession> SendAsync()
+        {
+            await registry.WaitForOwnerMoveAsync("thread-a");
+            return await registry.GetOrCreateSessionAsync(OwnedRef("thread-a", stored));
+        }
+    }
+
+    [Theory]
+    [InlineData("waits at the move's fence")]
+    [InlineData("arrives after the move")]
+    [InlineData("is a liveness recreate held across the move")]
+    public async Task A_create_from_a_ref_captured_before_a_move_builds_in_the_directory_the_move_committed(string how)
+    {
+        // A refresh, a liveness recreate or a tool call of an agent built before the move still carries the old
+        // directory. Created as asked, that sandbox would sit in the owner's slot (keyed without the directory), and
+        // the next send, which asks for the new directory, would get it.
+        var (registry, calls) = CreateRegistry();
+        var stale = OwnedRef("thread-a", "PRs/r-7");
+        var old = await registry.GetOrCreateSessionAsync(stale);
+        Task<SandboxSession>? early = null;
+        TaskCompletionSource? deleteGate = null;
+        TaskCompletionSource? probeGate = null;
+        if (how == "waits at the move's fence")
+        {
+            deleteGate = calls.HoldDeletes();
+        }
+        else if (how == "is a liveness recreate held across the move")
+        {
+            // Created without a probe, so this one probes, and is held there while the move runs.
+            probeGate = calls.HoldProbes();
+            early = registry.GetOrCreateLiveSessionAsync(stale);
+            await calls.WaitForProbeStartedAsync();
+        }
+
+        var release = registry.ReleaseOwnedSessionsAsync("thread-a", "PRs/r-9", () => Task.CompletedTask);
+        if (deleteGate is not null)
+        {
+            await calls.WaitForDeleteStartedAsync();
+            early = registry.GetOrCreateSessionAsync(stale);
+            deleteGate.SetResult();
+        }
+
+        await release.WaitAsync(Patience);
+        calls.Evict(old.SessionId); // the gateway forgets what it deleted
+        probeGate?.SetResult();
+        var resolved = await (early ?? registry.GetOrCreateSessionAsync(stale)).WaitAsync(Patience);
+        var next = await registry.GetOrCreateSessionAsync(OwnedRef("thread-a", "PRs/r-9"));
+        LogCalls(calls);
+        Logger.LogDebug(
+            "Stale create ({How}) got {SessionId} in {WorkingDir}; the next send got {NextSessionId}",
+            how,
+            resolved.SessionId,
+            resolved.WorkspaceWorkingDir,
+            next.SessionId
+        );
+
+        resolved.SessionId.Should().NotBe(old.SessionId, "the released sandbox is never handed out again");
+        resolved.WorkspaceWorkingDir.Should().Be("PRs/r-9", "a ref from before the move is re-resolved");
+        calls
+            .PostBodies.Skip(1)
+            .Select(WorkingDirSent)
+            .Should()
+            .AllBe("PRs/r-9", "every create after the first is the move's");
+        next.SessionId.Should().Be(resolved.SessionId, "the next send reuses the sandbox in the new directory");
+        calls.PostCount.Should().Be(2, "the move costs exactly one new sandbox");
+    }
+
+    private static WorkspaceRef OwnedRef(string owner, string directory) =>
+        new("ws-1", WorkingDir: directory, OwnerThreadId: owner);
+
+    private void LogCalls(CallLog calls) =>
+        Logger.LogDebug(
+            "Gateway saw creates {Creates}, delete attempts {DeleteAttempts} (at most {MaxInFlight} at once), "
+                + "confirmed deletes {Deletes}",
+            calls.PostCount,
+            calls.DeleteAttempts,
+            calls.MaxDeletesInFlight,
+            calls.DeletedSessionIds
+        );
+
+    [Fact]
+    public async Task A_dedicated_sandbox_the_gateway_evicted_comes_back_with_its_owner_and_working_dir()
+    {
+        // The reload hook rebuilds the ref from the workspace catalog, which knows neither the owner nor the
+        // conversation's directory. Unpinned, the recreate would land in the shared sandbox, writable everywhere.
+        var (registry, calls) = CreateRegistry(
+            reloadWorkspaceRef: (workspaceId, _) => Task.FromResult<WorkspaceRef?>(new WorkspaceRef(workspaceId))
+        );
+        var aRef = new WorkspaceRef("ws-1", WorkingDir: "PRs/r-7", OwnerThreadId: "thread-a");
+        var first = await registry.GetOrCreateSessionAsync(aRef);
+
+        calls.Evict(first.SessionId);
+        var live = await registry.GetOrCreateLiveSessionAsync(aRef);
+
+        live.SessionId.Should().NotBe(first.SessionId);
+        live.OwnerThreadId.Should().Be("thread-a");
+        live.WorkspaceWorkingDir.Should().Be("PRs/r-7");
+        WorkingDirSent(calls.PostBodies[1]).Should().Be("PRs/r-7");
+        registry.TryGetExistingSession("ws-1").Should().BeNull("the recreate must not take the shared slot");
+    }
+
+    private static string? WorkingDirSent(string createBody)
+    {
+        using var document = JsonDocument.Parse(createBody);
+        return document.RootElement.TryGetProperty("working_dir", out var dir) ? dir.GetString() : null;
+    }
+
     private static IReadOnlyList<string> AdoMethods(string createBody)
     {
         using var document = JsonDocument.Parse(createBody);
@@ -210,58 +658,75 @@ public class SandboxSessionRegistryPartitionTests
         ];
     }
 
-    private static (SandboxSessionRegistry Registry, CallLog Calls) CreateRegistry(AuthOptions? auth = null)
+    private (SandboxSessionRegistry Registry, CallLog Calls) CreateRegistry(
+        AuthOptions? auth = null,
+        Func<string, CancellationToken, Task<WorkspaceRef?>>? reloadWorkspaceRef = null
+    )
     {
         var calls = new CallLog();
 
-        var registryHandler = new StubHandler(req =>
-        {
-            var path = req.RequestUri!.AbsolutePath;
-
-            // Create: POST /api/v1/sandboxes — records the app id header that came with this
-            // particular create call so tests can assert per-credential partitioning.
-            if (req.Method == HttpMethod.Post && path.EndsWith("/sandboxes", StringComparison.Ordinal))
+        var registryHandler = new DeleteGatingHandler(
+            calls,
+            async req =>
             {
-                var appId = req.Headers.GetValues("X-Sbx-App-Id").Single();
-                var ordinal = calls.RecordPost(appId, req.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
-                var sessionId = $"sess-{ordinal}";
-                calls.MarkCreated(sessionId);
-                var responseBody = $$"""
-                    { "session_id": "{{sessionId}}", "container_id": "c-{{ordinal}}",
-                      "volumes": { "workspace": { "container_path": "/workspace", "read_only": false } } }
-                    """;
-                return new HttpResponseMessage(HttpStatusCode.OK)
+                var path = req.RequestUri!.AbsolutePath;
+
+                // Create: POST /api/v1/sandboxes — records the app id header that came with this
+                // particular create call so tests can assert per-credential partitioning.
+                if (req.Method == HttpMethod.Post && path.EndsWith("/sandboxes", StringComparison.Ordinal))
                 {
-                    Content = new StringContent(responseBody, Encoding.UTF8, "application/json"),
-                };
-            }
-
-            // Liveness: GET /api/v1/sandboxes/{id}
-            if (req.Method == HttpMethod.Get && path.Contains("/sandboxes/", StringComparison.Ordinal))
-            {
-                var id = path[(path.LastIndexOf('/') + 1)..];
-                return calls.IsAlive(id)
-                    ? new HttpResponseMessage(HttpStatusCode.OK)
-                    : new HttpResponseMessage(HttpStatusCode.NotFound)
+                    var appId = req.Headers.GetValues("X-Sbx-App-Id").Single();
+                    var ordinal = calls.RecordPost(appId, await req.Content!.ReadAsStringAsync());
+                    var sessionId = $"sess-{ordinal}";
+                    calls.MarkCreated(sessionId);
+                    // Echoes a requested working directory, as the gateway does: the SDK refuses a create whose
+                    // reply does not acknowledge it.
+                    using var request = JsonDocument.Parse(calls.PostBodies[^1]);
+                    var workingDir = request.RootElement.TryGetProperty("working_dir", out var dir)
+                        ? $", \"working_dir\": \"{dir.GetString()}\""
+                        : string.Empty;
+                    var responseBody = $$"""
+                        { "session_id": "{{sessionId}}", "container_id": "c-{{ordinal}}",
+                          "volumes": { "workspace": { "container_path": "/workspace", "read_only": false{{workingDir}} } } }
+                        """;
+                    return new HttpResponseMessage(HttpStatusCode.OK)
                     {
-                        Content = new StringContent(
-                            $$"""{ "code": 404, "error": "Session not found: {{id}}" }""",
-                            Encoding.UTF8,
-                            "application/json"
-                        ),
+                        Content = new StringContent(responseBody, Encoding.UTF8, "application/json"),
                     };
-            }
+                }
 
-            // Destroy: DELETE /api/v1/sandboxes/{id}
-            if (req.Method == HttpMethod.Delete && path.Contains("/sandboxes/", StringComparison.Ordinal))
-            {
-                var id = path[(path.LastIndexOf('/') + 1)..];
-                calls.RecordDelete(id);
+                // Liveness: GET /api/v1/sandboxes/{id}
+                if (req.Method == HttpMethod.Get && path.Contains("/sandboxes/", StringComparison.Ordinal))
+                {
+                    var id = path[(path.LastIndexOf('/') + 1)..];
+                    await calls.BeginProbeAsync();
+                    return calls.IsAlive(id)
+                        ? new HttpResponseMessage(HttpStatusCode.OK)
+                        : new HttpResponseMessage(HttpStatusCode.NotFound)
+                        {
+                            Content = new StringContent(
+                                $$"""{ "code": 404, "error": "Session not found: {{id}}" }""",
+                                Encoding.UTF8,
+                                "application/json"
+                            ),
+                        };
+                }
+
+                // Destroy: DELETE /api/v1/sandboxes/{id}
+                if (req.Method == HttpMethod.Delete && path.Contains("/sandboxes/", StringComparison.Ordinal))
+                {
+                    var id = path[(path.LastIndexOf('/') + 1)..];
+                    if (calls.FailDeletes)
+                    {
+                        return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+                    }
+                    calls.RecordDelete(id);
+                    return new HttpResponseMessage(HttpStatusCode.OK);
+                }
+
                 return new HttpResponseMessage(HttpStatusCode.OK);
             }
-
-            return new HttpResponseMessage(HttpStatusCode.OK);
-        });
+        );
 
         var options = new SandboxGatewayOptions
         {
@@ -282,13 +747,14 @@ public class SandboxSessionRegistryPartitionTests
         var registry = new SandboxSessionRegistry(
             gateway,
             options,
-            NullLogger<SandboxSessionRegistry>.Instance,
+            LoggerFactory.CreateLogger<SandboxSessionRegistry>(),
             new HttpClient(registryHandler),
             auth ?? new AuthOptions(),
             new SessionSecretStore(
                 Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
                 NullLogger<SessionSecretStore>.Instance
-            )
+            ),
+            reloadWorkspaceRef: reloadWorkspaceRef
         );
 
         return (registry, calls);
@@ -303,6 +769,79 @@ public class SandboxSessionRegistryPartitionTests
         private readonly List<string> _deletedSessionIds = [];
         private readonly HashSet<string> _created = new(StringComparer.Ordinal);
         private readonly HashSet<string> _evicted = new(StringComparer.Ordinal);
+
+        /// <summary>When set, every DELETE answers 500 and deletes nothing.</summary>
+        public volatile bool FailDeletes;
+
+        private readonly SemaphoreSlim _deletesStarted = new(0);
+        private TaskCompletionSource? _deleteGate;
+        private int _deleteAttempts;
+        private int _deletesInFlight;
+        private int _maxDeletesInFlight;
+
+        /// <summary>Every DELETE that reached the gateway, answered or still held.</summary>
+        public int DeleteAttempts => Volatile.Read(ref _deleteAttempts);
+
+        /// <summary>The most DELETEs the gateway was answering at one time.</summary>
+        public int MaxDeletesInFlight => Volatile.Read(ref _maxDeletesInFlight);
+
+        private readonly SemaphoreSlim _probesStarted = new(0);
+        private TaskCompletionSource? _probeGate;
+
+        /// <summary>Holds every liveness probe from now on until the returned source is completed.</summary>
+        public TaskCompletionSource HoldProbes()
+        {
+            var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            // Only probes from now on count: earlier ones must not satisfy the next wait.
+            while (_probesStarted.Wait(0)) { }
+
+            Volatile.Write(ref _probeGate, gate);
+            return gate;
+        }
+
+        public async Task WaitForProbeStartedAsync() =>
+            (await _probesStarted.WaitAsync(Patience)).Should().BeTrue("a liveness probe was expected");
+
+        /// <summary>Counts a liveness probe as begun and waits at the gate, if one is set.</summary>
+        public async Task BeginProbeAsync()
+        {
+            _ = _probesStarted.Release();
+            if (Volatile.Read(ref _probeGate) is { } gate)
+            {
+                await gate.Task;
+            }
+        }
+
+        /// <summary>Holds every DELETE from now on until the returned source is completed.</summary>
+        public TaskCompletionSource HoldDeletes()
+        {
+            var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            Volatile.Write(ref _deleteGate, gate);
+            return gate;
+        }
+
+        public async Task WaitForDeleteStartedAsync() =>
+            (await _deletesStarted.WaitAsync(Patience)).Should().BeTrue("a DELETE was expected");
+
+        /// <summary>Counts a DELETE as begun and waits at the gate, if one is set.</summary>
+        public async Task BeginDeleteAsync()
+        {
+            _ = Interlocked.Increment(ref _deleteAttempts);
+            var inFlight = Interlocked.Increment(ref _deletesInFlight);
+            int seen;
+            while (inFlight > (seen = Volatile.Read(ref _maxDeletesInFlight)))
+            {
+                _ = Interlocked.CompareExchange(ref _maxDeletesInFlight, inFlight, seen);
+            }
+
+            _ = _deletesStarted.Release();
+            if (Volatile.Read(ref _deleteGate) is { } gate)
+            {
+                await gate.Task;
+            }
+        }
+
+        public void EndDelete() => _ = Interlocked.Decrement(ref _deletesInFlight);
 
         public int PostCount
         {
@@ -389,6 +928,32 @@ public class SandboxSessionRegistryPartitionTests
             lock (_gate)
             {
                 return _created.Contains(sessionId) && !_evicted.Contains(sessionId);
+            }
+        }
+    }
+
+    /// <summary>Answers like <see cref="StubHandler"/>, but lets a test hold DELETEs and count them.</summary>
+    private sealed class DeleteGatingHandler(CallLog calls, Func<HttpRequestMessage, Task<HttpResponseMessage>> respond)
+        : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
+        {
+            if (request.Method != HttpMethod.Delete)
+            {
+                return await respond(request);
+            }
+
+            try
+            {
+                await calls.BeginDeleteAsync();
+                return await respond(request);
+            }
+            finally
+            {
+                calls.EndDelete();
             }
         }
     }
