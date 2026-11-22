@@ -25,7 +25,11 @@ internal static class ReviewArm
         {
             // Only a shadow arm may start a new database, and only through the open that creates every Reviewd
             // database in WAL. A mistyped live --db must fail, not start empty.
-            PrThreadBindings.Connection(database).Dispose();
+            using (var created = PrThreadBindings.Connection(database))
+            {
+                // The seam pools its handle; a one-off check must not leave the file open after the run.
+                SqliteConnection.ClearPool(created);
+            }
         }
         using var connection = new SqliteConnection(
             new SqliteConnectionStringBuilder
