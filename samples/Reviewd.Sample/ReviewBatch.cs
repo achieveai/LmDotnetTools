@@ -1266,7 +1266,8 @@ internal static class ReviewBatch
                 // A resume is not counted: it repeats one admission, which only a fresh admission can replace
                 // (seen live: a lost input re-verified five times). Neither is a held slot, which says nothing
                 // about the PR. Nor is a lost claim: a sweep reset the slot under the run, which says nothing about
-                // the PR either.
+                // the PR either. Nor is a review host read past its client timeout (the batch's own cancel returned
+                // above): a slow host, seen live at 64-143 s under store lock contention. It still spends lane retries.
                 var failedTimes =
                     launchedFresh
                     && !transientBeforeClaim
@@ -1276,6 +1277,7 @@ internal static class ReviewBatch
                             ReviewRunner.ReviewNotAdmittedException
                             or ReviewRunner.SlotUnavailableException
                             or ReviewRunner.SlotClaimLostException
+                            or TaskCanceledException
                         )
                         ? await RecordFailureAsync(entry, ex.Message)
                         : 0;
