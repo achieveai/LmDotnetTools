@@ -626,6 +626,7 @@ internal sealed class LmStreamingS2SClient
         "sandbox_release_failed",
         "dedicated_sandbox_required",
         "working_directory_invalid",
+        "dedicated_sandbox_mode_unsupported",
     };
 
     /// <summary>

@@ -1947,8 +1947,12 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// review daemon's per-run cleanup) still get complete teardown this way, rather than leaking
     /// every non-default-credential session forever. Evicts each entry's creation slot + reverse
     /// maps, then issues the gateway DELETE. Idempotent — a no-op when nothing is cached for the id.
-    /// Best-effort: gateway failures are logged inside <see cref="DestroySessionAsync"/> and
-    /// swallowed so run teardown never throws. Cancellation is observed only BEFORE each entry is
+    /// Released dedicated sandboxes still retiring on the workspace (an owner release the gateway
+    /// refused) are deleted too, but each is evicted only once the gateway confirms it gone (a 404
+    /// counts): one whose DELETE is refused or fails stays tracked, so the owner's next release, a
+    /// workspace release or disposal retries it. Best-effort: gateway failures are logged and
+    /// swallowed so run teardown never throws on a failed DELETE; a caller's cancellation still
+    /// propagates. Cancellation is observed only BEFORE each entry is
     /// removed from the cache (the point of no return); once an entry is committed to teardown its
     /// remote DELETE + secret removal run under <see cref="CancellationToken.None"/> so a cancellation
     /// can never orphan the remote session or its persisted secret. A creation still in flight is awaited
@@ -2131,7 +2135,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             await EvictSessionStateAsync(session).ConfigureAwait(false);
         }
 
-        // Released dedicated sandboxes whose DELETE was refused still run on this workspace.
+        // Released dedicated sandboxes whose DELETE was refused still run on this workspace. Each stays tracked until
+        // the gateway confirms it gone: forgotten after a refused DELETE, it would let the owner's next move commit
+        // while it still runs. The owner's next release, a workspace release and disposal retry it.
         foreach (var (retiring, key) in _retiringSessions.ToList())
         {
             if (
@@ -2143,23 +2149,21 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             }
 
             ct.ThrowIfCancellationRequested();
-            if (!_retiringSessions.TryRemove(retiring, out _))
-            {
-                continue;
-            }
-
-            SandboxSession session;
             try
             {
-                session = await retiring.Value.ConfigureAwait(false);
+                // A refusal is logged there and left tracked; this teardown stays best-effort.
+                _ = await TryDeleteRetiringAsync(retiring, key).ConfigureAwait(false);
             }
-            catch
+            catch (Exception ex)
             {
-                continue;
+                _logger.LogWarning(
+                    ex,
+                    "Deleting retiring sandbox of owner {OwnerThreadId} on workspace {WorkspaceId} failed; it stays "
+                        + "tracked for a retry",
+                    key.OwnerThreadId,
+                    workspaceId
+                );
             }
-
-            await DestroySessionAsync(session, CancellationToken.None).ConfigureAwait(false);
-            await EvictSessionStateAsync(session).ConfigureAwait(false);
         }
     }
 
