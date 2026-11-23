@@ -94,7 +94,10 @@ public sealed class ReviewdBatchLogTests : IDisposable
         batch.OnRunPrAsync = async pr =>
         {
             if (pr != "1")
+            {
                 return;
+            }
+
             firstStarted.TrySetResult();
             await release.Task;
         };
@@ -181,7 +184,9 @@ public sealed class ReviewdBatchLogTests : IDisposable
                 CancellationToken.None
             )
         )
+        {
             lease.CanWrite.Should().BeTrue();
+        }
 
         attempts.Should().Be(4);
         delays.Should().Be(3);

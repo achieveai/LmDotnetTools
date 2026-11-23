@@ -58,13 +58,25 @@ internal static class SlotReaper
         var attempt = await ReadAsync(connection, attemptKey, ct);
         ReclaimResult Terminal(string status) => new(repo.DisplayName, pr, slot, null, "n/a", status);
         if (attempt is null)
+        {
             return (null, null, Terminal("no-attempt"));
+        }
+
         if (attempt["claimToken"]?.GetValue<string>() is not { Length: > 0 } token)
+        {
             return (null, null, Terminal("no-claim-token"));
+        }
+
         if (attempt["slot"]?.GetValue<int>() != slot || attempt["workspaceId"]?.GetValue<string>() != workspace)
+        {
             return (null, null, Terminal("slot-workspace-mismatch"));
+        }
+
         if (attempt["cleanupState"]?.GetValue<string>() == "released")
+        {
             return (null, null, Terminal("already-released"));
+        }
+
         return (attempt, token, null);
     }
 
@@ -75,7 +87,9 @@ internal static class SlotReaper
     /// throws, so the caller skips it rather than discarding a running review. With <paramref name="execute"/>
     /// false only quiescence is inspected (the live conversation is restored) and nothing is reset. The abandoned-child
     /// check keeps its readings and warnings in <paramref name="reads"/>, so a caller that passes one log to every
-    /// reclaim reports a ghost once; without one this reclaim starts afresh.
+    /// reclaim reports a ghost once; without one this reclaim starts afresh. A verified review whose artifact commit has
+    /// not completed is held (<see cref="HoldsUnarchivedReview"/>): nothing is touched unless the operator passes
+    /// <paramref name="discardVerified"/>.
     /// </summary>
     internal static async Task<ReclaimResult> ReclaimOneAsync(
         SqliteConnection connection,
@@ -92,12 +106,43 @@ internal static class SlotReaper
         bool force = false,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
         Func<CancellationToken, Task<bool?>>? recheck = null,
-        AbandonedChildProbe.ReadLog? reads = null
+        AbandonedChildProbe.ReadLog? reads = null,
+        bool discardVerified = false
     )
     {
         delay ??= Task.Delay;
         var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/{pr}";
         var threadId = attempt["threadId"]?.GetValue<string>();
+        // The review is on the PR, and its archive is written from the slot a reset discards, so a reset would lose the
+        // archive for good (seen on the ADO runner, MCQdbDEV #11441). The slot stays held, untouched and said on every
+        // sweep; the alarm reports it as held and an operator finishes the commit or discards the slot.
+        if (!discardVerified && HoldsUnarchivedReview(attempt))
+        {
+            return new ReclaimResult(
+                repo.DisplayName,
+                pr,
+                slot,
+                threadId,
+                "not-frozen",
+                "held",
+                Detail: $"verified review at {attempt["stage"]?.GetValue<string>()} has no archive commit; held for an "
+                    + "operator to finish the commit or discard the slot (README: A held verified review)."
+            );
+        }
+        // A commit that landed is finished from this slot (review finish-commit, then a resume re-verifies and writes the
+        // receipt). A discard resets the slot, after which nothing can verify the review, so it is refused.
+        if (
+            discardVerified
+            && attempt["stage"]?.GetValue<string>() == "commit-completed"
+            && ReviewRunner.CommitLanded(attempt)
+        )
+        {
+            throw new InvalidOperationException(
+                $"This review's commit landed; run `reviewd review finish-commit --repo {repo.DisplayName} --pr {pr} "
+                    + $"--slot {slot} --db <db> --workspace {workspace} --execute` to finish it, then resume it. "
+                    + "A discard would strand it: the review could never be finished."
+            );
+        }
         var abandoned = new AbandonedChildProbe($"Reaper {repo.DisplayName}#{pr}/slot{slot}", reads);
         var head =
             attempt["headSha"]?.GetValue<string>()
@@ -112,6 +157,7 @@ internal static class SlotReaper
             threadId is { Length: > 0 }
             && await FindActivityAsync(client, threadId, delay, ct, abandoned) is { } liveActivity
         )
+        {
             return new ReclaimResult(
                 repo.DisplayName,
                 pr,
@@ -121,8 +167,12 @@ internal static class SlotReaper
                 "skipped",
                 Detail: $"{liveActivity}; left untouched (not frozen)."
             );
+        }
+
         if (!await StillOursAsync())
+        {
             return Moved("not-frozen");
+        }
 
         // 1) Freeze the conversation we own. Present == false means the host does not know it — not
         //    running there, which for a reclaim is the same end state as frozen.
@@ -132,7 +182,10 @@ internal static class SlotReaper
         {
             var frozen = await client.SetFrozenAsync(threadId, frozen: true, ct);
             if (frozen.Refusal is { } refusal)
+            {
                 throw new InvalidOperationException($"Host refused to freeze {threadId}: {refusal}.");
+            }
+
             freezeState =
                 !frozen.Present ? "absent-on-host"
                 : frozen.Frozen ? "frozen"
@@ -151,9 +204,15 @@ internal static class SlotReaper
         async Task<bool> StillOursAsync()
         {
             if (recheck is null)
+            {
                 return true;
+            }
+
             if (await recheck(ct) is not { } forceNow)
+            {
                 return false;
+            }
+
             force = forceNow;
             return true;
         }
@@ -196,10 +255,13 @@ internal static class SlotReaper
                 while (await FindActivityAsync(client, threadId!, delay, ct, abandoned) is { } activity)
                 {
                     if (DateTimeOffset.UtcNow >= deadline)
+                    {
                         throw new InvalidOperationException(
                             $"Conversation {threadId} did not quiesce within {QuiescenceDeadline.TotalSeconds:0}s of "
                                 + $"freezing ({activity}); slot not reclaimed."
                         );
+                    }
+
                     await Task.Delay(QuiescencePoll, ct);
                 }
             }
@@ -210,16 +272,40 @@ internal static class SlotReaper
                 return new ReclaimResult(repo.DisplayName, pr, slot, threadId, freezeState, "would-reclaim");
             }
 
-            if (!await StillOursAsync())
+            var ownerKey = SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot);
+            var operation = Guid.NewGuid().ToString("N");
+            // Read before the recheck, so the fence below lands only on the row the recheck approved.
+            var seen = await ReadRawAsync(connection, ownerKey, ct);
+            if (seen is null || !await StillOursAsync())
             {
+                await RestoreIfFrozenAsync();
+                return Moved(freezeState);
+            }
+            // Fence the claim before the reset discards anything. A lane whose renewals failed can still be running on
+            // this token: from here its saves are refused, so a verify that finishes now cannot record progress the
+            // reset then discards. The attempt is read in the same transaction; one that changed since the reaper read
+            // it (the lane saved first) is left alone, and so is an owner row that changed.
+            var fence = await SlotRelease.FenceAsync(connection, ownerKey, claimToken, seen, operation, attemptKey, ct);
+            if (fence is not { } fenced || fenced.Attempt?.ToJsonString() != attempt.ToJsonString())
+            {
+                if (fence is { } unused)
+                {
+                    _ = await SlotRelease.UnfenceAsync(
+                        connection,
+                        ownerKey,
+                        unused.Fenced,
+                        seen,
+                        CancellationToken.None
+                    );
+                }
                 await RestoreIfFrozenAsync();
                 return Moved(freezeState);
             }
 
             // 3) Discard-reset the native slot (release the owner marker, discard the prepared slot/pool run). The reset
-            //    renews the lease while it runs, so another reaper reading the same lapsed lease leaves the slot alone.
-            var ownerKey = SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot);
-            var operation = Guid.NewGuid().ToString("N");
+            //    renews the lease under its fence while it runs, so another reaper reading the same lapsed lease leaves
+            //    the slot alone. A reset that fails keeps the fence: the slot may be half discarded, so only the next
+            //    sweep's reset may continue on it.
             var args = new JsonObject
             {
                 ["org"] = repo.OrgOrOwner,
@@ -243,15 +329,18 @@ internal static class SlotReaper
                 "cleanup",
                 args,
                 operation,
-                ct
+                ct,
+                fence: operation
             );
             if (
                 result["claimToken"]?.GetValue<string>() != claimToken
                 || result["cleanBaselineVerified"]?.GetValue<bool>() != true
             )
+            {
                 throw new InvalidOperationException(
                     "Discard-reset postconditions were not verified; slot remains claimed."
                 );
+            }
 
             // 4) Release the SQLite owner on the exact claim token, stamping the attempt released. A forced reset keeps
             //    what it overrode on the attempt too, not just in the log.
@@ -265,19 +354,14 @@ internal static class SlotReaper
             // A review whose publication was never verified becomes a failed admission once its slot is reset: the next
             // pick admits the PR again in its own conversation, which checks what already posted (Kay9: review it again
             // rather than skip it until a new push; seen live: 12 open PRs parked that way, and prepares that failed
-            // holding their slot). A verified publication keeps its stage; only its artifact commit is missing. The
-            // runner saves verify-completed before it stores the verify result, so that stage counts as verified too.
-            if (
-                attempt["verifiedPublication"] is null
-                && attempt["stage"]?.GetValue<string>()
-                    is not ("verify-completed" or "commit-pending" or "commit-completed" or "completed-verified")
-            )
+            // holding their slot). A verified publication keeps its stage: it is archived, or an operator discarded it.
+            if (!IsVerified(attempt))
             {
                 attempt["stageBeforeReclaim"] = attempt["stage"]?.DeepClone();
                 attempt["stage"] = "failed-released";
                 attempt["resetCount"] = (attempt["resetCount"]?.GetValue<int>() ?? 0) + 1;
             }
-            await SlotRelease.ReleaseAsync(connection, ownerKey, claimToken, attemptKey, attempt, ct);
+            await SlotRelease.ReleaseAsync(connection, ownerKey, claimToken, attemptKey, attempt, ct, fence: operation);
 
             var forced = overrides is not null
                 ? "forced: " + string.Join("; ", overrides.Select(o => o!.GetValue<string>()))
@@ -292,6 +376,19 @@ internal static class SlotReaper
             throw;
         }
     }
+
+    // The runner saves verify-completed before it stores the verify result, so that stage counts as verified too.
+    private static bool IsVerified(JsonObject attempt) =>
+        attempt["verifiedPublication"] is not null
+        || attempt["stage"]?.GetValue<string>()
+            is "verify-completed"
+                or "commit-pending"
+                or "commit-completed"
+                or "completed-verified";
+
+    /// <summary>A verified review whose artifact commit has not completed: the reaper never resets its slot.</summary>
+    internal static bool HoldsUnarchivedReview(JsonObject attempt) =>
+        IsVerified(attempt) && attempt["stage"]?.GetValue<string>() != "completed-verified";
 
     // A live lane renews its lease every step, so a lease lapsed this long means no lane has watched the slot for an
     // hour: only our own bookkeeping still holds it. From here a reclaim forces through any disagreement between the
@@ -370,7 +467,10 @@ internal static class SlotReaper
     {
         var root = await client.GetRunStateAsync(threadId, ct);
         if (root.IsInProgress || root.CurrentRunId is not null)
+        {
             return "Conversation is in progress";
+        }
+
         ReviewSubAgentTreeSnapshot? tree = null;
         var busyReads = 0;
         while (tree is null)
@@ -398,14 +498,19 @@ internal static class SlotReaper
         {
             root = await client.GetRunStateAsync(threadId, ct);
             if (root.IsInProgress || root.CurrentRunId is not null)
+            {
                 return "Conversation is in progress";
+            }
         }
         var now = DateTimeOffset.UtcNow;
         var active = tree.Nodes.Where(n => !ReviewRunner.IsSettledNode(n, now)).ToList();
         // The root is idle here and there is no input to wait on, so a caller that passes a probe lets abandoned
         // children settle (#956).
         if (active.Count > 0 && probe is not null && await probe.AllAbandonedAsync(client, threadId, active, now, ct))
+        {
             return null;
+        }
+
         return active.Count == 0
             ? null
             : $"{active.Count} descendant(s) still active ({string.Join(", ", active.Select(n => $"{n.AgentId}={n.Status}"))})";
@@ -442,17 +547,29 @@ internal static class SlotReaper
             while (await reader.ReadAsync(ct))
             {
                 if (JsonNode.Parse(reader.GetString(0)) is not JsonObject owner)
+                {
                     continue;
+                }
+
                 if (owner["workspaceId"]?.GetValue<string>() != workspace)
+                {
                     continue;
+                }
+
                 if (!SlotRelease.IsLeaseExpired(owner, now, undatedExpired))
+                {
                     continue;
+                }
+
                 if (
                     owner["repository"]?.GetValue<string>() is not { Length: > 0 } repository
                     || owner["prId"]?.GetValue<string>() is not { Length: > 0 } pr
                     || owner["slot"]?.GetValue<int>() is not { } slot
                 )
+                {
                     continue;
+                }
+
                 owners.Add((PrCommands.ParseRepo(repository), pr, slot, IsForceDue(owner, now)));
             }
         }
@@ -517,17 +634,36 @@ internal static class SlotReaper
     /// </summary>
     public static async Task<int> RunAsync(CliOptions options, ReviewdConfig config, CancellationToken ct)
     {
-        var database = options.Required("db");
-        var workspace = options.Required("workspace");
         var session = options.Required("session");
-        var execute = options.Has("execute");
-        var undatedExpired = options.Has("include-undated");
+        // A shadow arm's --db must be paired with its read-only session; refused before any host or sandbox client.
         await ReviewArm.RequireReadOnlySessionForShadowAsync(
-            database,
+            options.Required("db"),
             () => AuthCommands.LoadOptions(config, null).TokenStoreDir!,
             session,
             ct
         );
+        using var sandboxClient = config.CreateSandboxClient(TimeSpan.FromMinutes(10));
+        return await RunAsync(
+            options,
+            config.CreateS2SClient(),
+            (phase, args, operation, token) =>
+                ReviewRunner.ExecuteSandboxAsync(sandboxClient, session, phase, args, operation, token),
+            ct
+        );
+    }
+
+    /// <summary><c>review reap-slots</c> on an injected host client and sandbox, so its output is testable.</summary>
+    internal static async Task<int> RunAsync(
+        CliOptions options,
+        LmStreamingS2SClient client,
+        SandboxExecutor sandbox,
+        CancellationToken ct
+    )
+    {
+        var database = options.Required("db");
+        var workspace = options.Required("workspace");
+        var execute = options.Has("execute");
+        var undatedExpired = options.Has("include-undated");
 
         await using var connection = new SqliteConnection(
             new SqliteConnectionStringBuilder
@@ -537,11 +673,6 @@ internal static class SlotReaper
             }.ToString()
         );
         await connection.OpenAsync(ct);
-
-        var client = config.CreateS2SClient();
-        using var sandboxClient = config.CreateSandboxClient(TimeSpan.FromMinutes(10));
-        SandboxExecutor sandbox = (phase, args, operation, token) =>
-            ReviewRunner.ExecuteSandboxAsync(sandboxClient, session, phase, args, operation, token);
 
         var results = await SweepAsync(
             connection,
@@ -562,6 +693,7 @@ internal static class SlotReaper
                     includeUndated = undatedExpired,
                     reclaimed = results.Count(r => r.Status == "reclaimed"),
                     skipped = results.Count(r => r.Status == "skipped"),
+                    held = results.Count(r => r.Status == "held"),
                     results,
                 }
             )
@@ -569,11 +701,14 @@ internal static class SlotReaper
         return 0;
     }
 
-    private static async Task<JsonObject?> ReadAsync(SqliteConnection connection, string key, CancellationToken ct)
+    private static async Task<JsonObject?> ReadAsync(SqliteConnection connection, string key, CancellationToken ct) =>
+        await ReadRawAsync(connection, key, ct) is { } raw ? JsonNode.Parse(raw)?.AsObject() : null;
+
+    private static async Task<string?> ReadRawAsync(SqliteConnection connection, string key, CancellationToken ct)
     {
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT value FROM cache WHERE key=@key";
         _ = command.Parameters.AddWithValue("@key", key);
-        return await command.ExecuteScalarAsync(ct) is string raw ? JsonNode.Parse(raw)?.AsObject() : null;
+        return await command.ExecuteScalarAsync(ct) as string;
     }
 }
