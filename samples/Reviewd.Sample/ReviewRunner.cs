@@ -1703,6 +1703,23 @@ internal static class ReviewRunner
             receipt["finishedAt"] = DateTimeOffset.UtcNow;
             using (var transaction = connection.BeginTransaction())
             {
+                // A reset can release this claim after the commit landed: KeepLandedAsync kept the attempt owned under
+                // the reset's fence, and the reset then released the slot. The completion must not re-own it, so it
+                // reads as released, and no cleanup follows (the reset cleaned the slot). Read in this transaction, so
+                // a release cannot land between the check and the write.
+                using var owner = connection.CreateCommand();
+                owner.Transaction = transaction;
+                owner.CommandText = "SELECT value FROM cache WHERE key=@key";
+                owner.Parameters.AddWithValue("@key", ownerKey);
+                var claim = await owner.ExecuteScalarAsync(ct) is string held ? JsonNode.Parse(held) : null;
+                if (
+                    claim?["claimToken"]?.GetValue<string>() != claimToken
+                    || claim["state"]?.GetValue<string>() != "owned"
+                )
+                {
+                    receipt["cleanupState"] = "released";
+                    commitClaimLost = true;
+                }
                 using var completion = connection.CreateCommand();
                 completion.Transaction = transaction;
                 completion.CommandText =

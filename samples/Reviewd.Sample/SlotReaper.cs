@@ -115,9 +115,15 @@ internal static class SlotReaper
         var threadId = attempt["threadId"]?.GetValue<string>();
         // The review is on the PR, and its archive is written from the slot a reset discards, so a reset would lose the
         // archive for good (seen on the ADO runner, MCQdbDEV #11441). The slot stays held, untouched and said on every
-        // sweep; the alarm reports it as held and an operator finishes the commit or discards the slot.
+        // sweep; the alarm reports it as held and an operator finishes the review or discards the slot.
+        var stage = attempt["stage"]?.GetValue<string>();
+        var landed = stage == "commit-completed" && ReviewRunner.CommitLanded(attempt);
         if (!discardVerified && HoldsUnarchivedReview(attempt))
         {
+            var recovery =
+                landed ? "run review finish-commit, then resume it,"
+                : stage == "verify-pending" ? "resume it,"
+                : "set its stage back to verify-pending and resume it,";
             return new ReclaimResult(
                 repo.DisplayName,
                 pr,
@@ -125,16 +131,24 @@ internal static class SlotReaper
                 threadId,
                 "not-frozen",
                 "held",
-                Detail: $"verified review at {attempt["stage"]?.GetValue<string>()} has no archive commit; held for an "
-                    + "operator to finish the commit or discard the slot (README: A held verified review)."
+                Detail: $"verified review at {stage} has no archive commit; held for an operator to {recovery} or "
+                    + "discard the slot (README: A held verified review)."
             );
         }
         // A commit that landed is finished from this slot (review finish-commit, then a resume re-verifies and writes the
-        // receipt). A discard resets the slot, after which nothing can verify the review, so it is refused.
+        // receipt). A discard resets the slot, after which nothing can verify the review, so it is refused. Not after a
+        // reset of this claim that failed: its fence is still on the owner row, the slot may be half discarded, and
+        // finish-commit refuses it, so only this discard can go on. It re-fences the same claim, and releases the slot
+        // only once the reset proves the clean baseline.
         if (
             discardVerified
-            && attempt["stage"]?.GetValue<string>() == "commit-completed"
-            && ReviewRunner.CommitLanded(attempt)
+            && landed
+            && await ReadAsync(connection, SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot), ct) is var owner
+            && !(
+                owner?["claimToken"]?.GetValue<string>() == claimToken
+                && owner["state"]?.GetValue<string>() == "owned"
+                && owner[SlotRelease.ResetFence] is not null
+            )
         )
         {
             throw new InvalidOperationException(

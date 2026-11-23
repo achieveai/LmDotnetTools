@@ -739,21 +739,30 @@ public sealed class SlotReaperTests
         }
     }
 
+    // Each hold names that stage's own recovery: a landed commit is finished with finish-commit and then resumed, a
+    // verify-pending review is resumed, and any other verified stage is set back to verify-pending by hand first.
     [Theory]
     // The runner saves verify-completed before the verify result: a crash in between still posted the review.
-    [InlineData("verify-completed", false)]
-    [InlineData("commit-pending", true)]
-    [InlineData("commit-completed", true)]
+    [InlineData("verify-completed", false, "set its stage back to verify-pending and resume it,")]
+    [InlineData("commit-pending", true, "set its stage back to verify-pending and resume it,")]
+    [InlineData("commit-completed", true, "set its stage back to verify-pending and resume it,")]
     // The stage alone holds too: a verified stage with no publication recorded.
-    [InlineData("commit-pending", false)]
-    [InlineData("commit-completed", false)]
+    [InlineData("commit-pending", false, "set its stage back to verify-pending and resume it,")]
+    [InlineData("commit-completed", false, "set its stage back to verify-pending and resume it,")]
     // A commit whose response was lost goes back to verify-pending to replay under its id; it is still verified.
-    [InlineData("verify-pending", true)]
-    public async Task Reaper_holds_a_verified_review_whose_archive_commit_has_not_completed(string stage, bool verified)
+    [InlineData("verify-pending", true, "resume it,")]
+    // A commit that landed before the run wrote its receipt.
+    [InlineData("commit-completed", true, "run review finish-commit, then resume it,", true)]
+    public async Task Reaper_holds_a_verified_review_whose_archive_commit_has_not_completed(
+        string stage,
+        bool verified,
+        string recovery,
+        bool landed = false
+    )
     {
         // Seen on the ADO runner (MCQdbDEV #11441): the reaper reset a verified review before its archive commit, and
         // nothing could write the archive after the reset. Such a slot stays held, untouched, with a reason the batch
-        // logs on every sweep, until an operator finishes the commit or discards it.
+        // logs on every sweep, until an operator finishes the review or discards it.
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-held-verified-{Guid.NewGuid():N}.db");
         try
         {
@@ -770,6 +779,14 @@ public sealed class SlotReaperTests
             {
                 seeded["verifiedPublication"] = new JsonObject { ["comments"] = 3 };
             }
+            if (landed)
+            {
+                seeded["artifactCommit"] = new JsonObject
+                {
+                    ["status"] = "committed",
+                    ["commit"] = new string('c', 40),
+                };
+            }
             await store.SetAsync(attemptKey, seeded, CancellationToken.None);
             var ownerBefore = (await store.GetAsync<JsonObject>(ownerKey))!.ToJsonString();
             var attemptBefore = (await store.GetAsync<JsonObject>(attemptKey))!.ToJsonString();
@@ -783,7 +800,7 @@ public sealed class SlotReaperTests
 
             var held = results.Should().ContainSingle().Which;
             held.Status.Should().Be("held");
-            held.Detail.Should().Contain(stage).And.Contain("operator");
+            held.Detail.Should().Contain(stage).And.Contain($"held for an operator to {recovery} or discard the slot");
             discards.Should().Be(0, "the reset would discard the slot the archive is written from");
             handler.Requests.Should().BeEmpty("a held slot is not even frozen");
             (await store.GetAsync<JsonObject>(ownerKey))!.ToJsonString().Should().Be(ownerBefore);
@@ -1551,24 +1568,14 @@ public sealed class SlotReaperTests
             var (swept, _) = await SweepAsync(connection, handler, calls);
             swept.Should().ContainSingle(r => r.Status == "held");
             calls.Should().BeEmpty();
-            var options = CliOptions.Parse([
-                "review",
-                "reclaim-slot",
-                "--repo",
+            var options = ReviewdCommandLines.ReclaimSlot(
                 repo.DisplayName,
-                "--pr",
                 "100",
-                "--slot",
-                "0",
-                "--db",
+                0,
                 database,
-                "--workspace",
-                "workspace",
-                "--session",
-                "session",
                 "--discard-verified",
-                "--execute",
-            ]);
+                "--execute"
+            );
             var (held, token, _) = await SlotReaper.PrepareAsync(
                 connection,
                 repo,
@@ -1645,10 +1652,14 @@ public sealed class SlotReaperTests
     // - kept-landed: the lane's save is refused by the fence, so it keeps its landed result (KeepLandedAsync), owned;
     // - completed: the run's completion saves its whole result (stage, reviewedHeadSha, finishedAt), and the batch must
     //   still read the released attempt as verified;
+    // - completed-over-old-archive: as completed, but the reset read the attempt after finish-commit sent a landed
+    //   commit back to verify-pending, so its read already holds that older archive; the resume's newer completion
+    //   still wins;
     // - foreign: a row saved under another claim is not this claim's result, so nothing of it is copied.
     [Theory]
     [InlineData("kept-landed")]
     [InlineData("completed")]
+    [InlineData("completed-over-old-archive")]
     [InlineData("foreign")]
     public async Task A_discard_keeps_a_commit_that_landed_under_its_fence(string landing)
     {
@@ -1661,8 +1672,17 @@ public sealed class SlotReaperTests
             var (ownerKey, store) = await SeedLapsedClaimAsync(connection, 0);
             var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/100";
             var seeded = (await store.GetAsync<JsonObject>(attemptKey))!;
-            seeded["stage"] = "commit-pending";
+            var oldArchive = landing == "completed-over-old-archive";
+            seeded["stage"] = oldArchive ? "verify-pending" : "commit-pending";
             seeded["verifiedPublication"] = new JsonObject { ["comments"] = 3 };
+            if (oldArchive)
+            {
+                seeded["artifactCommit"] = new JsonObject
+                {
+                    ["status"] = "committed",
+                    ["commit"] = new string('a', 40),
+                };
+            }
             await store.SetAsync(attemptKey, seeded, CancellationToken.None);
             var handler = new FakeHttpMessageHandler()
                 .OnJson(HttpMethod.Post, "/freeze", """{"frozen":true}""")
@@ -1705,7 +1725,7 @@ public sealed class SlotReaperTests
                         else
                         {
                             // The completion transaction saves the attempt whole; a foreign row names another claim.
-                            landed["stage"] = landing == "completed" ? "completed-verified" : "commit-completed";
+                            landed["stage"] = landing == "foreign" ? "commit-completed" : "completed-verified";
                             landed["reviewedHeadSha"] = "abc123";
                             landed["finishedAt"] = DateTimeOffset.UtcNow;
                             if (landing == "foreign")
@@ -1766,6 +1786,128 @@ public sealed class SlotReaperTests
                 .Verified(attempt, new JsonObject { ["head"] = "abc123" })
                 .Should()
                 .BeTrue("the batch reconciles the released attempt as verified");
+        }
+        finally
+        {
+            ReviewdSqlitePools.Clear(database);
+            File.Delete(database);
+        }
+    }
+
+    // A discard of a held commit-pending review fences the claim, the lane's commit lands under that fence, and the
+    // reset then fails: the slot stays fenced and may be half discarded. Nothing can finish that review there, so
+    // finish-commit refuses it and names the discard. The same discard then continues under the same claim, releases
+    // the slot once the reset verifies the clean baseline, and fabricates no receipt; run again, it finds the slot
+    // already released.
+    [Fact]
+    public async Task A_failed_discard_of_a_landed_commit_continues_and_writes_no_receipt()
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"reviewd-failed-discard-{Guid.NewGuid():N}.db");
+        try
+        {
+            using var connection = PrThreadBindings.Connection(database);
+            await connection.OpenAsync();
+            var repo = PrCommands.ParseRepo("O365Exchange/Weve_DA/Nova");
+            var (ownerKey, store) = await SeedLapsedClaimAsync(connection, 0);
+            var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/100";
+            var seeded = (await store.GetAsync<JsonObject>(attemptKey))!;
+            seeded["stage"] = "commit-pending";
+            seeded["verifiedPublication"] = new JsonObject { ["comments"] = 3 };
+            await store.SetAsync(attemptKey, seeded, CancellationToken.None);
+            var token = seeded["claimToken"]!.GetValue<string>();
+            var handler = new FakeHttpMessageHandler()
+                .OnJson(HttpMethod.Post, "/freeze", """{"frozen":true}""")
+                .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
+                .OnJson(HttpMethod.Get, "/subagents?recursive=true", Tree("completed"));
+            using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+            var resets = 0;
+            SlotReaper.SandboxExecutor sandbox = async (_, args, _, _) =>
+            {
+                if (++resets == 1)
+                {
+                    // The lane's commit lands under the reset's fence, and then the reset fails.
+                    var landed = (await store.GetAsync<JsonObject>(attemptKey))!;
+                    landed["stage"] = "commit-completed";
+                    landed["artifactCommit"] = new JsonObject
+                    {
+                        ["status"] = "committed",
+                        ["commit"] = new string('c', 40),
+                    };
+                    _ = await SlotRelease.KeepLandedAsync(
+                        connection,
+                        ownerKey,
+                        token,
+                        attemptKey,
+                        landed,
+                        CancellationToken.None
+                    );
+                    throw new InvalidOperationException("Sandbox cleanup failed (exit 1).");
+                }
+                return new JsonObject
+                {
+                    ["claimToken"] = args["claimToken"]!.DeepClone(),
+                    ["cleanBaselineVerified"] = true,
+                };
+            };
+            Task<int> DiscardAsync() =>
+                ReclaimSlotCommand.RunAsync(
+                    ReviewdCommandLines.ReclaimSlot(
+                        repo.DisplayName,
+                        "100",
+                        0,
+                        database,
+                        "--discard-verified",
+                        "--execute"
+                    ),
+                    () => new LmStreamingS2SClient(http, null, null, null),
+                    () => sandbox,
+                    CancellationToken.None
+                );
+
+            await FluentActions.Invoking(DiscardAsync).Should().ThrowAsync<Exception>().WithMessage("*cleanup failed*");
+
+            var owner = (await store.GetAsync<JsonObject>(ownerKey))!;
+            owner["claimToken"]!.GetValue<string>().Should().Be(token);
+            owner["state"]!.GetValue<string>().Should().Be("owned");
+            owner[SlotRelease.ResetFence].Should().NotBeNull("the failed reset keeps its fence");
+            var stranded = (await store.GetAsync<JsonObject>(attemptKey))!;
+            stranded["stage"]!.GetValue<string>().Should().Be("commit-completed");
+            stranded["cleanupState"]!.GetValue<string>().Should().Be("owned");
+            var before = stranded.ToJsonString();
+            await FluentActions
+                .Invoking(() =>
+                    FinishCommitCommand.FinishAsync(
+                        connection,
+                        repo,
+                        "100",
+                        0,
+                        "workspace",
+                        true,
+                        CancellationToken.None
+                    )
+                )
+                .Should()
+                .ThrowAsync<InvalidOperationException>()
+                .WithMessage("A reset fenced slot 0*`reviewd review reclaim-slot *--discard-verified --execute`.");
+            (await store.GetAsync<JsonObject>(attemptKey))!.ToJsonString().Should().Be(before);
+
+            (await DiscardAsync()).Should().Be(0);
+
+            resets.Should().Be(2, "the same discard continued on the fenced slot");
+            (await store.GetAsync<JsonObject>(ownerKey))!["state"]!.GetValue<string>().Should().Be("released");
+            var released = (await store.GetAsync<JsonObject>(attemptKey))!;
+            released["cleanupState"]!.GetValue<string>().Should().Be("released");
+            released["stage"]!.GetValue<string>().Should().Be("commit-completed", "the discard keeps the stage");
+            released["artifactCommit"]!["commit"]!.GetValue<string>().Should().Be(new string('c', 40));
+            released["reviewedHeadSha"].Should().BeNull("no completion is written");
+            released["finishedAt"].Should().BeNull("no completion is written");
+            (await store.GetAsync<JsonObject>($"reviewd/review-run/{repo.NormalizedKey}/100"))
+                .Should()
+                .BeNull("no receipt is fabricated");
+            ReviewBatch.Verified(released, new JsonObject { ["head"] = "abc123" }).Should().BeFalse();
+
+            (await DiscardAsync()).Should().Be(0, "an already released slot is an idempotent success");
+            resets.Should().Be(2, "nothing is reset again");
         }
         finally
         {

@@ -17,8 +17,9 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 public sealed class ReviewdFinishCommitTests
 {
     // The run stops right after it saved commit-completed, still owning its slot: the batch holds that review, and a
-    // resume refuses its stage. The command sends it back to verify-pending under the same claim; the resume then
-    // re-verifies, commits again and writes the receipt, so the batch reconciles it as verified and the slot is freed.
+    // resume refuses its stage. The command sends it back to verify-pending under the same claim and prints the resume
+    // to run, since the batch keeps its entry held; that resume re-verifies, commits again and writes the receipt, so
+    // the batch reconciles it as verified and the slot is freed.
     [Fact]
     public async Task A_run_killed_after_its_commit_landed_is_finished_and_reconciles_as_verified()
     {
@@ -35,13 +36,22 @@ public sealed class ReviewdFinishCommitTests
             .ThrowAsync<InvalidOperationException>()
             .WithMessage("Only identified admitted review or confirmation stages can resume.");
 
-        (await FinishCommitAsync(run, execute: true)).Should().Be(0);
+        var (exit, printed) = await FinishCommitAsync(run, execute: true);
 
+        exit.Should().Be(0);
         var finishing = await run.ReadAsync(run.AttemptKey);
         finishing["stage"]!.GetValue<string>().Should().Be("verify-pending");
         finishing["claimToken"]!.GetValue<string>().Should().Be(killed["claimToken"]!.GetValue<string>());
         (await run.Store.GetAsync<JsonObject>(run.RunKey)).Should().BeNull("the command writes no receipt");
-        ReviewBatch.Resumable(finishing).Should().BeTrue("the batch resumes it now");
+        printed!["next"]!
+            .GetValue<string>()
+            .Should()
+            .Be(
+                $"reviewd review run --repo {ScriptedReviewRun.Repo.DisplayName} --pr 17 --slot 2 "
+                    + $"--db \"{run.Connection.DataSource}\" --session session --workspace workspace --provider test "
+                    + $"--head {new string('a', 40)} --resume --execute",
+                "the resume repeats the attempt's own options, as the one below does"
+            );
         run.Phases.Clear();
 
         (await run.RunAsync(resume: true, CancellationToken.None)).Should().Be(0);
@@ -70,24 +80,14 @@ public sealed class ReviewdFinishCommitTests
         var sandbox = new List<string>();
         var discard = () =>
             ReclaimSlotCommand.RunAsync(
-                CliOptions.Parse([
-                    "review",
-                    "reclaim-slot",
-                    "--repo",
+                ReviewdCommandLines.ReclaimSlot(
                     ScriptedReviewRun.Repo.DisplayName,
-                    "--pr",
                     "17",
-                    "--slot",
-                    "2",
-                    "--db",
+                    2,
                     run.Database,
-                    "--workspace",
-                    "workspace",
-                    "--session",
-                    "session",
                     "--discard-verified",
-                    "--execute",
-                ]),
+                    "--execute"
+                ),
                 () => new LmStreamingS2SClient(http, null, null, null),
                 () =>
                     (phase, _, _, _) =>
@@ -107,17 +107,22 @@ public sealed class ReviewdFinishCommitTests
         sandbox.Should().BeEmpty("nothing is reset");
         (await run.ReadAsync(run.AttemptKey)).ToJsonString().Should().Be(before, "the review stays finishable");
         (await run.ReadAsync(run.OwnerKey)).ToJsonString().Should().Be(owner, "the slot stays held");
-        (await FinishCommitAsync(run, execute: true)).Should().Be(0);
+        (await FinishCommitAsync(run, execute: true)).Exit.Should().Be(0);
     }
 
-    // Each case the command cannot finish safely is refused with the operator's next step, and nothing is changed. A
-    // preview checks the same rules and changes nothing either.
+    // Each case the command cannot finish safely is refused with the operator's next step, and neither the attempt nor
+    // the owner row is changed. An attempt on another slot or workspace is refused even though the requested slot's
+    // owner is valid and held by its claim. A preview checks the same rules and changes nothing either.
     [Theory]
     [InlineData("released", "*already released*new push gets a fresh review*")]
     [InlineData("stage", "Only a commit-completed attempt can be finished; this one is at commit-pending.")]
     [InlineData("no-commit", "The attempt has no landed artifact commit; nothing to finish.")]
+    [InlineData("wrong-slot", "The attempt's slot or workspace does not match the request.")]
+    [InlineData("wrong-workspace", "The attempt's slot or workspace does not match the request.")]
     [InlineData("other-owner", "Slot 2 is not owned by this attempt's claim*")]
-    [InlineData("fenced", "A reset is running on slot 2*")]
+    [InlineData("absent-owner", "Slot 2 is not owned by this attempt's claim*")]
+    [InlineData("released-owner", "Slot 2 is not owned by this attempt's claim*")]
+    [InlineData("fenced", "A reset fenced slot 2*`reviewd review reclaim-slot *--discard-verified --execute`.")]
     [InlineData("live-run", "A review run still holds slot 2; stop it before finishing its commit.")]
     [InlineData("preview", null)]
     public async Task Finish_commit_refuses_what_it_cannot_finish_safely(string state, string? refusal)
@@ -146,14 +151,35 @@ public sealed class ReviewdFinishCommitTests
         {
             attempt["cleanupState"] = "released";
         }
-        await run.Store.SetAsync(run.AttemptKey, attempt);
-        if (state is "other-owner" or "fenced")
+        if (state == "wrong-slot")
         {
-            var owner = await run.ReadAsync(run.OwnerKey);
-            owner[state == "fenced" ? SlotRelease.ResetFence : "claimToken"] = "other";
-            await run.Store.SetAsync(run.OwnerKey, owner);
+            attempt["slot"] = 3;
+        }
+        if (state == "wrong-workspace")
+        {
+            attempt["workspaceId"] = "other-workspace";
+        }
+        await run.Store.SetAsync(run.AttemptKey, attempt);
+        var owner = await run.ReadAsync(run.OwnerKey);
+        if (state == "other-owner")
+        {
+            owner["claimToken"] = "other";
+        }
+        if (state == "released-owner")
+        {
+            owner["state"] = "released";
+        }
+        if (state == "fenced")
+        {
+            owner[SlotRelease.ResetFence] = "other";
+        }
+        await run.Store.SetAsync(run.OwnerKey, owner);
+        if (state == "absent-owner")
+        {
+            await run.ExecuteAsync($"DELETE FROM cache WHERE key = '{run.OwnerKey}';");
         }
         var before = (await run.ReadAsync(run.AttemptKey)).ToJsonString();
+        var ownerBefore = (await run.Store.GetAsync<JsonObject>(run.OwnerKey))?.ToJsonString();
         using var liveRun =
             state == "live-run"
                 ? ReviewRunner.AcquireLease(
@@ -166,13 +192,14 @@ public sealed class ReviewdFinishCommitTests
 
         if (refusal is null)
         {
-            (await finish()).Should().Be(0);
+            (await finish()).Exit.Should().Be(0);
         }
         else
         {
             await finish.Should().ThrowAsync<InvalidOperationException>().WithMessage(refusal);
         }
         (await run.ReadAsync(run.AttemptKey)).ToJsonString().Should().Be(before, "nothing is changed");
+        (await run.Store.GetAsync<JsonObject>(run.OwnerKey))?.ToJsonString().Should().Be(ownerBefore, "nor the owner");
     }
 
     // The process dies once the commit landed: its commit-completed save is its last write, so the attempt keeps the
@@ -192,23 +219,38 @@ public sealed class ReviewdFinishCommitTests
         return await run.ReadAsync(run.AttemptKey);
     }
 
-    private static Task<int> FinishCommitAsync(ScriptedReviewRun run, bool execute) =>
-        FinishCommitCommand.RunAsync(
-            CliOptions.Parse([
-                "review",
-                "finish-commit",
-                "--repo",
-                ScriptedReviewRun.Repo.DisplayName,
-                "--pr",
-                "17",
-                "--slot",
-                "2",
-                "--db",
-                run.Database,
-                "--workspace",
-                "workspace",
-                .. execute ? new[] { "--execute" } : [],
-            ]),
-            CancellationToken.None
-        );
+    // The command as the CLI runs it: its exit code and the JSON it printed (null when it printed none).
+    private static async Task<(int Exit, JsonObject? Printed)> FinishCommitAsync(ScriptedReviewRun run, bool execute)
+    {
+        var stdout = Console.Out;
+        using var printed = new StringWriter();
+        Console.SetOut(printed);
+        int exit;
+        try
+        {
+            exit = await FinishCommitCommand.RunAsync(
+                CliOptions.Parse([
+                    "review",
+                    "finish-commit",
+                    "--repo",
+                    ScriptedReviewRun.Repo.DisplayName,
+                    "--pr",
+                    "17",
+                    "--slot",
+                    "2",
+                    "--db",
+                    run.Database,
+                    "--workspace",
+                    "workspace",
+                    .. execute ? new[] { "--execute" } : [],
+                ]),
+                CancellationToken.None
+            );
+        }
+        finally
+        {
+            Console.SetOut(stdout);
+        }
+        return (exit, printed.ToString() is { Length: > 0 } text ? JsonNode.Parse(text)!.AsObject() : null);
+    }
 }

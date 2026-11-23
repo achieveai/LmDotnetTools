@@ -8,8 +8,9 @@ namespace Reviewd.Sample;
 /// <summary>
 /// <c>review finish-commit</c>: finishes a held review whose artifact commit landed but whose run stopped before it
 /// wrote its receipt (stage <c>commit-completed</c>, slot still owned by that run's claim). It sends the attempt back to
-/// <c>verify-pending</c> under that claim, so <c>review run --resume</c> (or the batch) re-verifies the publication,
-/// commits again and writes the receipt itself. It writes no success record and runs nothing remote.
+/// <c>verify-pending</c> under that claim, so the <c>review run --resume</c> it prints re-verifies the publication,
+/// commits again and writes the receipt itself. The batch does not: it keeps the PR's entry held until that receipt
+/// exists. It writes no success record and runs nothing remote.
 /// </summary>
 internal static class FinishCommitCommand
 {
@@ -121,9 +122,25 @@ internal static class FinishCommitCommand
         if (owner[SlotRelease.ResetFence] is not null)
         {
             throw new InvalidOperationException(
-                $"A reset is running on slot {slot}; wait for it to stop, then inspect the attempt again."
+                $"A reset fenced slot {slot}, so it may be partly discarded and the review cannot be finished there. "
+                    + "Once that reset has stopped, continue it: "
+                    + $"`reviewd review reclaim-slot --repo {repo.DisplayName} --pr {pr} --slot {slot} --db <db> "
+                    + $"--workspace {workspace} --session <session> --discard-verified --execute`."
             );
         }
+
+        // The resume must repeat the attempt's own identity: its session, provider, reasoning effort and reviewed head.
+        var effort = attempt["reasoningEffort"]?.GetValue<string>() is { } retained
+            ? $" --reasoning-effort {retained}"
+            : "";
+        var resume =
+            $"reviewd review run --repo {repo.DisplayName} --pr {pr} --slot {slot} --db \"{connection.DataSource}\" "
+            + $"--session {Retained("sessionId", "<session>")} --workspace {workspace} "
+            + $"--provider {Retained("providerId", "<provider>")}{effort} "
+            + $"--head {Retained("headSha", "<reviewed head>")} "
+            + "--resume --execute";
+
+        string Retained(string field, string missing) => attempt[field]?.GetValue<string>() ?? missing;
 
         var result = new JsonObject
         {
@@ -134,7 +151,7 @@ internal static class FinishCommitCommand
             ["from"] = stage,
             ["to"] = "verify-pending",
             ["status"] = execute ? "finish-ready" : "preview",
-            ["next"] = "review run --resume --execute on the reviewed head, or let the batch resume it",
+            ["next"] = resume,
         };
         if (!execute)
         {

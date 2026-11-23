@@ -290,23 +290,7 @@ public sealed class ReviewdOperatorOutputTests : IDisposable
             {
                 _out.GetStringBuilder().Clear();
                 var exit = await ReclaimSlotCommand.RunAsync(
-                    CliOptions.Parse([
-                        "review",
-                        "reclaim-slot",
-                        "--repo",
-                        Nova,
-                        "--pr",
-                        "100",
-                        "--slot",
-                        "0",
-                        "--db",
-                        database,
-                        "--workspace",
-                        "workspace",
-                        "--session",
-                        "session",
-                        .. flags,
-                    ]),
+                    ReviewdCommandLines.ReclaimSlot(Nova, "100", 0, database, flags),
                     () => new LmStreamingS2SClient(http, null, null, null),
                     () => Reset(resets),
                     CancellationToken.None
