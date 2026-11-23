@@ -114,6 +114,20 @@ public sealed class LmStreamingS2SClientDedicatedSandboxTests(ITestOutputHelper 
         "The review host refused to release the sandbox of 'thread-d' (503, sandbox_release_failed)."
     )]
     [InlineData(
+        "unknown-thread",
+        null,
+        404,
+        """{"error":"Conversation 'thread-d' not found.","code":"unknown_thread"}""",
+        "The review host does not know the thread 'thread-d' (404, unknown_thread)."
+    )]
+    [InlineData(
+        "no-route",
+        "PRs/nova-17",
+        404,
+        "",
+        "The review host has no sandbox release route (404 for 'thread-d'); it predates dedicated sandboxes."
+    )]
+    [InlineData(
         "unknown-code",
         null,
         400,
