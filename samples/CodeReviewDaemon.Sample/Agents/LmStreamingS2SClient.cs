@@ -571,9 +571,10 @@ internal sealed class LmStreamingS2SClient
     /// <paramref name="workingDirectory"/> the thread's next turn is jailed there instead, and a thread that ran in
     /// the workspace's shared sandbox becomes a dedicated one. The host refuses (409) while the thread runs.
     /// <para>
-    /// A refusal throws <see cref="ReviewHostContractException"/> naming the status and, when it is one of
-    /// <see cref="KnownReleaseRefusals"/>, the host's code. The rest of the host's body is never carried: the runner
-    /// writes this error to its log, and an upstream body there is arbitrary text from another service.
+    /// A refusal throws <see cref="ReviewHostContractException"/> naming the status and, when it is
+    /// <c>unknown_thread</c> on a 404 or one of <see cref="KnownReleaseRefusals"/>, the host's code. The rest of the
+    /// host's body is never carried: the runner writes this error to its log, and an upstream body there is arbitrary
+    /// text from another service.
     /// </para>
     /// </summary>
     public async Task ReleaseSandboxAsync(string threadId, string? workingDirectory, CancellationToken ct)
@@ -589,11 +590,12 @@ internal sealed class LmStreamingS2SClient
             var code = TryReadStringProperty(await response.Content.ReadAsStringAsync(ct), "code");
             if (response.StatusCode == HttpStatusCode.NotFound)
             {
-                // The host answers a thread it does not know (or will not admit exists) with its unknown_thread body.
+                // The host answers a thread that does not exist, or that this caller cannot see, with its unknown_thread
+                // body, and says only that it was not found.
                 // Any other 404 is a host without this route: one that predates dedicated sandboxes.
                 throw new ReviewHostContractException(
                     code == "unknown_thread"
-                        ? $"The review host does not know the thread '{threadId}' (404, unknown_thread)."
+                        ? $"The review host reports the thread '{threadId}' as not found (404, unknown_thread)."
                         : $"The review host has no sandbox release route (404 for '{threadId}'); it predates dedicated sandboxes."
                 );
             }

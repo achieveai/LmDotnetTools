@@ -42,11 +42,21 @@ public sealed class ReviewdFinishCommitTests
         finishing["claimToken"]!.GetValue<string>().Should().Be(killed["claimToken"]!.GetValue<string>());
         (await run.Store.GetAsync<JsonObject>(run.RunKey)).Should().BeNull("the command writes no receipt");
         ReviewBatch.Resumable(finishing).Should().BeTrue("the batch resumes it now");
+        run.Phases.Should()
+            .NotContain(
+                phase => phase.StartsWith("sandbox-release", StringComparison.Ordinal),
+                "nothing is released before the final resume"
+            );
         run.Phases.Clear();
 
         (await run.RunAsync(resume: true, CancellationToken.None)).Should().Be(0);
 
-        run.Phases.Should().ContainInOrder("inspect-prepared", "verify", "commit", "cleanup");
+        // The finished review releases its own thread's sandbox once, after its cleanup, and moves nothing.
+        var release = ScriptedReviewRun.SandboxRelease("thread", null);
+        run.Phases.Where(phase => phase.StartsWith("sandbox-release", StringComparison.Ordinal))
+            .Should()
+            .Equal(release);
+        run.Phases.Should().ContainInOrder("inspect-prepared", "verify", "commit", "cleanup", release);
         var receipt = await run.ReadAsync(run.RunKey);
         var attempt = await run.ReadAsync(run.AttemptKey);
         var entry = new JsonObject { ["head"] = new string('a', 40) };
