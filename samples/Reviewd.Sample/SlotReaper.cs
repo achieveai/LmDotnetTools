@@ -132,7 +132,7 @@ internal static class SlotReaper
             var recovery =
                 stoppedDiscard
                     ? "continue its stopped discard once that reset has stopped: `"
-                        + FinishCommitCommand.DiscardCommand(repo, pr, slot, connection.DataSource, workspace)
+                        + FinishCommitCommand.DiscardCommand(attempt, repo, pr, slot, connection.DataSource, workspace)
                         + "` (finish-commit refuses a fenced slot; README: A failed discard)."
                 : landed
                     ? "run review finish-commit, then resume it, or discard the slot (README: A held verified review)."

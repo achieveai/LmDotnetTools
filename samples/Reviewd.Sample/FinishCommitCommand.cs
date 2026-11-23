@@ -123,7 +123,7 @@ internal static class FinishCommitCommand
         {
             throw new InvalidOperationException(
                 $"A reset fenced slot {slot}, so it may be partly discarded and the review cannot be finished there. "
-                    + $"Once that reset has stopped, continue it: `{DiscardCommand(repo, pr, slot, connection.DataSource, workspace)}`."
+                    + $"Once that reset has stopped, continue it: `{DiscardCommand(attempt, repo, pr, slot, connection.DataSource, workspace)}`."
             );
         }
 
@@ -184,7 +184,7 @@ internal static class FinishCommitCommand
         var words = new List<string>
         {
             "reviewd review run --repo",
-            Quote(repo.DisplayName),
+            Quote(SavedRepository(attempt, repo)),
             "--pr",
             Quote(pr),
             "--slot",
@@ -253,10 +253,29 @@ internal static class FinishCommitCommand
             value?.GetValue<string>() is { } retained ? Quote(retained) : missing;
     }
 
-    /// <summary>The discard that continues a stopped reset of this slot (<c>reclaim-slot --discard-verified</c>).</summary>
-    internal static string DiscardCommand(RepoIdentity repo, string pr, int slot, string database, string workspace) =>
-        $"reviewd review reclaim-slot --repo {Quote(repo.DisplayName)} --pr {Quote(pr)} --slot {slot} "
-        + $"--db {Quote(database)} --workspace {Quote(workspace)} --session <session> --discard-verified --execute";
+    /// <summary>
+    /// The discard that continues a stopped reset of this slot (<c>reclaim-slot --discard-verified</c>), in the
+    /// attempt's own repository spelling and session (a placeholder only when it saved none).
+    /// </summary>
+    internal static string DiscardCommand(
+        JsonObject attempt,
+        RepoIdentity repo,
+        string pr,
+        int slot,
+        string database,
+        string workspace
+    ) =>
+        $"reviewd review reclaim-slot --repo {Quote(SavedRepository(attempt, repo))} --pr {Quote(pr)} --slot {slot} "
+        + $"--db {Quote(database)} --workspace {Quote(workspace)} --session "
+        + (attempt["sessionId"]?.GetValue<string>() is { } session ? Quote(session) : "<session>")
+        + " --discard-verified --execute";
+
+    /// <summary>
+    /// The repository as the attempt's run spelled it. Finish and reclaim match a repository case-insensitively, but
+    /// a resume checks the attempt's exact spelling, so a printed command repeats the saved one.
+    /// </summary>
+    private static string SavedRepository(JsonObject attempt, RepoIdentity repo) =>
+        attempt["repository"]?.GetValue<string>() ?? repo.DisplayName;
 
     /// <summary>
     /// A PowerShell single-quoted literal, so a value with spaces (an Azure DevOps project, a path) stays one argument

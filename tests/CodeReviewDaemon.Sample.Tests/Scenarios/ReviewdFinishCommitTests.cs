@@ -134,6 +134,56 @@ public sealed class ReviewdFinishCommitTests
         (await FinishCommitAsync(run, execute: true)).Exit.Should().Be(0);
     }
 
+    // That refusal's finish-commit quotes each value, so an Azure DevOps project or repository name with spaces (or a
+    // quote) stays one PowerShell argument.
+    [Fact]
+    public async Task A_refused_discard_names_a_finish_commit_whose_spaced_repo_stays_one_argument()
+    {
+        await using var run = await ScriptedReviewRun.CreateAsync();
+        var repo = PrCommands.ParseRepo("org/My Project/Nova\u2019s repo");
+        _ = await SeedFinishableAsync(run, repo, "workspace", new JsonObject { ["sessionId"] = "session" });
+        using var http = new HttpClient(new FakeHttpMessageHandler()) { BaseAddress = new Uri("http://localhost/") };
+
+        var refusal = await FluentActions
+            .Invoking(() =>
+                ReclaimSlotCommand.RunAsync(
+                    ReviewdCommandLines.ReclaimSlot(
+                        repo.DisplayName,
+                        "17",
+                        2,
+                        run.Database,
+                        "--discard-verified",
+                        "--execute"
+                    ),
+                    () => new LmStreamingS2SClient(http, null, null, null),
+                    () => (_, _, _, _) => Task.FromResult(new JsonObject()),
+                    CancellationToken.None
+                )
+            )
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+
+        ReviewdCommandLines
+            .PowerShellArguments(refusal.Which.Message.Split('`')[1])
+            .Should()
+            .Equal(
+                "reviewd",
+                "review",
+                "finish-commit",
+                "--repo",
+                "org/My Project/Nova\u2019s repo",
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                run.Connection.DataSource,
+                "--workspace",
+                "workspace",
+                "--execute"
+            );
+    }
+
     // Each case the command cannot finish safely is refused with the operator's next step, and neither the attempt nor
     // the owner row is changed. An attempt on another slot or workspace is refused even though the requested slot's
     // owner is valid and held by its claim. A preview checks the same rules and changes nothing either.
@@ -227,12 +277,15 @@ public sealed class ReviewdFinishCommitTests
     }
 
     // An Azure DevOps project or repository name may hold spaces, and a value may hold a quote. Each printed value stays
-    // one PowerShell argument, in the resume and in the discard a fenced slot names.
+    // one PowerShell argument, in the resume and in the discard a fenced slot names. Finish matches the repository
+    // case-insensitively, but a resume checks the attempt's exact spelling, so both print the saved spelling, and the
+    // discard the saved session.
     [Fact]
     public async Task Each_printed_value_stays_one_PowerShell_argument()
     {
         await using var run = await ScriptedReviewRun.CreateAsync();
         var repo = PrCommands.ParseRepo("org/My Project/Nova\u2019s repo");
+        var typed = PrCommands.ParseRepo("ORG/my project/NOVA\u2019S REPO");
         var ownerKey = await SeedFinishableAsync(
             run,
             repo,
@@ -248,7 +301,7 @@ public sealed class ReviewdFinishCommitTests
 
         var result = await FinishCommitCommand.FinishAsync(
             run.Connection,
-            repo,
+            typed,
             "17",
             2,
             "work space",
@@ -293,7 +346,7 @@ public sealed class ReviewdFinishCommitTests
             .Invoking(() =>
                 FinishCommitCommand.FinishAsync(
                     run.Connection,
-                    repo,
+                    typed,
                     "17",
                     2,
                     "work space",
@@ -305,9 +358,10 @@ public sealed class ReviewdFinishCommitTests
             .ThrowAsync<InvalidOperationException>();
         var discard = refusal.Which.Message.Split('`')[1];
         ReviewdCommandLines
-            .PowerShellArguments(discard.Replace("<session>", "session", StringComparison.Ordinal))
+            .PowerShellArguments(discard)
             .Should()
-            .ContainInConsecutiveOrder("--repo", "org/My Project/Nova\u2019s repo")
+            .ContainInConsecutiveOrder("--session", "it's a session")
+            .And.ContainInConsecutiveOrder("--repo", "org/My Project/Nova\u2019s repo")
             .And.ContainInConsecutiveOrder("--workspace", "work space")
             .And.ContainInConsecutiveOrder("--db", run.Connection.DataSource);
     }
