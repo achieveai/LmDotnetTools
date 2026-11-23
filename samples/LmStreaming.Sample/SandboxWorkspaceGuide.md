@@ -603,7 +603,10 @@ rest of the workspace is read-only to it (gateway ADR 0044). Sandboxes are never
   A shared-sandbox conversation released with a directory becomes dedicated. Answers:
   - `200` with the directory the next sandbox works in.
   - `400` `dedicated_sandbox_required`, `working_directory_invalid` or `dedicated_sandbox_mode_unsupported` (the
-    last two only for a release with a directory, a move); `404` `unknown_thread`.
+    last two only for a release with a directory, a move); `404` `unknown_thread`. A move's mode is checked again
+    when the move is stored, so `dedicated_sandbox_mode_unsupported` can also come after a successful DELETE, when a
+    mode switch landed during the release: the sandbox is gone, no move is stored, and the thread keeps its old
+    directory.
   - `409` `sandbox_release_while_running`: a run or queued input, a new turn, or work only this host keeps (a
     parked or unanswered call, an armed wait, a sub-agent, a background task). Nothing changes.
   - `503` `sandbox_release_failed`: the gateway refused the DELETE (nothing moved), or the DELETE succeeded but the

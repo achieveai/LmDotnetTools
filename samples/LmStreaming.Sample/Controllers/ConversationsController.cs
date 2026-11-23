@@ -2442,9 +2442,14 @@ public class ConversationsController(
     /// gateway did not confirm the delete: nothing was moved, and the sandbox stays tracked, so a retry deletes it.
     /// Every refusal comes before anything changes, except two that come after the gateway confirmed the delete, with
     /// the sandbox already gone and nothing stored. The move's mode is checked again in the same step that stores it,
-    /// so a mode switch that landed during the release answers 400. A move that could not be stored (the store
-    /// failed, the thread was deleted, or its mode kept changing) answers 503; the thread then owns no sandbox, so a
-    /// retry deletes nothing and stores the move.
+    /// so when a switch into a mode a dedicated sandbox cannot have (Mini App or browser debugging) was stored during
+    /// the release, the release answers 400; the switch itself has already answered 200. A move that could not be
+    /// stored (the store failed, the thread was deleted, or its mode kept changing) answers 503; the thread then owns
+    /// no sandbox, so a retry deletes nothing and stores the move.
+    /// </para>
+    /// <para>
+    /// Not every switch is caught: one whose mode is stored only after the move (it builds its agent first), or one
+    /// into a mode without a sandbox, can still leave a dedicated thread in a mode it cannot build in.
     /// </para>
     /// <para>
     /// The release is taken while no agent of the conversation is loaded, under the pool's lock, so it deletes only
@@ -2575,6 +2580,21 @@ public class ConversationsController(
         {
             await release!.WaitAsync(ct);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The release goes on without the caller, and nobody else reads how it ends.
+            logger.LogInformation(
+                "The caller stopped waiting for the sandbox release of thread {ThreadId}; it goes on",
+                threadId
+            );
+            _ = release!.ContinueWith(
+                ended => LogAbandonedReleaseFault(ended.Exception!.InnerException!, threadId, movedTo),
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default
+            );
+            throw;
+        }
         catch (AchieveAi.LmDotnetTools.Sandbox.SandboxException ex)
         {
             logger.LogWarning(
@@ -2660,59 +2680,21 @@ public class ConversationsController(
     {
         for (var attempt = 1; ; attempt++)
         {
+            bool stored;
             string? checkedModeId;
             try
             {
-                var current =
-                    await store.LoadMetadataAsync(threadId, CancellationToken.None)
-                    ?? throw new InvalidOperationException($"Thread '{threadId}' was deleted during the release.");
-                checkedModeId = PropertyString(current, MultiTurnAgentPool.ModePropertyKey);
-                if (await DedicatedModeRefusalAsync(current, CancellationToken.None) is { } refusal)
-                {
-                    throw new DedicatedSandboxModeUnsupportedException(refusal);
-                }
-
-                var committed = false;
-                await store.UpdateMetadataAsync(
-                    threadId,
-                    existing =>
-                    {
-                        // Deleted since the reload above: storing the move would write the thread back.
-                        if (existing is null)
-                        {
-                            throw new InvalidOperationException($"Thread '{threadId}' was deleted during the release.");
-                        }
-
-                        if (
-                            !string.Equals(
-                                PropertyString(existing, MultiTurnAgentPool.ModePropertyKey),
-                                checkedModeId,
-                                StringComparison.Ordinal
-                            )
-                        )
-                        {
-                            return existing;
-                        }
-
-                        committed = true;
-                        return existing with
-                        {
-                            Properties = (existing.Properties ?? ImmutableDictionary<string, object>.Empty)
-                                .SetItem(ConversationWorkingDirectory.PropertyKey, movedTo)
-                                .SetItem(ConversationDedicatedSandbox.PropertyKey, true),
-                        };
-                    },
-                    CancellationToken.None
-                );
-                if (committed)
-                {
-                    return;
-                }
+                (stored, checkedModeId) = await TryStoreMoveAsync(threadId, movedTo);
             }
             catch (Exception ex) when (ex is not DedicatedSandboxModeUnsupportedException)
             {
                 // Told apart from a gateway failure: the sandbox is already gone here.
                 throw new MoveNotStoredException(ex);
+            }
+
+            if (stored)
+            {
+                return;
             }
 
             logger.LogInformation(
@@ -2731,6 +2713,75 @@ public class ConversationsController(
                 );
             }
         }
+    }
+
+    /// <summary>Logs, once, how a release whose caller stopped waiting failed.</summary>
+    private void LogAbandonedReleaseFault(Exception fault, string threadId, string? movedTo) =>
+        logger.LogError(
+            fault is MoveNotStoredException { InnerException: { } cause } ? cause : fault,
+            "The sandbox release of thread {ThreadId}, whose caller stopped waiting, failed; directory move "
+                + "{MovedTo} not stored",
+            threadId,
+            movedTo
+        );
+
+    /// <summary>
+    /// One try of <see cref="CommitDedicatedMoveAsync"/>: reloads the thread, checks its mode, then stores the move
+    /// only if the stored mode id is still the one checked.
+    /// </summary>
+    /// <returns>Whether the move was stored, and the mode id that was checked.</returns>
+    private async Task<(bool Stored, string? CheckedModeId)> TryStoreMoveAsync(string threadId, string movedTo)
+    {
+        var current =
+            await store.LoadMetadataAsync(threadId, CancellationToken.None)
+            ?? throw new InvalidOperationException($"Thread '{threadId}' was deleted during the release.");
+        var checkedModeId = PropertyString(current, MultiTurnAgentPool.ModePropertyKey);
+        if (await DedicatedModeRefusalAsync(current, CancellationToken.None) is { } refusal)
+        {
+            throw new DedicatedSandboxModeUnsupportedException(refusal);
+        }
+
+        var stored = false;
+        await store.UpdateMetadataAsync(
+            threadId,
+            existing =>
+            {
+                (var next, stored) = WithMoveIfModeUnchanged(existing, threadId, checkedModeId, movedTo);
+                return next;
+            },
+            CancellationToken.None
+        );
+        return (stored, checkedModeId);
+    }
+
+    /// <summary>
+    /// The commit's compare-and-set: <paramref name="existing"/> with the move, when its mode id is still
+    /// <paramref name="checkedModeId"/>; otherwise <paramref name="existing"/> unchanged.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The thread was deleted since it was checked: storing the move
+    /// would write it back.</exception>
+    private static (ThreadMetadata Metadata, bool Moved) WithMoveIfModeUnchanged(
+        ThreadMetadata? existing,
+        string threadId,
+        string? checkedModeId,
+        string movedTo
+    )
+    {
+        if (existing is null)
+        {
+            throw new InvalidOperationException($"Thread '{threadId}' was deleted during the release.");
+        }
+
+        var modeId = PropertyString(existing, MultiTurnAgentPool.ModePropertyKey);
+        if (!string.Equals(modeId, checkedModeId, StringComparison.Ordinal))
+        {
+            return (existing, false);
+        }
+
+        var properties = (existing.Properties ?? ImmutableDictionary<string, object>.Empty)
+            .SetItem(ConversationWorkingDirectory.PropertyKey, movedTo)
+            .SetItem(ConversationDedicatedSandbox.PropertyKey, true);
+        return (existing with { Properties = properties }, true);
     }
 
     /// <summary>How many times <see cref="CommitDedicatedMoveAsync"/> checks a mode that changed under it.</summary>
