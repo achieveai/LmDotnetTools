@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.Misc.Storage;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Tests.Scenarios;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Reviewd::Reviewd.Sample;
@@ -32,6 +33,13 @@ internal sealed class ScriptedReviewRun : IAsyncDisposable
     internal CancellationTokenSource Cancellation { get; } = new();
 
     internal List<string> Phases { get; } = [];
+
+    /// <summary>
+    ///     The <see cref="Phases"/> entry for a sandbox release the run sent to the host, in order with the phases: the
+    ///     thread named in its route and the directory in its body ("none" when it asks for no move).
+    /// </summary>
+    internal static string SandboxRelease(string thread, string? directory) =>
+        $"sandbox-release {thread} {directory ?? "none"}";
 
     /// <summary>The host lists the run's conversation, bound to its workspace, provider and mode, as it does for a resume.</summary>
     internal bool HostListsThread { get; set; }
@@ -177,6 +185,17 @@ internal sealed class ScriptedReviewRun : IAsyncDisposable
                             ? """[{"threadId":"thread","title":"Nova-17","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1,"clientToolsDisabled":true}]"""
                             : "[]"
                     ),
+                }
+            )
+            .OnAsync(
+                ReviewdRunnerTests.IsSandboxRelease,
+                async request =>
+                {
+                    var segments = request.RequestUri!.AbsolutePath.Split('/');
+                    var body = JsonNode.Parse(await request.Content!.ReadAsStringAsync());
+                    var directory = body?["workingDirectoryRelPath"]?.GetValue<string>();
+                    Phases.Add(SandboxRelease(Uri.UnescapeDataString(segments[^3]), directory));
+                    return await ReviewdRunnerTests.EchoSandboxReleaseAsync(request);
                 }
             )
             .OnJson(HttpMethod.Put, "/metadata", "{}")

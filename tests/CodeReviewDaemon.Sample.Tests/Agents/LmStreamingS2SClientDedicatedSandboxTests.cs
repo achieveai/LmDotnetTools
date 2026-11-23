@@ -118,13 +118,27 @@ public sealed class LmStreamingS2SClientDedicatedSandboxTests(ITestOutputHelper 
         null,
         404,
         """{"error":"Conversation 'thread-d' not found.","code":"unknown_thread"}""",
-        "The review host does not know the thread 'thread-d' (404, unknown_thread)."
+        "The review host reports the thread 'thread-d' as not found (404, unknown_thread)."
     )]
     [InlineData(
         "no-route",
         "PRs/nova-17",
         404,
         "",
+        "The review host has no sandbox release route (404 for 'thread-d'); it predates dedicated sandboxes."
+    )]
+    [InlineData(
+        "404-other-code",
+        null,
+        404,
+        """{"code":"UPSTREAM-BODY-SENTINEL-5d1c"}""",
+        "The review host has no sandbox release route (404 for 'thread-d'); it predates dedicated sandboxes."
+    )]
+    [InlineData(
+        "404-numeric-code",
+        null,
+        404,
+        """{"code":404}""",
         "The review host has no sandbox release route (404 for 'thread-d'); it predates dedicated sandboxes."
     )]
     [InlineData(
