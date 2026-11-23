@@ -47,6 +47,8 @@ public sealed class ReviewdFinishCommitTests
         (await run.RunAsync(resume: true, CancellationToken.None)).Should().Be(0);
 
         run.Phases.Should().ContainInOrder("inspect-prepared", "verify", "commit", "cleanup");
+        // The finished review releases its sandbox once, after its cleanup; the killed run never got that far.
+        run.SandboxReleases.Should().Be(1);
         var receipt = await run.ReadAsync(run.RunKey);
         var attempt = await run.ReadAsync(run.AttemptKey);
         var entry = new JsonObject { ["head"] = new string('a', 40) };

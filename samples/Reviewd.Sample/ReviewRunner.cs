@@ -1723,19 +1723,20 @@ internal static class ReviewRunner
             else
             {
                 await CleanupAsync();
-            }
-            // The review is done with its sandbox: its container goes, its files stay, and the next review of this PR
-            // gets a fresh one. Best effort, and only here: owner cleanup stays read-only against the host, and the
-            // host deletes an idle conversation's sandbox when it unloads it anyway.
-            try
-            {
-                await client.ReleaseSandboxAsync(thread!, null, ct);
-            }
-            catch (Exception releaseFailure) when (!ct.IsCancellationRequested)
-            {
-                // Type and stack say where it failed. The client's errors carry no host response body, so neither
-                // does this line.
-                Console.Error.WriteLine($"Sandbox release of {thread} failed: {releaseFailure}");
+                // The review is done with its sandbox: its container goes, its files stay, and the next review of this
+                // PR gets a fresh one. Best effort, and only here: owner cleanup stays read-only against the host, and
+                // the host deletes an idle conversation's sandbox when it unloads it anyway. A lost claim skips this
+                // too: a reset cleaned the slot, so a newer attempt for this PR may be using the thread now.
+                try
+                {
+                    await client.ReleaseSandboxAsync(thread!, null, ct);
+                }
+                catch (Exception releaseFailure) when (!ct.IsCancellationRequested)
+                {
+                    // Type and stack say where it failed. The client's errors carry no host response body, so neither
+                    // does this line.
+                    Console.Error.WriteLine($"Sandbox release of {thread} failed: {releaseFailure}");
+                }
             }
             Console.WriteLine(receipt.ToJsonString());
             return 0;

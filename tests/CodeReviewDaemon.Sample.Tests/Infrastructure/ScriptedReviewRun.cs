@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.Misc.Storage;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Tests.Scenarios;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Reviewd::Reviewd.Sample;
@@ -32,6 +33,11 @@ internal sealed class ScriptedReviewRun : IAsyncDisposable
     internal CancellationTokenSource Cancellation { get; } = new();
 
     internal List<string> Phases { get; } = [];
+
+    /// <summary>How many sandbox releases the run sent to the host.</summary>
+    internal int SandboxReleases => _sandboxReleases;
+
+    private int _sandboxReleases;
 
     /// <summary>The host lists the run's conversation, bound to its workspace, provider and mode, as it does for a resume.</summary>
     internal bool HostListsThread { get; set; }
@@ -177,6 +183,14 @@ internal sealed class ScriptedReviewRun : IAsyncDisposable
                             ? """[{"threadId":"thread","title":"Nova-17","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1,"clientToolsDisabled":true}]"""
                             : "[]"
                     ),
+                }
+            )
+            .OnAsync(
+                ReviewdRunnerTests.IsSandboxRelease,
+                request =>
+                {
+                    Interlocked.Increment(ref _sandboxReleases);
+                    return ReviewdRunnerTests.EchoSandboxReleaseAsync(request);
                 }
             )
             .OnJson(HttpMethod.Put, "/metadata", "{}")
