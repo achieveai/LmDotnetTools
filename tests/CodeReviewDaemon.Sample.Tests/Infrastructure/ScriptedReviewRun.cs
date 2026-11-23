@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.Misc.Storage;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Tests.Scenarios;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Reviewd::Reviewd.Sample;
@@ -33,8 +34,21 @@ internal sealed class ScriptedReviewRun : IAsyncDisposable
 
     internal List<string> Phases { get; } = [];
 
+    /// <summary>
+    ///     The <see cref="Phases"/> entry for a sandbox release the run sent to the host, in order with the phases: the
+    ///     thread named in its route and the directory in its body ("none" when it asks for no move).
+    /// </summary>
+    internal static string SandboxRelease(string thread, string? directory) =>
+        $"sandbox-release {thread} {directory ?? "none"}";
+
     /// <summary>The host lists the run's conversation, bound to its workspace, provider and mode, as it does for a resume.</summary>
     internal bool HostListsThread { get; set; }
+
+    /// <summary>The run's <c>--mode</c>; null runs the configured mode (workspace-agent), as the host lists it.</summary>
+    internal string? Mode { get; set; }
+
+    /// <summary>The run's <c>--reasoning-effort</c>; null passes none.</summary>
+    internal string? ReasoningEffort { get; set; }
     internal Func<string, JsonObject, string, CancellationToken, Task<JsonObject?>>? OnPhase { get; set; }
 
     // SQL run once, synchronously, when the run logs a matching line to stderr (see ExecuteWhenLogged).
@@ -150,7 +164,35 @@ internal sealed class ScriptedReviewRun : IAsyncDisposable
     ///     One run. <paramref name="resume"/> passes <c>--resume</c>, as a new process resuming the attempt would;
     ///     <paramref name="cancellation"/> replaces <see cref="Cancellation"/>, as that new process's own token.
     /// </summary>
-    internal async Task<int> RunAsync(bool resume = false, CancellationToken? cancellation = null)
+    internal Task<int> RunAsync(bool resume = false, CancellationToken? cancellation = null) =>
+        RunAsync(
+            [
+                "review",
+                "run",
+                "--repo",
+                Repo.DisplayName,
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                Database,
+                "--session",
+                "session",
+                "--workspace",
+                "workspace",
+                "--provider",
+                "test",
+                .. Mode is null ? [] : new[] { "--mode", Mode },
+                .. ReasoningEffort is null ? [] : new[] { "--reasoning-effort", ReasoningEffort },
+                .. resume ? new[] { "--resume" } : [],
+                "--execute",
+            ],
+            cancellation
+        );
+
+    /// <summary>One run of the command line <paramref name="args"/> (from <c>review run</c> on).</summary>
+    internal async Task<int> RunAsync(string[] args, CancellationToken? cancellation = null)
     {
         var handler = new FakeHttpMessageHandler()
             .OnJson(
@@ -163,7 +205,9 @@ internal sealed class ScriptedReviewRun : IAsyncDisposable
                     request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
                 _ => new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent("""{"threadId":"thread","dedicatedSandboxAccepted":true}"""),
+                    Content = new StringContent(
+                        """{"threadId":"thread","dedicatedSandboxAccepted":true,"reasoningEffortAccepted":true}"""
+                    ),
                 }
             )
             .On(
@@ -174,9 +218,20 @@ internal sealed class ScriptedReviewRun : IAsyncDisposable
                 {
                     Content = new StringContent(
                         HostListsThread
-                            ? """[{"threadId":"thread","title":"Nova-17","workspace":"workspace","mode":"workspace-agent","provider":"test","lastUpdated":1,"clientToolsDisabled":true}]"""
+                            ? $$"""[{"threadId":"thread","title":"Nova-17","workspace":"workspace","mode":"{{Mode ?? "workspace-agent"}}","provider":"test","lastUpdated":1,"clientToolsDisabled":true}]"""
                             : "[]"
                     ),
+                }
+            )
+            .OnAsync(
+                ReviewdRunnerTests.IsSandboxRelease,
+                async request =>
+                {
+                    var segments = request.RequestUri!.AbsolutePath.Split('/');
+                    var body = JsonNode.Parse(await request.Content!.ReadAsStringAsync());
+                    var directory = body?["workingDirectoryRelPath"]?.GetValue<string>();
+                    Phases.Add(SandboxRelease(Uri.UnescapeDataString(segments[^3]), directory));
+                    return await ReviewdRunnerTests.EchoSandboxReleaseAsync(request);
                 }
             )
             .OnJson(HttpMethod.Put, "/metadata", "{}")
@@ -186,26 +241,7 @@ internal sealed class ScriptedReviewRun : IAsyncDisposable
             .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
         using var config = new ReviewdConfig(new ConfigurationBuilder().Build());
-        var options = CliOptions.Parse([
-            "review",
-            "run",
-            "--repo",
-            Repo.DisplayName,
-            "--pr",
-            "17",
-            "--slot",
-            "2",
-            "--db",
-            Database,
-            "--session",
-            "session",
-            "--workspace",
-            "workspace",
-            "--provider",
-            "test",
-            .. resume ? new[] { "--resume" } : [],
-            "--execute",
-        ]);
+        var options = CliOptions.Parse(args);
         var stderr = Console.Error;
         if (_onLogged.Count > 0)
         {

@@ -123,25 +123,11 @@ internal static class FinishCommitCommand
         {
             throw new InvalidOperationException(
                 $"A reset fenced slot {slot}, so it may be partly discarded and the review cannot be finished there. "
-                    + "Once that reset has stopped, continue it: "
-                    + $"`reviewd review reclaim-slot --repo {repo.DisplayName} --pr {pr} --slot {slot} --db <db> "
-                    + $"--workspace {workspace} --session <session> --discard-verified --execute`."
+                    + $"Once that reset has stopped, continue it: `{DiscardCommand(repo, pr, slot, connection.DataSource, workspace)}`."
             );
         }
 
-        // The resume must repeat the attempt's own identity: its session, provider, reasoning effort and reviewed head.
-        var effort = attempt["reasoningEffort"]?.GetValue<string>() is { } retained
-            ? $" --reasoning-effort {retained}"
-            : "";
-        var resume =
-            $"reviewd review run --repo {repo.DisplayName} --pr {pr} --slot {slot} --db \"{connection.DataSource}\" "
-            + $"--session {Retained("sessionId", "<session>")} --workspace {workspace} "
-            + $"--provider {Retained("providerId", "<provider>")}{effort} "
-            + $"--head {Retained("headSha", "<reviewed head>")} "
-            + "--resume --execute";
-
-        string Retained(string field, string missing) => attempt[field]?.GetValue<string>() ?? missing;
-
+        var (resume, fill) = ResumeCommand(attempt, repo, pr, slot, connection.DataSource, workspace);
         var result = new JsonObject
         {
             ["repo"] = repo.DisplayName,
@@ -152,7 +138,12 @@ internal static class FinishCommitCommand
             ["to"] = "verify-pending",
             ["status"] = execute ? "finish-ready" : "preview",
             ["next"] = resume,
+            ["shell"] = "PowerShell",
         };
+        if (fill.Count > 0)
+        {
+            result["fill"] = new JsonArray([.. fill.Select(step => JsonValue.Create(step))]);
+        }
         if (!execute)
         {
             return result;
@@ -172,4 +163,110 @@ internal static class FinishCommitCommand
         transaction.Commit();
         return result;
     }
+
+    /// <summary>
+    /// The resume that finishes this attempt, and what the operator must fill in first (each placeholder it leaves in
+    /// angle brackets, which PowerShell refuses to run). It repeats the attempt's own identity: its session, provider,
+    /// mode, reasoning effort and reviewed head, and a shadow arm's shadow options, since a shadow database refuses a
+    /// live run. Every value is quoted for PowerShell: Reviewd runs on Windows, from scheduled tasks.
+    /// </summary>
+    internal static (string Command, List<string> Fill) ResumeCommand(
+        JsonObject attempt,
+        RepoIdentity repo,
+        string pr,
+        int slot,
+        string database,
+        string workspace
+    )
+    {
+        var fill = new List<string>();
+        var provenance = attempt["provenance"] as JsonObject;
+        var words = new List<string>
+        {
+            "reviewd review run --repo",
+            Quote(repo.DisplayName),
+            "--pr",
+            Quote(pr),
+            "--slot",
+            slot.ToString(CultureInfo.InvariantCulture),
+            "--db",
+            Quote(database),
+            "--session",
+            Retained(attempt["sessionId"], "<session>"),
+            "--workspace",
+            Quote(workspace),
+            "--provider",
+            Retained(attempt["providerId"], "<provider>"),
+            "--mode",
+            // A shadow attempt saved its mode in its provenance before attempts saved it.
+            Retained(attempt["mode"] ?? provenance?["mode"], "<mode>"),
+        };
+        if (words[^1] == "<mode>")
+        {
+            fill.Add(
+                "<mode>: this attempt predates saved review modes. Use its run's --mode, else the configured "
+                    + "CodeReviewDaemon:LmStreamingModeId (default workspace-agent); a resume in another mode is "
+                    + "refused before any prompt is sent."
+            );
+        }
+        if (attempt["reasoningEffort"] is { } effort)
+        {
+            words.AddRange(["--reasoning-effort", Retained(effort, "<effort>")]);
+        }
+        if (attempt["shadow"]?.GetValue<bool>() == true)
+        {
+            words.AddRange(["--shadow", "--post-session", Retained(attempt["postSessionId"], "<post session>")]);
+            if (attempt["variant"] is { } variant)
+            {
+                words.AddRange(["--variant", Retained(variant, "<variant>")]);
+            }
+            if (provenance is null)
+            {
+                fill.Add(
+                    "This shadow attempt saved no provenance: add its run's --manifest, --experiment and "
+                        + "--task-prompt-file, if it had them."
+                );
+            }
+            if (provenance?["manifestSha256"] is { } manifest)
+            {
+                words.AddRange([
+                    "--manifest",
+                    "<manifest file>",
+                    "--experiment",
+                    Retained(provenance["experimentId"], "<experiment>"),
+                ]);
+                fill.Add($"<manifest file>: the variant manifest this arm ran (SHA-256 {manifest}).");
+            }
+            if (
+                provenance?["taskPromptSha256"]?.GetValue<string>() is { } prompt
+                && prompt != VariantManifest.Sha256Hex(ShadowTaskPrompt.Default)
+            )
+            {
+                words.AddRange(["--task-prompt-file", "<task prompt file>"]);
+                fill.Add($"<task prompt file>: the task prompt this arm sent (SHA-256 {prompt}).");
+            }
+        }
+        words.AddRange(["--head", Retained(attempt["headSha"], "<reviewed head>"), "--resume --execute"]);
+        return (string.Join(' ', words), fill);
+
+        static string Retained(JsonNode? value, string missing) =>
+            value?.GetValue<string>() is { } retained ? Quote(retained) : missing;
+    }
+
+    /// <summary>The discard that continues a stopped reset of this slot (<c>reclaim-slot --discard-verified</c>).</summary>
+    internal static string DiscardCommand(RepoIdentity repo, string pr, int slot, string database, string workspace) =>
+        $"reviewd review reclaim-slot --repo {Quote(repo.DisplayName)} --pr {Quote(pr)} --slot {slot} "
+        + $"--db {Quote(database)} --workspace {Quote(workspace)} --session <session> --discard-verified --execute";
+
+    /// <summary>
+    /// A PowerShell single-quoted literal, so a value with spaces (an Azure DevOps project, a path) stays one argument
+    /// and nothing in it is expanded. PowerShell also closes a single-quoted string at a typographic single quote, so
+    /// those are doubled too.
+    /// </summary>
+    internal static string Quote(string value) =>
+        "'"
+        + string.Concat(
+            value.Select(c => c is '\'' or '\u2018' or '\u2019' or '\u201A' or '\u201B' ? $"{c}{c}" : c.ToString())
+        )
+        + "'";
 }

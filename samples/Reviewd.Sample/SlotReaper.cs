@@ -118,12 +118,26 @@ internal static class SlotReaper
         // sweep; the alarm reports it as held and an operator finishes the review or discards the slot.
         var stage = attempt["stage"]?.GetValue<string>();
         var landed = stage == "commit-completed" && ReviewRunner.CommitLanded(attempt);
+        // A landed commit under a reset of this same claim that stopped (a failed discard): its fence is still on the
+        // owner row, the slot may be half discarded, and finish-commit refuses it, so only that discard can go on.
+        var owner = landed
+            ? await ReadAsync(connection, SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot), ct)
+            : null;
+        var stoppedDiscard =
+            owner?["claimToken"]?.GetValue<string>() == claimToken
+            && owner["state"]?.GetValue<string>() == "owned"
+            && owner[SlotRelease.ResetFence] is not null;
         if (!discardVerified && HoldsUnarchivedReview(attempt))
         {
             var recovery =
-                landed ? "run review finish-commit, then resume it,"
-                : stage == "verify-pending" ? "resume it,"
-                : "set its stage back to verify-pending and resume it,";
+                stoppedDiscard
+                    ? "continue its stopped discard once that reset has stopped: `"
+                        + FinishCommitCommand.DiscardCommand(repo, pr, slot, connection.DataSource, workspace)
+                        + "` (finish-commit refuses a fenced slot; README: A failed discard)."
+                : landed
+                    ? "run review finish-commit, then resume it, or discard the slot (README: A held verified review)."
+                : stage == "verify-pending" ? "resume it, or discard the slot (README: A held verified review)."
+                : "set its stage back to verify-pending and resume it, or discard the slot (README: A held verified review).";
             return new ReclaimResult(
                 repo.DisplayName,
                 pr,
@@ -131,29 +145,20 @@ internal static class SlotReaper
                 threadId,
                 "not-frozen",
                 "held",
-                Detail: $"verified review at {stage} has no archive commit; held for an operator to {recovery} or "
-                    + "discard the slot (README: A held verified review)."
+                Detail: $"verified review at {stage} has no archive commit; held for an operator to {recovery}"
             );
         }
         // A commit that landed is finished from this slot (review finish-commit, then a resume re-verifies and writes the
-        // receipt). A discard resets the slot, after which nothing can verify the review, so it is refused. Not after a
-        // reset of this claim that failed: its fence is still on the owner row, the slot may be half discarded, and
-        // finish-commit refuses it, so only this discard can go on. It re-fences the same claim, and releases the slot
-        // only once the reset proves the clean baseline.
-        if (
-            discardVerified
-            && landed
-            && await ReadAsync(connection, SlotRelease.OwnerKey(workspace, repo.NormalizedKey, slot), ct) is var owner
-            && !(
-                owner?["claimToken"]?.GetValue<string>() == claimToken
-                && owner["state"]?.GetValue<string>() == "owned"
-                && owner[SlotRelease.ResetFence] is not null
-            )
-        )
+        // receipt). A discard resets the slot, after which nothing can verify the review, so it is refused, except to
+        // continue a stopped discard of this claim. That re-fences the same claim, and releases the slot only once the
+        // reset proves the clean baseline.
+        if (discardVerified && landed && !stoppedDiscard)
         {
             throw new InvalidOperationException(
-                $"This review's commit landed; run `reviewd review finish-commit --repo {repo.DisplayName} --pr {pr} "
-                    + $"--slot {slot} --db <db> --workspace {workspace} --execute` to finish it, then resume it. "
+                "This review's commit landed; run `reviewd review finish-commit --repo "
+                    + $"{FinishCommitCommand.Quote(repo.DisplayName)} --pr {FinishCommitCommand.Quote(pr)} --slot {slot} "
+                    + $"--db {FinishCommitCommand.Quote(connection.DataSource)} "
+                    + $"--workspace {FinishCommitCommand.Quote(workspace)} --execute` to finish it, then resume it. "
                     + "A discard would strand it: the review could never be finished."
             );
         }
