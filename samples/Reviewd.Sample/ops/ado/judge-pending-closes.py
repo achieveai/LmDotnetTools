@@ -1,4 +1,5 @@
 # Prints repo<TAB>pr<TAB>n for each PR whose newest judgment is completed+final and not yet in closed.tsv/close-failed.tsv.
+# A shadow review's judgment is a score that is never closed into the store (judge close refuses it), so it is skipped.
 import json, sqlite3, sys, urllib.request
 db, judge_dir = sys.argv[1], sys.argv[2]
 done = set()
@@ -20,6 +21,6 @@ for pr in sorted(newest):
     n, value = newest[pr]
     try: r = json.loads(value)
     except ValueError: continue
-    if r.get("stage") == "completed" and r.get("outputStage") == "final":
+    if r.get("stage") == "completed" and r.get("outputStage") == "final" and r.get("shadow") is not True:
         item = (str(r.get("repository")), str(r.get("prId")), str(n))
         if item not in done: print("\t".join(item))

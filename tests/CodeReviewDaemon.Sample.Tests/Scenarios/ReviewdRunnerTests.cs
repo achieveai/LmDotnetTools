@@ -1929,6 +1929,20 @@ public sealed class ReviewdRunnerTests
         await batch.ExecuteAsync();
         batch.Runs.Should().Equal("1:fresh", "2:fresh", "3:fresh");
         batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
+
+        // A run the shutdown cancels mid-launch says nothing about the PR: it is not counted as a failure nor held for
+        // it, but left launching for the restart to settle as an interrupted launch.
+        using var cancelled = new BatchFixture(0);
+        cancelled.OnRun = () =>
+        {
+            cancelled.Cancellation.Cancel();
+            throw new OperationCanceledException(cancelled.Cancellation.Token);
+        };
+        await cancelled.ExecuteAsync();
+        cancelled.Runs.Should().Equal("1:fresh");
+        var entry = cancelled.Entries().Single(value => value["pr"]!.GetValue<string>() == "1");
+        entry["status"]!.GetValue<string>().Should().Be("launching");
+        entry["failures"]!.GetValue<int>().Should().Be(0, "a shutdown is not a failure of the PR");
     }
 
     [Fact]
@@ -2181,9 +2195,11 @@ public sealed class ReviewdRunnerTests
         batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
     }
 
+    // "fresh": a fresh run refused before its claim (a variant run's pin reads come first), so no attempt row exists.
     [Theory]
     [InlineData("eligibility")]
     [InlineData("resume")]
+    [InlineData("fresh")]
     public async Task Batch_backs_off_gateway_capacity_without_holding_the_pr(string refusedAt)
     {
         using var batch = new BatchFixture(0);
@@ -2206,7 +2222,10 @@ public sealed class ReviewdRunnerTests
         {
             if (pr == "1" && ++refusals <= 7)
             {
-                throw new SandboxException(SandboxErrorKind.Unavailable, "operation_concurrency_limit", 503);
+                throw new SandboxException(SandboxErrorKind.Unavailable, "operation_concurrency_limit", 503)
+                {
+                    ErrorCode = "operation_concurrency_limit",
+                };
             }
         }
         batch.Eligibility = pr =>
@@ -2218,16 +2237,59 @@ public sealed class ReviewdRunnerTests
 
             return BatchFixture.Live(pr);
         };
-        if (refusedAt == "resume")
+        if (refusedAt is "resume" or "fresh")
         {
             batch.OnRun = () => Refuse(batch.Runs[^1].Split(':')[0]);
         }
-
         await batch.ExecuteAsync();
         refusals.Should().Be(8);
         batch.Runs.Should().Contain(refusedAt == "resume" ? "1:resume" : "1:fresh");
         batch.Entries().Should().OnlyContain(entry => entry["status"]!.GetValue<string>() == "verified");
         batch.Entries().First()["failures"]!.GetValue<int>().Should().Be(0);
+    }
+
+    // A run's other 503 before its claim (a failed workspace restore, not the gateway's capacity limit), fresh or
+    // resumed (a variant run's pin reads come first either way), is not held at once, but each one counts, so the PR
+    // is held at the retry cap instead of retrying forever.
+    [Theory]
+    [InlineData("fresh")]
+    [InlineData("resume")]
+    public async Task Batch_counts_a_runs_other_gateway_503_before_its_claim_and_holds_it_at_the_cap(string run)
+    {
+        using var batch = new BatchFixture(0);
+        if (run == "resume")
+        {
+            batch.PutAttempt(
+                "1",
+                new JsonObject
+                {
+                    ["slot"] = 0,
+                    ["stage"] = "review-running",
+                    ["reviewInputId"] = "original",
+                    ["mergeSha"] = new string('b', 40),
+                }
+            );
+        }
+        var refusals = 0;
+        batch.OnRun = () =>
+        {
+            if (batch.Runs[^1] != $"1:{run}")
+            {
+                return;
+            }
+            refusals++;
+            throw new SandboxException(SandboxErrorKind.Unavailable, "workspace restore failed", 503)
+            {
+                ErrorCode = "workspace_restore_failed",
+            };
+        };
+
+        await batch.ExecuteAsync();
+
+        refusals.Should().Be(5, "each refusal counts toward the lane's five retries");
+        var entry = batch.Entries().Single(value => value["pr"]!.GetValue<string>() == "1");
+        entry["status"]!.GetValue<string>().Should().Be("held");
+        entry["capacityRetries"].Should().BeNull("it never backed off as capacity");
     }
 
     // A commit whose response a plain 503 lost is back at verify-pending with its replay id. Each resume renews the
@@ -2269,6 +2331,61 @@ public sealed class ReviewdRunnerTests
             }
         };
         await batch.ExecuteAsync();
+        batch.Runs.Where(run => run.StartsWith("1:", StringComparison.Ordinal)).Should().HaveCount(runs);
+        batch.Runs.Should().NotContain("1:fresh");
+        batch.Entries().Single(entry => entry["pr"]!.GetValue<string>() == "1")["status"]!
+            .GetValue<string>()
+            .Should()
+            .Be(status);
+    }
+
+    // The same lost commit once its resumed verify step has started: as the runner does, each resume records its
+    // verify operation id before the 503, so the row changed and the pre-claim rule above does not decide. Only the
+    // replay check decides here: a plain 503 with a lost commit pending counts, one without backs off uncounted.
+    [Theory]
+    [InlineData(true, null, 5, "held")]
+    [InlineData(false, null, 8, "verified")]
+    [InlineData(true, "operation_capacity_exhausted", 8, "verified")]
+    [InlineData(true, "sandbox_busy", 8, "verified")]
+    public async Task Batch_counts_a_plain_503_on_a_lost_commit_after_its_verify_step_started(
+        bool lostCommit,
+        string? errorCode,
+        int runs,
+        string status
+    )
+    {
+        using var batch = new BatchFixture(0);
+        var key = "reviewd/review-attempt/" + PrCommands.ParseRepo(BatchFixture.Repo).NormalizedKey + "/1";
+        batch.PutAttempt(
+            "1",
+            new JsonObject
+            {
+                ["slot"] = 0,
+                ["stage"] = "verify-pending",
+                ["reviewInputId"] = "original",
+                ["confirmationInputId"] = "confirmation",
+                ["mergeSha"] = new string('b', 40),
+                [ReviewRunner.CommitReplay] = lostCommit ? "lost" : null,
+            }
+        );
+        var refusals = 0;
+        batch.OnRun = () =>
+        {
+            if (++refusals > 7)
+            {
+                return;
+            }
+            var attempt = batch.Read(key)!.AsObject();
+            attempt["verifyOperationId"] = $"verify-{refusals}";
+            batch.Put(key, attempt);
+            throw new SandboxException(SandboxErrorKind.Unavailable, "service unavailable", 503)
+            {
+                ErrorCode = errorCode,
+            };
+        };
+
+        await batch.ExecuteAsync();
+
         batch.Runs.Where(run => run.StartsWith("1:", StringComparison.Ordinal)).Should().HaveCount(runs);
         batch.Runs.Should().NotContain("1:fresh");
         batch.Entries().Single(entry => entry["pr"]!.GetValue<string>() == "1")["status"]!
@@ -3097,6 +3214,9 @@ public sealed class ReviewdRunnerTests
         public CancellationToken SchedulingToken { get; private set; }
         public string? ReasoningEffort { get; set; }
         public string? MaxAgeHours { get; set; }
+
+        // The batch's arm flags, as "--shadow --variant x"; empty is the live reviewer.
+        public string[] Arm { get; set; } = [];
         public List<string?> RunAges { get; } = [];
         public DateTimeOffset Now => DateTimeOffset.FromUnixTimeSeconds(_seconds);
 
@@ -3110,6 +3230,9 @@ public sealed class ReviewdRunnerTests
         }
 
         public List<string?> RunEfforts { get; } = [];
+
+        // Each run's arm, as "shadow:<variant>" or "live".
+        public List<string> RunArms { get; } = [];
         public Func<string, JsonObject> Eligibility { get; set; } = Live;
         public Action? OnRun { get; set; }
         public Func<Task>? OnRunAsync { get; set; }
@@ -3243,6 +3366,7 @@ public sealed class ReviewdRunnerTests
                     "--execute",
                     .. ReasoningEffort is null ? [] : new string[] { "--reasoning-effort", ReasoningEffort },
                     .. MaxAgeHours is null ? [] : new string[] { "--max-age-hours", MaxAgeHours },
+                    .. Arm,
                 ]),
                 _config,
                 _ =>
@@ -3292,6 +3416,11 @@ public sealed class ReviewdRunnerTests
                         Runs.Add(pr + (options.Has("resume") ? ":resume" : ":fresh"));
                         RunSlots.Add((pr, int.Parse(options.Required("slot"))));
                         RunEfforts.Add(options.Get("reasoning-effort"));
+                        RunArms.Add(
+                            options.Has("shadow")
+                                ? $"shadow:{options.Get("variant")}:{options.Get("post-session")}"
+                                : "live"
+                        );
                         RunAges.Add(options.Get("max-age-hours"));
                         Events.Add($"run {pr}@{head[0]}" + (options.Has("resume") ? ":resume" : ":fresh"));
                     }
@@ -3485,7 +3614,11 @@ public sealed class ReviewdRunnerTests
             Cancellation.Dispose();
             _config.Dispose();
             ReviewdSqlitePools.Clear(_database);
-            File.Delete(_database);
+            // A read-only connection that closes last cannot checkpoint, so a WAL database can leave its sidecars.
+            foreach (var file in new[] { _database, _database + "-wal", _database + "-shm" })
+            {
+                File.Delete(file);
+            }
         }
     }
 
@@ -4638,7 +4771,7 @@ public sealed class ReviewdRunnerTests
 
     // A sweep that resets the slot while the send waits out a 503 has handed the slot on: the resend must not go out
     // on it, and the run must not overwrite the attempt the reset recorded, even when the wait is then cancelled
-    // (or its DB read fails) and the run stops on that error instead of reaching the claim check before the resend.
+    // and the run stops on that error instead of reaching the claim check before the resend.
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

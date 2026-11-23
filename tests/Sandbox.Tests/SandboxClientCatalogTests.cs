@@ -1,9 +1,10 @@
 using FluentAssertions;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.Sandbox.Tests;
 
-public class SandboxClientCatalogTests
+public class SandboxClientCatalogTests(ITestOutputHelper output)
 {
     [Fact]
     public async Task PreviewMarketplacesAsync_HappyPath_ParsesNestedCatalog()
@@ -294,6 +295,294 @@ public class SandboxClientCatalogTests
         exception.Should().BeOfType<SandboxException>();
         ((SandboxException)exception!).Kind.Should().Be(SandboxErrorKind.Protocol);
     }
+
+    [Fact]
+    public async Task ListDiscoveredAsync_MultiPage_FollowsNextCursorThroughAnEmptyPage_ReturnsAllRowsInOrder()
+    {
+        // Gateway issue #285: rows come one page per request; a page can be empty with a non-null
+        // next_cursor (it skipped unreadable rows), and only a null next_cursor ends the listing.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        OnDiscoveredPage(
+            handler,
+            "",
+            """{"discovered":[{"kind":"skill","name":"a","path":"/workspace/a/"},{"kind":"skill","name":"b","path":"/workspace/b/"}],"next_cursor":"2"}"""
+        );
+        OnDiscoveredPage(handler, "?after=2", """{"discovered":[],"next_cursor":"100002"}""");
+        OnDiscoveredPage(
+            handler,
+            "?after=100002",
+            """{"discovered":[{"kind":"skill","name":"c","path":"/workspace/c/"}],"next_cursor":null}"""
+        );
+
+        var items = await client.ListDiscoveredAsync("sess-1");
+        LogOutcome(handler, exception: null);
+
+        items.Select(item => item.Name).Should().Equal("a", "b", "c");
+        handler.Requests.Select(request => request.Uri.Query).Should().Equal("", "?after=2", "?after=100002");
+    }
+
+    [Fact]
+    public async Task ListDiscoveredAsync_AgentFilter_IsSentOnEveryPage()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        OnDiscoveredPage(
+            handler,
+            "?agent_id=agent-1.abc",
+            """{"discovered":[{"kind":"skill","name":"a","path":"/workspace/a/"}],"next_cursor":"7"}"""
+        );
+        OnDiscoveredPage(
+            handler,
+            "?agent_id=agent-1.abc&after=7",
+            """{"discovered":[{"kind":"skill","name":"b","path":"/workspace/b/"}],"next_cursor":null}"""
+        );
+
+        var items = await client.ListDiscoveredAsync("sess-1", "agent-1.abc");
+        LogOutcome(handler, exception: null);
+
+        items.Select(item => item.Name).Should().Equal("a", "b");
+        handler
+            .Requests.Select(request => request.Uri.Query)
+            .Should()
+            .Equal("?agent_id=agent-1.abc", "?agent_id=agent-1.abc&after=7");
+    }
+
+    [Fact]
+    public async Task ListDiscoveredAsync_RepeatedCursor_ThrowsProtocol()
+    {
+        // Every page hands back the SAME next_cursor: the SDK must reject the repeat rather than loop.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/sandboxes/sess-1/discovered",
+            """{"discovered":[{"kind":"skill","name":"a","path":"/workspace/a/"}],"next_cursor":"5"}"""
+        );
+
+        var exception = await Record.ExceptionAsync(() => client.ListDiscoveredAsync("sess-1"));
+        LogOutcome(handler, exception);
+
+        exception.Should().BeOfType<SandboxException>().Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+        handler.Requests.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task ListDiscoveredAsync_FreshCursorsPastThePageCap_ThrowsProtocol()
+    {
+        // Every page hands back a DISTINCT fresh cursor forever: the seen-cursor guard never trips, so the
+        // page cap must, rather than looping unbounded.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        var page = 0;
+        handler.On(
+            request => request.RequestUri!.AbsolutePath.EndsWith("/discovered", StringComparison.Ordinal),
+            _ => JsonOk("{\"discovered\":[],\"next_cursor\":\"" + Interlocked.Increment(ref page) + "\"}")
+        );
+
+        var exception = await Record.ExceptionAsync(() => client.ListDiscoveredAsync("sess-1"));
+        LogOutcome(handler, exception);
+
+        exception.Should().BeOfType<SandboxException>().Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+        handler.Requests.Should().HaveCount(4096);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(4096)]
+    public async Task ListDiscoveredAsync_CancelledAfterAPage_ThrowsOperationCanceled_NotProtocol(int cancelAfterPage)
+    {
+        // The caller cancels while page N is being read and page N still carries a fresh cursor. At N = 4096
+        // the page cap would also trip, so this proves cancellation is checked before the loop guards.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        using var cts = new CancellationTokenSource();
+        var page = 0;
+        handler.On(
+            request => request.RequestUri!.AbsolutePath.EndsWith("/discovered", StringComparison.Ordinal),
+            _ =>
+            {
+                if (Interlocked.Increment(ref page) == cancelAfterPage)
+                {
+                    cts.Cancel();
+                }
+
+                return JsonOk("{\"discovered\":[],\"next_cursor\":\"" + page + "\"}");
+            }
+        );
+
+        var exception = await Record.ExceptionAsync(() => client.ListDiscoveredAsync("sess-1", cts.Token));
+        LogOutcome(handler, exception);
+
+        exception.Should().BeAssignableTo<OperationCanceledException>();
+        handler.Requests.Should().HaveCount(cancelAfterPage);
+    }
+
+    [Theory]
+    [InlineData(404, SandboxErrorKind.NotFound)]
+    [InlineData(500, SandboxErrorKind.Protocol)]
+    public async Task ListDiscoveredAsync_SecondPageHttpError_ThrowsTheMappedError_WithNoPartialRows(
+        int status,
+        SandboxErrorKind expectedKind
+    )
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        OnDiscoveredPage(
+            handler,
+            "",
+            """{"discovered":[{"kind":"skill","name":"a","path":"/workspace/a/"}],"next_cursor":"1"}"""
+        );
+        handler.On(
+            request => request.RequestUri!.Query == "?after=1",
+            _ => new HttpResponseMessage((System.Net.HttpStatusCode)status)
+        );
+
+        IReadOnlyList<SandboxDiscoveredItem>? items = null;
+        var exception = await Record.ExceptionAsync(async () => items = await client.ListDiscoveredAsync("sess-1"));
+        LogOutcome(handler, exception);
+
+        exception.Should().BeOfType<SandboxException>().Which.Kind.Should().Be(expectedKind);
+        items.Should().BeNull("a failed later page must not hand back the rows read before it");
+        handler.Requests.Select(request => request.Uri.Query).Should().Equal("", "?after=1");
+    }
+
+    [Fact]
+    public async Task ListDiscoveredAsync_MalformedSecondPage_ThrowsProtocol()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        OnDiscoveredPage(
+            handler,
+            "",
+            """{"discovered":[{"kind":"skill","name":"a","path":"/workspace/a/"}],"next_cursor":"1"}"""
+        );
+        OnDiscoveredPage(handler, "?after=1", """{"discovered":[{"kind":"skill",""");
+
+        var exception = await Record.ExceptionAsync(() => client.ListDiscoveredAsync("sess-1"));
+        LogOutcome(handler, exception);
+
+        exception.Should().BeOfType<SandboxException>().Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+        handler.Requests.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task ListDiscoveredAsync_NullBodyOnALaterPage_ThrowsProtocol_NotATruncatedList()
+    {
+        // A 200 whose body is JSON null on page 2 must not end the walk silently with page 1's rows.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        OnDiscoveredPage(
+            handler,
+            "",
+            """{"discovered":[{"kind":"skill","name":"a","path":"/workspace/a/"}],"next_cursor":"1"}"""
+        );
+        OnDiscoveredPage(handler, "?after=1", "null");
+
+        var exception = await Record.ExceptionAsync(() => client.ListDiscoveredAsync("sess-1"));
+        LogOutcome(handler, exception);
+
+        exception.Should().BeOfType<SandboxException>().Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+        handler.Requests.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task ListDiscoveredAsync_DefaultAgentFilter_IsSentOnEveryPage()
+    {
+        // agentId "" is the default (primary) agent: `agent_id=` with an empty value, on every page.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        OnDiscoveredPage(
+            handler,
+            "?agent_id=",
+            """{"discovered":[{"kind":"skill","name":"a","path":"/workspace/a/"}],"next_cursor":"7"}"""
+        );
+        OnDiscoveredPage(
+            handler,
+            "?agent_id=&after=7",
+            """{"discovered":[{"kind":"skill","name":"b","path":"/workspace/b/"}],"next_cursor":null}"""
+        );
+
+        var items = await client.ListDiscoveredAsync("sess-1", "");
+        LogOutcome(handler, exception: null);
+
+        items.Select(item => item.Name).Should().Equal("a", "b");
+        handler.Requests.Select(request => request.Uri.Query).Should().Equal("?agent_id=", "?agent_id=&after=7");
+    }
+
+    [Fact]
+    public async Task ListDiscoveredAsync_ExactlyThePageCap_EndingWithNullCursor_ReturnsEveryRow()
+    {
+        // 4096 pages is allowed; only page 4097 trips the cap. One row per page, null cursor on the last.
+        const int pages = 4096;
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        var page = 0;
+        handler.On(
+            request => request.RequestUri!.AbsolutePath.EndsWith("/discovered", StringComparison.Ordinal),
+            _ =>
+            {
+                var current = Interlocked.Increment(ref page);
+                var next = current == pages ? "null" : "\"" + current + "\"";
+                return JsonOk(
+                    "{\"discovered\":[{\"kind\":\"skill\",\"name\":\"r"
+                        + current
+                        + "\",\"path\":\"/workspace/r/\"}],\"next_cursor\":"
+                        + next
+                        + "}"
+                );
+            }
+        );
+
+        var items = await client.ListDiscoveredAsync("sess-1");
+        LogOutcome(handler, exception: null);
+
+        items.Should().HaveCount(pages);
+        items[0].Name.Should().Be("r1");
+        items[^1].Name.Should().Be("r4096");
+        handler.Requests.Should().HaveCount(pages);
+    }
+
+    [Fact]
+    public async Task ListDiscoveredAsync_CursorRepeatedNonAdjacently_ThrowsProtocolAfterThreeRequests()
+    {
+        // Cursors A, B, A: the seen-cursor set (not just the previous cursor) must catch the repeat.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        OnDiscoveredPage(handler, "", """{"discovered":[],"next_cursor":"A"}""");
+        OnDiscoveredPage(handler, "?after=A", """{"discovered":[],"next_cursor":"B"}""");
+        OnDiscoveredPage(handler, "?after=B", """{"discovered":[],"next_cursor":"A"}""");
+
+        var exception = await Record.ExceptionAsync(() => client.ListDiscoveredAsync("sess-1"));
+        LogOutcome(handler, exception);
+
+        exception.Should().BeOfType<SandboxException>().Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+        handler.Requests.Select(request => request.Uri.Query).Should().Equal("", "?after=A", "?after=B");
+    }
+
+    /// <summary>Writes the paged requests and the outcome to the test output, so a failure shows what was sent.</summary>
+    private void LogOutcome(FakeGatewayHandler handler, Exception? exception)
+    {
+        var queries = handler.Requests.Select(request => request.Uri.Query).ToList();
+        output.WriteLine(
+            $"[discovered] {queries.Count} request(s); first: [{string.Join(", ", queries.Take(3))}]; "
+                + $"last: '{queries.LastOrDefault()}'"
+        );
+        output.WriteLine(
+            exception is null
+                ? "[discovered] outcome: returned"
+                : $"[discovered] outcome: {exception.GetType().Name}"
+                    + (exception is SandboxException sandbox ? $" ({sandbox.Kind})" : "")
+                    + $": {exception.Message}"
+        );
+    }
+
+    private static void OnDiscoveredPage(FakeGatewayHandler handler, string query, string json) =>
+        handler.On(
+            request =>
+                request.Method == HttpMethod.Get
+                && request.RequestUri!.AbsolutePath.EndsWith(
+                    "/api/v1/sandboxes/sess-1/discovered",
+                    StringComparison.Ordinal
+                )
+                && request.RequestUri.Query == query,
+            _ => JsonOk(json)
+        );
+
+    private static HttpResponseMessage JsonOk(string json) =>
+        new(System.Net.HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json"),
+        };
 
     [Fact]
     public async Task ListDiscoveredAsync_PinnedGatewayShape_ContextFileOmitsNameEntirely()

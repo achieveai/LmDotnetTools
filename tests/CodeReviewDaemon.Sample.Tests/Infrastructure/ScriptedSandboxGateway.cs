@@ -32,6 +32,12 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
     /// <summary>The JSON body of the most recent <c>POST .../operations</c> submit, for wire-level assertions.</summary>
     public string? LastSubmitBody { get; private set; }
 
+    /// <summary>The session id of each <c>POST .../operations</c> submit, in order, read from the request path.</summary>
+    public List<string> SubmitSessions { get; } = [];
+
+    /// <summary>The workspace's <c>relative_path</c> the mount-resolution route reports; null when unset.</summary>
+    public string? WorkspaceRelativePath { get; init; }
+
     /// <summary>Every <c>POST .../operations</c> submit body, in order.</summary>
     public List<string> SubmitBodies { get; } = [];
 
@@ -44,6 +50,14 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
     public int CommandExitCode { get; init; }
     public string CommandStdout { get; init; } = string.Empty;
     public string CommandStderr { get; init; } = string.Empty;
+
+    /// <summary>
+    /// When set, runs each submitted command (its executable and args) and answers with its exit code and output in
+    /// place of the fixed ones above.
+    /// </summary>
+    public Func<string, IReadOnlyList<string>, Task<(int Exit, string Stdout, string Stderr)>>? Execute { get; init; }
+
+    private (int Exit, string Stdout, string Stderr)? _ran;
 
     /// <summary>When true, the operation terminalizes as <c>timed_out</c> (the SDK surfaces <c>ExecutionTimeout</c>).</summary>
     public bool SimulateExecutionTimeout { get; init; }
@@ -102,7 +116,7 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
 
         if (request.Method == HttpMethod.Get && path.Contains("/sandboxes/", StringComparison.Ordinal))
         {
-            return ResolveWorkspaceMount();
+            return ResolveWorkspaceMount(WorkspaceRelativePath);
         }
 
         return new HttpResponseMessage(HttpStatusCode.NotImplemented)
@@ -112,7 +126,7 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
     }
 
     /// <summary>Answers <c>GET /api/v1/sandboxes/{id}</c> with a workspace volume carrying the mount id.</summary>
-    private static HttpResponseMessage ResolveWorkspaceMount() =>
+    private static HttpResponseMessage ResolveWorkspaceMount(string? relativePath) =>
         Json(
             HttpStatusCode.OK,
             JsonSerializer.Serialize(
@@ -127,6 +141,7 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
                             container_path = "/workspace",
                             read_only = false,
                             id = WorkspaceMountId,
+                            relative_path = relativePath,
                         },
                     },
                 }
@@ -143,7 +158,18 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
         if (request.Method == HttpMethod.Post && request.Content is not null)
         {
             LastSubmitBody = await request.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var segments = request.RequestUri!.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            SubmitSessions.Add(Uri.UnescapeDataString(segments[Array.IndexOf(segments, "sandboxes") + 1]));
             SubmitBodies.Add(LastSubmitBody);
+            if (Execute is not null)
+            {
+                using var submitted = JsonDocument.Parse(LastSubmitBody);
+                var args = submitted.RootElement.TryGetProperty("args", out var list)
+                    ? list.EnumerateArray().Select(arg => arg.GetString()!).ToList()
+                    : [];
+                _ran = await Execute(submitted.RootElement.GetProperty("executable").GetString()!, args)
+                    .ConfigureAwait(false);
+            }
         }
 
         var operationId = await ResolveOperationIdAsync(request, ct).ConfigureAwait(false);
@@ -173,8 +199,8 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
         var snapshot = new
         {
             operation_id = operationId,
-            status = CommandExitCode == 0 ? "succeeded" : "failed",
-            exit_code = CommandExitCode,
+            status = (_ran?.Exit ?? CommandExitCode) == 0 ? "succeeded" : "failed",
+            exit_code = _ran?.Exit ?? CommandExitCode,
             artifacts = new
             {
                 mount_id = WorkspaceMountId,
@@ -226,14 +252,14 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
             return TruncateStdout
                 ? new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StreamContent(new CutStream(Encoding.UTF8.GetBytes(CommandStdout))),
+                    Content = new StreamContent(new CutStream(Encoding.UTF8.GetBytes(_ran?.Stdout ?? CommandStdout))),
                 }
-                : Octet(Encoding.UTF8.GetBytes(CommandStdout));
+                : Octet(Encoding.UTF8.GetBytes(_ran?.Stdout ?? CommandStdout));
         }
 
         if (path.EndsWith("/stderr", StringComparison.Ordinal))
         {
-            return Octet(Encoding.UTF8.GetBytes(CommandStderr));
+            return Octet(Encoding.UTF8.GetBytes(_ran?.Stderr ?? CommandStderr));
         }
 
         if (SessionEvicted)

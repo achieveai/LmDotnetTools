@@ -800,7 +800,7 @@ public class ConversationsControllerTests
     /// single <c>AskUserQuestion</c> tool call, parking a deferred placeholder and ending the run.
     /// Patterned on <c>ChatWebSocketManagerClientToolResultTests.CreatePoolWithParkedAskUserQuestionAsync</c>.
     /// </summary>
-    private static async Task<MultiTurnAgentPool> CreatePoolWithParkedAskUserQuestionAsync(
+    internal static async Task<MultiTurnAgentPool> CreatePoolWithParkedAskUserQuestionAsync(
         string threadId,
         string toolCallId
     )
@@ -1851,6 +1851,7 @@ public class ConversationsControllerTests
 
         var response = Assert.IsType<ProvisionConversationResponse>(Assert.IsType<OkObjectResult>(result).Value);
         response.ReadOnlyEgressAccepted.Should().Be(readOnlyEgress);
+        response.ReadOnlyGitHubAccepted.Should().Be(readOnlyEgress);
         (await ConversationReadOnlyEgress.ReadAsync(store, response.ThreadId)).Should().Be(readOnlyEgress);
         (await store.LoadMetadataAsync(response.ThreadId))!
             .Properties!.ContainsKey(ConversationReadOnlyEgress.PropertyKey)

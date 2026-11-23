@@ -107,6 +107,10 @@ try
     {
         return await AuthCommands.RunAsync(options, config, cancellation.Token);
     }
+    if (options.Command == "variant up")
+    {
+        return await VariantUp.RunAsync(options, config, cancellation.Token);
+    }
     if (options.Command.StartsWith("sandbox ", StringComparison.Ordinal))
     {
         return await SandboxCommands.RunAsync(options, config, cancellation.Token);

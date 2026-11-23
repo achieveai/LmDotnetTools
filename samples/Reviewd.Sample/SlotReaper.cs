@@ -635,6 +635,13 @@ internal static class SlotReaper
     public static async Task<int> RunAsync(CliOptions options, ReviewdConfig config, CancellationToken ct)
     {
         var session = options.Required("session");
+        // A shadow arm's --db must be paired with its read-only session; refused before any host or sandbox client.
+        await ReviewArm.RequireReadOnlySessionForShadowAsync(
+            options.Required("db"),
+            () => AuthCommands.LoadOptions(config, null).TokenStoreDir!,
+            session,
+            ct
+        );
         using var sandboxClient = config.CreateSandboxClient(TimeSpan.FromMinutes(10));
         return await RunAsync(
             options,

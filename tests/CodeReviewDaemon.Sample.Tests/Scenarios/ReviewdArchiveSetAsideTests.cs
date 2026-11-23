@@ -269,7 +269,7 @@ public sealed class ReviewdArchiveSetAsideTests
                 from pathlib import Path
 
 
-                def commit_review(root, repo, pr, slot, source_sha, expected_branch):
+                def commit_review(root, repo, pr, slot, source_sha, expected_branch, push=True):
                     # The first push fails; the next reports what it committed.
                     failed = Path(root) / 'push-failed'
                     if not failed.exists():
@@ -397,7 +397,7 @@ public sealed class ReviewdArchiveSetAsideTests
                 from pathlib import Path
 
 
-                def commit_review(root, repo, pr, slot, source_sha, expected_branch):
+                def commit_review(root, repo, pr, slot, source_sha, expected_branch, push=True):
                     folder = Path(root) / f'slots/{slot}/PRs/{repo.lower()}-{pr}'
                     return sorted(p.relative_to(folder).as_posix() for p in folder.rglob('*') if p.is_file())
                 """
@@ -606,7 +606,7 @@ public sealed class ReviewdArchiveSetAsideTests
             from pathlib import Path
 
 
-            def commit_review(root, repo, pr, slot, source_sha, expected_branch):
+            def commit_review(root, repo, pr, slot, source_sha, expected_branch, push=True):
                 folder = Path(root) / f'slots/{slot}/PRs/{repo.lower()}-{pr}'
                 return sorted(p.relative_to(folder).as_posix() for p in folder.rglob('*') if p.is_file())
             """
