@@ -176,7 +176,10 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         await HoldAsync(9, 1);
         var slotOwner = Claim(receipt, DateTimeOffset.UtcNow.AddMinutes(30));
         if (released)
+        {
             slotOwner["state"] = "released";
+        }
+
         await PutAsync(OwnerKey(0), slotOwner);
 
         var run = () => RunAsync("--slots", "0");
@@ -197,7 +200,10 @@ public sealed class ReviewdAutoSlotTests : IDisposable
     public async Task No_usable_slot_exits_3_without_claims_writes_or_remote_calls()
     {
         for (var slot = 0; slot < 6; slot++)
+        {
             await HoldAsync(100 + slot, slot);
+        }
+
         var before = await ReadAllAsync();
 
         (await RunAsync()).Should().Be(ReviewRunner.NoSlotExitCode);
@@ -241,7 +247,9 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         // A fresh or undated lease is never touched on the host; a live review is never frozen.
         _handler.CountRequests("/freeze").Should().Be(0);
         if (outcome == "held")
+        {
             _handler.CountRequests("/run-state").Should().Be(0);
+        }
     }
 
     [Fact]
@@ -403,7 +411,10 @@ public sealed class ReviewdAutoSlotTests : IDisposable
     public async Task Without_slots_only_the_configured_lanes_are_tried()
     {
         for (var slot = 0; slot < 3; slot++)
+        {
             await HoldAsync(100 + slot, slot);
+        }
+
         _lanes = 3;
 
         (await RunAsync()).Should().Be(ReviewRunner.NoSlotExitCode);
@@ -665,7 +676,10 @@ public sealed class ReviewdAutoSlotTests : IDisposable
                 var child = int.Parse(await File.ReadAllTextAsync(pidFile), CultureInfo.InvariantCulture);
                 var stat = $"/proc/{child}/stat";
                 for (var wait = 0; wait < 50 && File.Exists(stat) && !IsZombie(stat); wait++)
+                {
                     await Task.Delay(20);
+                }
+
                 (!File.Exists(stat) || IsZombie(stat)).Should().BeTrue("the watchdog kills the step's children too");
             }
             else
@@ -978,7 +992,10 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         );
         var kit = new DirectoryInfo(AppContext.BaseDirectory);
         while (kit is not null && !File.Exists(Path.Combine(kit.FullName, scripts, "review_common.py")))
+        {
             kit = kit.Parent;
+        }
+
         Skip.If(kit is null, "the review-host kit is not in this checkout");
         const string harness = """
             import json, os, sys, types
@@ -1021,7 +1038,10 @@ public sealed class ReviewdAutoSlotTests : IDisposable
                     startedMinutesAgo.ToString(CultureInfo.InvariantCulture),
                 }
             )
+            {
                 start.ArgumentList.Add(argument);
+            }
+
             using var process = System.Diagnostics.Process.Start(start)!;
             var stdout = process.StandardOutput.ReadToEndAsync();
             var stderr = await process.StandardError.ReadToEndAsync();
@@ -1044,14 +1064,20 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         var root = Directory.CreateTempSubdirectory("reviewd-sandbox-").FullName;
         var scripts = Directory.CreateDirectory(Path.Combine(root, ".claude/skills/review-setup/scripts"));
         foreach (var (name, source) in NativeStubs)
+        {
             await File.WriteAllTextAsync(Path.Combine(scripts.FullName, name), source);
+        }
+
         using (
             var resource = typeof(ReviewRunner).Assembly.GetManifestResourceStream(
                 "Reviewd.Sample.ReviewRunnerSandbox.py"
             )!
         )
         using (var file = File.Create(Path.Combine(root, "ReviewRunnerSandbox.py")))
+        {
             await resource.CopyToAsync(file);
+        }
+
         Directory.CreateDirectory(Path.Combine(root, "state", "reviewd-owners"));
         return root;
     }
@@ -1082,7 +1108,10 @@ public sealed class ReviewdAutoSlotTests : IDisposable
             args["force"] = force;
         }
         foreach (var (key, value) in extra ?? [])
+        {
             args[key] = value?.DeepClone();
+        }
+
         var start = new System.Diagnostics.ProcessStartInfo(python)
         {
             WorkingDirectory = root,
@@ -1090,7 +1119,10 @@ public sealed class ReviewdAutoSlotTests : IDisposable
             RedirectStandardError = true,
         };
         foreach (var argument in new[] { Path.Combine(root, "ReviewRunnerSandbox.py"), phase, args.ToJsonString() })
+        {
             start.ArgumentList.Add(argument);
+        }
+
         using var process = System.Diagnostics.Process.Start(start)!;
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = await process.StandardError.ReadToEndAsync();
@@ -1284,7 +1316,10 @@ public sealed class ReviewdAutoSlotTests : IDisposable
             )!
         )
         using (var file = File.Create(script))
+        {
             await resource.CopyToAsync(file);
+        }
+
         try
         {
             var start = new System.Diagnostics.ProcessStartInfo(python)
@@ -1293,7 +1328,10 @@ public sealed class ReviewdAutoSlotTests : IDisposable
                 RedirectStandardError = true,
             };
             foreach (var argument in new[] { "-c", harness, script }.Concat(arguments))
+            {
                 start.ArgumentList.Add(argument);
+            }
+
             using var process = System.Diagnostics.Process.Start(start)!;
             var stdout = await process.StandardOutput.ReadToEndAsync();
             var stderr = await process.StandardError.ReadToEndAsync();
@@ -1319,7 +1357,9 @@ public sealed class ReviewdAutoSlotTests : IDisposable
     {
         ReviewdSqlitePools.Clear(_database);
         foreach (var file in Directory.GetFiles(Path.GetTempPath(), Path.GetFileName(_database) + "*"))
+        {
             File.Delete(file);
+        }
     }
 
     private string[] Arguments() =>
@@ -1354,30 +1394,43 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         );
     }
 
-    private Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken ct)
+    private async Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken ct)
     {
         var slot = args["slot"]!.GetValue<int>();
         _phases.Add($"{phase} {args["pr"]}/{slot}");
         if (phase == "cleanup")
-            return Task.FromResult(
-                new JsonObject
-                {
-                    ["claimToken"] = args["claimToken"]!.DeepClone(),
-                    ["cleanBaselineVerified"] = true,
-                    ["evidencePreserved"] = true,
-                }
-            );
+        {
+            return new JsonObject
+            {
+                ["claimToken"] = args["claimToken"]!.DeepClone(),
+                ["cleanBaselineVerified"] = true,
+                ["evidencePreserved"] = true,
+            };
+        }
+
         if (phase == "prepare" && _beforePrepare is not null)
-            _beforePrepare().GetAwaiter().GetResult();
+        {
+            await _beforePrepare();
+        }
+
         if (_settlePrepare && phase == "prepare")
+        {
             throw new ReviewRunner.SettledSandboxException("prepare", "Sandbox prepare failed (exit 1).");
+        }
+
         if (_notIdle.Contains(slot))
+        {
             throw new ReviewRunner.SlotNotIdleException("Native slot retains an owner.");
+        }
+
         if (_refuseAtCapacity)
+        {
             throw new SandboxException(SandboxErrorKind.Unavailable, "refused", 503)
             {
                 ErrorCode = "operation_capacity_exhausted",
             };
+        }
+
         throw new InvalidOperationException(Stop);
     }
 
@@ -1425,7 +1478,10 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         var claim = attempt.DeepClone().AsObject();
         claim["state"] = "owned";
         if (lease is { } expiry)
+        {
             claim["leaseExpiresAt"] = expiry;
+        }
+
         return claim;
     }
 
@@ -1454,7 +1510,10 @@ public sealed class ReviewdAutoSlotTests : IDisposable
         var rows = new Dictionary<string, string>();
         using var reader = await query.ExecuteReaderAsync();
         while (await reader.ReadAsync())
+        {
             rows[reader.GetString(0)] = reader.GetString(1);
+        }
+
         return rows;
     }
 }
