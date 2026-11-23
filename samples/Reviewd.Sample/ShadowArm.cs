@@ -35,6 +35,9 @@ internal sealed record ShadowArm(
             return new ShadowArm(template, sha, null, null);
         }
 
+        // A variant arm reviews only under an experiment record the study store holds (plan: "no batch runs without an
+        // experiment record").
+        StudyStore.RequireExperiment(options.Required("store"), options.Required("experiment"));
         var manifest = await VariantManifest.LoadAsync(manifestPath, ct);
         var variant = options.Required("variant");
         void Agree(string what, string? pinned, string? actual)

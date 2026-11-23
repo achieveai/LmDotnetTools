@@ -38,7 +38,8 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         Directory.CreateDirectory(_files);
         var path = Path.Combine(_files, id + ".json");
         File.WriteAllText(path, manifest.Length > 0 ? manifest : $$"""{"id":"{{id}}"}""");
-        return ["--variant", id, "--manifest", path, "--experiment", "exp-1"];
+        StudyFixture.Write(_files, ("exp-1", "experiment", null));
+        return ["--variant", id, "--manifest", path, "--experiment", "exp-1", "--store", _files];
     }
 
     [Theory]
@@ -2076,6 +2077,8 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             flags[3],
             "--experiment",
             "exp-1",
+            "--store",
+            _files,
             "--from-workspace",
             "base",
             "--champion",
@@ -2277,6 +2280,8 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             flags[3],
             "--experiment",
             "exp-1",
+            "--store",
+            _files,
             "--from-workspace",
             "base",
             "--champion",
@@ -2379,6 +2384,95 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         handler.Requests.Should().OnlyContain(r => r.Method == HttpMethod.Get, "no mode or workspace was made");
     }
 
+    // The study store is the only state between rounds: no arm is built or reviewed outside an experiment record it
+    // holds. review run, review batch and variant up each refuse before any host or gateway call.
+    [Theory]
+    [InlineData("no record", "The study at * has no record exp-2.*")]
+    [InlineData("another kind", "Study record exp-2 is a hypothesis record, not an experiment.")]
+    [InlineData("superseded", "Study record exp-2 was superseded by exp-3;*")]
+    [InlineData("no study", "--store * holds no study at .experimentation/reviewer-evolution/*")]
+    public async Task An_arm_under_an_experiment_the_study_does_not_hold_is_neither_built_nor_reviewed(
+        string study,
+        string refusal
+    )
+    {
+        var flags = Variant("b-007", """{"id":"b-007","provider":"test"}""");
+        var store = _files;
+        switch (study)
+        {
+            case "another kind":
+                StudyFixture.Write(_files, ("exp-2", "hypothesis", null));
+                break;
+            case "superseded":
+                StudyFixture.Write(_files, ("exp-2", "experiment", null), ("exp-3", "experiment", "exp-2"));
+                break;
+            case "no study":
+                store = Path.Combine(_files, "empty");
+                Directory.CreateDirectory(store);
+                break;
+            default:
+                break; // "no record": exp-2 is in no record
+        }
+        flags[5] = "exp-2";
+        flags[7] = store;
+        var host = new FakeHttpMessageHandler();
+        var gateway = new FakeHttpMessageHandler();
+        using var config = new ReviewdConfig(new ConfigurationBuilder().Build())
+        {
+            Transport = new HostAndGateway(host, gateway),
+        };
+        using var http = new HttpClient(host) { BaseAddress = new Uri("http://localhost/") };
+        string[] shadow = ["--session", "session", "--workspace", "workspace", "--provider", "test", "--shadow"];
+        var batch = CliOptions.Parse([
+            "review",
+            "batch",
+            "--selection",
+            Path.Combine(_files, "selection.json"),
+            "--db",
+            _database,
+            .. shadow,
+            "--post-session",
+            "read-only",
+            .. flags,
+            "--execute",
+        ]);
+        var up = CliOptions.Parse([
+            "variant",
+            "up",
+            "--manifest",
+            flags[3],
+            "--experiment",
+            "exp-2",
+            "--store",
+            store,
+            "--from-workspace",
+            "base",
+            "--champion",
+            S_champion,
+        ]);
+
+        var entries = new Func<Task>[]
+        {
+            () => RunAsync(host, [], ["--shadow", .. flags]),
+            () => ReviewBatch.RunBatchAsync(batch, config, CancellationToken.None),
+            () =>
+                VariantUp.RunCoreAsync(
+                    up,
+                    new LmStreamingS2SClient(http, null, null, null),
+                    (_, _, _, _) => Task.FromResult(""),
+                    (_, _, _) => Task.FromResult(new VariantUp.Clone("", [])),
+                    CancellationToken.None
+                ),
+        };
+
+        foreach (var entry in entries)
+        {
+            (await entry.Should().ThrowAsync<ArgumentException>()).WithMessage(refusal);
+        }
+        host.Requests.Should().BeEmpty();
+        gateway.Requests.Should().BeEmpty();
+    }
+
     [Fact]
     public async Task Variant_up_needs_a_fully_pinned_manifest_and_an_experiment()
     {
@@ -2397,7 +2491,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         var noExperiment = () => CliOptions.Parse(command);
         var unpinned = () =>
             VariantUp.RunCoreAsync(
-                CliOptions.Parse([.. command, "--experiment", "exp-1", "--execute"]),
+                CliOptions.Parse([.. command, "--experiment", "exp-1", "--store", _files, "--execute"]),
                 null!,
                 (_, _, _, _) => Task.FromResult(""),
                 (_, _, _) => Task.FromResult(new VariantUp.Clone("", [])),
@@ -2489,6 +2583,8 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
                     "m.json",
                     "--experiment",
                     "e1",
+                    "--store",
+                    "s",
                 ]);
             if (valid)
             {

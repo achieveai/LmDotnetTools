@@ -1338,6 +1338,8 @@ internal static class ReviewBatch
                         options.Required("manifest"),
                         "--experiment",
                         options.Required("experiment"),
+                        "--store",
+                        options.Required("store"),
                     ]);
                 }
                 if (options.Get("task-prompt-file") is { } taskPrompt)

@@ -94,8 +94,10 @@ internal static class VariantUp
         CancellationToken ct
     )
     {
-        var manifest = await VariantManifest.LoadAsync(options.Required("manifest"), ct);
         var experiment = options.Required("experiment");
+        // An arm is built only under an experiment record the study store holds, preview included.
+        StudyStore.RequireExperiment(options.Required("store"), experiment);
+        var manifest = await VariantManifest.LoadAsync(options.Required("manifest"), ct);
         var champion = options.Required("champion");
         var missing = new (string Name, string? Value)[]
         {
