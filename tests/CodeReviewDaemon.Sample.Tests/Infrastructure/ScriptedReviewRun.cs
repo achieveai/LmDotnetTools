@@ -34,10 +34,12 @@ internal sealed class ScriptedReviewRun : IAsyncDisposable
 
     internal List<string> Phases { get; } = [];
 
-    /// <summary>How many sandbox releases the run sent to the host.</summary>
-    internal int SandboxReleases => _sandboxReleases;
-
-    private int _sandboxReleases;
+    /// <summary>
+    ///     The <see cref="Phases"/> entry for a sandbox release the run sent to the host, in order with the phases: the
+    ///     thread named in its route and the directory in its body ("none" when it asks for no move).
+    /// </summary>
+    internal static string SandboxRelease(string thread, string? directory) =>
+        $"sandbox-release {thread} {directory ?? "none"}";
 
     /// <summary>The host lists the run's conversation, bound to its workspace, provider and mode, as it does for a resume.</summary>
     internal bool HostListsThread { get; set; }
@@ -187,10 +189,13 @@ internal sealed class ScriptedReviewRun : IAsyncDisposable
             )
             .OnAsync(
                 ReviewdRunnerTests.IsSandboxRelease,
-                request =>
+                async request =>
                 {
-                    Interlocked.Increment(ref _sandboxReleases);
-                    return ReviewdRunnerTests.EchoSandboxReleaseAsync(request);
+                    var segments = request.RequestUri!.AbsolutePath.Split('/');
+                    var body = JsonNode.Parse(await request.Content!.ReadAsStringAsync());
+                    var directory = body?["workingDirectoryRelPath"]?.GetValue<string>();
+                    Phases.Add(SandboxRelease(Uri.UnescapeDataString(segments[^3]), directory));
+                    return await ReviewdRunnerTests.EchoSandboxReleaseAsync(request);
                 }
             )
             .OnJson(HttpMethod.Put, "/metadata", "{}")

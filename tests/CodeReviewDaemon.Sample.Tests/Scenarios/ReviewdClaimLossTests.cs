@@ -255,7 +255,7 @@ public sealed class ReviewdClaimLossTests
                 .Be(0);
             (await run.ReadAsync(run.RunKey))["cleanupState"]!.GetValue<string>().Should().Be("released");
             // Nor does it release the thread's sandbox: after the reset, a newer attempt may be using that thread.
-            run.SandboxReleases.Should().Be(0);
+            run.Phases.Should().NotContain(phase => phase.StartsWith("sandbox-release", StringComparison.Ordinal));
         }
         else
         {
