@@ -587,11 +587,24 @@ internal sealed class LmStreamingS2SClient
         if (!response.IsSuccessStatusCode)
         {
             var code = TryReadStringProperty(await response.Content.ReadAsStringAsync(ct), "code");
+            if (response.StatusCode == HttpStatusCode.NotFound)
+            {
+                // The host answers a thread it does not know (or will not admit exists) with its unknown_thread body.
+                // Any other 404 is a host without this route: one that predates dedicated sandboxes.
+                throw new ReviewHostContractException(
+                    code == "unknown_thread"
+                        ? $"The review host does not know the thread '{threadId}' (404, unknown_thread)."
+                        : $"The review host has no sandbox release route (404 for '{threadId}'); it predates dedicated sandboxes."
+                );
+            }
             var known = code is not null && KnownReleaseRefusals.Contains(code) ? $", {code}" : "";
             throw new ReviewHostContractException(
                 $"The review host refused to release the sandbox of '{threadId}' ({(int)response.StatusCode}{known})."
             );
         }
+        // A plain release (no directory) moves nothing, so there is no directory to confirm: a 200 means the gateway
+        // deleted the thread's container, and the thread keeps its stored directory. Every dedicated thread has one,
+        // set when it was provisioned (ProvisionAsync refuses a dedicated sandbox without a working directory).
         if (workingDirectory is not null)
         {
             var body = await response.Content.ReadAsStringAsync(ct);
