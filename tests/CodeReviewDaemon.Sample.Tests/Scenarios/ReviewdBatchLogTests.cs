@@ -219,14 +219,15 @@ public sealed class ReviewdBatchLogTests : IDisposable
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(ReviewdRunnerTests.IsSandboxRelease, ReviewdRunnerTests.EchoSandboxReleaseAsync)
             .On(
                 request =>
                     request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
                 _ => new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent("""{"threadId":"thread"}"""),
+                    Content = new StringContent("""{"threadId":"thread","dedicatedSandboxAccepted":true}"""),
                 }
             )
             .OnJson(HttpMethod.Get, "/api/conversations?", "[]")

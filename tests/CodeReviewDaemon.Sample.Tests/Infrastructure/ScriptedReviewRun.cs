@@ -156,14 +156,14 @@ internal sealed class ScriptedReviewRun : IAsyncDisposable
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
             .On(
                 request =>
                     request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
                 _ => new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent("""{"threadId":"thread"}"""),
+                    Content = new StringContent("""{"threadId":"thread","dedicatedSandboxAccepted":true}"""),
                 }
             )
             .On(

@@ -3987,8 +3987,9 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
             .OnJson(HttpMethod.Get, "/subagents?", $$"""{"schemaVersion":1,"nodes":[{{descendants}}]}""");
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
@@ -4177,8 +4178,9 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .On(
                 request => request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath.EndsWith("/run-state"),
                 _ =>
@@ -4342,12 +4344,13 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .On(
                 request =>
                     request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
-                _ => Json("""{"threadId":"thread"}""")
+                _ => Json("""{"threadId":"thread","dedicatedSandboxAccepted":true}""")
             )
             .OnJson(HttpMethod.Get, "/api/conversations?", "[]")
             .OnJson(HttpMethod.Put, "/metadata", "{}");
@@ -4470,12 +4473,13 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .On(
                 request =>
                     request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
-                _ => Json("""{"threadId":"thread"}""")
+                _ => Json("""{"threadId":"thread","dedicatedSandboxAccepted":true}""")
             )
             // No prior conversation exists for this PR: the durable host-title lookup finds none.
             .OnJson(HttpMethod.Get, "/api/conversations?", "[]")
@@ -4652,12 +4656,13 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .On(
                 request =>
                     request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
-                _ => Json("""{"threadId":"thread"}""")
+                _ => Json("""{"threadId":"thread","dedicatedSandboxAccepted":true}""")
             )
             .OnJson(HttpMethod.Get, "/api/conversations?", "[]")
             .OnJson(HttpMethod.Put, "/metadata", "{}")
@@ -4786,12 +4791,13 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .On(
                 request =>
                     request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
-                _ => Json("""{"threadId":"thread"}""")
+                _ => Json("""{"threadId":"thread","dedicatedSandboxAccepted":true}""")
             )
             .OnJson(HttpMethod.Get, "/api/conversations?", "[]")
             .OnJson(HttpMethod.Put, "/metadata", "{}")
@@ -4930,12 +4936,13 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .On(
                 request =>
                     request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
-                _ => Json("""{"threadId":"thread"}""")
+                _ => Json("""{"threadId":"thread","dedicatedSandboxAccepted":true}""")
             )
             .OnJson(HttpMethod.Get, "/api/conversations?", "[]")
             .OnJson(HttpMethod.Put, "/metadata", "{}")
@@ -5070,12 +5077,13 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .On(
                 request =>
                     request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
-                _ => Json("""{"threadId":"thread"}""")
+                _ => Json("""{"threadId":"thread","dedicatedSandboxAccepted":true}""")
             )
             .OnJson(HttpMethod.Get, "/api/conversations?", "[]")
             .OnJson(HttpMethod.Put, "/metadata", "{}")
@@ -5198,8 +5206,9 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .OnJson(
                 HttpMethod.Get,
                 "/api/conversations?",
@@ -5349,8 +5358,9 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .OnJson(
                 HttpMethod.Get,
                 "/api/conversations?",
@@ -5463,7 +5473,7 @@ public sealed class ReviewdRunnerTests
     }
 
     // The persisted-message rows the host's GET api/conversations/{threadId}/messages returns.
-    private static string Transcript(params (string Role, string Text)[] messages) =>
+    internal static string Transcript(params (string Role, string Text)[] messages) =>
         new JsonArray(
             messages
                 .Select(message =>
@@ -5479,7 +5489,7 @@ public sealed class ReviewdRunnerTests
                 .ToArray()
         ).ToJsonString();
 
-    private static string ReviewPrompt(char head) =>
+    internal static string ReviewPrompt(char head) =>
         $"Review org/project/Nova PR #17 in slot Nova-2.\nExpected source head {new string(head, 40)}; prepared merge {new string('b', 40)}.";
 
     [Theory]
@@ -5495,8 +5505,9 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .OnJson(
                 HttpMethod.Get,
                 "/api/conversations?",
@@ -5662,8 +5673,9 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .OnJson(
                 HttpMethod.Get,
                 "/api/conversations?",
@@ -5672,7 +5684,7 @@ public sealed class ReviewdRunnerTests
             .On(
                 request =>
                     request.RequestUri!.AbsolutePath == "/api/conversations" && request.Method == HttpMethod.Post,
-                _ => Json("""{"threadId":"fresh"}""")
+                _ => Json("""{"threadId":"fresh","dedicatedSandboxAccepted":true}""")
             )
             // The titled conversation ran this head's review, so only our own reset is admitted past it.
             .OnJson(
@@ -5848,8 +5860,9 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .OnJson(
                 HttpMethod.Get,
                 "/api/conversations?",
@@ -5858,7 +5871,7 @@ public sealed class ReviewdRunnerTests
             .On(
                 request =>
                     request.RequestUri!.AbsolutePath == "/api/conversations" && request.Method == HttpMethod.Post,
-                _ => Json("""{"threadId":"fresh"}""")
+                _ => Json("""{"threadId":"fresh","dedicatedSandboxAccepted":true}""")
             )
             .OnJson(HttpMethod.Get, "/prior/messages", Transcript(("User", ReviewPrompt('a')), ("Assistant", "Done.")))
             .OnJson(HttpMethod.Put, "/metadata", "{}")
@@ -6031,8 +6044,9 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .On(
                 request =>
                     request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
@@ -6151,6 +6165,16 @@ public sealed class ReviewdRunnerTests
         }
     }
 
+    private static List<string?> ReleasedDirectories(IEnumerable<FakeHttpMessageHandler.RecordedRequest> requests) =>
+        [
+            .. requests
+                .Where(r =>
+                    r.Method == HttpMethod.Post
+                    && r.Uri.AbsolutePath.EndsWith("/sandbox/release", StringComparison.Ordinal)
+                )
+                .Select(r => JsonNode.Parse(r.Body!)!["workingDirectoryRelPath"]?.GetValue<string>()),
+        ];
+
     // Lease renewals that fail for longer than the lease (the step's renewal catch logs and retries them) let a sweep
     // reset the slot under a live step. The run must then stop at its next save: sending the review on a reset slot
     // posts it with missing context. The reset already recorded the attempt as a failed admission, so pick offers the
@@ -6168,12 +6192,13 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .On(
                 request =>
                     request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
-                _ => Json("""{"threadId":"thread"}""")
+                _ => Json("""{"threadId":"thread","dedicatedSandboxAccepted":true}""")
             )
             .OnJson(HttpMethod.Get, "/api/conversations?", "[]")
             .OnJson(HttpMethod.Put, "/metadata", "{}")
@@ -6299,12 +6324,13 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .On(
                 request =>
                     request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
-                _ => Json("""{"threadId":"thread"}""")
+                _ => Json("""{"threadId":"thread","dedicatedSandboxAccepted":true}""")
             )
             .OnJson(HttpMethod.Get, "/api/conversations?", "[]")
             .OnJson(HttpMethod.Put, "/metadata", "{}")
@@ -6635,15 +6661,16 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .On(
                 request =>
                     request.RequestUri!.AbsolutePath == "/api/conversations" && request.Method == HttpMethod.Post,
                 _ =>
                 {
                     provisions++;
-                    return Json("""{"threadId":"thread"}""");
+                    return Json("""{"threadId":"thread","dedicatedSandboxAccepted":true}""");
                 }
             )
             .OnJson(
@@ -6728,6 +6755,17 @@ public sealed class ReviewdRunnerTests
             var first = (await store.GetAsync<JsonObject>(key))!;
             first["stage"]!.GetValue<string>().Should().Be("completed-verified");
             phases.Should().Equal("prepare", "inspect", "inspect", "verify", "commit", "cleanup");
+            // The review gets a sandbox of its own, jailed to its PR folder, and gives it back when it is done.
+            var provision = JsonNode.Parse(
+                handler
+                    .Requests.Single(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations")
+                    .Body!
+            )!;
+            provision["dedicatedSandbox"]!.GetValue<bool>().Should().BeTrue();
+            provision["workingDirectoryRelPath"]!.GetValue<string>().Should().Be(".worktrees/Nova-2/PRs/nova-17");
+            ReleasedDirectories(handler.Requests)
+                .Should()
+                .Equal([null], "a fresh thread needs no move, only a release");
             var metadata = handler.Requests.Single(r => r.Method == HttpMethod.Put);
             JsonNode.Parse(metadata.Body!)!["title"]!.GetValue<string>().Should().Be("Nova-17-aaaaaaaa");
             handler
@@ -6801,6 +6839,13 @@ public sealed class ReviewdRunnerTests
                 .FindIndex(thaw, r => r.Uri.AbsolutePath.EndsWith("/run-state", StringComparison.Ordinal))
                 .Should()
                 .BeInRange(thaw + 1, send - 1, "work queued behind the freeze settles before the review is sent");
+            // The continued thread last wrote another review's folder, so it moves to this one with a fresh sandbox
+            // before anything is sent, and releases that sandbox once the run is done.
+            ReleasedDirectories(reReview).Should().Equal(".worktrees/Nova-2/PRs/nova-17", null);
+            reReview
+                .FindIndex(r => r.Uri.AbsolutePath == "/api/conversations/thread/sandbox/release")
+                .Should()
+                .BeLessThan(send, "the move happens before the review is sent");
             // The re-review's verify learns the first round's summary thread, where a reply may stand as its summary.
             verifySummaryThreads.Should().Equal("[]", "[7]");
             var last = (await store.GetAsync<JsonObject>(key))!;
@@ -7056,10 +7101,17 @@ public sealed class ReviewdRunnerTests
             );
             sends.Should().Be(count, "verification recovery must not resend either retained input");
             provisions.Should().Be(1);
+            // A verification resume sends nothing; its only write is giving back the finished review's sandbox.
             handler
                 .Requests.Skip(requestsBeforeResume)
                 .Should()
-                .OnlyContain(request => request.Method == HttpMethod.Get);
+                .OnlyContain(request =>
+                    request.Method == HttpMethod.Get
+                    || request.Uri.AbsolutePath == "/api/conversations/thread/sandbox/release"
+                );
+            ReleasedDirectories(handler.Requests.Skip(requestsBeforeResume))
+                .Should()
+                .Equal([null], "a resume after the send moves nothing");
             handler
                 .Requests.Skip(requestsBeforeResume)
                 .Should()
@@ -7316,12 +7368,13 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .On(
                 request =>
                     request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
-                _ => Json("""{"threadId":"thread"}""")
+                _ => Json("""{"threadId":"thread","dedicatedSandboxAccepted":true}""")
             )
             .OnJson(
                 HttpMethod.Get,
@@ -7592,12 +7645,13 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .On(
                 request =>
                     request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
-                _ => Json("""{"threadId":"fresh"}""")
+                _ => Json("""{"threadId":"fresh","dedicatedSandboxAccepted":true}""")
             )
             .OnJson(
                 HttpMethod.Get,
@@ -7907,12 +7961,13 @@ public sealed class ReviewdRunnerTests
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(IsSandboxRelease, EchoSandboxReleaseAsync)
             .On(
                 request =>
                     request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
-                _ => Json("""{"threadId":"fresh"}""")
+                _ => Json("""{"threadId":"fresh","dedicatedSandboxAccepted":true}""")
             )
             .OnJson(
                 HttpMethod.Get,
@@ -8119,4 +8174,15 @@ public sealed class ReviewdRunnerTests
 
     private static HttpResponseMessage Json(string value) =>
         new(HttpStatusCode.OK) { Content = new StringContent(value) };
+
+    internal static bool IsSandboxRelease(HttpRequestMessage request) =>
+        request.Method == HttpMethod.Post
+        && request.RequestUri!.AbsolutePath.EndsWith("/sandbox/release", StringComparison.Ordinal);
+
+    /// <summary>The host's release reply: it moved the thread to the directory asked for, else kept it in place.</summary>
+    internal static async Task<HttpResponseMessage> EchoSandboxReleaseAsync(HttpRequestMessage request)
+    {
+        var asked = JsonNode.Parse(await request.Content!.ReadAsStringAsync())?["workingDirectoryRelPath"];
+        return Json(new JsonObject { ["workingDirectoryRelPath"] = asked?.DeepClone() ?? "reviews" }.ToJsonString());
+    }
 }

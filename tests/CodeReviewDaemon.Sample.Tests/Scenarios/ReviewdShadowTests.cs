@@ -60,6 +60,8 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         var title = handler.Requests.Single(r => r.Uri.AbsolutePath.EndsWith("/metadata", StringComparison.Ordinal));
         var send = handler.Requests.First(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal));
         var attempt = await AttemptAsync();
+        // A shadow review is jailed to its own PR folder like a live one.
+        provision.Body.Should().Contain("\"dedicatedSandbox\":true");
         if (shadow)
         {
             provision.Body.Should().Contain("\"readOnlyEgress\":true");
@@ -3224,15 +3226,16 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             .OnJson(
                 HttpMethod.Get,
                 "/capabilities",
-                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}"""
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}"""
             )
+            .OnAsync(ReviewdRunnerTests.IsSandboxRelease, ReviewdRunnerTests.EchoSandboxReleaseAsync)
             .On(
                 request =>
                     request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/conversations",
                 _ => new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new StringContent(
-                        """{"threadId":"thread","readOnlyEgressAccepted":true,"readOnlyGitHubAccepted":true}"""
+                        """{"threadId":"thread","readOnlyEgressAccepted":true,"readOnlyGitHubAccepted":true,"dedicatedSandboxAccepted":true}"""
                     ),
                 }
             )
