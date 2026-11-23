@@ -2,6 +2,9 @@ namespace Reviewd.Sample;
 
 internal sealed class CliOptions
 {
+    internal static readonly System.Text.RegularExpressions.Regex VariantLabel = new("^[a-z0-9][a-z0-9-]{0,39}$");
+    private static readonly System.Text.RegularExpressions.Regex S_experimentId = new("^[A-Za-z0-9._-]{1,80}$");
+
     private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
 
     public string Command { get; private init; } = "";
@@ -79,6 +82,12 @@ internal sealed class CliOptions
                 "resume",
                 "cleanup-only",
                 "head",
+                "shadow",
+                "variant",
+                "post-session",
+                "task-prompt-file",
+                "manifest",
+                "experiment",
             ],
             "review batch" =>
             [
@@ -93,6 +102,12 @@ internal sealed class CliOptions
                 "listen",
                 "callback",
                 "execute",
+                "shadow",
+                "variant",
+                "post-session",
+                "task-prompt-file",
+                "manifest",
+                "experiment",
             ],
             "review reconcile-slot" => ["repo", "pr", "db", "evidence", "execute"],
             "review reclaim-slot" => ["repo", "pr", "slot", "db", "workspace", "session", "execute"],
@@ -134,12 +149,13 @@ internal sealed class CliOptions
             "judge close" => ["repo", "pr", "db", "store", "judgment", "remote", "execute"],
             "workspace list" => [],
             "workspace plugins" => ["workspace"],
+            "variant up" => ["manifest", "experiment", "from-workspace", "champion", "execute"],
             "workspace create" => ["name", "directory", "marketplaces", "enabled-plugins"],
             "workspace edit" => ["workspace", "marketplaces", "enabled-plugins"],
             "workspace exec" => ["workspace", "directory", "timeout"],
             "auth serve" => ["listen", "callback"],
             "auth run" => ["listen", "callback"],
-            "sandbox create" => ["workspace", "callback", "marketplaces"],
+            "sandbox create" => ["workspace", "callback", "marketplaces", "read-only-egress", "read-repos"],
             "sandbox exec" => ["session", "directory", "timeout"],
             "agent start" =>
             [
@@ -173,7 +189,18 @@ internal sealed class CliOptions
             }
 
             var value = "true";
-            if (name is not ("wait" or "execute" or "resume" or "cleanup-only" or "rejudge"))
+            if (
+                name
+                is not (
+                    "wait"
+                    or "execute"
+                    or "resume"
+                    or "cleanup-only"
+                    or "rejudge"
+                    or "shadow"
+                    or "read-only-egress"
+                )
+            )
             {
                 if (++i >= commandArgs.Length || commandArgs[i].StartsWith("--", StringComparison.Ordinal))
                 {
@@ -210,6 +237,70 @@ internal sealed class CliOptions
             )
                 throw new ArgumentException("--max-age-hours must be a positive integer.");
             result._values["max-age-hours"] = hours.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        if (result.Get("variant") is { } variant && !VariantLabel.IsMatch(variant))
+        {
+            throw new ArgumentException(
+                "--variant must be 1-40 lowercase letters, digits or dashes, starting with a letter or digit."
+            );
+        }
+        // A variant names a shadow arm; the live reviewer has none (ReviewArm pins a shadow --db to its variant).
+        if (result.Has("variant") && !result.Has("shadow"))
+        {
+            throw new ArgumentException("--variant names a shadow arm and needs --shadow.");
+        }
+        // A shadow review's steps run in a read-only-egress session (ReadOnlySessions); only a shadow review names one.
+        if (result.Has("shadow") != result.Has("post-session"))
+        {
+            throw new ArgumentException(
+                "--shadow needs --post-session <id of a sandbox create --read-only-egress session>, and "
+                    + "--post-session needs --shadow."
+            );
+        }
+        if (result.Get("post-session") is { } postSession && postSession == result.Get("session"))
+        {
+            throw new ArgumentException("--post-session must be a read-only session other than --session.");
+        }
+        // A read-only session runs a shadow review's prepare, which must fetch its repo.
+        if (result.Has("read-only-egress") != result.Has("read-repos"))
+        {
+            throw new ArgumentException(
+                "--read-only-egress needs --read-repos <org/project/repo,...> (the repos its prepare may fetch), "
+                    + "and --read-repos needs --read-only-egress."
+            );
+        }
+        // A shadow arm's task prompt is a template (ShadowTaskPrompt); a variant arm also names the manifest it was
+        // built from and the experiment it belongs to, both recorded in its receipts (ShadowArm).
+        if (result.Has("task-prompt-file") && !result.Has("shadow"))
+        {
+            throw new ArgumentException("--task-prompt-file sets a shadow review's task prompt and needs --shadow.");
+        }
+        if (
+            command is "review run" or "review batch"
+            && (result.Has("variant") != result.Has("manifest") || result.Has("variant") != result.Has("experiment"))
+        )
+        {
+            throw new ArgumentException(
+                "--variant, --manifest and --experiment go together: a variant arm names the manifest it was built "
+                    + "from and the experiment record it belongs to."
+            );
+        }
+        // variant up refuses to build an arm outside an experiment record (the study store is the only state between
+        // rounds).
+        if (command == "variant up")
+        {
+            _ = result.Required("manifest");
+            _ = result.Required("experiment");
+            _ = result.Required("from-workspace");
+            if (!System.Text.RegularExpressions.Regex.IsMatch(result.Required("champion"), "^[0-9a-f]{40}$"))
+            {
+                throw new ArgumentException("--champion must be a 40-character commit SHA.");
+            }
+        }
+        if (result.Get("experiment") is { } experiment && !S_experimentId.IsMatch(experiment))
+        {
+            throw new ArgumentException("--experiment must be 1-80 letters, digits, dots, underscores or dashes.");
         }
 
         if (command.StartsWith("pr ", StringComparison.Ordinal))
@@ -484,7 +575,16 @@ internal sealed class CliOptions
         auth serve [--listen <url>] [--callback <gateway-reachable-url>]
         auth run [--listen <url>] [--callback <gateway-reachable-url>] -- <local-program> [args...]
         sandbox create --workspace <logical-leaf> --callback <gateway-reachable-url> [--marketplaces <csv>]
+                       [--read-only-egress --read-repos <org/project/repo,...>]  (a review run --shadow --post-session:
+                       Azure DevOps and GitHub GET/HEAD only, plus each listed repo's git fetch and prepare's two read
+                       queries)
         sandbox exec --session <id> [--directory <relative-dir>] [--timeout <seconds>] -- <program> [args...]
+        variant up --manifest <variant.json> --experiment <record-id> --from-workspace <base-workspace-id>
+                   --champion <commit> [--execute]
+        Builds an A/B arm's workspace (variant-<id>) from its manifest: checks its review-repo clone is at the pinned
+        commit and holds the same KnowledgeBase/ as the experiment's frozen champion commit, registers its plugin alias at the pinned SHA, creates or updates its chat mode, and enables
+        code-reviewer from that alias, with every other plugin as in the base workspace. Prints the ids and the
+        review batch command. Without --execute it only previews.
         workspace list
         workspace plugins [--workspace <id>]
         workspace create --name <name> [--directory <leaf>] [--marketplaces <csv>] [--enabled-plugins <json>]
@@ -495,6 +595,18 @@ internal sealed class CliOptions
 
         review run --repo <org/project/repo> --pr <id> [--slot <0-5> | --slots <csv>] --db <pending.db>
                    --session <sandbox-session-id> --workspace <host-workspace-id> --provider <id> [--mode <id>] [--reasoning-effort <low|medium|high|xhigh>] [--max-age-hours <positive-integer>] [--execute] [--resume] [--cleanup-only]
+                   [--shadow --post-session <read-only-session-id>] [--task-prompt-file <template>]
+                   [--variant <label> --manifest <variant.json> --experiment <record-id>]
+        --shadow reviews without posting, for A/B experiments: Azure DevOps repos only, a fresh read-only-egress
+        conversation (never a reused one), comments the review would post saved as would_post.json, and the
+        artifacts committed to the store's local review branch without a push. Every step, prepare included, runs
+        in --post-session, a session made by sandbox create --read-only-egress --read-repos on the same workspace
+        that lists this --repo (--session is only checked against the workspace). Use its own
+        --db, workspace and store clone per arm; the --db is pinned to its arm on the first executed run.
+        --task-prompt-file replaces the shadow task prompt: a template with {{repo}} {{pr}} {{slotName}} {{contextPath}}
+        {{directory}} {{head}} {{merge}} {{qualityRules}}; it must use {{directory}} and {{head}}.
+        --variant labels the receipt with the arm (lowercase letters, digits, dashes); its manifest must agree with
+        the run (id, provider, effort, task prompt), and the receipt records the build, SHAs and experiment id.
         Without --slot, run takes the first free slot, or one whose lease has lapsed (reclaimed like reap-slots);
         a PR that already owns a slot keeps it. No usable slot exits 3 with per-slot reasons on stderr.
         It tries --slots in order, else the first Reviewd:LanesPerRepo slots (configuration, 1-6, default 6).
@@ -502,6 +614,7 @@ internal sealed class CliOptions
         Read-only: one JSON line per slot, state free | queued | owned | expired, with the owner PR and lease.
         review batch --selection <json> --db <pending.db> --session <id> --workspace <id> --provider <id>
                      [--mode <id>] [--reasoning-effort <low|medium|high|xhigh>] [--max-age-hours <positive-integer>] [--listen <url>] [--callback <url>] --execute
+                     [--shadow --post-session <id>] [--variant <label>]  (passed to every review run; see review run)
         Batch resumes its fixed selected queue; failed PRs requeue, ambiguous owners hold slots. No automatic new PR discovery.
         review capacity --repos <comma-separated-org/project/repo> --db <path> --workspace <id> --session <id>
                         --evidence <native-and-thread-quiescence.json>

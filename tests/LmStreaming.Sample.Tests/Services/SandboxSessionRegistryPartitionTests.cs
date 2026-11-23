@@ -153,6 +153,7 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
         // the key keeps the judge out of the lane's full-write sandbox (and the lane out of the judge's).
         var auth = new AuthOptions();
         auth.Ado.ClientId = "ado-client";
+        auth.Github.ClientId = "github-client";
         var (registry, calls) = CreateRegistry(auth);
 
         var normal = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1"));
@@ -162,8 +163,11 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
         normal.ReadOnlyEgress.Should().BeFalse();
         readOnly.ReadOnlyEgress.Should().BeTrue();
         calls.PostAppIds.Should().Equal(DefaultAppId, DefaultAppId);
-        AdoMethods(calls.PostBodies[0]).Should().BeEmpty("the lane's ado rule must keep allowing every method");
-        AdoMethods(calls.PostBodies[1]).Should().Equal("GET", "HEAD");
+        RuleMethods(calls.PostBodies[0], "ado").Should().BeEmpty("the lane's ado rule must keep allowing every method");
+        RuleMethods(calls.PostBodies[1], "ado").Should().Equal("GET", "HEAD");
+        // A read-only thread's agent can edit helpers that run with its credentials, so it must not push to GitHub.
+        RuleMethods(calls.PostBodies[0], "github").Should().BeEmpty("the lane keeps GitHub writes");
+        RuleMethods(calls.PostBodies[1], "github").Should().Equal("GET", "HEAD");
     }
 
     [Fact]
@@ -689,7 +693,7 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
         return document.RootElement.TryGetProperty("working_dir", out var dir) ? dir.GetString() : null;
     }
 
-    private static IReadOnlyList<string> AdoMethods(string createBody)
+    private static IReadOnlyList<string> RuleMethods(string createBody, string id)
     {
         using var document = JsonDocument.Parse(createBody);
         return
@@ -698,7 +702,7 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
                 .RootElement.GetProperty("network")
                 .GetProperty("rules")
                 .EnumerateArray()
-                .Single(rule => rule.GetProperty("id").GetString() == "ado")
+                .Single(rule => rule.GetProperty("id").GetString() == id)
                 .GetProperty("methods")
                 .EnumerateArray()
                 .Select(method => method.GetString()!),

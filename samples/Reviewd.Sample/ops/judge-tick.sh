@@ -190,7 +190,8 @@ fi
 # reports success (an alert may arrive twice). Nothing closes while STOPPED exists, including a STOPPED made while a
 # close runs: the rest wait.
 # pending: one "label<TAB>db<TAB>repository<TAB>PR<TAB>judgment" line per PR to close, read-only from each database;
-# with JUDGE_SHARD, only that shard's PRs, as the batch picks them (a PR id that is not a number is shard 0's).
+# with JUDGE_SHARD, only that shard's PRs, as the batch picks them (a PR id that is not a number is shard 0's). A shadow
+# review's judgment is a score that is never closed into the store (judge close refuses it), so it is never pending.
 pending() {
     python3 -I - "${JUDGE_SHARD:-0/1}" targets.tsv closed.tsv close-failed.tsv <<'PY'
 import json, sqlite3, sys, urllib.request
@@ -221,7 +222,7 @@ for line in open(sys.argv[2]):
             receipt = json.loads(value)
         except ValueError:
             continue
-        if receipt.get("stage") == "completed" and receipt.get("outputStage") == "final":
+        if receipt.get("stage") == "completed" and receipt.get("outputStage") == "final" and receipt.get("shadow") is not True:
             item = (label, str(receipt.get("repository")), str(receipt.get("prId")), str(n))
             if item not in done:
                 print("\t".join((label, db) + item[1:]))

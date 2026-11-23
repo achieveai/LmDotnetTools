@@ -69,6 +69,16 @@ internal static class ReviewRunner
     /// <summary>Exit code of an automatic <c>review run</c> that found no usable slot.</summary>
     internal const int NoSlotExitCode = 3;
 
+    /// <summary>
+    ///     Prefix of a review conversation's title. A shadow one is titled apart, so the live runner's title lookups
+    ///     ("{repo}-{pr}-") never reuse a read-only conversation or take a shadow review for a posted one.
+    /// </summary>
+    internal static string TitlePrefix(bool shadow) => shadow ? "shadow-" : "";
+
+    /// <summary>The confirmation of a <c>--shadow</c> run: the live one's audit and verdict, against would_post.json.</summary>
+    internal static string ShadowConfirmationPrompt(string directory) =>
+        $"Confirm that {directory}/would_post.json holds every comment and reply this review would post, and exactly one summary; add anything missing to the file, and post nothing. Report your final verdict on the PR, with a brief rationale and any unresolved blockers. If the review is incomplete or blocked, state that explicitly rather than inferring approval. If this review verified a medium or high issue, or a failing required check this PR caused, that the summary in would_post.json does not list as a blocker, add a reply entry for the summary: first \"REQUEST_CHANGES (replaces the verdict above)\", then each such blocker in one short line. Waiting for reviewer votes, approvals or policies is not such a blocker. You MUST return a non-empty final text response. End your response with a standalone line in exactly this format: verdict: <APPROVE | APPROVE_WITH_COMMENTS | REQUEST_CHANGES | BLOCKED | INCOMPLETE>. Choose exactly one value, do not leave the placeholder, and put nothing after this verdict line.";
+
     // The rules the merged-PR judge grades every review on (Prompts/merged-judge.md, "The owner's rules"). The pilot's
     // lowest grades were a clear verdict, the right amount and thread help. v2 adds the judges' most repeated lessons
     // from ~2,400 judged PRs: issues lost between finding and posting, weak dismissals, unchecked fixes, cases merged
@@ -116,23 +126,72 @@ internal static class ReviewRunner
         }
         using var sandbox = config.CreateSandboxClient(TimeSpan.FromMinutes(10));
         var workspace = await client.GetWorkspaceAsync(options.Required("workspace"), ct);
-        var session = await sandbox.GetAsync(options.Required("session"), ct);
-        var logical = session.WorkspaceRelativePath;
-        if (!MatchesWorkspace(logical, workspace.DirectoryRelPath))
-        {
-            throw new InvalidOperationException("Sandbox session does not identify the selected host workspace.");
-        }
         return await RunAsync(
             options,
             config,
             client,
-            (phase, args, operation, token) => ExecuteAsync(phase, args, operation, token),
+            await SandboxStepsAsync(options, config, sandbox, workspace.DirectoryRelPath, ct),
             ct,
             reads: AbandonedChildProbe.ReadLog.Process
         );
+    }
 
-        Task<JsonObject> ExecuteAsync(string phase, JsonObject args, string operation, CancellationToken token) =>
-            ExecuteSandboxAsync(sandbox, options.Required("session"), phase, args, operation, token);
+    /// <summary>
+    ///     The gateway-backed steps of <c>review run</c> and the batch's eligibility check: each step runs in the session
+    ///     <see cref="StepExecutorAsync" /> picks, on <paramref name="sandbox" />.
+    /// </summary>
+    internal static Task<Func<string, JsonObject, string, CancellationToken, Task<JsonObject>>> SandboxStepsAsync(
+        CliOptions options,
+        ReviewdConfig config,
+        SandboxClient sandbox,
+        string workspaceDirectory,
+        CancellationToken ct
+    ) =>
+        StepExecutorAsync(
+            options,
+            () => AuthCommands.LoadOptions(config, null).TokenStoreDir!,
+            workspaceDirectory,
+            async (id, token) => (await sandbox.GetAsync(id, token)).WorkspaceRelativePath,
+            (target, phase, args, operation, token) =>
+                ExecuteSandboxAsync(sandbox, target, phase, args, operation, token),
+            ct
+        );
+
+    /// <summary>
+    ///     What a review's steps run through: <c>--session</c>, or for a shadow review <c>--post-session</c> for every
+    ///     step, prepare included (<see cref="ReadOnlySessions.Route" />). The shadow agent can edit the workspace
+    ///     those steps run in, so in a full-egress session they could be made to post. Both sessions must belong to the
+    ///     workspace, and the post session must carry this host's read-only marker listing the run's repo.
+    /// </summary>
+    internal static async Task<Func<string, JsonObject, string, CancellationToken, Task<JsonObject>>> StepExecutorAsync(
+        CliOptions options,
+        Func<string> tokenStoreDir,
+        string workspaceDirectory,
+        Func<string, CancellationToken, Task<string?>> sessionWorkspace,
+        Func<string, string, JsonObject, string, CancellationToken, Task<JsonObject>> execute,
+        CancellationToken ct
+    )
+    {
+        var session = options.Required("session");
+        if (!MatchesWorkspace(await sessionWorkspace(session, ct), workspaceDirectory))
+        {
+            throw new InvalidOperationException("Sandbox session does not identify the selected host workspace.");
+        }
+        var postSession = options.Get("post-session");
+        if (postSession is not null)
+        {
+            // review run names its repo, whose prepare runs here; the batch's eligibility check has none and fetches nothing.
+            ReadOnlySessions.Require(
+                tokenStoreDir(),
+                postSession,
+                options.Get("repo") is { } repo ? PrCommands.ParseRepo(repo).DisplayName : null
+            );
+            if (!MatchesWorkspace(await sessionWorkspace(postSession, ct), workspaceDirectory))
+            {
+                throw new InvalidOperationException("--post-session does not identify the selected host workspace.");
+            }
+        }
+        return ReadOnlySessions.Route(execute, session, postSession);
     }
 
     internal static async Task<JsonObject> CheckEligibilityAsync(
@@ -145,16 +204,35 @@ internal static class ReviewRunner
         CancellationToken ct
     )
     {
-        var repo = PrCommands.ParseRepo(repository);
         var client = config.CreateS2SClient();
         using var sandbox = config.CreateSandboxClient(TimeSpan.FromMinutes(10));
         var workspace = await client.GetWorkspaceAsync(options.Required("workspace"), ct);
-        var session = await sandbox.GetAsync(options.Required("session"), ct);
-        if (!MatchesWorkspace(session.WorkspaceRelativePath, workspace.DirectoryRelPath))
-            throw new InvalidOperationException("Sandbox session does not identify the selected host workspace.");
-        return await ExecuteSandboxAsync(
-            sandbox,
-            options.Required("session"),
+        return await CheckEligibilityAsync(
+            await SandboxStepsAsync(options, config, sandbox, workspace.DirectoryRelPath, ct),
+            repository,
+            pr,
+            slot,
+            head,
+            ct
+        );
+    }
+
+    /// <summary>
+    ///     The batch's eligibility step, run through the same steps as a review (<see cref="SandboxStepsAsync" />): a
+    ///     shadow batch's eligibility runs the same workspace helpers as its reviews, so it takes the read-only
+    ///     <c>--post-session</c> too.
+    /// </summary>
+    internal static async Task<JsonObject> CheckEligibilityAsync(
+        Func<string, JsonObject, string, CancellationToken, Task<JsonObject>> step,
+        string repository,
+        string pr,
+        int slot,
+        string head,
+        CancellationToken ct
+    )
+    {
+        var repo = PrCommands.ParseRepo(repository);
+        return await step(
             "eligibility",
             new JsonObject
             {
@@ -491,6 +569,32 @@ internal static class ReviewRunner
         }
     }
 
+    /// <summary>
+    ///     Runs a pre-claim gateway read. A gateway that did not answer says nothing about the PR, so the review is
+    ///     deferred and the batch retries it with backoff instead of holding it. A commit that differs, or a refused
+    ///     credential, still refuses the run.
+    /// </summary>
+    internal static async Task<T> DeferIfUnanswered<T>(string what, Func<Task<T>> read)
+    {
+        try
+        {
+            return await read();
+        }
+        catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.TransportTimeout)
+        {
+            throw new ReviewDeferredException(
+                $"The gateway did not answer reading {what}: {ex.Message} Retry deferred."
+            );
+        }
+        // An answer cut mid-body (HttpIOException) or a connection reset while reading it (an IOException over a
+        // SocketException) reaches here as an IOException: the SDK maps only HttpRequestException to a transport
+        // failure. The read is read-only, so it is retried like an unanswered one.
+        catch (IOException ex)
+        {
+            throw new ReviewDeferredException($"The gateway's answer to {what} was cut: {ex.Message} Retry deferred.");
+        }
+    }
+
     internal static Task<int> RunAsync(
         CliOptions options,
         ReviewdConfig config,
@@ -534,6 +638,59 @@ internal static class ReviewRunner
         var maxAgeHours = options.Get("max-age-hours") is { } age
             ? int.Parse(age, System.Globalization.CultureInfo.InvariantCulture)
             : (int?)null;
+        // A shadow review is an A/B experiment arm: it reviews but never posts. The guarantee is the host's read-only
+        // egress, not the prompt. ADO keeps GET and HEAD, plus POST to exact paths only: each listed repo's git fetch
+        // (git-upload-pack; push is git-receive-pack) and prepare's two read queries (workitemsbatch,
+        // pullrequestquery). GitHub keeps GET and HEAD only, which blocks a GitHub fetch too, so --shadow stays
+        // Azure DevOps only.
+        var shadow = options.Has("shadow");
+        var variant = options.Get("variant");
+        if (shadow && repo.Provider == "github")
+        {
+            throw new ArgumentException(
+                "--shadow supports Azure DevOps repositories only: read-only egress refuses a GitHub fetch."
+            );
+        }
+        // The arm's task prompt and manifest are read and checked before anything is written.
+        var arm = await ShadowArm.ResolveAsync(options, provider, ct);
+        // And the workspace and mode are the ones variant up built for that manifest (host reads only), with the
+        // manifest's commit checked out in the review-repo clone (a read-only step, run only by an executing run).
+        // The clone read also gives the KnowledgeBase tree the receipt records.
+        JsonObject? clone = null;
+        if (arm is not null)
+        {
+            await arm.CheckProvisionedAsync(
+                client,
+                workspace,
+                mode,
+                options.Has("execute")
+                    ? async token =>
+                        (
+                            clone = await DeferIfUnanswered(
+                                "the review-repo clone's commit",
+                                () => sandbox("review-repo-head", [], Guid.NewGuid().ToString("N"), token)
+                            )
+                        )["head"]
+                            ?.GetValue<string>()
+                    : null,
+                options.Has("execute")
+                    ? (alias, token) =>
+                        DeferIfUnanswered(
+                            $"marketplace alias {alias}",
+                            async () =>
+                            {
+                                using var gateway = config.CreateSandboxClient();
+                                return (await gateway.ListAppMarketplacesAsync(token))
+                                    .SingleOrDefault(registered => registered.Alias == alias)
+                                    ?.ResolvedSha;
+                            }
+                        )
+                    : null,
+                ct
+            );
+        }
+        // Before anything is written: a shadow arm and the live reviewer never share a database.
+        await ReviewArm.CheckAsync(database, shadow, variant, pin: options.Has("execute"), ct);
         now ??= () => DateTimeOffset.UtcNow;
         var key = $"reviewd/review-run/{repo.NormalizedKey}/{pr}";
         var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/{pr}";
@@ -569,7 +726,17 @@ internal static class ReviewRunner
         var attempt = await ReadAsync(attemptKey);
         var resume = options.Has("resume");
         var cleanupOnly = options.Has("cleanup-only");
-        // A finished review is posted, verified and archived on the head it reviewed, even after a new push.
+        if (
+            resume
+            && arm is not null
+            && attempt?["provenance"] is JsonObject sent
+            && arm.ResumeMismatch(sent, mode, provider, reasoningEffort) is { } mismatch
+        )
+        {
+            throw new ArgumentException(mismatch);
+        }
+        // A finished review is posted (a shadow one recorded in would_post.json), verified and archived on the head it
+        // reviewed, even after a new push.
         var finishedResume = resume && !cleanupOnly && ReviewFinished(attempt);
         if (
             !cleanupOnly
@@ -754,7 +921,8 @@ internal static class ReviewRunner
         // the host itself remembers the PR's conversation via its title "{repo}-{pr}-{sha}". Reuse
         // that conversation instead of refusing or provisioning a blank one. Provider is reconciled
         // (switched if needed) on the reuse path below, so a different model is not a blocker.
-        if (thread is null && !resume && !cleanupOnly)
+        // A shadow run skips it: it always provisions a fresh read-only conversation (below).
+        if (thread is null && !resume && !cleanupOnly && !shadow)
         {
             var match = await client.FindConversationByTitlePrefixAsync($"{repo.RepoName}-{pr}-", workspace, mode, ct);
             if (match is { ClientToolsDisabled: false })
@@ -766,6 +934,34 @@ internal static class ReviewRunner
                 if (boundThread is null)
                     await PrThreadBindings.SetAsync(database, repo, pr, thread, ct);
             }
+        }
+        // A shadow run must never continue or resume a conversation that can post. A fresh one is provisioned with
+        // read-only egress, and a resume must be of a shadow attempt (and a live resume of a live one).
+        if ((resume || cleanupOnly) && (attempt?["shadow"]?.GetValue<bool>() ?? false) != shadow)
+        {
+            throw new ArgumentException(
+                shadow
+                    ? "--shadow cannot resume a live (posting) review attempt."
+                    : "A shadow review attempt can only be resumed with --shadow."
+            );
+        }
+        // A lost commit is resubmitted under its own operation id, which only the session it was sent in knows. In
+        // another post session the resubmit runs as a second commit, waits on the first one's slot lock, times out,
+        // and the attempt stays at commit-pending. So the replay must go through the saved post session.
+        if (
+            resume
+            && attempt?[CommitReplay]?.GetValue<string>() is { Length: > 0 }
+            && attempt["postSessionId"]?.GetValue<string>() is { } sentIn
+            && sentIn != options.Get("post-session")
+        )
+        {
+            throw new InvalidOperationException(
+                $"This attempt's lost commit can only be replayed through --post-session {sentIn}, the session it was sent in."
+            );
+        }
+        if (shadow && !resume && !cleanupOnly)
+        {
+            thread = null;
         }
         // True when this review continues an existing conversation (prior revision of this PR) rather
         // than a freshly-provisioned blank one. Drives the incremental re-review prompt below: the
@@ -803,9 +999,11 @@ internal static class ReviewRunner
         // head's review means this revision was reviewed from another db, and re-admitting it would post
         // duplicate PR comments. The title alone is not that record. It is stamped before the review is sent,
         // so an attempt that failed at the send leaves a conversation titled for this head that reviewed nothing.
+        // A shadow run posts nothing, so it has no duplicates to prevent: it reviews heads the live reviewer already did.
         if (
             !resume
             && !cleanupOnly
+            && !shadow
             && successful is null
             && current["HeadSha"]?.GetValue<string>() is { Length: >= 8 } liveHead
             && await client.FindConversationByTitlePrefixAsync(
@@ -942,6 +1140,11 @@ internal static class ReviewRunner
                     : current["HeadSha"]!.GetValue<string>(),
             ["reviewFinished"] = finishedResume,
         };
+        // The commit step reads it: a shadow review commits to the store's local review branch and never pushes.
+        if (shadow)
+        {
+            args["shadow"] = true;
+        }
         if (!options.Has("execute"))
         {
             Console.WriteLine(
@@ -959,10 +1162,14 @@ internal static class ReviewRunner
                         {
                             "claim idle selected slot and review-setup (no incoming reset)",
                             "save setup-context.json",
-                            "review and publish through S2S",
+                            shadow
+                                ? "shadow review through S2S on a fresh read-only-egress conversation (posts nothing)"
+                                : "review and publish through S2S",
                             "same-thread confirmation",
-                            "verify publication",
-                            "review_commit and publish review branch (top-level review repo only; no submodule push)",
+                            shadow ? "verify would_post.json" : "verify publication",
+                            shadow
+                                ? "review_commit to the local review branch (no push)"
+                                : "review_commit and publish review branch (top-level review repo only; no submodule push)",
                         },
                     }
                 )
@@ -1041,6 +1248,20 @@ internal static class ReviewRunner
         };
         if (reasoningEffort is not null)
             receipt["reasoningEffort"] = reasoningEffort;
+        if (shadow)
+        {
+            receipt["shadow"] = true;
+            receipt["postSessionId"] = options.Required("post-session");
+            var provenance = arm!.Provenance(mode, provider, reasoningEffort);
+            // Only an executing run gets here, and it checked the clone's and the alias's commits above.
+            provenance[ShadowArm.PinsVerified] = true;
+            provenance["knowledgeBaseTree"] = clone?["knowledgeBaseTree"]?.DeepClone();
+            receipt["provenance"] = provenance;
+        }
+        if (variant is not null)
+        {
+            receipt["variant"] = variant;
+        }
         if (selection is not null)
             receipt["slotSelection"] = selection.DeepClone();
         // Resets of one head add up across its retries, whatever ended each one.
@@ -1067,6 +1288,12 @@ internal static class ReviewRunner
         }
         if (resume || cleanupOnly)
             receipt = attempt!.DeepClone().AsObject();
+        // A shadow resume runs its steps in this run's --post-session, so a commit it loses is known only there. The
+        // check above keeps a lost commit's session; without one, the attempt moves to this session.
+        if (resume && shadow)
+        {
+            receipt["postSessionId"] = options.Required("post-session");
+        }
         if (cleanupOnly && attempt!["claimToken"] is null)
             receipt["legacyCleanupAdoption"] = true;
         // Archive the attempt the claim below overwrites before claiming, so the overwrite is never
@@ -1141,6 +1368,7 @@ internal static class ReviewRunner
                     reasoningEffort,
                     ".",
                     disableClientTools: true,
+                    readOnlyEgress: shadow,
                     ct
                 );
                 receipt["threadId"] = thread;
@@ -1149,7 +1377,14 @@ internal static class ReviewRunner
             }
             var revision = args["head"]!.GetValue<string>();
             if (!verificationResume)
-                await client.UpdateMetadataAsync(thread, $"{repo.RepoName}-{pr}-{revision[..8]}", null, ct);
+            {
+                await client.UpdateMetadataAsync(
+                    thread,
+                    $"{TitlePrefix(shadow)}{repo.RepoName}-{pr}-{revision[..8]}",
+                    null,
+                    ct
+                );
+            }
             var contextPath = "/workspace/" + setup["contextPath"]!.GetValue<string>();
             var directory = "/workspace/" + setup["reviewDirectory"]!.GetValue<string>();
             var github = repo.Provider == "github";
@@ -1231,6 +1466,23 @@ internal static class ReviewRunner
                 {publicationSchema}
                 Record every comment/reply this run posts, and only those: verify rejects any comment that was on the PR before this run, an earlier round's included. Keep an earlier round's unrecorded receipts in a separate file in the same folder (publication_receipts-<that head>-recovered.json), never in publication_receipts.json. Record this round's summary as kind summary, even when posted as a reply in an existing summary thread. Do not edit source, commit, push, merge, or complete the PR. Coordinator retains artifacts afterward.
                 """;
+            if (shadow)
+            {
+                prompt = ShadowTaskPrompt.Render(
+                    arm!.Template,
+                    new Dictionary<string, string>(StringComparer.Ordinal)
+                    {
+                        ["repo"] = repo.DisplayName,
+                        ["pr"] = pr,
+                        ["slotName"] = $"{repo.RepoName}-{slot}",
+                        ["contextPath"] = contextPath,
+                        ["directory"] = directory,
+                        ["head"] = args["head"]!.GetValue<string>(),
+                        ["merge"] = args["merge"]!.GetValue<string>(),
+                        ["qualityRules"] = ReviewQualityRules,
+                    }
+                );
+            }
             if (!resume)
             {
                 receipt["initialPrompt"] = prompt;
@@ -1255,18 +1507,26 @@ internal static class ReviewRunner
                 await SaveAsync();
             }
             else
-                // A confirmation that finds a verified blocker the posted summary missed now corrects the verdict on the PR:
-                // 12 judged reviews posted an approval while their own confirmation said REQUEST_CHANGES or BLOCKED.
+            {
+                // A live confirmation that finds a verified blocker the posted summary missed corrects the verdict on the
+                // PR: 12 judged reviews posted an approval while their own confirmation said REQUEST_CHANGES or BLOCKED.
+                // A shadow confirmation corrects would_post.json instead, and posts nothing.
                 await SendAndWaitAsync(
                     "confirmation",
-                    "Can you confirm if the PR feedback and replies to any discussion where you could add value have been posted. Audit and report existing publication receipts; do not post duplicates. Report your final verdict on the PR, with a brief rationale and any unresolved blockers. If the review is incomplete or blocked, state that explicitly rather than inferring approval. If this review verified a medium or high issue, or a failing required check this PR caused, that the summary you posted does not list as a blocker, reply in that summary thread now (on GitHub, a new PR comment): first \"REQUEST_CHANGES (replaces the verdict above)\", then each such blocker in one short line; record the reply in publication_receipts.json. Waiting for reviewer votes, approvals or policies is not such a blocker. You MUST return a non-empty final text response. End your response with a standalone line in exactly this format: verdict: <APPROVE | APPROVE_WITH_COMMENTS | REQUEST_CHANGES | BLOCKED | INCOMPLETE>. Choose exactly one value, do not leave the placeholder, and put nothing after this verdict line."
+                    shadow
+                        ? ShadowConfirmationPrompt(directory)
+                        : "Can you confirm if the PR feedback and replies to any discussion where you could add value have been posted. Audit and report existing publication receipts; do not post duplicates. Report your final verdict on the PR, with a brief rationale and any unresolved blockers. If the review is incomplete or blocked, state that explicitly rather than inferring approval. If this review verified a medium or high issue, or a failing required check this PR caused, that the summary you posted does not list as a blocker, reply in that summary thread now (on GitHub, a new PR comment): first \"REQUEST_CHANGES (replaces the verdict above)\", then each such blocker in one short line; record the reply in publication_receipts.json. Waiting for reviewer votes, approvals or policies is not such a blocker. You MUST return a non-empty final text response. End your response with a standalone line in exactly this format: verdict: <APPROVE | APPROVE_WITH_COMMENTS | REQUEST_CHANGES | BLOCKED | INCOMPLETE>. Choose exactly one value, do not leave the placeholder, and put nothing after this verdict line."
                 );
+            }
             // Only verify reads the summary threads, and a re-verify can find more (the lost round's own, on ADO), so
             // they stay out of args: a commit resubmitted under a lost one's id must send the same request, or the
             // gateway refuses it (409 idempotency_conflict) and the attempt is held at commit-pending.
             var verifyArgs = args.DeepClone().AsObject();
             verifyArgs["summaryThreads"] = await PriorSummaryThreadsAsync(connection, repo, pr, ct);
-            receipt["verifiedPublication"] = await StepAsync("verify", verifyArgs);
+            // A shadow review posted nothing, so its verify step checks would_post.json instead of the PR. The phase keeps
+            // its name so every verify-pending resume rule applies unchanged; the result goes under its own key so
+            // nothing that reads verifiedPublication mistakes would-post comments for posted ones.
+            receipt[shadow ? "wouldPost" : "verifiedPublication"] = await StepAsync("verify", verifyArgs);
             await WaitAsync(
                 client,
                 thread!,

@@ -69,6 +69,26 @@ public sealed class ReviewdJudgeCloseRunTests : IDisposable
         phases.Calls.Should().BeEmpty();
     }
 
+    // A shadow review is an experiment arm: its judgment is a score, and the KnowledgeBase never learns from it. Named
+    // or picked as the latest final judgment, it is refused before any phase runs.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_judgment_of_a_shadow_review_is_never_closed(bool named)
+    {
+        var receipt = Judged(Store, ReviewDir, 4);
+        receipt["shadow"] = true;
+        Save((4, receipt));
+        var phases = new Phases(Store);
+
+        var (exit, _, err) = await (named ? Close(phases, "--judgment", "4") : Close(phases));
+
+        exit.Should().Be(1);
+        err.Should()
+            .Contain("refused: judgment 4 judged a shadow review; a shadow judgment is never closed into the store.");
+        phases.Calls.Should().BeEmpty();
+    }
+
     [Fact]
     public async Task By_default_a_judgment_that_still_runs_blocks_close()
     {

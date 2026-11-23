@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace CodeReviewDaemon.Sample.Agents;
 
@@ -250,10 +251,11 @@ internal sealed class LmStreamingS2SClient
         );
 
     /// <summary>
-    /// <paramref name="readOnlyEgress"/> asks the host for a thread whose sandbox may only read ADO (GET and
-    /// HEAD). Unlike <c>disableClientTools</c> this is a contract, not a hint: a host that predates the field
-    /// ignores it and would give the thread full egress, so a reply without <c>readOnlyEgressAccepted: true</c>
-    /// deletes the thread (best effort) and throws <see cref="ReviewHostContractException"/>.
+    /// <paramref name="readOnlyEgress"/> asks the host for a thread whose sandbox may only read ADO and GitHub (GET
+    /// and HEAD). Unlike <c>disableClientTools</c> this is a contract, not a hint: a host that predates the field
+    /// ignores it and would give the thread full egress, and an earlier host narrowed only ADO. So a reply without
+    /// both <c>readOnlyEgressAccepted: true</c> and <c>readOnlyGitHubAccepted: true</c> deletes the thread (best
+    /// effort) and throws <see cref="ReviewHostContractException"/>.
     /// </summary>
     public async Task<string> ProvisionAsync(
         string workspaceId,
@@ -331,6 +333,10 @@ internal sealed class LmStreamingS2SClient
                     + $"'{reasoningEffort}'. Upgrade the review host before running this review."
             : readOnlyEgress && !ReadBoolProperty(body, "readOnlyEgressAccepted")
                 ? $"The LmStreaming review host at {_baseUrl} did not acknowledge requested read-only egress; "
+                    + $"thread '{threadId}' was not used and its delete was attempted. Upgrade the review host first."
+            // An earlier host narrowed only ADO, so its read-only thread could still push to GitHub.
+            : readOnlyEgress && !ReadBoolProperty(body, "readOnlyGitHubAccepted")
+                ? $"The LmStreaming review host at {_baseUrl} did not acknowledge read-only GitHub egress; "
                     + $"thread '{threadId}' was not used and its delete was attempted. Upgrade the review host first."
             : null;
         if (unacknowledged is not null)
@@ -935,6 +941,104 @@ internal sealed class LmStreamingS2SClient
 
         return catalog;
     }
+
+    /// <summary>
+    ///     Creates user chat mode <paramref name="name"/> from <paramref name="payload"/>, or replaces the one already
+    ///     named so, and returns its id. The host mints mode ids, so the name is the identity. A system mode of that
+    ///     name is refused, never edited. Both requests send <see cref="ChatModeReplacement"/>, so a replaced mode
+    ///     holds exactly what a fresh one would.
+    /// </summary>
+    public async Task<string> EnsureChatModeAsync(string name, JsonObject payload, CancellationToken ct)
+    {
+        payload = ChatModeReplacement(payload);
+        using var modes = JsonDocument.Parse(await SendReadAsync(HttpMethod.Get, "api/chat-modes", null, ct));
+        string? existing = null;
+        foreach (var mode in modes.RootElement.EnumerateArray())
+        {
+            if (!mode.TryGetProperty("name", out var named) || named.GetString() != name)
+            {
+                continue;
+            }
+            if (mode.TryGetProperty("isSystemDefined", out var system) && system.ValueKind == JsonValueKind.True)
+            {
+                throw new InvalidOperationException($"'{name}' is a system chat mode; it is never edited.");
+            }
+            existing = mode.GetProperty("id").GetString();
+            break;
+        }
+        var body = existing is null
+            ? await SendReadAsync(HttpMethod.Post, "api/chat-modes", payload, ct)
+            : await SendReadAsync(HttpMethod.Put, $"api/chat-modes/{Uri.EscapeDataString(existing)}", payload, ct);
+        using var saved = JsonDocument.Parse(body);
+        return saved.RootElement.GetProperty("id").GetString()
+            ?? throw new ReviewHostContractException("The host saved the chat mode but returned no id.");
+    }
+
+    /// <summary>
+    ///     The optional fields of the host's chat-mode body (<c>ChatModeCreateUpdate</c>). An update keeps the stored
+    ///     value of an omitted one, and a create stores null for it.
+    /// </summary>
+    internal static readonly IReadOnlyList<string> S_chatModeOptionalFields =
+    [
+        "description",
+        "enabledTools",
+        "enabledBuiltInTools",
+        "enabledCapabilityTools",
+        "subAgentPrompt",
+        "subAgentPromptPlacement",
+        "subAgentRequiredTools",
+        "subAgentReasoningEffort",
+        "subAgentModelIntelligenceByType",
+        "defaultSubAgentModelIntelligence",
+        "env",
+        "tiers",
+    ];
+
+    // Every field of the host's chat-mode body, by the name the host writes it under.
+    private static readonly IReadOnlyList<string> S_chatModeFields =
+    [
+        "name",
+        "systemPrompt",
+        .. S_chatModeOptionalFields,
+    ];
+
+    /// <summary>
+    ///     A copy of <paramref name="payload"/> with every field under the name the host writes it, and every optional
+    ///     field it omits set to an explicit null, the value a create stores for it. Sent as an update, it replaces the
+    ///     stored mode instead of merging into it.
+    /// </summary>
+    internal static JsonObject ChatModeReplacement(JsonObject payload)
+    {
+        var replacement = new JsonObject();
+        foreach (var (key, value) in payload)
+        {
+            // The host binds field names in any letter case, so "SubAgentPrompt" sets subAgentPrompt. Kept as
+            // written, the null fill below would add a second subAgentPrompt, and a run's check would compare the
+            // stored subAgentPrompt with nothing.
+            var field =
+                S_chatModeFields.FirstOrDefault(name => string.Equals(name, key, StringComparison.OrdinalIgnoreCase))
+                ?? key;
+            if (replacement.ContainsKey(field))
+            {
+                throw new ArgumentException($"The chat mode sets {field} twice, in different letter cases.");
+            }
+            replacement[field] = value?.DeepClone();
+        }
+        foreach (var field in S_chatModeOptionalFields)
+        {
+            if (!replacement.ContainsKey(field))
+            {
+                replacement[field] = null;
+            }
+        }
+        return replacement;
+    }
+
+    /// <summary>Chat mode <paramref name="modeId"/> as the host stores it (<c>GET api/chat-modes/{id}</c>).</summary>
+    public async Task<JsonObject> GetChatModeAsync(string modeId, CancellationToken ct) =>
+        JsonNode.Parse(await SendReadAsync(HttpMethod.Get, $"api/chat-modes/{Uri.EscapeDataString(modeId)}", null, ct))
+            as JsonObject
+        ?? throw new ReviewHostContractException($"The host returned no chat mode object for {modeId}.");
 
     /// <summary>Whether the host resolves chat mode <paramref name="modeId"/> (<c>GET api/chat-modes/{id}</c>; 404 = no).</summary>
     public async Task<bool> ModeExistsAsync(string modeId, CancellationToken ct)
