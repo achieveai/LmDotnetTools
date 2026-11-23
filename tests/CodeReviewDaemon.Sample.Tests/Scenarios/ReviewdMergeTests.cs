@@ -6,10 +6,11 @@ using AchieveAi.LmDotnetTools.Misc.Storage;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Reviewd::Reviewd.Sample;
+using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
-public sealed class ReviewdMergeTests
+public sealed class ReviewdMergeTests(ITestOutputHelper output)
 {
     [Fact]
     public async Task Wrong_merge_topology_with_conflicts_never_admits_a_resolver()
@@ -106,6 +107,27 @@ public sealed class ReviewdMergeTests
         merge.ReadReceipt()!["stage"]!.GetValue<string>().Should().Be("ready-to-push");
     }
 
+    // A merge waits through the shared review wait. A sub-agent tree read past the host client's timeout is read
+    // again: the merge keeps waiting on the input it sent and finishes, with no second send or provision.
+    [Fact]
+    public async Task A_tree_read_that_times_out_keeps_reading_the_merge_input_without_a_resend()
+    {
+        using var merge = new MergeFixture { TreeTimeouts = 2, Log = output.WriteLine };
+        output.WriteLine(
+            $"Setup: the first {merge.TreeTimeouts} sub-agent tree reads throw the 120 s HttpClient timeout; later reads answer."
+        );
+
+        (await merge.ExecuteAsync()).Should().Be(0);
+
+        output.WriteLine(
+            $"Outcome: treeReads={merge.TreeReads} sends={merge.Sends} provisions={merge.Provisions} stage={merge.ReadReceipt()?["stage"]}"
+        );
+        merge.TreeReads.Should().BeGreaterThan(2, "the two timed-out reads were read again");
+        merge.Sends.Should().Be(1);
+        merge.Provisions.Should().Be(1);
+        merge.ReadReceipt()!["stage"]!.GetValue<string>().Should().Be("ready-to-push");
+    }
+
     [Fact]
     public async Task Ambiguous_send_persists_admission_and_never_replays()
     {
@@ -155,6 +177,9 @@ public sealed class ReviewdMergeTests
         public int Provisions { get; private set; }
         public bool CancelStatus { get; set; }
         public bool AmbiguousSend { get; set; }
+        public int TreeTimeouts { get; set; }
+        public int TreeReads { get; private set; }
+        public Action<string>? Log { get; init; }
         public Func<int, JsonObject> Verification { get; set; } = _ => Facts(true, true);
         public Func<JsonObject> Live { get; set; } = () => Facts(true, true);
         private readonly HttpClient _http;
@@ -250,7 +275,7 @@ public sealed class ReviewdMergeTests
             string json;
             if (path.EndsWith("capabilities", StringComparison.Ordinal))
                 json =
-                    """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true}""";
+                    """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"conversationWorkingDirectory":true,"dedicatedSandbox":true}""";
             else if (path == "/api/conversations" && request.Method == HttpMethod.Post)
             {
                 _threads.Add("thread" + ++Provisions);
@@ -301,7 +326,17 @@ public sealed class ReviewdMergeTests
             else if (path.EndsWith("run-state", StringComparison.Ordinal))
                 json = """{"isInProgress":false,"currentRunId":null}""";
             else if (path.EndsWith("subagents", StringComparison.Ordinal))
+            {
+                if (++TreeReads <= TreeTimeouts)
+                {
+                    Log?.Invoke($"Tree read {TreeReads}: injected timeout {TreeReads}/{TreeTimeouts}");
+                    throw new TaskCanceledException(
+                        "The request was canceled due to the configured HttpClient.Timeout of 120 seconds elapsing.",
+                        new TimeoutException("A task was canceled.")
+                    );
+                }
                 json = """{"schemaVersion":1,"nodes":[]}""";
+            }
             else
                 throw new InvalidOperationException("Unexpected HTTP route " + path);
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) };

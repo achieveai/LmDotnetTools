@@ -278,6 +278,8 @@ finishes its current list. You do not restart it.
     --db $DB --workspace $WS --session $SESSION --config $CFG
   ```
 
+  If it prints `held`, the review is posted but not archived: see "A held verified review" in README.md.
+
 ## 10. Deploy a new build
 
 Publish the build, stop the matching process, then:

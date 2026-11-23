@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
@@ -125,6 +126,43 @@ public class SqliteConversationStoreTests : IAsyncLifetime
 
         // Assert
         await act.Should().ThrowAsync<ArgumentNullException>().WithParameterName("messages");
+    }
+
+    /// <summary>
+    /// An append reads the thread's messages only through the (thread_id, seq) index. Its legacy-row lookup,
+    /// served from idx_messages_thread_id, read every row of the thread under the write lock to find none:
+    /// 344-620 ms cold on a 5-7k-message thread, on every append.
+    /// </summary>
+    [Fact]
+    public async Task AppendMessagesAsync_ReadsTheThreadOnlyThroughTheSeqIndex()
+    {
+        var factory = new TracingConnectionFactory(new SqliteConnectionFactory(_databasePath));
+        await using (var store = new SqliteConversationStore(factory, ownsFactory: true))
+        {
+            await store.AppendMessagesAsync("thread-1", CreateTestMessages("thread-1", "run-1", 3));
+            factory.Statements.Clear();
+
+            await store.AppendMessagesAsync("thread-1", CreateTestMessages("thread-1", "run-2", 1));
+        }
+
+        var reads = factory.Statements.Where(sql => sql.Contains("FROM messages", StringComparison.Ordinal)).ToList();
+        reads.Should().HaveCount(3, "the watermark, the legacy-row lookup and the last message id");
+        await using var probe = new SqliteConnection($"Data Source={_databasePath}");
+        await probe.OpenAsync();
+        foreach (var sql in reads)
+        {
+            using var explain = probe.CreateCommand();
+            explain.CommandText = "EXPLAIN QUERY PLAN " + sql;
+            var plan = new List<string>();
+            await using var reader = await explain.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                plan.Add(reader.GetString(3));
+            }
+
+            plan.Should().Contain(step => step.Contains("idx_messages_thread_seq"), sql);
+            plan.Should().NotContain(step => step.Contains("idx_messages_thread_id"), sql);
+        }
     }
 
     #endregion
@@ -400,6 +438,98 @@ public class SqliteConversationStoreTests : IAsyncLifetime
         );
 
         (await ReadListingProjectionAsync("thread-1")).Should().Be((null, "source-b", "parent-b"));
+    }
+
+    [Fact]
+    public async Task LoadMetadataBatchAsync_HandlesEmptyDuplicateNullAndMissingIds()
+    {
+        var factory = new TracingConnectionFactory(new SqliteConnectionFactory(_databasePath));
+        await using var store = new SqliteConversationStore(factory, ownsFactory: true);
+        await store.SaveMetadataAsync("thread-a", CreateTestMetadata("thread-a", "run-a"));
+        var acquisitions = factory.Acquisitions;
+
+        (await store.LoadMetadataBatchAsync([])).Should().BeEmpty();
+        factory.Acquisitions.Should().Be(acquisitions, "an empty batch reads nothing");
+
+        var duplicated = await store.LoadMetadataBatchAsync(["thread-a", "thread-a"]);
+        duplicated.Keys.Should().Equal("thread-a");
+        duplicated["thread-a"].Should().BeEquivalentTo(await store.LoadMetadataAsync("thread-a"));
+
+        (await store.LoadMetadataBatchAsync(["missing-1", "missing-2"])).Should().BeEmpty();
+        var act = () => store.LoadMetadataBatchAsync(null!);
+        await act.Should().ThrowAsync<ArgumentNullException>().WithParameterName("threadIds");
+    }
+
+    /// <summary>A batch returns each row exactly as a point read does, every field included.</summary>
+    [Fact]
+    public async Task LoadMetadataBatchAsync_ReturnsEachRowAsLoadMetadataAsyncDoes()
+    {
+        var populated = new ThreadMetadata
+        {
+            ThreadId = "populated",
+            CurrentRunId = "run-current",
+            LatestRunId = "run-latest",
+            LastUpdated = 1_700_000_000_123,
+            SessionMappings = new Dictionary<string, string> { ["provider"] = "session-1" },
+            Properties = ImmutableDictionary<string, object>.Empty.Add("title", "A title").Add("count", 3),
+            TenantId = "tenant-a",
+            OwnerUserId = "user-a",
+            OwnerAppId = "app-a",
+            Visibility = Visibility.TenantPublished,
+        };
+        await _store.SaveMetadataAsync("populated", populated);
+        await _store.SaveMetadataAsync("sparse", new ThreadMetadata { ThreadId = "sparse", LastUpdated = 0 });
+
+        var batch = await _store.LoadMetadataBatchAsync(["populated", "sparse"]);
+
+        batch.Keys.Should().BeEquivalentTo(["populated", "sparse"]);
+        foreach (var id in batch.Keys)
+        {
+            // Serialized, because property values read back as JsonElement, which has no value equality.
+            var point = await _store.LoadMetadataAsync(id);
+            JsonSerializer.Serialize(batch[id]).Should().Be(JsonSerializer.Serialize(point), id);
+        }
+        JsonSerializer
+            .Serialize(batch["populated"] with { Properties = null })
+            .Should()
+            .Be(JsonSerializer.Serialize(populated with { Properties = null }), "every column round-trips");
+        batch["populated"].Properties!.Keys.Should().BeEquivalentTo(["title", "count"]);
+        batch["sparse"].TenantId.Should().BeNull();
+    }
+
+    /// <summary>
+    /// A batch waiting for the store's one connection gives up when its token is canceled. It must not take
+    /// or release the holder's permit, and the store must serve the next read.
+    /// </summary>
+    [Fact]
+    public async Task LoadMetadataBatchAsync_CancelsWhileWaitingForAConnection_AndLeavesTheHoldersPermit()
+    {
+        var bound = TimeSpan.FromSeconds(10);
+        var factory = new SqliteConnectionFactory(_databasePath, maxConnections: 1);
+        await using var store = new SqliteConversationStore(factory, ownsFactory: true);
+        await store.SaveMetadataAsync("thread-a", CreateTestMetadata("thread-a"));
+        var holder = await factory.GetConnectionAsync();
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            var pending = store.LoadMetadataBatchAsync(["thread-a"], cts.Token);
+            pending.IsCompleted.Should().BeFalse("the only connection is held");
+
+            await cts.CancelAsync();
+
+            await pending.Awaiting(read => read.WaitAsync(bound)).Should().ThrowAsync<OperationCanceledException>();
+            using var probe = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+            await factory
+                .Awaiting(f => f.GetConnectionAsync(probe.Token))
+                .Should()
+                .ThrowAsync<OperationCanceledException>("the holder still has the only permit");
+        }
+        finally
+        {
+            await holder.DisposeAsync();
+        }
+
+        (await store.LoadMetadataBatchAsync(["thread-a"]).WaitAsync(bound)).Keys.Should().Equal("thread-a");
     }
 
     #endregion
@@ -1188,8 +1318,9 @@ public class SqliteConversationStoreTests : IAsyncLifetime
             );
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-            var queued = store.UpdateMetadataAsync("thread-b", _ => CreateTestMetadata("thread-b"));
-            queued.IsCompleted.Should().BeFalse("the holder still has the metadata lock");
+            // Same thread: metadata locks are per thread, so only a writer to thread-a queues behind the holder.
+            var queued = store.UpdateMetadataAsync("thread-a", _ => CreateTestMetadata("thread-a"));
+            queued.IsCompleted.Should().BeFalse("the holder still has thread-a's metadata lock");
 
             await store.DisposeAsync();
             release.Set();
@@ -1288,7 +1419,16 @@ public class SqliteConversationStoreTests : IAsyncLifetime
     {
         public bool FailNext { get; set; }
 
-        public Task<SqliteConnection> GetConnectionAsync(CancellationToken ct = default)
+        public Task<SqliteConnection> GetConnectionAsync(CancellationToken ct = default) =>
+            FailOr(inner.GetConnectionAsync, ct);
+
+        public Task<SqliteConnection> GetWriteConnectionAsync(CancellationToken ct = default) =>
+            FailOr(inner.GetWriteConnectionAsync, ct);
+
+        private Task<SqliteConnection> FailOr(
+            Func<CancellationToken, Task<SqliteConnection>> open,
+            CancellationToken ct
+        )
         {
             if (FailNext)
             {
@@ -1296,7 +1436,35 @@ public class SqliteConversationStoreTests : IAsyncLifetime
                 return Task.FromException<SqliteConnection>(new IOException("no connection"));
             }
 
-            return inner.GetConnectionAsync(ct);
+            return open(ct);
+        }
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
+    }
+
+    /// <summary>Records every statement its connections run, with bound values written into the text.</summary>
+    private sealed class TracingConnectionFactory(ISqliteConnectionFactory inner) : ISqliteConnectionFactory
+    {
+        public List<string> Statements { get; } = [];
+
+        public int Acquisitions { get; private set; }
+
+        public async Task<SqliteConnection> GetConnectionAsync(CancellationToken ct = default)
+        {
+            Acquisitions++;
+            var connection = await inner.GetConnectionAsync(ct);
+            SQLitePCL.raw.sqlite3_trace(
+                connection.Handle,
+                (_, sql) =>
+                {
+                    lock (Statements)
+                    {
+                        Statements.Add(sql.utf8_to_string());
+                    }
+                },
+                null
+            );
+            return connection;
         }
 
         public ValueTask DisposeAsync() => inner.DisposeAsync();

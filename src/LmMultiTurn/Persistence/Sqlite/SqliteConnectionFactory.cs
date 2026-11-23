@@ -7,10 +7,22 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 /// Uses Microsoft.Data.Sqlite's built-in connection pooling with a semaphore
 /// to limit maximum concurrent connections.
 /// </summary>
+/// <remarks>
+/// Reads and writes draw on separate permits. SQLite lets one writer in at a time, and Microsoft.Data.Sqlite waits
+/// for a busy write lock by sleeping the calling thread, so a writer queued on the lock used to hold a pooled permit
+/// and a thread for up to its 30 s timeout. With every permit held that way, a one-millisecond read waited a minute.
+/// Writes now queue on <see cref="GetWriteConnectionAsync"/>'s single permit, asynchronously and holding nothing, and
+/// reads keep their own permits. Of the writes that use that permit, only the one holding it waits on the lock. It
+/// still waits for any writer that did not take the permit: another process, another factory on the same file, or a
+/// write made through <see cref="GetConnectionAsync"/>. The notify-wait, tenant and grant stores still write that way,
+/// so on a shared file their writers hold read permits while they wait on the lock. The write keeps the full 30 s
+/// wait: a shorter one would fail writes that a brief hold used to delay, and some callers drop a row whose save fails.
+/// </remarks>
 public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
 {
     private readonly string _connectionString;
     private readonly SemaphoreSlim _semaphore;
+    private readonly SemaphoreSlim _writeSemaphore = new(1, 1);
     private readonly int _maxConnections;
     private bool _disposed;
     private bool _walModeSet;
@@ -30,7 +42,10 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
     /// Initializes a new instance of the <see cref="SqliteConnectionFactory"/> class.
     /// </summary>
     /// <param name="databasePath">Path to the SQLite database file.</param>
-    /// <param name="maxConnections">Maximum number of concurrent connections (default: 5).</param>
+    /// <param name="maxConnections">
+    /// Maximum number of concurrent connections from <see cref="GetConnectionAsync"/> (default: 5).
+    /// <see cref="GetWriteConnectionAsync"/> has one more, of its own.
+    /// </param>
     public SqliteConnectionFactory(string databasePath, int maxConnections = 5)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
@@ -76,11 +91,17 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
         }.ToString();
 
     /// <inheritdoc />
-    public async Task<SqliteConnection> GetConnectionAsync(CancellationToken ct = default)
+    public Task<SqliteConnection> GetConnectionAsync(CancellationToken ct = default) => OpenAsync(_semaphore, ct);
+
+    /// <inheritdoc />
+    public Task<SqliteConnection> GetWriteConnectionAsync(CancellationToken ct = default) =>
+        OpenAsync(_writeSemaphore, ct);
+
+    private async Task<SqliteConnection> OpenAsync(SemaphoreSlim permits, CancellationToken ct)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        await _semaphore.WaitAsync(ct).ConfigureAwait(false);
+        await permits.WaitAsync(ct).ConfigureAwait(false);
 
         PooledConnection? connection = null;
         try
@@ -89,7 +110,7 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
             // to the wrapper would mean closing it — which returns its handle to the pool — and opening a
             // second one, so for a moment a handle this call is responsible for is available to another
             // thread.
-            connection = new PooledConnection(_connectionString, _semaphore);
+            connection = new PooledConnection(_connectionString, permits);
             ct.ThrowIfCancellationRequested();
             lock (PoolGate)
             {
@@ -109,7 +130,7 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
             // out one more than the factory is allowed to.
             if (connection is null)
             {
-                _ = _semaphore.Release();
+                _ = permits.Release();
             }
             else
             {
@@ -174,7 +195,10 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
             await _semaphore.WaitAsync().ConfigureAwait(false);
         }
 
+        await _writeSemaphore.WaitAsync().ConfigureAwait(false);
+
         _semaphore.Dispose();
+        _writeSemaphore.Dispose();
         _walModeLock.Dispose();
     }
 

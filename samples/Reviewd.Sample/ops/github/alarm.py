@@ -12,6 +12,9 @@ Problems, per install:
                 the head was seen (catches a stopped, hung or wedged batch whatever the cause)
   quarantined   a PR whose head failed 3 times the same way: the batch skips it until a new push
   stuck         a review was posted but the attempt froze at commit-pending (archive step failed)
+  held          a verified review whose archive commit never completed, its lease lapsed: the slot reaper holds the
+                slot instead of resetting it (a reset loses the archive). Told whatever the PR's head is now, again
+                every 24 h, until an operator finishes the commit or discards the slot (README: A held verified review)
   paused        state\\PAUSED older than 1 h (a deploy that died halfway leaves it behind)
   watchdog      status.json older than 20 min: the watchdog task itself is not running
   down          gateway, host, webhook or batch reported down by the watchdog for 15 min
@@ -50,6 +53,8 @@ REALERT = datetime.timedelta(hours=24)
 # At most once per install per STALL_RESTART, and never a batch younger than this.
 STALL_RESTART = datetime.timedelta(hours=2)
 QUARANTINE_AFTER = 3  # ReviewBatch.QuarantineAfter
+# SlotReaper.HoldsUnarchivedReview: a verified publication (or one of these stages) short of completed-verified.
+VERIFIED_STAGES = ("verify-completed", "commit-pending", "commit-completed")
 
 
 def ts(value):
@@ -84,7 +89,32 @@ def read_rows(install):
     return out
 
 
-def pr_problems(name, rows, max_age, now):
+def held_slots(name, rows, now):
+    """Slots the reaper holds: an owned slot whose lease has lapsed while its attempt is a verified review short of
+    completed-verified. Keyed by slot and claim, never by head, so a later push does not hide it. Returns the problems
+    and the attempt keys they cover, which pr_problems then leaves to this one alert."""
+    attempts = {a["claimToken"]: (k, a) for k, a in rows.items() if k.startswith("reviewd/review-attempt/")
+                and isinstance(a, dict) and a.get("claimToken")}
+    found, covered = [], set()
+    for key, owner in rows.items():
+        if not key.startswith("reviewd/slot-owner/") or not isinstance(owner, dict) or owner.get("state") != "owned":
+            continue
+        expiry = ts(owner.get("leaseExpiresAt"))
+        attempt_key, attempt = attempts.get(owner.get("claimToken"), (None, {}))
+        stage = attempt.get("stage")
+        if (not expiry or expiry > now or stage == "completed-verified"
+                or (attempt.get("verifiedPublication") is None and stage not in VERIFIED_STAGES)):
+            continue
+        covered.add(attempt_key)
+        found.append((f"{name}:held:{key[len('reviewd/slot-owner/'):]}:{owner.get('claimToken')}", name, "held",
+                      f"{owner.get('repository')} #{owner.get('prId')} slot {owner.get('slot')}: verified review "
+                      f"(stage {stage}, head {(attempt.get('headSha') or '')[:8]}) has no archive commit; its lease "
+                      f"lapsed {hours(now - expiry)} ago and the reaper holds the slot ({attempt_key}). Finish the "
+                      f"commit or discard the slot (README: A held verified review)."))
+    return found, covered
+
+
+def pr_problems(name, rows, max_age, now, held=frozenset()):
     found = []
     for key, snapshot in rows.items():
         if not key.startswith("reviewd/pr-snapshot/") or not isinstance(snapshot, dict):
@@ -93,6 +123,8 @@ def pr_problems(name, rows, max_age, now):
         for pr, s in snapshot.items():
             if not isinstance(s, dict) or s.get("Lifecycle") != "Open" or s.get("IsDraft"):
                 continue
+            if f"reviewd/review-attempt/{repo}/{pr}" in held:
+                continue  # told once as held, not again as stuck or unreviewed
             updated = ts(s.get("SourceUpdatedAt")) or ts(s.get("CreatedAt"))
             seen = ts(s.get("LastChangedAt"))
             head = s.get("HeadSha")
@@ -242,11 +274,12 @@ def install_problems(install, now, memory, dry=False):
                          f"{type(error).__name__}: {str(error)[:160]}")]
     try:
         rows = read_rows(install)
-        prs = pr_problems(name, rows, max_age, now)
+        held, covered = held_slots(name, rows, now)
+        prs = pr_problems(name, rows, max_age, now, covered)
     except Exception as error:  # a locked or missing database is a problem of its own, not a crash
         return found + [(f"{name}:unreadable", name, "unreadable", f"could not read reviews.db: "
                          f"{type(error).__name__}: {str(error)[:160]}")]
-    found += [p[:4] for p in prs]
+    found += held + [p[:4] for p in prs]
     waiting = [p[4] for p in prs if len(p) > 4 and p[4] >= STALL_RESTART]
     try:
         restarted = restart_stalled(install, name, rows, waiting, now, memory, dry)

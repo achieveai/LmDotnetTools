@@ -71,6 +71,10 @@ try
     {
         return await SlotRelease.RunAsync(options, cancellation.Token);
     }
+    if (options.Command == "review finish-commit")
+    {
+        return await FinishCommitCommand.RunAsync(options, cancellation.Token);
+    }
     if (options.Command == "review reclaim-slot")
     {
         return await ReclaimSlotCommand.RunAsync(options, config, cancellation.Token);
