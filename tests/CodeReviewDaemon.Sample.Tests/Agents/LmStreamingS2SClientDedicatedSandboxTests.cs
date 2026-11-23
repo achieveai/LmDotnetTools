@@ -114,6 +114,13 @@ public sealed class LmStreamingS2SClientDedicatedSandboxTests(ITestOutputHelper 
         "The review host refused to release the sandbox of 'thread-d' (503, sandbox_release_failed)."
     )]
     [InlineData(
+        "mode-unsupported",
+        "PRs/nova-17",
+        400,
+        """{"code":"dedicated_sandbox_mode_unsupported","detail":"UPSTREAM-BODY-SENTINEL-5d1c"}""",
+        "The review host refused to release the sandbox of 'thread-d' (400, dedicated_sandbox_mode_unsupported)."
+    )]
+    [InlineData(
         "unknown-code",
         null,
         400,

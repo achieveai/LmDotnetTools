@@ -2440,9 +2440,11 @@ public class ConversationsController(
     /// that is malformed, outside the workspace's own working directory, or unsupported by the conversation's
     /// provider and mode. 409 while it has work in hand, or when a new turn took it during the release. 503 when the
     /// gateway did not confirm the delete: nothing was moved, and the sandbox stays tracked, so a retry deletes it.
-    /// Every refusal comes before anything changes, except one: the move's mode is checked again in the same step that
-    /// stores it, so a mode switch that landed during the release answers 400 with nothing stored, the sandbox already
-    /// gone.
+    /// Every refusal comes before anything changes, except two that come after the gateway confirmed the delete, with
+    /// the sandbox already gone and nothing stored. The move's mode is checked again in the same step that stores it,
+    /// so a mode switch that landed during the release answers 400. A move that could not be stored (the store
+    /// failed, the thread was deleted, or its mode kept changing) answers 503; the thread then owns no sandbox, so a
+    /// retry deletes nothing and stores the move.
     /// </para>
     /// <para>
     /// The release is taken while no agent of the conversation is loaded, under the pool's lock, so it deletes only
@@ -2520,11 +2522,8 @@ public class ConversationsController(
             }
 
             // Moving a thread into (or within) a dedicated sandbox keeps its mode, which must be one it may have.
-            if (
-                await ThreadModeAsync(metadata, ct) is { } threadMode
-                && ConversationDedicatedSandbox.ModeRefusal(ModeCapabilities.Resolve(threadMode.EnabledCapabilityTools))
-                    is { } modeRefusal
-            )
+            // The commit checks again, on its own reload, once the sandbox is gone.
+            if (await DedicatedModeRefusalAsync(metadata, ct) is { } modeRefusal)
             {
                 return DedicatedModeUnsupported(modeRefusal, threadId);
             }
@@ -2609,8 +2608,9 @@ public class ConversationsController(
         }
         catch (MoveNotStoredException ex)
         {
-            // The DELETE was confirmed, then the store refused the new directory. The thread keeps its old one and
-            // owns no sandbox, so a retry deletes nothing and stores the move again.
+            // The DELETE was confirmed, then the move was not stored: the store failed, the thread was deleted, or its
+            // mode kept changing. The thread keeps its old directory and owns no sandbox, so a retry deletes nothing
+            // and stores the move again.
             logger.LogError(
                 ex.InnerException,
                 "Released the dedicated sandbox of thread {ThreadId}, but storing its move to {MovedTo} failed",
@@ -2654,8 +2654,8 @@ public class ConversationsController(
     /// </remarks>
     /// <exception cref="DedicatedSandboxModeUnsupportedException">The stored mode is one a dedicated sandbox cannot
     /// have. Nothing was stored.</exception>
-    /// <exception cref="MoveNotStoredException">The store failed, or the mode kept changing. Nothing was
-    /// stored.</exception>
+    /// <exception cref="MoveNotStoredException">The conversation or mode store failed, the thread was deleted, or the
+    /// mode kept changing. Nothing was stored.</exception>
     private async Task CommitDedicatedMoveAsync(string threadId, string movedTo)
     {
         for (var attempt = 1; ; attempt++)
@@ -2667,11 +2667,7 @@ public class ConversationsController(
                     await store.LoadMetadataAsync(threadId, CancellationToken.None)
                     ?? throw new InvalidOperationException($"Thread '{threadId}' was deleted during the release.");
                 checkedModeId = PropertyString(current, MultiTurnAgentPool.ModePropertyKey);
-                if (
-                    await ThreadModeAsync(current, CancellationToken.None) is { } mode
-                    && ConversationDedicatedSandbox.ModeRefusal(ModeCapabilities.Resolve(mode.EnabledCapabilityTools))
-                        is { } refusal
-                )
+                if (await DedicatedModeRefusalAsync(current, CancellationToken.None) is { } refusal)
                 {
                     throw new DedicatedSandboxModeUnsupportedException(refusal);
                 }
@@ -2681,19 +2677,25 @@ public class ConversationsController(
                     threadId,
                     existing =>
                     {
+                        // Deleted since the reload above: storing the move would write the thread back.
+                        if (existing is null)
+                        {
+                            throw new InvalidOperationException($"Thread '{threadId}' was deleted during the release.");
+                        }
+
                         if (
                             !string.Equals(
-                                PropertyString(existing!, MultiTurnAgentPool.ModePropertyKey),
+                                PropertyString(existing, MultiTurnAgentPool.ModePropertyKey),
                                 checkedModeId,
                                 StringComparison.Ordinal
                             )
                         )
                         {
-                            return existing!;
+                            return existing;
                         }
 
                         committed = true;
-                        return existing! with
+                        return existing with
                         {
                             Properties = (existing.Properties ?? ImmutableDictionary<string, object>.Empty)
                                 .SetItem(ConversationWorkingDirectory.PropertyKey, movedTo)
@@ -2787,6 +2789,15 @@ public class ConversationsController(
         );
         return ConversationDedicatedSandbox.ResolveWorkingDir(directory, workspace?.WorkingDir);
     }
+
+    /// <summary>
+    /// Why a dedicated sandbox cannot run in the mode <paramref name="metadata"/> stores, or null when it can. Each
+    /// caller passes its own snapshot, so the check reads the mode that snapshot holds.
+    /// </summary>
+    private async Task<string?> DedicatedModeRefusalAsync(ThreadMetadata metadata, CancellationToken ct) =>
+        await ThreadModeAsync(metadata, ct) is { } mode
+            ? ConversationDedicatedSandbox.ModeRefusal(ModeCapabilities.Resolve(mode.EnabledCapabilityTools))
+            : null;
 
     /// <summary>The mode the thread's agent would be built with, resolved as the pool resolves it.</summary>
     private async Task<ChatMode?> ThreadModeAsync(ThreadMetadata metadata, CancellationToken ct) =>

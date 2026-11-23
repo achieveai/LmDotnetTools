@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answered `409`. A mode that keeps changing answers `503 sandbox_release_failed`. A mode switch that waited for such a
   move now answers that `400` instead of a server error. `SandboxSessionRegistry.DestroyWorkspaceSessionAsync` keeps a
   retiring dedicated sandbox tracked until the gateway confirms its DELETE. Before, a refused DELETE dropped it, so the
-  owner's next move committed while it still ran. The destroy stays best-effort and does not throw.
+  owner's next move committed while it still ran. A 404 counts as gone. The destroy stays best-effort: a failed
+  DELETE is logged and does not throw, though a caller's cancellation still does.
 
 - **LmStreaming: dedicated per-conversation sandboxes and a sandbox release route.** A conversation provisioned with
   `dedicatedSandbox: true` and a working directory gets its own sandbox, jailed to that directory by the gateway

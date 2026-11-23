@@ -1084,53 +1084,22 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
     {
         // The release reads the mode, then unloads the agent and commits the move. A switch into a Mini App mode in
         // between must not be committed into a dedicated sandbox: every later send would answer 409.
-        ModeReadHookStore? modes = null;
-        await using var fixture = await StartAsync(configureServices: services =>
-        {
-            EnableMiniAppsAndBrowserDebug(services);
-            modes = ModeReadHookStore.Install(services);
-        });
+        await using var fixture = await StartHookedAsync();
         var miniAppMode = await fixture.CreateSandboxModeWithAsync(ToolGroups.MiniAppDebug);
-        var a = await fixture.ProvisionAsync(
-            null,
-            dedicated: false,
-            properties: new Dictionary<string, object>
-            {
-                [MultiTurnAgentPool.ModePropertyKey] = SystemChatModes.WorkspaceAgentModeId,
-            }
-        );
+        var a = await fixture.ProvisionSharedWorkspaceThreadAsync();
         _ = fixture.BuildAgent(a);
         HttpStatusCode? switchStatus = null;
-        modes!.BeforeNextRead(
+        fixture.Modes.BeforeNextRead(
             SystemChatModes.WorkspaceAgentModeId,
-            async () =>
-            {
-                using var switched = await fixture.Client.PostAsJsonAsync(
-                    $"/api/conversations/{a}/mode",
-                    new SwitchModeRequest { ModeId = miniAppMode.Id }
-                );
-                switchStatus = switched.StatusCode;
-                Logger.LogDebug(
-                    "Switch of {ThreadId} inside the release's mode read answered {Status}: {Body}",
-                    a,
-                    (int)switched.StatusCode,
-                    await switched.Content.ReadAsStringAsync()
-                );
-            }
+            async () => switchStatus = (await fixture.SwitchModeAsync(a, miniAppMode.Id)).Status
         );
 
         using var response = await fixture.ReleaseAsync(a, "PRs/r-9");
 
         switchStatus.Should().Be(HttpStatusCode.OK, "the thread was still shared when the switch ran");
-        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        (await response.Content.ReadAsStringAsync()).Should().Contain(ConversationDedicatedSandbox.ModeUnsupportedCode);
-        (await ConversationDedicatedSandbox.ReadAsync(fixture.Store, a)).Should().BeFalse("the move was not committed");
-        (await ConversationWorkingDirectory.ReadAsync(fixture.Store, a)).Should().BeNull();
-        (await fixture.Store.LoadMetadataAsync(a))!
-            .Properties![MultiTurnAgentPool.ModePropertyKey]
-            .ToString()
-            .Should()
-            .Be(miniAppMode.Id, "the switch stands");
+        await AssertModeRefusedAsync(response);
+        await AssertMoveNotStoredAsync(fixture, a);
+        (await fixture.StoredModeAsync(a)).Should().Be(miniAppMode.Id, "the switch stands");
         fixture
             .Pool.GetOrCreateAgent(a, miniAppMode, "test", null, requestedWorkspaceId: fixture.WorkspaceId)
             .Should()
@@ -1142,58 +1111,54 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
     {
         // A switch persists its mode just after it builds its agent. That write can land after the commit read the
         // mode and before it stores the move; storing anyway would commit a mode the check never saw.
-        ModeReadHookStore? modes = null;
-        await using var fixture = await StartAsync(configureServices: services =>
-        {
-            EnableMiniAppsAndBrowserDebug(services);
-            modes = ModeReadHookStore.Install(services);
-        });
+        await using var fixture = await StartHookedAsync();
         var miniAppMode = await fixture.CreateSandboxModeWithAsync(ToolGroups.MiniAppDebug);
-        var a = await fixture.ProvisionAsync(
-            null,
-            dedicated: false,
-            properties: new Dictionary<string, object>
-            {
-                [MultiTurnAgentPool.ModePropertyKey] = SystemChatModes.WorkspaceAgentModeId,
-            }
-        );
+        var a = await fixture.ProvisionSharedWorkspaceThreadAsync();
         bool? duringMove = null;
-        modes!.BeforeNextRead(
+        fixture.Modes.BeforeNextRead(
             SystemChatModes.WorkspaceAgentModeId,
             async () =>
             {
                 // The commit runs inside the release, which holds the thread's move fence; the route's own reads
                 // run before it.
                 duringMove = !fixture.Registry.WaitForOwnerMoveAsync(a).IsCompleted;
-                await fixture.Store.UpdateMetadataAsync(
-                    a,
-                    existing =>
-                        existing! with
-                        {
-                            Properties = existing.Properties!.SetItem(
-                                MultiTurnAgentPool.ModePropertyKey,
-                                miniAppMode.Id
-                            ),
-                        }
-                );
-                Logger.LogDebug(
-                    "Wrote mode {ModeId} to {ThreadId}; during the move: {DuringMove}",
-                    miniAppMode.Id,
-                    a,
-                    duringMove
-                );
+                await fixture.WriteModeAsync(a, miniAppMode.Id);
             },
-            // The route reads the mode twice before the commit: validating the directory, then checking the mode.
-            skip: 2
+            skip: RouteModeReads
         );
 
         using var response = await fixture.ReleaseAsync(a, "PRs/r-9");
 
         duringMove.Should().BeTrue("the write landed inside the commit, after the route's check");
-        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        (await response.Content.ReadAsStringAsync()).Should().Contain(ConversationDedicatedSandbox.ModeUnsupportedCode);
-        (await ConversationDedicatedSandbox.ReadAsync(fixture.Store, a)).Should().BeFalse("the move was not committed");
-        (await ConversationWorkingDirectory.ReadAsync(fixture.Store, a)).Should().BeNull();
+        await AssertModeRefusedAsync(response);
+        await AssertMoveNotStoredAsync(fixture, a);
+    }
+
+    [Fact]
+    public async Task A_mode_changed_once_to_another_the_sandbox_allows_while_the_move_is_stored_is_moved_in_that_mode()
+    {
+        // A change the commit sees is checked again, not refused: the second check finds a mode a dedicated sandbox
+        // may have, so the move lands in it.
+        await using var fixture = await StartHookedAsync();
+        var a = await fixture.ProvisionSharedWorkspaceThreadAsync();
+        fixture.Modes.BeforeNextRead(
+            SystemChatModes.WorkspaceAgentModeId,
+            () => fixture.WriteModeAsync(a, SystemChatModes.WorkflowAuthorModeId),
+            skip: RouteModeReads
+        );
+
+        using var response = await fixture.ReleaseAsync(a, "PRs/r-9");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await fixture.StoredModeAsync(a)).Should().Be(SystemChatModes.WorkflowAuthorModeId);
+        (await ConversationDedicatedSandbox.ReadAsync(fixture.Store, a)).Should().BeTrue();
+        (await ConversationWorkingDirectory.ReadAsync(fixture.Store, a)).Should().Be("PRs/r-9");
+        using var sent = await fixture.SendAsync(a);
+        sent.IsSuccessStatusCode.Should().BeTrue("the thread builds in the mode the move was stored in");
+        fixture
+            .Registry.TryGetExistingSession(fixture.WorkspaceId, readOnlyEgress: false, a)!
+            .WorkspaceWorkingDir.Should()
+            .Be("PRs/r-9", "the next agent runs in its own sandbox, in the new directory");
     }
 
     [Fact]
@@ -1201,21 +1166,11 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
     {
         // The commit checks again when the mode changed under it, but not for ever: the release holds the thread's
         // next sandbox back until it ends.
-        ModeReadHookStore? modes = null;
-        await using var fixture = await StartAsync(configureServices: services =>
-            modes = ModeReadHookStore.Install(services)
-        );
-        var a = await fixture.ProvisionAsync(
-            null,
-            dedicated: false,
-            properties: new Dictionary<string, object>
-            {
-                [MultiTurnAgentPool.ModePropertyKey] = SystemChatModes.WorkspaceAgentModeId,
-            }
-        );
+        await using var fixture = await StartHookedAsync();
+        var a = await fixture.ProvisionSharedWorkspaceThreadAsync();
         var writes = 0;
         void FlipOnRead(string modeId, int skip) =>
-            modes!.BeforeNextRead(
+            fixture.Modes.BeforeNextRead(
                 modeId,
                 async () =>
                 {
@@ -1224,29 +1179,102 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
                             ? SystemChatModes.DefaultModeId
                             : SystemChatModes.WorkspaceAgentModeId;
                     _ = Interlocked.Increment(ref writes);
-                    await fixture.Store.UpdateMetadataAsync(
-                        a,
-                        existing =>
-                            existing! with
-                            {
-                                Properties = existing.Properties!.SetItem(MultiTurnAgentPool.ModePropertyKey, next),
-                            }
-                    );
+                    await fixture.WriteModeAsync(a, next);
                     FlipOnRead(next, skip: 0);
                 },
                 skip
             );
-        // Past the route's two reads, every read the commit makes changes the mode before the commit stores.
-        FlipOnRead(SystemChatModes.WorkspaceAgentModeId, skip: 2);
+        // Past the route's reads, every read the commit makes changes the mode before the commit stores.
+        FlipOnRead(SystemChatModes.WorkspaceAgentModeId, skip: RouteModeReads);
 
         using var response = await fixture.ReleaseAsync(a, "PRs/r-9").WaitAsync(TimeSpan.FromSeconds(30));
 
         Logger.LogDebug("Mode writes during the commit: {Writes}", writes);
-        response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
-        (await response.Content.ReadAsStringAsync()).Should().Contain("sandbox_release_failed");
+        await AssertReleaseFailedAsync(response);
         writes.Should().Be(3, "the commit checks three times, then gives up");
-        (await ConversationDedicatedSandbox.ReadAsync(fixture.Store, a)).Should().BeFalse("the move was not committed");
-        (await ConversationWorkingDirectory.ReadAsync(fixture.Store, a)).Should().BeNull();
+        await AssertMoveNotStoredAsync(fixture, a);
+    }
+
+    [Fact]
+    public async Task A_thread_deleted_between_the_commits_reload_and_its_store_is_not_written_back()
+    {
+        // The commit reloads the thread, then stores the move in a separate step. A delete in between leaves nothing
+        // to move; writing the move anyway would bring the thread back.
+        await using var fixture = await StartHookedAsync();
+        var a = await fixture.ProvisionSharedWorkspaceThreadAsync();
+        fixture.Modes.BeforeNextRead(
+            SystemChatModes.WorkspaceAgentModeId,
+            () => fixture.Store.DeleteThreadAsync(a),
+            skip: RouteModeReads
+        );
+
+        using var response = await fixture.ReleaseAsync(a, "PRs/r-9");
+
+        await AssertReleaseFailedAsync(response);
+        (await fixture.Store.LoadMetadataAsync(a)).Should().BeNull("the deleted thread stays deleted");
+        var failure = fixture.Logs.Events.Single(logEvent =>
+            logEvent.MessageTemplate.Text.StartsWith(
+                "Released the dedicated sandbox of thread",
+                StringComparison.Ordinal
+            )
+            && logEvent.Level == Serilog.Events.LogEventLevel.Error
+        );
+        failure
+            .Exception.Should()
+            .BeOfType<InvalidOperationException>("a deleted thread is refused by name, not by a null dereference")
+            .Which.Message.Should()
+            .Contain("deleted");
+    }
+
+    [Theory]
+    [InlineData("the conversation store fails the commit's reload")]
+    [InlineData("the mode store fails the commit's mode lookup")]
+    public async Task A_store_failure_after_the_delete_answers_503_stores_nothing_and_a_retry_moves_the_thread(
+        string failure
+    )
+    {
+        // The sandbox is gone by the time the commit runs. Its failure must not read as a stored move, and the
+        // thread then owns no sandbox, so a retry deletes nothing and stores the move.
+        MetadataLoadFaultStore? conversations = null;
+        await using var fixture = await StartHookedAsync(services =>
+            conversations = MetadataLoadFaultStore.Install(services)
+        );
+        var a = await fixture.ProvisionSharedWorkspaceThreadAsync();
+        var owned = await fixture.Registry.GetOrCreateSessionAsync(
+            new WorkspaceRef(fixture.WorkspaceId, WorkingDir: "PRs/r-7", OwnerThreadId: a)
+        );
+        if (failure.Contains("reload", StringComparison.Ordinal))
+        {
+            // The route's own mode check is its last read before the release; the commit's reload comes next.
+            fixture.Modes.BeforeNextRead(
+                SystemChatModes.WorkspaceAgentModeId,
+                () =>
+                {
+                    conversations!.FailNextLoad(a);
+                    return Task.CompletedTask;
+                },
+                skip: RouteModeReads - 1
+            );
+        }
+        else
+        {
+            fixture.Modes.BeforeNextRead(
+                SystemChatModes.WorkspaceAgentModeId,
+                () => throw new IOException("The mode store failed."),
+                skip: RouteModeReads
+            );
+        }
+
+        using var failed = await fixture.ReleaseAsync(a, "PRs/r-9");
+
+        await AssertReleaseFailedAsync(failed);
+        fixture.Gateway.Deletes.Should().Equal([owned.SessionId], "the sandbox was deleted before the commit ran");
+        await AssertMoveNotStoredAsync(fixture, a);
+        using var retried = await fixture.ReleaseAsync(a, "PRs/r-9");
+        retried.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await ConversationDedicatedSandbox.ReadAsync(fixture.Store, a)).Should().BeTrue();
+        (await ConversationWorkingDirectory.ReadAsync(fixture.Store, a)).Should().Be("PRs/r-9");
+        fixture.Gateway.DeleteAttempts.Should().Be(1, "the retry had no sandbox left to delete");
     }
 
     [Fact]
@@ -1254,16 +1282,9 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
     {
         // The other order: the switch checks the flag while the thread is still shared, then waits for the move.
         // By the time it builds, the thread is dedicated, so it must get the refusal, not a server error.
-        await using var fixture = await StartAsync(configureServices: EnableMiniAppsAndBrowserDebug);
+        await using var fixture = await StartHookedAsync();
         var miniAppMode = await fixture.CreateSandboxModeWithAsync(ToolGroups.MiniAppDebug);
-        var a = await fixture.ProvisionAsync(
-            null,
-            dedicated: false,
-            properties: new Dictionary<string, object>
-            {
-                [MultiTurnAgentPool.ModePropertyKey] = SystemChatModes.WorkspaceAgentModeId,
-            }
-        );
+        var a = await fixture.ProvisionSharedWorkspaceThreadAsync();
         _ = fixture.BuildAgent(a);
         // It also owns a sandbox, so the release has a DELETE to hold while the switch arrives.
         _ = await fixture.Registry.GetOrCreateSessionAsync(
@@ -1272,30 +1293,25 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         var gate = fixture.Gateway.HoldDeletes();
         var post = fixture.ReleaseAsync(a, "PRs/r-9");
         await fixture.Gateway.WaitForDeleteStartedAsync();
-        var deadline = DateTime.UtcNow.AddSeconds(10);
-        while (fixture.Registry.WaitForOwnerMoveAsync(a).IsCompleted && DateTime.UtcNow < deadline)
-        {
-            await Task.Delay(10);
-        }
+        // The release puts the thread's move fence up as it hands the DELETE to the thread pool.
+        SpinWait
+            .SpinUntil(() => !fixture.Registry.WaitForOwnerMoveAsync(a).IsCompleted, Patience)
+            .Should()
+            .BeTrue("the release holds the thread's move fence while its DELETE runs");
 
-        var switching = fixture.Client.PostAsJsonAsync(
-            $"/api/conversations/{a}/mode",
-            new SwitchModeRequest { ModeId = miniAppMode.Id }
-        );
-        await Task.Delay(100);
-        Logger.LogDebug("Switch of {ThreadId} done before the move: {Done}", a, switching.IsCompleted);
+        var pastGuard = fixture.Logs.WaitForAsync(PoolSwitchTemplate, a, Patience);
+        var switching = fixture.SwitchModeAsync(a, miniAppMode.Id);
+        // The pool logs this only once the route passed its dedicated-flag check and handed it the switch, so the
+        // switch can no longer be refused there.
+        _ = await pastGuard;
         gate.SetResult();
         using var released = await post;
-        using var switched = await switching;
-        var switchBody = await switched.Content.ReadAsStringAsync();
-        Logger.LogDebug("Switch of {ThreadId} answered {Status}: {Body}", a, (int)switched.StatusCode, switchBody);
+        var (switchStatus, switchBody) = await switching;
 
         released.StatusCode.Should().Be(HttpStatusCode.OK);
-        switched.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        switchStatus.Should().Be(HttpStatusCode.BadRequest);
         switchBody.Should().Contain(ConversationDedicatedSandbox.ModeUnsupportedCode);
-        (await fixture.Store.LoadMetadataAsync(a))!
-            .Properties![MultiTurnAgentPool.ModePropertyKey]
-            .ToString()
+        (await fixture.StoredModeAsync(a))
             .Should()
             .Be(SystemChatModes.WorkspaceAgentModeId, "a refused switch leaves the mode as it was");
         (await ConversationDedicatedSandbox.ReadAsync(fixture.Store, a)).Should().BeTrue();
@@ -1304,6 +1320,48 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
             .Registry.TryGetExistingSession(fixture.WorkspaceId, readOnlyEgress: false, a)!
             .WorkspaceWorkingDir.Should()
             .Be("PRs/r-9", "the thread's next agent runs in its own sandbox, in the new directory");
+    }
+
+    /// <summary>How many times the release route reads the mode before its commit: validating the directory, then
+    /// checking the mode.</summary>
+    private const int RouteModeReads = 2;
+
+    /// <summary>The pool's log line as it takes a mode switch the route has already let through.</summary>
+    private const string PoolSwitchTemplate = "Switching agent for thread {ThreadId} to mode {ModeId} ({ModeName})";
+
+    private static readonly TimeSpan Patience = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// A host with Mini Apps and browser debugging on, its mode store hooked (<see cref="Fixture.Modes"/>) and its
+    /// logs captured (<see cref="Fixture.Logs"/>).
+    /// </summary>
+    private Task<Fixture> StartHookedAsync(Action<IServiceCollection>? configureServices = null) =>
+        StartAsync(configureServices: services =>
+        {
+            EnableMiniAppsAndBrowserDebug(services);
+            _ = ModeReadHookStore.Install(services);
+            _ = HostLogCapture.Install(services);
+            configureServices?.Invoke(services);
+        });
+
+    private static async Task AssertModeRefusedAsync(HttpResponseMessage response)
+    {
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain(ConversationDedicatedSandbox.ModeUnsupportedCode);
+    }
+
+    private static async Task AssertReleaseFailedAsync(HttpResponseMessage response)
+    {
+        response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("sandbox_release_failed");
+    }
+
+    private static async Task AssertMoveNotStoredAsync(Fixture fixture, string threadId)
+    {
+        (await ConversationDedicatedSandbox.ReadAsync(fixture.Store, threadId))
+            .Should()
+            .BeFalse("the move was not committed");
+        (await ConversationWorkingDirectory.ReadAsync(fixture.Store, threadId)).Should().BeNull();
     }
 
     /// <summary>Mini Apps and browser debugging on. The test host runs as Production, where both are off.</summary>
@@ -1363,6 +1421,13 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         public MultiTurnAgentPool Pool => _host.Services.GetRequiredService<MultiTurnAgentPool>();
         public SandboxSessionRegistry Registry => _host.Services.GetRequiredService<SandboxSessionRegistry>();
         public IConversationStore Store => _host.Services.GetRequiredService<IConversationStore>();
+
+        /// <summary>The hooked mode store; only on a host started with <c>StartHookedAsync</c>.</summary>
+        public ModeReadHookStore Modes => (ModeReadHookStore)_host.Services.GetRequiredService<IChatModeStore>();
+
+        /// <summary>The captured host logs; only on a host started with <c>StartHookedAsync</c>.</summary>
+        public HostLogCapture Logs =>
+            _host.Services.GetServices<Serilog.Core.ILogEventSink>().OfType<HostLogCapture>().Single();
 
         public static async Task<Fixture> StartAsync(
             ILogger logger,
@@ -1451,6 +1516,53 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
                 properties?.Keys
             );
             return threadId;
+        }
+
+        /// <summary>A thread in the workspace's shared sandbox, in the Workspace Agent mode.</summary>
+        public Task<string> ProvisionSharedWorkspaceThreadAsync() =>
+            ProvisionAsync(
+                null,
+                dedicated: false,
+                properties: new Dictionary<string, object>
+                {
+                    [MultiTurnAgentPool.ModePropertyKey] = SystemChatModes.WorkspaceAgentModeId,
+                }
+            );
+
+        /// <summary>The mode id the thread stores.</summary>
+        public async Task<string?> StoredModeAsync(string threadId) =>
+            (await Store.LoadMetadataAsync(threadId))?.Properties?[MultiTurnAgentPool.ModePropertyKey].ToString();
+
+        /// <summary>Stores <paramref name="modeId"/> as the thread's mode, as a mode switch persists it.</summary>
+        public Task WriteModeAsync(string threadId, string modeId)
+        {
+            _logger.LogDebug("Writing mode {ModeId} to {ThreadId}", modeId, threadId);
+            return Store.UpdateMetadataAsync(
+                threadId,
+                existing =>
+                    existing! with
+                    {
+                        Properties = existing.Properties!.SetItem(MultiTurnAgentPool.ModePropertyKey, modeId),
+                    }
+            );
+        }
+
+        /// <summary>Switches the thread's mode over HTTP, as the UI does.</summary>
+        public async Task<(HttpStatusCode Status, string Body)> SwitchModeAsync(string threadId, string modeId)
+        {
+            using var response = await Client.PostAsJsonAsync(
+                $"/api/conversations/{threadId}/mode",
+                new SwitchModeRequest { ModeId = modeId }
+            );
+            var body = await response.Content.ReadAsStringAsync();
+            _logger.LogDebug(
+                "Switch of {ThreadId} to {ModeId} answered {Status}: {Body}",
+                threadId,
+                modeId,
+                (int)response.StatusCode,
+                body
+            );
+            return (response.StatusCode, body);
         }
 
         /// <summary>A stored mode with the sandbox tools and every tool of <paramref name="toolGroup"/>.</summary>

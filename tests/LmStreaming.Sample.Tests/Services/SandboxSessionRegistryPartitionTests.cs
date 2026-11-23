@@ -687,6 +687,77 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
         registry.TryGetExistingSession("ws-1").Should().BeNull("the recreate must not take the shared slot");
     }
 
+    [Fact]
+    public async Task A_retiring_sandbox_the_gateway_already_lost_is_forgotten_by_a_workspace_destroy_and_frees_its_owners_move()
+    {
+        // A 404 means the sandbox is already gone. Kept tracked, it would refuse its owner's every move for good.
+        var (registry, calls) = CreateRegistry();
+        var a = await registry.GetOrCreateSessionAsync(OwnedRef("thread-a", "PRs/r-7"));
+        calls.FailDeletes = true;
+        await registry
+            .ReleaseOwnedSessionsAsync("thread-a")
+            .Invoking(task => task)
+            .Should()
+            .ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
+        calls.FailDeletes = false;
+        calls.DeleteOverride = _ => new HttpResponseMessage(HttpStatusCode.NotFound);
+
+        await registry.DestroyWorkspaceSessionAsync("ws-1");
+
+        LogCalls(calls);
+        calls.DeleteAttempts.Should().Be(2, "the destroy tried the retiring sandbox");
+        registry.TryGetSessionById(a.SessionId, out _).Should().BeFalse("a 404 confirms it gone");
+        var committed = 0;
+        await registry.ReleaseOwnedSessionsAsync(
+            "thread-a",
+            "PRs/r-9",
+            () =>
+            {
+                committed++;
+                return Task.CompletedTask;
+            }
+        );
+        committed.Should().Be(1);
+        calls.DeleteAttempts.Should().Be(2, "nothing is left for the owner's move to delete");
+    }
+
+    [Fact]
+    public async Task A_workspace_destroy_whose_delete_of_one_retiring_sandbox_throws_keeps_it_and_still_deletes_the_others()
+    {
+        // The destroy is best-effort teardown: one unexpected failure must neither stop it nor lose that sandbox.
+        var logger = new TestDoubles.CapturingLogger<SandboxSessionRegistry>();
+        var (registry, calls) = CreateRegistry(logger: logger);
+        var a = await registry.GetOrCreateSessionAsync(OwnedRef("thread-a", "PRs/r-7"));
+        var b = await registry.GetOrCreateSessionAsync(OwnedRef("thread-b", "PRs/r-8"));
+        calls.FailDeletes = true;
+        foreach (var owner in new[] { "thread-a", "thread-b" })
+        {
+            await registry
+                .ReleaseOwnedSessionsAsync(owner)
+                .Invoking(task => task)
+                .Should()
+                .ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
+        }
+
+        calls.FailDeletes = false;
+        calls.DeleteOverride = id =>
+            id == a.SessionId ? throw new InvalidOperationException("the gateway client broke") : null;
+
+        await registry.DestroyWorkspaceSessionAsync("ws-1");
+
+        LogCalls(calls);
+        calls.DeletedSessionIds.Should().Equal(b.SessionId);
+        registry.TryGetSessionById(a.SessionId, out _).Should().BeTrue("its DELETE was never confirmed");
+        registry.TryGetSessionById(b.SessionId, out _).Should().BeFalse();
+        logger
+            .Entries.Should()
+            .Contain(entry =>
+                entry.Level == LogLevel.Warning
+                && entry.Message.Contains("thread-a", StringComparison.Ordinal)
+                && entry.Message.Contains("stays tracked", StringComparison.Ordinal)
+            );
+    }
+
     private static string? WorkingDirSent(string createBody)
     {
         using var document = JsonDocument.Parse(createBody);
@@ -711,7 +782,8 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
 
     private (SandboxSessionRegistry Registry, CallLog Calls) CreateRegistry(
         AuthOptions? auth = null,
-        Func<string, CancellationToken, Task<WorkspaceRef?>>? reloadWorkspaceRef = null
+        Func<string, CancellationToken, Task<WorkspaceRef?>>? reloadWorkspaceRef = null,
+        ILogger<SandboxSessionRegistry>? logger = null
     )
     {
         var calls = new CallLog();
@@ -767,6 +839,11 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
                 if (req.Method == HttpMethod.Delete && path.Contains("/sandboxes/", StringComparison.Ordinal))
                 {
                     var id = path[(path.LastIndexOf('/') + 1)..];
+                    if (calls.DeleteOverride?.Invoke(id) is { } overridden)
+                    {
+                        return overridden;
+                    }
+
                     if (calls.FailDeletes)
                     {
                         return new HttpResponseMessage(HttpStatusCode.InternalServerError);
@@ -798,7 +875,7 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
         var registry = new SandboxSessionRegistry(
             gateway,
             options,
-            LoggerFactory.CreateLogger<SandboxSessionRegistry>(),
+            logger ?? LoggerFactory.CreateLogger<SandboxSessionRegistry>(),
             new HttpClient(registryHandler),
             auth ?? new AuthOptions(),
             new SessionSecretStore(
@@ -823,6 +900,12 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
 
         /// <summary>When set, every DELETE answers 500 and deletes nothing.</summary>
         public volatile bool FailDeletes;
+
+        /// <summary>
+        /// When set, answers each DELETE it returns a response for (or throws from) before anything else; null falls
+        /// through to <see cref="FailDeletes"/> and a confirmed delete.
+        /// </summary>
+        public volatile Func<string, HttpResponseMessage?>? DeleteOverride;
 
         private readonly SemaphoreSlim _deletesStarted = new(0);
         private TaskCompletionSource? _deleteGate;
