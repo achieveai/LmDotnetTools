@@ -42,30 +42,40 @@ internal static partial class StudyStore
 
     private static string Normal(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
 
-    // The path with each existing link along it replaced by its final target, so a check sees where a write lands.
-    // One hop at a time, and each target is resolved the same way, so a target that itself passes through a link
-    // (out -> bridge/records, bridge -> the study) lands where the write would on every platform. (Windows' final-target
-    // lookup already follows the whole path; Unix's follows only the last name.)
+    // The path with each existing link along it replaced by its target, so a check sees where a write lands. One hop
+    // at a time, and each target is resolved the same way, so a target that itself passes through a link
+    // (out -> bridge/records, bridge -> the study) lands where the write would on every platform. '..' follows the
+    // platform: Windows drops it by name before it follows any link, while Unix follows the link first and '..' then
+    // leaves the link's target (out -> bridge/../records, bridge -> study/artifacts, is study/records there).
     private static string Resolve(string path, int depth = 0)
     {
         if (depth > 32)
         {
             throw new IOException($"{path} passes through more than 32 links.");
         }
-        var full = Normal(path);
+        var full = OperatingSystem.IsWindows() ? Normal(path) : Path.Combine(Directory.GetCurrentDirectory(), path);
         var current = Path.GetPathRoot(full)!;
         foreach (
             var part in full[current.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries)
         )
         {
+            if (part == ".")
+            {
+                continue;
+            }
+            if (part == "..")
+            {
+                current = Path.GetDirectoryName(current) ?? current;
+                continue;
+            }
             current = Path.Combine(current, part);
             FileSystemInfo entry = Directory.Exists(current) ? new DirectoryInfo(current) : new FileInfo(current);
-            if (entry.LinkTarget is not null && entry.ResolveLinkTarget(returnFinalTarget: false) is { } target)
+            if (entry.LinkTarget is { } target)
             {
-                current = Resolve(target.FullName, depth + 1);
+                current = Resolve(Path.Combine(Path.GetDirectoryName(current)!, target), depth + 1);
             }
         }
-        return current;
+        return Path.TrimEndingDirectorySeparator(current);
     }
 
     /// <summary>

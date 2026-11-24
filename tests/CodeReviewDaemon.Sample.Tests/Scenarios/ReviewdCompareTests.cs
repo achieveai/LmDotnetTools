@@ -3,6 +3,7 @@ extern alias Reviewd;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Microsoft.Data.Sqlite;
@@ -409,6 +410,73 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
             .Select(Path.GetFileName)
             .Should()
             .Equal("aa-1.json");
+    }
+
+    // Unix follows a link before the '..' after it: out -> bridge/../records with bridge -> study/artifacts is
+    // study/records, though the target's text collapses by name to a folder outside the study. (Windows drops '..' by
+    // name first, so there the same link lands outside, as its text says.)
+    [LinuxOnlyFact("only Unix applies '..' after following the link before it")]
+    public async Task Compare_refuses_an_output_link_whose_dot_dot_leaves_another_links_target()
+    {
+        StudyFixture.Write(_files, ("aa-1", "experiment", null));
+        var a = Arm("a1", new Review(1));
+        var b = Arm("a2", new Review(1));
+        Directory.CreateDirectory(Path.Combine(StudyRoot, "artifacts"));
+        DirectoryLink.Create(Path.Combine(_files, "bridge"), Path.Combine(StudyRoot, "artifacts"));
+        var output = Path.Combine(_files, "out");
+        Directory.CreateSymbolicLink(output, Path.Combine("bridge", "..", "records"));
+
+        var compare = () => CompareToAsync(output, a, b);
+
+        var refused = await compare.Should().ThrowAsync<ArgumentException>();
+        Logger.LogInformation("--out {Output} refused with {Refusal}", output, refused.Which.Message);
+        refused.WithMessage("--out * is inside the study at *");
+        Directory
+            .EnumerateFileSystemEntries(Path.Combine(StudyRoot, "records"))
+            .Select(Path.GetFileName)
+            .Should()
+            .Equal("aa-1.json");
+    }
+
+    // The resolver follows at most 32 links: a chain of 32 still resolves and is written, one more link and a two-link
+    // cycle are refused before any write.
+    [Theory]
+    [InlineData("a chain of 32 links", 32)]
+    [InlineData("a chain of 33 links", 33)]
+    [InlineData("a two-link cycle", 2)]
+    public async Task Compare_follows_at_most_32_links_from_its_output(string chain, int links)
+    {
+        StudyFixture.Write(_files, ("aa-1", "experiment", null));
+        var a = Arm("a1", new Review(1));
+        var b = Arm("a2", new Review(1));
+        var end = Path.Combine(_files, "end");
+        Directory.CreateDirectory(end);
+        string Link(int i) => Path.Combine(_files, $"link-{i}");
+        for (var i = links - 1; i >= 0; i--)
+        {
+            var last = i == links - 1;
+            DirectoryLink.Create(Link(i), last ? (chain == "a two-link cycle" ? Link(0) : end) : Link(i + 1));
+        }
+        var record = Path.Combine(StudyRoot, "records", "aa-1.json");
+        var before = await File.ReadAllBytesAsync(record);
+
+        var compare = () => CompareToAsync(Link(0), a, b);
+
+        if (chain == "a chain of 32 links")
+        {
+            (await compare()).Should().Be(0);
+            Logger.LogInformation("--out through {Chain} wrote {Files}", chain, Directory.GetFiles(end));
+            File.Exists(Path.Combine(end, "compare.json")).Should().BeTrue();
+        }
+        else
+        {
+            var refused = await compare.Should().ThrowAsync<IOException>();
+            Logger.LogInformation("--out through {Chain} refused with {Refusal}", chain, refused.Which.Message);
+            refused.WithMessage("* passes through more than 32 links.");
+            Directory.EnumerateFileSystemEntries(end).Should().BeEmpty();
+            Evidence().Should().BeEmpty();
+        }
+        (await File.ReadAllBytesAsync(record)).Should().Equal(before);
     }
 
     // An --out file that is a hard link to a study record is replaced, never written through: the record keeps its

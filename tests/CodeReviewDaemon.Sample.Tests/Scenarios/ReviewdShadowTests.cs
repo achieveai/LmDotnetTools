@@ -2265,6 +2265,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         string cloneSha,
         bool execute = true,
         string modeFile = """{"systemPrompt":"Review as b-007."}""",
+        string? store = null,
         params string[] knowledgeChanges
     )
     {
@@ -2281,7 +2282,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             "--experiment",
             "exp-1",
             "--store",
-            _files,
+            store ?? _files,
             "--from-workspace",
             "base",
             "--champion",
@@ -2345,6 +2346,25 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             .And.Contain($"--experiment exp-1 --store \"{_files}\" ")
             .And.Contain("--read-only-egress --read-repos <org/project/repo,");
         result["champion"]!.GetValue<string>().Should().Be(S_champion);
+    }
+
+    // A --store typed with a trailing separator prints without it, so the copied command's closing quote is not
+    // escaped by a trailing backslash, and the quotes keep a path with a space whole.
+    [Fact]
+    public async Task Variant_up_prints_the_store_quoted_without_its_trailing_separator()
+    {
+        var store = Path.Combine(_files, "review store");
+        StudyFixture.Write(store, ("exp-1", "experiment", null));
+
+        var (result, _) = await VariantUpAsync(
+            VariantHost(),
+            new string('2', 40),
+            store: store + Path.DirectorySeparatorChar
+        );
+
+        var next = result["next"]!.GetValue<string>();
+        Logger.LogInformation("--store {Store} printed as {Next}", store + Path.DirectorySeparatorChar, next);
+        next.Should().Contain($"--experiment exp-1 --store \"{store}\" ");
     }
 
     [Fact]
