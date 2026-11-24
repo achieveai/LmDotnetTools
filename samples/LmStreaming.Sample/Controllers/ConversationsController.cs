@@ -2813,8 +2813,9 @@ public class ConversationsController(
     /// Starts deleting the conversation's dedicated sandbox, the only route that deletes it on a conversation's
     /// behalf besides the release route. An idle unload leaves the sandbox to retire, so it may still be tracked
     /// though no agent is loaded. The container only, never the workspace files. A failed delete stays tracked, so
-    /// the next release retries it. Returns <see langword="false"/>, deleting nothing, when a send rebuilt the agent
-    /// while the old one was disposed: that replacement holds the sandbox.
+    /// a workspace release (a backup restore or a purge) retries it: the deleted conversation's own release route
+    /// answers unknown thread. Returns <see langword="false"/>, deleting nothing, when an agent of the conversation
+    /// is pooled again, such as one a send rebuilt while the old one was disposed: it holds the sandbox.
     /// </summary>
     private bool TryStartDeletingOwnedSandbox(string threadId)
     {
@@ -2916,8 +2917,8 @@ public class ConversationsController(
     /// <summary>
     /// Deletes a conversation and evicts its agent. Closed to machine callers on an agent-owned thread:
     /// destroying a sibling's transcript — and its live agent with it — is the most damaging thing this
-    /// controller can be asked to do by id alone. 409 when a send rebuilt the agent while the old one was disposed:
-    /// nothing else is deleted then.
+    /// controller can be asked to do by id alone. 409 when an agent of the conversation is pooled again, such as one
+    /// a send rebuilt while the old one was disposed: nothing else is deleted then.
     /// </summary>
     [HttpDelete("{threadId}")]
     public async Task<IActionResult> Delete(string threadId, CancellationToken ct = default)
@@ -3900,7 +3901,7 @@ public class ConversationsController(
     /// MUST be called only AFTER <see cref="AuthorizeAsync"/> has allowed the action. It is not a
     /// guard and decides nothing about access; it acts on the pool for a caller who is already
     /// entitled to write. Called before the decision it would be worse than the bug it fixes: any
-    /// tenant member could evict a stranger's live agent - and its sandbox - by id alone, learning
+    /// tenant member could evict a stranger's live agent by id alone, learning
     /// nothing from their own 404 while the owner pays for it.
     /// </para>
     /// <para>
