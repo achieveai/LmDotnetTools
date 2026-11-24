@@ -598,7 +598,13 @@ try
                 .GetAsync(workspaceId, ct)
                 .ConfigureAwait(false);
             return workspace is null ? null : BuildWorkspaceRef(workspaceId, workspace);
-        }
+        },
+        // Each conversation's dedicated sandboxes, kept in its metadata: a restart reuses them and a conversation
+        // delete reaches them all.
+        ownedSandboxes: sp.GetRequiredService<ConversationOwnedSandboxes>()
+    ));
+    _ = builder.Services.AddSingleton(sp => new ConversationOwnedSandboxes(
+        sp.GetRequiredService<IConversationStore>()
     ));
 
     // The registry also implements the narrow file-browser surface the FileBrowserController depends on

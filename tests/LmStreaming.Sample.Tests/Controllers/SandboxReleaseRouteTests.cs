@@ -243,13 +243,13 @@ public sealed class SandboxReleaseRouteTests : LoggingTestBase
     }
 
     [Fact]
-    public async Task A_move_the_store_refuses_after_the_delete_answers_503_and_a_retry_stores_it()
+    public async Task A_move_the_store_refuses_after_the_retire_answers_503_and_a_retry_stores_it()
     {
         var gateway = new OwnedSandboxGateway();
         await using var registry = gateway.CreateRegistry(LoggerFactory, "lm-release-route-test");
         await using var pool = ConversationsControllerTests.CreatePool();
         var store = new MetadataFaultStore(await SeedAsync("PRs/r-7"));
-        var session = await registry.GetOrCreateSessionAsync(OwnedRef());
+        _ = await registry.GetOrCreateSessionAsync(OwnedRef());
         var controller = CreateController(store, pool, registry);
         store.FailUpdates = true;
 
@@ -267,7 +267,7 @@ public sealed class SandboxReleaseRouteTests : LoggingTestBase
             .Should()
             .Contain("sandbox_release_failed")
             .And.Contain("was not stored");
-        gateway.Deletes.Should().Equal(session.SessionId);
+        gateway.DeleteAttempts.Should().Be(0, "a release retires the sandbox; it sends no DELETE");
         (await ConversationWorkingDirectory.ReadAsync(store, ThreadId)).Should().Be("PRs/r-7", "nothing moved");
 
         store.FailUpdates = false;
@@ -280,7 +280,7 @@ public sealed class SandboxReleaseRouteTests : LoggingTestBase
 
         retried.Should().BeOfType<OkObjectResult>();
         (await ConversationWorkingDirectory.ReadAsync(store, ThreadId)).Should().Be("PRs/r-9");
-        gateway.DeleteAttempts.Should().Be(1, "the retry has no sandbox left to delete");
+        gateway.DeleteAttempts.Should().Be(0, "neither release deletes a sandbox");
     }
 
     /// <summary>

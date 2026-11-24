@@ -137,6 +137,25 @@ public sealed class SessionSecretStore
     }
 
     /// <summary>
+    /// Whether a secret is persisted for <paramref name="sessionId"/>: without one, no webhook call of that session
+    /// can authenticate, so a host must not reuse the session.
+    /// </summary>
+    public async Task<bool> ExistsAsync(string sessionId, CancellationToken ct = default)
+    {
+        var filePath = GetFilePath(sessionId);
+
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return File.Exists(filePath);
+        }
+        finally
+        {
+            _ = _gate.Release();
+        }
+    }
+
+    /// <summary>
     /// Removes the persisted secret for <paramref name="sessionId"/>, if any.
     /// </summary>
     public async Task RemoveAsync(string sessionId, CancellationToken ct = default)

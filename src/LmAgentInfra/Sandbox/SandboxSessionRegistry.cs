@@ -112,7 +112,9 @@ public sealed record SandboxSession(
 /// configuration: a ref rebuilt from the workspace catalog does not carry it, so every rebuild path pins it.</param>
 /// <param name="OwnerThreadId">The conversation that owns a dedicated sandbox, or <see langword="null"/> for the
 /// workspace's shared one. Part of the session-cache key, so no other conversation is ever handed this sandbox; it
-/// lives until <see cref="SandboxSessionRegistry.ReleaseOwnedSessionsAsync(string, CancellationToken)"/> deletes it. A conversation property
+/// lives until the conversation's delete
+/// (<see cref="SandboxSessionRegistry.ReleaseOwnedSessionsAsync(string, CancellationToken)"/>) deletes it; a move only
+/// retires it (<see cref="SandboxSessionRegistry.RetireOwnedSessionsAsync(string, CancellationToken)"/>). A conversation property
 /// like <paramref name="ReadOnlyEgress"/>, and pinned on every rebuild path together with its
 /// <paramref name="WorkingDir"/>.</param>
 public sealed record WorkspaceRef(
@@ -545,6 +547,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// <param name="timeProvider">Clock behind the liveness freshness window (<see cref="SessionLivenessFreshness"/>).
     /// Defaults to <see cref="TimeProvider.System"/>; a test injects one so it can expire the window
     /// without sleeping.</param>
+    /// <param name="ownedSandboxes">Where each conversation's dedicated sandboxes are remembered across restarts
+    /// (see <see cref="IOwnedSandboxStore"/>). Null keeps them in memory only: a restarted host then creates a fresh
+    /// one and cannot reach the old one, which is every construction site's behaviour before it.</param>
     public SandboxSessionRegistry(
         SandboxGatewayLifetime gateway,
         SandboxGatewayOptions options,
@@ -555,10 +560,12 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         PredefinedKeyRegistry? predefinedKeys = null,
         MultiTurnLifecycleServices? lifecycle = null,
         Func<string, CancellationToken, Task<WorkspaceRef?>>? reloadWorkspaceRef = null,
-        TimeProvider? timeProvider = null
+        TimeProvider? timeProvider = null,
+        IOwnedSandboxStore? ownedSandboxes = null
     )
     {
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _ownedSandboxes = ownedSandboxes;
         _gateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -1490,8 +1497,13 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// <see cref="CreatePluginSelectionCandidateAsync"/> for a plugin-selection candidate, which has no
     /// cache slot and so cannot go through the former. Any future create path that bypasses both MUST
     /// call <see cref="PublishPendingCreationAsync"/> itself.
+    /// <para>
+    /// <paramref name="retire"/> evicts a session that still exists on the gateway (an owner release that retires it):
+    /// its webhook secret stays for a command it still runs, and so does its owner's record of it. Otherwise the
+    /// session is gone, and an owned one is dropped from its owner's records too.
+    /// </para>
     /// </remarks>
-    private async Task EvictSessionStateAsync(SandboxSession session)
+    private async Task EvictSessionStateAsync(SandboxSession session, bool retire = false)
     {
         // Reverse map removal is exact: only drops the entry when it still points at this session, so a
         // concurrent recreation's mapping is never clobbered.
@@ -1516,6 +1528,12 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             DecrementSessionRefAndMaybeDispose(credential);
         }
         ForgetSessionEnvState(session.SessionId);
+        if (retire)
+        {
+            return;
+        }
+
+        await ForgetOwnedRecordAsync(session).ConfigureAwait(false);
         // The in-memory eviction above is COMMITTED: the session is now unreachable through every
         // per-session collection. The persisted webhook secret is the last authenticator that could
         // still validate a callback for this dead session, so its removal MUST run to completion under
@@ -1684,6 +1702,25 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         var reservationCommitted = false;
         try
         {
+            // A conversation's own sandbox from before a restart is reused while the gateway still has it, so the
+            // restart creates nothing and the old one is not left to sleep untracked.
+            if (
+                await TryAdoptOwnedSessionAsync(
+                        workspaceRef,
+                        workspaceRelPath,
+                        effectiveCredential,
+                        client,
+                        mcpContext,
+                        ct
+                    )
+                    .ConfigureAwait(false) is
+                { } adopted
+            )
+            {
+                reservationCommitted = true;
+                return adopted;
+            }
+
             SandboxInfo info;
             try
             {
@@ -1870,6 +1907,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 // its secret hitting disk. On failure the catch below tears the half-built session down
                 // rather than leaving a session whose webhooks can never authenticate.
                 await _sessionSecretStore.SaveAsync(session.SessionId, sessionSecret, ct).ConfigureAwait(false);
+                // Recorded before returning for the same reason: a sandbox its owner does not record would outlive a
+                // restart unreachable, and its conversation's delete would never reach it.
+                await RecordOwnedSessionAsync(session, effectiveCredential, workspaceRef.WorkingDir, ct)
+                    .ConfigureAwait(false);
             }
             catch
             {
@@ -1888,6 +1929,23 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 );
                 ForgetSessionEnvState(session.SessionId);
                 _ = _sessionMcpContexts.TryRemove(session.SessionId, out _);
+                // The secret may already be on disk (a failed owner record comes after it). No-op when it is not. A
+                // failure here is logged, so the create's own failure is what propagates.
+                try
+                {
+                    await _sessionSecretStore
+                        .RemoveAsync(session.SessionId, CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception removeFailure)
+                {
+                    _logger.LogWarning(
+                        removeFailure,
+                        "Failed to remove webhook secret for rolled-back session {SessionId}",
+                        session.SessionId
+                    );
+                }
+
                 throw;
             }
             // The reservation acquired above IS this session's refcount — commit it (no extra increment),

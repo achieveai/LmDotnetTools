@@ -2427,35 +2427,36 @@ public class ConversationsController(
     }
 
     /// <summary>
-    /// Deletes the dedicated sandbox of an idle conversation (<see cref="ConversationDedicatedSandbox"/>) and, when
+    /// Retires the dedicated sandbox of an idle conversation (<see cref="ConversationDedicatedSandbox"/>) and, when
     /// <see cref="ReleaseSandboxRequest.WorkingDirectoryRelPath"/> is given, moves the directory its next sandbox
-    /// works in. Only the container goes: the workspace files and the conversation, history included, stay, and its
-    /// next turn gets a fresh sandbox. A conversation that still runs in the workspace's shared sandbox becomes a
-    /// dedicated one when a directory is given, so a conversation from before dedicated sandboxes can be continued
-    /// jailed; the shared sandbox itself is never deleted.
+    /// works in. Retiring sends the gateway nothing: the sandbox stays on it, recorded on the conversation as retired,
+    /// until the conversation is deleted, so no DELETE wipes the workspace's command output for the other sandboxes on
+    /// it (SBX#372). The workspace files and the conversation, history included, stay, and its next turn gets a fresh
+    /// sandbox. A conversation that still runs in the workspace's shared sandbox becomes a dedicated one when a
+    /// directory is given, so a conversation from before dedicated sandboxes can be continued jailed; the shared
+    /// sandbox itself is never touched.
     /// </summary>
     /// <remarks>
     /// <para>
     /// 400 for a shared-sandbox conversation without a directory, a host without a sandbox registry, or a directory
     /// that is malformed, outside the workspace's own working directory, or unsupported by the conversation's
-    /// provider and mode. 409 while it has work in hand, or when a new turn took it during the release. 503 when the
-    /// gateway did not confirm the delete: nothing was moved, and the sandbox stays tracked, so a retry deletes it.
-    /// Every refusal comes before anything changes, except two that come after the gateway confirmed the delete, with
-    /// the sandbox already gone and nothing stored. The move's mode is checked again in the same step that stores it,
-    /// so when a switch into a mode a dedicated sandbox cannot have (Mini App or browser debugging) was stored during
-    /// the release, the release answers 400; the switch itself has already answered 200. A move that could not be
-    /// stored (the store failed, the thread was deleted, or its mode kept changing) answers 503; the thread then owns
-    /// no sandbox, so a retry deletes nothing and stores the move.
+    /// provider and mode. 409 while it has work in hand, or when a new turn took it during the release. Every refusal
+    /// comes before anything changes, except two that come after the sandbox was retired, with nothing stored. The
+    /// move's mode is checked again in the same step that stores it, so when a switch into a mode a dedicated sandbox
+    /// cannot have (Mini App or browser debugging) was stored during the release, the release answers 400; the switch
+    /// itself has already answered 200. A move that could not be stored (the store failed, the thread was deleted, or
+    /// its mode kept changing) answers 503; the thread then holds no sandbox, so a retry retires nothing and stores
+    /// the move. A failure to record the retirement stores no move either, and fails the request.
     /// </para>
     /// <para>
     /// Not every switch is caught: one whose mode is stored only after the move (it builds its agent first), or one
     /// into a mode without a sandbox, can still leave a dedicated thread in a mode it cannot build in.
     /// </para>
     /// <para>
-    /// The release is taken while no agent of the conversation is loaded, under the pool's lock, so it deletes only
-    /// sandboxes no live agent holds, and the move is stored only after the gateway confirms the delete; until then
-    /// the conversation's next sandbox is held back, so it is always created from the stored directory. This awaits
-    /// any release of the conversation already running, so 200 means the gateway confirmed it.
+    /// The release is taken while no agent of the conversation is loaded, under the pool's lock, so it retires only
+    /// sandboxes no live agent holds, and the move is stored only after the retirement is recorded; until then the
+    /// conversation's next sandbox is held back, so it is always created from the stored directory. This awaits any
+    /// release of the conversation already running, so 200 means the retirement is recorded.
     /// </para>
     /// </remarks>
     [HttpPost("{threadId}/sandbox/release")]
@@ -2561,8 +2562,8 @@ public class ConversationsController(
                 threadId,
                 () =>
                     release = movedTo is null
-                        ? sandboxSessionRegistry.ReleaseOwnedSessionsAsync(threadId, CancellationToken.None)
-                        : sandboxSessionRegistry.ReleaseOwnedSessionsAsync(
+                        ? sandboxSessionRegistry.RetireOwnedSessionsAsync(threadId, CancellationToken.None)
+                        : sandboxSessionRegistry.RetireOwnedSessionsAsync(
                             threadId,
                             movedTo,
                             commitMove!,
@@ -2595,31 +2596,12 @@ public class ConversationsController(
             );
             throw;
         }
-        catch (AchieveAi.LmDotnetTools.Sandbox.SandboxException ex)
-        {
-            logger.LogWarning(
-                ex,
-                "Releasing the dedicated sandbox of thread {ThreadId} failed; directory move {MovedTo} not stored",
-                threadId,
-                movedTo
-            );
-            return StatusCode(
-                StatusCodes.Status503ServiceUnavailable,
-                new
-                {
-                    error = "sandbox_release_failed",
-                    code = "sandbox_release_failed",
-                    detail = ex.Message,
-                    threadId,
-                }
-            );
-        }
         catch (DedicatedSandboxModeUnsupportedException ex)
         {
             // A mode switch landed after the check above: the move is not stored, and the thread keeps the mode.
             logger.LogWarning(
                 ex,
-                "Released the sandbox of thread {ThreadId}, but its mode changed to one a dedicated sandbox cannot "
+                "Retired the sandbox of thread {ThreadId}, but its mode changed to one a dedicated sandbox cannot "
                     + "have; directory move {MovedTo} not stored",
                 threadId,
                 movedTo
@@ -2628,12 +2610,12 @@ public class ConversationsController(
         }
         catch (MoveNotStoredException ex)
         {
-            // The DELETE was confirmed, then the move was not stored: the store failed, the thread was deleted, or its
-            // mode kept changing. The thread keeps its old directory and owns no sandbox, so a retry deletes nothing
+            // The sandbox was retired, then the move was not stored: the store failed, the thread was deleted, or its
+            // mode kept changing. The thread keeps its old directory and holds no sandbox, so a retry retires nothing
             // and stores the move again.
             logger.LogError(
                 ex.InnerException,
-                "Released the dedicated sandbox of thread {ThreadId}, but storing its move to {MovedTo} failed",
+                "Retired the dedicated sandbox of thread {ThreadId}, but storing its move to {MovedTo} failed",
                 threadId,
                 movedTo
             );
@@ -2643,7 +2625,7 @@ public class ConversationsController(
                 {
                     error = "sandbox_release_failed",
                     code = "sandbox_release_failed",
-                    detail = "The sandbox was deleted, but the new working directory was not stored. Retry the release.",
+                    detail = "The sandbox was retired, but the new working directory was not stored. Retry the release.",
                     threadId,
                 }
             );
@@ -2810,25 +2792,37 @@ public class ConversationsController(
     }
 
     /// <summary>
-    /// Starts deleting the conversation's dedicated sandbox, the only route that deletes it on a conversation's
-    /// behalf besides the release route. An idle unload leaves the sandbox to retire, so it may still be tracked
-    /// though no agent is loaded. The container only, never the workspace files. A failed delete stays tracked, so
-    /// a workspace release (a backup restore or a purge) retries it: the deleted conversation's own release route
-    /// answers unknown thread. Returns <see langword="false"/>, deleting nothing, when an agent of the conversation
-    /// is pooled again, such as one a send rebuilt while the old one was disposed: it holds the sandbox.
+    /// Starts deleting the conversation's dedicated sandboxes, the only route that deletes them on a conversation's
+    /// behalf: the one this host tracks (an idle unload leaves it, so it may be tracked though no agent is loaded)
+    /// and every one the conversation records, retired by a move or left by a restart. The containers only, never the
+    /// workspace files. Each is deleted under the credential of the app that created it, the caller's or this
+    /// host's; one neither has is logged and left. A failed delete stays tracked, so a workspace release (a backup
+    /// restore or a purge) retries it: the deleted conversation's own release route answers unknown thread. Returns
+    /// <see langword="false"/>, deleting nothing, when an agent of the conversation is pooled again, such as one a
+    /// send rebuilt while the old one was disposed: it holds the sandbox.
     /// </summary>
-    private bool TryStartDeletingOwnedSandbox(string threadId)
+    private async Task<bool> TryStartDeletingOwnedSandboxAsync(string threadId, CancellationToken ct)
     {
         if (sandboxSessionRegistry is not { } registry)
         {
             return true;
         }
 
+        // Read now: they go with the conversation's metadata. They name the sandboxes this host no longer tracks, the
+        // ones a move retired and the current one of a host that restarted since.
+        var persisted = await registry.LoadOwnedSandboxesAsync(threadId, ct);
+        var callerCredential = TryBuildCallerCredential(HttpContext?.Request?.Headers);
         Task? release = null;
         if (
             !agentPool.TryRunWhileNotPooled(
                 threadId,
-                () => release = registry.ReleaseOwnedSessionsAsync(threadId, CancellationToken.None)
+                () =>
+                    release = registry.ReleaseOwnedSessionsAsync(
+                        threadId,
+                        persisted,
+                        callerCredential,
+                        CancellationToken.None
+                    )
             )
         )
         {
@@ -2935,7 +2929,7 @@ public class ConversationsController(
 
         await agentPool.RemoveAgentAsync(threadId);
 
-        if (!TryStartDeletingOwnedSandbox(threadId))
+        if (!await TryStartDeletingOwnedSandboxAsync(threadId, ct))
         {
             return WhileRunningConflict(
                 threadId,
