@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -17,12 +18,24 @@ internal static partial class StudyStore
     internal const string RelativeRoot = ".experimentation/reviewer-evolution";
 
     /// <summary>research-store.mjs's record id: a lowercase kebab identifier of at most 100 characters.</summary>
-    [GeneratedRegex("^[a-z0-9]+(?:-[a-z0-9]+)*$")]
+    [GeneratedRegex(@"\A[a-z0-9]+(?:-[a-z0-9]+)*\z")]
     private static partial Regex RecordIdPattern();
 
     internal static bool IsRecordId(string id) => id.Length <= 100 && RecordIdPattern().IsMatch(id);
 
     internal static string Root(string store) => Path.Combine(store, ".experimentation", "reviewer-evolution");
+
+    /// <summary>The indented JSON the study's records and compare's result are written in.</summary>
+    internal static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
+
+    /// <summary>Whether <paramref name="path" /> is the study's own folder or anywhere under it.</summary>
+    internal static bool IsInside(string store, string path)
+    {
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Root(store)));
+        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return full.Equals(root, comparison) || full.StartsWith(root + Path.DirectorySeparatorChar, comparison);
+    }
 
     /// <summary>
     ///     Refuses <paramref name="experiment" /> unless the study in <paramref name="store" /> holds it as an
@@ -67,14 +80,17 @@ internal static partial class StudyStore
     /// <summary>
     ///     Files <paramref name="artifact" /> under <c>artifacts/</c> and an evidence record that cites its path and
     ///     SHA-256, linked <c>derived-from</c> the experiment. Both are named by that hash, so the same result filed
-    ///     twice is one record ("unchanged"), and a new result is a new record beside the old one, never over it.
+    ///     twice is one record ("unchanged", once the record and its artifact are checked to be that result's), and a
+    ///     new result is a new record beside the old one, never over it. <paramref name="whileLocked" /> runs under the
+    ///     same study lock, after the filing, so two writers never interleave their outputs.
     /// </summary>
     internal static (string Outcome, string RecordId, string ArtifactPath) AddEvidence(
         string store,
         string experiment,
         string title,
         string artifact,
-        Func<string, string, JsonObject> data
+        Func<string, string, JsonObject> data,
+        Action whileLocked
     )
     {
         RequireExperiment(store, experiment);
@@ -85,12 +101,14 @@ internal static partial class StudyStore
         var relativeArtifact = $"artifacts/{id}.json";
         using var _ = Lock(root);
         var recordPath = Path.Combine(root, "records", id + ".json");
+        var artifactPath = Path.Combine(root, "artifacts", id + ".json");
         if (File.Exists(recordPath))
         {
+            RequireFiled(recordPath, artifactPath, experiment, relativeArtifact, sha);
+            whileLocked();
             return ("unchanged", id, relativeArtifact);
         }
         Directory.CreateDirectory(Path.Combine(root, "artifacts"));
-        var artifactPath = Path.Combine(root, "artifacts", id + ".json");
         if (!File.Exists(artifactPath))
         {
             WriteNew(artifactPath, bytes);
@@ -106,15 +124,50 @@ internal static partial class StudyStore
             ["kind"] = "evidence",
             ["title"] = title,
             ["summary"] = $"Paired compare of experiment {experiment}; results in {relativeArtifact} (sha256 {sha}).",
-            ["createdAt"] = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+            ["createdAt"] = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture),
             ["links"] = new JsonArray(new JsonObject { ["rel"] = "derived-from", ["target"] = experiment }),
             ["data"] = data(relativeArtifact, sha),
         };
         WriteNew(recordPath, Encoding.UTF8.GetBytes(record.ToJsonString(Indented) + "\n"));
+        whileLocked();
         return ("created", id, relativeArtifact);
     }
 
-    private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
+    // The record already at this result's name must be its evidence record, and the artifact it cites must still hold
+    // the result, before the result counts as filed.
+    private static void RequireFiled(
+        string recordPath,
+        string artifactPath,
+        string experiment,
+        string relativeArtifact,
+        string sha
+    )
+    {
+        var record = Parse(recordPath);
+        var cites =
+            record["kind"]?.GetValue<string>() == "evidence"
+            && record["links"] is JsonArray links
+            && links.Any(link =>
+                link?["rel"]?.GetValue<string>() == "derived-from" && link["target"]?.GetValue<string>() == experiment
+            )
+            && record["summary"]?.GetValue<string>() is { } summary
+            && summary.Contains(relativeArtifact, StringComparison.Ordinal)
+            && summary.Contains(sha, StringComparison.Ordinal);
+        if (!cites)
+        {
+            throw new InvalidOperationException(
+                $"{recordPath} exists but is not this result's evidence record (kind evidence, derived-from "
+                    + $"{experiment}, citing {relativeArtifact} sha256 {sha}); nothing was filed."
+            );
+        }
+        if (!File.Exists(artifactPath) || VariantManifest.Sha256Hex(File.ReadAllBytes(artifactPath)) != sha)
+        {
+            throw new InvalidOperationException(
+                $"{recordPath} cites {relativeArtifact} sha256 {sha}, but that artifact is "
+                    + $"{(File.Exists(artifactPath) ? "changed" : "missing")}; nothing was filed."
+            );
+        }
+    }
 
     private static Dictionary<string, JsonObject> Records(string root)
     {
@@ -126,15 +179,30 @@ internal static partial class StudyStore
         }
         foreach (var file in Directory.EnumerateFiles(directory, "*.json"))
         {
-            if (
-                JsonNode.Parse(File.ReadAllText(file)) is JsonObject record
-                && record["id"]?.GetValue<string>() is { } id
-            )
+            var record = Parse(file);
+            if (record["id"]?.GetValue<string>() is { } id)
             {
                 records[id] = record;
             }
         }
         return records;
+    }
+
+    // A record file that does not parse stops every gate, so the error names it.
+    private static JsonObject Parse(string file)
+    {
+        try
+        {
+            return JsonNode.Parse(File.ReadAllText(file)) as JsonObject
+                ?? throw new InvalidOperationException($"Study record file {file} is not a JSON object.");
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidOperationException(
+                $"Study record file {file} is not valid JSON: {exception.Message}",
+                exception
+            );
+        }
     }
 
     // research-store.mjs's writer lock: one writer adds at a time, and a lock left behind is the operator's to clear.

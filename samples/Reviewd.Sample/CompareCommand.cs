@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Text;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
 
@@ -95,6 +94,14 @@ internal static class CompareCommand
         var store = options.Required("store");
         var output = options.Required("out");
         StudyStore.RequireExperiment(store, experiment);
+        // The result's own copy is filed under artifacts/; an --out in the study would write over its records.
+        if (StudyStore.IsInside(store, output))
+        {
+            throw new ArgumentException(
+                $"--out {output} is inside the study at {StudyStore.Root(store)}; write the result outside it (compare "
+                    + "files its own copy under artifacts/)."
+            );
+        }
         var databases = options.GetAll("arm");
         if (databases.Count < 2)
         {
@@ -110,10 +117,7 @@ internal static class CompareCommand
             arms.Add(await ReadArmAsync(database, experiment, ct));
         }
         var result = Compare(experiment, arms);
-        var json = result.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + "\n";
-        Directory.CreateDirectory(output);
-        await File.WriteAllTextAsync(Path.Combine(output, "compare.json"), json, ct);
-        await File.WriteAllTextAsync(Path.Combine(output, "compare.md"), Markdown(result), ct);
+        var json = result.ToJsonString(StudyStore.Indented) + "\n";
         var (outcome, recordId, artifact) = StudyStore.AddEvidence(
             store,
             experiment,
@@ -132,7 +136,14 @@ internal static class CompareCommand
                         + "bound while any conversation is incomplete); a pair needs both arms judged on the same head; "
                         + $"intervals are {Resamples} percentile bootstrap resamples of PR pairs, seed {Seed}, not "
                         + "corrected for multiple arms.",
-                }
+                },
+            // Under the study lock: two compares to one --out never leave one's JSON beside the other's Markdown.
+            () =>
+            {
+                Directory.CreateDirectory(output);
+                File.WriteAllText(Path.Combine(output, "compare.json"), json);
+                File.WriteAllText(Path.Combine(output, "compare.md"), Markdown(result));
+            }
         );
         Console.WriteLine(
             new JsonObject

@@ -2342,7 +2342,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             .Should()
             .Contain("--workspace ws-b --provider test --mode mode-1 --shadow")
             .And.Contain("--variant b-007 --manifest ")
-            .And.Contain("--experiment exp-1")
+            .And.Contain($"--experiment exp-1 --store {_files} ")
             .And.Contain("--read-only-egress --read-repos <org/project/repo,");
         result["champion"]!.GetValue<string>().Should().Be(S_champion);
     }
@@ -2423,6 +2423,26 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         };
         using var http = new HttpClient(host) { BaseAddress = new Uri("http://localhost/") };
         string[] shadow = ["--session", "session", "--workspace", "workspace", "--provider", "test", "--shadow"];
+        // The public entry: on --execute it reads the workspace and session from the host and gateway before its run.
+        var run = CliOptions.Parse([
+            "review",
+            "run",
+            "--repo",
+            Repo.DisplayName,
+            "--pr",
+            "17",
+            "--slot",
+            "2",
+            "--db",
+            _database,
+            "--max-age-hours",
+            "72",
+            .. shadow,
+            "--post-session",
+            "read-only",
+            .. flags,
+            "--execute",
+        ]);
         var batch = CliOptions.Parse([
             "review",
             "batch",
@@ -2451,23 +2471,34 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             S_champion,
         ]);
 
-        var entries = new Func<Task>[]
+        var entries = new (string Name, Func<Task> Run)[]
         {
-            () => RunAsync(host, [], ["--shadow", .. flags]),
-            () => ReviewBatch.RunBatchAsync(batch, config, CancellationToken.None),
-            () =>
-                VariantUp.RunCoreAsync(
-                    up,
-                    new LmStreamingS2SClient(http, null, null, null),
-                    (_, _, _, _) => Task.FromResult(""),
-                    (_, _, _) => Task.FromResult(new VariantUp.Clone("", [])),
-                    CancellationToken.None
-                ),
+            ("review run", () => ReviewRunner.RunAsync(run, config, CancellationToken.None)),
+            ("review batch", () => ReviewBatch.RunBatchAsync(batch, config, CancellationToken.None)),
+            (
+                "variant up",
+                () =>
+                    VariantUp.RunCoreAsync(
+                        up,
+                        new LmStreamingS2SClient(http, null, null, null),
+                        (_, _, _, _) => Task.FromResult(""),
+                        (_, _, _) => Task.FromResult(new VariantUp.Clone("", [])),
+                        CancellationToken.None
+                    )
+            ),
         };
 
-        foreach (var entry in entries)
+        foreach (var (name, entry) in entries)
         {
-            (await entry.Should().ThrowAsync<ArgumentException>()).WithMessage(refusal);
+            var refused = await entry.Should().ThrowAsync<ArgumentException>();
+            Logger.LogInformation(
+                "Study {Study}, store {Store}: {Entry} refused with {Refusal}",
+                study,
+                store,
+                name,
+                refused.Which.Message
+            );
+            refused.WithMessage(refusal);
         }
         host.Requests.Should().BeEmpty();
         gateway.Requests.Should().BeEmpty();

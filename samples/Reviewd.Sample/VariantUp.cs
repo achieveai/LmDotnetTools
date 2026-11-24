@@ -233,7 +233,8 @@ internal static class VariantUp
             + "--read-repos <org/project/repo,... every repo this arm reviews>, then "
             + $"review batch --selection <json> --db <this arm's db> --session <session> --workspace {workspace.Id} "
             + $"--provider {manifest.Provider ?? "<provider>"} --mode {modeId}{effort} --shadow --post-session <read-only "
-            + $"session> --variant {manifest.Id} --manifest {manifest.Path} --experiment {experiment}{taskPrompt} --execute";
+            + $"session> --variant {manifest.Id} --manifest {manifest.Path} --experiment {experiment} "
+            + $"--store {options.Required("store")}{taskPrompt} --execute";
         return result;
     }
 }

@@ -1,48 +1,15 @@
 extern alias Reviewd;
 
+using System.Globalization;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 using Reviewd::Reviewd.Sample;
 using Xunit.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
-
-/// <summary>
-///     A study store in research-store.mjs's format: <c>study.json</c> and one <c>records/&lt;id&gt;.json</c> per
-///     record, under <c>.experimentation/reviewer-evolution/</c> of <c>store</c>.
-/// </summary>
-internal static class StudyFixture
-{
-    internal static void Write(string store, params (string Id, string Kind, string? Supersedes)[] records)
-    {
-        var root = Path.Combine(store, ".experimentation", "reviewer-evolution");
-        Directory.CreateDirectory(Path.Combine(root, "records"));
-        File.WriteAllText(
-            Path.Combine(root, "study.json"),
-            """{"schemaVersion":1,"id":"reviewer-evolution","question":"q","createdAt":"2026-11-23T00:00:00.000Z"}"""
-        );
-        foreach (var (id, kind, supersedes) in records)
-        {
-            var record = new JsonObject
-            {
-                ["schemaVersion"] = 1,
-                ["id"] = id,
-                ["kind"] = kind,
-                ["title"] = id,
-                ["summary"] = id,
-                ["createdAt"] = "2026-11-23T00:00:00.000Z",
-                ["links"] = new JsonArray(),
-                ["data"] = new JsonObject(),
-            };
-            if (supersedes is not null)
-            {
-                record["supersedes"] = supersedes;
-            }
-            File.WriteAllText(Path.Combine(root, "records", id + ".json"), record.ToJsonString());
-        }
-    }
-}
 
 /// <summary>
 ///     <c>compare</c> pairs two shadow arms' blind judgments by PR and reviewed head, and files the paired result in the
@@ -66,7 +33,9 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
         string JudgeMode = "judge",
         string? KnowledgeBaseTree = null,
         string JudgmentStage = "completed",
-        string Experiment = "aa-1"
+        string Experiment = "aa-1",
+        bool RecordsTree = true,
+        string? Artifact = null
     );
 
     private string Arm(string variant, params Review[] reviews)
@@ -93,7 +62,7 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
         Put(ReviewArm.Key, new JsonObject { ["shadow"] = true, ["variant"] = variant });
         foreach (var review in reviews)
         {
-            var artifact = $"{variant}-{review.Pr}".PadRight(40, '0');
+            var artifact = (review.Artifact ?? $"{variant}-{review.Pr}").PadRight(40, '0');
             Put(
                 $"reviewd/review-run/{Repo}/{review.Pr}",
                 new JsonObject
@@ -102,11 +71,13 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
                     ["shadow"] = true,
                     ["headSha"] = new string(review.Head[0], 40),
                     ["artifactCommit"] = new JsonObject { ["commit"] = artifact },
-                    ["provenance"] = new JsonObject
-                    {
-                        ["experimentId"] = review.Experiment,
-                        ["knowledgeBaseTree"] = review.KnowledgeBaseTree ?? Tree,
-                    },
+                    ["provenance"] = review.RecordsTree
+                        ? new JsonObject
+                        {
+                            ["experimentId"] = review.Experiment,
+                            ["knowledgeBaseTree"] = review.KnowledgeBaseTree ?? Tree,
+                        }
+                        : new JsonObject { ["experimentId"] = review.Experiment },
                 }
             );
             Put(
@@ -153,7 +124,11 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
         return path;
     }
 
-    private Task<int> CompareAsync(params string[] arms) =>
+    private string Out => Path.Combine(_files, "out");
+
+    private Task<int> CompareAsync(params string[] arms) => CompareToAsync(Out, arms);
+
+    private Task<int> CompareToAsync(string output, params string[] arms) =>
         CompareCommand.RunAsync(
             CliOptions.Parse([
                 "compare",
@@ -163,7 +138,7 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
                 _files,
                 .. arms.SelectMany(a => new[] { "--arm", a }),
                 "--out",
-                Path.Combine(_files, "out"),
+                output,
             ]),
             CancellationToken.None
         );
@@ -249,10 +224,13 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
         Evidence().Should().Equal([filed], "the same result is the same record");
     }
 
-    // Arms reviewed with other knowledge, or judged by another judge, are refused before anything is written.
+    // Arms not reviewed and judged alike are refused before anything is written: a receipt with no knowledge tree,
+    // other knowledge, another judge, or one review in two arms.
     [Theory]
+    [InlineData("no tree", "Arm a2 */2: the review receipt records no knowledgeBaseTree*")]
     [InlineData("knowledge", "The arms reviewed with different KnowledgeBase/ trees*")]
     [InlineData("judge", "The arms were judged by different judges*")]
+    [InlineData("same review", "Review a1-2* is in more than one arm (a1, a2);*")]
     public async Task Compare_refuses_arms_reviewed_with_other_knowledge_or_judged_by_another_judge(
         string differs,
         string refusal
@@ -263,16 +241,226 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
         var b = Arm(
             "a2",
             new Review(1),
-            differs == "knowledge"
-                ? new Review(2, KnowledgeBaseTree: new string('8', 40))
-                : new Review(2, JudgeMode: "j2")
+            differs switch
+            {
+                "no tree" => new Review(2, RecordsTree: false),
+                "knowledge" => new Review(2, KnowledgeBaseTree: new string('8', 40)),
+                "judge" => new Review(2, JudgeMode: "j2"),
+                _ => new Review(2, Artifact: "a1-2"),
+            }
         );
 
         var compare = () => CompareAsync(a, b);
 
-        (await compare.Should().ThrowAsync<InvalidOperationException>()).WithMessage(refusal);
-        Directory.Exists(Path.Combine(_files, "out")).Should().BeFalse();
+        var refused = await compare.Should().ThrowAsync<InvalidOperationException>();
+        Logger.LogInformation("Arms differ by {Differs}: refused with {Refusal}", differs, refused.Which.Message);
+        refused.WithMessage(refusal);
+        Directory.Exists(Out).Should().BeFalse();
         Evidence().Should().BeEmpty();
+    }
+
+    // Unequal deltas give an interval wider than a point. The bounds sit where the normal approximation puts a 90%
+    // interval (mean 0.355 +- 1.645 x 0.1655), and they are pinned: the seed and resample count are part of the result,
+    // so changing either, or the percentiles, moves them.
+    [Fact]
+    public void Paired_gives_the_90_percent_bootstrap_interval_of_the_mean_delta()
+    {
+        double[] deltas = [0.13, 0.91, -0.42, 0.05, 1.37, 0, 0.66, -0.18, 0.29, 0.74];
+
+        var paired = CompareCommand.Paired([.. deltas.Select(d => (0.0, d))]);
+
+        Logger.LogInformation("Paired summary {Paired}", paired.ToJsonString());
+        paired["n"]!.GetValue<int>().Should().Be(10);
+        paired["meanDelta"]!.GetValue<double>().Should().Be(0.355);
+        paired["sdDelta"]!.GetValue<double>().Should().Be(0.5518);
+        var interval = paired["ci90"]!.AsArray().Select(v => v!.GetValue<double>()).ToArray();
+        interval[0].Should().BeApproximately(0.355 - 0.2723, 0.03);
+        interval[1].Should().BeApproximately(0.355 + 0.2723, 0.03);
+        interval.Should().Equal(0.083, 0.634);
+    }
+
+    // A result already filed counts as filed only while its record is that result's evidence record and the artifact
+    // it cites still holds the result; otherwise the rerun refuses and writes nothing.
+    [Theory]
+    [InlineData("deleted artifact", "* cites artifacts/aa-1-compare-*.json sha256 *, but that artifact is missing;*")]
+    [InlineData("changed artifact", "* cites artifacts/aa-1-compare-*.json sha256 *, but that artifact is changed;*")]
+    [InlineData("another kind", "* exists but is not this result's evidence record*")]
+    [InlineData("no link", "* exists but is not this result's evidence record*")]
+    public async Task A_filed_result_is_unchanged_only_while_its_record_and_artifact_still_hold_it(
+        string damage,
+        string refusal
+    )
+    {
+        StudyFixture.Write(_files, ("aa-1", "experiment", null));
+        var a = Arm("a1", new Review(1));
+        var b = Arm("a2", new Review(1, Capture: 0.7));
+        (await CompareAsync(a, b)).Should().Be(0);
+        var filed = Evidence().Single();
+        var artifact = Path.Combine(StudyRoot, "artifacts", filed + ".json");
+        var recordPath = Path.Combine(StudyRoot, "records", filed + ".json");
+        var record = JsonNode.Parse(await File.ReadAllTextAsync(recordPath))!;
+        switch (damage)
+        {
+            case "deleted artifact":
+                File.Delete(artifact);
+                break;
+            case "changed artifact":
+                await File.AppendAllTextAsync(artifact, " ");
+                break;
+            case "another kind":
+                record["kind"] = "lesson";
+                await File.WriteAllTextAsync(recordPath, record.ToJsonString());
+                break;
+            default:
+                record["links"] = new JsonArray();
+                await File.WriteAllTextAsync(recordPath, record.ToJsonString());
+                break;
+        }
+        Directory.Delete(Out, recursive: true);
+
+        var rerun = () => CompareAsync(a, b);
+
+        var refused = await rerun.Should().ThrowAsync<InvalidOperationException>();
+        Logger.LogInformation(
+            "Filed result with {Damage}: rerun refused with {Refusal}",
+            damage,
+            refused.Which.Message
+        );
+        refused.WithMessage(refusal);
+        Directory.Exists(Out).Should().BeFalse();
+        Evidence().Should().Equal(filed);
+    }
+
+    // The study's own folders are not an output: an --out there would write compare.json among its records.
+    [Theory]
+    [InlineData("")]
+    [InlineData("records")]
+    [InlineData("artifacts/out")]
+    public async Task Compare_refuses_an_output_inside_the_study(string under)
+    {
+        StudyFixture.Write(_files, ("aa-1", "experiment", null));
+        var a = Arm("a1", new Review(1));
+        var b = Arm("a2", new Review(1));
+        var output = Path.Combine(StudyRoot, under);
+
+        var compare = () => CompareToAsync(output, a, b);
+
+        var refused = await compare.Should().ThrowAsync<ArgumentException>();
+        Logger.LogInformation("--out {Output} refused with {Refusal}", output, refused.Which.Message);
+        refused.WithMessage("--out * is inside the study at *");
+        Directory
+            .EnumerateFiles(StudyRoot, "*", SearchOption.AllDirectories)
+            .Select(f => Path.GetRelativePath(StudyRoot, f).Replace('\\', '/'))
+            .Should()
+            .BeEquivalentTo("study.json", "records/aa-1.json");
+    }
+
+    // The outputs are written under the study lock with the filing: while another writer holds it, compare writes
+    // neither its evidence nor its --out files, so two compares to one --out never mix one's JSON with the other's
+    // Markdown.
+    [Fact]
+    public async Task Compare_writes_its_outputs_only_under_the_study_lock()
+    {
+        StudyFixture.Write(_files, ("aa-1", "experiment", null));
+        var a = Arm("a1", new Review(1));
+        var b = Arm("a2", new Review(1));
+        var held = Path.Combine(StudyRoot, ".write-lock");
+        await File.WriteAllTextAsync(held, """{"pid":1,"writer":"another compare"}""");
+
+        var compare = () => CompareAsync(a, b);
+
+        (await compare.Should().ThrowAsync<InvalidOperationException>()).WithMessage("The study is locked*");
+        Directory.Exists(Out).Should().BeFalse();
+        Evidence().Should().BeEmpty();
+        File.Delete(held);
+        (await CompareAsync(a, b)).Should().Be(0);
+        Directory.EnumerateFiles(Out).Select(Path.GetFileName).Should().BeEquivalentTo("compare.json", "compare.md");
+    }
+
+    // The record's createdAt is an ISO UTC timestamp whatever the culture (th-TH counts years from 543 BC).
+    [Fact]
+    public async Task The_evidence_record_timestamp_is_invariant_under_another_culture()
+    {
+        StudyFixture.Write(_files, ("aa-1", "experiment", null));
+        var a = Arm("a1", new Review(1));
+        var b = Arm("a2", new Review(1));
+        var previous = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("th-TH");
+            (await CompareAsync(a, b)).Should().Be(0);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previous;
+        }
+
+        var record = JsonNode.Parse(
+            await File.ReadAllTextAsync(Path.Combine(StudyRoot, "records", Evidence().Single() + ".json"))
+        )!;
+        var createdAt = record["createdAt"]!.GetValue<string>();
+        Logger.LogInformation("createdAt under th-TH: {CreatedAt}", createdAt);
+        createdAt.Should().MatchRegex(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$");
+        DateTimeOffset
+            .ParseExact(
+                createdAt,
+                "yyyy-MM-ddTHH:mm:ss.fffZ",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal
+            )
+            .Should()
+            .BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(10));
+    }
+
+    // A record file that does not parse stops the gate, and the error names it.
+    [Fact]
+    public async Task A_malformed_study_record_is_named_in_the_refusal()
+    {
+        StudyFixture.Write(_files, ("aa-1", "experiment", null));
+        await File.WriteAllTextAsync(Path.Combine(StudyRoot, "records", "broken.json"), "{");
+        var a = Arm("a1", new Review(1));
+        var b = Arm("a2", new Review(1));
+
+        var compare = () => CompareAsync(a, b);
+
+        (await compare.Should().ThrowAsync<InvalidOperationException>()).WithMessage(
+            $"Study record file {Path.Combine(StudyRoot, "records", "broken.json")} is not valid JSON:*"
+        );
+        Directory.Exists(Out).Should().BeFalse();
+    }
+
+    // An experiment id is a research-store record id: lowercase kebab, at most 100 characters, nothing after it.
+    [Theory]
+    [InlineData("aa-1", true)]
+    [InlineData("100 chars", true)]
+    [InlineData("101 chars", false)]
+    [InlineData("AA-1", false)]
+    [InlineData("aa_1", false)]
+    [InlineData("aa.1", false)]
+    [InlineData("aa--1", false)]
+    [InlineData("-aa", false)]
+    [InlineData("aa-", false)]
+    [InlineData("aa-1\n", false)]
+    public void An_experiment_id_is_a_lowercase_kebab_record_id_of_at_most_100_characters(string id, bool valid)
+    {
+        id = id switch
+        {
+            "100 chars" => new string('a', 100),
+            "101 chars" => new string('a', 101),
+            _ => id,
+        };
+
+        var parse = () =>
+            CliOptions.Parse(["compare", "--experiment", id, "--store", "s", "--arm", "a", "--arm", "b", "--out", "o"]);
+
+        if (valid)
+        {
+            parse.Should().NotThrow();
+        }
+        else
+        {
+            parse.Should().Throw<ArgumentException>().WithMessage("--experiment must be a study record id*");
+        }
     }
 
     protected override void Dispose(bool disposing)
@@ -282,7 +470,10 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
         {
             Directory.Delete(_files, recursive: true);
         }
-        catch (IOException) { }
+        catch (IOException exception)
+        {
+            Logger.LogWarning(exception, "Could not delete the test folder {Folder}", _files);
+        }
         base.Dispose(disposing);
     }
 }
