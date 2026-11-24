@@ -18,6 +18,18 @@ internal sealed record ShadowArm(
     JsonObject? ModePayload = null
 )
 {
+    /// <summary>
+    ///     Refuses an <c>--experiment</c> the <c>--store</c> study does not hold as a current experiment record. Entry
+    ///     points call it before their first host or gateway request.
+    /// </summary>
+    internal static void RequireStudy(CliOptions options)
+    {
+        if (options.Get("experiment") is { } experiment)
+        {
+            StudyStore.RequireExperiment(options.Required("store"), experiment);
+        }
+    }
+
     /// <summary>The live run has none; a shadow run gets the default template unless --task-prompt-file names one.</summary>
     internal static async Task<ShadowArm?> ResolveAsync(CliOptions options, string provider, CancellationToken ct)
     {
@@ -35,6 +47,10 @@ internal sealed record ShadowArm(
             return new ShadowArm(template, sha, null, null);
         }
 
+        // A variant arm reviews only under an experiment record the study store holds (plan: "no batch runs without an
+        // experiment record").
+        _ = options.Required("experiment");
+        RequireStudy(options);
         var manifest = await VariantManifest.LoadAsync(manifestPath, ct);
         var variant = options.Required("variant");
         void Agree(string what, string? pinned, string? actual)

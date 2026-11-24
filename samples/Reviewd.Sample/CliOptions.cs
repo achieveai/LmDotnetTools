@@ -3,9 +3,11 @@ namespace Reviewd.Sample;
 internal sealed class CliOptions
 {
     internal static readonly System.Text.RegularExpressions.Regex VariantLabel = new("^[a-z0-9][a-z0-9-]{0,39}$");
-    private static readonly System.Text.RegularExpressions.Regex S_experimentId = new("^[A-Za-z0-9._-]{1,80}$");
 
     private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
+
+    // compare takes one --arm per arm database, in order.
+    private readonly List<string> _arms = [];
 
     public string Command { get; private init; } = "";
     public bool ShowHelp { get; private init; }
@@ -15,6 +17,12 @@ internal sealed class CliOptions
     public string? Get(string name) => _values.GetValueOrDefault(name);
 
     public bool Has(string name) => _values.ContainsKey(name);
+
+    /// <summary>Every value of a repeatable option, in the order given (only <c>--arm</c> repeats).</summary>
+    public IReadOnlyList<string> GetAll(string name) =>
+        name == "arm" ? _arms
+        : Get(name) is { } value ? [value]
+        : [];
 
     public string Required(string name) =>
         Get(name) is { Length: > 0 } value ? value : throw new ArgumentException($"--{name} is required.");
@@ -59,10 +67,12 @@ internal sealed class CliOptions
             throw new ArgumentException("Specify a command. Use --help for usage.");
         }
 
-        var command = $"{commandArgs[0]} {commandArgs[1]}";
+        // compare is the one command of a single word.
+        var command = commandArgs[0] == "compare" ? "compare" : $"{commandArgs[0]} {commandArgs[1]}";
         var allowed = command switch
         {
-            "pr list" => new[] { "repo", "repos", "db" },
+            "compare" => new[] { "experiment", "store", "arm", "out" },
+            "pr list" => ["repo", "repos", "db"],
             "pr check" => ["repo", "repos", "db"],
             "pr pick" => ["repo", "repos", "db", "max-age-hours", "selection-out"],
             "review run" =>
@@ -88,6 +98,7 @@ internal sealed class CliOptions
                 "task-prompt-file",
                 "manifest",
                 "experiment",
+                "store",
             ],
             "review batch" =>
             [
@@ -108,6 +119,7 @@ internal sealed class CliOptions
                 "task-prompt-file",
                 "manifest",
                 "experiment",
+                "store",
             ],
             "review reconcile-slot" => ["repo", "pr", "db", "evidence", "execute"],
             "review finish-commit" => ["repo", "pr", "slot", "db", "workspace", "execute"],
@@ -160,7 +172,7 @@ internal sealed class CliOptions
             "judge close" => ["repo", "pr", "db", "store", "judgment", "remote", "execute"],
             "workspace list" => [],
             "workspace plugins" => ["workspace"],
-            "variant up" => ["manifest", "experiment", "from-workspace", "champion", "execute"],
+            "variant up" => ["manifest", "experiment", "store", "from-workspace", "champion", "execute"],
             "workspace create" => ["name", "directory", "marketplaces", "enabled-plugins"],
             "workspace edit" => ["workspace", "marketplaces", "enabled-plugins"],
             "workspace exec" => ["workspace", "directory", "timeout"],
@@ -185,7 +197,7 @@ internal sealed class CliOptions
             _ => throw new ArgumentException($"Unknown command '{command}'. Use --help for usage."),
         };
         var result = new CliOptions { Command = command, Argv = separator < 0 ? [] : args[(separator + 1)..] };
-        for (var i = 2; i < commandArgs.Length; i++)
+        for (var i = command == "compare" ? 1 : 2; i < commandArgs.Length; i++)
         {
             var arg = commandArgs[i];
             if (!arg.StartsWith("--", StringComparison.Ordinal))
@@ -222,7 +234,11 @@ internal sealed class CliOptions
                 value = commandArgs[i];
             }
 
-            if (!result._values.TryAdd(name, value))
+            if (name == "arm")
+            {
+                result._arms.Add(value);
+            }
+            else if (!result._values.TryAdd(name, value))
             {
                 throw new ArgumentException($"Duplicate option --{name}.");
             }
@@ -315,9 +331,28 @@ internal sealed class CliOptions
                 throw new ArgumentException("--champion must be a 40-character commit SHA.");
             }
         }
-        if (result.Get("experiment") is { } experiment && !S_experimentId.IsMatch(experiment))
+        if (result.Get("experiment") is { } experiment && !StudyStore.IsRecordId(experiment))
         {
-            throw new ArgumentException("--experiment must be 1-80 letters, digits, dots, underscores or dashes.");
+            throw new ArgumentException(
+                "--experiment must be a study record id: lowercase letters and digits, single dashes between them, "
+                    + "at most 100 characters."
+            );
+        }
+        // An experiment id is checked against the study store's records (StudyStore), so it always names the store.
+        if (
+            command is "review run" or "review batch" or "variant up" or "compare"
+            && result.Has("experiment") != result.Has("store")
+        )
+        {
+            throw new ArgumentException(
+                "--experiment and --store go together: --store is the review-store clone whose "
+                    + $"{StudyStore.RelativeRoot}/ study holds the experiment record."
+            );
+        }
+        if (command == "compare")
+        {
+            _ = result.Required("experiment");
+            _ = result.Required("out");
         }
 
         if (command.StartsWith("pr ", StringComparison.Ordinal))
@@ -609,12 +644,20 @@ internal sealed class CliOptions
                        Azure DevOps and GitHub GET/HEAD only, plus each listed repo's git fetch and prepare's two read
                        queries)
         sandbox exec --session <id> [--directory <relative-dir>] [--timeout <seconds>] -- <program> [args...]
-        variant up --manifest <variant.json> --experiment <record-id> --from-workspace <base-workspace-id>
-                   --champion <commit> [--execute]
+        variant up --manifest <variant.json> --experiment <record-id> --store <review-store clone>
+                   --from-workspace <base-workspace-id> --champion <commit> [--execute]
         Builds an A/B arm's workspace (variant-<id>) from its manifest: checks its review-repo clone is at the pinned
         commit and holds the same KnowledgeBase/ as the experiment's frozen champion commit, registers its plugin alias at the pinned SHA, creates or updates its chat mode, and enables
         code-reviewer from that alias, with every other plugin as in the base workspace. Prints the ids and the
-        review batch command. Without --execute it only previews.
+        review batch command. Without --execute it only previews. --experiment must be an experiment record of the
+        study in --store (.experimentation/reviewer-evolution/, research-store.mjs format), as for review run and batch.
+        compare --experiment <record-id> --store <review-store clone> --arm <baseline db> --arm <db> [--arm <db>...]
+                --out <dir>
+        Pairs each arm's final blind judgments with the baseline's (the first --arm) by PR and reviewed head, and gives
+        each metric (foundCapture, completeness, false+unproven, accuracy, hallucinations, overall, review and judge
+        cost) the mean paired delta with a 90% bootstrap interval, plus the review-cost ratio (guardrail 1.3).
+        Refuses arms judged with different KnowledgeBase/ trees or judges. Writes compare.json and compare.md to --out
+        and files the result in the study as an evidence record (artifacts/<id>.json; never overwritten).
         workspace list
         workspace plugins [--workspace <id>]
         workspace create --name <name> [--directory <leaf>] [--marketplaces <csv>] [--enabled-plugins <json>]
@@ -626,7 +669,7 @@ internal sealed class CliOptions
         review run --repo <org/project/repo> --pr <id> [--slot <0-5> | --slots <csv>] --db <pending.db>
                    --session <sandbox-session-id> --workspace <host-workspace-id> --provider <id> [--mode <id>] [--reasoning-effort <low|medium|high|xhigh>] [--max-age-hours <positive-integer>] [--execute] [--resume] [--cleanup-only]
                    [--shadow --post-session <read-only-session-id>] [--task-prompt-file <template>]
-                   [--variant <label> --manifest <variant.json> --experiment <record-id>]
+                   [--variant <label> --manifest <variant.json> --experiment <record-id> --store <review-store clone>]
         --shadow reviews without posting, for A/B experiments: Azure DevOps repos only, a fresh read-only-egress
         conversation (never a reused one), comments the review would post saved as would_post.json, and the
         artifacts committed to the store's local review branch without a push. Every step, prepare included, runs

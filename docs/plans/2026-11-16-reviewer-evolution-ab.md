@@ -43,7 +43,7 @@
 >   saved mode back and refuses a file the host stores otherwise (a field it does not keep, a number written as a
 >   string), because every run would refuse that arm.
 > - Build an arm (preview without `--execute`):
->   `variant up --manifest <manifest> --experiment <id> --from-workspace <base workspace> --champion <commit> --execute`.
+>   `variant up --manifest <manifest> --experiment <id> --store <review-store clone> --from-workspace <base workspace> --champion <commit> --execute`.
 >   It never moves the clone: it refuses one in `reviewRepo.directory` that is not at `reviewRepo.sha`, or whose
 >   `KnowledgeBase/` tree differs from the champion commit's, before it changes anything. Then it registers the alias at
 >   `plugins.sha`, creates or replaces the mode (a replace clears every field the file omits), and creates or updates
@@ -54,7 +54,7 @@
 >   `sandbox create --workspace <directory> --callback <url> --read-only-egress --read-repos <org/project/repo,...>`,
 >   then `review batch --selection <json> --db <arm db> --session <session> --workspace <workspace> --provider <provider>
 >   --mode <mode> [--reasoning-effort <effort>] --shadow --post-session <read-only session> --variant <id>
->   --manifest <manifest> --experiment <id> [--task-prompt-file <file>] --execute`.
+>   --manifest <manifest> --experiment <id> --store <review-store clone> [--task-prompt-file <file>] --execute`.
 > - Every run checks, on the host, that its workspace and mode are the ones `variant up` built for the manifest
 >   (directory, reviewer plugin source, mode name and settings) and, when it executes, that the clone is still at
 >   `reviewRepo.sha`. A resume must keep the arm it started with (task prompt, manifest, experiment, mode file), and a

@@ -112,6 +112,8 @@ internal static class ReviewRunner
 
     public static async Task<int> RunAsync(CliOptions options, ReviewdConfig config, CancellationToken ct)
     {
+        // Before the workspace and session reads below: an arm outside the study is refused without a request.
+        ShadowArm.RequireStudy(options);
         var client = config.CreateS2SClient();
         if (!options.Has("execute"))
         {

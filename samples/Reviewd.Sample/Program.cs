@@ -107,6 +107,10 @@ try
     {
         return await AuthCommands.RunAsync(options, config, cancellation.Token);
     }
+    if (options.Command == "compare")
+    {
+        return await CompareCommand.RunAsync(options, cancellation.Token);
+    }
     if (options.Command == "variant up")
     {
         return await VariantUp.RunAsync(options, config, cancellation.Token);

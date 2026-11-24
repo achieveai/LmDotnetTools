@@ -94,8 +94,10 @@ internal static class VariantUp
         CancellationToken ct
     )
     {
-        var manifest = await VariantManifest.LoadAsync(options.Required("manifest"), ct);
         var experiment = options.Required("experiment");
+        // An arm is built only under an experiment record the study store holds, preview included.
+        StudyStore.RequireExperiment(options.Required("store"), experiment);
+        var manifest = await VariantManifest.LoadAsync(options.Required("manifest"), ct);
         var champion = options.Required("champion");
         var missing = new (string Name, string? Value)[]
         {
@@ -224,14 +226,16 @@ internal static class VariantUp
         result["workspaceId"] = workspace.Id;
         result["modeId"] = modeId;
         result["reviewRepoSha"] = head;
-        var taskPrompt = manifest.TaskPromptFile is { } file ? $" --task-prompt-file {file}" : "";
+        // Paths are quoted, so a copied command survives a space in one.
+        var taskPrompt = manifest.TaskPromptFile is { } file ? $" --task-prompt-file \"{file}\"" : "";
         var effort = manifest.Effort is { } level ? $" --reasoning-effort {level}" : "";
         result["next"] =
             $"sandbox create --workspace {manifest.ReviewRepoDirectory} --callback <url> --read-only-egress "
             + "--read-repos <org/project/repo,... every repo this arm reviews>, then "
             + $"review batch --selection <json> --db <this arm's db> --session <session> --workspace {workspace.Id} "
             + $"--provider {manifest.Provider ?? "<provider>"} --mode {modeId}{effort} --shadow --post-session <read-only "
-            + $"session> --variant {manifest.Id} --manifest {manifest.Path} --experiment {experiment}{taskPrompt} --execute";
+            + $"session> --variant {manifest.Id} --manifest \"{manifest.Path}\" --experiment {experiment} "
+            + $"--store \"{Path.TrimEndingDirectorySeparator(Path.GetFullPath(options.Required("store")))}\"{taskPrompt} --execute";
         return result;
     }
 }
