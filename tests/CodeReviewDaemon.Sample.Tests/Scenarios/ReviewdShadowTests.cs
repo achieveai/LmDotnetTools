@@ -2341,8 +2341,8 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             .GetValue<string>()
             .Should()
             .Contain("--workspace ws-b --provider test --mode mode-1 --shadow")
-            .And.Contain("--variant b-007 --manifest ")
-            .And.Contain($"--experiment exp-1 --store {_files} ")
+            .And.Contain("--variant b-007 --manifest \"")
+            .And.Contain($"--experiment exp-1 --store \"{_files}\" ")
             .And.Contain("--read-only-egress --read-repos <org/project/repo,");
         result["champion"]!.GetValue<string>().Should().Be(S_champion);
     }

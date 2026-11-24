@@ -28,13 +28,56 @@ internal static partial class StudyStore
     /// <summary>The indented JSON the study's records and compare's result are written in.</summary>
     internal static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
 
-    /// <summary>Whether <paramref name="path" /> is the study's own folder or anywhere under it.</summary>
+    /// <summary>
+    ///     Whether <paramref name="path" /> is the study's own folder or anywhere under it, as written or once every
+    ///     link along either path is followed (a directory symlink or junction to <c>records/</c> lands there too).
+    /// </summary>
     internal static bool IsInside(string store, string path)
     {
-        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Root(store)));
-        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-        return full.Equals(root, comparison) || full.StartsWith(root + Path.DirectorySeparatorChar, comparison);
+        bool Under(string root, string full) =>
+            full.Equals(root, comparison) || full.StartsWith(root + Path.DirectorySeparatorChar, comparison);
+        return Under(Normal(Root(store)), Normal(path)) || Under(Resolve(Root(store)), Resolve(path));
+    }
+
+    private static string Normal(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+
+    // The path with each existing link along it replaced by its final target, so a check sees where a write lands.
+    private static string Resolve(string path)
+    {
+        var full = Normal(path);
+        var current = Path.GetPathRoot(full)!;
+        foreach (
+            var part in full[current.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries)
+        )
+        {
+            current = Path.Combine(current, part);
+            FileSystemInfo entry = Directory.Exists(current) ? new DirectoryInfo(current) : new FileInfo(current);
+            if (entry.LinkTarget is not null && entry.ResolveLinkTarget(returnFinalTarget: true) is { } target)
+            {
+                current = Normal(target.FullName);
+            }
+        }
+        return current;
+    }
+
+    /// <summary>
+    ///     Writes <paramref name="path" /> whole under a temporary name, then moves it over whatever stands there. A
+    ///     move replaces the name itself, so a file there that is a link (or a hard link) to a study record is
+    ///     replaced, never written through.
+    /// </summary>
+    internal static void Replace(string path, string text)
+    {
+        var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            File.WriteAllText(temporary, text);
+            File.Move(temporary, path, overwrite: true);
+        }
+        finally
+        {
+            File.Delete(temporary);
+        }
     }
 
     /// <summary>

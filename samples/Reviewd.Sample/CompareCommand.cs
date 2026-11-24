@@ -94,14 +94,7 @@ internal static class CompareCommand
         var store = options.Required("store");
         var output = options.Required("out");
         StudyStore.RequireExperiment(store, experiment);
-        // The result's own copy is filed under artifacts/; an --out in the study would write over its records.
-        if (StudyStore.IsInside(store, output))
-        {
-            throw new ArgumentException(
-                $"--out {output} is inside the study at {StudyStore.Root(store)}; write the result outside it (compare "
-                    + "files its own copy under artifacts/)."
-            );
-        }
+        RequireOutside(store, output);
         var databases = options.GetAll("arm");
         if (databases.Count < 2)
         {
@@ -141,8 +134,10 @@ internal static class CompareCommand
             () =>
             {
                 Directory.CreateDirectory(output);
-                File.WriteAllText(Path.Combine(output, "compare.json"), json);
-                File.WriteAllText(Path.Combine(output, "compare.md"), Markdown(result));
+                // Checked again where it is written: a link made since the first check still never reaches the study.
+                RequireOutside(store, output);
+                StudyStore.Replace(Path.Combine(output, "compare.json"), json);
+                StudyStore.Replace(Path.Combine(output, "compare.md"), Markdown(result));
             }
         );
         Console.WriteLine(
@@ -157,6 +152,18 @@ internal static class CompareCommand
             }.ToJsonString()
         );
         return 0;
+    }
+
+    // The result's own copy is filed under artifacts/; an --out in the study would write over its records.
+    private static void RequireOutside(string store, string output)
+    {
+        if (StudyStore.IsInside(store, output))
+        {
+            throw new ArgumentException(
+                $"--out {output} is inside the study at {StudyStore.Root(store)}; write the result outside it (compare "
+                    + "files its own copy under artifacts/)."
+            );
+        }
     }
 
     /// <summary>

@@ -1,5 +1,6 @@
 extern alias Reviewd;
 
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
@@ -286,6 +287,8 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
     [InlineData("changed artifact", "* cites artifacts/aa-1-compare-*.json sha256 *, but that artifact is changed;*")]
     [InlineData("another kind", "* exists but is not this result's evidence record*")]
     [InlineData("no link", "* exists but is not this result's evidence record*")]
+    [InlineData("wrong cited path", "* exists but is not this result's evidence record*")]
+    [InlineData("wrong cited sha", "* exists but is not this result's evidence record*")]
     public async Task A_filed_result_is_unchanged_only_while_its_record_and_artifact_still_hold_it(
         string damage,
         string refusal
@@ -311,8 +314,19 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
                 record["kind"] = "lesson";
                 await File.WriteAllTextAsync(recordPath, record.ToJsonString());
                 break;
-            default:
+            case "no link":
                 record["links"] = new JsonArray();
+                await File.WriteAllTextAsync(recordPath, record.ToJsonString());
+                break;
+            default:
+                // The summary is where the record cites its artifact: another path, or the right path with another hash.
+                var summary = record["summary"]!.GetValue<string>();
+                var sha = VariantManifest.Sha256Hex(await File.ReadAllBytesAsync(artifact));
+                record["summary"] =
+                    damage == "wrong cited path"
+                        ? summary.Replace($"artifacts/{filed}.json", "artifacts/other.json", StringComparison.Ordinal)
+                        : summary.Replace(sha, new string('0', 64), StringComparison.Ordinal);
+                record["summary"]!.GetValue<string>().Should().NotBe(summary, "the damage must change the citation");
                 await File.WriteAllTextAsync(recordPath, record.ToJsonString());
                 break;
         }
@@ -355,6 +369,100 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
             .BeEquivalentTo("study.json", "records/aa-1.json");
     }
 
+    // A link is followed before the check: --out through a directory link (a junction on Windows) to records/, or a
+    // folder under one, is the study's records folder and is refused before any write.
+    [Theory]
+    [InlineData("the link")]
+    [InlineData("a folder under the link")]
+    public async Task Compare_refuses_an_output_that_links_into_the_study(string through)
+    {
+        StudyFixture.Write(_files, ("aa-1", "experiment", null));
+        var a = Arm("a1", new Review(1));
+        var b = Arm("a2", new Review(1));
+        var alias = Path.Combine(_files, "alias");
+        DirectoryLink.Create(alias, Path.Combine(StudyRoot, "records"));
+        var output = through == "the link" ? alias : Path.Combine(alias, "sub");
+
+        var compare = () => CompareToAsync(output, a, b);
+
+        var refused = await compare.Should().ThrowAsync<ArgumentException>();
+        Logger.LogInformation(
+            "--out {Output} through {Through} refused with {Refusal}",
+            output,
+            through,
+            refused.Which.Message
+        );
+        refused.WithMessage("--out * is inside the study at *");
+        Directory
+            .EnumerateFileSystemEntries(Path.Combine(StudyRoot, "records"))
+            .Select(Path.GetFileName)
+            .Should()
+            .Equal("aa-1.json");
+    }
+
+    // An --out file that is a hard link to a study record is replaced, never written through: the record keeps its
+    // bytes. A hard link needs no privilege and no containment check can see it, so only the write can stop it.
+    [Fact]
+    public async Task An_output_file_hard_linked_to_a_study_record_is_replaced_not_written_through()
+    {
+        StudyFixture.Write(_files, ("aa-1", "experiment", null));
+        var a = Arm("a1", new Review(1));
+        var b = Arm("a2", new Review(1));
+        var experiment = Path.Combine(StudyRoot, "records", "aa-1.json");
+        var before = await File.ReadAllBytesAsync(experiment);
+        Directory.CreateDirectory(Out);
+        HardLink(Path.Combine(Out, "compare.json"), experiment);
+
+        (await CompareAsync(a, b)).Should().Be(0);
+
+        (await File.ReadAllBytesAsync(experiment)).Should().Equal(before);
+        var written = await File.ReadAllTextAsync(Path.Combine(Out, "compare.json"));
+        Logger.LogInformation("compare.json after the run starts {Start}", written[..Math.Min(80, written.Length)]);
+        JsonNode.Parse(written)!["schema"]!.GetValue<string>().Should().Be("reviewd-compare/1");
+    }
+
+    // The same through a file symlink, where this machine may create one.
+    [RequiresFileSymlinkFact("a file symlink needs Developer Mode or an elevated process on Windows")]
+    public async Task An_output_file_symlinked_to_a_study_record_is_replaced_not_written_through()
+    {
+        StudyFixture.Write(_files, ("aa-1", "experiment", null));
+        var a = Arm("a1", new Review(1));
+        var b = Arm("a2", new Review(1));
+        var experiment = Path.Combine(StudyRoot, "records", "aa-1.json");
+        var before = await File.ReadAllBytesAsync(experiment);
+        Directory.CreateDirectory(Out);
+        File.CreateSymbolicLink(Path.Combine(Out, "compare.json"), experiment);
+
+        (await CompareAsync(a, b)).Should().Be(0);
+
+        (await File.ReadAllBytesAsync(experiment)).Should().Equal(before);
+        new FileInfo(Path.Combine(Out, "compare.json")).LinkTarget.Should().BeNull("the link was replaced by the file");
+    }
+
+    private static void HardLink(string link, string target)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            using var mklink = Process.Start(
+                new ProcessStartInfo("cmd.exe", $"/c mklink /H \"{link}\" \"{target}\"")
+                {
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                }
+            )!;
+            mklink.WaitForExit();
+            mklink.ExitCode.Should().Be(0, mklink.StandardError.ReadToEnd());
+        }
+        else
+        {
+            using var ln = Process.Start("ln", [target, link]);
+            ln.WaitForExit();
+            ln.ExitCode.Should().Be(0);
+        }
+        File.Exists(link).Should().BeTrue($"the test needs '{link}' to be a second name for '{target}'");
+    }
+
     // The outputs are written under the study lock with the filing: while another writer holds it, compare writes
     // neither its evidence nor its --out files, so two compares to one --out never mix one's JSON with the other's
     // Markdown.
@@ -369,7 +477,9 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
 
         var compare = () => CompareAsync(a, b);
 
-        (await compare.Should().ThrowAsync<InvalidOperationException>()).WithMessage("The study is locked*");
+        var refused = await compare.Should().ThrowAsync<InvalidOperationException>();
+        Logger.LogInformation("With {Lock} held, compare refused with {Refusal}", held, refused.Which.Message);
+        refused.WithMessage("The study is locked*");
         Directory.Exists(Out).Should().BeFalse();
         Evidence().Should().BeEmpty();
         File.Delete(held);
@@ -412,20 +522,23 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
             .BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(10));
     }
 
-    // A record file that does not parse stops the gate, and the error names it.
-    [Fact]
-    public async Task A_malformed_study_record_is_named_in_the_refusal()
+    // A record file that does not parse, or is not an object, stops the gate, and the error names it.
+    [Theory]
+    [InlineData("{", "is not valid JSON:*")]
+    [InlineData("[]", "is not a JSON object.")]
+    public async Task A_malformed_study_record_is_named_in_the_refusal(string content, string refusal)
     {
         StudyFixture.Write(_files, ("aa-1", "experiment", null));
-        await File.WriteAllTextAsync(Path.Combine(StudyRoot, "records", "broken.json"), "{");
+        var broken = Path.Combine(StudyRoot, "records", "broken.json");
+        await File.WriteAllTextAsync(broken, content);
         var a = Arm("a1", new Review(1));
         var b = Arm("a2", new Review(1));
 
         var compare = () => CompareAsync(a, b);
 
-        (await compare.Should().ThrowAsync<InvalidOperationException>()).WithMessage(
-            $"Study record file {Path.Combine(StudyRoot, "records", "broken.json")} is not valid JSON:*"
-        );
+        var refused = await compare.Should().ThrowAsync<InvalidOperationException>();
+        Logger.LogInformation("Record content {Content} refused with {Refusal}", content, refused.Which.Message);
+        refused.WithMessage($"Study record file {broken} {refusal}");
         Directory.Exists(Out).Should().BeFalse();
     }
 
@@ -452,6 +565,16 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
 
         var parse = () =>
             CliOptions.Parse(["compare", "--experiment", id, "--store", "s", "--arm", "a", "--arm", "b", "--out", "o"]);
+        string? error = null;
+        try
+        {
+            parse();
+        }
+        catch (ArgumentException exception)
+        {
+            error = exception.Message;
+        }
+        Logger.LogInformation("--experiment {Id} (length {Length}): {Outcome}", id, id.Length, error ?? "accepted");
 
         if (valid)
         {
@@ -466,6 +589,8 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
     protected override void Dispose(bool disposing)
     {
         SqliteConnection.ClearAllPools();
+        // Recursive delete throws on a junction; unlink first so only the links go, never their targets.
+        DirectoryLink.UnlinkAllUnder(_files);
         try
         {
             Directory.Delete(_files, recursive: true);
