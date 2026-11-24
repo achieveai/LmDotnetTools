@@ -366,6 +366,28 @@ public sealed class ReviewdFinishCommitTests
             .And.ContainInConsecutiveOrder("--db", run.Connection.DataSource);
     }
 
+    // The discard a fenced slot names runs in the session the review's steps ran in: a shadow attempt's read-only post
+    // session, which a shadow database requires, else the agent session. One the attempt did not save stays a
+    // placeholder.
+    [Theory]
+    [InlineData(false, "post", "--session 'session'")]
+    [InlineData(true, "post", "--session 'post'")]
+    [InlineData(true, null, "--session <post session>")]
+    public void A_discard_names_the_session_the_reviews_steps_ran_in(bool shadow, string? post, string expected)
+    {
+        var attempt = new JsonObject
+        {
+            ["sessionId"] = "session",
+            ["shadow"] = shadow,
+            ["postSessionId"] = post,
+        };
+
+        FinishCommitCommand
+            .DiscardCommand(attempt, ScriptedReviewRun.Repo, "17", 2, "reviewd.db", "workspace")
+            .Should()
+            .EndWith($" {expected} --discard-verified --execute");
+    }
+
     // What the attempt did not save is left as a placeholder PowerShell refuses to run, and listed under fill, never
     // guessed: an attempt from before attempts saved their mode, and a shadow arm's manifest and task prompt files. A
     // shadow attempt gets its shadow options, since its database refuses a live run; its mode is in its provenance.

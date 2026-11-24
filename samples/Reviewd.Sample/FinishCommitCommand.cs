@@ -255,7 +255,8 @@ internal static class FinishCommitCommand
 
     /// <summary>
     /// The discard that continues a stopped reset of this slot (<c>reclaim-slot --discard-verified</c>), in the
-    /// attempt's own repository spelling and session (a placeholder only when it saved none).
+    /// attempt's own repository spelling and session: a shadow attempt's post session, since a shadow database refuses
+    /// a session that is not read-only (a placeholder only when it saved none).
     /// </summary>
     internal static string DiscardCommand(
         JsonObject attempt,
@@ -267,8 +268,18 @@ internal static class FinishCommitCommand
     ) =>
         $"reviewd review reclaim-slot --repo {Quote(SavedRepository(attempt, repo))} --pr {Quote(pr)} --slot {slot} "
         + $"--db {Quote(database)} --workspace {Quote(workspace)} --session "
-        + (attempt["sessionId"]?.GetValue<string>() is { } session ? Quote(session) : "<session>")
+        + DiscardSession(attempt)
         + " --discard-verified --execute";
+
+    // A shadow review's steps run in its --post-session, the read-only session its database requires.
+    private static string DiscardSession(JsonObject attempt) =>
+        attempt["shadow"]?.GetValue<bool>() == true
+            ? attempt["postSessionId"]?.GetValue<string>() is { } post
+                ? Quote(post)
+                : "<post session>"
+            : attempt["sessionId"]?.GetValue<string>() is { } session
+                ? Quote(session)
+                : "<session>";
 
     /// <summary>
     /// The repository as the attempt's run spelled it. Finish and reclaim match a repository case-insensitively, but
