@@ -201,8 +201,8 @@ public sealed record SandboxSessionResolution(
 
 /// <summary>
 /// Owns sandbox sessions for the sample app. Sessions are created lazily and exactly once per
-/// workspace id, then destroyed on application shutdown when the DI container disposes this
-/// singleton.
+/// workspace id. Application shutdown, when the DI container disposes this singleton, forgets them without deleting
+/// them on the gateway (see <see cref="DisposeAsync"/>).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -1950,7 +1950,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// Released dedicated sandboxes still retiring on the workspace (an owner release the gateway
     /// refused) are deleted too, but each is evicted only once the gateway confirms it gone (a 404
     /// counts): one whose DELETE is refused or fails stays tracked, so the owner's next release, a
-    /// workspace release or disposal retries it. Best-effort: gateway failures are logged and
+    /// workspace release retries it. Best-effort: gateway failures are logged and
     /// swallowed so run teardown never throws on a failed DELETE; a caller's cancellation still
     /// propagates. Cancellation is observed only BEFORE each entry is
     /// removed from the cache (the point of no return); once an entry is committed to teardown its
@@ -2137,7 +2137,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
 
         // Released dedicated sandboxes whose DELETE was refused still run on this workspace. Each stays tracked until
         // the gateway confirms it gone: forgotten after a refused DELETE, it would let the owner's next move commit
-        // while it still runs. The owner's next release, a workspace release and disposal retry it.
+        // while it still runs. The owner's next release and a workspace release retry it.
         foreach (var (retiring, key) in _retiringSessions.ToList())
         {
             if (
@@ -2168,50 +2168,25 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     }
 
     /// <summary>
-    /// Best-effort destroys every successfully-created session on shutdown. Errors are logged and
-    /// swallowed so disposal never throws.
+    /// Forgets every session on shutdown WITHOUT deleting any on the gateway: a sandbox stays paired with its
+    /// conversation and retires there (the gateway stops an idle container by itself). A gateway DELETE also wipes the
+    /// workspace's command output for every other sandbox on it (SBX#372). Their webhook secrets stay on disk too.
+    /// Errors are logged and swallowed so disposal never throws.
     /// </summary>
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
         if (_disposed)
         {
-            return;
+            return ValueTask.CompletedTask;
         }
 
         _disposed = true;
 
         try
         {
-            // Released dedicated sandboxes whose DELETE was never confirmed are still live, so they go too.
-            foreach (var entry in _sessions.Values.Concat(_retiringSessions.Keys))
-            {
-                // Only destroy sessions that were actually created and completed successfully.
-                if (!entry.IsValueCreated || !entry.Value.IsCompletedSuccessfully)
-                {
-                    continue;
-                }
-
-                await DestroySessionAsync(entry.Value.Result, CancellationToken.None).ConfigureAwait(false);
-                // Best-effort secret cleanup: a single filesystem failure here must not abort disposal of
-                // the remaining sessions, per-credential clients, and the shared transport below. Isolate it
-                // (DestroySessionAsync already swallows its own errors) so disposal always reaches the
-                // guaranteed final resource cleanup in the finally.
-                try
-                {
-                    await _sessionSecretStore
-                        .RemoveAsync(entry.Value.Result.SessionId, CancellationToken.None)
-                        .ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(
-                        ex,
-                        "Failed to remove webhook secret for session {SessionId} during disposal; continuing teardown.",
-                        entry.Value.Result.SessionId
-                    );
-                }
-            }
-
+            // No webhook secret is removed either: the sandbox outlives this host, and so may a command it runs. A
+            // restarted host reloads the secret from disk to authenticate that command's calls. Deleting the
+            // session (its conversation's delete, a workspace release) removes it.
             _sessions.Clear();
             _retiringSessions.Clear();
             _subAgentBindings.Clear();
@@ -2280,6 +2255,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 _httpClient.Dispose();
             }
         }
+
+        return ValueTask.CompletedTask;
     }
 
     /// <summary>

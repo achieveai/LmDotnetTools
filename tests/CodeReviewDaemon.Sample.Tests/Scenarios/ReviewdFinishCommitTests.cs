@@ -75,12 +75,9 @@ public sealed class ReviewdFinishCommitTests
 
         (await run.RunAsync(resume[1..], CancellationToken.None)).Should().Be(0);
 
-        // The finished review releases its own thread's sandbox once, after its cleanup, and moves nothing.
-        var release = ScriptedReviewRun.SandboxRelease("thread", null);
-        run.Phases.Where(phase => phase.StartsWith("sandbox-release", StringComparison.Ordinal))
-            .Should()
-            .Equal(release);
-        run.Phases.Should().ContainInOrder("inspect-prepared", "verify", "commit", "cleanup", release);
+        // The finished review leaves its thread's sandbox to retire: it releases and moves nothing.
+        run.Phases.Should().NotContain(phase => phase.StartsWith("sandbox-release", StringComparison.Ordinal));
+        run.Phases.Should().ContainInOrder("inspect-prepared", "verify", "commit", "cleanup");
         var receipt = await run.ReadAsync(run.RunKey);
         var attempt = await run.ReadAsync(run.AttemptKey);
         var entry = new JsonObject { ["head"] = new string('a', 40) };

@@ -105,7 +105,10 @@ public class SandboxControllerTests
         var conflict = result.Should().BeOfType<ObjectResult>().Subject;
         conflict.StatusCode.Should().Be(StatusCodes.Status409Conflict);
         conflict.Value.Should().BeEquivalentTo(new { errorCode = "workspace_attached", retryable = true });
-        JsonSerializer.Serialize(conflict.Value).Should().Contain("live sandboxes were stopped");
+        JsonSerializer
+            .Serialize(conflict.Value)
+            .Should()
+            .Contain("sandboxes this host still tracked on the workspace were stopped");
         fixture
             .Harness.Gateway.DeletedSessionIds.Should()
             .Equal([mine.SessionId], "the gateway only refuses over the backup app's own sandboxes");

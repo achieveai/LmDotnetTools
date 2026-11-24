@@ -14,13 +14,15 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
+using Serilog.Events;
 using Xunit.Abstractions;
 
 namespace LmStreaming.Sample.Tests.Services;
 
 /// <summary>
 /// A thread provisioned with a dedicated sandbox gets a sandbox of its own, created with its working directory as
-/// the gateway working directory, and loses it when its agent goes or when the release route is called.
+/// the gateway working directory. It keeps that sandbox when its agent is unloaded, and loses it when the
+/// conversation is deleted or the release route is called.
 /// </summary>
 /// <remarks>
 /// Composition-root on purpose, like <see cref="ReadOnlyEgressCompositionTests"/>: the flag is read and put on the
@@ -71,22 +73,85 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         fixture.Registry.GetThreads(sessions[1]).Should().Equal(a);
     }
 
+    /// <summary>
+    /// Deleting a conversation is what deletes its dedicated sandbox, whether its agent is loaded or was unloaded idle
+    /// (the sandbox outlives an unload), and never the shared one.
+    /// </summary>
     [Fact]
-    public async Task Removing_a_dedicated_threads_agent_deletes_its_sandbox_but_not_the_shared_one()
+    public async Task Deleting_a_dedicated_conversation_deletes_its_sandbox_loaded_or_unloaded_but_not_the_shared_one()
     {
-        await using var fixture = await StartAsync();
-        var a = await fixture.ProvisionAsync("PRs/r-7");
-        var shared = $"lane-{Guid.NewGuid():N}";
-        foreach (var threadId in new[] { shared, a })
+        await using var fixture = await StartAsync(configureServices: services => HostLogCapture.Install(services));
+        var loaded = await fixture.ProvisionAsync("PRs/r-7");
+        var unloaded = await fixture.ProvisionAsync("PRs/r-8");
+        var shared = await fixture.ProvisionSharedWorkspaceThreadAsync();
+        foreach (var threadId in new[] { shared, loaded, unloaded })
         {
             _ = fixture.BuildAgent(threadId);
         }
 
-        await fixture.Pool.RemoveAgentAsync(a);
-        await fixture.Pool.RemoveAgentAsync(shared);
+        var sessions = fixture.Gateway.Creates.Select(create => create.SessionId).ToList();
+        fixture.Pool.TryGetHandoffState(unloaded, out var handoff).Should().BeTrue();
+        (await fixture.Pool.TryUnloadAgentAsync(unloaded, handoff))
+            .Should()
+            .Be(MultiTurnAgentPool.AgentReleaseOutcome.Released);
+        fixture.Gateway.DeleteAttempts.Should().Be(0, "an unload leaves the sandbox to retire");
+        // A file check would race the eviction, so wait for the store's own line for each deleted sandbox.
+        var secretsRemoved = sessions
+            .Skip(1)
+            .Select(sessionId => fixture.Logs.WaitForAsync(SecretRemovedTemplate, "SessionId", sessionId, Patience))
+            .ToList();
 
-        (await fixture.Gateway.NextDeleteAsync()).Should().Be(fixture.Gateway.Creates[1].SessionId);
-        fixture.Gateway.Deletes.Should().Equal(fixture.Gateway.Creates[1].SessionId);
+        foreach (var threadId in new[] { loaded, unloaded, shared })
+        {
+            using var response = await fixture.Client.DeleteAsync($"/api/conversations/{threadId}");
+            response.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        }
+
+        // The release runs in the background, so wait for both DELETEs rather than read the list at once.
+        _ = await fixture.Gateway.NextDeleteAsync();
+        _ = await fixture.Gateway.NextDeleteAsync();
+        _ = await Task.WhenAll(secretsRemoved);
+        fixture.LogGateway();
+        fixture.Gateway.Deletes.Should().BeEquivalentTo([sessions[1], sessions[2]]);
+        fixture.Gateway.DeleteAttempts.Should().Be(2, "the shared sandbox is never deleted with a conversation");
+        fixture
+            .Logs.Events.Where(logEvent => logEvent.MessageTemplate.Text == SecretRemovedTemplate)
+            .Select(logEvent => ((ScalarValue)logEvent.Properties["SessionId"]).Value as string)
+            .Should()
+            .BeEquivalentTo([sessions[1], sessions[2]], "only a deleted sandbox loses its webhook secret");
+    }
+
+    [Fact]
+    public async Task A_refused_delete_of_a_deleted_conversations_sandbox_keeps_it_tracked_and_its_next_release_deletes_it()
+    {
+        await using var fixture = await StartAsync(configureServices: services => HostLogCapture.Install(services));
+        var a = await fixture.ProvisionAsync("PRs/r-7");
+        _ = fixture.BuildAgent(a);
+        var session = fixture.Gateway.Creates.Single().SessionId;
+        fixture.Gateway.FailDeletes = true;
+        var refused = fixture.Logs.WaitForAsync(DeleteRefusedTemplate, a, Patience);
+
+        using (var response = await fixture.Client.DeleteAsync($"/api/conversations/{a}"))
+        {
+            response
+                .StatusCode.Should()
+                .Be(HttpStatusCode.NoContent, "the conversation goes even when its sandbox cannot");
+        }
+
+        _ = await refused;
+        fixture.LogGateway();
+        fixture.Gateway.DeleteAttempts.Should().Be(1);
+        fixture
+            .Registry.TryGetSessionById(session, out _)
+            .Should()
+            .BeTrue("a refused DELETE leaves the sandbox tracked");
+        (await fixture.Store.LoadMetadataAsync(a)).Should().BeNull();
+
+        fixture.Gateway.FailDeletes = false;
+        await fixture.Registry.ReleaseOwnedSessionsAsync(a);
+        fixture.LogGateway();
+        fixture.Gateway.Deletes.Should().Equal(session);
+        fixture.Registry.TryGetSessionById(session, out _).Should().BeFalse();
     }
 
     [Fact]
@@ -591,6 +656,47 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         fixture.Pool.ActiveAgentCount.Should().Be(0);
     }
 
+    /// <summary>
+    /// The idle sweep unloads a dedicated conversation's agent and sends the gateway no DELETE, whose wipe of the
+    /// workspace's command output would hit every other sandbox on it (SBX#372). The sandbox stays paired with the
+    /// conversation, so the next load reuses the same gateway session. Only one the gateway really lost (its liveness
+    /// probe answers 404) is created afresh, in the same directory.
+    /// </summary>
+    [Fact]
+    public async Task An_idle_unload_sends_no_delete_and_the_next_load_reuses_the_same_sandbox_unless_the_gateway_lost_it()
+    {
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        await using var fixture = await StartAsync(timeProvider: clock);
+        var a = await fixture.ProvisionAsync("PRs/r-7");
+        _ = fixture.BuildAgent(a);
+        var first = fixture.Gateway.Creates.Single().SessionId;
+
+        (await fixture.Pool.UnloadIdleAgentsAsync(TimeSpan.FromTicks(1))).Should().Be(1, "the agent has no work");
+        clock.Advance(TimeSpan.FromMinutes(1)); // past the liveness window, so the next load probes the sandbox
+        _ = fixture.BuildAgent(a);
+        fixture.LogGateway();
+
+        fixture.Gateway.DeleteAttempts.Should().Be(0, "an idle unload leaves the sandbox to retire");
+        fixture.Gateway.Creates.Should().ContainSingle("the next load reuses the conversation's sandbox");
+        OwnSessionId(fixture, a).Should().Be(first);
+
+        (await fixture.Pool.UnloadIdleAgentsAsync(TimeSpan.FromTicks(1))).Should().Be(1);
+        fixture.Gateway.Forget(first);
+        clock.Advance(TimeSpan.FromMinutes(1));
+        _ = fixture.BuildAgent(a);
+        fixture.LogGateway();
+
+        fixture.Gateway.Creates.Should().HaveCount(2, "a sandbox the gateway lost is created afresh");
+        var fresh = fixture.Gateway.Creates[1];
+        fresh.SessionId.Should().NotBe(first);
+        WorkingDir(fresh.Body).Should().Be("PRs/r-7");
+        OwnSessionId(fixture, a).Should().Be(fresh.SessionId);
+        fixture.Gateway.DeleteAttempts.Should().Be(0);
+    }
+
+    private static string? OwnSessionId(Fixture fixture, string threadId) =>
+        fixture.Registry.TryGetExistingSession(fixture.WorkspaceId, readOnlyEgress: false, threadId)?.SessionId;
+
     [Fact]
     public async Task A_dedicated_thread_reloaded_after_an_agent_unload_or_a_host_restart_gets_its_own_jailed_sandbox_again()
     {
@@ -609,32 +715,26 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
                 AssertOwnedAndJailed(first, a, "the first build");
                 var firstSession = first.Gateway.Creates.Single().SessionId;
 
-                // Idle unload: the agent leaves the pool; the next turn rebuilds it from the stored metadata.
+                // Idle unload: the agent leaves the pool and its sandbox stays, to retire on the gateway. The next turn
+                // rebuilds the agent from the stored metadata, on the same sandbox.
                 first.Pool.TryGetHandoffState(a, out var handoff).Should().BeTrue();
                 (await first.Pool.TryReleaseIdleAgentAsync(a, handoff))
                     .Should()
                     .Be(MultiTurnAgentPool.AgentReleaseOutcome.Released);
                 first.Pool.ActiveAgentCount.Should().Be(0);
-                (await first.Gateway.NextDeleteAsync())
-                    .Should()
-                    .Be(firstSession, "the unloaded agent's own sandbox goes with it");
                 _ = first.BuildAgent(a);
                 AssertOwnedAndJailed(first, a, "the rebuild after an idle unload");
-                first.Gateway.Creates.Should().HaveCount(2, "the rebuild makes exactly one more sandbox");
-                first.Gateway.Creates[1].SessionId.Should().NotBe(firstSession);
-                first.Gateway.Deletes.Should().Equal(firstSession);
-                first.Gateway.Creates.Should().OnlyContain(create => WorkingDir(create.Body) == "PRs/r-7");
+                first.Gateway.Creates.Should().ContainSingle("the rebuild reuses the conversation's own sandbox");
+                first
+                    .Registry.TryGetExistingSession(first.WorkspaceId, readOnlyEgress: false, a)!
+                    .SessionId.Should()
+                    .Be(firstSession);
+                first.Gateway.DeleteAttempts.Should().Be(0, "an unload deletes no sandbox");
             }
 
-            // A graceful shutdown deletes the sandbox the stopped host still held; the next host makes its own.
-            // The test host disposes its container on the app's own thread, after the factory's dispose returns,
-            // so wait for that DELETE rather than read the list at once.
-            (await firstGateway.NextDeleteAsync())
-                .Should()
-                .Be(firstGateway.Creates[1].SessionId, "shutdown deletes the sandbox the host still held");
-            firstGateway
-                .Deletes.Should()
-                .BeEquivalentTo(firstGateway.Creates.Select(create => create.SessionId), "shutdown deletes it");
+            // A graceful shutdown deletes no sandbox either (the registry's own disposal test proves that); it only
+            // forgets it, so the next host, whose registry starts empty, makes its own.
+            firstGateway.Creates.Should().ContainSingle();
 
             // Restart: a new host, registry and pool over the same stores. Only the stored metadata carries the
             // flag and the directory now.
@@ -681,7 +781,10 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         // the release route's move is deleting: it waits for the move, then creates. That sandbox must be in the new
         // directory, or the next send would get it (the slot is keyed without the directory).
         var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
-        await using var fixture = await StartAsync(timeProvider: clock);
+        await using var fixture = await StartAsync(
+            timeProvider: clock,
+            configureServices: services => HostLogCapture.Install(services)
+        );
         var a = await fixture.ProvisionAsync("PRs/r-7");
         _ = fixture.BuildAgent(a);
         var first = fixture.Gateway.Creates.Single().SessionId;
@@ -694,6 +797,7 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         var release = fixture.ReleaseAsync(a, "PRs/r-9");
         await fixture.Gateway.WaitForDeleteStartedAsync(); // the move has begun: the old sandbox is out of its slot
         fixture.Gateway.Forget(first);
+        var evicted = fixture.Logs.WaitForAsync(SecretRemovedTemplate, "SessionId", first, Patience);
         probeGate.SetResult(); // 404: the refresh recreates from its old ref, and waits for the move
 
         // The refresh must read its 404 before the DELETE completes: the DELETE's eviction would cancel a probe still
@@ -706,6 +810,9 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
             await Task.Delay(10);
         }
 
+        // The eviction removes the secret only after it dropped the session's client reference, so from here on the
+        // DELETE is in flight on a client nothing but the release itself holds.
+        _ = await evicted;
         deleteGate.SetResult();
         using (var released = await release)
         {
@@ -1373,6 +1480,13 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         "The sandbox release of thread {ThreadId}, whose caller stopped waiting, failed; directory move {MovedTo} not stored";
 
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(10);
+
+    /// <summary>The secret store's line once a session's webhook secret is gone.</summary>
+    private const string SecretRemovedTemplate = "Removed webhook secret for session {SessionId}";
+
+    /// <summary>The conversation delete's line when the gateway refused its sandbox's DELETE.</summary>
+    private const string DeleteRefusedTemplate =
+        "Could not delete the dedicated sandbox of deleted conversation {ThreadId}";
 
     /// <summary>
     /// A host with Mini Apps and browser debugging on, its mode store hooked (<see cref="Fixture.Modes"/>) and its

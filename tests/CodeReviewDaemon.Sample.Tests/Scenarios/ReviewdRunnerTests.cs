@@ -6792,7 +6792,7 @@ public sealed class ReviewdRunnerTests
             var first = (await store.GetAsync<JsonObject>(key))!;
             first["stage"]!.GetValue<string>().Should().Be("completed-verified");
             phases.Should().Equal("prepare", "inspect", "inspect", "verify", "commit", "cleanup");
-            // The review gets a sandbox of its own, jailed to its PR folder, and gives it back when it is done.
+            // The review gets a sandbox of its own, jailed to its PR folder, and leaves it to retire when it is done.
             var provision = JsonNode.Parse(
                 handler
                     .Requests.Single(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath == "/api/conversations")
@@ -6802,7 +6802,7 @@ public sealed class ReviewdRunnerTests
             provision["workingDirectoryRelPath"]!.GetValue<string>().Should().Be(".worktrees/Nova-2/PRs/nova-17");
             ReleasedDirectories(handler.Requests)
                 .Should()
-                .Equal([null], "a fresh thread needs no move, only a release");
+                .BeEmpty("a fresh thread needs no move, and a finished review releases nothing");
             var metadata = handler.Requests.Single(r => r.Method == HttpMethod.Put);
             JsonNode.Parse(metadata.Body!)!["title"]!.GetValue<string>().Should().Be("Nova-17-aaaaaaaa");
             handler
@@ -6877,8 +6877,8 @@ public sealed class ReviewdRunnerTests
                 .Should()
                 .BeInRange(thaw + 1, send - 1, "work queued behind the freeze settles before the review is sent");
             // The continued thread last wrote another review's folder, so it moves to this one with a fresh sandbox
-            // before anything is sent, and releases that sandbox once the run is done.
-            ReleasedDirectories(reReview).Should().Equal(".worktrees/Nova-2/PRs/nova-17", null);
+            // before anything is sent, and leaves that sandbox to retire once the run is done.
+            ReleasedDirectories(reReview).Should().Equal(".worktrees/Nova-2/PRs/nova-17");
             reReview
                 .FindIndex(r => r.Uri.AbsolutePath == "/api/conversations/thread/sandbox/release")
                 .Should()
@@ -7138,17 +7138,14 @@ public sealed class ReviewdRunnerTests
             );
             sends.Should().Be(count, "verification recovery must not resend either retained input");
             provisions.Should().Be(1);
-            // A verification resume sends nothing; its only write is giving back the finished review's sandbox.
+            // A verification resume sends nothing and writes nothing: the finished review's sandbox is left to retire.
             handler
                 .Requests.Skip(requestsBeforeResume)
                 .Should()
-                .OnlyContain(request =>
-                    request.Method == HttpMethod.Get
-                    || request.Uri.AbsolutePath == "/api/conversations/thread/sandbox/release"
-                );
+                .OnlyContain(request => request.Method == HttpMethod.Get);
             ReleasedDirectories(handler.Requests.Skip(requestsBeforeResume))
                 .Should()
-                .Equal([null], "a resume after the send moves nothing");
+                .BeEmpty("a resume after the send moves nothing and releases nothing");
             handler
                 .Requests.Skip(requestsBeforeResume)
                 .Should()

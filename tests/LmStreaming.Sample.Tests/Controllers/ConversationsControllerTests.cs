@@ -9,6 +9,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using LmStreaming.Sample.Identity;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.Agents;
 using LmStreaming.Sample.Tests.Services;
@@ -35,7 +36,8 @@ public class ConversationsControllerTests
         ProviderRegistry? providerRegistry = null,
         ConversationStatusResolver? statusResolver = null,
         SandboxSessionRegistry? sandboxSessionRegistry = null,
-        SandboxEnvApplier? envApplier = null
+        SandboxEnvApplier? envApplier = null,
+        ConversationAuthorizer? authorizer = null
     )
     {
         return new ConversationsController(
@@ -48,7 +50,7 @@ public class ConversationsControllerTests
                 ?? new ConversationStatusResolver(store, store as IRunLedgerStore ?? new InMemoryConversationStore()),
             TimeProvider.System,
             new WorkflowRunRegistry(),
-            TestAuthorizers.Disabled(),
+            authorizer ?? TestAuthorizers.Disabled(),
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
             new SubAgentScanCoverageCache(),

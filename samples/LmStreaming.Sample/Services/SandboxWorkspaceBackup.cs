@@ -95,8 +95,15 @@ public sealed class SandboxWorkspaceBackup : IDisposable
         }
         catch (SandboxException ex)
         {
-            // The live sandboxes are already stopped; say so, or the user retries believing nothing happened.
-            throw Rewrap(ex, $"This workspace's live sandboxes were stopped, but the restore failed: {ex.Message}");
+            // The sandboxes this host tracks are already stopped; say so, or the user retries believing nothing
+            // happened. A sandbox left from before a host restart is not tracked, so it is not stopped and can still
+            // hold the workspace.
+            throw Rewrap(
+                ex,
+                "This app's sandboxes this host still tracked on the workspace were stopped, but the restore failed: "
+                    + $"{ex.Message} A sandbox left from before a host restart is not tracked, so it was not stopped and "
+                    + "can still hold the workspace."
+            );
         }
     }
 
