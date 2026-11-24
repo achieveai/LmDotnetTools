@@ -15,8 +15,8 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// <summary>
 ///     The runner's side of dedicated sandboxes, on one PR whose earlier review left a conversation behind: the
 ///     continued thread moves to this review's PR folder before anything is sent, a move the host refuses stops the
-///     review, a retained attempt from before dedicated sandboxes moves before its confirmation, and the release after
-///     a verified review is best effort. Each run records one ordered event list of host requests and sandbox phases.
+///     review, a retained attempt from before dedicated sandboxes moves before its confirmation, and a verified review
+///     never releases its sandbox afterwards. Each run records one ordered event list of host requests and sandbox phases.
 ///     The runner's stderr is read, so these tests swap the process-wide Console writers and run on their own.
 /// </summary>
 [Collection(ConsoleCapturingCollection.Name)]
@@ -74,8 +74,13 @@ public sealed class ReviewdDedicatedSandboxRunnerTests(ITestOutputHelper output)
             .BeNull("the slot was never claimed");
     }
 
+    /// <summary>
+    ///     A finished review leaves its sandbox paired with the conversation, to retire on the gateway: after verify,
+    ///     commit and cleanup the run sends no final release, whose gateway DELETE would wipe the workspace's command
+    ///     output for every other review on it (SBX#372). The move before the review still happens.
+    /// </summary>
     [Fact]
-    public async Task Runner_moves_a_continued_thread_before_its_review_and_releases_it_after_verify_commit_and_cleanup()
+    public async Task Runner_moves_a_continued_thread_before_its_review_and_never_releases_its_sandbox_after_it()
     {
         var run = await RunAsync();
 
@@ -93,11 +98,18 @@ public sealed class ReviewdDedicatedSandboxRunnerTests(ITestOutputHelper output)
                     "phase verify",
                     "phase commit",
                     "phase cleanup",
-                    FinalRelease,
                 ],
-                "the move precedes the first send, and the final release follows verify, commit and cleanup"
+                "the move precedes the first send, and nothing releases the sandbox after the review"
             );
+        _events.Should().NotContain(FinalRelease);
         (await StoreGetAsync(AttemptKey))!["sandboxDirectory"]!.GetValue<string>().Should().Be(ReviewDirectory);
+        var attempt = (await StoreGetAsync(AttemptKey))!;
+        attempt["stage"]!.GetValue<string>().Should().Be("completed-verified");
+        attempt["cleanupState"]!.GetValue<string>().Should().Be("released", "the slot is still released");
+        (await StoreGetAsync(SlotRelease.OwnerKey("workspace", _repo.NormalizedKey, 2)))!["state"]!
+            .GetValue<string>()
+            .Should()
+            .Be("released");
     }
 
     /// <summary>A move the host does not complete stops the review before anything is sent, whatever the failure.</summary>
@@ -119,36 +131,6 @@ public sealed class ReviewdDedicatedSandboxRunnerTests(ITestOutputHelper output)
         _events.Should().NotContain(FinalRelease);
         _events.Should().NotContain(e => e.StartsWith("phase verify", StringComparison.Ordinal));
         (await StoreGetAsync(AttemptKey))!["sandboxDirectory"].Should().BeNull("the move never happened");
-    }
-
-    /// <summary>
-    ///     The review is verified, committed and cleaned up before the final release, so a failed release changes
-    ///     none of that: the run still returns 0. Its log line names the error type and stack, never the host's body.
-    /// </summary>
-    [Theory]
-    [InlineData("throws")]
-    [InlineData("409")]
-    [InlineData("503")]
-    public async Task Runner_keeps_a_verified_review_when_its_final_release_fails(string failure)
-    {
-        _release = (request, directory) => directory is null ? Refuse(failure) : Echo(request);
-
-        var run = await RunAsync();
-
-        run.Exit.Should().Be(0, "a failed release is logged, not thrown");
-        _events.Should().EndWith(FinalRelease);
-        var receipt = (await StoreGetAsync(ReceiptKey))!;
-        receipt["stage"]!.GetValue<string>().Should().Be("completed-verified");
-        var attempt = (await StoreGetAsync(AttemptKey))!;
-        attempt["stage"]!.GetValue<string>().Should().Be("completed-verified");
-        attempt["cleanupState"]!.GetValue<string>().Should().Be("released", "cleanup finished before the release");
-        var logged = run
-            .Stderr.Split('\n')
-            .Single(l => l.StartsWith("Sandbox release of prior failed", StringComparison.Ordinal));
-        logged
-            .Should()
-            .Contain(failure == "throws" ? nameof(HttpRequestException) : nameof(ReviewHostContractException));
-        run.Stderr.Should().Contain("   at ", "the stack is logged").And.NotContain(Sentinel);
     }
 
     /// <summary>
@@ -205,7 +187,6 @@ public sealed class ReviewdDedicatedSandboxRunnerTests(ITestOutputHelper output)
                 "phase verify",
                 "phase commit",
                 "phase cleanup",
-                FinalRelease,
             ]);
         if (moved)
         {

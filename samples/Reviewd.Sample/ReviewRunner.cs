@@ -1742,21 +1742,11 @@ internal static class ReviewRunner
             }
             else
             {
+                // The review's sandbox is not released here: it stays paired with the conversation and retires (the
+                // gateway stops an idle container by itself). Only the moves above, before a review and before a
+                // pre-upgrade confirmation, release it. A gateway DELETE also wipes the workspace's command output for
+                // every other review on it (SBX#372).
                 await CleanupAsync();
-                // The review is done with its sandbox: its container goes, its files stay, and the next review of this
-                // PR gets a fresh one. Best effort, and only here: owner cleanup stays read-only against the host, and
-                // the host deletes an idle conversation's sandbox when it unloads it anyway. A lost claim skips this
-                // too: a reset cleaned the slot, so a newer attempt for this PR may be using the thread now.
-                try
-                {
-                    await client.ReleaseSandboxAsync(thread!, null, ct);
-                }
-                catch (Exception releaseFailure) when (!ct.IsCancellationRequested)
-                {
-                    // Type and stack say where it failed. The client's errors carry no host response body, so neither
-                    // does this line.
-                    Console.Error.WriteLine($"Sandbox release of {thread} failed: {releaseFailure}");
-                }
             }
             Console.WriteLine(receipt.ToJsonString());
             return 0;

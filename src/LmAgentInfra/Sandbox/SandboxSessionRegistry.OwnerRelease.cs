@@ -15,13 +15,13 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 /// <para>
 /// A taken-out session is "retiring": it is tracked apart from the slots until the gateway confirms its DELETE (a
 /// <c>404</c> counts as gone). A refused DELETE, a caller that stops waiting, or a fresh sandbox taking the slot
-/// meanwhile cannot lose it: the next release of the owner, a workspace release or destroy, and disposal all delete
-/// it.
+/// meanwhile cannot lose it: the next release of the owner and a workspace release or destroy delete it. Disposal
+/// deletes nothing.
 /// </para>
 /// <para>
 /// Releases of one owner run one at a time, in call order, and each runs to the end under
 /// <see cref="CancellationToken.None"/>; a caller's token only stops the caller waiting. So a release joins the one
-/// already running (the one an agent removal started, say) instead of racing it with a second DELETE, and its
+/// already running (a conversation delete's, say) instead of racing it with a second DELETE, and its
 /// outcome is the gateway's real answer.
 /// </para>
 /// </remarks>
@@ -264,11 +264,13 @@ public sealed partial class SandboxSessionRegistry
             return null;
         }
 
+        // Pinned for the DELETE: a liveness eviction of this session meanwhile (a refresh that read its 404) drops
+        // the session's own refcount, and the last one disposes the client, cancelling the DELETE in flight.
+        var credential = CredentialFor(session.SessionId);
+        var client = AcquireClientForSession(credential);
         try
         {
-            await ClientFor(CredentialFor(session.SessionId))
-                .DeleteAsync(session.SessionId, CancellationToken.None)
-                .ConfigureAwait(false);
+            await client.DeleteAsync(session.SessionId, CancellationToken.None).ConfigureAwait(false);
         }
         catch (SandboxException ex) when (ex.StatusCode == 404)
         {
@@ -284,6 +286,10 @@ public sealed partial class SandboxSessionRegistry
                 key.OwnerThreadId
             );
             return ex;
+        }
+        finally
+        {
+            DecrementSessionRefAndMaybeDispose(credential);
         }
 
         // Only the caller that forgets it also clears its state: a workspace release may have deleted it meanwhile.

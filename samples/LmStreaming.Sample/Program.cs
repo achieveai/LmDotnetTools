@@ -3391,24 +3391,10 @@ try
             // and a session id we don't know about is a no-op. We don't have the sessionId in
             // hand, so the cleanest contract is to ask the registry to scrub.
             sandboxRegistryForCleanup.UnregisterThreadFromAllSessions(threadId);
-            // A dedicated sandbox is this thread's alone, so it goes with the loaded agent (idle unload included):
-            // the container only, never the workspace files. The next turn builds a fresh one. A failed delete
-            // stays tracked, so the release endpoint or the next removal retries it.
-            _ = sandboxRegistryForCleanup
-                .ReleaseOwnedSessionsAsync(threadId)
-                .ContinueWith(
-                    task =>
-                        loggerFactory
-                            .CreateLogger("LmStreaming.Sample.SandboxBinding")
-                            .LogWarning(
-                                task.Exception,
-                                "Could not delete the dedicated sandbox of removed thread {ThreadId}",
-                                threadId
-                            ),
-                    CancellationToken.None,
-                    TaskContinuationOptions.OnlyOnFaulted,
-                    TaskScheduler.Default
-                );
+            // A dedicated sandbox is NOT deleted here: an idle unload must leave it paired with its conversation, to
+            // retire on the gateway (it stops an idle container by itself) and be reused by the next load. Deleting
+            // the conversation deletes it (ConversationsController.Delete). A gateway DELETE also wipes the
+            // workspace's command output for every other sandbox on it (SBX#372).
             workflowRunRegistry.Remove(threadId);
             // Drop the remembered descendant graph too (#251): the pool is not a dependency of the
             // scanner (that would be a construction cycle), so invalidation is wired here instead.
