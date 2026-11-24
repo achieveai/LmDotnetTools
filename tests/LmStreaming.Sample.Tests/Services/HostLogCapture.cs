@@ -39,16 +39,21 @@ internal sealed class HostLogCapture : ILogEventSink
 
     /// <summary>The first event, logged from now on, whose template is <paramref name="template"/> and whose
     /// <c>ThreadId</c> is <paramref name="threadId"/>.</summary>
-    public Task<LogEvent> WaitForAsync(string template, string threadId, TimeSpan patience)
+    public Task<LogEvent> WaitForAsync(string template, string threadId, TimeSpan patience) =>
+        WaitForAsync(template, "ThreadId", threadId, patience);
+
+    /// <summary>The first event, logged from now on, whose template is <paramref name="template"/> and whose
+    /// <paramref name="property"/> is <paramref name="value"/>.</summary>
+    public Task<LogEvent> WaitForAsync(string template, string property, string value, TimeSpan patience)
     {
         var seen = new TaskCompletionSource<LogEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
         _waiters.Enqueue(
             (
                 logEvent =>
                     logEvent.MessageTemplate.Text == template
-                    && logEvent.Properties.TryGetValue("ThreadId", out var value)
-                    && value is ScalarValue { Value: string id }
-                    && id == threadId,
+                    && logEvent.Properties.TryGetValue(property, out var logged)
+                    && logged is ScalarValue { Value: string id }
+                    && id == value,
                 seen
             )
         );

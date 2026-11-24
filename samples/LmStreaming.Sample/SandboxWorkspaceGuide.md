@@ -584,8 +584,10 @@ path** into the system prompt at runtime (the gateway reports it when the sessio
 
 ### Session lifetime
 
-The sandbox session is **app-wide** — shared across all tabs and conversations — and is
-**deleted when the app shuts down**. A conversation with a dedicated sandbox (below) is the exception.
+The sandbox session is **app-wide** — shared across all tabs and conversations. It is **not deleted when the
+app shuts down**: it retires on the gateway, which stops an idle container by itself. A gateway DELETE also wipes
+the workspace's command output for every other sandbox on it (SBX#372). A conversation with a dedicated sandbox
+(below) is the exception to the sharing.
 
 ### Dedicated sandboxes (per conversation)
 
@@ -596,8 +598,11 @@ rest of the workspace is read-only to it (gateway ADR 0044). Sandboxes are never
 - **Capability.** `GET /api/conversations/capabilities` reports `dedicatedSandbox: true` on a host with a sandbox
   registry. It does not check the gateway version: an older gateway that ignores `working_dir` makes the create
   fail, it does not fall back to a writable sandbox.
-- **Lifetime.** The sandbox goes when the conversation's agent goes (idle unload, delete) and when the app shuts
-  down. The next turn creates a fresh one with the stored directory.
+- **Lifetime.** The sandbox is paired with its conversation and is deleted only when the conversation is deleted.
+  An idle unload and an app shutdown leave it to retire on the gateway; the next turn on the same host reuses it,
+  and a fresh one is created with the stored directory only when the gateway lost it. A restarted host does not
+  know the old sandbox yet (tracked as follow-up work): it creates a fresh one, and the old one sleeps until the
+  gateway's own cleanup.
 - **Release and move.** `POST /api/conversations/{threadId}/sandbox/release` with an optional
   `workingDirectoryRelPath` deletes the sandbox and, only once the gateway confirms, stores the new directory.
   A shared-sandbox conversation released with a directory becomes dedicated. Answers:

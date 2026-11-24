@@ -2455,7 +2455,7 @@ public class ConversationsController(
     /// The release is taken while no agent of the conversation is loaded, under the pool's lock, so it deletes only
     /// sandboxes no live agent holds, and the move is stored only after the gateway confirms the delete; until then
     /// the conversation's next sandbox is held back, so it is always created from the stored directory. This awaits
-    /// the delete an agent removal already started, so 200 means the gateway confirmed it.
+    /// any release of the conversation already running, so 200 means the gateway confirmed it.
     /// </para>
     /// </remarks>
     [HttpPost("{threadId}/sandbox/release")]
@@ -2873,7 +2873,8 @@ public class ConversationsController(
     /// <summary>
     /// Deletes a conversation and evicts its agent. Closed to machine callers on an agent-owned thread:
     /// destroying a sibling's transcript — and its live agent with it — is the most damaging thing this
-    /// controller can be asked to do by id alone.
+    /// controller can be asked to do by id alone. 409 when a send rebuilt the agent while the old one was disposed:
+    /// nothing else is deleted then.
     /// </summary>
     [HttpDelete("{threadId}")]
     public async Task<IActionResult> Delete(string threadId, CancellationToken ct = default)
@@ -2892,20 +2893,40 @@ public class ConversationsController(
 
         // The conversation's dedicated sandbox is deleted with it, and only here: an idle unload leaves it to retire,
         // so it may still be tracked though no agent is loaded. The container only, never the workspace files. A
-        // failed delete stays tracked, so a workspace release retries it.
-        _ = sandboxSessionRegistry
-            ?.ReleaseOwnedSessionsAsync(threadId, CancellationToken.None)
-            .ContinueWith(
-                task =>
-                    logger.LogWarning(
-                        task.Exception,
-                        "Could not delete the dedicated sandbox of deleted conversation {ThreadId}",
-                        threadId
-                    ),
-                CancellationToken.None,
-                TaskContinuationOptions.OnlyOnFaulted,
-                TaskScheduler.Default
+        // failed delete stays tracked, so a workspace release retries it. Taken while no agent of the conversation
+        // is pooled, as the release route does: a send during the old agent's dispose builds a replacement that
+        // holds the sandbox, and neither it nor the conversation is deleted under that replacement.
+        Task? sandboxRelease = null;
+        if (
+            sandboxSessionRegistry is { } registry
+            && !agentPool.TryRunWhileNotPooled(
+                threadId,
+                () => sandboxRelease = registry.ReleaseOwnedSessionsAsync(threadId, CancellationToken.None)
+            )
+        )
+        {
+            logger.LogInformation("Delete of thread {ThreadId} refused: a new turn took the conversation", threadId);
+            return Conflict(
+                new
+                {
+                    error = "Cannot delete the conversation: a new turn took the conversation.",
+                    code = "conversation_delete_while_running",
+                    threadId,
+                }
             );
+        }
+
+        _ = sandboxRelease?.ContinueWith(
+            task =>
+                logger.LogWarning(
+                    task.Exception,
+                    "Could not delete the dedicated sandbox of deleted conversation {ThreadId}",
+                    threadId
+                ),
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default
+        );
         // Not store.DeleteThreadAsync: a fork reads its original's messages in place, so an original
         // with forks is only marked deleted and kept until its last fork goes.
         _ = await ConversationForks.DeleteAsync(store, threadId, ct);
@@ -3878,9 +3899,9 @@ public class ConversationsController(
     /// costs ZERO sandbox provisions (it is a cache hit) plus the pooled agent's in-memory-only state,
     /// and sharing a conversation today shares its filesystem. Whether that should be so is an open
     /// product decision tracked in #417; for a shared-sandbox thread this releases the agent, never the
-    /// sandbox. A thread with a DEDICATED sandbox differs: that sandbox is its agent's alone, so it goes
-    /// with the agent (the pool's ThreadRemoved handler deletes it), and the grantee's next turn gets a
-    /// fresh one jailed to the same working directory. Only the container goes; the files stay.
+    /// sandbox. A thread with a DEDICATED sandbox differs only in that the sandbox is the conversation's
+    /// alone: it too stays when the agent goes, and the grantee's next turn reuses it, jailed to the same
+    /// working directory. Only deleting the conversation deletes it.
     /// </para>
     /// <para>
     /// The reads below are ONE look at one entry, and the release re-validates that same entry under

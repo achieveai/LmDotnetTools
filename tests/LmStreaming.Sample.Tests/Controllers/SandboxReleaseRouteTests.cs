@@ -102,6 +102,44 @@ public sealed class SandboxReleaseRouteTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task A_turn_that_rebuilds_the_agent_while_delete_disposes_the_old_one_keeps_its_sandbox_and_transcript_and_delete_answers_409()
+    {
+        var gateway = new OwnedSandboxGateway();
+        await using var registry = gateway.CreateRegistry(LoggerFactory, "lm-release-route-test");
+        await using var pool = ConversationsControllerTests.CreatePool();
+        var store = await SeedAsync("PRs/r-7");
+        var disposing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var old = (FakeMultiTurnAgent)pool.GetOrCreateAgent(ThreadId, WorkspaceMode);
+        old.DisposeGate = disposing.Task;
+        var session = await registry.GetOrCreateSessionAsync(OwnedRef());
+        var controller = CreateController(store, pool, registry);
+
+        var delete = controller.Delete(ThreadId, CancellationToken.None);
+        await Wait.UntilAsync(() => pool.ActiveAgentCount == 0, "Delete took the old agent out of the pool");
+        // A send arrives during the old agent's dispose: the replacement is built, from the sandbox still cached.
+        var replacement = pool.GetOrCreateAgent(ThreadId, WorkspaceMode);
+        disposing.SetResult();
+        var result = await delete;
+        Log(result, gateway);
+
+        var conflict = result.Should().BeOfType<ConflictObjectResult>().Subject;
+        JsonSerializer
+            .Serialize(conflict.Value)
+            .Should()
+            .Contain("conversation_delete_while_running")
+            .And.Contain("a new turn took the conversation");
+        pool.GetOrCreateAgent(ThreadId, WorkspaceMode).Should().BeSameAs(replacement);
+        gateway.DeleteAttempts.Should().Be(0, "the replacement's sandbox must not be deleted under it");
+        registry
+            .TryGetExistingSession(SandboxSessionRegistry.DefaultWorkspaceId, false, ThreadId)
+            .Should()
+            .BeSameAs(session);
+        (await store.LoadMetadataAsync(ThreadId))
+            .Should()
+            .NotBeNull("the conversation is not deleted under the replacement");
+    }
+
+    [Fact]
     public async Task The_release_route_on_a_host_without_a_sandbox_registry_answers_400_and_changes_nothing()
     {
         await using var pool = ConversationsControllerTests.CreatePool();

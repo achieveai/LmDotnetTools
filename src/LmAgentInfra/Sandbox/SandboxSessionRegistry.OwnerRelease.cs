@@ -21,7 +21,7 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 /// <para>
 /// Releases of one owner run one at a time, in call order, and each runs to the end under
 /// <see cref="CancellationToken.None"/>; a caller's token only stops the caller waiting. So a release joins the one
-/// already running (the one an agent removal started, say) instead of racing it with a second DELETE, and its
+/// already running (a conversation delete's, say) instead of racing it with a second DELETE, and its
 /// outcome is the gateway's real answer.
 /// </para>
 /// </remarks>

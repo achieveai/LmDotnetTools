@@ -357,9 +357,10 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
     /// wipes the workspace's command output for every other sandbox on it (SBX#372).
     /// </summary>
     [Fact]
-    public async Task Disposal_sends_no_delete_for_a_shared_a_dedicated_or_a_retiring_sandbox()
+    public async Task Disposal_sends_no_delete_for_a_shared_a_dedicated_or_a_retiring_sandbox_and_keeps_their_secrets()
     {
-        var (registry, calls) = CreateRegistry();
+        var secrets = Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N"));
+        var (registry, calls) = CreateRegistry(secretDirectory: secrets);
         _ = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws"));
         _ = await registry.GetOrCreateSessionAsync(OwnedRef("thread-a", "PRs/r-7"));
         _ = await registry.GetOrCreateSessionAsync(OwnedRef("thread-b", "PRs/r-8"));
@@ -377,6 +378,12 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
 
         calls.DeleteAttempts.Should().Be(attemptsBefore, "shutdown deletes no sandbox");
         calls.DeletedSessionIds.Should().BeEmpty();
+        // Each sandbox outlives the host, and so may a command it runs: a restarted host reloads the secret from
+        // disk to authenticate that command's webhook calls.
+        Directory
+            .GetFiles(secrets, "*.secret")
+            .Should()
+            .HaveCount(3, "shutdown removes no webhook secret of a sandbox it leaves running");
     }
 
     [Fact]
@@ -811,7 +818,8 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
     private (SandboxSessionRegistry Registry, CallLog Calls) CreateRegistry(
         AuthOptions? auth = null,
         Func<string, CancellationToken, Task<WorkspaceRef?>>? reloadWorkspaceRef = null,
-        ILogger<SandboxSessionRegistry>? logger = null
+        ILogger<SandboxSessionRegistry>? logger = null,
+        string? secretDirectory = null
     )
     {
         var calls = new CallLog();
@@ -907,7 +915,8 @@ public class SandboxSessionRegistryPartitionTests : LoggingTestBase
             new HttpClient(registryHandler),
             auth ?? new AuthOptions(),
             new SessionSecretStore(
-                Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+                secretDirectory
+                    ?? Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
                 NullLogger<SessionSecretStore>.Instance
             ),
             reloadWorkspaceRef: reloadWorkspaceRef

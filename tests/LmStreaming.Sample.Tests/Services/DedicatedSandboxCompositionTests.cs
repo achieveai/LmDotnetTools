@@ -14,6 +14,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
+using Serilog.Events;
 using Xunit.Abstractions;
 
 namespace LmStreaming.Sample.Tests.Services;
@@ -79,7 +80,7 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
     [Fact]
     public async Task Deleting_a_dedicated_conversation_deletes_its_sandbox_loaded_or_unloaded_but_not_the_shared_one()
     {
-        await using var fixture = await StartAsync();
+        await using var fixture = await StartAsync(configureServices: services => HostLogCapture.Install(services));
         var loaded = await fixture.ProvisionAsync("PRs/r-7");
         var unloaded = await fixture.ProvisionAsync("PRs/r-8");
         var shared = await fixture.ProvisionSharedWorkspaceThreadAsync();
@@ -94,6 +95,11 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
             .Should()
             .Be(MultiTurnAgentPool.AgentReleaseOutcome.Released);
         fixture.Gateway.DeleteAttempts.Should().Be(0, "an unload leaves the sandbox to retire");
+        // A file check would race the eviction, so wait for the store's own line for each deleted sandbox.
+        var secretsRemoved = sessions
+            .Skip(1)
+            .Select(sessionId => fixture.Logs.WaitForAsync(SecretRemovedTemplate, "SessionId", sessionId, Patience))
+            .ToList();
 
         foreach (var threadId in new[] { loaded, unloaded, shared })
         {
@@ -104,9 +110,48 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         // The release runs in the background, so wait for both DELETEs rather than read the list at once.
         _ = await fixture.Gateway.NextDeleteAsync();
         _ = await fixture.Gateway.NextDeleteAsync();
+        _ = await Task.WhenAll(secretsRemoved);
         fixture.LogGateway();
         fixture.Gateway.Deletes.Should().BeEquivalentTo([sessions[1], sessions[2]]);
         fixture.Gateway.DeleteAttempts.Should().Be(2, "the shared sandbox is never deleted with a conversation");
+        fixture
+            .Logs.Events.Where(logEvent => logEvent.MessageTemplate.Text == SecretRemovedTemplate)
+            .Select(logEvent => ((ScalarValue)logEvent.Properties["SessionId"]).Value as string)
+            .Should()
+            .BeEquivalentTo([sessions[1], sessions[2]], "only a deleted sandbox loses its webhook secret");
+    }
+
+    [Fact]
+    public async Task A_refused_delete_of_a_deleted_conversations_sandbox_keeps_it_tracked_and_its_next_release_deletes_it()
+    {
+        await using var fixture = await StartAsync(configureServices: services => HostLogCapture.Install(services));
+        var a = await fixture.ProvisionAsync("PRs/r-7");
+        _ = fixture.BuildAgent(a);
+        var session = fixture.Gateway.Creates.Single().SessionId;
+        fixture.Gateway.FailDeletes = true;
+        var refused = fixture.Logs.WaitForAsync(DeleteRefusedTemplate, a, Patience);
+
+        using (var response = await fixture.Client.DeleteAsync($"/api/conversations/{a}"))
+        {
+            response
+                .StatusCode.Should()
+                .Be(HttpStatusCode.NoContent, "the conversation goes even when its sandbox cannot");
+        }
+
+        _ = await refused;
+        fixture.LogGateway();
+        fixture.Gateway.DeleteAttempts.Should().Be(1);
+        fixture
+            .Registry.TryGetSessionById(session, out _)
+            .Should()
+            .BeTrue("a refused DELETE leaves the sandbox tracked");
+        (await fixture.Store.LoadMetadataAsync(a)).Should().BeNull();
+
+        fixture.Gateway.FailDeletes = false;
+        await fixture.Registry.ReleaseOwnedSessionsAsync(a);
+        fixture.LogGateway();
+        fixture.Gateway.Deletes.Should().Equal(session);
+        fixture.Registry.TryGetSessionById(session, out _).Should().BeFalse();
     }
 
     [Fact]
@@ -736,7 +781,10 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         // the release route's move is deleting: it waits for the move, then creates. That sandbox must be in the new
         // directory, or the next send would get it (the slot is keyed without the directory).
         var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
-        await using var fixture = await StartAsync(timeProvider: clock);
+        await using var fixture = await StartAsync(
+            timeProvider: clock,
+            configureServices: services => HostLogCapture.Install(services)
+        );
         var a = await fixture.ProvisionAsync("PRs/r-7");
         _ = fixture.BuildAgent(a);
         var first = fixture.Gateway.Creates.Single().SessionId;
@@ -749,6 +797,7 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         var release = fixture.ReleaseAsync(a, "PRs/r-9");
         await fixture.Gateway.WaitForDeleteStartedAsync(); // the move has begun: the old sandbox is out of its slot
         fixture.Gateway.Forget(first);
+        var evicted = fixture.Logs.WaitForAsync(SecretRemovedTemplate, "SessionId", first, Patience);
         probeGate.SetResult(); // 404: the refresh recreates from its old ref, and waits for the move
 
         // The refresh must read its 404 before the DELETE completes: the DELETE's eviction would cancel a probe still
@@ -761,6 +810,9 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
             await Task.Delay(10);
         }
 
+        // The eviction removes the secret only after it dropped the session's client reference, so from here on the
+        // DELETE is in flight on a client nothing but the release itself holds.
+        _ = await evicted;
         deleteGate.SetResult();
         using (var released = await release)
         {
@@ -1428,6 +1480,13 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         "The sandbox release of thread {ThreadId}, whose caller stopped waiting, failed; directory move {MovedTo} not stored";
 
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(10);
+
+    /// <summary>The secret store's line once a session's webhook secret is gone.</summary>
+    private const string SecretRemovedTemplate = "Removed webhook secret for session {SessionId}";
+
+    /// <summary>The conversation delete's line when the gateway refused its sandbox's DELETE.</summary>
+    private const string DeleteRefusedTemplate =
+        "Could not delete the dedicated sandbox of deleted conversation {ThreadId}";
 
     /// <summary>
     /// A host with Mini Apps and browser debugging on, its mode store hooked (<see cref="Fixture.Modes"/>) and its
