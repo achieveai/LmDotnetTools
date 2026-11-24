@@ -371,11 +371,13 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
     }
 
     // A link is followed before the check: --out through a directory link (a junction on Windows) to records/, or a
-    // folder under one, is the study's records folder and is refused before any write.
+    // folder under one, is the study's records folder and is refused before any write. A '..' the caller typed after a
+    // link is collapsed by name, as .NET collapses it before writing: outer/bridge/../alias is outer/alias.
     [Theory]
     [InlineData("the link")]
     [InlineData("a folder under the link")]
     [InlineData("a link whose target passes through another link")]
+    [InlineData("a typed '..' after another link")]
     public async Task Compare_refuses_an_output_that_links_into_the_study(string through)
     {
         StudyFixture.Write(_files, ("aa-1", "experiment", null));
@@ -393,7 +395,19 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
         {
             DirectoryLink.Create(alias, Path.Combine(StudyRoot, "records"));
         }
-        var output = through == "a folder under the link" ? Path.Combine(alias, "sub") : alias;
+        if (through == "a typed '..' after another link")
+        {
+            // bridge -> elsewhere/deep: following bridge before the '..' would end at elsewhere/alias, which is absent.
+            var deep = Path.Combine(_files, "elsewhere", "deep");
+            Directory.CreateDirectory(deep);
+            DirectoryLink.Create(Path.Combine(_files, "bridge"), deep);
+        }
+        var output = through switch
+        {
+            "a folder under the link" => Path.Combine(alias, "sub"),
+            "a typed '..' after another link" => Path.Combine(_files, "bridge", "..", "alias"),
+            _ => alias,
+        };
 
         var compare = () => CompareToAsync(output, a, b);
 
@@ -431,6 +445,55 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
         var refused = await compare.Should().ThrowAsync<ArgumentException>();
         Logger.LogInformation("--out {Output} refused with {Refusal}", output, refused.Which.Message);
         refused.WithMessage("--out * is inside the study at *");
+        Directory
+            .EnumerateFileSystemEntries(Path.Combine(StudyRoot, "records"))
+            .Select(Path.GetFileName)
+            .Should()
+            .Equal("aa-1.json");
+    }
+
+    // A Windows device path (\\?\ or \\.\) names the same folder as the plain path but escapes GetFullPath's
+    // normalisation, so a prefixed --out or --store is refused before any comparison or write.
+    [WindowsOnlyFact("device paths are a Windows form; elsewhere \\\\?\\ is an ordinary file name")]
+    public async Task Compare_refuses_a_device_path_for_its_output_or_its_store()
+    {
+        StudyFixture.Write(_files, ("aa-1", "experiment", null));
+        var a = Arm("a1", new Review(1));
+        var b = Arm("a2", new Review(1));
+        var record = Path.Combine(StudyRoot, "records", "aa-1.json");
+        var before = await File.ReadAllBytesAsync(record);
+        var cases = new (string Name, string Store, string Output)[]
+        {
+            (@"--out \\?\ to records", _files, @"\\?\" + Path.Combine(StudyRoot, "records")),
+            (@"--out \\.\ to records", _files, @"\\.\" + Path.Combine(StudyRoot, "records")),
+            (@"--store \\?\, --out records", @"\\?\" + _files, Path.Combine(StudyRoot, "records")),
+        };
+
+        foreach (var (name, store, output) in cases)
+        {
+            var compare = () =>
+                CompareCommand.RunAsync(
+                    CliOptions.Parse([
+                        "compare",
+                        "--experiment",
+                        "aa-1",
+                        "--store",
+                        store,
+                        "--arm",
+                        a,
+                        "--arm",
+                        b,
+                        "--out",
+                        output,
+                    ]),
+                    CancellationToken.None
+                );
+
+            var refused = await compare.Should().ThrowAsync<ArgumentException>();
+            Logger.LogInformation("{Case} refused with {Refusal}", name, refused.Which.Message);
+            refused.WithMessage("* is a Windows device path *");
+        }
+        (await File.ReadAllBytesAsync(record)).Should().Equal(before);
         Directory
             .EnumerateFileSystemEntries(Path.Combine(StudyRoot, "records"))
             .Select(Path.GetFileName)

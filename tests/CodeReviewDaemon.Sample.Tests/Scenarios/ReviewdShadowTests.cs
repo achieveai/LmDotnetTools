@@ -2348,22 +2348,21 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         result["champion"]!.GetValue<string>().Should().Be(S_champion);
     }
 
-    // A --store typed with a trailing separator prints without it, so the copied command's closing quote is not
+    // A --store typed with trailing separators prints without them, so the copied command's closing quote is not
     // escaped by a trailing backslash, and the quotes keep a path with a space whole.
-    [Fact]
-    public async Task Variant_up_prints_the_store_quoted_without_its_trailing_separator()
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task Variant_up_prints_the_store_quoted_without_its_trailing_separators(int separators)
     {
         var store = Path.Combine(_files, "review store");
         StudyFixture.Write(store, ("exp-1", "experiment", null));
+        var typed = store + new string(Path.DirectorySeparatorChar, separators);
 
-        var (result, _) = await VariantUpAsync(
-            VariantHost(),
-            new string('2', 40),
-            store: store + Path.DirectorySeparatorChar
-        );
+        var (result, _) = await VariantUpAsync(VariantHost(), new string('2', 40), store: typed);
 
         var next = result["next"]!.GetValue<string>();
-        Logger.LogInformation("--store {Store} printed as {Next}", store + Path.DirectorySeparatorChar, next);
+        Logger.LogInformation("--store {Store} printed as {Next}", typed, next);
         next.Should().Contain($"--experiment exp-1 --store \"{store}\" ");
     }
 

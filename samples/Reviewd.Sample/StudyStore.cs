@@ -34,6 +34,13 @@ internal static partial class StudyStore
     /// </summary>
     internal static bool IsInside(string store, string path)
     {
+        if (new[] { store, path }.FirstOrDefault(IsDevicePath) is { } device)
+        {
+            throw new ArgumentException(
+                $@"{device} is a Windows device path (\\?\, \\.\ or \??\), which skips the normalisation the "
+                    + "study check compares by; give a plain path."
+            );
+        }
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         bool Under(string root, string full) =>
             full.Equals(root, comparison) || full.StartsWith(root + Path.DirectorySeparatorChar, comparison);
@@ -42,18 +49,31 @@ internal static partial class StudyStore
 
     private static string Normal(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
 
+    // \\?\, \\.\ and \??\ (either slash) reach the same folder as the plain path, but GetFullPath leaves them as
+    // written, so a prefixed --out or --store would never compare equal to the plain other side.
+    private static bool IsDevicePath(string path)
+    {
+        static bool Slash(char c) => c is '\\' or '/';
+        return OperatingSystem.IsWindows()
+            && path.Length >= 4
+            && Slash(path[0])
+            && Slash(path[3])
+            && ((Slash(path[1]) && path[2] is '?' or '.') || (path[1] == '?' && path[2] == '?'));
+    }
+
     // The path with each existing link along it replaced by its target, so a check sees where a write lands. One hop
     // at a time, and each target is resolved the same way, so a target that itself passes through a link
     // (out -> bridge/records, bridge -> the study) lands where the write would on every platform. '..' follows the
     // platform: Windows drops it by name before it follows any link, while Unix follows the link first and '..' then
-    // leaves the link's target (out -> bridge/../records, bridge -> study/artifacts, is study/records there).
+    // leaves the link's target (out -> bridge/../records, bridge -> study/artifacts, is study/records there). The
+    // caller's own path is collapsed by name everywhere, because .NET does that to it before any write.
     private static string Resolve(string path, int depth = 0)
     {
         if (depth > 32)
         {
             throw new IOException($"{path} passes through more than 32 links.");
         }
-        var full = OperatingSystem.IsWindows() ? Normal(path) : Path.Combine(Directory.GetCurrentDirectory(), path);
+        var full = depth == 0 || OperatingSystem.IsWindows() ? Normal(path) : path;
         var current = Path.GetPathRoot(full)!;
         foreach (
             var part in full[current.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries)

@@ -235,7 +235,7 @@ internal static class VariantUp
             + $"review batch --selection <json> --db <this arm's db> --session <session> --workspace {workspace.Id} "
             + $"--provider {manifest.Provider ?? "<provider>"} --mode {modeId}{effort} --shadow --post-session <read-only "
             + $"session> --variant {manifest.Id} --manifest \"{manifest.Path}\" --experiment {experiment} "
-            + $"--store \"{Path.TrimEndingDirectorySeparator(options.Required("store"))}\"{taskPrompt} --execute";
+            + $"--store \"{Path.TrimEndingDirectorySeparator(Path.GetFullPath(options.Required("store")))}\"{taskPrompt} --execute";
         return result;
     }
 }
