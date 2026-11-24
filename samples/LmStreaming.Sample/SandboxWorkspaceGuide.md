@@ -598,11 +598,16 @@ rest of the workspace is read-only to it (gateway ADR 0044). Sandboxes are never
 - **Capability.** `GET /api/conversations/capabilities` reports `dedicatedSandbox: true` on a host with a sandbox
   registry. It does not check the gateway version: an older gateway that ignores `working_dir` makes the create
   fail, it does not fall back to a writable sandbox.
-- **Lifetime.** The sandbox is paired with its conversation and is deleted only when the conversation is deleted.
-  An idle unload and an app shutdown leave it to retire on the gateway; the next turn on the same host reuses it,
+- **Lifetime.** The sandbox is paired with its conversation. Deleting the conversation deletes it, and so do the
+  release route below, a workspace backup restore, an operator purge and the rollback of a failed create. Nothing
+  else does: an idle unload and an app shutdown leave it to retire on the gateway; the next turn on the same host reuses it,
   and a fresh one is created with the stored directory only when the gateway lost it. A restarted host does not
   know the old sandbox yet (tracked as follow-up work): it creates a fresh one, and the old one sleeps until the
   gateway's own cleanup.
+- **Delete.** `DELETE /api/conversations/{threadId}` deletes the sandbox with the conversation, in the background:
+  a refused DELETE is logged and the sandbox stays tracked, so its next release retries it. `409`
+  `conversation_delete_while_running` when a send rebuilt the agent while the delete disposed the old one: nothing
+  is deleted, the conversation or its sandbox. Retry the delete.
 - **Release and move.** `POST /api/conversations/{threadId}/sandbox/release` with an optional
   `workingDirectoryRelPath` deletes the sandbox and, only once the gateway confirms, stores the new directory.
   A shared-sandbox conversation released with a directory becomes dedicated. Answers:

@@ -1743,8 +1743,9 @@ internal static class ReviewRunner
             else
             {
                 // The review's sandbox is not released here: it stays paired with the conversation and retires (the
-                // gateway stops an idle container by itself). Only deleting the conversation deletes it. A gateway
-                // DELETE also wipes the workspace's command output for every other review on it (SBX#372).
+                // gateway stops an idle container by itself). Only the moves above, before a review and before a
+                // pre-upgrade confirmation, release it. A gateway DELETE also wipes the workspace's command output for
+                // every other review on it (SBX#372).
                 await CleanupAsync();
             }
             Console.WriteLine(receipt.ToJsonString());

@@ -100,8 +100,9 @@ public sealed class SandboxWorkspaceBackup : IDisposable
             // hold the workspace.
             throw Rewrap(
                 ex,
-                $"This workspace's live sandboxes were stopped, but the restore failed: {ex.Message} A sandbox left "
-                    + "from before a host restart is not stopped and can still hold the workspace."
+                "This app's sandboxes this host still tracked on the workspace were stopped, but the restore failed: "
+                    + $"{ex.Message} A sandbox left from before a host restart is not tracked, so it was not stopped and "
+                    + "can still hold the workspace."
             );
         }
     }
