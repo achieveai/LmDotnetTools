@@ -2890,6 +2890,22 @@ public class ConversationsController(
 
         await agentPool.RemoveAgentAsync(threadId);
 
+        // The conversation's dedicated sandbox is deleted with it, and only here: an idle unload leaves it to retire,
+        // so it may still be tracked though no agent is loaded. The container only, never the workspace files. A
+        // failed delete stays tracked, so a workspace release retries it.
+        _ = sandboxSessionRegistry
+            ?.ReleaseOwnedSessionsAsync(threadId, CancellationToken.None)
+            .ContinueWith(
+                task =>
+                    logger.LogWarning(
+                        task.Exception,
+                        "Could not delete the dedicated sandbox of deleted conversation {ThreadId}",
+                        threadId
+                    ),
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted,
+                TaskScheduler.Default
+            );
         // Not store.DeleteThreadAsync: a fork reads its original's messages in place, so an original
         // with forks is only marked deleted and kept until its last fork goes.
         _ = await ConversationForks.DeleteAsync(store, threadId, ct);
