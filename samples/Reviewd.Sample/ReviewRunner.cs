@@ -1341,6 +1341,8 @@ internal static class ReviewRunner
             ["workspaceId"] = workspace,
             ["sessionId"] = options.Required("session"),
             ["providerId"] = provider,
+            // A resume must run in the same mode (the conversation is bound to it), so finish-commit prints it.
+            ["mode"] = mode,
             ["headSha"] = args["head"]!.DeepClone(),
             ["startedAt"] = DateTimeOffset.UtcNow,
             ["stage"] = "selected",
@@ -1700,11 +1702,29 @@ internal static class ReviewRunner
             {
                 throw new InvalidOperationException("Artifact commit was not verified.");
             }
-            receipt["stage"] = "completed-verified";
-            receipt["reviewedHeadSha"] = args["head"]!.DeepClone();
-            receipt["finishedAt"] = DateTimeOffset.UtcNow;
             using (var transaction = connection.BeginTransaction())
             {
+                // A reset can release this claim after the commit landed: KeepLandedAsync kept the attempt owned under
+                // the reset's fence, and the reset then released the slot. The completion must not re-own it, so it
+                // reads as released, and no cleanup follows (the reset cleaned the slot). Read in this transaction, so
+                // a release cannot land between the check and the write. Read before the attempt is marked verified:
+                // a failed read then leaves the failure path retaining commit-completed, which finish-commit finishes.
+                using var owner = connection.CreateCommand();
+                owner.Transaction = transaction;
+                owner.CommandText = "SELECT value FROM cache WHERE key=@key";
+                owner.Parameters.AddWithValue("@key", ownerKey);
+                var claim = await owner.ExecuteScalarAsync(ct) is string held ? JsonNode.Parse(held) : null;
+                receipt["stage"] = "completed-verified";
+                receipt["reviewedHeadSha"] = args["head"]!.DeepClone();
+                receipt["finishedAt"] = DateTimeOffset.UtcNow;
+                if (
+                    claim?["claimToken"]?.GetValue<string>() != claimToken
+                    || claim["state"]?.GetValue<string>() != "owned"
+                )
+                {
+                    receipt["cleanupState"] = "released";
+                    commitClaimLost = true;
+                }
                 using var completion = connection.CreateCommand();
                 completion.Transaction = transaction;
                 completion.CommandText =

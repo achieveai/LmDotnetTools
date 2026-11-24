@@ -2,6 +2,7 @@ extern alias Reviewd;
 
 using System.Text.Json.Nodes;
 using CodeReviewDaemon.Sample.Agents;
+using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using Reviewd::Reviewd.Sample;
 
@@ -17,12 +18,21 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 public sealed class ReviewdFinishCommitTests
 {
     // The run stops right after it saved commit-completed, still owning its slot: the batch holds that review, and a
-    // resume refuses its stage. The command sends it back to verify-pending under the same claim; the resume then
-    // re-verifies, commits again and writes the receipt, so the batch reconciles it as verified and the slot is freed.
-    [Fact]
-    public async Task A_run_killed_after_its_commit_landed_is_finished_and_reconciles_as_verified()
+    // resume refuses its stage. The command sends it back to verify-pending under the same claim and prints the resume
+    // to run, since the batch keeps its entry held; that resume re-verifies, commits again and writes the receipt, so
+    // the batch reconciles it as verified and the slot is freed. The resume run is the printed command itself, as
+    // PowerShell passes it: it keeps the run's mode (the conversation is bound to it) and reasoning effort.
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("security-review", "high")]
+    public async Task A_run_killed_after_its_commit_landed_is_finished_and_reconciles_as_verified(
+        string? mode,
+        string? effort
+    )
     {
         await using var run = await ScriptedReviewRun.CreateAsync();
+        run.Mode = mode;
+        run.ReasoningEffort = effort;
         var killed = await KillAfterCommitAsync(run);
         killed["stage"]!.GetValue<string>().Should().Be("commit-completed");
         killed["cleanupState"]!.GetValue<string>().Should().Be("owned");
@@ -35,21 +45,35 @@ public sealed class ReviewdFinishCommitTests
             .ThrowAsync<InvalidOperationException>()
             .WithMessage("Only identified admitted review or confirmation stages can resume.");
 
-        (await FinishCommitAsync(run, execute: true)).Should().Be(0);
+        var (exit, printed) = await FinishCommitAsync(run, execute: true);
 
+        exit.Should().Be(0);
         var finishing = await run.ReadAsync(run.AttemptKey);
         finishing["stage"]!.GetValue<string>().Should().Be("verify-pending");
         finishing["claimToken"]!.GetValue<string>().Should().Be(killed["claimToken"]!.GetValue<string>());
         (await run.Store.GetAsync<JsonObject>(run.RunKey)).Should().BeNull("the command writes no receipt");
-        ReviewBatch.Resumable(finishing).Should().BeTrue("the batch resumes it now");
+        var next = printed!["next"]!.GetValue<string>();
+        next.Should()
+            .Be(
+                $"reviewd review run --repo '{ScriptedReviewRun.Repo.DisplayName}' --pr '17' --slot 2 "
+                    + $"--db '{run.Connection.DataSource}' --session 'session' --workspace 'workspace' "
+                    + $"--provider 'test' --mode '{mode ?? "workspace-agent"}'"
+                    + (effort is null ? "" : $" --reasoning-effort '{effort}'")
+                    + $" --head '{new string('a', 40)}' --resume --execute",
+                "the resume repeats the attempt's own options"
+            );
         run.Phases.Should()
             .NotContain(
                 phase => phase.StartsWith("sandbox-release", StringComparison.Ordinal),
                 "nothing is released before the final resume"
             );
+        printed["shell"]!.GetValue<string>().Should().Be("PowerShell");
+        printed["fill"].Should().BeNull("nothing is left to fill in");
         run.Phases.Clear();
+        var resume = ReviewdCommandLines.PowerShellArguments(next);
+        resume[0].Should().Be("reviewd");
 
-        (await run.RunAsync(resume: true, CancellationToken.None)).Should().Be(0);
+        (await run.RunAsync(resume[1..], CancellationToken.None)).Should().Be(0);
 
         // The finished review releases its own thread's sandbox once, after its cleanup, and moves nothing.
         var release = ScriptedReviewRun.SandboxRelease("thread", null);
@@ -80,24 +104,14 @@ public sealed class ReviewdFinishCommitTests
         var sandbox = new List<string>();
         var discard = () =>
             ReclaimSlotCommand.RunAsync(
-                CliOptions.Parse([
-                    "review",
-                    "reclaim-slot",
-                    "--repo",
+                ReviewdCommandLines.ReclaimSlot(
                     ScriptedReviewRun.Repo.DisplayName,
-                    "--pr",
                     "17",
-                    "--slot",
-                    "2",
-                    "--db",
+                    2,
                     run.Database,
-                    "--workspace",
-                    "workspace",
-                    "--session",
-                    "session",
                     "--discard-verified",
-                    "--execute",
-                ]),
+                    "--execute"
+                ),
                 () => new LmStreamingS2SClient(http, null, null, null),
                 () =>
                     (phase, _, _, _) =>
@@ -117,17 +131,72 @@ public sealed class ReviewdFinishCommitTests
         sandbox.Should().BeEmpty("nothing is reset");
         (await run.ReadAsync(run.AttemptKey)).ToJsonString().Should().Be(before, "the review stays finishable");
         (await run.ReadAsync(run.OwnerKey)).ToJsonString().Should().Be(owner, "the slot stays held");
-        (await FinishCommitAsync(run, execute: true)).Should().Be(0);
+        (await FinishCommitAsync(run, execute: true)).Exit.Should().Be(0);
     }
 
-    // Each case the command cannot finish safely is refused with the operator's next step, and nothing is changed. A
-    // preview checks the same rules and changes nothing either.
+    // That refusal's finish-commit quotes each value, so an Azure DevOps project or repository name with spaces (or a
+    // quote) stays one PowerShell argument.
+    [Fact]
+    public async Task A_refused_discard_names_a_finish_commit_whose_spaced_repo_stays_one_argument()
+    {
+        await using var run = await ScriptedReviewRun.CreateAsync();
+        var repo = PrCommands.ParseRepo("org/My Project/Nova\u2019s repo");
+        _ = await SeedFinishableAsync(run, repo, "workspace", new JsonObject { ["sessionId"] = "session" });
+        using var http = new HttpClient(new FakeHttpMessageHandler()) { BaseAddress = new Uri("http://localhost/") };
+
+        var refusal = await FluentActions
+            .Invoking(() =>
+                ReclaimSlotCommand.RunAsync(
+                    ReviewdCommandLines.ReclaimSlot(
+                        repo.DisplayName,
+                        "17",
+                        2,
+                        run.Database,
+                        "--discard-verified",
+                        "--execute"
+                    ),
+                    () => new LmStreamingS2SClient(http, null, null, null),
+                    () => (_, _, _, _) => Task.FromResult(new JsonObject()),
+                    CancellationToken.None
+                )
+            )
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+
+        ReviewdCommandLines
+            .PowerShellArguments(refusal.Which.Message.Split('`')[1])
+            .Should()
+            .Equal(
+                "reviewd",
+                "review",
+                "finish-commit",
+                "--repo",
+                "org/My Project/Nova\u2019s repo",
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                run.Connection.DataSource,
+                "--workspace",
+                "workspace",
+                "--execute"
+            );
+    }
+
+    // Each case the command cannot finish safely is refused with the operator's next step, and neither the attempt nor
+    // the owner row is changed. An attempt on another slot or workspace is refused even though the requested slot's
+    // owner is valid and held by its claim. A preview checks the same rules and changes nothing either.
     [Theory]
     [InlineData("released", "*already released*new push gets a fresh review*")]
     [InlineData("stage", "Only a commit-completed attempt can be finished; this one is at commit-pending.")]
     [InlineData("no-commit", "The attempt has no landed artifact commit; nothing to finish.")]
+    [InlineData("wrong-slot", "The attempt's slot or workspace does not match the request.")]
+    [InlineData("wrong-workspace", "The attempt's slot or workspace does not match the request.")]
     [InlineData("other-owner", "Slot 2 is not owned by this attempt's claim*")]
-    [InlineData("fenced", "A reset is running on slot 2*")]
+    [InlineData("absent-owner", "Slot 2 is not owned by this attempt's claim*")]
+    [InlineData("released-owner", "Slot 2 is not owned by this attempt's claim*")]
+    [InlineData("fenced", "A reset fenced slot 2*`reviewd review reclaim-slot *--discard-verified --execute`.")]
     [InlineData("live-run", "A review run still holds slot 2; stop it before finishing its commit.")]
     [InlineData("preview", null)]
     public async Task Finish_commit_refuses_what_it_cannot_finish_safely(string state, string? refusal)
@@ -156,14 +225,35 @@ public sealed class ReviewdFinishCommitTests
         {
             attempt["cleanupState"] = "released";
         }
-        await run.Store.SetAsync(run.AttemptKey, attempt);
-        if (state is "other-owner" or "fenced")
+        if (state == "wrong-slot")
         {
-            var owner = await run.ReadAsync(run.OwnerKey);
-            owner[state == "fenced" ? SlotRelease.ResetFence : "claimToken"] = "other";
-            await run.Store.SetAsync(run.OwnerKey, owner);
+            attempt["slot"] = 3;
+        }
+        if (state == "wrong-workspace")
+        {
+            attempt["workspaceId"] = "other-workspace";
+        }
+        await run.Store.SetAsync(run.AttemptKey, attempt);
+        var owner = await run.ReadAsync(run.OwnerKey);
+        if (state == "other-owner")
+        {
+            owner["claimToken"] = "other";
+        }
+        if (state == "released-owner")
+        {
+            owner["state"] = "released";
+        }
+        if (state == "fenced")
+        {
+            owner[SlotRelease.ResetFence] = "other";
+        }
+        await run.Store.SetAsync(run.OwnerKey, owner);
+        if (state == "absent-owner")
+        {
+            await run.ExecuteAsync($"DELETE FROM cache WHERE key = '{run.OwnerKey}';");
         }
         var before = (await run.ReadAsync(run.AttemptKey)).ToJsonString();
+        var ownerBefore = (await run.Store.GetAsync<JsonObject>(run.OwnerKey))?.ToJsonString();
         using var liveRun =
             state == "live-run"
                 ? ReviewRunner.AcquireLease(
@@ -176,13 +266,233 @@ public sealed class ReviewdFinishCommitTests
 
         if (refusal is null)
         {
-            (await finish()).Should().Be(0);
+            (await finish()).Exit.Should().Be(0);
         }
         else
         {
             await finish.Should().ThrowAsync<InvalidOperationException>().WithMessage(refusal);
         }
         (await run.ReadAsync(run.AttemptKey)).ToJsonString().Should().Be(before, "nothing is changed");
+        (await run.Store.GetAsync<JsonObject>(run.OwnerKey))?.ToJsonString().Should().Be(ownerBefore, "nor the owner");
+    }
+
+    // An Azure DevOps project or repository name may hold spaces, and a value may hold a quote. Each printed value stays
+    // one PowerShell argument, in the resume and in the discard a fenced slot names. Finish matches the repository
+    // case-insensitively, but a resume checks the attempt's exact spelling, so both print the saved spelling, and the
+    // discard the saved session.
+    [Fact]
+    public async Task Each_printed_value_stays_one_PowerShell_argument()
+    {
+        await using var run = await ScriptedReviewRun.CreateAsync();
+        var repo = PrCommands.ParseRepo("org/My Project/Nova\u2019s repo");
+        var typed = PrCommands.ParseRepo("ORG/my project/NOVA\u2019S REPO");
+        var ownerKey = await SeedFinishableAsync(
+            run,
+            repo,
+            "work space",
+            new JsonObject
+            {
+                ["sessionId"] = "it's a session",
+                ["providerId"] = "test",
+                ["mode"] = "review mode",
+                ["reasoningEffort"] = "high",
+            }
+        );
+
+        var result = await FinishCommitCommand.FinishAsync(
+            run.Connection,
+            typed,
+            "17",
+            2,
+            "work space",
+            execute: false,
+            CancellationToken.None
+        );
+
+        ReviewdCommandLines
+            .PowerShellArguments(result["next"]!.GetValue<string>())
+            .Should()
+            .Equal(
+                "reviewd",
+                "review",
+                "run",
+                "--repo",
+                "org/My Project/Nova\u2019s repo",
+                "--pr",
+                "17",
+                "--slot",
+                "2",
+                "--db",
+                run.Connection.DataSource,
+                "--session",
+                "it's a session",
+                "--workspace",
+                "work space",
+                "--provider",
+                "test",
+                "--mode",
+                "review mode",
+                "--reasoning-effort",
+                "high",
+                "--head",
+                new string('a', 40),
+                "--resume",
+                "--execute"
+            );
+        var owner = await run.ReadAsync(ownerKey);
+        owner[SlotRelease.ResetFence] = "stopped-reset";
+        await run.Store.SetAsync(ownerKey, owner);
+        var refusal = await FluentActions
+            .Invoking(() =>
+                FinishCommitCommand.FinishAsync(
+                    run.Connection,
+                    typed,
+                    "17",
+                    2,
+                    "work space",
+                    execute: false,
+                    CancellationToken.None
+                )
+            )
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+        var discard = refusal.Which.Message.Split('`')[1];
+        ReviewdCommandLines
+            .PowerShellArguments(discard)
+            .Should()
+            .ContainInConsecutiveOrder("--session", "it's a session")
+            .And.ContainInConsecutiveOrder("--repo", "org/My Project/Nova\u2019s repo")
+            .And.ContainInConsecutiveOrder("--workspace", "work space")
+            .And.ContainInConsecutiveOrder("--db", run.Connection.DataSource);
+    }
+
+    // The discard a fenced slot names runs in the session the review's steps ran in: a shadow attempt's read-only post
+    // session, which a shadow database requires, else the agent session. One the attempt did not save stays a
+    // placeholder.
+    [Theory]
+    [InlineData(false, "post", "--session 'session'")]
+    [InlineData(true, "post", "--session 'post'")]
+    [InlineData(true, null, "--session <post session>")]
+    public void A_discard_names_the_session_the_reviews_steps_ran_in(bool shadow, string? post, string expected)
+    {
+        var attempt = new JsonObject
+        {
+            ["sessionId"] = "session",
+            ["shadow"] = shadow,
+            ["postSessionId"] = post,
+        };
+
+        FinishCommitCommand
+            .DiscardCommand(attempt, ScriptedReviewRun.Repo, "17", 2, "reviewd.db", "workspace")
+            .Should()
+            .EndWith($" {expected} --discard-verified --execute");
+    }
+
+    // What the attempt did not save is left as a placeholder PowerShell refuses to run, and listed under fill, never
+    // guessed: an attempt from before attempts saved their mode, and a shadow arm's manifest and task prompt files. A
+    // shadow attempt gets its shadow options, since its database refuses a live run; its mode is in its provenance.
+    [Theory]
+    [InlineData("legacy", "--mode <mode> --head", "<mode>: this attempt predates saved review modes*")]
+    [InlineData(
+        "shadow",
+        "--mode 'arm-mode' --shadow --post-session 'post' --variant 'v1' --manifest <manifest file> "
+            + "--experiment 'exp-1' --task-prompt-file <task prompt file> --head",
+        "<manifest file>: the variant manifest this arm ran (SHA-256 m1).|<task prompt file>: *(SHA-256 t1)."
+    )]
+    [InlineData("shadow-default-prompt", "--mode 'arm-mode' --shadow --post-session 'post' --head", null)]
+    public async Task A_resume_leaves_what_the_attempt_did_not_save_to_fill_in(
+        string attemptKind,
+        string expected,
+        string? fill
+    )
+    {
+        await using var run = await ScriptedReviewRun.CreateAsync();
+        var fields = new JsonObject { ["sessionId"] = "session", ["providerId"] = "test" };
+        if (attemptKind != "legacy")
+        {
+            fields["shadow"] = true;
+            fields["postSessionId"] = "post";
+            fields["provenance"] = new JsonObject
+            {
+                ["mode"] = "arm-mode",
+                ["taskPromptSha256"] =
+                    attemptKind == "shadow" ? "t1" : VariantManifest.Sha256Hex(ShadowTaskPrompt.Default),
+            };
+        }
+        if (attemptKind == "shadow")
+        {
+            fields["variant"] = "v1";
+            fields["provenance"]!["manifestSha256"] = "m1";
+            fields["provenance"]!["experimentId"] = "exp-1";
+        }
+        _ = await SeedFinishableAsync(run, ScriptedReviewRun.Repo, "workspace", fields);
+
+        var result = await FinishCommitCommand.FinishAsync(
+            run.Connection,
+            ScriptedReviewRun.Repo,
+            "17",
+            2,
+            "workspace",
+            execute: false,
+            CancellationToken.None
+        );
+
+        var next = result["next"]!.GetValue<string>();
+        next.Should().Contain($"--provider 'test' {expected} '{new string('a', 40)}' --resume --execute");
+        if (fill is null)
+        {
+            result["fill"].Should().BeNull();
+            _ = ReviewdCommandLines.PowerShellArguments(next);
+            return;
+        }
+        var expectedFill = fill.Split('|');
+        var printedFill = result["fill"]!.AsArray().Select(step => step!.GetValue<string>()).ToList();
+        printedFill.Should().HaveCount(expectedFill.Length);
+        for (var i = 0; i < expectedFill.Length; i++)
+        {
+            printedFill[i].Should().Match(expectedFill[i]);
+        }
+        FluentActions
+            .Invoking(() => ReviewdCommandLines.PowerShellArguments(next))
+            .Should()
+            .Throw<ArgumentException>("PowerShell refuses a placeholder");
+    }
+
+    // A commit-completed attempt with a landed commit, owned by its own claim on slot 2 of the workspace, with the given
+    // saved fields in place of a run's. Returns the owner row's key.
+    private static async Task<string> SeedFinishableAsync(
+        ScriptedReviewRun run,
+        RepoIdentity repo,
+        string workspace,
+        JsonObject fields
+    )
+    {
+        var attemptKey = $"reviewd/review-attempt/{repo.NormalizedKey}/17";
+        var ownerKey = SlotRelease.OwnerKey(workspace, repo.NormalizedKey, 2);
+        _ = await SlotRelease.ClaimAsync(
+            run.Connection,
+            ownerKey,
+            new JsonObject
+            {
+                ["repository"] = repo.DisplayName,
+                ["prId"] = "17",
+                ["slot"] = 2,
+                ["workspaceId"] = workspace,
+                ["headSha"] = new string('a', 40),
+            },
+            null,
+            attemptKey,
+            CancellationToken.None
+        );
+        var attempt = await run.ReadAsync(attemptKey);
+        attempt["stage"] = "commit-completed";
+        attempt["artifactCommit"] = ScriptedReviewRun.Committed();
+        foreach (var (name, value) in fields)
+        {
+            attempt[name] = value?.DeepClone();
+        }
+        await run.Store.SetAsync(attemptKey, attempt);
+        return ownerKey;
     }
 
     // The process dies once the commit landed: its commit-completed save is its last write, so the attempt keeps the
@@ -202,23 +512,38 @@ public sealed class ReviewdFinishCommitTests
         return await run.ReadAsync(run.AttemptKey);
     }
 
-    private static Task<int> FinishCommitAsync(ScriptedReviewRun run, bool execute) =>
-        FinishCommitCommand.RunAsync(
-            CliOptions.Parse([
-                "review",
-                "finish-commit",
-                "--repo",
-                ScriptedReviewRun.Repo.DisplayName,
-                "--pr",
-                "17",
-                "--slot",
-                "2",
-                "--db",
-                run.Database,
-                "--workspace",
-                "workspace",
-                .. execute ? new[] { "--execute" } : [],
-            ]),
-            CancellationToken.None
-        );
+    // The command as the CLI runs it: its exit code and the JSON it printed (null when it printed none).
+    private static async Task<(int Exit, JsonObject? Printed)> FinishCommitAsync(ScriptedReviewRun run, bool execute)
+    {
+        var stdout = Console.Out;
+        using var printed = new StringWriter();
+        Console.SetOut(printed);
+        int exit;
+        try
+        {
+            exit = await FinishCommitCommand.RunAsync(
+                CliOptions.Parse([
+                    "review",
+                    "finish-commit",
+                    "--repo",
+                    ScriptedReviewRun.Repo.DisplayName,
+                    "--pr",
+                    "17",
+                    "--slot",
+                    "2",
+                    "--db",
+                    run.Database,
+                    "--workspace",
+                    "workspace",
+                    .. execute ? new[] { "--execute" } : [],
+                ]),
+                CancellationToken.None
+            );
+        }
+        finally
+        {
+            Console.SetOut(stdout);
+        }
+        return (exit, printed.ToString() is { Length: > 0 } text ? JsonNode.Parse(text)!.AsObject() : null);
+    }
 }

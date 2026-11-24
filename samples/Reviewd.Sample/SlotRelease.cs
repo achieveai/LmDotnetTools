@@ -443,13 +443,21 @@ internal static class SlotRelease
         // A reset releases from the attempt it read when it fenced. A commit of the same claim can land after that, and
         // its result is then saved under the fence (KeepLandedAsync), or the run's completion saves it whole (stage,
         // reviewedHeadSha, finishedAt). That result is final: every field it saved wins over the older read, and the
-        // release keeps only what it added itself (such as the reclaim record).
+        // release keeps only what it added itself (such as the reclaim record). The read may already hold an older
+        // archive (finish-commit sends a landed commit back to verify-pending, and its resume commits and completes
+        // again), so a newer result is one whose archive or completion differs from the read.
         read.Parameters["@key"].Value = attemptKey;
         var current = await read.ExecuteScalarAsync(ct) is string saved ? JsonNode.Parse(saved)?.AsObject() : null;
         var landed =
-            released["artifactCommit"] is null
-            && current?["claimToken"]?.GetValue<string>() == token
-            && current["artifactCommit"] is not null;
+            current?["claimToken"]?.GetValue<string>() == token
+            && current["artifactCommit"] is not null
+            && (
+                !JsonNode.DeepEquals(current["artifactCommit"], released["artifactCommit"])
+                || (
+                    current["stage"]?.GetValue<string>() == "completed-verified"
+                    && released["stage"]?.GetValue<string>() != "completed-verified"
+                )
+            );
         if (landed)
         {
             foreach (var (name, value) in current!)

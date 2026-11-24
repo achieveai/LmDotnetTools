@@ -273,6 +273,54 @@ public sealed class ReviewdClaimLossTests
         run.Phases.Should().NotContain("cleanup", "the slot belongs to another run");
     }
 
+    // The commit lands under a reset's fence, so its save keeps the attempt owned (KeepLandedAsync), and the reset then
+    // releases the slot before the run writes its completion. The completion must not put back the owned state the
+    // reset replaced: the result is kept as released, the batch reads it as verified, and the run cleans nothing.
+    [Fact]
+    public async Task A_reset_that_releases_after_the_landed_save_is_not_reowned_by_the_completion()
+    {
+        await using var run = await ScriptedReviewRun.CreateAsync();
+        run.OnPhase = async (phase, _, _, _) =>
+        {
+            if (phase == "commit")
+            {
+                await run.ExecuteAsync(
+                    $"UPDATE cache SET value = json_set(value, '$.{SlotRelease.ResetFence}', 'reset') "
+                        + $"WHERE key = '{run.OwnerKey}';"
+                );
+            }
+            return null;
+        };
+        await run.ExecuteAsync(
+            $"""
+            CREATE TRIGGER release_after_landed_save AFTER UPDATE ON cache
+            WHEN NEW.key = '{run.AttemptKey}' AND json_extract(NEW.value, '$.stage') = 'commit-completed'
+                AND json_extract(NEW.value, '$.cleanupState') = 'owned'
+            BEGIN
+                UPDATE cache
+                SET value = json_remove(json_set(value, '$.state', 'released'), '$.{SlotRelease.ResetFence}')
+                WHERE key = '{run.OwnerKey}';
+                UPDATE cache SET value = json_set(value, '$.cleanupState', 'released') WHERE key = '{run.AttemptKey}';
+            END;
+            """
+        );
+
+        (await run.RunAsync()).Should().Be(0, "the landed result is final");
+
+        var kept = await run.ReadAsync(run.AttemptKey);
+        kept["stage"]!.GetValue<string>().Should().Be("completed-verified");
+        kept["cleanupState"]!.GetValue<string>().Should().Be("released", "the reset released the slot");
+        kept["reviewedHeadSha"]!.GetValue<string>().Should().Be(new string('a', 40), "the completion's head is kept");
+        kept["finishedAt"].Should().NotBeNull("the completion's time is kept");
+        kept["artifactCommit"]!["commit"]!.GetValue<string>().Should().HaveLength(40, "the landed archive is kept");
+        (await run.ReadAsync(run.RunKey))["cleanupState"]!.GetValue<string>().Should().Be("released");
+        var entry = new JsonObject { ["head"] = new string('a', 40) };
+        ReviewBatch.Verified(kept, entry).Should().BeTrue();
+        ReviewBatch.Reusable(kept).Should().BeTrue("the batch reads it as verified, not as an owner to resume");
+        (await run.ReadAsync(run.OwnerKey))["state"]!.GetValue<string>().Should().Be("released");
+        run.Phases.Should().NotContain("cleanup", "the reset cleaned the slot");
+    }
+
     // The commit lands after a reset took the claim, and its first save after that is canceled or fails once. The
     // failure path keeps the commit's result, released, since the reset already cleaned the slot: owned, it would
     // pin the lane; dropped, the archive that landed would be forgotten.
