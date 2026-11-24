@@ -2515,6 +2515,43 @@ public sealed class ReviewdRunnerTests
         }
     }
 
+    // review finish-commit sends a held commit-completed review back to verify-pending, but the batch already holds
+    // that PR's entry and does not resume it: the operator runs the resume the command prints
+    // (ReviewdFinishCommitTests). Once that resume has written the receipt and released the slot, the batch reconciles
+    // the held entry as verified.
+    [Fact]
+    public async Task Batch_keeps_a_finished_commit_held_until_its_manual_resume_writes_the_receipt()
+    {
+        using var batch = new BatchFixture(0, 1);
+        var finishing = RetainedOwner(0, 'a', "verify-pending");
+        finishing["cleanupState"] = "owned";
+        finishing["verifiedPublication"] = new JsonObject { ["comments"] = 1 };
+        finishing["artifactCommit"] = new JsonObject { ["status"] = "committed", ["commit"] = new string('c', 40) };
+        var landed = finishing.DeepClone().AsObject();
+        landed["stage"] = "commit-completed";
+        batch.PutAttempt("1", landed);
+        await batch.ExecuteAsync();
+        batch.Entries()[0]["status"]!.GetValue<string>().Should().Be("held", "a landed commit keeps its slot");
+
+        batch.PutAttempt("1", finishing);
+        await batch.ExecuteAsync();
+
+        batch.Entries()[0]["status"]!.GetValue<string>().Should().Be("held", "the batch does not resume a held entry");
+        batch.Runs.Should().NotContain(run => run.StartsWith("1:", StringComparison.Ordinal));
+
+        var verified = finishing.DeepClone().AsObject();
+        verified["stage"] = "completed-verified";
+        verified["reviewedHeadSha"] = new string('a', 40);
+        verified["finishedAt"] = DateTimeOffset.UtcNow;
+        verified["cleanupState"] = "released";
+        batch.Put($"reviewd/review-run/{PrCommands.ParseRepo(BatchFixture.Repo).NormalizedKey}/1", verified);
+        batch.PutAttempt("1", verified);
+        await batch.ExecuteAsync();
+
+        batch.Entries()[0]["status"]!.GetValue<string>().Should().Be("verified", "the resume's receipt reconciles it");
+        batch.Runs.Should().NotContain(run => run.StartsWith("1:", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task Batch_creation_age_is_rolling_forwarded_and_bound_to_immutable_scope()
     {
