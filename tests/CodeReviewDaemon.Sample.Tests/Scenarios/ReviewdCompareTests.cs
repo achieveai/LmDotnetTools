@@ -374,14 +374,25 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
     [Theory]
     [InlineData("the link")]
     [InlineData("a folder under the link")]
+    [InlineData("a link whose target passes through another link")]
     public async Task Compare_refuses_an_output_that_links_into_the_study(string through)
     {
         StudyFixture.Write(_files, ("aa-1", "experiment", null));
         var a = Arm("a1", new Review(1));
         var b = Arm("a2", new Review(1));
         var alias = Path.Combine(_files, "alias");
-        DirectoryLink.Create(alias, Path.Combine(StudyRoot, "records"));
-        var output = through == "the link" ? alias : Path.Combine(alias, "sub");
+        if (through == "a link whose target passes through another link")
+        {
+            // alias -> bridge/records, bridge -> the study: the text of alias's own target is outside the study.
+            var bridge = Path.Combine(_files, "bridge");
+            DirectoryLink.Create(bridge, StudyRoot);
+            DirectoryLink.Create(alias, Path.Combine(bridge, "records"));
+        }
+        else
+        {
+            DirectoryLink.Create(alias, Path.Combine(StudyRoot, "records"));
+        }
+        var output = through == "a folder under the link" ? Path.Combine(alias, "sub") : alias;
 
         var compare = () => CompareToAsync(output, a, b);
 
@@ -402,8 +413,10 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
 
     // An --out file that is a hard link to a study record is replaced, never written through: the record keeps its
     // bytes. A hard link needs no privilege and no containment check can see it, so only the write can stop it.
-    [Fact]
-    public async Task An_output_file_hard_linked_to_a_study_record_is_replaced_not_written_through()
+    [Theory]
+    [InlineData("compare.json")]
+    [InlineData("compare.md")]
+    public async Task An_output_file_hard_linked_to_a_study_record_is_replaced_not_written_through(string name)
     {
         StudyFixture.Write(_files, ("aa-1", "experiment", null));
         var a = Arm("a1", new Review(1));
@@ -411,17 +424,28 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
         var experiment = Path.Combine(StudyRoot, "records", "aa-1.json");
         var before = await File.ReadAllBytesAsync(experiment);
         Directory.CreateDirectory(Out);
-        HardLink(Path.Combine(Out, "compare.json"), experiment);
+        var output = Path.Combine(Out, name);
+        HardLink(output, experiment);
 
         (await CompareAsync(a, b)).Should().Be(0);
 
-        (await File.ReadAllBytesAsync(experiment)).Should().Equal(before);
-        var written = await File.ReadAllTextAsync(Path.Combine(Out, "compare.json"));
-        Logger.LogInformation("compare.json after the run starts {Start}", written[..Math.Min(80, written.Length)]);
-        JsonNode.Parse(written)!["schema"]!.GetValue<string>().Should().Be("reviewd-compare/1");
+        var after = await File.ReadAllBytesAsync(experiment);
+        var written = await File.ReadAllTextAsync(output);
+        Logger.LogInformation(
+            "{Output} hard-linked to {Record}: record {Length} bytes sha256 {Sha} after the run; output starts {Start}",
+            output,
+            experiment,
+            after.Length,
+            VariantManifest.Sha256Hex(after),
+            written[..Math.Min(40, written.Length)]
+        );
+        after.Should().Equal(before);
+        written
+            .Should()
+            .NotBe(System.Text.Encoding.UTF8.GetString(before), "the output holds the result, not the record");
     }
 
-    // The same through a file symlink, where this machine may create one.
+    // The same through a file symlink, where this machine may create one: each output in turn links to the record.
     [RequiresFileSymlinkFact("a file symlink needs Developer Mode or an elevated process on Windows")]
     public async Task An_output_file_symlinked_to_a_study_record_is_replaced_not_written_through()
     {
@@ -431,12 +455,27 @@ public sealed class ReviewdCompareTests(ITestOutputHelper output) : LoggingTestB
         var experiment = Path.Combine(StudyRoot, "records", "aa-1.json");
         var before = await File.ReadAllBytesAsync(experiment);
         Directory.CreateDirectory(Out);
-        File.CreateSymbolicLink(Path.Combine(Out, "compare.json"), experiment);
 
-        (await CompareAsync(a, b)).Should().Be(0);
+        foreach (var name in new[] { "compare.json", "compare.md" })
+        {
+            var output = Path.Combine(Out, name);
+            File.Delete(output);
+            File.CreateSymbolicLink(output, experiment);
 
-        (await File.ReadAllBytesAsync(experiment)).Should().Equal(before);
-        new FileInfo(Path.Combine(Out, "compare.json")).LinkTarget.Should().BeNull("the link was replaced by the file");
+            (await CompareAsync(a, b)).Should().Be(0);
+
+            var after = await File.ReadAllBytesAsync(experiment);
+            Logger.LogInformation(
+                "{Output} symlinked to {Target}: record {Length} bytes sha256 {Sha} after the run; output link now {Link}",
+                output,
+                experiment,
+                after.Length,
+                VariantManifest.Sha256Hex(after),
+                new FileInfo(output).LinkTarget ?? "(none)"
+            );
+            after.Should().Equal(before);
+            new FileInfo(output).LinkTarget.Should().BeNull("the link was replaced by the file");
+        }
     }
 
     private static void HardLink(string link, string target)

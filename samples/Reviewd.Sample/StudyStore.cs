@@ -43,8 +43,15 @@ internal static partial class StudyStore
     private static string Normal(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
 
     // The path with each existing link along it replaced by its final target, so a check sees where a write lands.
-    private static string Resolve(string path)
+    // One hop at a time, and each target is resolved the same way, so a target that itself passes through a link
+    // (out -> bridge/records, bridge -> the study) lands where the write would on every platform. (Windows' final-target
+    // lookup already follows the whole path; Unix's follows only the last name.)
+    private static string Resolve(string path, int depth = 0)
     {
+        if (depth > 32)
+        {
+            throw new IOException($"{path} passes through more than 32 links.");
+        }
         var full = Normal(path);
         var current = Path.GetPathRoot(full)!;
         foreach (
@@ -53,9 +60,9 @@ internal static partial class StudyStore
         {
             current = Path.Combine(current, part);
             FileSystemInfo entry = Directory.Exists(current) ? new DirectoryInfo(current) : new FileInfo(current);
-            if (entry.LinkTarget is not null && entry.ResolveLinkTarget(returnFinalTarget: true) is { } target)
+            if (entry.LinkTarget is not null && entry.ResolveLinkTarget(returnFinalTarget: false) is { } target)
             {
-                current = Normal(target.FullName);
+                current = Resolve(target.FullName, depth + 1);
             }
         }
         return current;
@@ -252,9 +259,10 @@ internal static partial class StudyStore
     private static FileStream Lock(string root)
     {
         var path = Path.Combine(root, ".write-lock");
+        FileStream stream;
         try
         {
-            var stream = new FileStream(
+            stream = new FileStream(
                 path,
                 FileMode.CreateNew,
                 FileAccess.Write,
@@ -262,9 +270,6 @@ internal static partial class StudyStore
                 4096,
                 FileOptions.DeleteOnClose
             );
-            stream.Write(Encoding.UTF8.GetBytes($$"""{"pid":{{Environment.ProcessId}},"writer":"reviewd compare"}"""));
-            stream.Flush();
-            return stream;
         }
         catch (IOException) when (File.Exists(path))
         {
@@ -272,6 +277,19 @@ internal static partial class StudyStore
                 $"The study is locked ({path}). Check whether its writer is still running; remove an abandoned lock only "
                     + "after confirming it is inactive."
             );
+        }
+        try
+        {
+            stream.Write(Encoding.UTF8.GetBytes($$"""{"pid":{{Environment.ProcessId}},"writer":"reviewd compare"}"""));
+            stream.Flush();
+            return stream;
+        }
+        catch
+        {
+            // A lock whose metadata could not be written is released at once (DeleteOnClose), not left to block the
+            // next writer.
+            stream.Dispose();
+            throw;
         }
     }
 
