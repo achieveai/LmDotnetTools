@@ -14,15 +14,15 @@ public sealed class ReviewdPreparedContextTests
 {
     // The runner's rules for writing the prepared report, taken from the sandbox script as it ships.
     private const string RunnerRules = """
-        import ast, json, re, sys
+        import ast, json, os, re, sys, tempfile
         from pathlib import Path
         names = {'render_json', 'split_part', 'context_files', 'write_prepared_context', 'receipt_files', 'read_receipt',
-                 'CONTEXT_PIECE_LIMIT', 'CONTEXT_TEXT_PART', 'ARCHIVE_FILE_LIMIT'}
+                 'replace_file', 'CONTEXT_PIECE_LIMIT', 'CONTEXT_TEXT_PART', 'ARCHIVE_FILE_LIMIT'}
         body = [n for n in ast.parse(Path(sys.argv[1]).read_text(encoding='utf-8')).body
                 if (isinstance(n, ast.FunctionDef) and n.name in names)
                 or (isinstance(n, ast.Assign) and any(getattr(t, 'id', None) in names for t in n.targets))]
         class ReviewError(Exception): pass
-        scope = {'json': json, 're': re, 'ReviewError': ReviewError}
+        scope = {'json': json, 're': re, 'os': os, 'tempfile': tempfile, 'Path': Path, 'ReviewError': ReviewError}
         exec(compile(ast.Module(body, []), 'sandbox', 'exec'), scope)
 
         """;
@@ -256,6 +256,50 @@ public sealed class ReviewdPreparedContextTests
         result["same"]!.GetValue<bool>().Should().BeTrue("read back, the receipt is the one the review wrote");
         result["elsewhere"]!.GetValue<string>().Should().Contain("unexpected file");
         result["revision"]!.GetValue<string>().Should().Contain("another revision");
+    }
+
+    [SkippableFact]
+    public async Task A_receipt_kept_as_several_never_writes_through_a_link_in_the_review_folder()
+    {
+        // The commit replaces each receipt file through a staging file. It once opened <name>.part by name, so a link
+        // the review left at that name sent the receipt's text to whatever the link points at, outside the folder.
+        const string harness =
+            RunnerRules
+            + """
+                root = Path(tempfile.mkdtemp())
+                folder, sentinel = root / 'PRs' / 'r-7', root / 'sentinel.txt'
+                folder.mkdir(parents=True)
+                sentinel.write_text('untouched')
+                (folder / 'publication_receipts.json').write_text('old')
+                try:
+                    os.symlink(sentinel, folder / 'publication_receipts.json.part')
+                except OSError:
+                    print(json.dumps({'linked': False}))
+                    raise SystemExit(0)
+                scope['replace_file'](folder, 'publication_receipts.json', 'new\n')
+                print(json.dumps({
+                    'linked': True,
+                    'sentinel': sentinel.read_text(),
+                    'receipt': (folder / 'publication_receipts.json').read_text(),
+                    'left': sorted(path.name for path in folder.iterdir()),
+                }))
+                """;
+
+        var (exitCode, stdout, stderr) = await ReviewdAutoSlotTests.RunSandboxRuleAsync(harness);
+
+        exitCode.Should().Be(0, stderr);
+        var result = JsonNode.Parse(stdout)!;
+        Skip.IfNot(result["linked"]!.GetValue<bool>(), "this account cannot create symbolic links");
+        result["sentinel"]!.GetValue<string>().Should().Be("untouched");
+        result["receipt"]!.GetValue<string>().Should().Be("new\n");
+        result["left"]!
+            .AsArray()
+            .Select(node => node!.GetValue<string>())
+            .Should()
+            .Equal(
+                ["publication_receipts.json", "publication_receipts.json.part"],
+                "the staging file is gone and the planted link is left as it was"
+            );
     }
 
     [SkippableTheory]

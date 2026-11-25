@@ -197,8 +197,9 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
     public async Task Verify_takes_the_receipts_revision_from_the_runner_and_its_round_from_the_comments()
     {
         // AWB#188 (#1006): a long-lived conversation copied an earlier round's mergeSha into the receipt, and verify
-        // refused this round's posted review on every retry. The runner now writes its prepared revision over the
-        // copied one; a receipt from an earlier round still fails, because its comments are in this round's baseline.
+        // refused this round's posted review on every retry. Verify now reads the receipt with the runner's prepared
+        // revision in place of the copied one, and writes nothing. A receipt from an earlier round still fails,
+        // because its comments are in this round's baseline.
         var python = await FindPythonAsync();
         Skip.If(python is null, "no Python interpreter on PATH, so the sandbox's verify rule cannot be run");
         string head = new('h', 40),
@@ -213,30 +214,41 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
                 ["kind"] = "summary",
                 ["content"] = $"summary {id}",
             };
-        static JsonObject Receipt(string head, string merge, JsonObject comment, params string[] continuedIn)
+        static JsonObject Receipt(
+            string head,
+            string merge,
+            JsonObject comment,
+            string? continuedIn = null,
+            string prId = "17"
+        )
         {
             var receipt = new JsonObject
             {
-                ["prId"] = "17",
+                ["prId"] = prId,
                 ["headSha"] = head,
                 ["mergeSha"] = merge,
                 ["comments"] = new JsonArray(comment),
             };
-            if (continuedIn.Length > 0)
-                receipt["continued_in"] = new JsonArray([.. continuedIn.Select(name => (JsonNode)name)]);
+            if (continuedIn is not null)
+            {
+                receipt["continued_in"] = new JsonArray(continuedIn);
+            }
             return receipt;
         }
-        // Summaries 1 and 2 are on the PR; the baseline lists those already there when this round prepared.
-        static JsonObject Case(JsonObject files, params int[] baseline)
+        // Summaries 1 and 2 are on PR 17; the baseline lists those already there when this round prepared. ids are
+        // the comments verify must return, or null when it must refuse the receipt.
+        static JsonObject Case(JsonObject files, int[]? ids, params int[] baseline)
         {
             var live = new JsonObject();
             foreach (var id in new[] { 1, 2 })
+            {
                 live[$"issues/comments/{id}"] = new JsonObject
                 {
                     ["id"] = id,
                     ["body"] = $"summary {id}",
                     ["issue_url"] = "https://api.github.com/repos/o/r/issues/17",
                 };
+            }
             return new JsonObject
             {
                 ["files"] = new JsonObject(
@@ -244,30 +256,50 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
                 ),
                 ["live"] = live,
                 ["baseline"] = new JsonArray([.. baseline.Select(id => (JsonNode)new JsonArray("issue_comment", id))]),
+                ["ids"] = ids is null ? null : new JsonArray([.. ids.Select(id => (JsonNode)id)]),
             };
         }
+        static JsonObject Split(JsonObject first, JsonObject second) =>
+            new() { ["publication_receipts.json"] = first, ["publication_receipts-2.json"] = second };
+        const string Continued = "publication_receipts-2.json";
         var cases = new JsonArray(
-            // The AWB#188 receipt: this round's head and comments, an earlier round's merge.
-            Case(new JsonObject { ["publication_receipts.json"] = Receipt(head, earlierMerge, Comment(1)) }),
-            // A stale head, the same way.
-            Case(new JsonObject { ["publication_receipts.json"] = Receipt(earlierHead, merge, Comment(1)) }),
-            // A receipt kept as two, both naming the earlier revision.
+            // The AWB#188 receipt: this round's head and comments, an earlier round's merge. Its prId is wrong too.
             Case(
-                new JsonObject
-                {
-                    ["publication_receipts.json"] = Receipt(
-                        earlierHead,
-                        earlierMerge,
-                        Comment(1),
-                        "publication_receipts-2.json"
-                    ),
-                    ["publication_receipts-2.json"] = Receipt(earlierHead, earlierMerge, Comment(2)),
-                }
+                new JsonObject { ["publication_receipts.json"] = Receipt(head, earlierMerge, Comment(1), prId: "18") },
+                [1]
+            ),
+            // A stale head, the same way.
+            Case(new JsonObject { ["publication_receipts.json"] = Receipt(earlierHead, merge, Comment(1)) }, [1]),
+            // A receipt kept as two, both naming the earlier revision: both comments are verified.
+            Case(
+                Split(
+                    Receipt(earlierHead, earlierMerge, Comment(1), Continued),
+                    Receipt(earlierHead, earlierMerge, Comment(2))
+                ),
+                [1, 2]
+            ),
+            // Two files naming different revisions, as a write stopped between them would leave.
+            Case(
+                Split(Receipt(head, merge, Comment(1), Continued), Receipt(earlierHead, earlierMerge, Comment(2))),
+                [1, 2]
+            ),
+            // The continuation's comment was on the PR before this round's prepare.
+            Case(
+                Split(
+                    Receipt(earlierHead, earlierMerge, Comment(1), Continued),
+                    Receipt(earlierHead, earlierMerge, Comment(2))
+                ),
+                null,
+                2
             ),
             // An earlier round's receipt: its summary was on the PR before this round's prepare.
-            Case(new JsonObject { ["publication_receipts.json"] = Receipt(earlierHead, earlierMerge, Comment(1)) }, 1),
+            Case(
+                new JsonObject { ["publication_receipts.json"] = Receipt(earlierHead, earlierMerge, Comment(1)) },
+                null,
+                1
+            ),
             // This round's revision, but a summary that is not on the PR.
-            Case(new JsonObject { ["publication_receipts.json"] = Receipt(head, merge, Comment(3)) })
+            Case(new JsonObject { ["publication_receipts.json"] = Receipt(head, merge, Comment(3)) }, null)
         );
         string[] names =
         [
@@ -276,28 +308,27 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
             "github_reply_wrapper",
             "same_text",
             "github_verify",
-            "render_json",
             "read_receipt",
             "stamp_receipt",
         ];
-        var stamp = $"stamp_receipt(c['files'].__getitem__, c['files'].__setitem__, 17, '{head}', '{merge}')";
+        var stamp = $"stamp_receipt(c['files'].__getitem__, 17, '{head}', '{merge}')";
+        var verify = $"github_verify({stamp}['comments'], c['live'].get, c['baseline'])";
 
         var verified = await RunAsync(
             python!,
             names,
-            $"passes(lambda: github_verify({stamp}['comments'], c['live'].get, c['baseline']))",
+            $"passes(lambda: {verify}) and [v['commentId'] for v in {verify}] == c['ids']",
             cases.ToJsonString()
         );
-        verified.Should().Equal(true, true, true, false, false);
+        verified.Should().Equal(true, true, true, true, false, false, false);
 
-        var stamped = await RunAsync(
+        var revision = await RunAsync(
             python!,
             names,
-            $"{stamp} is not None and all(json.loads(text)['prId'] == '17' and json.loads(text)['headSha'] == "
-                + $"'{head}' and json.loads(text)['mergeSha'] == '{merge}' for text in c['files'].values())",
+            $"[{stamp}[key] for key in ('prId', 'headSha', 'mergeSha')] == ['17', '{head}', '{merge}']",
             cases.ToJsonString()
         );
-        stamped.Should().AllBeEquivalentTo(true, "every receipt file names the prepared revision for the archive");
+        revision.Should().AllBeEquivalentTo(true, "verify reads every receipt with the prepared revision");
     }
 
     public void Dispose()

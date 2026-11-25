@@ -9,6 +9,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from urllib.parse import quote
@@ -637,21 +638,26 @@ def read_receipt(read):
     return receipt
 
 
-def stamp_receipt(read, write, pr_id, head, merge):
-    # The receipt read_receipt(read) returns, naming the revision this run prepared. The review writes the receipt but
-    # the runner owns its revision: a long-lived conversation copied an earlier round's mergeSha into it (AWB#188,
-    # #1006), and verify refused the posted review on every retry. So prId, headSha and mergeSha are written over,
-    # with write(name, text), in the receipt and each file it continues in, and the archive keeps the prepared
-    # revision. The comments are what tie a receipt to this round: verify reads each back from the PR and refuses one
-    # in this round's baseline, so an earlier round's receipt still fails.
-    receipt = read_receipt(read)
+def stamp_receipt(read, pr_id, head, merge):
+    # The receipt read_receipt(read) returns, with this run's prepared revision in place of the one the review copied
+    # into each file. The review writes the receipt but the runner owns its revision: a long-lived conversation copied
+    # an earlier round's mergeSha into it (AWB#188, #1006), and verify refused the posted review on every retry. Nothing
+    # is written, so the archive keeps the review's text. The comments are what tie a receipt to this round: verify
+    # reads each back from the PR and refuses one in this round's baseline, so an earlier round's receipt still fails.
     revision = {'prId': str(pr_id), 'headSha': head, 'mergeSha': merge}
-    continued = json.loads(read('publication_receipts.json')).get('continued_in') or []
-    for name in ['publication_receipts.json'] + continued:
-        part = json.loads(read(name))
-        if str(part.get('prId')) != str(pr_id) or part.get('headSha') != head or part.get('mergeSha') != merge:
-            write(name, render_json({**part, **revision}) + '\n')
-    return {**receipt, **revision}
+    return read_receipt(lambda name: json.dumps({**json.loads(read(name)), **revision}))
+
+
+def replace_file(folder, name, text):
+    # Replaces folder/name whole with text. The staging file is created new in the folder, never opened by a name that
+    # may already hold a file or a link, so nothing outside the folder is written through.
+    handle, staging = tempfile.mkstemp(dir=folder, prefix=f'.{name}.', suffix='.part')
+    try:
+        with os.fdopen(handle, 'w', encoding='utf-8', newline='\n') as stream:
+            stream.write(text)
+        os.replace(staging, Path(folder) / name)
+    finally:
+        Path(staging).unlink(missing_ok=True)
 
 
 def fitting_name(name, ending, key):
@@ -899,16 +905,8 @@ elif phase == 'verify' and args.get('shadow'):
                                        args['head'], args['merge'])))
 elif phase == 'verify':
     inspect_prepared()
-
-    def write_receipt(name, text):
-        # Replaced whole, so a verify stopped midway leaves the receipt as it was.
-        path = safe_path(outer, f'{directory}/{name}')
-        with path.with_name(f'{name}.part').open('w', encoding='utf-8', newline='\n') as stream:
-            stream.write(text)
-        os.replace(path.with_name(f'{name}.part'), path)
-
-    receipt = stamp_receipt(lambda name: safe_path(outer, f'{directory}/{name}').read_text(), write_receipt, pr,
-                            args['head'], args['merge'])
+    receipt = stamp_receipt(lambda name: safe_path(outer, f'{directory}/{name}').read_text(), pr, args['head'],
+                            args['merge'])
     comments = receipt.get('comments')
     if not isinstance(comments, list) or not comments:
         raise ReviewError('Publication receipt must include a posted summary.')
@@ -973,9 +971,7 @@ elif phase == 'commit':
                 raise
             continue
         for name in sorted(parts, key=lambda name: name == receipt.name):
-            with (folder / f'{name}.part').open('w', encoding='utf-8', newline='\n') as stream:
-                stream.write(parts[name])
-            os.replace(folder / f'{name}.part', folder / name)
+            replace_file(folder, name, parts[name])
         print(f'Kept {directory}/{receipt.name} as {len(parts)} receipts under the archive limit', file=sys.stderr)
     for note in set_aside_unarchivable(folder, quarantine):
         print(f"Set aside {directory}/{note['omitted']} ({note['kind']}); kept a note", file=sys.stderr)
