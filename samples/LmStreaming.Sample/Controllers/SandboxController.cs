@@ -24,6 +24,7 @@ public sealed class SandboxController(
     SandboxWorkspaceBackup backup,
     ConversationAuthorizer authorizer,
     IConversationStore conversations,
+    ConversationOwnedSandboxes ownedSandboxes,
     ILogger<SandboxController> logger
 ) : ControllerBase
 {
@@ -77,10 +78,18 @@ public sealed class SandboxController(
 
     /// <summary>
     /// Restores a snapshot (404 when the workspace has no such snapshot, before anything is stopped). The gateway
-    /// refuses while any sandbox mounts the workspace, so this deletes the workspace's sandboxes first: every
-    /// conversation on this workspace loses its live sandbox and its next turn creates a fresh one on the restored
-    /// files. The client confirms that with the user before calling.
+    /// refuses while any sandbox mounts the workspace, so this deletes the workspace's sandboxes this host tracks
+    /// first: every conversation on this workspace loses its live sandbox and its next turn creates a fresh one on the
+    /// restored files. The client confirms that with the user before calling.
     /// </summary>
+    /// <remarks>
+    /// A sandbox this host does not track (one a move retired, or one from before a restart) belongs to a
+    /// conversation that still exists, and is deleted only with it. When the gateway refuses the restore and
+    /// conversations still record sandboxes on the workspace, this answers 409
+    /// <c>restore_blocked_by_conversation_sandboxes</c> naming them (<c>blockers</c>: session and thread ids), so the
+    /// operator can delete those conversations, or wait for the gateway release that lets a restore pass them, and
+    /// retry. Otherwise the gateway's refusal is passed on as is.
+    /// </remarks>
     [HttpPost("backup/restore")]
     [OperatorSecretAuth(RefuseWithForbidden = true)]
     public Task<IActionResult> Restore(string threadId, [FromBody] RestoreRequest request, CancellationToken ct) =>
@@ -91,12 +100,72 @@ public sealed class SandboxController(
             {
                 if (string.IsNullOrWhiteSpace(request.SnapshotId))
                     return BadRequest(new { error = "snapshotId is required." });
-                var restored = await backup.RestoreAsync(
-                    target.GatewayWorkspace,
-                    request.SnapshotId,
-                    release => registry.ReleaseWorkspaceSessionsAsync(target.WorkspaceId, backup.AppId, release),
-                    token
-                );
+                SandboxBackupRestoreResult? restored;
+                // A refused DELETE of the release is the release's own failure, not the gateway refusing the restore.
+                var releaseFailed = false;
+                try
+                {
+                    restored = await backup.RestoreAsync(
+                        target.GatewayWorkspace,
+                        request.SnapshotId,
+                        async release =>
+                        {
+                            try
+                            {
+                                await registry.ReleaseWorkspaceSessionsAsync(target.WorkspaceId, backup.AppId, release);
+                            }
+                            catch
+                            {
+                                releaseFailed = true;
+                                throw;
+                            }
+                        },
+                        token
+                    );
+                }
+                catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.Conflict && !releaseFailed)
+                {
+                    var blockers = await ownedSandboxes.ListOnWorkspaceAsync(
+                        target.GatewayWorkspace,
+                        backup.AppId,
+                        token
+                    );
+                    if (blockers.Count == 0)
+                    {
+                        throw;
+                    }
+
+                    logger.LogWarning(
+                        "Restore of workspace {GatewayWorkspace} refused ({ErrorCode}); conversations still record "
+                            + "sandboxes on it, not checked on the gateway: {Blockers}",
+                        target.GatewayWorkspace,
+                        ex.ErrorCode,
+                        string.Join(", ", blockers.Select(blocker => $"{blocker.Record.SessionId}@{blocker.ThreadId}"))
+                    );
+                    return Conflict(
+                        new
+                        {
+                            error = "Nothing was restored: the gateway refused, and conversations that still exist "
+                                + "record sandboxes on the workspace. These are records, not checked on the gateway: "
+                                + "a recorded sandbox may already be gone. A sandbox is deleted only with its "
+                                + "conversation, so if one of them still holds the workspace, delete that conversation "
+                                + "or wait for the gateway release that lets a restore pass it (SBX#372), then retry the "
+                                + "restore. The sandboxes this host tracked on the workspace were stopped.",
+                            code = "restore_blocked_by_conversation_sandboxes",
+                            errorCode = ex.ErrorCode,
+                            retryable = false,
+                            blockers = blockers
+                                .Select(blocker => new
+                                {
+                                    sessionId = blocker.Record.SessionId,
+                                    threadId = blocker.ThreadId,
+                                    retired = blocker.Record.Retired,
+                                })
+                                .ToArray(),
+                        }
+                    );
+                }
+
                 return restored is null
                     ? NotFound(
                         new { error = $"Workspace '{target.GatewayWorkspace}' has no snapshot '{request.SnapshotId}'." }

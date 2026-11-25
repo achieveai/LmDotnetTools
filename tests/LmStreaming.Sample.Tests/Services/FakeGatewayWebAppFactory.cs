@@ -70,6 +70,8 @@ internal sealed class FakeGatewayWebAppFactory : WebApplicationFactory<Program>
         builder.UseSetting("SandboxGateway:AutoSpawn", "false");
         builder.UseSetting("SandboxGateway:AppId", _appId);
         builder.UseSetting("SandboxGateway:WorkspaceBasePath", Path.Combine(Root, "workspace-base"));
+        // The webhook secrets too, so a restart over the same root finds the ones the earlier host saved.
+        builder.UseSetting("Auth:TokenStoreDir", Path.Combine(Root, "oauth-tokens"));
         foreach (var (key, value) in _settings)
         {
             builder.UseSetting(key, value);
@@ -96,6 +98,8 @@ internal sealed class FakeGatewayWebAppFactory : WebApplicationFactory<Program>
                 sp.GetRequiredService<ILogger<SandboxGatewayLifetime>>(),
                 new HttpClient(_gateway, disposeHandler: false)
             ));
+            // Resolved through the interface, so a test can put its own over the host's store.
+            services.AddSingleton<IOwnedSandboxStore>(sp => sp.GetRequiredService<ConversationOwnedSandboxes>());
             services.RemoveAll<SandboxSessionRegistry>();
             services.AddSingleton(sp => new SandboxSessionRegistry(
                 sp.GetRequiredService<SandboxGatewayLifetime>(),
@@ -104,7 +108,8 @@ internal sealed class FakeGatewayWebAppFactory : WebApplicationFactory<Program>
                 new HttpClient(_gateway, disposeHandler: false),
                 sp.GetRequiredService<AuthOptions>(),
                 sp.GetRequiredService<SessionSecretStore>(),
-                timeProvider: _timeProvider
+                timeProvider: _timeProvider,
+                ownedSandboxes: sp.GetRequiredService<IOwnedSandboxStore>()
             ));
             _configureServices?.Invoke(services);
         });

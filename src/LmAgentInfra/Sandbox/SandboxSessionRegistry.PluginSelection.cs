@@ -344,7 +344,8 @@ public sealed partial class SandboxSessionRegistry
                 : partition.Session.WorkspaceWorkingDir,
         };
 
-        var candidate = await CreateSessionAsync(candidateRef, ct, partition.Credential).ConfigureAwait(false);
+        var candidate = await CreateSessionAsync(candidateRef, ct, partition.Credential, pluginCandidate: true)
+            .ConfigureAwait(false);
 
         // Drain the creation stash here. This path deliberately bypasses AwaitAndEvictOnFailureAsync —
         // there is no cache slot to evict on failure, because a candidate is not published until the
@@ -453,6 +454,8 @@ public sealed partial class SandboxSessionRegistry
     /// <summary>
     /// Destroys <paramref name="session"/> on the gateway and drops its per-session state, swallowing
     /// every failure. Shared by the abort and retire paths, whose contracts both promise not to throw.
+    /// A dedicated sandbox is recorded as retired first; when the gateway does not confirm it gone, its
+    /// record and webhook secret stay, so the conversation's delete still reaches it.
     /// </summary>
     /// <remarks>
     /// Two things here are load-bearing.
@@ -475,8 +478,10 @@ public sealed partial class SandboxSessionRegistry
     {
         try
         {
-            await DestroySessionAsync(session, CancellationToken.None).ConfigureAwait(false);
-            await EvictSessionStateAsync(session).ConfigureAwait(false);
+            // Before the DELETE: a restart between the two must not reuse a sandbox the swap replaced.
+            var recorded = await RetireOwnedRecordAsync(session).ConfigureAwait(false);
+            var gone = await DestroySessionAsync(session, CancellationToken.None).ConfigureAwait(false);
+            await EvictSessionStateAsync(session, retire: recorded && !gone).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

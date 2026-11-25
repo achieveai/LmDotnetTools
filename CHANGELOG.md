@@ -24,10 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **LmStreaming: dedicated per-conversation sandboxes and a sandbox release route.** A conversation provisioned with
   `dedicatedSandbox: true` and a working directory gets its own sandbox, jailed to that directory by the gateway
   (ADR 0044); other conversations on the workspace keep sharing one. `GET /api/conversations/capabilities` reports
-  `dedicatedSandbox`. New route `POST /api/conversations/{threadId}/sandbox/release` deletes the conversation's
-  sandbox and, once the gateway confirms, can move it to a new directory (`200`); it refuses with `409
-  sandbox_release_while_running` while the conversation has work in hand or holds work only the host keeps, and
-  answers `503 sandbox_release_failed` when the DELETE or the move's store write fails. A fork of a dedicated
+  `dedicatedSandbox`. New route `POST /api/conversations/{threadId}/sandbox/release` retires the conversation's
+  sandbox and, once the retirement is recorded, can move it to a new directory (`200`). Retiring sends the gateway
+  no DELETE: the sandbox stays recorded on the conversation, asleep on the gateway, until the conversation is
+  deleted. The route refuses with `409 sandbox_release_while_running` while the conversation has work in hand or
+  holds work only the host keeps. A failed write of the retirement record or of the move fails the request (`503
+  sandbox_release_failed`). A fork of a dedicated
   conversation gets its own jailed sandbox. `SandboxSessionRegistry` gains `ReleaseOwnedSessionsAsync` and
   `WaitForOwnerMoveAsync`; `MultiTurnAgentPool` gains `TryUnloadAgentAsync` and `AgentReleaseOutcome.HoldsWork`.
   Rolling a host back to a build without this ignores the stored flag and runs those conversations in the shared,

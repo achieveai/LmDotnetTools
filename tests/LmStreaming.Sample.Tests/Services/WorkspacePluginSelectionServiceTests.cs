@@ -1792,6 +1792,8 @@ public class WorkspacePluginSelectionServiceTests
         private int _creates;
         private int _failDeletes;
 
+        private HttpStatusCode _failDeleteStatus = HttpStatusCode.ServiceUnavailable;
+
         /// <summary>
         /// When set, a create THROWS this instead of answering. Distinct from
         /// <c>failCreateAfter</c>, which returns HTTP 500 and so becomes a SandboxException — a
@@ -1857,14 +1859,15 @@ public class WorkspacePluginSelectionServiceTests
         public void ReleaseDeletes() => Volatile.Read(ref _deleteGate)?.TrySetResult();
 
         /// <summary>
-        /// How many of the next DELETEs answer 503 instead of deleting. A refused delete is not recorded in
-        /// <see cref="DeletedSessionIds"/>: the sandbox is still running.
+        /// How many of the next DELETEs answer <paramref name="status"/> (503 by default) instead of deleting. A
+        /// refused delete is not recorded in <see cref="DeletedSessionIds"/>: the sandbox is still running.
         /// </summary>
-        public void FailNextDeletes(int count)
+        public void FailNextDeletes(int count, HttpStatusCode status = HttpStatusCode.ServiceUnavailable)
         {
             lock (_gate)
             {
                 _failDeletes = count;
+                _failDeleteStatus = status;
             }
         }
 
@@ -1987,7 +1990,7 @@ public class WorkspacePluginSelectionServiceTests
                     if (_failDeletes > 0)
                     {
                         _failDeletes--;
-                        return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+                        return new HttpResponseMessage(_failDeleteStatus);
                     }
 
                     _deletedSessionIds.Add(deleted);

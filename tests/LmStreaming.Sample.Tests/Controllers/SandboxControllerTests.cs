@@ -115,6 +115,128 @@ public class SandboxControllerTests
         fixture.Harness.Registry.TryGetSessionById(theirs.SessionId, out _).Should().BeTrue();
     }
 
+    /// <summary>
+    /// After a restart, or after a move retired one, a conversation's sandbox is one this host no longer tracks. It is
+    /// deleted only with its conversation, so a restore leaves it, and when the gateway still refuses, the 409 names
+    /// each such sandbox and its conversation and says what to do, instead of a bare refusal.
+    /// </summary>
+    [Fact]
+    public async Task Restore_RefusedWhileConversationsStillRecordSandboxes_Is409_NamesThem_AndDeletesNoneOfThem()
+    {
+        await using var fixture = await Fixture.CreateAsync(
+            restoreConflict: true,
+            recorded: ws =>
+                [
+                    ("review-current", Recorded("sess-current", ws, BackupAppId, retired: false)),
+                    ("review-moved", Recorded("sess-retired", ws, BackupAppId, retired: true)),
+                    // Neither blocks this restore: another app's sandbox, and one on another workspace.
+                    ("review-other-app", Recorded("sess-other-app", ws, "app-b", retired: false)),
+                    ("review-other-ws", Recorded("sess-other-ws", "other-ws", BackupAppId, retired: false)),
+                ]
+        );
+        var tracked = await SeedSessionAsync(fixture.Harness, fixture.Workspace, BackupAppId);
+
+        var result = await fixture.Controller.Restore(
+            ThreadId,
+            new SandboxController.RestoreRequest("snap-1"),
+            CancellationToken.None
+        );
+
+        var conflict = result.Should().BeOfType<ConflictObjectResult>().Subject;
+        using var body = JsonDocument.Parse(JsonSerializer.Serialize(conflict.Value));
+        body.RootElement.GetProperty("code").GetString().Should().Be("restore_blocked_by_conversation_sandboxes");
+        // Records, not gateway state: a recorded sandbox may already be gone, so the advice is conditional.
+        body.RootElement.GetProperty("error")
+            .GetString()
+            .Should()
+            .Contain("not checked on the gateway")
+            .And.Contain("if one of them still holds the workspace, delete that conversation")
+            .And.Contain("wait for the gateway release");
+        body.RootElement.GetProperty("blockers")
+            .EnumerateArray()
+            .Select(blocker =>
+                (
+                    blocker.GetProperty("sessionId").GetString(),
+                    blocker.GetProperty("threadId").GetString(),
+                    blocker.GetProperty("retired").GetBoolean()
+                )
+            )
+            .Should()
+            .BeEquivalentTo([("sess-current", "review-current", false), ("sess-retired", "review-moved", true)]);
+        fixture
+            .Harness.Gateway.DeletedSessionIds.Should()
+            .Equal([tracked.SessionId], "a restore deletes only what this host tracks, never a conversation's own");
+    }
+
+    /// <summary>
+    /// The owners are read in one list, so a conversation past the first page of conversations is still named.
+    /// </summary>
+    [Fact]
+    public async Task Restore_RefusedWithMoreConversationsThanOnePage_NamesTheOwnerPastThePage()
+    {
+        await using var fixture = await Fixture.CreateAsync(
+            restoreConflict: true,
+            recorded: ws =>
+                [
+                    // Sorts last (equal last-update times fall back to the thread id, descending), so it is past the
+                    // first 200 conversations.
+                    ("review-a-owner", Recorded("sess-owned", ws, BackupAppId, retired: true)),
+                    .. Enumerable
+                        .Range(0, 205)
+                        .Select(index =>
+                            ($"review-x{index}", Recorded($"sess-{index}", "other-ws", BackupAppId, retired: false))
+                        ),
+                ]
+        );
+
+        var result = await fixture.Controller.Restore(
+            ThreadId,
+            new SandboxController.RestoreRequest("snap-1"),
+            CancellationToken.None
+        );
+
+        using var body = JsonDocument.Parse(
+            JsonSerializer.Serialize(result.Should().BeOfType<ConflictObjectResult>().Subject.Value)
+        );
+        body.RootElement.GetProperty("blockers")
+            .EnumerateArray()
+            .Select(blocker => blocker.GetProperty("threadId").GetString())
+            .Should()
+            .Equal("review-a-owner");
+    }
+
+    /// <summary>
+    /// A release DELETE the gateway refuses with 409 is the release failing, not the gateway refusing the restore: it
+    /// is reported as such, never as conversations blocking the restore.
+    /// </summary>
+    [Fact]
+    public async Task Restore_ReleaseDeleteRefusedWith409_ReportsTheReleaseFailure_NotTheRecordedBlockers()
+    {
+        await using var fixture = await Fixture.CreateAsync(
+            restoreSucceeds: true,
+            recorded: ws => [("review-moved", Recorded("sess-retired", ws, BackupAppId, retired: true))]
+        );
+        var tracked = await SeedSessionAsync(fixture.Harness, fixture.Workspace, BackupAppId);
+        fixture.Harness.Gateway.FailNextDeletes(1, HttpStatusCode.Conflict);
+
+        var result = await fixture.Controller.Restore(
+            ThreadId,
+            new SandboxController.RestoreRequest("snap-1"),
+            CancellationToken.None
+        );
+
+        var refused = result.Should().BeOfType<ObjectResult>().Subject;
+        refused.StatusCode.Should().Be(StatusCodes.Status409Conflict);
+        var json = JsonSerializer.Serialize(refused.Value);
+        json.Should().Contain("live sandboxes could not all be stopped");
+        json.Should().NotContain("restore_blocked_by_conversation_sandboxes");
+        fixture.BackupRequests.Should().NotContain("POST /api/v1/backup/restore");
+        fixture.Harness.Registry.TryGetSessionById(tracked.SessionId, out _).Should().BeTrue();
+    }
+
+    private static OwnedSandboxRecord Recorded(string sessionId, string gatewayWorkspace, string appId, bool retired) =>
+        new(sessionId, "ws-id", gatewayWorkspace, appId, ReadOnlyEgress: false, "PRs/r-7", retired);
+
     [Theory]
     [InlineData("restore")]
     [InlineData("purge")]
@@ -314,6 +436,7 @@ public class SandboxControllerTests
                 _ = services.AddSingleton(fixture.Backup);
                 _ = services.AddSingleton(fixture.Authorizer);
                 _ = services.AddSingleton(fixture.Conversations);
+                _ = services.AddSingleton(fixture.OwnedSandboxes);
                 _ = services.AddLogging();
             }
         );
@@ -339,15 +462,30 @@ public class SandboxControllerTests
         public required SandboxAppAccess Access { get; init; }
         public required ConversationAuthorizer Authorizer { get; init; }
         public required IConversationStore Conversations { get; init; }
+        public required ConversationOwnedSandboxes OwnedSandboxes { get; init; }
 
+        // recorded: the sandboxes conversations record, given the gateway workspace name. None by default.
         public static async Task<Fixture> CreateAsync(
             bool restoreConflict = false,
             bool restoreSucceeds = false,
-            bool costsIncludeOwnWorkspace = true
+            bool costsIncludeOwnWorkspace = true,
+            Func<string, IReadOnlyList<(string ThreadId, OwnedSandboxRecord Record)>>? recorded = null
         )
         {
             var harness = Harness.Create();
             var workspace = await SeedWorkspaceAsync(harness, ["official"]);
+            // Their own store: what a conversation records is all the restore reads of it.
+            var recordingStore = new InMemoryConversationStore();
+            var ownedSandboxes = new ConversationOwnedSandboxes(recordingStore);
+            foreach (var (threadId, record) in recorded?.Invoke(workspace.DirectoryRelPath) ?? [])
+            {
+                await recordingStore.UpdateMetadataAsync(
+                    threadId,
+                    existing => existing ?? new ThreadMetadata { ThreadId = threadId, LastUpdated = 0 }
+                );
+                await ownedSandboxes.UpdateAsync(threadId, records => [.. records, record]);
+            }
+
             var conversations = new Mock<IConversationStore>();
             conversations
                 .Setup(x => x.LoadMetadataAsync(ThreadId, It.IsAny<CancellationToken>()))
@@ -411,6 +549,7 @@ public class SandboxControllerTests
                 backup,
                 authorizer,
                 conversations.Object,
+                ownedSandboxes,
                 NullLogger<SandboxController>.Instance
             );
             return new Fixture
@@ -423,6 +562,7 @@ public class SandboxControllerTests
                 Access = access,
                 Authorizer = authorizer,
                 Conversations = conversations.Object,
+                OwnedSandboxes = ownedSandboxes,
             };
         }
 
