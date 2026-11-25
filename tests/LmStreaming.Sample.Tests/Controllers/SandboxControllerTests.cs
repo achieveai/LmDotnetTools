@@ -145,10 +145,12 @@ public class SandboxControllerTests
         var conflict = result.Should().BeOfType<ConflictObjectResult>().Subject;
         using var body = JsonDocument.Parse(JsonSerializer.Serialize(conflict.Value));
         body.RootElement.GetProperty("code").GetString().Should().Be("restore_blocked_by_conversation_sandboxes");
+        // Records, not gateway state: a recorded sandbox may already be gone, so the advice is conditional.
         body.RootElement.GetProperty("error")
             .GetString()
             .Should()
-            .Contain("Delete those conversations")
+            .Contain("not checked on the gateway")
+            .And.Contain("if one of them still holds the workspace, delete that conversation")
             .And.Contain("wait for the gateway release");
         body.RootElement.GetProperty("blockers")
             .EnumerateArray()
@@ -164,6 +166,72 @@ public class SandboxControllerTests
         fixture
             .Harness.Gateway.DeletedSessionIds.Should()
             .Equal([tracked.SessionId], "a restore deletes only what this host tracks, never a conversation's own");
+    }
+
+    /// <summary>
+    /// The owners are read in one list, so a conversation past the first page of conversations is still named.
+    /// </summary>
+    [Fact]
+    public async Task Restore_RefusedWithMoreConversationsThanOnePage_NamesTheOwnerPastThePage()
+    {
+        await using var fixture = await Fixture.CreateAsync(
+            restoreConflict: true,
+            recorded: ws =>
+                [
+                    // Sorts last (equal last-update times fall back to the thread id, descending), so it is past the
+                    // first 200 conversations.
+                    ("review-a-owner", Recorded("sess-owned", ws, BackupAppId, retired: true)),
+                    .. Enumerable
+                        .Range(0, 205)
+                        .Select(index =>
+                            ($"review-x{index}", Recorded($"sess-{index}", "other-ws", BackupAppId, retired: false))
+                        ),
+                ]
+        );
+
+        var result = await fixture.Controller.Restore(
+            ThreadId,
+            new SandboxController.RestoreRequest("snap-1"),
+            CancellationToken.None
+        );
+
+        using var body = JsonDocument.Parse(
+            JsonSerializer.Serialize(result.Should().BeOfType<ConflictObjectResult>().Subject.Value)
+        );
+        body.RootElement.GetProperty("blockers")
+            .EnumerateArray()
+            .Select(blocker => blocker.GetProperty("threadId").GetString())
+            .Should()
+            .Equal("review-a-owner");
+    }
+
+    /// <summary>
+    /// A release DELETE the gateway refuses with 409 is the release failing, not the gateway refusing the restore: it
+    /// is reported as such, never as conversations blocking the restore.
+    /// </summary>
+    [Fact]
+    public async Task Restore_ReleaseDeleteRefusedWith409_ReportsTheReleaseFailure_NotTheRecordedBlockers()
+    {
+        await using var fixture = await Fixture.CreateAsync(
+            restoreSucceeds: true,
+            recorded: ws => [("review-moved", Recorded("sess-retired", ws, BackupAppId, retired: true))]
+        );
+        var tracked = await SeedSessionAsync(fixture.Harness, fixture.Workspace, BackupAppId);
+        fixture.Harness.Gateway.FailNextDeletes(1, HttpStatusCode.Conflict);
+
+        var result = await fixture.Controller.Restore(
+            ThreadId,
+            new SandboxController.RestoreRequest("snap-1"),
+            CancellationToken.None
+        );
+
+        var refused = result.Should().BeOfType<ObjectResult>().Subject;
+        refused.StatusCode.Should().Be(StatusCodes.Status409Conflict);
+        var json = JsonSerializer.Serialize(refused.Value);
+        json.Should().Contain("live sandboxes could not all be stopped");
+        json.Should().NotContain("restore_blocked_by_conversation_sandboxes");
+        fixture.BackupRequests.Should().NotContain("POST /api/v1/backup/restore");
+        fixture.Harness.Registry.TryGetSessionById(tracked.SessionId, out _).Should().BeTrue();
     }
 
     private static OwnedSandboxRecord Recorded(string sessionId, string gatewayWorkspace, string appId, bool retired) =>

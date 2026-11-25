@@ -2769,6 +2769,12 @@ public class ConversationsController(
     /// <summary>How many times <see cref="CommitDedicatedMoveAsync"/> checks a mode that changed under it.</summary>
     private const int MoveCommitAttempts = 3;
 
+    /// <summary>
+    /// How long a conversation delete waits to read its sandbox records, which waits for a release of the
+    /// conversation already running. Past it the delete answers 503 and keeps the conversation.
+    /// </summary>
+    private static readonly TimeSpan S_ownedSandboxReadTimeout = TimeSpan.FromSeconds(30);
+
     /// <summary>The release route's 409 reason when the agent is idle but holds work a rebuild would lose.</summary>
     internal const string HoldsWorkReason =
         "the conversation holds work only this host keeps: a parked or unanswered call, an armed wait, a sub-agent "
@@ -2797,39 +2803,64 @@ public class ConversationsController(
     /// and every one the conversation records, retired by a move or left by a restart. The containers only, never the
     /// workspace files. Each is deleted under the credential of the app that created it, the caller's or this
     /// host's; one neither has is logged and left. A failed delete stays tracked, so a workspace release (a backup
-    /// restore or a purge) retries it: the deleted conversation's own release route answers unknown thread. Returns
-    /// <see langword="false"/>, deleting nothing, when an agent of the conversation is pooled again, such as one a
-    /// send rebuilt while the old one was disposed: it holds the sandbox.
+    /// restore or a purge) retries it: the deleted conversation's own release route answers unknown thread.
     /// </summary>
-    private async Task<bool> TryStartDeletingOwnedSandboxAsync(string threadId, CancellationToken ct)
+    /// <returns>
+    /// <see langword="null"/> once the delete has started and the conversation may go. Otherwise the answer, and the
+    /// conversation must be kept: 409 when an agent of the conversation is pooled again, such as one a send rebuilt
+    /// while the old one was disposed (it holds the sandbox); 503 when the conversation's sandbox records could not
+    /// be read in time (they go with the conversation, so keeping it lets a retry delete every one).
+    /// </returns>
+    private async Task<IActionResult?> TryStartDeletingOwnedSandboxAsync(string threadId, CancellationToken ct)
     {
         if (sandboxSessionRegistry is not { } registry)
         {
-            return true;
+            return null;
         }
 
-        // Read now: they go with the conversation's metadata. They name the sandboxes this host no longer tracks, the
-        // ones a move retired and the current one of a host that restarted since.
-        var persisted = await registry.LoadOwnedSandboxesAsync(threadId, ct);
         var callerCredential = TryBuildCallerCredential(HttpContext?.Request?.Headers);
-        Task? release = null;
+        Task<Task>? started = null;
         if (
             !agentPool.TryRunWhileNotPooled(
                 threadId,
-                () =>
-                    release = registry.ReleaseOwnedSessionsAsync(
-                        threadId,
-                        persisted,
-                        callerCredential,
-                        CancellationToken.None
-                    )
+                () => started = registry.DeleteOwnedSessionsAsync(threadId, callerCredential)
             )
         )
         {
-            return false;
+            return WhileRunningConflict(
+                threadId,
+                "delete the conversation",
+                "conversation_delete_while_running",
+                "a new turn took the conversation"
+            );
         }
 
-        _ = release!.ContinueWith(
+        Task release;
+        try
+        {
+            release = await started!.WaitAsync(S_ownedSandboxReadTimeout, ct);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            logger.LogError(
+                ex,
+                "Could not read the dedicated sandboxes of conversation {ThreadId}; the conversation is kept so a "
+                    + "retry deletes them",
+                threadId
+            );
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new
+                {
+                    error = "conversation_sandboxes_unreadable",
+                    code = "conversation_sandboxes_unreadable",
+                    detail = "The conversation's sandboxes could not be read, so it was not deleted. Retry the delete.",
+                    threadId,
+                }
+            );
+        }
+
+        _ = release.ContinueWith(
             task =>
                 logger.LogWarning(
                     task.Exception,
@@ -2840,7 +2871,7 @@ public class ConversationsController(
             TaskContinuationOptions.OnlyOnFaulted,
             TaskScheduler.Default
         );
-        return true;
+        return null;
     }
 
     /// <summary>
@@ -2929,14 +2960,9 @@ public class ConversationsController(
 
         await agentPool.RemoveAgentAsync(threadId);
 
-        if (!await TryStartDeletingOwnedSandboxAsync(threadId, ct))
+        if (await TryStartDeletingOwnedSandboxAsync(threadId, ct) is { } kept)
         {
-            return WhileRunningConflict(
-                threadId,
-                "delete the conversation",
-                "conversation_delete_while_running",
-                "a new turn took the conversation"
-            );
+            return kept;
         }
 
         // Not store.DeleteThreadAsync: a fork reads its original's messages in place, so an original

@@ -499,8 +499,10 @@ that gateway cache; the next request reads the current key. Shared OAuth account
 
 MCP setup and binding metadata are frozen when a session is created. Restart loses in-memory ownership;
 callbacks for those old sessions deny even if their authentication secret remains on disk. Create a new
-session through the normal app path to restore access. Missing/expired credentials return `pending` without
-waiting for browser sign-in. Unknown sessions, bindings or destinations deny.
+session through the normal app path to restore access. The exception is a dedicated (conversation-owned) sandbox
+the restarted host reuses: reusing it binds the conversation's current MCP setup to its existing session id on
+this host, so its callbacks work again. What the gateway was given at create stays as it was. Missing/expired
+credentials return `pending` without waiting for browser sign-in. Unknown sessions, bindings or destinations deny.
 
 The upstream [MCP callback example](https://github.com/achieveai/SandboxedOstoolsMcpServer/blob/1f5b4ada20ba6c9467c16c679a5b0935c7475b10/Docs/examples/webhooks/auth_request_mcp.json)
 defines the unified envelope and server identity. The [webhook contract](https://github.com/achieveai/SandboxedOstoolsMcpServer/blob/1f5b4ada20ba6c9467c16c679a5b0935c7475b10/Docs/webhooks.md#L207-L257)
@@ -601,13 +603,17 @@ rest of the workspace is read-only to it (gateway ADR 0044). Sandboxes are never
 - **Lifetime.** The sandbox is paired with its conversation, which records it in its metadata
   (`sample.ownedSandboxes`): the current one and every one the release route retired. Deleting the conversation
   deletes them all. So do, for the ones this host tracks, a workspace backup restore, an operator purge, a
-  plugin-selection swap (it deletes the superseded sandboxes, dedicated ones included) and the rollback of a failed
-  create. Nothing else does: the release route, an idle unload and an app shutdown leave it to retire on the
+  plugin-selection swap (it deletes the superseded sandboxes, dedicated ones included; one whose DELETE is refused
+  stays recorded, retired, for the conversation's delete) and the rollback of a failed create. Nothing else does: the release route, an idle unload and an app shutdown leave it to retire on the
   gateway. The next turn reuses it, on a restarted host too, while the gateway still has it (a dormant one
-  included); a fresh one is created with the stored directory only when the gateway lost it. A backup restore the
+  included) and its webhook secret is still on disk; otherwise a fresh one is created with the stored directory,
+  and the old one is recorded as retired. A backup restore the
   gateway refuses while such an untracked sandbox may still hold the workspace answers `409`
-  `restore_blocked_by_conversation_sandboxes`, with `blockers` naming each sandbox and its conversation: delete
-  those conversations, or wait for the gateway release that lets a restore pass them (SBX#372), then retry.
+  `restore_blocked_by_conversation_sandboxes`, with `blockers` naming each sandbox a conversation records and that
+  conversation. These are recorded, not checked on the gateway: one may already be gone. If one still holds the
+  workspace, delete its conversation, or wait for the gateway release that lets a restore pass it (SBX#372), then
+  retry. A DELETE refused while the restore stops this host's own sandboxes is reported as that failure, not as
+  blockers.
 - **Delete.** `DELETE /api/conversations/{threadId}` deletes the conversation's sandboxes with it, the current one
   and the retired ones, in the background. Each is deleted under the credential of the app that created it: the
   caller's (its sandbox app headers) or this host's own; one neither has is logged and left on the gateway. A
@@ -615,7 +621,9 @@ rest of the workspace is read-only to it (gateway ADR 0044). Sandboxes are never
   The deleted conversation's own release route cannot: it answers unknown thread. `409`
   `conversation_delete_while_running` when an agent of the conversation is pooled again, such as one a send
   rebuilt while the delete disposed the old one: nothing
-  is deleted, the conversation or its sandbox. Retry the delete.
+  is deleted, the conversation or its sandbox. Retry the delete. `503` `conversation_sandboxes_unreadable` when the
+  conversation's records could not be read (they are read after any release of it still running, for up to 30
+  seconds): the conversation and its records are kept, so a retry deletes every sandbox they name.
 - **Release and move.** `POST /api/conversations/{threadId}/sandbox/release` with an optional
   `workingDirectoryRelPath` retires the sandbox and, once that is recorded, stores the new directory. Retiring sends
   the gateway no DELETE: the sandbox sleeps there, recorded on the conversation, until the conversation is deleted.
@@ -637,7 +645,8 @@ rest of the workspace is read-only to it (gateway ADR 0044). Sandboxes are never
 - **Mini Apps.** The host runs Mini Apps through operations, so outside the jail. A dedicated conversation
   therefore never gets a mode with Mini App debugging or browser debugging (which opens a Mini App by id).
   Provision, mode switch and a release with a directory (a move) answer `400` `dedicated_sandbox_mode_unsupported`;
-  a release without one only stops the sandbox and answers `200`. Building the agent refuses such a mode too (a
+  a release without one only retires the sandbox on this host (no gateway request, nothing is stopped) and answers
+  `200`. Building the agent refuses such a mode too (a
   fork, or a mode edited later), so a send then answers `409` `dedicated_sandbox_mode_unsupported`. The
   conversation's directory may not be the workspace root, `mini-web-apps` or inside it (`400`
   `working_directory_invalid`), so its agent can never write an app the host would run.

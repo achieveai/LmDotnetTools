@@ -9,7 +9,8 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 /// <para>
 /// Every create of an owned sandbox records it as the owner's current one for its slot, retiring the one it replaces.
 /// A restarted host reuses a current record the gateway still has (a dormant sandbox counts: the gateway keeps it
-/// until it is deleted or reaped) instead of creating another. An owner release that retires keeps the records and
+/// until it is deleted or reaped) and whose webhook secret is still on disk, instead of creating another. When either
+/// is missing it creates a fresh one, which retires the record. An owner release that retires keeps the records and
 /// marks them retired; a confirmed delete drops the deleted one. So the records name every sandbox of the conversation
 /// that still exists, and the conversation's delete reaches all of them.
 /// </para>
@@ -22,9 +23,8 @@ public sealed partial class SandboxSessionRegistry
     private readonly IOwnedSandboxStore? _ownedSandboxes;
 
     /// <summary>
-    /// The sandboxes <paramref name="threadId"/> records, current and retired. Read before the conversation is deleted:
-    /// its delete passes them to <see cref="ReleaseOwnedSessionsAsync(string, IReadOnlyList{OwnedSandboxRecord}, SandboxCredential?, CancellationToken)"/>.
-    /// Empty on a host with no store.
+    /// The sandboxes <paramref name="threadId"/> records, current and retired: the ones
+    /// <see cref="DeleteOwnedSessionsAsync(string, SandboxCredential?)"/> deletes. Empty on a host with no store.
     /// </summary>
     public Task<IReadOnlyList<OwnedSandboxRecord>> LoadOwnedSandboxesAsync(
         string threadId,
@@ -95,6 +95,9 @@ public sealed partial class SandboxSessionRegistry
                 record.SessionId,
                 owner
             );
+            // Its secret first: once the record is gone, nothing would ever remove it, and it would keep accepting
+            // callbacks for a sandbox that no longer exists.
+            await _sessionSecretStore.RemoveAsync(record.SessionId, CancellationToken.None).ConfigureAwait(false);
             await _ownedSandboxes
                 .UpdateAsync(owner, kept => [.. kept.Where(other => other.SessionId != record.SessionId)], ct)
                 .ConfigureAwait(false);
@@ -144,13 +147,15 @@ public sealed partial class SandboxSessionRegistry
     }
 
     /// <summary>
-    /// Records <paramref name="session"/> as its owner's current sandbox for its slot, retiring the one it replaces.
-    /// A no-op for a shared sandbox or on a host with no store.
+    /// Records <paramref name="session"/> as its owner's current sandbox for its slot. Unless
+    /// <paramref name="retireSameSlot"/> is off (a plugin-selection candidate, which the swap retires the other way
+    /// round), the one it replaces is marked retired. A no-op for a shared sandbox or on a host with no store.
     /// </summary>
     private async Task RecordOwnedSessionAsync(
         SandboxSession session,
         SandboxCredential credential,
         string? workingDir,
+        bool retireSameSlot,
         CancellationToken ct
     )
     {
@@ -174,7 +179,8 @@ public sealed partial class SandboxSessionRegistry
                 records =>
                     [
                         .. records.Select(record =>
-                            !record.Retired
+                            retireSameSlot
+                            && !record.Retired
                             && IsSameSlot(record, created.WorkspaceId, created.AppId, created.ReadOnlyEgress)
                                 ? record with
                                 {
@@ -220,6 +226,51 @@ public sealed partial class SandboxSessionRegistry
                 owner
             );
         }
+    }
+
+    /// <summary>
+    /// Marks <paramref name="session"/> retired in its owner's records. Best-effort, as
+    /// <see cref="ForgetOwnedRecordAsync"/> is, and skipped while the owner's conversation is being deleted.
+    /// </summary>
+    /// <returns>Whether the owner records the session at all: a dedicated sandbox on a host with a store.</returns>
+    private async Task<bool> RetireOwnedRecordAsync(SandboxSession session)
+    {
+        if (_ownedSandboxes is null || session.OwnerThreadId is not { } owner)
+        {
+            return false;
+        }
+
+        if (_ownersBeingDeleted.ContainsKey(owner))
+        {
+            return true;
+        }
+
+        try
+        {
+            await _ownedSandboxes
+                .UpdateAsync(
+                    owner,
+                    records =>
+                        [
+                            .. records.Select(record =>
+                                record.SessionId == session.SessionId ? record with { Retired = true } : record
+                            ),
+                        ],
+                    CancellationToken.None
+                )
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Failed to record sandbox session {SessionId} of owner {OwnerThreadId} as retired",
+                session.SessionId,
+                owner
+            );
+        }
+
+        return true;
     }
 
     private static bool IsSameSlot(OwnedSandboxRecord record, string workspaceId, string appId, bool readOnlyEgress) =>

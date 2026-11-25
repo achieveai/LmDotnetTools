@@ -51,7 +51,8 @@ public sealed partial class SandboxSessionRegistry
 
     /// <summary>
     /// Per owner, a running release that commits a change (see
-    /// <see cref="ReleaseOwnedSessionsAsync(string, string, Func{Task}, CancellationToken)"/>). The owner's creates wait for it.
+    /// <see cref="ReleaseOwnedSessionsAsync(string, string, Func{Task}, CancellationToken)"/>) or that retires. The
+    /// owner's creates wait for it.
     /// </summary>
     private readonly ConcurrentDictionary<string, Task> _ownerFences = new(StringComparer.Ordinal);
 
@@ -68,6 +69,15 @@ public sealed partial class SandboxSessionRegistry
     /// </summary>
     private readonly ConcurrentDictionary<string, Task> _ownersBeingDeleted = new(StringComparer.Ordinal);
 
+    private enum OwnerReleaseKind
+    {
+        /// <summary>Deletes the owner's sandboxes on the gateway.</summary>
+        Delete,
+
+        /// <summary>Stops using them, records them as retired and sends the gateway nothing.</summary>
+        Retire,
+    }
+
     /// <summary>
     /// Stops the dedicated sandboxes <paramref name="threadId"/> owns and confirms each is gone. Only the container
     /// goes: the workspace files are the gateway's mount and stay, and the conversation keeps its history; its next
@@ -79,34 +89,41 @@ public sealed partial class SandboxSessionRegistry
         ReleaseOwnedSessionsCoreAsync(threadId, movedToWorkingDir: null, commit: null, OwnerReleaseKind.Delete, ct);
 
     /// <summary>
-    /// As <see cref="ReleaseOwnedSessionsAsync(string, CancellationToken)"/>, and also deletes the sandboxes
-    /// <paramref name="persisted"/> records that this host no longer tracks: the current one a restart forgot and the
-    /// retired ones a move left. The conversation is being deleted, so these go with it. Each is deleted under the
-    /// credential of the app it was created under: <paramref name="callerCredential"/> or this host's own, whichever
-    /// has that app id. One neither has is logged and left on the gateway.
+    /// Starts deleting every sandbox <paramref name="threadId"/> owns, for a conversation being deleted: the ones this
+    /// host tracks, and the ones its records name that this host no longer tracks (the ones a move retired, and the
+    /// current one a restart forgot). Each recorded one is deleted under the credential of the app it was created
+    /// under: <paramref name="callerCredential"/> or this host's own, whichever has that app id. One neither has is
+    /// logged and left on the gateway.
     /// </summary>
-    /// <param name="threadId">The owner.</param>
-    /// <param name="persisted">The owner's records, read before its conversation is deleted.</param>
-    /// <param name="callerCredential">The credential of the caller deleting the conversation, if it sent one.</param>
-    /// <param name="ct">Stops the caller waiting; the release itself runs to the end.</param>
-    /// <exception cref="SandboxException">A sandbox could not be stopped; it is still tracked, so a retry deletes it.</exception>
-    public Task ReleaseOwnedSessionsAsync(
-        string threadId,
-        IReadOnlyList<OwnedSandboxRecord> persisted,
-        SandboxCredential? callerCredential,
-        CancellationToken ct = default
-    )
+    /// <remarks>
+    /// The take-out happens before this returns, as for any release. The records are read after every earlier release
+    /// of the owner has finished, so a sandbox an earlier retire evicted, or one created and retired just before, is
+    /// read too. Delete the conversation only once the returned task completes: its records go with it.
+    /// </remarks>
+    /// <returns>
+    /// Completes once the records are read. Faults when they could not be: nothing is deleted then, the conversation
+    /// must be kept, and a retry deletes everything. Its result is the delete itself, which runs on in the background
+    /// and faults with a <see cref="SandboxException"/> when a sandbox could not be deleted; that one stays tracked,
+    /// so a workspace release retries it.
+    /// </returns>
+    public Task<Task> DeleteOwnedSessionsAsync(string threadId, SandboxCredential? callerCredential)
     {
-        ArgumentNullException.ThrowIfNull(persisted);
-        return ReleaseOwnedSessionsCoreAsync(
+        var captured = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = ReleaseOwnedSessionsCoreAsync(
             threadId,
             movedToWorkingDir: null,
             commit: null,
             OwnerReleaseKind.Delete,
-            ct,
-            persisted,
-            callerCredential
+            CancellationToken.None,
+            (callerCredential, captured)
         );
+        return CapturedThenAsync(captured.Task, release);
+
+        static async Task<Task> CapturedThenAsync(Task captured, Task release)
+        {
+            await captured.ConfigureAwait(false);
+            return release;
+        }
     }
 
     /// <summary>
@@ -172,23 +189,13 @@ public sealed partial class SandboxSessionRegistry
         return ReleaseOwnedSessionsCoreAsync(threadId, movedToWorkingDir, commit, OwnerReleaseKind.Delete, ct);
     }
 
-    private enum OwnerReleaseKind
-    {
-        /// <summary>Deletes the owner's sandboxes on the gateway.</summary>
-        Delete,
-
-        /// <summary>Stops using them, records them as retired and sends the gateway nothing.</summary>
-        Retire,
-    }
-
     private Task ReleaseOwnedSessionsCoreAsync(
         string threadId,
         string? movedToWorkingDir,
         Func<Task>? commit,
         OwnerReleaseKind kind,
         CancellationToken ct,
-        IReadOnlyList<OwnedSandboxRecord>? persisted = null,
-        SandboxCredential? callerCredential = null
+        (SandboxCredential? Caller, TaskCompletionSource Captured)? recorded = null
     )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -220,9 +227,8 @@ public sealed partial class SandboxSessionRegistry
                 }
             }
 
-            if (persisted is not null)
+            if (recorded is not null)
             {
-                TrackPersistedForDelete(threadId, persisted, callerCredential);
                 // Marked before the release can run; replaced by the release itself below.
                 _ownersBeingDeleted[threadId] = Task.CompletedTask;
             }
@@ -232,14 +238,16 @@ public sealed partial class SandboxSessionRegistry
             release =
                 kind == OwnerReleaseKind.Retire
                     ? Task.Run(() => RunOwnerRetireAsync(threadId, previous, retired, movedToWorkingDir, commit))
-                    : Task.Run(() => RunOwnerReleaseAsync(threadId, previous, movedToWorkingDir, commit));
+                    : Task.Run(() => RunOwnerReleaseAsync(threadId, previous, movedToWorkingDir, commit, recorded));
             _ownerReleaseTails[threadId] = release;
-            if (commit is not null)
+            // A retire fences even without a commit: it marks every record of the owner retired, so a sandbox created
+            // meanwhile would be recorded current and then marked retired with the rest.
+            if (commit is not null || kind == OwnerReleaseKind.Retire)
             {
                 _ownerFences[threadId] = release;
             }
 
-            if (persisted is not null)
+            if (recorded is not null)
             {
                 _ownersBeingDeleted[threadId] = release;
             }
@@ -255,10 +263,10 @@ public sealed partial class SandboxSessionRegistry
     }
 
     /// <summary>
-    /// Waits until no release that commits a change for <paramref name="threadId"/> is running, so a caller that reads
-    /// the owner's committed state next (its working directory, say) reads the outcome, not the state the release is
-    /// replacing. Completes at once when none is running. A failed release committed nothing, so its failure is not
-    /// rethrown here.
+    /// Waits until no release that commits a change or retires for <paramref name="threadId"/> is running, so a caller
+    /// that reads the owner's committed state next (its working directory, say) reads the outcome, not the state the
+    /// release is replacing. Completes at once when none is running. A failed release committed nothing, so its
+    /// failure is not rethrown here.
     /// </summary>
     /// <remarks>
     /// Covers a thread that owns no sandbox yet too (a shared-sandbox thread moving to a dedicated one): the fence is
@@ -286,16 +294,43 @@ public sealed partial class SandboxSessionRegistry
         string threadId,
         Task previous,
         string? movedToWorkingDir,
-        Func<Task>? commit
+        Func<Task>? commit,
+        (SandboxCredential? Caller, TaskCompletionSource Captured)? recorded
     )
     {
-        try
+        if (recorded is not null)
         {
-            await previous.ConfigureAwait(false);
+            _logger.LogInformation(
+                "Deleting the sandboxes of owner {OwnerThreadId} once its earlier releases finish",
+                threadId
+            );
         }
-        catch
+
+        // Whatever an earlier release left is retried below.
+        await AwaitPreviousReleaseAsync(previous).ConfigureAwait(false);
+
+        if (recorded is { } delete)
         {
-            // That release reported its own outcome to its callers; whatever it left is retried below.
+            // After the earlier releases: a sandbox one of them retired is no longer tracked, so only its record
+            // names it now.
+            try
+            {
+                IReadOnlyList<OwnedSandboxRecord> records = _ownedSandboxes is null
+                    ? []
+                    : await _ownedSandboxes.LoadAsync(threadId, CancellationToken.None).ConfigureAwait(false);
+                lock (_ownerReleaseLock)
+                {
+                    TrackPersistedForDelete(threadId, records, delete.Caller);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Nothing is deleted: the caller keeps the conversation, and with it the records a retry reads.
+                _ = delete.Captured.TrySetException(ex);
+                throw;
+            }
+
+            _ = delete.Captured.TrySetResult();
         }
 
         var failures = 0;
@@ -319,12 +354,39 @@ public sealed partial class SandboxSessionRegistry
             throw ReleaseFailure(failures, $"of thread '{threadId}'", lastFailure);
         }
 
-        if (commit is not null)
+        await CommitOwnerMoveAsync(threadId, movedToWorkingDir, commit).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Waits for the owner's previous release. Its failure is not rethrown: that release reported its own outcome to
+    /// its callers.
+    /// </summary>
+    private static async Task AwaitPreviousReleaseAsync(Task previous)
+    {
+        try
         {
-            await commit().ConfigureAwait(false);
-            // Before this release ends: the creates waiting on its fence re-resolve to it as soon as they wake.
-            _ownerMovedTo[threadId] = movedToWorkingDir!;
+            await previous.ConfigureAwait(false);
         }
+        catch
+        {
+            // Reported to that release's callers.
+        }
+    }
+
+    /// <summary>
+    /// Runs <paramref name="commit"/>, when there is one, then publishes <paramref name="movedToWorkingDir"/> as the
+    /// owner's directory. A failed commit publishes nothing.
+    /// </summary>
+    private async Task CommitOwnerMoveAsync(string threadId, string? movedToWorkingDir, Func<Task>? commit)
+    {
+        if (commit is null)
+        {
+            return;
+        }
+
+        await commit().ConfigureAwait(false);
+        // Before this release ends: the creates waiting on its fence re-resolve to it as soon as they wake.
+        _ownerMovedTo[threadId] = movedToWorkingDir!;
     }
 
     private async Task RunOwnerRetireAsync(
@@ -338,14 +400,7 @@ public sealed partial class SandboxSessionRegistry
         Func<Task>? commit
     )
     {
-        try
-        {
-            await previous.ConfigureAwait(false);
-        }
-        catch
-        {
-            // That release reported its own outcome to its callers.
-        }
+        await AwaitPreviousReleaseAsync(previous).ConfigureAwait(false);
 
         var sessions =
             new List<(
@@ -403,17 +458,13 @@ public sealed partial class SandboxSessionRegistry
             );
         }
 
-        if (commit is not null)
-        {
-            await commit().ConfigureAwait(false);
-            _ownerMovedTo[threadId] = movedToWorkingDir!;
-        }
+        await CommitOwnerMoveAsync(threadId, movedToWorkingDir, commit).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Tracks, as retiring under <paramref name="owner"/>, every sandbox <paramref name="persisted"/> records that this
-    /// host does not track already, so the owner's delete deletes it with the rest. Call under
-    /// <see cref="_ownerReleaseLock"/>, with the owner's take-out.
+    /// host does not track already, so the owner's delete deletes it with the rest. Each id once, however often it is
+    /// recorded. Call under <see cref="_ownerReleaseLock"/>.
     /// </summary>
     private void TrackPersistedForDelete(
         string owner,
@@ -427,7 +478,7 @@ public sealed partial class SandboxSessionRegistry
             .ToHashSet(StringComparer.Ordinal);
         foreach (var record in persisted)
         {
-            if (_sessionsById.ContainsKey(record.SessionId) || known.Contains(record.SessionId))
+            if (_sessionsById.ContainsKey(record.SessionId) || !known.Add(record.SessionId))
             {
                 continue;
             }

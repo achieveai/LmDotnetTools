@@ -1565,10 +1565,13 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
     /// <param name="credential">Caller credential to create the session under; <c>null</c> resolves
     /// to the process-wide default (M1 behavior, still the only path for the daemon and every
     /// contextless caller).</param>
+    /// <param name="pluginCandidate">A plugin-selection candidate, created beside the session it may replace: never an
+    /// adopted one (that would carry the old plugins), and recorded without retiring the one still serving.</param>
     private async Task<SandboxSession> CreateSessionAsync(
         WorkspaceRef workspaceRef,
         CancellationToken ct,
-        SandboxCredential? credential = null
+        SandboxCredential? credential = null,
+        bool pluginCandidate = false
     )
     {
         var workspaceId = workspaceRef.Id;
@@ -1705,7 +1708,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             // A conversation's own sandbox from before a restart is reused while the gateway still has it, so the
             // restart creates nothing and the old one is not left to sleep untracked.
             if (
-                await TryAdoptOwnedSessionAsync(
+                !pluginCandidate
+                && await TryAdoptOwnedSessionAsync(
                         workspaceRef,
                         workspaceRelPath,
                         effectiveCredential,
@@ -1713,8 +1717,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                         mcpContext,
                         ct
                     )
-                    .ConfigureAwait(false) is
-                { } adopted
+                    .ConfigureAwait(false)
+                    is { } adopted
             )
             {
                 reservationCommitted = true;
@@ -1909,7 +1913,13 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 await _sessionSecretStore.SaveAsync(session.SessionId, sessionSecret, ct).ConfigureAwait(false);
                 // Recorded before returning for the same reason: a sandbox its owner does not record would outlive a
                 // restart unreachable, and its conversation's delete would never reach it.
-                await RecordOwnedSessionAsync(session, effectiveCredential, workspaceRef.WorkingDir, ct)
+                await RecordOwnedSessionAsync(
+                        session,
+                        effectiveCredential,
+                        workspaceRef.WorkingDir,
+                        retireSameSlot: !pluginCandidate,
+                        ct
+                    )
                     .ConfigureAwait(false);
             }
             catch
@@ -1918,7 +1928,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 // credential via _sessionCredentials, so the DELETE must carry the owner's app id while
                 // that entry is still present (a default/foreign id is rejected 404, leaking the remote
                 // session). Uses CancellationToken.None so a cancelled create still attempts teardown.
-                await DestroySessionAsync(session, CancellationToken.None).ConfigureAwait(false);
+                _ = await DestroySessionAsync(session, CancellationToken.None).ConfigureAwait(false);
                 // Remove ONLY the entries this attempt added, and only while they still point at THIS
                 // session, so a concurrent recreation is never clobbered (mirrors InvalidateSessionAsync).
                 _ = ((ICollection<KeyValuePair<string, SandboxSession>>)_sessionsById).Remove(
@@ -2186,7 +2196,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
             // creating credential via CredentialFor(sessionId), so the DELETE must carry the owner's
             // X-Sbx-App-Id (a foreign/default id would be rejected 404, leaking the gateway session) —
             // and CredentialFor reads _sessionCredentials, which EvictSessionStateAsync clears.
-            await DestroySessionAsync(session, CancellationToken.None).ConfigureAwait(false);
+            _ = await DestroySessionAsync(session, CancellationToken.None).ConfigureAwait(false);
             // Clear every per-session collection (reverse map, sub-agent bindings, thread routing,
             // discovery ledger, credential + client refcount, persisted secret) via the shared helper —
             // the same one InvalidateSessionAsync uses, so the two teardown paths can never diverge.
@@ -3088,12 +3098,14 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
         return [.. _sessionsById.Keys];
     }
 
-    private async Task DestroySessionAsync(SandboxSession session, CancellationToken ct = default)
+    /// <returns>Whether the gateway confirmed it gone: deleted, or already absent (<c>404</c>).</returns>
+    private async Task<bool> DestroySessionAsync(SandboxSession session, CancellationToken ct = default)
     {
         try
         {
             await ClientFor(CredentialFor(session.SessionId)).DeleteAsync(session.SessionId, ct).ConfigureAwait(false);
             _logger.LogInformation("Destroyed sandbox session {SessionId}", session.SessionId);
+            return true;
         }
         catch (SandboxException ex)
         {
@@ -3104,10 +3116,12 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable, ISandboxB
                 ex.StatusCode,
                 session.SessionId
             );
+            return ex.StatusCode == 404;
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to destroy sandbox session {SessionId}", session.SessionId);
+            return false;
         }
     }
 

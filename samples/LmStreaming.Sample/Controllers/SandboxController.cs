@@ -101,16 +101,29 @@ public sealed class SandboxController(
                 if (string.IsNullOrWhiteSpace(request.SnapshotId))
                     return BadRequest(new { error = "snapshotId is required." });
                 SandboxBackupRestoreResult? restored;
+                // A refused DELETE of the release is the release's own failure, not the gateway refusing the restore.
+                var releaseFailed = false;
                 try
                 {
                     restored = await backup.RestoreAsync(
                         target.GatewayWorkspace,
                         request.SnapshotId,
-                        release => registry.ReleaseWorkspaceSessionsAsync(target.WorkspaceId, backup.AppId, release),
+                        async release =>
+                        {
+                            try
+                            {
+                                await registry.ReleaseWorkspaceSessionsAsync(target.WorkspaceId, backup.AppId, release);
+                            }
+                            catch
+                            {
+                                releaseFailed = true;
+                                throw;
+                            }
+                        },
                         token
                     );
                 }
-                catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.Conflict)
+                catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.Conflict && !releaseFailed)
                 {
                     var blockers = await ownedSandboxes.ListOnWorkspaceAsync(
                         target.GatewayWorkspace,
@@ -124,7 +137,7 @@ public sealed class SandboxController(
 
                     logger.LogWarning(
                         "Restore of workspace {GatewayWorkspace} refused ({ErrorCode}); conversations still record "
-                            + "sandboxes on it: {Blockers}",
+                            + "sandboxes on it, not checked on the gateway: {Blockers}",
                         target.GatewayWorkspace,
                         ex.ErrorCode,
                         string.Join(", ", blockers.Select(blocker => $"{blocker.Record.SessionId}@{blocker.ThreadId}"))
@@ -132,11 +145,12 @@ public sealed class SandboxController(
                     return Conflict(
                         new
                         {
-                            error = "Nothing was restored: sandboxes of conversations that still exist may hold the "
-                                + "workspace, and a sandbox is deleted only with its conversation. Delete those "
-                                + "conversations, or wait for the gateway release that lets a restore pass them "
-                                + "(SBX#372), then retry the restore. The sandboxes this host tracked on the workspace "
-                                + "were stopped.",
+                            error = "Nothing was restored: the gateway refused, and conversations that still exist "
+                                + "record sandboxes on the workspace. These are records, not checked on the gateway: "
+                                + "a recorded sandbox may already be gone. A sandbox is deleted only with its "
+                                + "conversation, so if one of them still holds the workspace, delete that conversation "
+                                + "or wait for the gateway release that lets a restore pass it (SBX#372), then retry the "
+                                + "restore. The sandboxes this host tracked on the workspace were stopped.",
                             code = "restore_blocked_by_conversation_sandboxes",
                             errorCode = ex.ErrorCode,
                             retryable = false,

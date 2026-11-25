@@ -20,15 +20,12 @@ public sealed class ConversationOwnedSandboxes(IConversationStore store) : IOwne
     /// <summary>Property key in a thread's <c>ThreadMetadata.Properties</c> holding its sandboxes as a JSON array.</summary>
     public const string PropertyKey = "sample.ownedSandboxes";
 
-    private const int ListPageSize = 200;
+    private static readonly JsonSerializerOptions S_json = new(JsonSerializerDefaults.Web);
 
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly ConversationListOptions S_listOptions = new() { ExcludeDeleted = true };
 
-    private static readonly ConversationListOptions ListOptions = new()
-    {
-        SortOrder = ConversationSortOrder.Created,
-        ExcludeDeleted = true,
-    };
+    /// <summary>Abandons a write to a conversation that no longer exists.</summary>
+    private sealed class ThreadGoneException : Exception;
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<OwnedSandboxRecord>> LoadAsync(string threadId, CancellationToken ct = default)
@@ -76,8 +73,8 @@ public sealed class ConversationOwnedSandboxes(IConversationStore store) : IOwne
     /// left out: their sandboxes went with them.
     /// </summary>
     /// <remarks>
-    /// Pages in creation order, newest first, so a conversation created during the scan can only repeat a row (dropped
-    /// here), and only one deleted during it can be missed.
+    /// One list of every conversation, read at once: pages over a list that changes between reads can skip a
+    /// conversation. A sandbox two conversations record is listed for each, so neither owner is hidden.
     /// </remarks>
     public async Task<IReadOnlyList<(string ThreadId, OwnedSandboxRecord Record)>> ListOnWorkspaceAsync(
         string gatewayWorkspace,
@@ -85,29 +82,20 @@ public sealed class ConversationOwnedSandboxes(IConversationStore store) : IOwne
         CancellationToken ct = default
     )
     {
-        var found = new List<(string ThreadId, OwnedSandboxRecord Record)>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        for (var offset = 0; ; offset += ListPageSize)
-        {
-            var page = await store.ListThreadsAsync(ListPageSize, offset, ListOptions, ct).ConfigureAwait(false);
-            foreach (var metadata in page)
-            {
-                found.AddRange(
-                    Read(metadata)
-                        .Where(record =>
-                            string.Equals(record.GatewayWorkspace, gatewayWorkspace, StringComparison.Ordinal)
-                            && string.Equals(record.AppId, appId, StringComparison.Ordinal)
-                            && seen.Add(record.SessionId)
-                        )
-                        .Select(record => (metadata.ThreadId, record))
-                );
-            }
-
-            if (page.Count < ListPageSize)
-            {
-                return found;
-            }
-        }
+        var conversations = await store.ListThreadsAsync(int.MaxValue, 0, S_listOptions, ct).ConfigureAwait(false);
+        var seen = new HashSet<(string ThreadId, string SessionId)>();
+        return
+        [
+            .. conversations.SelectMany(metadata =>
+                Read(metadata)
+                    .Where(record =>
+                        string.Equals(record.GatewayWorkspace, gatewayWorkspace, StringComparison.Ordinal)
+                        && string.Equals(record.AppId, appId, StringComparison.Ordinal)
+                        && seen.Add((metadata.ThreadId, record.SessionId))
+                    )
+                    .Select(record => (metadata.ThreadId, record))
+            ),
+        ];
     }
 
     private static IReadOnlyList<OwnedSandboxRecord> Read(ThreadMetadata? metadata)
@@ -122,7 +110,7 @@ public sealed class ConversationOwnedSandboxes(IConversationStore store) : IOwne
             ?? throw new InvalidOperationException(
                 $"Stored sandboxes of conversation '{metadata.ThreadId}' are not a JSON string."
             );
-        return JsonSerializer.Deserialize<OwnedSandboxRecord[]>(json, Json)
+        return JsonSerializer.Deserialize<OwnedSandboxRecord[]>(json, S_json)
             ?? throw new InvalidOperationException(
                 $"Stored sandboxes of conversation '{metadata.ThreadId}' are not a JSON array."
             );
@@ -134,8 +122,5 @@ public sealed class ConversationOwnedSandboxes(IConversationStore store) : IOwne
     ) =>
         records.Count == 0
             ? properties.Remove(PropertyKey)
-            : properties.SetItem(PropertyKey, JsonSerializer.Serialize(records, Json));
-
-    /// <summary>Abandons a write to a conversation that no longer exists.</summary>
-    private sealed class ThreadGoneException : Exception;
+            : properties.SetItem(PropertyKey, JsonSerializer.Serialize(records, S_json));
 }

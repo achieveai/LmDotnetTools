@@ -5,12 +5,12 @@ namespace LmStreaming.Sample.Tests.Services;
 
 /// <summary>
 /// The host's record of each conversation's sandboxes, passed through, with every write it receives noted and the
-/// ability to hold writes (to act while a release records its retirement) or fail them. A release route sends the
-/// gateway nothing now, so its record write is where a test catches one in flight.
+/// ability to hold writes (to act while a release records its retirement) or fail writes or reads. A release route
+/// sends the gateway nothing now, so its record write is where a test catches one in flight.
 /// </summary>
 internal sealed class HeldOwnedSandboxStore(IOwnedSandboxStore inner) : IOwnedSandboxStore
 {
-    private static readonly TimeSpan Patience = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan S_patience = TimeSpan.FromSeconds(10);
 
     private readonly object _gate = new();
     private readonly List<string> _writes = [];
@@ -19,6 +19,9 @@ internal sealed class HeldOwnedSandboxStore(IOwnedSandboxStore inner) : IOwnedSa
 
     /// <summary>When set, every write fails, writing nothing.</summary>
     public volatile bool FailWrites;
+
+    /// <summary>When set, every read fails.</summary>
+    public volatile bool FailLoads;
 
     /// <summary>The thread of every write that reached the store, held, failed or done, in order.</summary>
     public IReadOnlyList<string> Writes
@@ -52,10 +55,12 @@ internal sealed class HeldOwnedSandboxStore(IOwnedSandboxStore inner) : IOwnedSa
 
     /// <summary>Waits until one more write has reached the store (held or not).</summary>
     public async Task WaitForWriteStartedAsync() =>
-        (await _writesStarted.WaitAsync(Patience)).Should().BeTrue("a sandbox record write was expected");
+        (await _writesStarted.WaitAsync(S_patience)).Should().BeTrue("a sandbox record write was expected");
 
     public Task<IReadOnlyList<OwnedSandboxRecord>> LoadAsync(string threadId, CancellationToken ct = default) =>
-        inner.LoadAsync(threadId, ct);
+        FailLoads
+            ? Task.FromException<IReadOnlyList<OwnedSandboxRecord>>(new IOException("The sandbox record store failed."))
+            : inner.LoadAsync(threadId, ct);
 
     public async Task UpdateAsync(
         string threadId,
