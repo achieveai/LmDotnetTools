@@ -340,7 +340,7 @@ public sealed class SubAgentModelResolverTests
         // `model` override as "unknown" — including gpt-5.6-luna, the model the deployment was actually
         // running. A valid, in-use, in-catalog id rejected as unknown cannot be explained by catalog
         // membership; only an empty allow-list explains it. This test wires the REAL checked-in
-        // appsettings.json through the REAL loader into the REAL resolver, so the id in use must survive.
+        // appsettings.json through the REAL loader into the REAL resolver, so the configured id must survive.
         var configuration = new ConfigurationBuilder()
             .AddJsonFile(SubAgentIntelligenceOptionsTests.AppsettingsPath, optional: false)
             .Build();
@@ -352,23 +352,23 @@ public sealed class SubAgentModelResolverTests
         var resolver = CreateResolver(
             options,
             new CapturingLogger<SubAgentModelResolver>(),
-            Model(InUseModelId, CopilotModelTransport.Responses),
-            Model("claude-opus-5", CopilotModelTransport.Anthropic),
+            Model(TierZeroModelId, CopilotModelTransport.Responses),
+            Model("claude-opus-5.5", CopilotModelTransport.Anthropic),
             Model("gpt-5.6-terra", CopilotModelTransport.Responses),
-            Model("gpt-6.1-sol", CopilotModelTransport.Responses),
+            Model("gpt-6.2-sol", CopilotModelTransport.Responses),
             Model("gemini-3.8-flash", CopilotModelTransport.ChatCompletions),
-            Model("gpt-6-astra", CopilotModelTransport.Responses)
+            Model("gpt-6.2-astra", CopilotModelTransport.Responses)
         );
 
         options.Tiers.Should().NotBeEmpty("an all-empty ladder is what emptied the allow-list");
         resolver
-            .IsKnownModel(InUseModelId)
+            .IsKnownModel(TierZeroModelId)
             .Should()
-            .BeTrue($"{InUseModelId} is the model in use; the allow-list must never reject it");
+            .BeTrue($"{TierZeroModelId} is configured at tier 0 and must be allowed");
         resolver
             .AvailableModelIds.Should()
             .Contain(
-                InUseModelId,
+                TierZeroModelId,
                 "the Agent tool descriptor advertises this menu; an empty menu is what "
                     + "made the parent LLM invent ids like 'gpt-5' and 'sonnet'"
             );
@@ -390,14 +390,13 @@ public sealed class SubAgentModelResolverTests
         var resolver = CreateResolver(
             options,
             new CapturingLogger<SubAgentModelResolver>(),
-            Model(InUseModelId, CopilotModelTransport.Responses),
-            Model("claude-opus-5", CopilotModelTransport.Anthropic),
-            Model("claude-haiku-5.5", CopilotModelTransport.Anthropic),
+            Model(TierZeroModelId, CopilotModelTransport.Responses),
+            Model("mai-code-2", CopilotModelTransport.Responses),
             Model("claude-opus-5.5", CopilotModelTransport.Anthropic),
             Model("gpt-5.6-terra", CopilotModelTransport.Responses),
-            Model("gpt-6.1-sol", CopilotModelTransport.Responses),
+            Model("gpt-6.2-sol", CopilotModelTransport.Responses),
             Model("gemini-3.8-flash", CopilotModelTransport.ChatCompletions),
-            Model("gpt-6-astra", CopilotModelTransport.Responses)
+            Model("gpt-6.2-astra", CopilotModelTransport.Responses)
         );
 
         // Guard against vacuity: with an empty ladder this loop iterates nothing and the test would pass
@@ -414,20 +413,20 @@ public sealed class SubAgentModelResolverTests
     }
 
     [Theory]
-    [InlineData(0, "gpt-6-luna", ReasoningEffort.High)]
-    [InlineData(1, "claude-haiku-5.5", ReasoningEffort.High)]
-    [InlineData(2, "claude-haiku-5.5", ReasoningEffort.Xhigh)]
-    [InlineData(3, "gpt-6.1-sol", ReasoningEffort.High)]
-    [InlineData(4, "gpt-6.1-sol", ReasoningEffort.Xhigh)]
+    [InlineData(0, "mai-code-2-flash", ReasoningEffort.High)]
+    [InlineData(1, "mai-code-2", ReasoningEffort.High)]
+    [InlineData(2, "mai-code-2", ReasoningEffort.Xhigh)]
+    [InlineData(3, "gpt-6.2-sol", ReasoningEffort.High)]
+    [InlineData(4, "gpt-6.2-sol", ReasoningEffort.Xhigh)]
     [InlineData(5, "claude-opus-5.5", ReasoningEffort.Xhigh)]
-    [InlineData(6, "gpt-6-astra", ReasoningEffort.Xhigh)]
+    [InlineData(6, "gpt-6.2-astra", ReasoningEffort.Xhigh)]
     public void Appsettings_EachTierResolvesToTheOwnerApprovedModelAndEffort(
         int tier,
         string expectedModel,
         ReasoningEffort? expectedEffort
     )
     {
-        // Pins the owner-approved mapping (2026-10-14) end to end: checked-in appsettings.json, the real
+        // Pins the approved mapping end to end: checked-in appsettings.json, the real
         // loader and the real resolver. Tiers 1/2 and 3/4 share a model and differ only by its "model:effort"
         // suffix, and tier 6's primary suffix wins over its Efforts entry.
         var configuration = new ConfigurationBuilder()
@@ -440,23 +439,25 @@ public sealed class SubAgentModelResolverTests
         var resolver = CreateResolver(
             options,
             new CapturingLogger<SubAgentModelResolver>(),
-            Model("gpt-6-luna", CopilotModelTransport.Responses),
-            Model("claude-haiku-5.5", CopilotModelTransport.Anthropic),
+            Model("mai-code-2-flash", CopilotModelTransport.Responses),
+            Model("mai-code-2", CopilotModelTransport.Responses),
             Model("claude-opus-5.5", CopilotModelTransport.Anthropic),
             Model("gemini-3.8-flash", CopilotModelTransport.ChatCompletions),
             Model("gpt-5.6-terra", CopilotModelTransport.Responses),
-            Model("gpt-6.1-sol", CopilotModelTransport.Responses),
-            Model("gpt-6-astra", CopilotModelTransport.Responses)
+            Model("gpt-6.2-sol", CopilotModelTransport.Responses),
+            Model("gpt-6.2-astra", CopilotModelTransport.Responses)
         );
 
         resolver.ResolveClimbing(null, tier).Should().Be(new SubAgentTierSelection(expectedModel, expectedEffort));
     }
 
     [Theory]
-    [InlineData(3, "gpt-5.6-terra,gemini-3.8-flash,gpt-6-astra", "gpt-5.6-terra", ReasoningEffort.High)]
-    [InlineData(3, "gemini-3.8-flash,gpt-6-astra", "gemini-3.8-flash", ReasoningEffort.Xhigh)]
-    [InlineData(4, "gpt-5.6-terra,gemini-3.8-flash,gpt-6-astra", "gpt-6-astra", ReasoningEffort.Xhigh)]
-    public void Appsettings_WithoutGpt6Sol_TierRunsItsFallbackAtThatCandidatesOwnEffort(
+    [InlineData(1, "mai-code-2-flash", "mai-code-2-flash", ReasoningEffort.Xhigh)]
+    [InlineData(2, "gpt-6.2-sol", "gpt-6.2-sol", ReasoningEffort.Medium)]
+    [InlineData(3, "gpt-5.6-terra,gemini-3.8-flash,gpt-6.2-astra", "gpt-5.6-terra", ReasoningEffort.High)]
+    [InlineData(3, "gemini-3.8-flash,gpt-6.2-astra", "gemini-3.8-flash", ReasoningEffort.Xhigh)]
+    [InlineData(4, "gpt-5.6-terra,gemini-3.8-flash,gpt-6.2-astra", "gpt-6.2-astra", ReasoningEffort.Xhigh)]
+    public void Appsettings_WhenPrimaryIsUnavailable_TierRunsItsFallbackAtThatCandidatesOwnEffort(
         int tier,
         string servedModels,
         string expectedModel,
@@ -483,9 +484,7 @@ public sealed class SubAgentModelResolverTests
         resolver.IsKnownModel(expectedModel).Should().BeTrue("the effort suffix is not part of the sanctioned id");
     }
 
-    /// <summary>The Copilot model id this deployment reviews on today. Named once so the guard above reads
-    /// as "the model in use", not as an arbitrary literal.</summary>
-    private const string InUseModelId = "gpt-6-luna";
+    private const string TierZeroModelId = "mai-code-2-flash";
 
     /// <summary>The model a climb picked, or null. Model-only assertions use this so they still fail when
     /// the selection itself is null.</summary>

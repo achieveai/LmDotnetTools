@@ -128,6 +128,21 @@ Context windows (`MaxContextTokens` / `MaxOutputTokens`, #681), verified 2026-09
 
 `claude-sonnet-4-20250514` carries no window: its model page no longer resolves, so there is nothing to cite. It still prices, and its window resolves to the `ContextWindow:MaxTokens` cap (no utilization only when the cap is 0).
 
+## November 2026 tier additions
+
+These estimates use standard OpenAI API rates or published Copilot rates as of November 25, 2026. All amounts are USD per million tokens. All four entries use subset input accounting.
+
+| Model id | Input | Cache read | Output | Source |
+|---|---:|---:|---:|---|
+| `gpt-6.2-sol` | 2.00 | 0.10 | 10.00 | [OpenAI Standard pricing](https://developers.openai.com/api/docs/pricing) |
+| `gpt-6.2-astra` | 8.00 | 0.40 | 40.00 | [OpenAI Standard pricing](https://developers.openai.com/api/docs/pricing) |
+| `mai-code-2` | 0.50 | 0.025 | 2.50 | [GitHub Copilot launch pricing](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing#microsoft) |
+| `mai-code-2-flash` | 0.05 | 0.005 | 0.25 | [GitHub Copilot launch pricing](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing#microsoft) |
+
+GitHub lists regular rates starting May 17, 2027. MAI Code 2 moves to $1.00 input, $0.05 cached input and $5.00 output. MAI Code 2 Flash moves to $0.10 input, $0.01 cached input and $0.50 output. The catalog stores one rate per model and needs a refresh when these rates change. [GitHub pricing footnotes](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing#footnotes)
+
+The GPT-6.2 entries use short-context rates. The estimator does not apply long-context surcharges or the GPT-6.2 cache writes billed at 30-minute and 12-hour retention. [OpenAI pricing](https://developers.openai.com/api/docs/pricing)
+
 ## Deliberately unpriced
 
 These ids appear in the sample's configuration but have no entry. Their cost resolves null ("unavailable"). Do not add a guessed rate (#378).
