@@ -286,6 +286,53 @@ public class CopilotAgentLoopTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task A_failed_turn_on_a_store_that_never_finishes_a_save_still_reports_its_error_within_the_budget()
+    {
+        // The error path completes the run with no cancellation token at all, so only the save-wait budget
+        // keeps a store that never answers from holding the failed run's end for good.
+        var fakeClient = new FakeCopilotClient(
+            sessionId: "sess_hung_store",
+            events: [],
+            failWith: new InvalidOperationException("bridge crashed")
+        );
+        var store = new AppendGateStore(new InMemoryConversationStore(), holds: _ => true);
+        await using var loop = new CopilotAgentLoop(
+            new CopilotSdkOptions(),
+            threadId: "thread-copilot-hung-store",
+            store: store,
+            clientFactory: (_, _) => fakeClient,
+            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>()
+        );
+        loop.IssuedSavesWaitBudget = TimeSpan.FromMilliseconds(200);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        _ = loop.RunAsync(cts.Token);
+
+        var input = new UserInput([new TextMessage { Role = Role.User, Text = "hello" }]);
+        var messages = await Task.Run(
+                async () =>
+                {
+                    var seen = new List<IMessage>();
+                    await foreach (var msg in loop.ExecuteRunAsync(input, cts.Token))
+                    {
+                        seen.Add(msg);
+                    }
+
+                    return seen;
+                },
+                cts.Token
+            )
+            .WaitAsync(TimeSpan.FromSeconds(5), cts.Token);
+
+        store.FirstHeld.IsCompleted.Should().BeTrue("non-vacuity: the user row's save was still unfinished");
+        messages
+            .OfType<RunCompletedMessage>()
+            .Should()
+            .ContainSingle(m => m.IsError && m.ErrorMessage == "bridge crashed");
+        store.Release();
+        await cts.CancelAsync();
+    }
+
+    [Fact]
     public async Task RunCompletionWrite_KeepsAPropertyAnotherWriterSetBetweenItsReadAndItsWrite()
     {
         // The override records the Copilot session id after the base end-of-run write; a
@@ -457,11 +504,18 @@ public class CopilotAgentLoopTests : LoggingTestBase
     {
         private readonly string _sessionId;
         private readonly IReadOnlyList<CopilotTurnEventEnvelope> _events;
+        private readonly Exception? _failWith;
 
-        public FakeCopilotClient(string sessionId, IReadOnlyList<CopilotTurnEventEnvelope> events)
+        /// <summary>Replays <paramref name="events"/>, then throws <paramref name="failWith"/> if set, like a bridge crashing mid-turn.</summary>
+        public FakeCopilotClient(
+            string sessionId,
+            IReadOnlyList<CopilotTurnEventEnvelope> events,
+            Exception? failWith = null
+        )
         {
             _sessionId = sessionId;
             _events = events;
+            _failWith = failWith;
         }
 
         public CopilotBridgeInitOptions? LastStartOptions { get; private set; }
@@ -502,6 +556,11 @@ public class CopilotAgentLoopTests : LoggingTestBase
                 ct.ThrowIfCancellationRequested();
                 yield return item;
                 await Task.Yield();
+            }
+
+            if (_failWith is not null)
+            {
+                throw _failWith;
             }
         }
 

@@ -2422,6 +2422,152 @@ public class CompactionLoopTests
         (await h.StateAsync())!.ActiveCheckpointId.Should().NotBeNull(decisions);
     }
 
+    /// <summary>What run completion logs when it goes ahead with row saves still unfinished.</summary>
+    private const string SaveWaitTimedOut = "still unfinished";
+
+    private static readonly TimeSpan Watchdog = TimeSpan.FromSeconds(5);
+
+    private static bool HasText(PersistedMessage row, string text) =>
+        row.MessageType == nameof(TextMessage) && row.MessageJson.Contains($"\"{text}\"", StringComparison.Ordinal);
+
+    /// <summary>Runs one input to its end, reading the store the moment the completion arrives.</summary>
+    private static Task<(RunCompletedMessage Completed, IReadOnlyList<string> Texts)> RunReadingAtCompletionAsync(
+        Harness h,
+        string text
+    ) =>
+        Task.Run(async () =>
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            (RunCompletedMessage, IReadOnlyList<string>)? result = null;
+            await foreach (
+                var message in h.Loop.ExecuteRunAsync(
+                    new UserInput([new TextMessage { Text = text, Role = Role.User }]),
+                    cts.Token
+                )
+            )
+            {
+                if (message is RunCompletedMessage completed)
+                {
+                    result = (completed, [.. (await h.StoredRowsAsync()).OfType<TextMessage>().Select(m => m.Text)]);
+                }
+            }
+
+            return result ?? throw new InvalidOperationException("run never completed");
+        });
+
+    [Fact]
+    public async Task CompactMode_RunCompletion_WaitsForTheHeldAnswerRow_AndAReaderFindsIt()
+    {
+        var held = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new FailSaveStore(
+            new InMemoryConversationStore(),
+            (_, _, _) => false,
+            hold: (row, attempt) =>
+            {
+                if (!HasText(row, "answer"))
+                {
+                    return null;
+                }
+
+                _ = held.TrySetResult();
+                return release.Task;
+            }
+        );
+        var logger = new CapturingLogger<MultiTurnAgentLoop>();
+        await using var h = new Harness(
+            EchoThenDone(0, "answer"),
+            Options(CompactionMode.Compact),
+            _ => 1_000_000,
+            store: store,
+            logger: logger
+        );
+        var completionWaits = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.Loop.WaitingForIssuedSavesForTest = () => completionWaits.TrySetResult();
+
+        var run = RunReadingAtCompletionAsync(h, "start");
+
+        // The run has reached its end while the answer is held on its way into the store.
+        await held.Task.WaitAsync(Watchdog);
+        await completionWaits.Task.WaitAsync(Watchdog);
+        var completedWhileHeld = await Task.WhenAny(run, Task.Delay(250)) == run;
+        _ = release.TrySetResult();
+        var (completed, texts) = await run.WaitAsync(Watchdog);
+
+        completedWhileHeld.Should().BeFalse("the run must not report completion while its answer is unsaved");
+        completed.IsError.Should().BeFalse(completed.ErrorMessage);
+        texts.Should().Equal(["start", "answer"], "a reader acting on the completion must find the whole run saved");
+        logger.Entries.Should().NotContain(e => e.Mentions(SaveWaitTimedOut));
+    }
+
+    [Fact]
+    public async Task CompactMode_AnAnswerRowRefusedOnEveryAttempt_DoesNotHoldCompletion_AndIsSavedOnceTheStoreRecovers()
+    {
+        var refusing = true;
+        var store = new FailSaveStore(
+            new InMemoryConversationStore(),
+            (row, _, _) => Volatile.Read(ref refusing) && HasText(row, "answer")
+        );
+        var logger = new CapturingLogger<MultiTurnAgentLoop>();
+        await using var h = new Harness(
+            EchoThenDone(0, "answer"),
+            Options(CompactionMode.Compact),
+            _ => 1_000_000,
+            store: store,
+            logger: logger
+        );
+
+        // Well inside the 10 s save-wait budget: completion must come from the drain giving up, not a timeout.
+        var (completed, texts) = await RunReadingAtCompletionAsync(h, "start").WaitAsync(Watchdog);
+
+        completed.IsError.Should().BeFalse(completed.ErrorMessage);
+        store.FailedSaves.Should().BeGreaterThanOrEqualTo(2, "completion tried the refused row once more");
+        texts.Should().Equal(["start"], "the refused answer is still queued");
+        logger.Entries.Should().NotContain(e => e.Mentions(SaveWaitTimedOut));
+
+        // The store recovers; the next row issued writes the queued answer first, in order.
+        Volatile.Write(ref refusing, false);
+        var (next, after) = await RunReadingAtCompletionAsync(h, "again").WaitAsync(Watchdog);
+
+        next.IsError.Should().BeFalse(next.ErrorMessage);
+        after.Should().Equal(["start", "answer", "again", "answer"]);
+        logger.Entries.Should().NotContain(e => e.Mentions(SaveWaitTimedOut));
+    }
+
+    [Fact]
+    public async Task CompactMode_AnAnswerRowThatNeverSaves_HoldsCompletionOnlyForTheBudget_AndStaysQueuedInOrder()
+    {
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new FailSaveStore(
+            new InMemoryConversationStore(),
+            (_, _, _) => false,
+            hold: (row, _) => HasText(row, "answer") ? release.Task : null
+        );
+        var logger = new CapturingLogger<MultiTurnAgentLoop>();
+        await using var h = new Harness(
+            EchoThenDone(0, "answer"),
+            Options(CompactionMode.Compact),
+            _ => 1_000_000,
+            store: store,
+            logger: logger
+        );
+        h.Loop.IssuedSavesWaitBudget = TimeSpan.FromMilliseconds(200);
+
+        var (completed, texts) = await RunReadingAtCompletionAsync(h, "start").WaitAsync(Watchdog);
+
+        completed.IsError.Should().BeFalse(completed.ErrorMessage);
+        texts.Should().Equal(["start"]);
+        logger.Entries.Count(e => e.Mentions(SaveWaitTimedOut)).Should().Be(1, "the run went ahead and said so");
+
+        // The held write was not abandoned: once the store answers, the answer lands ahead of the next run.
+        _ = release.TrySetResult();
+        var (next, after) = await RunReadingAtCompletionAsync(h, "again").WaitAsync(Watchdog);
+
+        next.IsError.Should().BeFalse(next.ErrorMessage);
+        after.Should().Equal(["start", "answer", "again", "answer"]);
+        logger.Entries.Count(e => e.Mentions(SaveWaitTimedOut)).Should().Be(1);
+    }
+
     [Fact]
     public async Task CompactMode_AFailedSaveOnSqlite_AfterARestart_SendsTheCallBeforeItsResult()
     {
