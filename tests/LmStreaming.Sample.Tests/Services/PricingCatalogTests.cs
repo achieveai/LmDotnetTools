@@ -472,6 +472,112 @@ public class PricingCatalogTests
         }
     }
 
+    [Theory]
+    [InlineData("gpt-6.2-astra", 8.00, 0.40, 40.00, 8_960)]
+    [InlineData("gpt-6.2-sol", 2.00, 0.10, 10.00, 2_240)]
+    [InlineData("mai-code-2", 0.50, 0.025, 2.50, 560)]
+    [InlineData("mai-code-2-flash", 0.05, 0.005, 0.25, 57)]
+    public void ShippedTierModelRatesAndCacheArithmetic_MatchPublishedPrices(
+        string modelId,
+        double inputRate,
+        double cachedInputRate,
+        double outputRate,
+        long expectedMicros
+    )
+    {
+        var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
+        var resolver = ResolverFrom(configuration);
+        var pricing = resolver.Resolve(modelId);
+        pricing.Should().NotBeNull();
+        pricing!.PromptPerMillion.Should().Be((decimal)inputRate);
+        pricing.CacheReadPerMillion.Should().Be((decimal)cachedInputRate);
+        pricing.CompletionPerMillion.Should().Be((decimal)outputRate);
+        pricing.Currency.Should().Be("USD");
+        pricing.CacheAccounting.Should().Be(CacheAccounting.SubsetOfInput);
+
+        var record = new UsageLedger("conv-1", resolver).UpsertAttempt(
+            Observation(modelId, input: 1_000, output: 100) with
+            {
+                CacheReadTokens = 400,
+                OccurredAtUtc = new DateTimeOffset(2026, 11, 25, 0, 0, 0, TimeSpan.Zero),
+            }
+        );
+
+        record.EstimatedPublicCostMicros.Should().Be(expectedMicros);
+        record.CostCompleteness.Should().Be(CostCompleteness.Complete);
+
+        var uncappedConfiguration = new ConfigurationBuilder()
+            .AddConfiguration(configuration)
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["ContextWindow:MaxTokens"] = "0" })
+            .Build();
+        var capacity = CapacityFrom(uncappedConfiguration).Resolve(modelId);
+        capacity.Should().NotBeNull();
+        capacity!.WindowTokens.Should().Be(1_050_000);
+        capacity.MaxOutputTokens.Should().Be(128_000);
+    }
+
+    [Theory]
+    [InlineData("mai-code-2", 560, 1_120)]
+    [InlineData("mai-code-2-flash", 57, 114)]
+    public void ShippedMaiPricing_ChangesOnTheAttemptsUtcDate(string modelId, long launchMicros, long regularMicros)
+    {
+        var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
+        var resolver = ResolverFrom(configuration);
+        var observation = Observation(modelId, input: 1_000, output: 100) with { CacheReadTokens = 400 };
+        var cutoff = new DateTimeOffset(2027, 5, 17, 0, 0, 0, TimeSpan.Zero);
+
+        var launch = new UsageLedger("conv-1", resolver).UpsertAttempt(
+            observation with
+            {
+                OccurredAtUtc = cutoff.AddTicks(-1),
+            }
+        );
+        var regular = new UsageLedger("conv-1", resolver).UpsertAttempt(
+            observation with
+            {
+                OccurredAtUtc = cutoff.ToOffset(TimeSpan.FromHours(-7)),
+            }
+        );
+        var unknown = new UsageLedger("conv-1", resolver).UpsertAttempt(observation);
+
+        launch.EstimatedPublicCostMicros.Should().Be(launchMicros);
+        regular.EstimatedPublicCostMicros.Should().Be(regularMicros);
+        regular.CostCompleteness.Should().Be(CostCompleteness.Complete);
+        unknown.EstimatedPublicCostMicros.Should().BeNull();
+        unknown.CostCompleteness.Should().Be(CostCompleteness.Unavailable);
+    }
+
+    [Theory]
+    [InlineData("gpt-6.2-astra", 2_172_400, 4_342_816)]
+    [InlineData("gpt-6.2-sol", 543_100, 1_085_704)]
+    public void ShippedGpt62Pricing_PricesTheFullLongTurnAndFlagsMissingCacheWriteTelemetry(
+        string modelId,
+        long shortMicros,
+        long longMicros
+    )
+    {
+        var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
+        var resolver = ResolverFrom(configuration);
+        var boundary = Observation(modelId, input: 272_000, output: 100) with
+        {
+            CacheReadTokens = 1_000,
+            ReasoningTokens = 30,
+        };
+
+        var shortTurn = new UsageLedger("conv-1", resolver).UpsertAttempt(boundary);
+        var longTurn = new UsageLedger("conv-1", resolver).UpsertAttempt(boundary with { InputTokens = 272_001 });
+
+        shortTurn.EstimatedPublicCostMicros.Should().Be(shortMicros);
+        shortTurn.CostCompleteness.Should().Be(CostCompleteness.Partial);
+        longTurn.EstimatedPublicCostMicros.Should().Be(longMicros);
+        longTurn.CostCompleteness.Should().Be(CostCompleteness.Partial);
+
+        var eligibleTurn = new UsageLedger("conv-1", resolver).UpsertAttempt(
+            Observation(modelId, input: 1_024, output: 100)
+        );
+        eligibleTurn.CostCompleteness.Should().Be(CostCompleteness.Partial);
+    }
+
     private static bool IsServedOverAnAnthropicShapedEndpoint(string modelId) =>
         modelId.StartsWith("claude-", StringComparison.OrdinalIgnoreCase)
         || modelId.StartsWith("deepseek-", StringComparison.OrdinalIgnoreCase);

@@ -52,6 +52,8 @@ namespace LmStreaming.Sample.Services;
 ///         (Anthropic: <c>input_tokens</c> excludes them); it changes the arithmetic, so a misspelt value
 ///         rejects the entry rather than falling back. <c>EffectiveDate</c> (<c>yyyy-MM-dd</c>) and
 ///         <c>_source</c> (ignored by the binder) are how the next person re-verifies a rate.
+///         <c>RateChange</c> uses the attempt date, <c>LongContext</c> uses its billed input, and
+///         <c>UnobservedCacheWritesFromInputTokens</c> flags a gap in cache-write telemetry.
 ///         <c>MaxContextTokens</c> / <c>MaxOutputTokens</c> (#681) are the model's window and output
 ///         ceiling; they feed <see cref="IModelCapacityResolver" /> so a per-generation context observation
 ///         can carry a utilization. Optional: an entry without them still prices, and gets the
@@ -62,9 +64,9 @@ namespace LmStreaming.Sample.Services;
 ///         operational fact with an expiry date, not a code constant, and a wrong one is worse than an absent
 ///         one because it is summed, reported and believed (#378). So the shipped section carries only public
 ///         list prices copied from a vendor's own pricing page, each dated and cited — a cited, dated rate is
-///         not a guess. The Copilot-served ids the sample runs on carry their vendor's retail API list price
-///         as a public-equivalent estimate: what the same usage would cost on the vendor API, not what the
-///         subscription bills. Claude CLI and Codex defaults stay absent, so their cost resolves null.
+///         not a guess. Most Copilot-served ids use their vendor's retail API price. MAI uses GitHub's
+///         published Copilot rates. These estimates are separate from the subscription bill.
+///         Claude CLI and Codex defaults stay absent, so their cost resolves null.
 ///         The citation list lives in <c>docs/features/public-pricing-catalog.md</c>. Operators override or
 ///         extend the section in <c>appsettings.&lt;Environment&gt;.json</c> or via environment variables.
 ///     </para>
@@ -241,6 +243,14 @@ public static class PricingCatalog
                 || !TryReadCategoryRate(entry, "ReasoningPerMillion", rejected, out var reasoning)
                 || !TryReadCacheAccounting(entry, rejected, out var cacheAccounting)
                 || !TryReadEffectiveDate(entry, rejected, out var effectiveDate)
+                || !TryReadRateChange(entry, rejected, out var rateChange)
+                || !TryReadLongContext(entry, rejected, out var longContext)
+                || !TryReadTokenLimit(
+                    entry,
+                    "UnobservedCacheWritesFromInputTokens",
+                    rejected,
+                    out var unobservedCacheWrites
+                )
                 || !TryReadTokenLimit(entry, "MaxContextTokens", rejected, out var maxContextTokens)
                 || !TryReadTokenLimit(entry, "MaxOutputTokens", rejected, out var maxOutputTokens)
             )
@@ -258,6 +268,9 @@ public static class PricingCatalog
                 ReasoningPerMillion = reasoning,
                 CacheAccounting = cacheAccounting,
                 EffectiveDate = effectiveDate,
+                RateChange = rateChange,
+                LongContext = longContext,
+                UnobservedCacheWritesFromInputTokens = unobservedCacheWrites,
             };
 
             // One provider entry per name the model answers to, all carrying the SAME rate. The resolver
@@ -461,9 +474,7 @@ public static class PricingCatalog
             return true;
         }
 
-        if (
-            DateOnly.TryParseExact(raw, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)
-        )
+        if (TryParseDate(raw, out var parsed))
         {
             effectiveDate = parsed;
             return true;
@@ -472,6 +483,68 @@ public static class PricingCatalog
         rejected?.Add($"'{entry.Key}' has EffectiveDate='{raw}'; expected an ISO date (yyyy-MM-dd)");
         return false;
     }
+
+    private static bool TryReadRateChange(
+        IConfigurationSection entry,
+        ICollection<string>? rejected,
+        out PricingRateChange? rateChange
+    )
+    {
+        rateChange = null;
+        var section = entry.GetSection("RateChange");
+        if (!section.Exists())
+        {
+            return true;
+        }
+
+        if (
+            TryParseDate(section["EffectiveDate"], out var date)
+            && TryParseMultiplier(section["Multiplier"], out var multiplier)
+        )
+        {
+            rateChange = new PricingRateChange(date, multiplier);
+            return true;
+        }
+
+        rejected?.Add($"'{entry.Key}' has invalid RateChange; expected an ISO EffectiveDate and a positive Multiplier");
+        return false;
+    }
+
+    private static bool TryReadLongContext(
+        IConfigurationSection entry,
+        ICollection<string>? rejected,
+        out LongContextPricing? longContext
+    )
+    {
+        longContext = null;
+        var section = entry.GetSection("LongContext");
+        if (!section.Exists())
+        {
+            return true;
+        }
+
+        if (
+            TryReadTokenLimit(section, "InputTokensGreaterThan", null, out var threshold)
+            && threshold is { } inputTokens
+            && TryParseMultiplier(section["InputMultiplier"], out var inputMultiplier)
+            && TryParseMultiplier(section["OutputMultiplier"], out var outputMultiplier)
+        )
+        {
+            longContext = new LongContextPricing(inputTokens, inputMultiplier, outputMultiplier);
+            return true;
+        }
+
+        rejected?.Add(
+            $"'{entry.Key}' has invalid LongContext; expected a positive InputTokensGreaterThan, InputMultiplier, and OutputMultiplier"
+        );
+        return false;
+    }
+
+    private static bool TryParseDate(string? raw, out DateOnly date) =>
+        DateOnly.TryParseExact(raw, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out date);
+
+    private static bool TryParseMultiplier(string? raw, out decimal multiplier) =>
+        decimal.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out multiplier) && multiplier > 0;
 
     /// <summary>Renders a rate for the operator, naming an absent one rather than printing an empty string.</summary>
     private static string Describe(double? rate) =>

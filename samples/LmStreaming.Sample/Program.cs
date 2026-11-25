@@ -904,7 +904,7 @@ try
     // runs no loop of its own and drives every review into a conversation here — so the catalog the
     // UsageLedger resolves against has to be composed and registered by THIS process. See PricingCatalog
     // for the configuration shape and docs/features/public-pricing-catalog.md for which rates are shipped
-    // (cited public list prices only, #682; Copilot ids at their vendor's retail API price) and which are unpriced.
+    // (cited public list prices only, #682; the source varies by model) and which are unpriced.
     _ = builder.Services.AddConfiguredPricing(builder.Configuration);
 
     // #721: the Compaction section, bound once for the process and shared by the pool's loops and the

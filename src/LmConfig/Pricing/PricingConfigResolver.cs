@@ -161,6 +161,9 @@ public sealed class PricingConfigResolver : IPricingResolver
             ReasoningPerMillion = ToDecimal(config.ReasoningPerMillion),
             CacheAccounting = config.CacheAccounting,
             EffectiveDate = config.EffectiveDate,
+            RateChange = config.RateChange,
+            LongContext = config.LongContext,
+            UnobservedCacheWritesFromInputTokens = config.UnobservedCacheWritesFromInputTokens,
             Source = _source,
             Version = _version,
         };

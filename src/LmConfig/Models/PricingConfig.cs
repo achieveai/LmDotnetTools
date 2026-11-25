@@ -54,6 +54,18 @@ public record PricingConfig
     [JsonPropertyName("effective_date")]
     public DateOnly? EffectiveDate { get; init; }
 
+    /// <inheritdoc cref="ModelPricing.RateChange" />
+    [JsonPropertyName("rate_change")]
+    public PricingRateChange? RateChange { get; init; }
+
+    /// <inheritdoc cref="ModelPricing.LongContext" />
+    [JsonPropertyName("long_context")]
+    public LongContextPricing? LongContext { get; init; }
+
+    /// <inheritdoc cref="ModelPricing.UnobservedCacheWritesFromInputTokens" />
+    [JsonPropertyName("unobserved_cache_writes_from_input_tokens")]
+    public int? UnobservedCacheWritesFromInputTokens { get; init; }
+
     /// <summary>
     ///     Calculates the total cost for a request.
     /// </summary>

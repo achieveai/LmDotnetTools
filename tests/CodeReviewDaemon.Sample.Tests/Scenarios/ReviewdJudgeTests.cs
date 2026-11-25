@@ -62,6 +62,31 @@ public sealed class ReviewdJudgeTests
         JudgeRunner.StillRunning(rootActive: true, frozen: false, null, [], Now).Should().NotBeNull();
     }
 
+    [Fact]
+    public async Task The_default_judge_model_matches_both_delegate_tiers()
+    {
+        var relative = Path.Combine("samples", "LmStreaming.Sample", "appsettings.json");
+        var settingsPath = Path.Combine(AppContext.BaseDirectory, relative);
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+        {
+            settingsPath = Path.Combine(dir.FullName, relative);
+            if (File.Exists(settingsPath))
+            {
+                break;
+            }
+        }
+
+        var tiers = JsonNode.Parse(await File.ReadAllTextAsync(settingsPath))!["SubAgentIntelligence"]!["Tiers"]!;
+        foreach (var tier in new[] { "3", "4" })
+        {
+            var primaryModel = tiers[tier]![0]!.GetValue<string>().Split(':')[0];
+            JudgeRunner.DefaultProvider.Should().Be(primaryModel, $"judge delegates may use tier {tier}");
+        }
+
+        var prompt = await JudgeRunner.ReadResourceAsync("Reviewd.Sample.Prompts.merged-judge.md", default);
+        prompt.Should().Contain($"the default judge model, {JudgeRunner.DefaultProvider}.");
+    }
+
     // ---- judge run contracts
 
     [Fact]

@@ -24,7 +24,7 @@ namespace Reviewd.Sample;
 /// </summary>
 internal static class JudgeRunner
 {
-    internal const string DefaultProvider = "gpt-6.1-sol";
+    internal const string DefaultProvider = "gpt-6.2-sol";
     internal const string DefaultEffort = "xhigh";
     internal const decimal DefaultMaxUsd = 15m;
     internal const int AdoChangedExitCode = 3;

@@ -453,9 +453,12 @@ public sealed class SubAgentModelResolverTests
 
     [Theory]
     [InlineData(1, "mai-code-2-flash", "mai-code-2-flash", ReasoningEffort.Xhigh)]
+    [InlineData(2, "gemini-3.8-flash,gpt-6.2-sol", "gemini-3.8-flash", ReasoningEffort.High)]
     [InlineData(2, "gpt-6.2-sol", "gpt-6.2-sol", ReasoningEffort.Medium)]
+    [InlineData(3, "gpt-6-sol,gpt-5.6-terra", "gpt-6-sol", ReasoningEffort.Medium)]
     [InlineData(3, "gpt-5.6-terra,gemini-3.8-flash,gpt-6.2-astra", "gpt-5.6-terra", ReasoningEffort.High)]
     [InlineData(3, "gemini-3.8-flash,gpt-6.2-astra", "gemini-3.8-flash", ReasoningEffort.Xhigh)]
+    [InlineData(4, "gpt-6-sol,gpt-6.2-astra", "gpt-6-sol", ReasoningEffort.High)]
     [InlineData(4, "gpt-5.6-terra,gemini-3.8-flash,gpt-6.2-astra", "gpt-6.2-astra", ReasoningEffort.Xhigh)]
     public void Appsettings_WhenPrimaryIsUnavailable_TierRunsItsFallbackAtThatCandidatesOwnEffort(
         int tier,
