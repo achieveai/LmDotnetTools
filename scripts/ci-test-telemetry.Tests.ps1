@@ -263,4 +263,14 @@ finally {
     }
 }
 
+# The SDK pin: SDK 11 broke the scoped-CSS bundle build, so CI and local builds must stay on stable 10.0.x.
+$globalJsonPath = [System.IO.Path]::Combine($PSScriptRoot, "..", "global.json")
+Assert-True (Test-Path $globalJsonPath) "global.json is missing; the .NET SDK is no longer pinned."
+$sdkPin = (Get-Content $globalJsonPath -Raw | ConvertFrom-Json).sdk
+Assert-True ($null -ne $sdkPin) "global.json has no sdk section."
+Assert-True ("$($sdkPin.version)".StartsWith("10.0.")) "global.json sdk.version '$($sdkPin.version)' is not a 10.0.x SDK."
+Assert-True ($sdkPin.rollForward -ceq "latestFeature") "global.json sdk.rollForward '$($sdkPin.rollForward)' is not latestFeature."
+Assert-True ($sdkPin.allowPrerelease -is [bool] -and -not $sdkPin.allowPrerelease) "global.json sdk.allowPrerelease is not false."
+Write-Host "PASS: global.json pins a stable .NET 10.0 SDK with latestFeature roll-forward."
+
 $global:LASTEXITCODE = 0

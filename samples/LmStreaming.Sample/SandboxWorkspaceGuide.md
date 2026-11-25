@@ -34,7 +34,7 @@ There are two ways to drive this mode, with different isolation guarantees:
 
 ## Prerequisites
 
-- **.NET 9 SDK** (the sample targets `net9.0`).
+- **Stable .NET 10.0 SDK**, 10.0.100 or later within 10.0 (as selected by `global.json`). The sample still targets `net9.0`.
 - **Node 20** (for the Vite client in `ClientApp/`).
 - **The gateway, built once.** In `B:\sources\SandboxedOstoolsMcpServer` run:
 

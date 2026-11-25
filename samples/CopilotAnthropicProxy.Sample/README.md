@@ -36,7 +36,7 @@ the prefix belongs: Claude Code appends `/v1/messages` to a bare host, the Verce
 
 ## Prerequisites
 
-- .NET SDK 9.0+
+- Stable .NET 10.0 SDK, 10.0.100 or later within 10.0 (as selected by `global.json`)
 - A resolvable GitHub Copilot credential. Any of the following works (checked in this order by
   `CliCredentialCopilotTokenProvider`): `GITHUB_COPILOT_TOKEN` / `GH_TOKEN` env var, the GitHub
   Copilot CLI sign-in (`~/.copilot/config.json`), the macOS login keychain, the Copilot editor

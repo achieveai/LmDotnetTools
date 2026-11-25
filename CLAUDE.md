@@ -37,7 +37,7 @@ dotnet test tests/LmCore.Tests/LmCore.Tests.csproj
 - When using Playwright, ALWAYS use `Task` tool to avoid polluting primary context
 
 ## Environment Requirements
-- **.NET SDK**: 8.0+ (check `Directory.Build.props` for exact version)
+- **.NET SDK**: stable .NET 10.0 SDK, 10.0.100 or later within 10.0 (as selected by `global.json`). Target frameworks are in `Directory.Build.props`.
 - **Optional Environment Variables**:
   - `OPENROUTER_API_KEY` - For OpenRouter provider
   - `ENABLE_USAGE_MIDDLEWARE` - Enable usage tracking (default: true)
