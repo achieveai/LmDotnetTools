@@ -664,8 +664,21 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
     }
 
     /// <summary>
+    /// How long run completion waits for issued row saves before it goes ahead without them. A store that
+    /// never answers would otherwise hold the run's terminal state and its completion for good.
+    /// </summary>
+    internal TimeSpan IssuedSavesWaitBudget { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Test seam, null outside tests: runs when run completion starts waiting for issued row saves, before
+    /// anything about the run's end is visible.
+    /// </summary>
+    internal Action? WaitingForIssuedSavesForTest { get; set; }
+
+    /// <summary>
     /// Completes once every row save issued so far has finished. Must not wait indefinitely on a store
-    /// that refuses writes, and should not fault; a failed save is reported where it happens.
+    /// that refuses writes, and should not fault; a failed save is reported where it happens. Run completion
+    /// bounds the wait by <see cref="IssuedSavesWaitBudget"/> in case a store never answers.
     /// </summary>
     protected virtual Task WaitForIssuedSavesAsync()
     {
@@ -3686,10 +3699,21 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent, IAcceptanceReporting
 
         // Same for the run's transcript rows, which AddToHistory saves without waiting: a reader that acts on
         // the completion (a sub-agent roster saying the child finished, then a replay of its transcript) must
-        // find them in the store. Only saves already issued are waited for.
+        // find them in the store. Only saves already issued are waited for, and only for a bounded time: a store
+        // that never answers must not hold the run's end, whose callers may pass no token at all.
+        WaitingForIssuedSavesForTest?.Invoke();
         try
         {
-            await WaitForIssuedSavesAsync().WaitAsync(ct);
+            await WaitForIssuedSavesAsync().WaitAsync(IssuedSavesWaitBudget, ct);
+        }
+        catch (TimeoutException)
+        {
+            Logger.LogWarning(
+                "Run {RunId} on thread {ThreadId} completes with message saves still unfinished after {Budget}",
+                runId,
+                ThreadId,
+                IssuedSavesWaitBudget
+            );
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {

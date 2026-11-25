@@ -13,6 +13,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using FluentAssertions;
 using LmMultiTurn.Tests.Lifecycle;
+using LmMultiTurn.Tests.Persistence;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;
@@ -1159,110 +1160,194 @@ public class MultiTurnAgentLoopTests
             .Returns(Task.FromResult(ToAsyncEnumerable(messages)));
     }
 
+    /// <summary>What run completion logs when it goes ahead with row saves still unfinished.</summary>
+    private const string SaveWaitTimedOut = "still unfinished";
+
     [Fact]
     public async Task Run_completion_is_published_only_once_the_runs_rows_are_in_the_store()
     {
         // A sub-agent roster reports a child finished from its RunCompletedMessage, and the focus view then
         // replays the child's transcript from the store. A slow store write used to lose that race: the
-        // completion went out while every row was still being saved, and the replay came back empty.
-        const string ThreadId = "held-append-thread";
+        // completion went out while the answer was still being saved, and the replay came back without it.
+        const string ThreadId = "held-answer-thread";
         SetupMockAgentResponse([new TextMessage { Text = "answer", Role = Role.Assistant }]);
-        var store = new HeldAppendStore(new InMemoryConversationStore());
+        var store = new AppendGateStore(new InMemoryConversationStore(), holds: IsAnswer);
+        var logger = new CapturingLogger();
         await using var loop = new MultiTurnAgentLoop(
             _mockAgent.Object,
             new FunctionRegistry(),
             ThreadId,
-            store: store
+            store: store,
+            logger: logger
+        );
+        var completionWaits = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        loop.WaitingForIssuedSavesForTest = () => completionWaits.TrySetResult();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        _ = loop.RunAsync(cts.Token);
+
+        var run = RunToCompletionAsync(loop, store, "hi", cts.Token);
+
+        // The run has reached its end while the answer's save is held open.
+        await store.FirstHeld.WaitAsync(cts.Token);
+        await completionWaits.Task.WaitAsync(cts.Token);
+        // Unfixed, the completion follows at once; fixed, it does not come while the row is held.
+        var completedWhileHeld = await Task.WhenAny(run, Task.Delay(250, cts.Token)) == run;
+        store.Release();
+        var (completed, texts) = await run.WaitAsync(cts.Token);
+
+        completedWhileHeld.Should().BeFalse("the run must not report completion while its answer is unsaved");
+        completed.IsError.Should().BeFalse();
+        texts.Should().Equal(["hi", "answer"], "a reader acting on the completion must find the whole run saved");
+        logger.Mentions(SaveWaitTimedOut).Should().BeFalse("a released save finishes well inside the budget");
+        await cts.CancelAsync();
+    }
+
+    [Fact]
+    public async Task A_store_that_refuses_every_append_still_lets_the_run_complete_promptly()
+    {
+        // Each failed save is caught and logged where it happens, so completion has nothing left to wait for.
+        // Metadata writes go through untouched.
+        const string ThreadId = "refused-append-thread";
+        SetupMockAgentResponse([new TextMessage { Text = "answer", Role = Role.Assistant }]);
+        var store = new AppendGateStore(new InMemoryConversationStore(), refuse: true);
+        var logger = new CapturingLogger();
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            new FunctionRegistry(),
+            ThreadId,
+            store: store,
+            logger: logger
         );
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         _ = loop.RunAsync(cts.Token);
 
-        var rowsAtCompletion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var run = Task.Run(
-            async () =>
-            {
-                var input = new UserInput([new TextMessage { Text = "hi", Role = Role.User }]);
-                await foreach (var msg in loop.ExecuteRunAsync(input, cts.Token))
-                {
-                    if (msg is RunCompletedMessage)
-                    {
-                        var rows = await store.Inner.LoadMessagesAsync(ThreadId, cts.Token);
-                        _ = rowsAtCompletion.TrySetResult(rows.Count);
-                    }
-                }
-            },
-            cts.Token
-        );
+        // Well inside the 10 s save-wait budget, so a completion that only came by timing out fails here.
+        var (completed, texts) = await RunToCompletionAsync(loop, store, "hi", cts.Token)
+            .WaitAsync(TimeSpan.FromSeconds(5), cts.Token);
 
-        await store.FirstAppendHeld.WaitAsync(cts.Token);
-
-        // Unfixed, the completion follows within moments of the held write; fixed, it never comes while held.
-        _ = await Task.WhenAny(rowsAtCompletion.Task, Task.Delay(TimeSpan.FromMilliseconds(250), cts.Token));
-        var completedWhileHeld = rowsAtCompletion.Task.IsCompleted;
-        store.Release();
-        var rowsSeen = await rowsAtCompletion.Task.WaitAsync(cts.Token);
-        await run;
-
-        completedWhileHeld.Should().BeFalse("the run must not report completion while its rows are unsaved");
-        rowsSeen.Should().BeGreaterThan(0, "a subscriber that sees the completion must find the run's rows saved");
+        completed.IsError.Should().BeFalse(completed.ErrorMessage);
+        store.Refused.Should().BeGreaterThanOrEqualTo(2, "the user row and the answer were both refused");
+        texts.Should().BeEmpty();
+        logger.Mentions(SaveWaitTimedOut).Should().BeFalse("a refused save fails at once; nothing is left pending");
         await cts.CancelAsync();
     }
 
-    /// <summary>Holds every <c>AppendMessagesAsync</c> open until released, like a store on a slow disk.</summary>
-    private sealed class HeldAppendStore(InMemoryConversationStore inner) : IConversationStore
+    [Fact]
+    public async Task A_save_that_never_finishes_holds_completion_only_for_the_budget_even_across_a_restart()
     {
-        private readonly TaskCompletionSource _held = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        const string ThreadId = "unanswered-append-thread";
+        SetupMockAgentResponse([new TextMessage { Text = "answer", Role = Role.Assistant }]);
+        var store = new AppendGateStore(new InMemoryConversationStore(), holds: IsAnswer);
+        var logger = new CapturingLogger();
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            new FunctionRegistry(),
+            ThreadId,
+            store: store,
+            logger: logger
+        );
+        loop.IssuedSavesWaitBudget = TimeSpan.FromMilliseconds(200);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var running = loop.RunAsync(cts.Token);
 
-        public InMemoryConversationStore Inner => inner;
+        var (first, _) = await RunToCompletionAsync(loop, store, "hi", cts.Token)
+            .WaitAsync(TimeSpan.FromSeconds(5), cts.Token);
 
-        public Task FirstAppendHeld => _held.Task;
+        first.IsError.Should().BeFalse(first.ErrorMessage);
+        logger.Count(SaveWaitTimedOut).Should().Be(1, "the run went ahead once the budget ran out, and said so");
 
-        public void Release() => _release.TrySetResult();
-
-        public async Task AppendMessagesAsync(
-            string threadId,
-            IReadOnlyList<PersistedMessage> messages,
-            CancellationToken ct = default
-        )
+        // The same loop, stopped and started again, still owes the first run's answer: the next run is not
+        // held by it for longer than the budget either.
+        await loop.StopAsync(TimeSpan.FromSeconds(5));
+        try
         {
-            _ = _held.TrySetResult();
-            await _release.Task.WaitAsync(ct);
-            await inner.AppendMessagesAsync(threadId, messages, ct);
+            await running;
+        }
+        catch (OperationCanceledException) { }
+
+        running = loop.RunAsync(cts.Token);
+        var (second, _) = await RunToCompletionAsync(loop, store, "again", cts.Token)
+            .WaitAsync(TimeSpan.FromSeconds(5), cts.Token);
+
+        second.IsError.Should().BeFalse(second.ErrorMessage);
+        logger.Count(SaveWaitTimedOut).Should().Be(2);
+
+        // The held saves were never abandoned: once the store answers, both answers land.
+        store.Release();
+        IReadOnlyList<string> texts = [];
+        for (var i = 0; i < 100 && texts.Count < 4; i++)
+        {
+            await Task.Delay(50, cts.Token);
+            texts = await StoredTextsAsync(store, ThreadId, cts.Token);
         }
 
-        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
-            string threadId,
-            CancellationToken ct = default
-        ) => inner.LoadMessagesAsync(threadId, ct);
+        texts.Should().Equal(["hi", "again", "answer", "answer"]);
+        await cts.CancelAsync();
+    }
 
-        public Task ReplaceMessageAsync(
-            string threadId,
-            PersistedMessage replacement,
-            CancellationToken ct = default
-        ) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+    private static bool IsAnswer(PersistedMessage row) =>
+        row.MessageJson.Contains("\"answer\"", StringComparison.Ordinal);
 
-        public Task SaveMetadataAsync(string threadId, ThreadMetadata metadata, CancellationToken ct = default) =>
-            inner.SaveMetadataAsync(threadId, metadata, ct);
+    /// <summary>
+    /// Runs one input to its end. The store is read the moment the completion arrives, as a reader acting on
+    /// it would.
+    /// </summary>
+    private static Task<(RunCompletedMessage Completed, IReadOnlyList<string> Texts)> RunToCompletionAsync(
+        MultiTurnAgentLoop loop,
+        IConversationStore store,
+        string text,
+        CancellationToken ct
+    ) =>
+        Task.Run(
+            async () =>
+            {
+                (RunCompletedMessage, IReadOnlyList<string>)? result = null;
+                var input = new UserInput([new TextMessage { Text = text, Role = Role.User }]);
+                await foreach (var msg in loop.ExecuteRunAsync(input, ct))
+                {
+                    if (msg is RunCompletedMessage completed)
+                    {
+                        result = (completed, await StoredTextsAsync(store, loop.ThreadId, ct));
+                    }
+                }
 
-        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
-            inner.LoadMetadataAsync(threadId, ct);
+                return result ?? throw new InvalidOperationException("the run never completed");
+            },
+            ct
+        );
 
-        public Task UpdateMetadataAsync(
-            string threadId,
-            Func<ThreadMetadata?, ThreadMetadata> update,
-            CancellationToken ct = default
-        ) => inner.UpdateMetadataAsync(threadId, update, ct);
+    private static async Task<IReadOnlyList<string>> StoredTextsAsync(
+        IConversationStore store,
+        string threadId,
+        CancellationToken ct
+    ) =>
+        [
+            .. MessagePersistenceConverter
+                .FromPersistedMessagesResilient(await store.LoadMessagesAsync(threadId, ct))
+                .OfType<TextMessage>()
+                .Select(m => m.Text),
+        ];
 
-        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
-            inner.DeleteThreadAsync(threadId, ct);
+    private sealed class CapturingLogger : ILogger<MultiTurnAgentLoop>
+    {
+        private readonly System.Collections.Concurrent.ConcurrentQueue<string> _messages = new();
 
-        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
-            int limit = 50,
-            int offset = 0,
-            ConversationListOptions? options = null,
-            CancellationToken ct = default
-        ) => inner.ListThreadsAsync(limit, offset, options, ct);
+        public bool Mentions(string text) => Count(text) > 0;
+
+        public int Count(string text) => _messages.Count(m => m.Contains(text, StringComparison.Ordinal));
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        ) => _messages.Enqueue(formatter(state, exception));
     }
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
