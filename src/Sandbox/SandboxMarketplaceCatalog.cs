@@ -48,7 +48,7 @@ public sealed class SandboxMarketplaceEntry
     }
 }
 
-/// <summary>A plugin within a marketplace and the skills/agents it contributes.</summary>
+/// <summary>A plugin within a marketplace and the components it contributes.</summary>
 public sealed class SandboxMarketplacePlugin
 {
     public string Name { get; }
@@ -56,6 +56,10 @@ public sealed class SandboxMarketplacePlugin
     public string Description { get; }
     public IReadOnlyList<SandboxMarketplaceSkill> Skills { get; }
     public IReadOnlyList<SandboxMarketplaceAgent> Agents { get; }
+    public IReadOnlyList<SandboxMarketplaceMcpServer> McpServers { get; }
+
+    /// <summary>True for a selectable plugin, false for a synthetic group, or null on older gateways.</summary>
+    public bool? Selectable { get; }
 
     public SandboxMarketplacePlugin(
         string name,
@@ -64,6 +68,17 @@ public sealed class SandboxMarketplacePlugin
         IReadOnlyList<SandboxMarketplaceSkill>? skills,
         IReadOnlyList<SandboxMarketplaceAgent>? agents
     )
+        : this(name, version, description, skills, agents, null, null) { }
+
+    public SandboxMarketplacePlugin(
+        string name,
+        string? version,
+        string? description,
+        IReadOnlyList<SandboxMarketplaceSkill>? skills,
+        IReadOnlyList<SandboxMarketplaceAgent>? agents,
+        IReadOnlyList<SandboxMarketplaceMcpServer>? mcpServers,
+        bool? selectable
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         Name = name;
@@ -71,6 +86,37 @@ public sealed class SandboxMarketplacePlugin
         Description = description ?? string.Empty;
         Skills = skills is null ? [] : [.. skills];
         Agents = agents is null ? [] : [.. agents];
+        McpServers = mcpServers is null ? [] : [.. mcpServers];
+        Selectable = selectable;
+    }
+}
+
+/// <summary>A declared MCP server in the marketplace preview, with no request-header values.</summary>
+public sealed class SandboxMarketplaceMcpServer
+{
+    public string Name { get; }
+    public string Transport { get; }
+
+    /// <summary>The declared remote URL, which can contain unresolved placeholders.</summary>
+    public string? Url { get; }
+    public string? AuthMode { get; }
+    public IReadOnlyList<string> UnresolvedVariables { get; }
+
+    public SandboxMarketplaceMcpServer(
+        string name,
+        string transport,
+        string? url,
+        string? authMode,
+        IReadOnlyList<string>? unresolvedVariables
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentException.ThrowIfNullOrWhiteSpace(transport);
+        Name = name;
+        Transport = transport;
+        Url = url;
+        AuthMode = authMode;
+        UnresolvedVariables = unresolvedVariables is null ? [] : [.. unresolvedVariables];
     }
 }
 

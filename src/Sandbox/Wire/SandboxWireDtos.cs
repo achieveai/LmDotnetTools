@@ -275,8 +275,21 @@ internal sealed record MarketplacePluginDto(
     [property: JsonPropertyName("version")] string? Version,
     [property: JsonPropertyName("description")] string? Description,
     [property: JsonPropertyName("skills")] IReadOnlyList<MarketplaceSkillDto>? Skills,
-    [property: JsonPropertyName("agents")] IReadOnlyList<MarketplaceAgentDto>? Agents
+    [property: JsonPropertyName("agents")] IReadOnlyList<MarketplaceAgentDto>? Agents,
+    [property: JsonPropertyName("mcp_servers")] IReadOnlyList<MarketplaceMcpServerDto>? McpServers,
+    [property: JsonPropertyName("selectable")] bool? Selectable
 );
+
+internal sealed record MarketplaceMcpServerDto(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("transport")] string? Transport,
+    [property: JsonPropertyName("url")] string? Url,
+    [property: JsonPropertyName("auth")] MarketplaceMcpAuthDto? Auth,
+    [property: JsonPropertyName("unresolved_vars")] IReadOnlyList<string>? UnresolvedVariables
+);
+
+internal sealed record MarketplaceMcpAuthDto([property: JsonPropertyName("mode")] string? Mode);
 
 internal sealed record MarketplaceSkillDto(
     [property: JsonPropertyName("name")] string Name,
