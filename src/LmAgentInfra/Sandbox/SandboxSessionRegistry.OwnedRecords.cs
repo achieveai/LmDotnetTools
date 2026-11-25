@@ -9,10 +9,13 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 /// <para>
 /// Every create of an owned sandbox records it as the owner's current one for its slot, retiring the one it replaces.
 /// A restarted host reuses a current record the gateway still has (a dormant sandbox counts: the gateway keeps it
-/// until it is deleted or reaped) and whose webhook secret is still on disk, instead of creating another. When either
-/// is missing it creates a fresh one, which retires the record. An owner release that retires keeps the records and
-/// marks them retired; a confirmed delete drops the deleted one. So the records name every sandbox of the conversation
-/// that still exists, and the conversation's delete reaches all of them.
+/// until it is deleted or reaped) and whose webhook secret is still on disk, instead of creating another. When its
+/// secret is missing, the record is kept and the fresh create marks it retired, so the conversation's delete still
+/// reaches that sandbox. When the gateway confirms it gone (404), its record and secret are removed instead. A
+/// plugin-selection candidate is the exception: its preparation never adopts a record (that would carry the old
+/// plugins), and records the candidate without retiring the one still serving. An owner release that retires keeps
+/// the records and marks them retired; a confirmed delete drops the deleted one. So the records name every sandbox of
+/// the conversation that still exists, and the conversation's delete reaches all of them.
 /// </para>
 /// <para>
 /// With no store, nothing is recorded and nothing is reused across a restart.
@@ -24,7 +27,7 @@ public sealed partial class SandboxSessionRegistry
 
     /// <summary>
     /// The sandboxes <paramref name="threadId"/> records, current and retired: the ones
-    /// <see cref="DeleteOwnedSessionsAsync(string, SandboxCredential?)"/> deletes. Empty on a host with no store.
+    /// <see cref="StartDeletingOwnedSessions(string, SandboxCredential?)"/> deletes. Empty on a host with no store.
     /// </summary>
     public Task<IReadOnlyList<OwnedSandboxRecord>> LoadOwnedSandboxesAsync(
         string threadId,
@@ -41,7 +44,9 @@ public sealed partial class SandboxSessionRegistry
     /// The owner's current sandbox for <paramref name="workspaceRef"/>'s slot and directory, when this host does not
     /// track it (a restart forgot it), its webhook secret is still on disk, and the gateway still has it. Registered
     /// as this registry's session under <paramref name="credential"/>; the caller commits the client reference it took.
-    /// <see langword="null"/> when there is nothing to reuse: the caller creates one, and that create retires the record.
+    /// <see langword="null"/> when there is nothing to reuse: the caller creates one. A record whose secret is missing
+    /// is kept, and that create marks it retired; one the gateway confirms gone (404) is removed here, with its secret.
+    /// Never called for a plugin-selection candidate.
     /// </summary>
     /// <exception cref="SandboxSessionUnavailableException">The gateway could not say whether it still has it.</exception>
     private async Task<SandboxSession?> TryAdoptOwnedSessionAsync(

@@ -132,7 +132,9 @@ public sealed class ConversationOwnedSandboxesTests : IDisposable
                 )
             );
             await read.Task.WaitAsync(TimeSpan.FromSeconds(10));
-            var delete = Task.Run(() => store.DeleteThreadAsync(threadId));
+            // Started here, not on the thread pool, so it is under way before the write is released.
+            var delete = store.DeleteThreadAsync(threadId);
+            delete.IsCompleted.Should().BeFalse("the delete waits for the record write that read the conversation");
             hold.Set();
 
             // Separately: the delete queues behind the write, so neither may wait on the other's completion here.
@@ -204,6 +206,76 @@ public sealed class ConversationOwnedSandboxesTests : IDisposable
         finally
         {
             await DisposeAsync(store);
+        }
+    }
+
+    /// <summary>
+    /// The owners are read in one list. A conversation updated while they are read moves to the front of the newest-
+    /// first order; read in pages, it would move from past the first page into it after that page was read, and be
+    /// missed. Read at once, it is named.
+    /// </summary>
+    [Fact]
+    public async Task An_owner_updated_while_the_owners_are_read_is_still_listed()
+    {
+        var inner = new InMemoryConversationStore();
+        var seeding = new ConversationOwnedSandboxes(inner);
+        // The owner is the oldest, so it sorts last, past the first 200.
+        await SeedAsync("review-owner", lastUpdated: 0, Record("sess-owned"));
+        for (var index = 1; index <= 205; index++)
+        {
+            await SeedAsync(
+                $"review-{index}",
+                lastUpdated: index,
+                Record($"sess-{index}") with
+                {
+                    GatewayWorkspace = "other",
+                }
+            );
+        }
+
+        var store = new Mock<IConversationStore>();
+        var lists = 0;
+        store
+            .Setup(x =>
+                x.ListThreadsAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<ConversationListOptions?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(
+                async (int limit, int offset, ConversationListOptions? options, CancellationToken ct) =>
+                {
+                    var page = await inner.ListThreadsAsync(limit, offset, options, ct);
+                    if (Interlocked.Increment(ref lists) == 1)
+                    {
+                        // Another writer touches the owner while the list is read: it becomes the newest.
+                        await inner.UpdateMetadataAsync(
+                            "review-owner",
+                            existing => existing! with { LastUpdated = 1000 },
+                            ct
+                        );
+                    }
+
+                    return page;
+                }
+            );
+
+        var listed = await new ConversationOwnedSandboxes(store.Object).ListOnWorkspaceAsync("reviews", "app-a");
+
+        listed
+            .Select(entry => (entry.ThreadId, entry.Record.SessionId))
+            .Should()
+            .Equal([("review-owner", "sess-owned")]);
+
+        async Task SeedAsync(string threadId, long lastUpdated, OwnedSandboxRecord record)
+        {
+            await inner.UpdateMetadataAsync(
+                threadId,
+                _ => new ThreadMetadata { ThreadId = threadId, LastUpdated = lastUpdated }
+            );
+            await seeding.UpdateAsync(threadId, _ => [record]);
         }
     }
 

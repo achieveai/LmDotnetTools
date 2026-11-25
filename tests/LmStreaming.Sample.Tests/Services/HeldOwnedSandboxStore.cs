@@ -5,7 +5,8 @@ namespace LmStreaming.Sample.Tests.Services;
 
 /// <summary>
 /// The host's record of each conversation's sandboxes, passed through, with every write it receives noted and the
-/// ability to hold writes (to act while a release records its retirement) or fail writes or reads. A release route
+/// ability to hold writes (to act while a release records its retirement) or reads (to act while a conversation
+/// delete reads its records), or fail either. A release route
 /// sends the gateway nothing now, so its record write is where a test catches one in flight.
 /// </summary>
 internal sealed class HeldOwnedSandboxStore(IOwnedSandboxStore inner) : IOwnedSandboxStore
@@ -15,7 +16,9 @@ internal sealed class HeldOwnedSandboxStore(IOwnedSandboxStore inner) : IOwnedSa
     private readonly object _gate = new();
     private readonly List<string> _writes = [];
     private readonly SemaphoreSlim _writesStarted = new(0);
+    private readonly SemaphoreSlim _loadsStarted = new(0);
     private TaskCompletionSource? _hold;
+    private TaskCompletionSource? _loadHold;
 
     /// <summary>When set, every write fails, writing nothing.</summary>
     public volatile bool FailWrites;
@@ -57,10 +60,33 @@ internal sealed class HeldOwnedSandboxStore(IOwnedSandboxStore inner) : IOwnedSa
     public async Task WaitForWriteStartedAsync() =>
         (await _writesStarted.WaitAsync(S_patience)).Should().BeTrue("a sandbox record write was expected");
 
-    public Task<IReadOnlyList<OwnedSandboxRecord>> LoadAsync(string threadId, CancellationToken ct = default) =>
-        FailLoads
-            ? Task.FromException<IReadOnlyList<OwnedSandboxRecord>>(new IOException("The sandbox record store failed."))
-            : inner.LoadAsync(threadId, ct);
+    /// <summary>Holds every read from now on until the returned gate is completed; the read then sees the store as
+    /// it is at that moment.</summary>
+    public TaskCompletionSource HoldLoads()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        while (_loadsStarted.Wait(0)) { }
+
+        Volatile.Write(ref _loadHold, gate);
+        return gate;
+    }
+
+    /// <summary>Waits until one more read has reached the store (held or not).</summary>
+    public async Task WaitForLoadStartedAsync() =>
+        (await _loadsStarted.WaitAsync(S_patience)).Should().BeTrue("a sandbox record read was expected");
+
+    public async Task<IReadOnlyList<OwnedSandboxRecord>> LoadAsync(string threadId, CancellationToken ct = default)
+    {
+        _ = _loadsStarted.Release();
+        if (Volatile.Read(ref _loadHold) is { } hold)
+        {
+            await hold.Task.WaitAsync(ct);
+        }
+
+        return FailLoads
+            ? throw new IOException("The sandbox record store failed.")
+            : await inner.LoadAsync(threadId, ct);
+    }
 
     public async Task UpdateAsync(
         string threadId,

@@ -17,15 +17,15 @@ namespace LmStreaming.Sample.Services;
 /// </remarks>
 public sealed class ConversationOwnedSandboxes(IConversationStore store) : IOwnedSandboxStore
 {
+    /// <summary>Abandons a write to a conversation that no longer exists.</summary>
+    private sealed class ThreadGoneException : Exception;
+
     /// <summary>Property key in a thread's <c>ThreadMetadata.Properties</c> holding its sandboxes as a JSON array.</summary>
     public const string PropertyKey = "sample.ownedSandboxes";
 
     private static readonly JsonSerializerOptions S_json = new(JsonSerializerDefaults.Web);
 
     private static readonly ConversationListOptions S_listOptions = new() { ExcludeDeleted = true };
-
-    /// <summary>Abandons a write to a conversation that no longer exists.</summary>
-    private sealed class ThreadGoneException : Exception;
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<OwnedSandboxRecord>> LoadAsync(string threadId, CancellationToken ct = default)

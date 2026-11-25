@@ -29,7 +29,7 @@ internal sealed class OwnedSandboxGateway : HttpMessageHandler
     private readonly Dictionary<string, Dictionary<string, string>> _env = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _probesStarted = new(0);
     private TaskCompletionSource? _probeGate;
-    private readonly List<(string SessionId, string? AppId, bool HasKey)> _deleteApps = [];
+    private readonly List<(string SessionId, string? AppId, string? Key)> _deleteApps = [];
 
     /// <summary>When set, every DELETE answers 500 and deletes nothing.</summary>
     public volatile bool FailDeletes;
@@ -49,9 +49,10 @@ internal sealed class OwnedSandboxGateway : HttpMessageHandler
     public volatile bool TimeOutProbes;
 
     /// <summary>
-    /// The sandbox app of every DELETE that reached the gateway, in order, and whether it carried an app key.
+    /// The sandbox app of every DELETE that reached the gateway, in order, with the app key it carried. The tests' keys
+    /// are synthetic; they are compared here and never logged.
     /// </summary>
-    public IReadOnlyList<(string SessionId, string? AppId, bool HasKey)> DeleteApps
+    public IReadOnlyList<(string SessionId, string? AppId, string? Key)> DeleteApps
     {
         get
         {
@@ -189,7 +190,8 @@ internal sealed class OwnedSandboxGateway : HttpMessageHandler
                             ? apps.Single()
                             : null,
                         request.Headers.TryGetValues(SandboxCredential.AppKeyHeader, out var keys)
-                            && !string.IsNullOrEmpty(keys.Single())
+                            ? keys.Single()
+                            : null
                     )
                 );
             }

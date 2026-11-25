@@ -606,8 +606,10 @@ rest of the workspace is read-only to it (gateway ADR 0044). Sandboxes are never
   plugin-selection swap (it deletes the superseded sandboxes, dedicated ones included; one whose DELETE is refused
   stays recorded, retired, for the conversation's delete) and the rollback of a failed create. Nothing else does: the release route, an idle unload and an app shutdown leave it to retire on the
   gateway. The next turn reuses it, on a restarted host too, while the gateway still has it (a dormant one
-  included) and its webhook secret is still on disk; otherwise a fresh one is created with the stored directory,
-  and the old one is recorded as retired. A backup restore the
+  included) and its webhook secret is still on disk. Otherwise a fresh one is created with the stored directory,
+  and the old record depends on why. A missing secret keeps the record, marked retired, so the conversation's
+  delete still reaches that sandbox. A gateway that answers `404` for it confirms it is gone, so its record and
+  secret are removed. A backup restore the
   gateway refuses while such an untracked sandbox may still hold the workspace answers `409`
   `restore_blocked_by_conversation_sandboxes`, with `blockers` naming each sandbox a conversation records and that
   conversation. These are recorded, not checked on the gateway: one may already be gone. If one still holds the

@@ -881,7 +881,9 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
             gateway
                 .DeleteApps.Should()
                 .BeEquivalentTo(
-                    sessions.Select(sessionId => (sessionId, (string?)AppId, true)),
+                    sessions.Select(sessionId =>
+                        (sessionId, (string?)AppId, (string?)S_hostKey["SandboxGateway:AppKey"])
+                    ),
                     "the host created both, so it deletes both under its own app and key"
                 );
             foreach (var sessionId in sessions)
@@ -972,6 +974,7 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
                 ]
         );
         var unreachable = fixture.Logs.WaitForAsync(CannotDeleteTemplate, "SessionId", "sess-foreign", Patience);
+        var clientsBefore = fixture.Registry.PerCredentialClientCount;
 
         using var request = new HttpRequestMessage(HttpMethod.Delete, $"/api/conversations/{a}");
         request.Headers.Add(SandboxCredential.AppIdHeader, "caller-app");
@@ -988,8 +991,17 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         fixture.Gateway.Deletes.Should().Equal(["sess-caller"], "only the caller's own app can delete its sandbox");
         fixture.Gateway.DeleteAttempts.Should().Be(1, "a sandbox recorded twice is deleted once");
         fixture
+            .Registry.PerCredentialClientCount.Should()
+            .Be(
+                clientsBefore,
+                "the caller app's client, taken once for the id recorded twice, is released after its DELETE"
+            );
+        fixture
             .Gateway.DeleteApps.Should()
-            .Equal([("sess-caller", (string?)"caller-app", true)], "under the caller's app, with its key");
+            .Equal(
+                [("sess-caller", (string?)"caller-app", (string?)"caller-key")],
+                "under the caller's app, with its key"
+            );
     }
 
     /// <summary>
@@ -1165,6 +1177,46 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
     }
 
     /// <summary>
+    /// A sandbox created and fully retired after a deleted conversation's agent is removed, and before the delete
+    /// hands over to the registry, is in no slot and no map by then: only its record names it. The delete reads the
+    /// records after the hand-off, so it deletes that sandbox with the conversation.
+    /// </summary>
+    [Fact]
+    public async Task Deleting_a_conversation_deletes_a_sandbox_created_and_retired_just_before_its_hand_off()
+    {
+        await using var fixture = await StartAsync();
+        var a = await fixture.ProvisionAsync("PRs/r-7");
+        string? late = null;
+        fixture.Pool.AfterRemoveAgentForTest = async threadId =>
+        {
+            // Once: the release below removes the agent again.
+            if (threadId != a || late is not null)
+            {
+                return;
+            }
+
+            late = (
+                await fixture.Registry.GetOrCreateSessionAsync(
+                    new WorkspaceRef(fixture.WorkspaceId, WorkingDir: "PRs/r-7", OwnerThreadId: a)
+                )
+            ).SessionId;
+            using var retired = await fixture.ReleaseAsync(a, directory: null);
+            retired.StatusCode.Should().Be(HttpStatusCode.OK);
+        };
+
+        using (var deleted = await fixture.Client.DeleteAsync($"/api/conversations/{a}"))
+        {
+            deleted.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        }
+
+        await fixture.Registry.ReleaseOwnedSessionsAsync(a);
+        fixture.LogGateway();
+        late.Should().NotBeNull("the sandbox was created in the gap");
+        fixture.Gateway.Deletes.Should().Equal([late], "only its record names it, and the delete reads the records");
+        (await fixture.Store.LoadMetadataAsync(a)).Should().BeNull();
+    }
+
+    /// <summary>
     /// The records go with the conversation, so a delete that cannot read them deletes nothing: it answers 503 and
     /// keeps the conversation and its records, and a retry deletes every sandbox they name.
     /// </summary>
@@ -1207,6 +1259,85 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         fixture.LogGateway();
         fixture.Gateway.Deletes.Should().BeEquivalentTo(sessions, "the retry deletes every sandbox the records name");
         (await fixture.Store.LoadMetadataAsync(a)).Should().BeNull();
+    }
+
+    /// <summary>
+    /// A conversation delete whose records read outlasts its wait (30 s), or whose caller goes away first, is abandoned
+    /// before it deletes anything: the read finishing later deletes nothing, the conversation and its records stay, and
+    /// its next turn reuses the same sandbox.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_conversation_delete_abandoned_while_reading_its_records_deletes_nothing_later_and_the_conversation_reuses_its_sandbox(
+        bool callerGoesAway
+    )
+    {
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        await using var fixture = await StartAsync(
+            timeProvider: clock,
+            configureServices: services =>
+            {
+                HostLogCapture.Install(services);
+                // The route's clock too, for its 30 s wait.
+                _ = services.AddSingleton<TimeProvider>(clock);
+            }
+        );
+        var a = await fixture.ProvisionAsync("PRs/r-7");
+        _ = fixture.BuildAgent(a);
+        var session = fixture.Gateway.Creates.Single().SessionId;
+        var loads = fixture.Records.HoldLoads();
+        using var caller = new CancellationTokenSource();
+
+        var delete = fixture.Client.DeleteAsync($"/api/conversations/{a}", caller.Token);
+        await fixture.Records.WaitForLoadStartedAsync();
+        if (callerGoesAway)
+        {
+            var stopped = fixture.Logs.WaitForAsync(CallerLeftDeleteTemplate, a, Patience);
+            await caller.CancelAsync();
+            _ = await stopped;
+            await FluentActions.Awaiting(() => delete).Should().ThrowAsync<OperationCanceledException>();
+        }
+        else
+        {
+            // The route starts its wait as it hands the delete over; until then a clock step is not seen.
+            using var timedOut = await AdvanceUntilAsync(clock, delete, TimeSpan.FromSeconds(31));
+            timedOut.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+            (await timedOut.Content.ReadAsStringAsync()).Should().Contain("conversation_sandboxes_unreadable");
+        }
+
+        var abandoned = fixture.Logs.WaitForAsync(DeleteAbandonedTemplate, "OwnerThreadId", a, Patience);
+        loads.SetResult();
+        _ = await abandoned;
+
+        fixture.LogGateway();
+        fixture.Gateway.DeleteAttempts.Should().Be(0, "an abandoned delete deletes nothing, then or later");
+        (await fixture.Store.LoadMetadataAsync(a)).Should().NotBeNull("the conversation is kept");
+        (await fixture.Registry.LoadOwnedSandboxesAsync(a))
+            .Select(record => (record.SessionId, record.Retired))
+            .Should()
+            .Equal([(session, false)]);
+
+        _ = fixture.BuildAgent(a);
+        fixture.Gateway.Creates.Should().ContainSingle("the kept conversation reuses its sandbox");
+        OwnSessionId(fixture, a).Should().Be(session);
+    }
+
+    /// <summary>Steps <paramref name="clock"/> until <paramref name="response"/> answers.</summary>
+    private static async Task<HttpResponseMessage> AdvanceUntilAsync(
+        FakeTimeProvider clock,
+        Task<HttpResponseMessage> response,
+        TimeSpan step
+    )
+    {
+        var deadline = DateTime.UtcNow + Patience;
+        while (!response.IsCompleted && DateTime.UtcNow < deadline)
+        {
+            clock.Advance(step);
+            _ = await Task.WhenAny(response, Task.Delay(TimeSpan.FromMilliseconds(20)));
+        }
+
+        return await response.WaitAsync(Patience);
     }
 
     /// <summary>
@@ -2047,7 +2178,7 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
     /// <summary>The host's sandbox app key, for a test that checks the key a DELETE carries.</summary>
     private static readonly IReadOnlyDictionary<string, string> S_hostKey = new Dictionary<string, string>
     {
-        ["SandboxGateway:AppKey"] = Convert.ToBase64String(new byte[32]),
+        ["SandboxGateway:AppKey"] = Convert.ToBase64String([.. Enumerable.Range(1, 32).Select(i => (byte)i)]),
     };
 
     /// <summary>The secret store's line once a session's webhook secret is gone.</summary>
@@ -2060,6 +2191,16 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
     /// <summary>The registry's line once a conversation delete is queued behind the owner's earlier releases.</summary>
     private const string DeleteQueuedTemplate =
         "Deleting the sandboxes of owner {OwnerThreadId} once its earlier releases finish";
+
+    /// <summary>The registry's line when a conversation delete it was about to commit had been abandoned.</summary>
+    private const string DeleteAbandonedTemplate =
+        "Not deleting the sandboxes of owner {OwnerThreadId}: the conversation delete was abandoned and the "
+        + "conversation is kept";
+
+    /// <summary>The route's line when a conversation delete's caller went away before its records were read.</summary>
+    private const string CallerLeftDeleteTemplate =
+        "The caller stopped waiting for the delete of conversation {ThreadId}; it was abandoned before deleting "
+        + "anything and the conversation is kept";
 
     /// <summary>
     /// A host with Mini Apps and browser debugging on, its mode store hooked (<see cref="Fixture.Modes"/>) and its

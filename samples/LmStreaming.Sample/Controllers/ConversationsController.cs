@@ -2806,11 +2806,15 @@ public class ConversationsController(
     /// restore or a purge) retries it: the deleted conversation's own release route answers unknown thread.
     /// </summary>
     /// <returns>
-    /// <see langword="null"/> once the delete has started and the conversation may go. Otherwise the answer, and the
+    /// <see langword="null"/> once the delete has committed and the conversation may go. Otherwise the answer, and the
     /// conversation must be kept: 409 when an agent of the conversation is pooled again, such as one a send rebuilt
     /// while the old one was disposed (it holds the sandbox); 503 when the conversation's sandbox records could not
     /// be read in time (they go with the conversation, so keeping it lets a retry delete every one).
     /// </returns>
+    /// <remarks>
+    /// A delete that times out or whose caller goes away is abandoned before it can delete anything, so the kept
+    /// conversation keeps its sandboxes. One that committed first goes on.
+    /// </remarks>
     private async Task<IActionResult?> TryStartDeletingOwnedSandboxAsync(string threadId, CancellationToken ct)
     {
         if (sandboxSessionRegistry is not { } registry)
@@ -2819,11 +2823,11 @@ public class ConversationsController(
         }
 
         var callerCredential = TryBuildCallerCredential(HttpContext?.Request?.Headers);
-        Task<Task>? started = null;
+        SandboxSessionRegistry.OwnedSessionsDeletion? deletion = null;
         if (
             !agentPool.TryRunWhileNotPooled(
                 threadId,
-                () => started = registry.DeleteOwnedSessionsAsync(threadId, callerCredential)
+                () => deletion = registry.StartDeletingOwnedSessions(threadId, callerCredential)
             )
         )
         {
@@ -2835,13 +2839,24 @@ public class ConversationsController(
             );
         }
 
-        Task release;
+        // Set by the action above, which ran.
+        var started = deletion!;
         try
         {
-            release = await started!.WaitAsync(S_ownedSandboxReadTimeout, ct);
+            await started.Read.WaitAsync(S_ownedSandboxReadTimeout, timeProvider, ct);
         }
-        catch (Exception ex) when (!ct.IsCancellationRequested)
+        catch (Exception ex) when (started.TryAbandon())
         {
+            if (ct.IsCancellationRequested)
+            {
+                logger.LogWarning(
+                    "The caller stopped waiting for the delete of conversation {ThreadId}; it was abandoned before "
+                        + "deleting anything and the conversation is kept",
+                    threadId
+                );
+                throw;
+            }
+
             logger.LogError(
                 ex,
                 "Could not read the dedicated sandboxes of conversation {ThreadId}; the conversation is kept so a "
@@ -2859,8 +2874,17 @@ public class ConversationsController(
                 }
             );
         }
+        catch (Exception ex)
+        {
+            // Committed just before the wait ended: its sandboxes are going, so the conversation goes too.
+            logger.LogWarning(
+                ex,
+                "The delete of conversation {ThreadId} committed as its wait ended; deleting the conversation",
+                threadId
+            );
+        }
 
-        _ = release.ContinueWith(
+        _ = started.Completion.ContinueWith(
             task =>
                 logger.LogWarning(
                     task.Exception,

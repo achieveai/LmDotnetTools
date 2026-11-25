@@ -1701,6 +1701,12 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
     internal Func<string, Task>? BeforeUnloadLockForTest { get; set; }
 
     /// <summary>
+    /// Test-only: runs at the end of <see cref="RemoveAgentAsync"/>, so a test can land work after a conversation's
+    /// agent is gone and before its caller's next step (a conversation delete's hand-off, say).
+    /// </summary>
+    internal Func<string, Task>? AfterRemoveAgentForTest { get; set; }
+
+    /// <summary>
     /// The idle sweep's unlocked read: whether <paramref name="loop"/> has a run in progress, a background task
     /// that has not reported its end, or live work of its own or in its sub-agent tree. Re-taken under the lock by
     /// <see cref="HoldsLiveWorkUnderLock"/>. See <see cref="UnloadIdleAgentsAsync"/> for why each counts.
@@ -2535,6 +2541,11 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable, IAgentRunActivityProb
             MarkReleased(entry);
             _logger.LogInformation("Removing agent for thread {ThreadId}", threadId);
             await DisposeRemovedEntryAsync(threadId, entry).ConfigureAwait(false);
+        }
+
+        if (AfterRemoveAgentForTest is { } afterRemove)
+        {
+            await afterRemove(threadId).ConfigureAwait(false);
         }
     }
 
