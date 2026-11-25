@@ -28,6 +28,12 @@ public sealed partial class SandboxClient
         ArgumentNullException.ThrowIfNull(request);
 
         var dto = ToWireDto(request, _options.AppId);
+        var archivePreparation = request.ArchivePreparation;
+        if (archivePreparation is not null)
+        {
+            ValidateArchiveSelection(archivePreparation.Archives, request.Marketplaces, dto.PluginSelection);
+        }
+
         using var response = await SendRestAsync(HttpMethod.Post, "api/v1/sandboxes", dto, sessionId: null, ct)
             .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
@@ -39,10 +45,43 @@ public sealed partial class SandboxClient
         }
 
         var payload = await ReadSandboxResponseOrThrowAsync(response, "sandbox creation", ct).ConfigureAwait(false);
+        var statusCode = (int)response.StatusCode;
+        IReadOnlyList<SandboxAppMarketplaceArchive> archives;
+        try
+        {
+            archives = ReadResolvedArchiveReceipts(
+                payload.ResolvedArchiveReceipts,
+                payload.SourceVersion,
+                "creating a sandbox",
+                statusCode
+            );
+            if (
+                archivePreparation is null
+                    ? archives.Count != 0
+                    : (
+                        archivePreparation.SourceVersion != payload.SourceVersion
+                        || !MatchesArchives(archivePreparation.Archives, archives)
+                    )
+            )
+            {
+                throw new SandboxException(
+                    SandboxErrorKind.Protocol,
+                    "The gateway did not acknowledge the exact prepared archive selection.",
+                    statusCode
+                );
+            }
+        }
+        catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.Protocol)
+        {
+            await DeleteUnverifiedArchiveSandboxAsync(payload.SessionId, statusCode).ConfigureAwait(false);
+            throw;
+        }
+
         var info = ToSandboxInfo(
             payload,
             "sandbox creation",
-            (int)response.StatusCode,
+            statusCode,
+            archives,
             sentSearchFlags: request.Skills is { SearchTool: not null } or { AgentsSearchTool: not null }
         );
         if (request.WorkingDir is { } workingDir)
@@ -54,6 +93,23 @@ public sealed partial class SandboxClient
 
         SeedWorkspaceMountId(info);
         return info;
+    }
+
+    private async Task DeleteUnverifiedArchiveSandboxAsync(string sessionId, int createStatus)
+    {
+        try
+        {
+            await DeleteAsync(sessionId, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (SandboxException ex)
+        {
+            throw new SandboxException(
+                SandboxErrorKind.Protocol,
+                $"The gateway did not acknowledge the archive selection, and cleanup of sandbox '{sessionId}' failed.",
+                createStatus,
+                ex
+            );
+        }
     }
 
     /// <summary>
@@ -80,7 +136,24 @@ public sealed partial class SandboxClient
 
         var payload = await ReadSandboxResponseOrThrowAsync(response, $"sandbox '{sessionId}'", ct)
             .ConfigureAwait(false);
-        var info = ToSandboxInfo(payload, $"sandbox '{sessionId}'", (int)response.StatusCode);
+        var operation = $"reading sandbox '{sessionId}'";
+        var statusCode = (int)response.StatusCode;
+        var archives = ReadResolvedArchiveReceipts(
+            payload.ResolvedArchiveReceipts,
+            payload.SourceVersion,
+            operation,
+            statusCode
+        );
+        if (archives.Count != 0 && payload.SessionId != sessionId)
+        {
+            throw new SandboxException(
+                SandboxErrorKind.Protocol,
+                "The gateway returned archive receipts for a different sandbox.",
+                statusCode
+            );
+        }
+
+        var info = ToSandboxInfo(payload, operation, statusCode, archives);
         SeedWorkspaceMountId(info);
         return info;
     }
@@ -235,9 +308,20 @@ public sealed partial class SandboxClient
                                 pair.Value.Url
                             ),
                             StringComparer.Ordinal
-                        )
+                        ),
+                    mcp.Direct.Count == 0
+                        ? null
+                        : mcp
+                            .Direct.Select(server => new DirectMcpServerDto(
+                                server.Marketplace,
+                                server.Name,
+                                server.Url
+                            ))
+                            .ToArray()
                 )
-                : null
+                : null,
+            ArchiveReceipts: request.ArchivePreparation?.Archives.Select(ToArchiveReceiptDto).ToArray(),
+            ExpectedSourceVersion: request.ArchivePreparation?.SourceVersion
         );
 
     private static PluginRefDto ToPluginRefDto(SandboxPluginRef pluginRef) =>
@@ -270,6 +354,7 @@ public sealed partial class SandboxClient
         CreateSandboxResponseDto dto,
         string operation,
         int statusCode,
+        IReadOnlyList<SandboxAppMarketplaceArchive> archives,
         bool sentSearchFlags = false
     ) =>
         new(
@@ -294,6 +379,8 @@ public sealed partial class SandboxClient
         )
         {
             Mcp = TryToMcpResolvedPolicy(dto.Mcp, statusCode),
+            SourceVersion = dto.SourceVersion,
+            ResolvedArchiveReceipts = archives,
         };
 
     private static SandboxMcpResolvedPolicy? TryToMcpResolvedPolicy(JsonElement? echo, int statusCode)

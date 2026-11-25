@@ -19,14 +19,27 @@ public enum SandboxMcpAuthMode
 /// <summary>Secret-free setup for HTTP MCP libraries. Omit the create property to keep legacy behavior.</summary>
 public sealed class SandboxMcpPolicy
 {
+    /// <summary>Maximum number of direct MCP endpoints accepted by the gateway for one sandbox.</summary>
+    public const int MaxDirectEndpoints = 64;
+
     public SandboxMcpEgress? Egress { get; }
     public IReadOnlyDictionary<string, SandboxMcpServerPolicy> Servers { get; }
+    public IReadOnlyList<SandboxDirectMcpServer> Direct { get; }
 
     public SandboxMcpPolicy(
         SandboxMcpEgress? egress = null,
         IReadOnlyDictionary<string, SandboxMcpServerPolicy>? servers = null
     )
+        : this(egress, servers, []) { }
+
+    public SandboxMcpPolicy(
+        SandboxMcpEgress? egress,
+        IReadOnlyDictionary<string, SandboxMcpServerPolicy>? servers,
+        IReadOnlyList<SandboxDirectMcpServer> direct
+    )
     {
+        ArgumentNullException.ThrowIfNull(direct);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(direct.Count, MaxDirectEndpoints, nameof(direct));
         if (egress is { } mode && !Enum.IsDefined(mode))
         {
             throw new ArgumentOutOfRangeException(nameof(egress));
@@ -43,10 +56,27 @@ public sealed class SandboxMcpPolicy
             }
         }
 
+        if (egress == SandboxMcpEgress.Auto && direct.Count > 0)
+        {
+            throw new ArgumentException("Direct MCP servers require manual egress.", nameof(direct));
+        }
+
+        foreach (var declaration in direct)
+        {
+            ArgumentNullException.ThrowIfNull(declaration, nameof(direct));
+            ArgumentException.ThrowIfNullOrWhiteSpace(declaration.Marketplace, nameof(direct));
+            ArgumentException.ThrowIfNullOrWhiteSpace(declaration.Name, nameof(direct));
+            ArgumentException.ThrowIfNullOrWhiteSpace(declaration.Url, nameof(direct));
+        }
+
         Egress = egress;
         Servers = new ReadOnlyDictionary<string, SandboxMcpServerPolicy>(copy);
+        Direct = Array.AsReadOnly(direct.ToArray());
     }
 }
+
+/// <summary>An approved, fixed HTTPS endpoint associated with an app grant. Supply egress policy separately.</summary>
+public sealed record SandboxDirectMcpServer(string Marketplace, string Name, string Url);
 
 /// <summary>One server override. Header names are public; credential values belong in the app's token store.</summary>
 public sealed class SandboxMcpServerPolicy

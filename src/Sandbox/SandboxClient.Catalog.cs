@@ -308,7 +308,9 @@ public sealed partial class SandboxClient
             dto.Version,
             dto.Description,
             SelectNonNullOrThrow(dto.Skills, ToSkill, operation, statusCode),
-            SelectNonNullOrThrow(dto.Agents, ToAgent, operation, statusCode)
+            SelectNonNullOrThrow(dto.Agents, ToAgent, operation, statusCode),
+            SelectNonNullOrThrow(dto.McpServers, ToMcpServer, operation, statusCode),
+            dto.Selectable
         );
 
     private static SandboxMarketplaceSkill ToSkill(MarketplaceSkillDto dto) =>
@@ -316,4 +318,10 @@ public sealed partial class SandboxClient
 
     private static SandboxMarketplaceAgent ToAgent(MarketplaceAgentDto dto) =>
         new(dto.Name, dto.Description, dto.Plugin, dto.Marketplace, dto.Path);
+
+    private static SandboxMarketplaceMcpServer ToMcpServer(MarketplaceMcpServerDto dto) =>
+        new(dto.Name, dto.Transport ?? dto.Type, dto.Url, dto.Auth?.Mode, dto.UnresolvedVariables)
+        {
+            RequiresOAuth = dto.RequiresOAuth,
+        };
 }
