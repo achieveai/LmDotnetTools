@@ -193,6 +193,113 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
         results.Should().Equal(true, false, false, true, false);
     }
 
+    [SkippableFact]
+    public async Task Verify_takes_the_receipts_revision_from_the_runner_and_its_round_from_the_comments()
+    {
+        // AWB#188 (#1006): a long-lived conversation copied an earlier round's mergeSha into the receipt, and verify
+        // refused this round's posted review on every retry. The runner now writes its prepared revision over the
+        // copied one; a receipt from an earlier round still fails, because its comments are in this round's baseline.
+        var python = await FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox's verify rule cannot be run");
+        string head = new('h', 40),
+            merge = new('m', 40),
+            earlierHead = new('d', 40),
+            earlierMerge = new('3', 40);
+        static JsonObject Comment(int id) =>
+            new()
+            {
+                ["commentType"] = "issue_comment",
+                ["commentId"] = id,
+                ["kind"] = "summary",
+                ["content"] = $"summary {id}",
+            };
+        static JsonObject Receipt(string head, string merge, JsonObject comment, params string[] continuedIn)
+        {
+            var receipt = new JsonObject
+            {
+                ["prId"] = "17",
+                ["headSha"] = head,
+                ["mergeSha"] = merge,
+                ["comments"] = new JsonArray(comment),
+            };
+            if (continuedIn.Length > 0)
+                receipt["continued_in"] = new JsonArray([.. continuedIn.Select(name => (JsonNode)name)]);
+            return receipt;
+        }
+        // Summaries 1 and 2 are on the PR; the baseline lists those already there when this round prepared.
+        static JsonObject Case(JsonObject files, params int[] baseline)
+        {
+            var live = new JsonObject();
+            foreach (var id in new[] { 1, 2 })
+                live[$"issues/comments/{id}"] = new JsonObject
+                {
+                    ["id"] = id,
+                    ["body"] = $"summary {id}",
+                    ["issue_url"] = "https://api.github.com/repos/o/r/issues/17",
+                };
+            return new JsonObject
+            {
+                ["files"] = new JsonObject(
+                    files.Select(file => KeyValuePair.Create(file.Key, (JsonNode?)file.Value!.ToJsonString()))
+                ),
+                ["live"] = live,
+                ["baseline"] = new JsonArray([.. baseline.Select(id => (JsonNode)new JsonArray("issue_comment", id))]),
+            };
+        }
+        var cases = new JsonArray(
+            // The AWB#188 receipt: this round's head and comments, an earlier round's merge.
+            Case(new JsonObject { ["publication_receipts.json"] = Receipt(head, earlierMerge, Comment(1)) }),
+            // A stale head, the same way.
+            Case(new JsonObject { ["publication_receipts.json"] = Receipt(earlierHead, merge, Comment(1)) }),
+            // A receipt kept as two, both naming the earlier revision.
+            Case(
+                new JsonObject
+                {
+                    ["publication_receipts.json"] = Receipt(
+                        earlierHead,
+                        earlierMerge,
+                        Comment(1),
+                        "publication_receipts-2.json"
+                    ),
+                    ["publication_receipts-2.json"] = Receipt(earlierHead, earlierMerge, Comment(2)),
+                }
+            ),
+            // An earlier round's receipt: its summary was on the PR before this round's prepare.
+            Case(new JsonObject { ["publication_receipts.json"] = Receipt(earlierHead, earlierMerge, Comment(1)) }, 1),
+            // This round's revision, but a summary that is not on the PR.
+            Case(new JsonObject { ["publication_receipts.json"] = Receipt(head, merge, Comment(3)) })
+        );
+        string[] names =
+        [
+            "GITHUB_COMMENTS",
+            "github_belongs",
+            "github_reply_wrapper",
+            "same_text",
+            "github_verify",
+            "render_json",
+            "read_receipt",
+            "stamp_receipt",
+        ];
+        var stamp = $"stamp_receipt(c['files'].__getitem__, c['files'].__setitem__, 17, '{head}', '{merge}')";
+
+        var verified = await RunAsync(
+            python!,
+            names,
+            $"passes(lambda: github_verify({stamp}['comments'], c['live'].get, c['baseline']))",
+            cases.ToJsonString()
+        );
+        verified.Should().Equal(true, true, true, false, false);
+
+        var stamped = await RunAsync(
+            python!,
+            names,
+            $"{stamp} is not None and all(json.loads(text)['prId'] == '17' and json.loads(text)['headSha'] == "
+                + $"'{head}' and json.loads(text)['mergeSha'] == '{merge}' for text in c['files'].values())",
+            cases.ToJsonString()
+        );
+        stamped.Should().AllBeEquivalentTo(true, "every receipt file names the prepared revision for the archive");
+    }
+
     public void Dispose()
     {
         ReviewdSqlitePools.Clear(_database);
@@ -249,7 +356,7 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
         try
         {
             const string harness = """
-                import ast, hashlib, json, sys
+                import ast, hashlib, json, re, sys
                 tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
                 names, expression = sys.argv[2].split(','), sys.argv[3]
                 def named(node):
@@ -267,7 +374,7 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
                         return True
                     except ReviewError:
                         return False
-                scope = {'pr': 17, 'hashlib': hashlib, 'json': json, 'ReviewError': ReviewError, 'passes': passes}
+                scope = {'pr': 17, 'hashlib': hashlib, 'json': json, 're': re, 'ReviewError': ReviewError, 'passes': passes}
                 exec(compile(ast.Module(lifted, []), 'rules', 'exec'), scope)
                 call = eval('lambda c: ' + expression, scope)
                 cases = json.loads(sys.stdin.read())

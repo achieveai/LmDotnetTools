@@ -637,6 +637,23 @@ def read_receipt(read):
     return receipt
 
 
+def stamp_receipt(read, write, pr_id, head, merge):
+    # The receipt read_receipt(read) returns, naming the revision this run prepared. The review writes the receipt but
+    # the runner owns its revision: a long-lived conversation copied an earlier round's mergeSha into it (AWB#188,
+    # #1006), and verify refused the posted review on every retry. So prId, headSha and mergeSha are written over,
+    # with write(name, text), in the receipt and each file it continues in, and the archive keeps the prepared
+    # revision. The comments are what tie a receipt to this round: verify reads each back from the PR and refuses one
+    # in this round's baseline, so an earlier round's receipt still fails.
+    receipt = read_receipt(read)
+    revision = {'prId': str(pr_id), 'headSha': head, 'mergeSha': merge}
+    continued = json.loads(read('publication_receipts.json')).get('continued_in') or []
+    for name in ['publication_receipts.json'] + continued:
+        part = json.loads(read(name))
+        if str(part.get('prId')) != str(pr_id) or part.get('headSha') != head or part.get('mergeSha') != merge:
+            write(name, render_json({**part, **revision}) + '\n')
+    return {**receipt, **revision}
+
+
 def fitting_name(name, ending, key):
     # One file name holds at most 255 bytes, and a deep path flattened into one, or a long name with an ending added,
     # can need more: the move or the note then failed every commit. Keeps name + ending while it leaves room for a
@@ -882,10 +899,16 @@ elif phase == 'verify' and args.get('shadow'):
                                        args['head'], args['merge'])))
 elif phase == 'verify':
     inspect_prepared()
-    receipt = read_receipt(lambda name: safe_path(outer, f'{directory}/{name}').read_text())
-    if (str(receipt.get('prId')) != str(pr) or receipt.get('headSha') != args['head']
-            or receipt.get('mergeSha') != args['merge']):
-        raise ReviewError('Publication receipt does not identify the prepared PR revision.')
+
+    def write_receipt(name, text):
+        # Replaced whole, so a verify stopped midway leaves the receipt as it was.
+        path = safe_path(outer, f'{directory}/{name}')
+        with path.with_name(f'{name}.part').open('w', encoding='utf-8', newline='\n') as stream:
+            stream.write(text)
+        os.replace(path.with_name(f'{name}.part'), path)
+
+    receipt = stamp_receipt(lambda name: safe_path(outer, f'{directory}/{name}').read_text(), write_receipt, pr,
+                            args['head'], args['merge'])
     comments = receipt.get('comments')
     if not isinstance(comments, list) or not comments:
         raise ReviewError('Publication receipt must include a posted summary.')
