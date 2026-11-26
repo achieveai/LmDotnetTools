@@ -19,6 +19,7 @@ public sealed class ReviewdSourceFingerprintTests
         {
             // Each case gets its own store with two detached source checkouts, A (this slot) and B (another lane),
             // as the pool makes them. A's fingerprint is taken, the case changes something, and the check runs on A.
+            // Each rejected case changes only what one fingerprint field sees, so dropping that field fails it.
             const string harness = """
                 import json, subprocess, sys
                 from pathlib import Path
@@ -32,10 +33,14 @@ public sealed class ReviewdSourceFingerprintTests
                                            '-c', 'commit.gpgsign=false', '-C', str(cwd), *args],
                                           check=True, capture_output=True, text=True).stdout.strip()
 
+                def has_ref(cwd, ref):
+                    return subprocess.run(['git', '-C', str(cwd), 'rev-parse', '-q', '--verify', ref],
+                                          capture_output=True).returncode == 0
+
                 def pool(name):
                     seed, store = work / name / 'seed', work / name / 'store'
                     seed.mkdir(parents=True)
-                    git(seed, 'init', '-q')
+                    git(seed, 'init', '-q', '--initial-branch=main')
                     (seed / 'tracked.txt').write_text('one\n')
                     git(seed, 'add', 'tracked.txt')
                     git(seed, 'commit', '-q', '-m', 'one')
@@ -43,7 +48,9 @@ public sealed class ReviewdSourceFingerprintTests
                     (seed / 'tracked.txt').write_text('two\n')
                     git(seed, 'commit', '-q', '-am', 'two')
                     git(work / name, 'clone', '-q', '--bare', str(seed), str(store))
-                    git(store, 'update-ref', 'refs/review-setup/prepare/nova-1', first)
+                    for ref in ('refs/review-setup/prepare/nova-1', 'refs/review-setup/prepare/nova-2',
+                                'refs/remotes/origin/pr/9'):
+                        git(store, 'update-ref', ref, first)
                     a, b = work / name / 'a', work / name / 'b'
                     git(store, 'worktree', 'add', '-q', '--detach', str(a), 'HEAD')
                     git(store, 'worktree', 'add', '-q', '--detach', str(b), 'HEAD')
@@ -51,34 +58,68 @@ public sealed class ReviewdSourceFingerprintTests
 
                 def other_lane_fetches(a, b, first):
                     # What a fetch and a prepare in lane B do to the shared store: new commits, new and moved
-                    # refs, a pruned ref. B's own detached HEAD moves too.
+                    # refs, an unrelated pruned ref. A's own prepare ref stays. B's detached HEAD moves, and B
+                    # starts a bisect and writes a worktree ref, which are B's alone.
+                    main_before = has_ref(b, 'refs/heads/main')
                     (b / 'tracked.txt').write_text('fetched\n')
                     git(b, 'commit', '-q', '-am', 'fetched')
                     fetched = git(b, 'rev-parse', 'HEAD')
                     git(b, 'update-ref', 'refs/remotes/origin/pr/2', fetched)
                     git(b, 'update-ref', 'refs/review-setup/prepare/nova-2', fetched)
                     git(b, 'update-ref', 'refs/heads/main', fetched)
-                    git(b, 'update-ref', '-d', 'refs/review-setup/prepare/nova-1')
+                    git(b, 'update-ref', '-d', 'refs/remotes/origin/pr/9')
+                    git(b, 'bisect', 'start', '--no-checkout', fetched, first)
+                    git(b, 'update-ref', 'refs/worktree/lane-b', fetched)
+                    return {'mainExistedBefore': main_before,
+                            'mainMoved': git(a, 'rev-parse', 'refs/heads/main') == fetched,
+                            'ownPrepareKept': git(a, 'rev-parse', 'refs/review-setup/prepare/nova-1') == first,
+                            'laneBBisects': has_ref(b, 'refs/bisect/bad')}
+
+                def same_tree_head(a, b, first):
+                    # A new commit with HEAD's tree: no file, index, diff or status change.
+                    same = git(a, 'commit-tree', 'HEAD^{tree}', '-p', 'HEAD', '-m', 'same tree')
+                    git(a, 'checkout', '-q', '--detach', same)
+
+                def replaced(a, b, first):
+                    # Same tree, no parent: the SHA stays, but the diff it shows changes.
+                    root = git(a, 'commit-tree', 'HEAD^{tree}', '-m', 'replacement')
+                    git(a, 'replace', 'HEAD', root)
+                    return {'replaceRef': has_ref(a, 'refs/replace/' + git(a, 'rev-parse', 'HEAD'))}
+
+                def bisected(a, b, first):
+                    git(a, 'bisect', 'start', '--no-checkout', 'HEAD', first)
+                    return {'bisectRef': has_ref(a, 'refs/bisect/bad')}
+
+                def untracked(a):
+                    (a / 'notes.txt').write_text('notes\n')
 
                 cases = {
-                    'otherLaneFetches': other_lane_fetches,
-                    'headMoved': lambda a, b, first: git(a, 'checkout', '-q', '--detach', first),
-                    'switchedOntoBranch': lambda a, b, first: git(a, 'switch', '-q', '-c', 'hook-branch'),
-                    'indexChanged': lambda a, b, first: git(a, 'update-index', '--chmod=+x', 'tracked.txt'),
-                    'trackedFileEdited': lambda a, b, first: (a / 'tracked.txt').write_text('edited\n'),
+                    'otherLaneFetches': (None, other_lane_fetches),
+                    'headMovedToSameTree': (None, same_tree_head),
+                    'switchedOntoBranch': (None, lambda a, b, first: git(a, 'switch', '-q', '-c', 'hook-branch')),
+                    'assumeUnchanged': (None, lambda a, b, first: git(a, 'update-index', '--assume-unchanged',
+                                                                      'tracked.txt')),
+                    'trackedFileEdited': (None, lambda a, b, first: (a / 'tracked.txt').write_text('edited\n')),
+                    'untrackedFileRewritten': (untracked, lambda a, b, first: (a / 'notes.txt').write_text('x\n')),
+                    'replaceRefAdded': (None, replaced),
+                    'bisectStarted': (None, bisected),
                 }
                 result = {}
-                for name, change in cases.items():
+                for name, (prepare, change) in cases.items():
                     a, b, first = pool(name)
+                    if prepare:
+                        prepare(a)
                     before = commit.source_fingerprint(a)
                     refs = git(a, 'for-each-ref')
-                    change(a, b, first)
+                    facts = change(a, b, first)
+                    facts = facts if isinstance(facts, dict) else {}
                     try:
                         commit.assert_source_unchanged(a, before)
-                        outcome = 'unchanged'
-                    except ReviewError as error:
-                        outcome = 'changed: ' + str(error)
-                    result[name] = {'outcome': outcome, 'storeRefsMoved': git(a, 'for-each-ref') != refs}
+                        outcome, error = 'unchanged', None
+                    except ReviewError as caught:
+                        outcome, error = 'changed', str(caught)
+                    result[name] = {'outcome': outcome, 'error': error,
+                                    'storeRefsMoved': git(a, 'for-each-ref') != refs, **facts}
                 print(json.dumps(result))
                 """;
 
@@ -87,23 +128,38 @@ public sealed class ReviewdSourceFingerprintTests
             exitCode.Should().Be(0, stderr);
             var result = JsonNode.Parse(stdout)!.AsObject();
             var fetch = result["otherLaneFetches"]!;
-            fetch["storeRefsMoved"]!
-                .GetValue<bool>()
-                .Should()
-                .BeTrue("checkout A sees the shared store's refs, so lane B's fetch is visible from A");
+            foreach (var fact in new[] { "storeRefsMoved", "mainExistedBefore", "mainMoved", "ownPrepareKept" })
+                fetch[fact]!.GetValue<bool>().Should().BeTrue($"lane B's fetch is visible from A ({fact})");
+            fetch["laneBBisects"]!.GetValue<bool>().Should().BeTrue("lane B has per-worktree refs of its own");
             fetch["outcome"]!
                 .GetValue<string>()
                 .Should()
                 .Be("unchanged", "another lane's fetch into the shared store is not a change to this checkout");
-            foreach (var name in new[] { "headMoved", "switchedOntoBranch", "indexChanged", "trackedFileEdited" })
+            result["replaceRefAdded"]!["replaceRef"]!.GetValue<bool>().Should().BeTrue();
+            result["bisectStarted"]!["bisectRef"]!.GetValue<bool>().Should().BeTrue();
+            foreach (
+                var name in new[]
+                {
+                    "headMovedToSameTree",
+                    "switchedOntoBranch",
+                    "assumeUnchanged",
+                    "trackedFileEdited",
+                    "untrackedFileRewritten",
+                    "replaceRefAdded",
+                    "bisectStarted",
+                }
+            )
             {
-                result[name]!["outcome"]!
+                var rejected = result[name]!;
+                rejected["outcome"]!
                     .GetValue<string>()
                     .Should()
-                    .Be(
-                        "changed: Source changed during artifact capture or commit hook; side effects preserved for inspection.",
-                        $"a hook that leaves this checkout {name} must still fail the commit"
-                    );
+                    .Be("changed", $"a hook that leaves this checkout {name} must still fail the commit");
+                // The retry classifier matches only this phrase.
+                rejected["error"]!
+                    .GetValue<string>()
+                    .Should()
+                    .Contain("Source changed during artifact capture or commit hook", name);
             }
         }
         finally
