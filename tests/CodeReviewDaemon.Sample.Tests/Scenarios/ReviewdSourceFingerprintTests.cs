@@ -19,7 +19,8 @@ public sealed class ReviewdSourceFingerprintTests
         {
             // Each case gets its own store with two detached source checkouts, A (this slot) and B (another lane),
             // as the pool makes them. A's fingerprint is taken, the case changes something, and the check runs on A.
-            // Each rejected case changes only what one fingerprint field sees, so dropping that field fails it.
+            // Most rejected cases change only what one fingerprint field sees, so dropping that field fails them. The
+            // branch switch and the tracked edit are each seen by several fields, so they check overlapping guards.
             const string harness = """
                 import json, subprocess, sys
                 from pathlib import Path
@@ -90,6 +91,25 @@ public sealed class ReviewdSourceFingerprintTests
                     git(a, 'bisect', 'start', '--no-checkout', 'HEAD', first)
                     return {'bisectRef': has_ref(a, 'refs/bisect/bad')}
 
+                def own_ref(namespace):
+                    def write(a, b, first):
+                        git(a, 'update-ref', namespace + '/x', 'HEAD')
+                        return {'ownRef': has_ref(a, namespace + '/x') and not has_ref(b, namespace + '/x')}
+                    return write
+
+                def replacement(a, message):
+                    return git(a, 'commit-tree', 'HEAD^{tree}', '-m', message)
+
+                def replace_installed(a):
+                    git(a, 'replace', 'HEAD', replacement(a, 'first replacement'))
+
+                def replace_retargeted(a, b, first):
+                    # The same refs/replace/<HEAD> name, now naming a different same-tree root commit.
+                    ref = 'refs/replace/' + git(a, 'rev-parse', 'HEAD')
+                    before = git(a, 'rev-parse', ref)
+                    git(a, 'replace', '-f', 'HEAD', replacement(a, 'second replacement'))
+                    return {'sameNameNewTarget': git(a, 'rev-parse', ref) != before}
+
                 def untracked(a):
                     (a / 'notes.txt').write_text('notes\n')
 
@@ -102,7 +122,10 @@ public sealed class ReviewdSourceFingerprintTests
                     'trackedFileEdited': (None, lambda a, b, first: (a / 'tracked.txt').write_text('edited\n')),
                     'untrackedFileRewritten': (untracked, lambda a, b, first: (a / 'notes.txt').write_text('x\n')),
                     'replaceRefAdded': (None, replaced),
+                    'replaceRefRetargeted': (replace_installed, replace_retargeted),
                     'bisectStarted': (None, bisected),
+                    'worktreeRefAdded': (None, own_ref('refs/worktree')),
+                    'rewrittenRefAdded': (None, own_ref('refs/rewritten')),
                 }
                 result = {}
                 for name, (prepare, change) in cases.items():
@@ -137,6 +160,12 @@ public sealed class ReviewdSourceFingerprintTests
                 .Be("unchanged", "another lane's fetch into the shared store is not a change to this checkout");
             result["replaceRefAdded"]!["replaceRef"]!.GetValue<bool>().Should().BeTrue();
             result["bisectStarted"]!["bisectRef"]!.GetValue<bool>().Should().BeTrue();
+            result["replaceRefRetargeted"]!["sameNameNewTarget"]!
+                .GetValue<bool>()
+                .Should()
+                .BeTrue("only the replace ref's target changes, not its name");
+            foreach (var name in new[] { "worktreeRefAdded", "rewrittenRefAdded" })
+                result[name]!["ownRef"]!.GetValue<bool>().Should().BeTrue($"{name} is A's ref alone");
             foreach (
                 var name in new[]
                 {
@@ -146,7 +175,10 @@ public sealed class ReviewdSourceFingerprintTests
                     "trackedFileEdited",
                     "untrackedFileRewritten",
                     "replaceRefAdded",
+                    "replaceRefRetargeted",
                     "bisectStarted",
+                    "worktreeRefAdded",
+                    "rewrittenRefAdded",
                 }
             )
             {
