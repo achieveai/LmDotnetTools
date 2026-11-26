@@ -264,13 +264,52 @@ finally {
 }
 
 # The SDK pin: SDK 11 broke the scoped-CSS bundle build, so CI and local builds must stay on stable 10.0.x.
-$globalJsonPath = [System.IO.Path]::Combine($PSScriptRoot, "..", "global.json")
-Assert-True (Test-Path $globalJsonPath) "global.json is missing; the .NET SDK is no longer pinned."
-$sdkPin = (Get-Content $globalJsonPath -Raw | ConvertFrom-Json).sdk
-Assert-True ($null -ne $sdkPin) "global.json has no sdk section."
-Assert-True ("$($sdkPin.version)".StartsWith("10.0.")) "global.json sdk.version '$($sdkPin.version)' is not a 10.0.x SDK."
-Assert-True ($sdkPin.rollForward -ceq "latestFeature") "global.json sdk.rollForward '$($sdkPin.rollForward)' is not latestFeature."
-Assert-True ($sdkPin.allowPrerelease -is [bool] -and -not $sdkPin.allowPrerelease) "global.json sdk.allowPrerelease is not false."
+# Returns the first reason the pin is wrong, or $null when it is a stable 10.0.100+ pin.
+function Get-SdkPinFailure {
+    param([string]$GlobalJsonPath)
+
+    if (-not (Test-Path $GlobalJsonPath)) { return "global.json is missing; the .NET SDK is no longer pinned." }
+    $sdkPin = (Get-Content $GlobalJsonPath -Raw | ConvertFrom-Json).sdk
+    if ($null -eq $sdkPin) { return "global.json has no sdk section." }
+    if (-not ($sdkPin.version -is [string] -and $sdkPin.version -cmatch '\A10\.0\.[1-9][0-9]{2,}\z')) {
+        return "global.json sdk.version '$($sdkPin.version)' is not a stable 10.0 SDK at 10.0.100 or later."
+    }
+    if ($sdkPin.rollForward -cne "latestFeature") { return "global.json sdk.rollForward '$($sdkPin.rollForward)' is not latestFeature." }
+    if (-not ($sdkPin.allowPrerelease -is [bool] -and -not $sdkPin.allowPrerelease)) { return "global.json sdk.allowPrerelease is not false." }
+    return $null
+}
+
+$sdkPinRoot = Join-Path ([System.IO.Path]::GetTempPath()) "ci-test-sdk-pin-$([guid]::NewGuid().ToString('N'))"
+New-Item -ItemType Directory -Path $sdkPinRoot -Force | Out-Null
+try {
+    $pinCases = [ordered]@{
+        '"10.0.100"' = $true
+        '"10.0.300"' = $true
+        '"10.0.100-preview.1"' = $false
+        '"10.0.100-rc.2"' = $false
+        '"10.0.99"' = $false
+        '"10.0.garbage"' = $false
+        '"10.0.100 "' = $false
+        '["10.0.100"]' = $false
+    }
+    $pinPath = Join-Path $sdkPinRoot "global.json"
+    foreach ($versionJson in $pinCases.Keys) {
+        Set-Content -Path $pinPath -Encoding utf8 -Value "{ `"sdk`": { `"version`": $versionJson, `"rollForward`": `"latestFeature`", `"allowPrerelease`": false } }"
+        $pinFailure = Get-SdkPinFailure $pinPath
+        if ($pinCases[$versionJson]) {
+            Assert-True ($null -eq $pinFailure) "The SDK pin check rejected the stable pin $versionJson`: $pinFailure"
+        }
+        else {
+            Assert-True ("$pinFailure" -match "sdk\.version") "The SDK pin check accepted the invalid pin $versionJson."
+        }
+    }
+}
+finally {
+    Remove-Item $sdkPinRoot -Recurse -Force
+}
+
+$repoPinFailure = Get-SdkPinFailure ([System.IO.Path]::Combine($PSScriptRoot, "..", "global.json"))
+Assert-True ($null -eq $repoPinFailure) "The repository global.json is not a valid SDK pin: $repoPinFailure"
 Write-Host "PASS: global.json pins a stable .NET 10.0 SDK with latestFeature roll-forward."
 
 $global:LASTEXITCODE = 0

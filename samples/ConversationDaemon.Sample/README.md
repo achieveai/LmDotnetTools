@@ -30,7 +30,7 @@ Between steps the daemon always waits for the prior run to reach idle before sen
 
 ## Prerequisites
 
-- Stable .NET 10.0 SDK, 10.0.100 or later within 10.0 (as selected by `global.json`). Target frameworks are in `Directory.Build.props`.
+- Stable .NET 10.0 SDK, 10.0.100 or later within 10.0 (as selected by `global.json`).
 - A running `LmStreaming.Sample` instance. No API keys are needed — the scripted prompts use the
   built-in **mock** provider (`test-anthropic`), so nothing calls a real LLM.
 
