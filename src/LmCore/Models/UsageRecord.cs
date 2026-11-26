@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Models;
 
 /// <summary>
@@ -156,6 +158,10 @@ public sealed record UsageRecord
     ///     the remainder used 30-minute retention. Null means the split was unavailable.
     /// </summary>
     public long? ResponsesCacheWrite12hTokens { get; init; }
+
+    /// <summary>Whether this input snapshot had conflicting Responses cache-write observations.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ResponsesCacheWriteConflict { get; init; }
 
     /// <summary>Reasoning tokens — a subset of <see cref="OutputTokens" />.</summary>
     public long ReasoningTokens { get; init; }

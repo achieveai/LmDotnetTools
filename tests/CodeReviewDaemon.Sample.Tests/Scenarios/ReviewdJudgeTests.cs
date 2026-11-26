@@ -1191,7 +1191,7 @@ public sealed class ReviewdJudgeTests
                 .OnJson(
                     HttpMethod.Get,
                     "api/providers",
-                    """{"providers":[{"id":"gpt-6.1-sol","available":true},{"id":"gpt-6-luna","available":false}]}"""
+                    """{"providers":[{"id":"gpt-6.2-sol","available":true},{"id":"gpt-6-luna","available":false}]}"""
                 )
                 .OnJson(HttpMethod.Get, "api/chat-modes/workspace-agent", "{}")
                 .OnJson(HttpMethod.Get, "api/chat-modes/", "{}", HttpStatusCode.NotFound)
@@ -1217,12 +1217,12 @@ public sealed class ReviewdJudgeTests
             }
         }
 
-        (await Refusal("gpt-6.1-sol")).Should().BeNull();
+        (await Refusal(JudgeRunner.ProviderFor(ParseJudgeOptions()))).Should().BeNull();
         (await Refusal("no-such-provider")).Should().StartWith("--provider no-such-provider is not a provider");
         (await Refusal("gpt-6-luna")).Should().StartWith("--provider gpt-6-luna is unavailable");
-        (await Refusal("gpt-6.1-sol", mode: "no-such-mode")).Should().StartWith("--mode no-such-mode is not a mode");
-        (await Refusal("gpt-6.1-sol", template: " \n")).Should().StartWith("The judge prompt template is empty");
-        (await Refusal("gpt-6.1-sol", template: new string('x', 100 * 1024)))
+        (await Refusal("gpt-6.2-sol", mode: "no-such-mode")).Should().StartWith("--mode no-such-mode is not a mode");
+        (await Refusal("gpt-6.2-sol", template: " \n")).Should().StartWith("The judge prompt template is empty");
+        (await Refusal("gpt-6.2-sol", template: new string('x', 100 * 1024)))
             .Should()
             .StartWith("The judge prompt is ")
             .And.Contain("(limit 102400)");

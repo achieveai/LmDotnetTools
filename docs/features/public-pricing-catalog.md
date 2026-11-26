@@ -109,7 +109,7 @@ The following Copilot-served ids use the vendor's retail API list price as a pub
 | `deepseek-flash` | `deepseek-v4-flash` | 0.15 | 0.003 | — | — | 0.60 | Additive | https://api-docs.deepseek.com/quick_start/pricing/ |
 
 - `gpt-5.6-sol`'s rate is promotional through at least 2026-11-21. Re-verify after that date.
-- Earlier GPT-6 entries in this table omit Responses cache-write rates. Observed writes for those entries leave the public estimate Partial. See the November tier additions below for the configured GPT-6.2 rates.
+- Earlier GPT-6 entries in this table omit Responses cache-write rates. Observed writes for those entries leave the public estimate Partial. See the November tier additions below for the configured GPT-6.2 rates. Conflicting write counts for the same attempt remain Partial when repeated or loaded from a saved record.
 - `gemini-3.8-flash`'s rate is promotional through 2026-12-31. From 2027-01-01 Google lists 1.50 input, 0.15 cache read and 7.50 output. Re-verify then.
 - OpenAI bills prompts over 272K input at 2x input and 1.5x output. While compaction is on (the sample default), it targets the 196K window, so requests normally stay below that. With compaction off, a long conversation can cross it.
 - OpenAI ids are priced from OpenAI's own page, never a reseller's. OpenRouter (checked 2026-09-18) lists `gpt-5.6-sol` at half OpenAI's promotional rate; the catalog keeps OpenAI's.

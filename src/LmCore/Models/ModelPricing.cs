@@ -254,7 +254,11 @@ public sealed record ModelPricing
 
         var missing = new List<string>();
         long? responsesWrites = null;
-        if (record.ResponsesCacheWriteTokens is { } observedWrites)
+        if (record.ResponsesCacheWriteConflict)
+        {
+            missing.Add(CostEstimate.MissingCacheWriteTelemetry);
+        }
+        else if (record.ResponsesCacheWriteTokens is { } observedWrites)
         {
             if (
                 CacheAccounting == CacheAccounting.SubsetOfInput

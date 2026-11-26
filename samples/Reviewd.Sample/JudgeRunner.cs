@@ -149,6 +149,7 @@ internal static class JudgeRunner
         New,
         ResumeMarker,
         Resume,
+        ResumeAcceptedLegacy,
         ResumeCapped,
         Skip,
         Refuse,
@@ -305,8 +306,8 @@ internal static class JudgeRunner
         if (action is Action.New or Action.ResumeMarker || (action == Action.Resume && latestStage == "inputs-written"))
             await PreflightAsync();
         else if (
-            action == Action.Resume
-            && RequiresResponsesCacheWritePricing(identity["provider"]!.GetValue<string>())
+            action is Action.Resume or Action.ResumeAcceptedLegacy
+            && RequiresResponsesCacheWritePricing(latest!["identity"]!["provider"]!.GetValue<string>())
         )
             await client.EnsureHostContractAsync(ct, requireResponsesCacheWritePricing: true);
         if (!execute)
@@ -322,10 +323,11 @@ internal static class JudgeRunner
             case Action.Refuse:
                 throw new InvalidOperationException(reason);
             case Action.Resume:
+            case Action.ResumeAcceptedLegacy:
             case Action.ResumeCapped:
                 receipt = latest!;
                 receiptKey = judgePrefix + latestN.ToString(CultureInfo.InvariantCulture);
-                if (action == Action.Resume)
+                if (action != Action.ResumeCapped)
                     ((receipt["caps"] as JsonObject) ?? (JsonObject)(receipt["caps"] = new JsonObject()))["maxUsd"] =
                         maxUsd;
                 Console.Error.WriteLine($"{label}: {reason}");
@@ -554,6 +556,16 @@ internal static class JudgeRunner
             if (Stage() == "nudge-send-pending")
             {
                 var nudge = receipt["nudge"]!.AsObject();
+                if (action == Action.ResumeAcceptedLegacy)
+                    return await StopForBudgetAsync(thread!, "The legacy follow-up cannot be safely replayed.");
+                receipt["judgeUsage"] = await ReadSettledUsageAsync(client, thread!, receipt, ct);
+                if (BudgetStopReason(receipt["judgeUsage"], maxUsd, requireAggregate: true) is { } stopReason)
+                    return await StopForBudgetAsync(thread!, stopReason);
+                if (JudgedModelError(stored["provider"]!.GetValue<string>(), receipt["judgeUsage"]) is { } error)
+                {
+                    receipt["error"] = error;
+                    return await FinishAsync("failed", thread!, 1);
+                }
                 nudge["inputId"] = await SendAsync(thread!, NudgeText(), nudge["key"]!.GetValue<string>());
                 nudge["sentAt"] = DateTimeOffset.UtcNow;
                 receipt["stage"] = "nudge-running";
@@ -632,15 +644,16 @@ internal static class JudgeRunner
                 receipt["descendantsSettled"] = await SettleDescendantsAsync(thread);
             await PostCheckReadsAsync();
             var outputStage = receipt["outputStage"]?.GetValue<string>();
-            var (end, exit) = PostCheckEnd(state, receipt["ado"]?["compare"], outputStage, nudged: nudge is not null);
+            var (end, exit) = PostCheckEnd(
+                state,
+                receipt["ado"]?["compare"],
+                outputStage,
+                nudged: nudge is not null || action == Action.ResumeAcceptedLegacy
+            );
             if (end == "nudge")
             {
                 if (BudgetStopReason(receipt["judgeUsage"], maxUsd, requireAggregate: true) is { } stopReason)
-                {
-                    receipt["caps"]!["reason"] = stopReason;
-                    receipt["caps"]!["reachedUsd"] = receipt["judgeUsage"]?["usd"]?.DeepClone();
-                    return await CapAsync(thread);
-                }
+                    return await StopForBudgetAsync(thread, stopReason);
 
                 // The turn cap or an unfinished draft: one follow-up in the same conversation, never a new judge.
                 receipt["nudge"] = new JsonObject { ["key"] = "reviewd-judge-nudge-" + Guid.NewGuid().ToString("N") };
@@ -668,6 +681,13 @@ internal static class JudgeRunner
             return await FinishAsync(end, thread, exit);
         }
 
+        Task<int> StopForBudgetAsync(string thread, string reason)
+        {
+            receipt["caps"]!["reason"] = reason;
+            receipt["caps"]!["reachedUsd"] = receipt["judgeUsage"]?["usd"]?.DeepClone();
+            return CapAsync(thread);
+        }
+
         // Freeze is final: the parked loop never reaches idle, and descendants cannot be frozen (403).
         async Task<int> CapAsync(string thread)
         {
@@ -681,7 +701,8 @@ internal static class JudgeRunner
             receipt["frozenAt"] = DateTimeOffset.UtcNow;
             receipt["capCaveat"] = CapCaveat;
             await SaveAsync();
-            Console.Error.WriteLine($"{label}: cap reached; froze {thread} (final, never unfrozen). {CapCaveat}");
+            var reason = receipt["caps"]?["reason"]?.GetValue<string>() ?? "cap reached";
+            Console.Error.WriteLine($"{label}: {reason}; froze {thread} (final, never unfrozen). {CapCaveat}");
             return await CappedPostCheckAsync();
         }
 
@@ -730,7 +751,12 @@ internal static class JudgeRunner
             receipt["outputStage"] = outputs["stage"]?.DeepClone();
             receipt["judgment"] = outputs["judgment"]?.DeepClone();
             // Sub-agents can spend after the freeze and after the last capped-wait reading.
-            receipt["judgeUsage"] = await ReadUsageAsync(client, receipt["judgeThreadId"]!.GetValue<string>(), ct);
+            receipt["judgeUsage"] = await ReadSettledUsageAsync(
+                client,
+                receipt["judgeThreadId"]!.GetValue<string>(),
+                receipt,
+                ct
+            );
             await SaveAsync();
         }
 
@@ -744,12 +770,18 @@ internal static class JudgeRunner
                         + $"${receipt["caps"]!["maxUsd"]!.GetValue<decimal>().ToString(CultureInfo.InvariantCulture)} cap"
                         + (receipt["frozenAt"] is null ? "." : " (sub-agent spend after the freeze is not capped).")
                 );
-            if (exitCode == 0 && !IsMeasuredUsage(receipt["judgeUsage"], requireAggregate: true))
+            if (exitCode == 0)
             {
-                receipt["stage"] = "failed";
-                receipt["error"] =
-                    "The judge finished without a complete cost estimate. Its output was retained for inspection.";
-                exitCode = 1;
+                var usage = receipt["judgeUsage"];
+                var error = !IsMeasuredUsage(usage, requireAggregate: true)
+                    ? "The judge finished without a complete cost estimate. Its output was retained for inspection."
+                    : JudgedModelError(receipt["identity"]!["provider"]!.GetValue<string>(), usage);
+                if (error is not null)
+                {
+                    receipt["stage"] = "failed";
+                    receipt["error"] = error;
+                    exitCode = 1;
+                }
             }
             receipt["finishedAt"] = DateTimeOffset.UtcNow;
             await SaveAsync();
@@ -1152,6 +1184,8 @@ internal static class JudgeRunner
         var sameIdentity = JsonNode.DeepEquals(WithoutFinalHead(latest["identity"]), WithoutFinalHead(identity));
         if (latestStage is { } running && ResumableStages.Contains(running))
         {
+            if (CanResumeAcceptedLegacy(latest, identity))
+                return (Action.ResumeAcceptedLegacy, $"settle legacy judgment {n} from {running} without new input.");
             if (rejudge)
                 return (
                     Action.Refuse,
@@ -1255,6 +1289,21 @@ internal static class JudgeRunner
 
     private static bool RequiresResponsesCacheWritePricing(string provider) =>
         UsesDefaultProvider(provider) || string.Equals(provider, "gpt-6.2-astra", StringComparison.OrdinalIgnoreCase);
+
+    // The host's usage models reflect billed attempts, including fallback. The judge must use its
+    // selected model across the root, auxiliary attempts and delegates before output can be accepted.
+    private static string? JudgedModelError(string provider, JsonNode? usage)
+    {
+        if (usage?["aggregate"]?["perModel"] is not JsonArray { Count: > 0 } models)
+            return "The review host did not report the judge's effective model.";
+        foreach (var row in models)
+        {
+            var model = row?["modelId"]?.GetValue<string>();
+            if (!string.Equals(provider, model, StringComparison.OrdinalIgnoreCase))
+                return $"The judge used {model ?? "an unverified model"}; expected {provider}.";
+        }
+        return null;
+    }
 
     internal static string? JudgeDelegationError(string provider, IReadOnlyList<ReviewSubAgentNode> nodes)
     {
@@ -1376,16 +1425,7 @@ internal static class JudgeRunner
         CancellationToken ct
     )
     {
-        var usage = await ReadUsageAsync(client, thread, ct);
-        if (
-            usage["aggregate"] is null
-            && receipt["judgeInputId"]?.GetValue<string>() is { } rootInput
-            && receipt["lost"]?["inputId"]?.GetValue<string>() != rootInput
-        )
-        {
-            usage["measured"] = false;
-            usage["note"] = "the judge finished without a usage record";
-        }
+        var usage = await ReadSettledUsageAsync(client, thread, receipt, ct);
         receipt["judgeUsage"] = usage;
         if (
             receipt["judgeUsage"]?["usd"]?.GetValue<decimal>() is not { } usd
@@ -1395,6 +1435,28 @@ internal static class JudgeRunner
             return null;
         receipt["capOverrun"] = usd - cap;
         return usd - cap;
+    }
+
+    private static async Task<JsonObject> ReadSettledUsageAsync(
+        LmStreamingS2SClient client,
+        string thread,
+        JsonObject receipt,
+        CancellationToken ct
+    )
+    {
+        var usage = await ReadUsageAsync(client, thread, ct);
+        if (
+            usage["aggregate"] is null
+            && receipt["judgeInputId"]?.GetValue<string>() is { } rootInput
+            && (receipt["lost"]?["inputId"]?.GetValue<string>() != rootInput || receipt["nudge"] is not null)
+        )
+        {
+            usage["measured"] = false;
+            usage["usd"] = receipt["judgeUsage"]?["usd"]?.DeepClone();
+            usage["completeness"] = "Partial";
+            usage["note"] = "the judge finished without a usage record";
+        }
+        return usage;
     }
 
     // One judge at a time per judge lock: by default one host-wide lock, across every install's database. A judge lane
@@ -2051,6 +2113,40 @@ internal static class JudgeRunner
             return null;
         copy.Remove("finalHeadSha");
         return copy;
+    }
+
+    internal static bool HasAcceptedLegacyInput(JsonObject? receipt) =>
+        (
+            receipt?["stage"]?.GetValue<string>()
+            is "judge-running"
+                or "post-check"
+                or "nudge-send-pending"
+                or "nudge-running"
+        )
+        && receipt["judgeInputId"]?.GetValue<string>() is { Length: > 0 }
+        && receipt["judgeThreadId"]?.GetValue<string>() is { Length: > 0 }
+        && receipt["identity"] is JsonObject stored
+        && stored["provider"]?.GetValue<string>() is { Length: > 0 }
+        && stored["sendContractVersion"]?.GetValue<int>() is null or 1;
+
+    // Settle the accepted input using its stored identity. The caller may now name a different
+    // provider and prompt, but the reviewed inputs and other options must still match.
+    private static bool CanResumeAcceptedLegacy(JsonObject? receipt, JsonObject current)
+    {
+        if (
+            !HasAcceptedLegacyInput(receipt)
+            || WithoutFinalHead(receipt!["identity"]) is not JsonObject stored
+            || WithoutFinalHead(current) is not JsonObject requested
+            || requested["sendContractVersion"]?.GetValue<int>() != 2
+        )
+            return false;
+
+        foreach (var name in new[] { "sendContractVersion", "provider", "promptTemplateSha256" })
+        {
+            stored.Remove(name);
+            requested.Remove(name);
+        }
+        return JsonNode.DeepEquals(stored, requested);
     }
 
     private static string Differences(JsonNode? before, JsonObject now)

@@ -147,8 +147,8 @@ internal static class JudgeBatch
 
     /// <summary>
     ///     One judge receipt's spend. A lower bound when sub-agents may still add to it. <c>Unknown</c>: the cost
-    ///     cannot be measured, so the day cap counts the run's cap, as the runner's freeze does. <c>Read</c>: the
-    ///     receipt holds a usage reading.
+    ///     cannot be measured, so the guards count at least the run's cap. <c>Read</c>: a dollar reading is available.
+    ///     <c>NeverStarted</c>: the receipt proves no paid turn started.
     /// </summary>
     internal sealed record Spend(
         string Label,
@@ -159,7 +159,8 @@ internal static class JudgeBatch
         bool LowerBound,
         decimal Cap,
         bool Unknown,
-        bool Read = true
+        bool Read = true,
+        bool NeverStarted = false
     )
     {
         public decimal Charged => Unknown ? Math.Max(Usd, Cap) : Usd;
@@ -343,7 +344,7 @@ internal static class JudgeBatch
         if (status == "" && !latched && scan.Guard.Avg10 > settings.AvgUsdTarget)
             (exit, status, cause) = (
                 GuardStopExitCode,
-                $"paused: the average cost {Usd(scan.Guard.Avg10)} over the last {scan.Guard.AvgCount} judgments is above the {Usd(settings.AvgUsdTarget)} limit",
+                $"paused: the budgeted average cost {Usd(scan.Guard.Avg10)} over the last {scan.Guard.AvgCount} judgments is above the {Usd(settings.AvgUsdTarget)} limit",
                 "average cost too high"
             );
         // The stop file's first line says when and why (the tick writes it); the status says how to undo it.
@@ -433,11 +434,12 @@ internal static class JudgeBatch
         var stage = latest["stage"]?.GetValue<string>() ?? "";
         if (JudgeRunner.ResumableStages.Contains(stage))
         {
-            var ours = settings.SamePrompt(latest["identity"]) && latest["caps"]?["maxUsd"] is not null;
+            var canResume = settings.SamePrompt(latest["identity"]) || JudgeRunner.HasAcceptedLegacyInput(latest);
+            var ours = canResume && latest["caps"]?["maxUsd"] is not null;
             // A live run the batch cannot resume (another prompt, no stored cap) is only "Running now".
             if (inFlight && !ours)
                 return new(pr, Kind.Skip, "running");
-            if (!settings.SamePrompt(latest["identity"]))
+            if (!canResume)
                 return new(
                     pr,
                     Kind.NeedsYou,
@@ -486,8 +488,8 @@ internal static class JudgeBatch
     }
 
     /// <summary>
-    ///     Rolling 24 h spend (an unknown cost counts its cap), and the mean of the last 10 finished judgments that had
-    ///     a thread at their known reading (off below 5).
+    ///     Rolling 24 h spend and the mean of the last 10 finished judgments that had a thread (off below 5).
+    ///     Both guards count unknown cost at the greater of the observed amount and the run's cap.
     /// </summary>
     internal static GuardState Guards(IReadOnlyList<Spend> spends, DateTimeOffset now)
     {
@@ -495,7 +497,7 @@ internal static class JudgeBatch
         var last = LastFinished(threaded);
         return new(
             threaded.Where(spend => InDay(spend, now)).Sum(spend => spend.Charged),
-            last.Count >= AvgMinimum ? Math.Round(last.Average(spend => spend.Usd), 2) : null,
+            last.Count >= AvgMinimum ? Math.Round(last.Average(spend => spend.Charged), 2) : null,
             last.Count
         );
     }
@@ -514,24 +516,36 @@ internal static class JudgeBatch
     internal static Spend SpendOf(string label, JsonObject receipt, decimal defaultCap)
     {
         var usage = receipt["judgeUsage"];
+        var usd = usage?["usd"]?.GetValue<decimal>();
+        var stage = receipt["stage"]?.GetValue<string>();
+        var input = receipt["judgeInputId"]?.GetValue<string>();
         var complete = JudgeRunner.IsComplete(usage?["completeness"]);
         var measured = JudgeRunner.IsMeasuredUsage(usage);
         var lowerBound =
             !complete
             || !measured
-            || receipt["stage"]?.GetValue<string>() == "capped"
+            || stage == "capped"
             || receipt["descendantsSettled"]?.GetValue<bool>() == false
             || receipt["finishedAt"] is null;
+        var neverStarted =
+            (stage == "thread-created" && input is null && receipt["judgeIdempotencyKey"] is null)
+            || (
+                stage == "failed"
+                && input is not null
+                && receipt["lost"]?["inputId"]?.GetValue<string>() == input
+                && receipt["nudge"] is null
+            );
         return new(
             label,
             receipt["judgeThreadId"]?.GetValue<string>(),
             Time(receipt["startedAt"]),
             Time(receipt["finishedAt"]),
-            usage?["usd"]?.GetValue<decimal>() ?? 0m,
+            usd ?? 0m,
             lowerBound,
             receipt["caps"]?["maxUsd"]?.GetValue<decimal>() ?? defaultCap,
-            !measured || usage?["usd"] is null,
-            usage is not null
+            !measured || usd is null,
+            Read: usd is not null,
+            NeverStarted: neverStarted
         );
     }
 
@@ -674,20 +688,20 @@ internal static class JudgeBatch
             if (live["aggregate"] is null)
             {
                 Console.Error.WriteLine($"judge batch: {spend.Label}: the host has no usage for {spend.Thread}");
-                // With no reading of its own, the thread has spent nothing (a send that never landed). With one, the
-                // host lost its record and the reading stands.
-                if (!spend.Read)
-                    scan.Spends[i] = spend with { Unknown = false };
-                else if (!spend.Unknown)
-                    scan.NeedsYou.Add(new(spend.Label, "cost may be higher than shown; the host has no cost record"));
+                // A missing aggregate cannot distinguish an unattempted send from a turn the host may have accepted.
+                // Keep any previous reading and reserve the cap unless the receipt proves nothing started.
+                var knownZero = spend.NeverStarted && spend.Usd == 0m;
+                scan.Spends[i] = spend with { Unknown = !knownZero, Read = spend.Read || knownZero };
                 continue;
             }
             var measured = JudgeRunner.IsMeasuredUsage(live);
+            var liveUsd = live["usd"]?.GetValue<decimal>();
             scan.Spends[i] = spend with
             {
-                Usd = Math.Max(spend.Usd, live["usd"]?.GetValue<decimal>() ?? 0m),
+                Usd = Math.Max(spend.Usd, liveUsd ?? 0m),
                 LowerBound = !measured || !JudgeRunner.IsComplete(live["completeness"]),
-                Unknown = !measured,
+                Unknown = !measured || liveUsd is null,
+                Read = spend.Read || liveUsd is not null,
             };
             if (!measured)
                 Console.Error.WriteLine($"judge batch: {spend.Label}: the host did not provide a complete price");
@@ -1242,12 +1256,12 @@ internal static class JudgeBatch
         if (guard.Avg10 is null)
             text.AppendLine(
                 CultureInfo.InvariantCulture,
-                $"- Average per judgment: off until {AvgMinimum} have finished ({guard.AvgCount} so far); limit {Usd(settings.AvgUsdTarget)}."
+                $"- Average budgeted cost per judgment: off until {AvgMinimum} have finished ({guard.AvgCount} so far); limit {Usd(settings.AvgUsdTarget)}."
             );
         else
             text.AppendLine(
                 CultureInfo.InvariantCulture,
-                $"- Average per judgment: {Usd(guard.Avg10)} over the last {guard.AvgCount}; limit {Usd(settings.AvgUsdTarget)}."
+                $"- Average budgeted cost per judgment: {Usd(guard.Avg10)} over the last {guard.AvgCount}; limit {Usd(settings.AvgUsdTarget)}."
             );
         text.AppendLine(CultureInfo.InvariantCulture, $"- PRs: {PrCounts(scan.Counts)}.");
         text.AppendLine(
@@ -1262,14 +1276,21 @@ internal static class JudgeBatch
             text.AppendLine(CultureInfo.InvariantCulture, $"- {line}");
         if (day.Count > 0)
         {
+            var readings = scan.Spends.Where(spend => spend.Read).ToLookup(spend => (spend.Label, spend.Thread));
             text.AppendLine().AppendLine("| PR | Result | $ | Misses |").AppendLine("|---|---|---|---|");
             // Newest first, so a cut table keeps the latest judgments. One with no judge thread never reached the
             // host, so it spent nothing.
             foreach (var (label, receipt) in day.OrderByDescending(r => Time(r.Receipt["finishedAt"])).Take(TableRows))
+            {
+                var judgment = $"{label} #{receipt["n"]?.ToJsonString()}";
+                var thread = receipt["judgeThreadId"]?.GetValue<string>();
+                var usd = receipt["judgeUsage"]?["usd"]?.GetValue<decimal>() ?? (thread is null ? 0m : null);
+                var observed = readings[(judgment, thread)].Select(spend => (decimal?)spend.Usd).Append(usd).Max();
                 text.AppendLine(
                     CultureInfo.InvariantCulture,
-                    $"| {label} #{receipt["n"]?.ToJsonString()} | {StageWords(receipt["stage"]?.GetValue<string>())} | {Usd(receipt["judgeUsage"]?["usd"]?.GetValue<decimal>() ?? (receipt["judgeThreadId"] is null ? 0m : null))} | {MissCount(receipt)} |"
+                    $"| {judgment} | {StageWords(receipt["stage"]?.GetValue<string>())} | {Usd(observed)} | {MissCount(receipt)} |"
                 );
+            }
             if (day.Count > TableRows)
                 text.AppendLine(CultureInfo.InvariantCulture, $"| … and {day.Count - TableRows} more | | | |");
         }

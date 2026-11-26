@@ -174,6 +174,44 @@ public sealed class CacheTokenUsageRegressionTests
         ReadCacheWrite(details, "responses_cache_write_12h_tokens").Should().Be(write12h);
     }
 
+    [Theory]
+    [InlineData("2147483648")]
+    [InlineData("9223372036854775808")]
+    public async Task UsageMessage_is_not_emitted_when_reported_input_exceeds_its_numeric_range(string input)
+    {
+        var completed = ResponseEventParser.Parse(
+            $$"""
+            {
+              "type": "response.completed",
+              "response": {
+                "usage": {
+                  "input_tokens": {{input}},
+                  "input_tokens_details": { "cached_tokens": 0, "cache_write_tokens": 0 },
+                  "output_tokens": 5
+                }
+              }
+            }
+            """
+        );
+        using var agent = new OpenAiResponsesAgent("test-agent", new StubResponsesClient(completed));
+
+        var stream = await agent.GenerateReplyStreamingAsync([new TextMessage { Role = Role.User, Text = "hi" }]);
+        var usageMessages = new List<UsageMessage>();
+        Func<Task> read = async () =>
+        {
+            await foreach (var message in stream)
+            {
+                if (message is UsageMessage usage)
+                {
+                    usageMessages.Add(usage);
+                }
+            }
+        };
+
+        await read.Should().ThrowAsync<JsonException>().WithMessage("*input_tokens*");
+        usageMessages.Should().BeEmpty("the input cannot be represented as a billable usage record");
+    }
+
     private static long? ReadCacheWrite(JsonElement details, string property) =>
         details.ValueKind == JsonValueKind.Object && details.TryGetProperty(property, out var count)
             ? count.GetInt64()

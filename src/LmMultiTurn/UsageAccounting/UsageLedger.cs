@@ -213,9 +213,14 @@ public sealed class UsageLedger : IUsageSink
         if (
             record.CostCompleteness == CostCompleteness.Complete
             && record.EstimatedPublicCostMicros is not null
-            && pricingResolver?.Resolve(record.EffectiveModelId)
-                is { ResponsesCacheWrite30mPerMillion: not null } pricing
-            && pricing.Estimate(record).Completeness != CostCompleteness.Complete
+            && (
+                record.ResponsesCacheWriteConflict
+                || (
+                    pricingResolver?.Resolve(record.EffectiveModelId)
+                        is { ResponsesCacheWrite30mPerMillion: not null } pricing
+                    && pricing.Estimate(record).Completeness != CostCompleteness.Complete
+                )
+            )
         )
         {
             return record with { CostCompleteness = CostCompleteness.Partial };
@@ -272,7 +277,25 @@ public sealed class UsageLedger : IUsageSink
         var cached = Math.Max(existing.CacheReadTokens, observation.CacheReadTokens);
         // Counts form a partition of a particular input observation. A pair from an earlier, smaller
         // input snapshot cannot establish the write counts for the merged input.
-        var responses = MatchingResponsesWrites(observation) ?? MatchingResponsesWrites(existing);
+        var priorResponses = MatchingResponsesWrites(existing);
+        var observedResponses = MatchingResponsesWrites(observation);
+        var responses = observedResponses ?? priorResponses;
+        // Retain a disagreement for this input and read count so replaying either claim cannot settle it.
+        var responsesConflict =
+            priorResponses?.ResponsesCacheWriteConflict == true
+            || observedResponses?.ResponsesCacheWriteConflict == true
+            || (
+                priorResponses?.ResponsesCacheWriteTokens is { } priorWrites
+                && observedResponses?.ResponsesCacheWriteTokens is { } observedWrites
+                && (
+                    priorWrites != observedWrites
+                    || (
+                        priorResponses.ResponsesCacheWrite12hTokens is { } prior12h
+                        && observedResponses.ResponsesCacheWrite12hTokens is { } observed12h
+                        && prior12h != observed12h
+                    )
+                )
+            );
 
         return observation with
         {
@@ -281,8 +304,9 @@ public sealed class UsageLedger : IUsageSink
             CacheReadTokens = cached,
             CacheWriteTokens = Math.Max(existing.CacheWriteTokens, observation.CacheWriteTokens),
             CacheWrite1hTokens = MaxNullable(existing.CacheWrite1hTokens, observation.CacheWrite1hTokens),
-            ResponsesCacheWriteTokens = responses?.ResponsesCacheWriteTokens,
-            ResponsesCacheWrite12hTokens = responses?.ResponsesCacheWrite12hTokens,
+            ResponsesCacheWriteTokens = responsesConflict ? null : responses?.ResponsesCacheWriteTokens,
+            ResponsesCacheWrite12hTokens = responsesConflict ? null : responses?.ResponsesCacheWrite12hTokens,
+            ResponsesCacheWriteConflict = responsesConflict,
             ReasoningTokens = Math.Max(existing.ReasoningTokens, observation.ReasoningTokens),
             EstimatedPublicCostMicros = MaxNullable(
                 existing.EstimatedPublicCostMicros,
@@ -314,7 +338,7 @@ public sealed class UsageLedger : IUsageSink
         UsageRecord? MatchingResponsesWrites(UsageRecord candidate) =>
             candidate.InputTokens == input
             && candidate.CacheReadTokens == cached
-            && candidate.ResponsesCacheWriteTokens is not null
+            && (candidate.ResponsesCacheWriteTokens is not null || candidate.ResponsesCacheWriteConflict)
                 ? candidate
                 : null;
     }

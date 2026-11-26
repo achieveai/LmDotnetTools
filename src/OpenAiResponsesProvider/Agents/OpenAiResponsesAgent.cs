@@ -548,6 +548,11 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
         }
 
         var reportedInput = ReadOptionalInt(usageEl, "input_tokens");
+        if (usageEl.TryGetProperty("input_tokens", out _) && reportedInput is null or < 0)
+        {
+            throw new JsonException("Responses usage input_tokens must be a nonnegative 32-bit integer.");
+        }
+
         var inputTokens = reportedInput ?? 0;
         var outputTokens =
             usageEl.TryGetProperty("output_tokens", out var outEl) && outEl.ValueKind == JsonValueKind.Number

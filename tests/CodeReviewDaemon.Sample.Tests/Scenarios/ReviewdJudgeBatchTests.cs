@@ -273,6 +273,10 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             .Be(
                 "NeedsYou judgment 1 stopped in the judging step under another prompt; resume it by hand with the original prompt"
             );
+        otherPrompt["judgeInputId"] = "accepted-root";
+        Row(Of([otherPrompt])).Should().Be("Resume resume judgment 1 from the judging step (stored)");
+        otherPrompt["identity"]!["sendContractVersion"] = 2;
+        Row(Of([otherPrompt])).Should().StartWith("NeedsYou");
         // A shadow review's judgment adds the would-post section, which is part of its prompt too.
         var sameWouldPost = Stage("judge-running");
         sameWouldPost["identity"]!["wouldPostPromptSha256"] = "would-post-sha";
@@ -525,7 +529,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             .Be(
                 (
                     5,
-                    "paused: the average cost $4.50 over the last 10 judgments is above the $4.00 limit",
+                    "paused: the budgeted average cost $4.50 over the last 10 judgments is above the $4.00 limit",
                     "average cost too high"
                 )
             );
@@ -624,13 +628,13 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         free.Should().Equal("PostCheck 7001: runs", "Start 7002: runs");
     }
 
-    // A judge whose send never landed leaves a stored start: a thread, no usage. Its own possible spend counts once in
-    // the day cap, and a thread the host holds no usage for (404) and that has no reading has spent nothing.
+    // A provisioned thread whose send has not begun spends nothing. If the host cannot answer, its stored start's
+    // reserved amount is replaced by the new start's cap rather than counted twice.
     [Fact]
     public async Task A_stored_start_whose_send_never_landed_counts_once_against_the_day_cap()
     {
         var defaults = S_settings with { MaxUsd = 15m };
-        var pending = Receipt("send-pending", thread: "thread-pending", startedAt: Now.AddMinutes(-90));
+        var pending = Receipt("thread-created", thread: "thread-pending", startedAt: Now.AddMinutes(-90));
         pending.Remove("judgeUsage");
         pending["caps"]!["maxUsd"] = 15m;
         var db = Db(
@@ -654,7 +658,7 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
         }
 
         var (unsent, unsentWait) = await PlanWith(HttpStatusCode.NotFound, defaults);
-        unsent.Guard.Spent24h.Should().Be(2m, "a thread with no usage and no reading has spent nothing");
+        unsent.Guard.Spent24h.Should().Be(2m, "the receipt proves the thread had not attempted a send");
         unsent.NeedsYou.Should().BeEmpty();
         unsentWait.Should().BeNull();
 
@@ -664,6 +668,35 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
 
         var (_, tightWait) = await PlanWith(HttpStatusCode.BadGateway, defaults with { MaxUsdPerDay = 20m });
         tightWait.Should().BeNull("$2 + its own $15 fits a $20 day cap");
+    }
+
+    [Theory]
+    [InlineData("send-pending", false)]
+    [InlineData("judge-running", true)]
+    public async Task Missing_live_usage_reserves_the_cap_after_a_possible_send(string stage, bool accepted)
+    {
+        var current = Receipt(stage, thread: "thread-current");
+        current.Remove("judgeUsage");
+        current["judgeIdempotencyKey"] = "reviewd-judge-existing";
+        if (accepted)
+            current["judgeInputId"] = "accepted-input";
+        var db = Db(
+            "alpha",
+            Review("7001"),
+            Review("7002"),
+            Snapshot(("7001", "Merged", Now.AddDays(-1)), ("7002", "Merged", Now.AddDays(-2))),
+            Judgment("7001", 1, current)
+        );
+        var host = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "thread-current/run-state", Idle)
+            .OnJson(HttpMethod.Get, "thread-current/usage", "{}", HttpStatusCode.NotFound);
+        var settings = S_settings with { MaxUsdPerDay = 8m };
+
+        var (scan, plan) = await PlanAsync(host, [], settings, Target("alpha", db));
+
+        scan.Guard.Spent24h.Should().Be(5m, "a missing aggregate does not establish that the send never ran");
+        scan.Spends.Should().ContainSingle().Which.Unknown.Should().BeTrue();
+        plan.Single(entry => entry.Pick.Pr.Pr == "7002").Wait.Should().Be("cap");
     }
 
     // A judge in flight holds every start, which hid the cap: $28.78 spent plus the next $15 judge is over $30.
@@ -813,6 +846,48 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             .Contain("| Nova !7001 #1 | failed | $0.40 | 0 |")
             .And.Contain("- Spent in the last 24 h: $15.00 of the $30.00 daily cap.")
             .And.Contain("- Nova !7001 #1: cost not known; until it is, the daily cap counts its cost cap ($15.00)");
+    }
+
+    [Fact]
+    public async Task A_live_partial_cost_stays_visible_and_uses_its_cap_for_both_budget_guards()
+    {
+        var partial = Receipt("completed", thread: "thread-partial", usd: 0.40m, finishedAt: Now.AddMinutes(-10));
+        partial["judgeUsage"]!["aggregate"] = new JsonObject { ["estimatedCostCompleteness"] = 1 };
+        var db = Db(
+            "alpha",
+            [
+                Review("7001"),
+                Review("7006"),
+                Snapshot(("7006", "Merged", Now.AddDays(-1))),
+                Judgment("7001", 1, partial),
+                .. Enumerable
+                    .Range(7002, 4)
+                    .Select(i =>
+                        Judgment(
+                            i.ToString(),
+                            1,
+                            Receipt("completed", thread: $"thread-{i}", usd: 4m, finishedAt: Now.AddHours(-1))
+                        )
+                    ),
+            ]
+        );
+        var host = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "thread-partial/usage",
+            """{"preferredCostMicros":900000,"completeness":2,"estimatedCostCompleteness":1}"""
+        );
+
+        var (scan, plan) = await PlanAsync(host, [], Target("alpha", db));
+
+        scan.Spends.Single(spend => spend.Thread == "thread-partial").Usd.Should().Be(0.90m);
+        scan.Guard.Spent24h.Should().Be(21m);
+        scan.Guard.Avg10.Should().Be(4.20m, "the partial price is a lower bound, not the budgeted amount");
+        plan.Should().ContainSingle().Which.Wait.Should().Be("average guard");
+        JudgeBatch
+            .Summary(scan, plan, [], [], S_settings, execute: false, "paused", 5, Now)
+            .Should()
+            .Contain("Average budgeted cost per judgment: $4.20")
+            .And.Contain("| Nova !7001 #1 | done | $0.90 | 0 |");
     }
 
     [Fact]
