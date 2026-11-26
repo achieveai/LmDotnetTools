@@ -4,7 +4,7 @@
 
 | Requirement | Check command | Minimum |
 |---|---|---|
-| .NET SDK | `dotnet --version` | 9.0+ |
+| .NET SDK | `dotnet --version` | stable .NET 10.0 SDK, 10.0.100 or later within 10.0 (as selected by `global.json`) |
 | Node.js + npm | `node -v && npm -v` | Node 18+ |
 | Codex CLI | `codex --version` | 0.101.0 (configurable via `CODEX_CLI_MIN_VERSION`) |
 | Codex API key | `echo $CODEX_API_KEY` | Must be set in environment or `.env` |

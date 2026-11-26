@@ -10,7 +10,7 @@ This example demonstrates how to use the AchieveAi.LmDotnetTools libraries to:
 
 ## Prerequisites
 
-- .NET 9.0 SDK
+- Stable .NET 10.0 SDK, 10.0.100 or later within 10.0 (as selected by `global.json`)
 - A running instance of the Python MCP Server (from `McpServers/PythonMCPServer`)
 - An OpenAI API key
 

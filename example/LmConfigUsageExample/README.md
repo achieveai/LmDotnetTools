@@ -23,7 +23,7 @@ This example demonstrates how to use the LmConfig library to configure and use d
 ### Prerequisites
 
 For most examples:
-- .NET 9.0 SDK
+- Stable .NET 10.0 SDK, 10.0.100 or later within 10.0 (as selected by `global.json`)
 - Environment variables set for API keys (e.g., `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`)
 
 **For the ClaudeAgentSDK example (Example 7), you additionally need:**

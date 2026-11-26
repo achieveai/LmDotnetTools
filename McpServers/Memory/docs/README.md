@@ -247,7 +247,7 @@ This directory contains comprehensive design documentation for a simplified yet 
 ## Getting Started
 
 ### Prerequisites
-- .NET 9.0 SDK
+- Stable .NET 10.0 SDK, 10.0.100 or later within 10.0 (as selected by `global.json`)
 - SQLite with sqlite-vec extension support
 - OpenAI or Anthropic API key
 
@@ -343,7 +343,7 @@ The Memory MCP Server is a sophisticated memory management system that provides 
 
 ## Prerequisites
 
-- .NET 9.0 SDK
+- Stable .NET 10.0 SDK, 10.0.100 or later within 10.0 (as selected by `global.json`)
 - SQLite with sqlite-vec extension support
 - OpenAI or Anthropic API key
 
