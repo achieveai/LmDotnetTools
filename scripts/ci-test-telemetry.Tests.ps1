@@ -274,7 +274,7 @@ function Get-SdkPinFailure {
     if (-not ($sdkPin.version -is [string] -and $sdkPin.version -cmatch '\A10\.0\.[1-9][0-9]{2,}\z')) {
         return "global.json sdk.version '$($sdkPin.version)' is not a stable 10.0 SDK at 10.0.100 or later."
     }
-    if ($sdkPin.rollForward -cne "latestFeature") { return "global.json sdk.rollForward '$($sdkPin.rollForward)' is not latestFeature." }
+    if (-not ($sdkPin.rollForward -is [string] -and $sdkPin.rollForward -ceq "latestFeature")) { return "global.json sdk.rollForward '$($sdkPin.rollForward)' is not latestFeature." }
     if (-not ($sdkPin.allowPrerelease -is [bool] -and -not $sdkPin.allowPrerelease)) { return "global.json sdk.allowPrerelease is not false." }
     return $null
 }
@@ -282,25 +282,30 @@ function Get-SdkPinFailure {
 $sdkPinRoot = Join-Path ([System.IO.Path]::GetTempPath()) "ci-test-sdk-pin-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $sdkPinRoot -Force | Out-Null
 try {
-    $pinCases = [ordered]@{
-        '"10.0.100"' = $true
-        '"10.0.300"' = $true
-        '"10.0.100-preview.1"' = $false
-        '"10.0.100-rc.2"' = $false
-        '"10.0.99"' = $false
-        '"10.0.garbage"' = $false
-        '"10.0.100 "' = $false
-        '["10.0.100"]' = $false
-    }
+    # Each case is a version and a rollForward (both as JSON), and the field the check must reject, or $null if it must pass.
+    $pinCases = @(
+        @('"10.0.100"', '"latestFeature"', $null),
+        @('"10.0.300"', '"latestFeature"', $null),
+        @('"10.0.100-preview.1"', '"latestFeature"', "sdk\.version"),
+        @('"10.0.100-rc.2"', '"latestFeature"', "sdk\.version"),
+        @('"10.0.99"', '"latestFeature"', "sdk\.version"),
+        @('"10.0.garbage"', '"latestFeature"', "sdk\.version"),
+        @('"10.0.100 "', '"latestFeature"', "sdk\.version"),
+        @('["10.0.100"]', '"latestFeature"', "sdk\.version"),
+        @('"10.0.100"', '[]', "sdk\.rollForward"),
+        @('"10.0.100"', '["latestFeature"]', "sdk\.rollForward"),
+        @('"10.0.100"', 'true', "sdk\.rollForward")
+    )
     $pinPath = Join-Path $sdkPinRoot "global.json"
-    foreach ($versionJson in $pinCases.Keys) {
-        Set-Content -Path $pinPath -Encoding utf8 -Value "{ `"sdk`": { `"version`": $versionJson, `"rollForward`": `"latestFeature`", `"allowPrerelease`": false } }"
+    foreach ($pinCase in $pinCases) {
+        $versionJson, $rollForwardJson, $expectedField = $pinCase
+        Set-Content -Path $pinPath -Encoding utf8 -Value "{ `"sdk`": { `"version`": $versionJson, `"rollForward`": $rollForwardJson, `"allowPrerelease`": false } }"
         $pinFailure = Get-SdkPinFailure $pinPath
-        if ($pinCases[$versionJson]) {
-            Assert-True ($null -eq $pinFailure) "The SDK pin check rejected the stable pin $versionJson`: $pinFailure"
+        if ($null -eq $expectedField) {
+            Assert-True ($null -eq $pinFailure) "The SDK pin check rejected the stable pin $versionJson/$rollForwardJson`: $pinFailure"
         }
         else {
-            Assert-True ("$pinFailure" -match "sdk\.version") "The SDK pin check accepted the invalid pin $versionJson."
+            Assert-True ("$pinFailure" -match $expectedField) "The SDK pin check accepted the invalid pin $versionJson/$rollForwardJson ($pinFailure)."
         }
     }
 }
