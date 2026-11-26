@@ -26,7 +26,16 @@ public class SandboxClientCatalogTests(ITestOutputHelper output)
                       "version": "1.0.0",
                       "description": "Review helpers",
                       "skills": [{"name": "pr-review", "description": "desc", "plugin": "code-reviewer", "marketplace": "official", "path": "/skills/pr-review"}],
-                      "agents": [{"name": "reviewer", "description": "desc", "plugin": "code-reviewer", "marketplace": "official", "path": "/agents/reviewer"}]
+                      "agents": [{"name": "reviewer", "description": "desc", "plugin": "code-reviewer", "marketplace": "official", "path": "/agents/reviewer"}],
+                      "selectable": true,
+                      "mcp_servers": [{
+                        "name": "review-data",
+                        "type": "http",
+                        "transport": "http",
+                        "url": "https://${REGION}.example.com/mcp",
+                        "auth": {"mode": "injected", "headers": ["Authorization"]},
+                        "unresolved_vars": ["REGION"]
+                      }]
                     }
                   ]
                 }
@@ -47,6 +56,34 @@ public class SandboxClientCatalogTests(ITestOutputHelper output)
         plugin.Name.Should().Be("code-reviewer");
         plugin.Skills.Should().ContainSingle().Which.Name.Should().Be("pr-review");
         plugin.Agents.Should().ContainSingle().Which.Name.Should().Be("reviewer");
+        plugin.Selectable.Should().BeTrue();
+        var server = plugin.McpServers.Should().ContainSingle().Which;
+        server.Name.Should().Be("review-data");
+        server.Transport.Should().Be("http");
+        server.Url.Should().Be("https://${REGION}.example.com/mcp");
+        server.AuthMode.Should().Be("injected");
+        server.RequiresOAuth.Should().BeFalse();
+        server.UnresolvedVariables.Should().Equal("REGION");
+    }
+
+    [Fact]
+    public async Task PreviewMarketplacesAsync_ReadsPublisherOAuthIndependentlyOfHeaderAuthentication()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/marketplaces/preview",
+            """
+            {"selected":["vercel"],"marketplaces":[{"alias":"vercel","plugins":[{"name":"vercel","mcp_servers":[
+              {"name":"vercel","type":"http","url":"https://mcp.vercel.com/","auth":{"mode":"none"},"requiresOAuth":true}
+            ]}]}]}
+            """
+        );
+
+        var catalog = await client.PreviewMarketplacesAsync(["vercel"]);
+        var endpoint = catalog.Marketplaces.Single().Plugins.Single().McpServers.Single();
+        endpoint.AuthMode.Should().Be("none");
+        endpoint.RequiresOAuth.Should().BeTrue();
     }
 
     [Fact]

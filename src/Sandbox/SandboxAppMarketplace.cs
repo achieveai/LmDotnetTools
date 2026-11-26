@@ -29,6 +29,9 @@ public sealed record SandboxAppMarketplace
     /// <summary>The commit <see cref="Ref"/> resolves to now. New sandboxes mount this commit.</summary>
     public required string ResolvedSha { get; init; }
 
+    /// <summary>The isolated catalog package, or <see langword="null"/> for a whole-marketplace registration.</summary>
+    public string? Plugin { get; init; }
+
     /// <summary>
     /// When the alias was first registered, exactly as the gateway reported it (RFC 3339). Kept as text: the
     /// gateway writes nanosecond precision, which <see cref="DateTimeOffset"/> does not parse.
@@ -43,4 +46,33 @@ public sealed record SandboxAppMarketplace
     /// The previous commit stays in use while this is set.
     /// </summary>
     public string? LastError { get; init; }
+}
+
+/// <summary>A signed app's registration of one publisher archive, with the download and staged content digests.</summary>
+public sealed record SandboxAppMarketplaceArchive(
+    string AppId,
+    string Alias,
+    string Url,
+    string Sha256,
+    string ContentSha256,
+    string Plugin
+);
+
+/// <summary>An exact sandbox source selection prepared for one or more publisher archives.</summary>
+public sealed class SandboxArchivePreparation
+{
+    public string SourceVersion { get; }
+    public IReadOnlyList<SandboxPluginRef> EffectivePlugins { get; }
+    public IReadOnlyList<SandboxAppMarketplaceArchive> Archives { get; }
+
+    internal SandboxArchivePreparation(
+        string sourceVersion,
+        IReadOnlyList<SandboxPluginRef> effectivePlugins,
+        IReadOnlyList<SandboxAppMarketplaceArchive> archives
+    )
+    {
+        SourceVersion = sourceVersion;
+        EffectivePlugins = Array.AsReadOnly(effectivePlugins.ToArray());
+        Archives = Array.AsReadOnly(archives.ToArray());
+    }
 }

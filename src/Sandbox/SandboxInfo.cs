@@ -55,6 +55,12 @@ public sealed class SandboxInfo
     /// </summary>
     public SandboxPluginResolution? PluginResolution { get; }
 
+    /// <summary>The source version acknowledged by the gateway when it resolved an exact package selection.</summary>
+    public string? SourceVersion { get; init; }
+
+    /// <summary>The app-owned publisher archive receipts acknowledged for this sandbox.</summary>
+    public IReadOnlyList<SandboxAppMarketplaceArchive> ResolvedArchiveReceipts { get; init; } = [];
+
     /// <summary>
     /// The image the sandbox was created from after the gateway resolved it (request, then app default,
     /// then server default; ADR 0039). Reported on a <see cref="SandboxClient.CreateAsync"/> result and, from

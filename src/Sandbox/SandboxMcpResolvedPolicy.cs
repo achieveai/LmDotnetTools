@@ -26,6 +26,7 @@ public sealed class SandboxMcpResolvedServer
     public string? ProviderId { get; }
     public string? RuleId { get; }
     public IReadOnlyList<string> UnresolvedVars { get; }
+    public bool Direct { get; }
 
     internal SandboxMcpResolvedServer(
         string name,
@@ -37,7 +38,8 @@ public sealed class SandboxMcpResolvedServer
         IReadOnlyList<string> headers,
         string? providerId,
         string? ruleId,
-        IReadOnlyList<string> unresolvedVars
+        IReadOnlyList<string> unresolvedVars,
+        bool direct
     )
     {
         Name = name;
@@ -50,5 +52,6 @@ public sealed class SandboxMcpResolvedServer
         ProviderId = providerId;
         RuleId = ruleId;
         UnresolvedVars = Array.AsReadOnly(unresolvedVars.ToArray());
+        Direct = direct;
     }
 }

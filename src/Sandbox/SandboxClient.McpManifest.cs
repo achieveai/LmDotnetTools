@@ -110,7 +110,8 @@ public sealed partial class SandboxClient
                     McpNames(row.Headers, status),
                     row.ProviderId,
                     row.RuleId,
-                    McpNames(row.UnresolvedVars, status)
+                    McpNames(row.UnresolvedVars, status),
+                    row.Direct
                 ),
                 status
             )
