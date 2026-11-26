@@ -1208,6 +1208,60 @@ public sealed class ReviewdJudgeTests
             .Be($$"""{"round":"review/x-3","status":"UNKNOWN","reason":"merge {{missing}} not in source store"}""");
     }
 
+    // #1006: the archived receipt keeps the head and merge the review copied into it, and AWB#188 copied an earlier
+    // round's merge. The judge measures each round's diff from its merge and finds its iteration from its head, so a
+    // round takes both from the attempt record that committed it; a round no record committed keeps the receipt's.
+    [SkippableFact]
+    public async Task A_round_takes_its_head_and_merge_from_the_attempt_that_committed_it()
+    {
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no python3 on PATH");
+        string stale = new('d', 40),
+            latest = new('1', 40),
+            earlier = new('2', 40),
+            unrecorded = new('5', 40);
+        static JsonObject Round(string branch, string artifactCommit, string tip, string head, string merge) =>
+            new()
+            {
+                ["branch"] = branch,
+                ["artifactCommit"] = artifactCommit,
+                ["tip"] = tip,
+                ["headSha"] = head,
+                ["mergeSha"] = merge,
+            };
+        static JsonObject Attempt(string commit, string head, string merge) =>
+            new()
+            {
+                ["artifactCommit"] = new JsonObject { ["commit"] = commit },
+                ["headSha"] = head,
+                ["mergeSha"] = merge,
+            };
+
+        var revisions = await SandboxAsync(
+            python!,
+            "(sandbox.take_prepared_revisions(data[0], data[1]), [[r['headSha'], r['mergeSha']] for r in data[0]])[1]",
+            new JsonArray(
+                new JsonArray(
+                    // The AWB#188 round: this round's head, an earlier round's merge.
+                    Round("review/x-1dbdb9dc", latest, latest, "h1", stale),
+                    // A merged branch whose tip is the artifact commit the earlier attempt recorded.
+                    Round("review/x-d5da22a5", new('4', 40), earlier, stale, stale),
+                    Round("review/x-0ld", unrecorded, unrecorded, "h0", "m0")
+                ),
+                new JsonArray(
+                    Attempt(latest, "h1", "m1"),
+                    Attempt(earlier, "h2", "m2"),
+                    new JsonObject { ["headSha"] = "h9", ["mergeSha"] = "m9" }
+                )
+            )
+        );
+
+        revisions
+            .ToJsonString()
+            .Should()
+            .Be("""[["h1","m1"],["h2","m2"],["h0","m0"]]""", "each recorded round takes its runner's revision");
+    }
+
     // A review retried many times carries a long attempt history. Its judge-inputs arguments outgrew Linux's 128 KiB
     // limit for one argv string (IdeasWatchTower !5817047, 146,812 bytes), so that PR could never be judged.
     [SkippableFact]

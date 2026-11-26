@@ -650,14 +650,45 @@ def stamp_receipt(read, pr_id, head, merge):
 
 def replace_file(folder, name, text):
     # Replaces folder/name whole with text. The staging file is created new in the folder, never opened by a name that
-    # may already hold a file or a link, so nothing outside the folder is written through.
-    handle, staging = tempfile.mkstemp(dir=folder, prefix=f'.{name}.', suffix='.part')
+    # may already hold a file or a link, so nothing outside the folder is written through. Its short fixed prefix fits
+    # beside any name that fits (a recovered receipt's can be 245 bytes); keep_receipts_under_limit sweeps it up.
+    handle, staging = tempfile.mkstemp(dir=folder, prefix=STAGING_PREFIX, suffix='.part')
     try:
         with os.fdopen(handle, 'w', encoding='utf-8', newline='\n') as stream:
             stream.write(text)
         os.replace(staging, Path(folder) / name)
     finally:
         Path(staging).unlink(missing_ok=True)
+
+
+STAGING_PREFIX = '.rcpt-'
+
+
+def keep_receipts_under_limit(folder):
+    # A receipt over the limit is kept as several, before set_aside_unarchivable would move it out: when the push
+    # fails, the attempt resumes by verifying it again. Each file is replaced whole, the first one last. An earlier
+    # round's receipts the review recovered (publication_receipts-<head>-recovered.json) are split the same way, so
+    # the judge still counts those comments as ours; one that is not a receipt is left to be set aside. A commit
+    # stopped hard can leave a staging file, which is no part of the review, so it goes first. Returns
+    # [(receipt name, files kept as)].
+    for leftover in folder.glob(f'{STAGING_PREFIX}*.part'):
+        if not leftover.is_dir() or leftover.is_symlink():
+            leftover.unlink()
+    kept = []
+    for receipt in [folder / 'publication_receipts.json'] + sorted(folder.glob('publication_receipts-*-recovered.json')):
+        if not receipt.is_file() or receipt.is_symlink() or receipt.stat().st_size <= ARCHIVE_FILE_LIMIT:
+            continue
+        try:
+            parts = receipt_files(json.loads(receipt.read_text()), receipt.stem,
+                                  linked=receipt.name == 'publication_receipts.json')
+        except (ValueError, TypeError, KeyError, AttributeError):
+            if receipt.name == 'publication_receipts.json':
+                raise
+            continue
+        for name in sorted(parts, key=lambda name: name == receipt.name):
+            replace_file(folder, name, parts[name])
+        kept.append((receipt.name, len(parts)))
+    return kept
 
 
 def fitting_name(name, ending, key):
@@ -956,23 +987,8 @@ elif phase == 'commit':
         target = set_aside(path, folder, quarantine)
         print(f'Left out {directory}/{path.name}, prepared history the archive does not keep; moved to {target}',
               file=sys.stderr)
-    # A receipt over the limit is kept as several, before set_aside_unarchivable would move it out: when the push
-    # fails, the attempt resumes by verifying it again. Each file is replaced whole, the first one last. An earlier
-    # round's receipts the review recovered (publication_receipts-<head>-recovered.json) are split the same way, so
-    # the judge still counts those comments as ours; one that is not a receipt is left to be set aside.
-    for receipt in [folder / 'publication_receipts.json'] + sorted(folder.glob('publication_receipts-*-recovered.json')):
-        if not receipt.is_file() or receipt.is_symlink() or receipt.stat().st_size <= ARCHIVE_FILE_LIMIT:
-            continue
-        try:
-            parts = receipt_files(json.loads(receipt.read_text()), receipt.stem,
-                                  linked=receipt.name == 'publication_receipts.json')
-        except (ValueError, TypeError, KeyError, AttributeError):
-            if receipt.name == 'publication_receipts.json':
-                raise
-            continue
-        for name in sorted(parts, key=lambda name: name == receipt.name):
-            replace_file(folder, name, parts[name])
-        print(f'Kept {directory}/{receipt.name} as {len(parts)} receipts under the archive limit', file=sys.stderr)
+    for name, count in keep_receipts_under_limit(folder):
+        print(f'Kept {directory}/{name} as {count} receipts under the archive limit', file=sys.stderr)
     for note in set_aside_unarchivable(folder, quarantine):
         print(f"Set aside {directory}/{note['omitted']} ({note['kind']}); kept a note", file=sys.stderr)
     # A shadow review commits to the local review branch only: its store is an experiment clone whose origin may be the

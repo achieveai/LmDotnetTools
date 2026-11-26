@@ -317,10 +317,15 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
         var verified = await RunAsync(
             python!,
             names,
-            $"passes(lambda: {verify}) and [v['commentId'] for v in {verify}] == c['ids']",
+            $"passes(lambda: {verify}) and (c['ids'] is None or [v['commentId'] for v in {verify}] == c['ids'])",
             cases.ToJsonString()
         );
-        verified.Should().Equal(true, true, true, true, false, false, false);
+        verified
+            .Should()
+            .Equal(
+                [true, true, true, true, false, false, false],
+                "the first four verify with exactly their comments, and verify refuses the last three"
+            );
 
         var revision = await RunAsync(
             python!,
