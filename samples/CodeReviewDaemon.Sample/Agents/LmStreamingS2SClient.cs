@@ -471,7 +471,7 @@ internal sealed class LmStreamingS2SClient
     /// until the governor's clock runs out only delays the same conclusion.
     /// </para>
     /// </summary>
-    public async Task EnsureHostContractAsync(CancellationToken ct)
+    public async Task EnsureHostContractAsync(CancellationToken ct, bool requireResponsesCacheWritePricing = false)
     {
         using var response = await ExecuteAsync(HttpMethod.Get, "api/conversations/capabilities", body: null, ct);
 
@@ -512,6 +512,10 @@ internal sealed class LmStreamingS2SClient
         if (!ReadBoolProperty(body, "rootReasoningEffort"))
         {
             missing.Add("rootReasoningEffort");
+        }
+        if (requireResponsesCacheWritePricing && !ReadBoolProperty(body, "responsesCacheWritePricing"))
+        {
+            missing.Add("responsesCacheWritePricing");
         }
 
         if (missing.Count > 0)

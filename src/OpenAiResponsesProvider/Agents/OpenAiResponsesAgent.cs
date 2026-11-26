@@ -547,10 +547,8 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
             return false;
         }
 
-        var inputTokens =
-            usageEl.TryGetProperty("input_tokens", out var inEl) && inEl.ValueKind == JsonValueKind.Number
-                ? inEl.GetInt32()
-                : 0;
+        var reportedInput = ReadOptionalInt(usageEl, "input_tokens");
+        var inputTokens = reportedInput ?? 0;
         var outputTokens =
             usageEl.TryGetProperty("output_tokens", out var outEl) && outEl.ValueKind == JsonValueKind.Number
                 ? outEl.GetInt32()
@@ -562,8 +560,10 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
 
         // The Responses API reports prompt-cache hits and reasoning spend in NESTED detail objects.
         // Surface them so consumers see real cache/reasoning counts (otherwise every cache hit reads 0).
-        var cachedTokens = TryReadNestedInt(usageEl, "input_tokens_details", "cached_tokens");
-        var reasoningTokens = TryReadNestedInt(usageEl, "output_tokens_details", "reasoning_tokens");
+        var inputDetails = ReadObject(usageEl, "input_tokens_details");
+        var reportedCached = ReadNonNegativeCount(inputDetails, "cached_tokens");
+        var cachedTokens = reportedCached is <= int.MaxValue ? (int)reportedCached.Value : 0;
+        var reasoningTokens = ReadOptionalInt(ReadObject(usageEl, "output_tokens_details"), "reasoning_tokens") ?? 0;
 
         usage = new Usage
         {
@@ -571,22 +571,74 @@ public sealed class OpenAiResponsesAgent : IStreamingAgent, IDisposable
             CompletionTokens = outputTokens,
             TotalTokens = totalTokens,
         }.WithTokenDetails(cachedTokens, reasoningTokens);
+
+        // Copilot counts writes inside input_tokens. Preserve them only when the read and write counts
+        // form a valid input partition; an omitted cached_tokens field cannot establish that partition.
+        if (
+            reportedInput is >= 0
+            && reportedCached is { } cached
+            && ReadNonNegativeCount(inputDetails, "cache_write_tokens") is { } writes
+            && writes <= inputTokens - cached
+        )
+        {
+            var write12h = ReadCacheWrite12h(inputDetails, writes);
+            if (writes == 0 && write12h is null)
+            {
+                // A conflicting or malformed split cannot prove there were no writes.
+                return true;
+            }
+
+            usage = usage with
+            {
+                InputTokenDetails = (usage.InputTokenDetails ?? new InputTokenDetails()) with
+                {
+                    ResponsesCacheWriteTokens = writes,
+                    ResponsesCacheWrite12hTokens = write12h,
+                },
+            };
+        }
+
         return true;
     }
 
-    private static int TryReadNestedInt(JsonElement parent, string objectProperty, string numberProperty)
+    private static long? ReadCacheWrite12h(JsonElement inputDetails, long writes)
     {
-        // Non-throwing: optional usage telemetry must never abort an otherwise valid stream just
-        // because a count is encoded in a way GetInt32() would reject (out-of-range / non-int number).
-        return
-            parent.TryGetProperty(objectProperty, out var nestedEl)
-            && nestedEl.ValueKind == JsonValueKind.Object
-            && nestedEl.TryGetProperty(numberProperty, out var valueEl)
-            && valueEl.ValueKind == JsonValueKind.Number
-            && valueEl.TryGetInt32(out var value)
-            ? value
-            : 0;
+        if (!inputDetails.TryGetProperty("cache_write_tokens_details", out var split))
+        {
+            return writes == 0 ? 0 : null;
+        }
+
+        var thirtyMinutes = ReadNonNegativeCount(split, "ttl_30m_tokens");
+        var twelveHours = ReadNonNegativeCount(split, "ttl_12h_tokens");
+        return thirtyMinutes is { } shortWrite && twelveHours == writes - shortWrite ? twelveHours : null;
     }
+
+    private static JsonElement ReadObject(JsonElement parent, string property) =>
+        parent.ValueKind == JsonValueKind.Object
+        && parent.TryGetProperty(property, out var child)
+        && child.ValueKind == JsonValueKind.Object
+            ? child
+            : default;
+
+    private static int? ReadOptionalInt(JsonElement parent, string property)
+    {
+        return
+            parent.ValueKind == JsonValueKind.Object
+            && parent.TryGetProperty(property, out var number)
+            && number.ValueKind == JsonValueKind.Number
+            && number.TryGetInt32(out var value)
+            ? value
+            : null;
+    }
+
+    private static long? ReadNonNegativeCount(JsonElement parent, string property) =>
+        parent.ValueKind == JsonValueKind.Object
+        && parent.TryGetProperty(property, out var number)
+        && number.ValueKind == JsonValueKind.Number
+        && number.TryGetInt64(out var value)
+        && value >= 0
+            ? value
+            : null;
 
     private sealed record PendingFunctionCall(
         string ItemId,

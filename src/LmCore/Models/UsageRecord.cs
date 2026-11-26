@@ -145,6 +145,18 @@ public sealed record UsageRecord
     /// </summary>
     public long? CacheWrite1hTokens { get; init; }
 
+    /// <summary>
+    ///     Responses cache-write tokens already included in <see cref="InputTokens" />.
+    ///     Null means the provider's write count was unavailable. An explicit zero means no writes.
+    /// </summary>
+    public long? ResponsesCacheWriteTokens { get; init; }
+
+    /// <summary>
+    ///     The 12-hour portion of <see cref="ResponsesCacheWriteTokens" />. When both counts are known,
+    ///     the remainder used 30-minute retention. Null means the split was unavailable.
+    /// </summary>
+    public long? ResponsesCacheWrite12hTokens { get; init; }
+
     /// <summary>Reasoning tokens — a subset of <see cref="OutputTokens" />.</summary>
     public long ReasoningTokens { get; init; }
 

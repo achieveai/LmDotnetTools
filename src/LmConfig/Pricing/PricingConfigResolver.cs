@@ -158,6 +158,8 @@ public sealed class PricingConfigResolver : IPricingResolver
             CacheReadPerMillion = ToDecimal(config.CacheReadPerMillion),
             CacheWrite5mPerMillion = ToDecimal(config.CacheWrite5mPerMillion),
             CacheWrite1hPerMillion = ToDecimal(config.CacheWrite1hPerMillion),
+            ResponsesCacheWrite30mPerMillion = ToDecimal(config.ResponsesCacheWrite30mPerMillion),
+            ResponsesCacheWrite12hPerMillion = ToDecimal(config.ResponsesCacheWrite12hPerMillion),
             ReasoningPerMillion = ToDecimal(config.ReasoningPerMillion),
             CacheAccounting = config.CacheAccounting,
             EffectiveDate = config.EffectiveDate,

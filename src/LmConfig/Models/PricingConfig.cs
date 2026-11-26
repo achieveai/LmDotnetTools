@@ -38,6 +38,14 @@ public record PricingConfig
     [JsonPropertyName("cache_write_1h_per_million")]
     public double? CacheWrite1hPerMillion { get; init; }
 
+    /// <inheritdoc cref="ModelPricing.ResponsesCacheWrite30mPerMillion" />
+    [JsonPropertyName("responses_cache_write_30m_per_million")]
+    public double? ResponsesCacheWrite30mPerMillion { get; init; }
+
+    /// <inheritdoc cref="ModelPricing.ResponsesCacheWrite12hPerMillion" />
+    [JsonPropertyName("responses_cache_write_12h_per_million")]
+    public double? ResponsesCacheWrite12hPerMillion { get; init; }
+
     /// <summary>Cost per million reasoning tokens, or null when reasoning is billed as completion.</summary>
     [JsonPropertyName("reasoning_per_million")]
     public double? ReasoningPerMillion { get; init; }

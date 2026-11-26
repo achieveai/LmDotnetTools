@@ -66,7 +66,7 @@ namespace LmStreaming.Sample.Services;
 ///         list prices copied from a vendor's own pricing page, each dated and cited — a cited, dated rate is
 ///         not a guess. Most Copilot-served ids use their vendor's retail API price. MAI uses GitHub's
 ///         published Copilot rates. These estimates are separate from the subscription bill.
-///         Claude CLI and Codex defaults stay absent, so their cost resolves null.
+///         An unlisted model resolves to no public estimate.
 ///         The citation list lives in <c>docs/features/public-pricing-catalog.md</c>. Operators override or
 ///         extend the section in <c>appsettings.&lt;Environment&gt;.json</c> or via environment variables.
 ///     </para>
@@ -79,12 +79,10 @@ namespace LmStreaming.Sample.Services;
 ///         identical to no configuration at all.
 ///     </para>
 ///     <para>
-///         <b>Version.</b> The catalog format carries no effective date, and nothing in this repository
-///         refreshes a configured catalog — a host's rates are exactly as current as its config. So a cost
-///         resolved without a version records where the rate came from but not how old it is.
-///         <c>Pricing:Version</c> is that date, stamped onto every <see cref="ModelPricing" /> this host
-///         resolves. LmConfig's own <c>AddLmConfig</c> cannot supply it (it has no way to know), which is
-///         why the authoritative resolver is registered here rather than left to that call's <c>TryAdd</c>.
+///         <b>Version.</b> <c>Pricing:Version</c> identifies the configuration snapshot. Each model can also
+///         carry its own <c>EffectiveDate</c>. The host stamps the snapshot version onto every
+///         <see cref="ModelPricing" /> it resolves. LmConfig's default registration leaves the snapshot
+///         version unset, so the host registers its own resolver.
 ///     </para>
 ///     <para>
 ///         What a partly-priced catalog does downstream: a conversation total is a STRICT fold
@@ -240,6 +238,8 @@ public static class PricingCatalog
                 !TryReadCategoryRate(entry, "CacheReadPerMillion", rejected, out var cacheRead)
                 || !TryReadCategoryRate(entry, "CacheWrite5mPerMillion", rejected, out var cacheWrite5m)
                 || !TryReadCategoryRate(entry, "CacheWrite1hPerMillion", rejected, out var cacheWrite1h)
+                || !TryReadCategoryRate(entry, "ResponsesCacheWrite30mPerMillion", rejected, out var responsesWrite30m)
+                || !TryReadCategoryRate(entry, "ResponsesCacheWrite12hPerMillion", rejected, out var responsesWrite12h)
                 || !TryReadCategoryRate(entry, "ReasoningPerMillion", rejected, out var reasoning)
                 || !TryReadCacheAccounting(entry, rejected, out var cacheAccounting)
                 || !TryReadEffectiveDate(entry, rejected, out var effectiveDate)
@@ -265,6 +265,8 @@ public static class PricingCatalog
                 CacheReadPerMillion = cacheRead,
                 CacheWrite5mPerMillion = cacheWrite5m,
                 CacheWrite1hPerMillion = cacheWrite1h,
+                ResponsesCacheWrite30mPerMillion = responsesWrite30m,
+                ResponsesCacheWrite12hPerMillion = responsesWrite12h,
                 ReasoningPerMillion = reasoning,
                 CacheAccounting = cacheAccounting,
                 EffectiveDate = effectiveDate,
@@ -319,8 +321,7 @@ public static class PricingCatalog
     }
 
     /// <summary>
-    ///     Reads <c>Pricing:Version</c> — the effective date of the configured rates — or null when the host
-    ///     declares none, in which case a resolved cost records its source but not its age.
+    ///     Reads the configuration snapshot label from <c>Pricing:Version</c>. An omitted label yields null.
     /// </summary>
     public static string? ReadVersion(IConfiguration configuration)
     {

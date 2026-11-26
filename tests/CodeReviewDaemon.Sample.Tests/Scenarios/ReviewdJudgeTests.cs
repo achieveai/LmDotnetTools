@@ -65,26 +65,126 @@ public sealed class ReviewdJudgeTests
     [Fact]
     public async Task The_default_judge_model_matches_both_delegate_tiers()
     {
-        var relative = Path.Combine("samples", "LmStreaming.Sample", "appsettings.json");
-        var settingsPath = Path.Combine(AppContext.BaseDirectory, relative);
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-        {
-            settingsPath = Path.Combine(dir.FullName, relative);
-            if (File.Exists(settingsPath))
-            {
-                break;
-            }
-        }
-
-        var tiers = JsonNode.Parse(await File.ReadAllTextAsync(settingsPath))!["SubAgentIntelligence"]!["Tiers"]!;
+        var provider = JudgeRunner.ProviderFor(ParseJudgeOptions());
+        provider.Should().Be("gpt-6.2-sol");
+        var settings = JsonNode.Parse(await File.ReadAllTextAsync(FindReviewHostSettings()))!;
+        var tiers = settings["SubAgentIntelligence"]!["Tiers"]!;
         foreach (var tier in new[] { "3", "4" })
         {
             var primaryModel = tiers[tier]![0]!.GetValue<string>().Split(':')[0];
-            JudgeRunner.DefaultProvider.Should().Be(primaryModel, $"judge delegates may use tier {tier}");
+            provider.Should().Be(primaryModel, $"judge delegates may use the model configured at tier {tier}");
         }
 
-        var prompt = await JudgeRunner.ReadResourceAsync("Reviewd.Sample.Prompts.merged-judge.md", default);
-        prompt.Should().Contain($"the default judge model, {JudgeRunner.DefaultProvider}.");
+        var template = await JudgeRunner.ReadResourceAsync("Reviewd.Sample.Prompts.merged-judge.md", default);
+        var prompt = JudgeRunner.ComposePrompt(template, "org/project/repo", "17", "PRs/repo-17/judgment-1", provider);
+        prompt.Should().Contain($"the default judge model, {provider}.");
+        prompt.Should().Contain("When the run disables blind delegation, do not call the Agent tool");
+        prompt.Should().Contain($"Blind delegation requires the Agent tool to advertise your model, `{provider}`.");
+    }
+
+    [Fact]
+    public void An_explicit_alternate_judge_model_disables_blind_delegation()
+    {
+        var provider = JudgeRunner.ProviderFor(ParseJudgeOptions("--provider", "gpt-6.1-sol"));
+        provider.Should().Be("gpt-6.1-sol");
+        var prompt = JudgeRunner.ComposePrompt(
+            "Judge prompt.",
+            "org/project/repo",
+            "17",
+            "PRs/repo-17/judgment-1",
+            provider
+        );
+        prompt.Should().Contain("Blind delegation is disabled for this run. Do not call the Agent tool.");
+    }
+
+    [Theory]
+    [InlineData("gpt-6.2-sol", true, "gpt-6.2-sol", true)]
+    [InlineData("gpt-6.2-sol", true, "gpt-6-sol", false)]
+    [InlineData("gpt-6.2-sol", true, null, false)]
+    [InlineData("gpt-6.1-sol", true, "gpt-6.1-sol", false)]
+    [InlineData("gpt-6.1-sol", false, null, true)]
+    public void Only_verified_same_model_judge_delegates_are_accepted(
+        string provider,
+        bool hasDelegate,
+        string? effectiveModel,
+        bool accepted
+    )
+    {
+        ReviewSubAgentNode[] nodes = hasDelegate
+            ? [Child(ReviewSubAgentStatus.Completed) with { EffectiveModelId = effectiveModel }]
+            : [];
+        (JudgeRunner.JudgeDelegationError(provider, nodes) is null).Should().Be(accepted);
+    }
+
+    [Fact]
+    public async Task The_gpt62_judge_requires_cache_write_accounting_before_a_send()
+    {
+        var host = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/capabilities",
+            """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true}"""
+        );
+        var client = Client(host);
+        var check = () => client.EnsureHostContractAsync(default, requireResponsesCacheWritePricing: true);
+
+        await check.Should().ThrowAsync<ReviewHostContractException>().WithMessage("*responsesCacheWritePricing*");
+        host.CountRequests("/messages").Should().Be(0);
+    }
+
+    [Fact]
+    public async Task An_alternate_judge_send_requires_acknowledged_spawn_suppression()
+    {
+        var host = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "/messages",
+            """{"inputId":"idem:0:judge-1","idempotencyKeyHonored":true,"spawningSuppressed":true}""",
+            HttpStatusCode.Accepted
+        );
+        var input = await JudgeRunner.SendWithKeyAsync(
+            Client(host),
+            "thread-1",
+            "Judge without delegates.",
+            "judge-1",
+            FastOutage,
+            "repo #1",
+            CancellationToken.None,
+            suppressSubAgentSpawning: true
+        );
+
+        input.Should().Be("idem:0:judge-1");
+        JsonNode.Parse(host.Requests.Single().Body!)!["suppressSubAgentSpawning"]!.GetValue<bool>().Should().BeTrue();
+    }
+
+    private static CliOptions ParseJudgeOptions(params string[] extras) =>
+        CliOptions.Parse([
+            "judge",
+            "run",
+            "--repo",
+            "org/project/repo",
+            "--pr",
+            "17",
+            "--db",
+            "review.db",
+            "--session",
+            "judge-session",
+            "--workspace",
+            "workspace",
+            .. extras,
+        ]);
+
+    private static string FindReviewHostSettings()
+    {
+        var relative = Path.Combine("samples", "LmStreaming.Sample", "appsettings.json");
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+        {
+            var settingsPath = Path.Combine(dir.FullName, relative);
+            if (File.Exists(settingsPath))
+            {
+                return settingsPath;
+            }
+        }
+
+        throw new FileNotFoundException($"Could not find {relative} above the test output.", relative);
     }
 
     // ---- judge run contracts
@@ -801,6 +901,99 @@ public sealed class ReviewdJudgeTests
         watch.Reached.Should().BeFalse();
         receipt["caps"]!["reason"].Should().BeNull();
         receipt["judgeUsage"]!["usd"]!.GetValue<decimal>().Should().Be(0.12m);
+    }
+
+    [Fact]
+    public async Task A_partial_price_estimate_stops_the_judge_and_keeps_the_display_amount()
+    {
+        var host = CappedHost(
+            InProgress(1),
+            (
+                HttpStatusCode.OK,
+                """{"preferredCostMicros":120000,"estimatedCostCompleteness":1,"totalTokens":2000,"completeness":2}"""
+            )
+        );
+        var (watch, receipt, capped) = Watch(host);
+
+        var (outcome, _) = await WaitOnHost(
+            Client(host),
+            FastOutage,
+            watch.DelayAsync,
+            capped.Token,
+            () => watch.Reached
+        );
+
+        outcome.Should().Be("capped");
+        receipt["judgeUsage"]!["measured"]!.GetValue<bool>().Should().BeFalse();
+        receipt["judgeUsage"]!["usd"]!.GetValue<decimal>().Should().Be(0.12m);
+        receipt["caps"]!["reason"]!.GetValue<string>().Should().Contain("partial");
+    }
+
+    [Fact]
+    public void A_saved_partial_estimate_still_reserves_the_full_judge_cap()
+    {
+        var receipt = JsonNode
+            .Parse(
+                """
+                {
+                  "stage": "completed",
+                  "finishedAt": "2026-11-25T21:00:00Z",
+                  "judgeUsage": {
+                    "measured": true,
+                    "usd": 0.12,
+                    "completeness": 2,
+                    "aggregate": { "estimatedCostCompleteness": 1 }
+                  }
+                }
+                """
+            )!
+            .AsObject();
+
+        var spend = JudgeBatch.SpendOf("judge", receipt, 15m);
+        spend.Usd.Should().Be(0.12m);
+        spend.LowerBound.Should().BeTrue();
+        spend.Charged.Should().Be(15m);
+    }
+
+    [Theory]
+    [InlineData(false, 15)]
+    [InlineData(true, 0)]
+    public async Task A_terminal_usage_404_reserves_the_cap_unless_the_root_never_started(
+        bool rootNeverStarted,
+        int expectedCharge
+    )
+    {
+        var host = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/usage", "{}", HttpStatusCode.NotFound);
+        var receipt = new JsonObject { ["judgeInputId"] = "root-input" };
+        if (rootNeverStarted)
+            receipt["lost"] = new JsonObject { ["inputId"] = "root-input" };
+
+        await JudgeRunner.FinalUsageAsync(Client(host), "thread-1", receipt, CancellationToken.None);
+
+        JudgeBatch.SpendOf("judge", receipt, 15m).Charged.Should().Be(expectedCharge);
+    }
+
+    [Theory]
+    [InlineData(false, true, 0.12, "partial estimate")]
+    [InlineData(true, true, 15, "cap reached")]
+    [InlineData(true, true, 0.12, null)]
+    [InlineData(true, false, 0, "no usage recorded yet (404)")]
+    public void A_judge_follow_up_requires_measured_budget_headroom(
+        bool measured,
+        bool hasAggregate,
+        double usd,
+        string? reason
+    )
+    {
+        var usage = new JsonObject { ["measured"] = measured, ["usd"] = (decimal)usd };
+        if (!measured)
+            usage["note"] = "partial estimate";
+        if (hasAggregate)
+            usage["aggregate"] = new JsonObject();
+        else
+            usage["note"] = "no usage recorded yet (404)";
+
+        JudgeRunner.BudgetStopReason(usage, 15m, requireAggregate: true).Should().Be(reason);
     }
 
     [Fact]

@@ -363,6 +363,9 @@ public record ConversationCapabilitiesResponse
     /// </summary>
     public required bool RootReasoningEffort { get; init; }
 
+    /// <summary>True when usage estimates account for Responses cache writes and mark missing observations incomplete.</summary>
+    public bool ResponsesCacheWritePricing { get; init; }
+
     /// <summary>
     /// True when <see cref="ProvisionConversationRequest.Env"/> is understood and persisted before the
     /// hosted root agent is built, and applied as the provision-layer sandbox env (spec §5). Callers

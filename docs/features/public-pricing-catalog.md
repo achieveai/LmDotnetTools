@@ -8,10 +8,12 @@ Category-complete public-price cost estimates for usage records (#682, spec #679
 
 | Category | Tokens | Rate |
 |---|---|---|
-| Uncached input | `InputTokens` (Additive) or `InputTokens − CacheReadTokens` (SubsetOfInput) | `PromptPerMillion` |
+| Uncached input | `InputTokens` (Additive) or `InputTokens − CacheReadTokens − known Responses writes` (SubsetOfInput) | `PromptPerMillion` |
 | Cache read | `CacheReadTokens` | `CacheReadPerMillion` |
 | Cache write, 5m TTL | `CacheWriteTokens − CacheWrite1hTokens` | `CacheWrite5mPerMillion` |
 | Cache write, 1h TTL | `CacheWrite1hTokens` | `CacheWrite1hPerMillion` |
+| Responses cache write, 30m | `ResponsesCacheWriteTokens − ResponsesCacheWrite12hTokens` (already inside input) | `ResponsesCacheWrite30mPerMillion` |
+| Responses cache write, 12h | `ResponsesCacheWrite12hTokens` (already inside input) | `ResponsesCacheWrite12hPerMillion` |
 | Output | `OutputTokens − ReasoningTokens` | `CompletionPerMillion` |
 | Reasoning | `ReasoningTokens` | `ReasoningPerMillion`, else `CompletionPerMillion` |
 
@@ -28,7 +30,7 @@ Rules:
 
 | Mode | Provider | Meaning |
 |---|---|---|
-| `SubsetOfInput` (default) | OpenAI | `cached_tokens ⊆ prompt_tokens`. Uncached input = input − cache read. |
+| `SubsetOfInput` (default) | OpenAI | Cache reads and reported Responses writes are disjoint parts of input. Uncached input excludes both. |
 | `Additive` | Anthropic | `input_tokens` excludes cache read and cache creation. Every category is billed on top. |
 
 The mode changes the arithmetic. The same record priced under the wrong mode is double-counted or under-counted, so a misspelt `CacheAccounting` rejects the entry instead of defaulting.
@@ -66,10 +68,11 @@ Sample host: `samples/LmStreaming.Sample/appsettings.json`, section `Pricing`.
 - `PromptPerMillion`, `CompletionPerMillion`: required.
 - Category rates: optional. Absent = unpriced category (Partial when it has tokens). Present-but-negative/NaN/infinite rejects the whole entry.
 - `CacheAccounting`: `SubsetOfInput` (default) or `Additive`.
-- `EffectiveDate`: `yyyy-MM-dd`.
-- `RateChange`: optional object containing `EffectiveDate` and a positive `Multiplier` for every rate. The effective date is inclusive and uses the attempt's UTC date. An attempt with an unknown date receives no estimate from a scheduled entry. Stored estimates keep the amount calculated when the attempt was priced.
+- `EffectiveDate`: optional per-row source date in `yyyy-MM-dd` form. `Pricing:Version` identifies the whole snapshot.
+- `RateChange`: optional object containing `EffectiveDate` and a positive `Multiplier` for every rate. The effective date is inclusive and uses the attempt's UTC date. An attempt with an unknown date receives no estimate from a scheduled entry. Loading stored usage keeps its existing estimates. If the same attempt later receives an observation without its own estimate, the ledger recalculates from the merged token counts using the loaded catalog when the model resolves.
 - `LongContext`: optional object containing `InputTokensGreaterThan`, `InputMultiplier`, and `OutputMultiplier`. The threshold uses total billed input, including cache reads. A request above that threshold uses the multipliers for the full request.
-- `UnobservedCacheWritesFromInputTokens`: optional minimum billed input where unavailable cache-write telemetry makes the estimate Partial.
+- `ResponsesCacheWrite30mPerMillion` and `ResponsesCacheWrite12hPerMillion`: optional public rates for input-inclusive Responses cache writes. Anthropic retains its separate additive 5-minute and 1-hour rates.
+- `UnobservedCacheWritesFromInputTokens`: optional minimum billed input where a missing Responses write count makes the estimate Partial.
 - `_source`: vendor URL, ignored by the binder.
 - `MaxContextTokens`, `MaxOutputTokens` (#681): optional positive integers — the model's context window and output ceiling, surfaced through `IModelCapacityResolver` so each generation's context observation carries a utilization. Present-but-not-positive rejects the whole entry.
 - `ContextWindow:MaxTokens` (top-level, not per model; default `196000`): the sample host's ceiling. Every resolved window is clamped to it, and a model with no `MaxContextTokens` (Claude CLI, Codex, any Copilot id not listed below) resolves to exactly it, so the gauge and compaction work for those models. `0` turns the cap off, and an absent window is then unknown again (no gauge, no compaction pressure). A negative value fails startup.
@@ -106,7 +109,7 @@ The following Copilot-served ids use the vendor's retail API list price as a pub
 | `deepseek-flash` | `deepseek-v4-flash` | 0.15 | 0.003 | — | — | 0.60 | Additive | https://api-docs.deepseek.com/quick_start/pricing/ |
 
 - `gpt-5.6-sol`'s rate is promotional through at least 2026-11-21. Re-verify after that date.
-- OpenAI lists cache writes for the GPT-6 family at 1.25x input (`gpt-6-astra` 12.50, `gpt-6-sol` 2.50, `gpt-6.1-sol` 2.50, `gpt-6-luna` 0.125). They are not in the catalog. `UsageRecordMapper` reads cache writes only from Anthropic's `cache_creation_input_tokens`, so an OpenAI rate would never apply. If OpenAI usage starts reporting cache writes, those tokens already sit inside the prompt count under SubsetOfInput, so only the 0.25x surcharge would be missing; a full 1.25x rate would double-bill them.
+- Earlier GPT-6 entries in this table omit Responses cache-write rates. Observed writes for those entries leave the public estimate Partial. See the November tier additions below for the configured GPT-6.2 rates.
 - `gemini-3.8-flash`'s rate is promotional through 2026-12-31. From 2027-01-01 Google lists 1.50 input, 0.15 cache read and 7.50 output. Re-verify then.
 - OpenAI bills prompts over 272K input at 2x input and 1.5x output. While compaction is on (the sample default), it targets the 196K window, so requests normally stay below that. With compaction off, a long conversation can cross it.
 - OpenAI ids are priced from OpenAI's own page, never a reseller's. OpenRouter (checked 2026-09-18) lists `gpt-5.6-sol` at half OpenAI's promotional rate; the catalog keeps OpenAI's.
@@ -133,22 +136,24 @@ Context windows (`MaxContextTokens` / `MaxOutputTokens`, #681), verified 2026-09
 
 ## November 2026 tier additions
 
-The GPT-6.2 estimates use OpenAI Standard rates, which match the listed Copilot token rates. The MAI estimates use Copilot launch rates. All amounts are USD per million tokens, verified November 25, 2026. All four entries use subset input accounting.
+The GPT-6.2 estimates use OpenAI Standard rates, which match the listed Copilot token rates. The MAI estimates use Copilot launch rates. The four appsettings rows record **November 17, 2026** as their effective date, when GitHub announced both model families. Rates and window sources were checked on **November 25, 2026**. All figures below are USD per million tokens and use subset input accounting. [GPT-6.2 launch](https://github.blog/changelog/2026-11-17-openais-gpt-6-2-astra-and-gpt-6-2-sol-now-available/), [MAI launch](https://github.blog/changelog/2026-11-17-mai-code-2-and-mai-code-2-flash-in-github-copilot/)
 
 | Model id | Input | Cache read | Output | Source |
 |---|---:|---:|---:|---|
-| `gpt-6.2-sol` | 2.00 | 0.10 | 10.00 | [OpenAI Standard pricing](https://developers.openai.com/api/docs/pricing) |
-| `gpt-6.2-astra` | 8.00 | 0.40 | 40.00 | [OpenAI Standard pricing](https://developers.openai.com/api/docs/pricing) |
-| `mai-code-2` | 0.50 | 0.025 | 2.50 | [GitHub Copilot launch pricing](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing#microsoft) |
-| `mai-code-2-flash` | 0.05 | 0.005 | 0.25 | [GitHub Copilot launch pricing](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing#microsoft) |
+| `gpt-6.2-sol` | 2.00 | 0.10 | 10.00 | [GPT-6.2 Sol model page](https://developers.openai.com/api/docs/models/gpt-6.2-sol) |
+| `gpt-6.2-astra` | 8.00 | 0.40 | 40.00 | [GPT-6.2 Astra model page](https://developers.openai.com/api/docs/models/gpt-6.2-astra) |
+| `mai-code-2` | 0.50 | 0.025 | 2.50 | [GitHub Copilot launch pricing](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing#footnotes) |
+| `mai-code-2-flash` | 0.05 | 0.005 | 0.25 | [GitHub Copilot launch pricing](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing#footnotes) |
 
-For attempts on or after May 17, 2027 UTC, the catalog doubles the MAI launch rates. MAI Code 2 uses $1.00 input, $0.05 cached input, and $5.00 output. MAI Code 2 Flash uses $0.10 input, $0.01 cached input, and $0.50 output. GitHub publishes a calendar date. The catalog uses UTC as its date convention. [GitHub pricing footnotes](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing#footnotes)
+The catalog doubles the MAI launch rates when the recorded usage date is May 17, 2027 UTC or later. The mapper timestamps incoming finalized usage on observation after completion. The ledger keeps the first known timestamp for that attempt. MAI Code 2 uses $1.00 input, $0.05 cached input, and $5.00 output. MAI Code 2 Flash uses $0.10 input, $0.01 cached input, and $0.50 output. GitHub publishes a calendar date. The catalog uses UTC as its date convention. [GitHub pricing footnotes](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing#footnotes)
 
-For GPT-6.2 requests with more than 272,000 input tokens, uncached input and cache read rates double and output rates rise by 50% for the entire request. Cached input counts toward the threshold. The compaction cap is independent of this price threshold. [GitHub OpenAI model prices](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing#openai), [GPT-6.2 Astra API rates](https://developers.openai.com/api/docs/models/gpt-6.2-astra), [GPT-6.2 Sol API rates](https://developers.openai.com/api/docs/models/gpt-6.2-sol)
+The native Copilot catalog lists 272,000 as the maximum input in the default price tier for both GPT-6.2 models. GitHub's pricing table and the two OpenAI model pages also publish the standard and long-context bands. Above 272,000 billed input tokens, uncached input and cache read rates double and output rates rise by 50% for the entire request. Cached input counts toward the threshold. The compaction cap is independent of this price threshold. [GitHub OpenAI model prices](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing#openai), [GPT-6.2 Astra API rates](https://developers.openai.com/api/docs/models/gpt-6.2-astra), [GPT-6.2 Sol API rates](https://developers.openai.com/api/docs/models/gpt-6.2-sol)
 
-The GPT-6.2 routes can incur cache writes. OpenAI publishes 30-minute and 12-hour retention prices and a minimum cacheable prefix of 1,024 visible input tokens. The usage mapper lacks GPT-6.2 cache-write telemetry. Starting at 1,024 reported input tokens, the estimator flags its result Partial and reports the priced categories as a lower bound. [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching), [GitHub OpenAI model prices](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing#openai)
+GitHub's Copilot price table and native catalog both list GPT-6.2 cache-write prices. OpenAI's Standard rates per million writes are $2.50 (30 minutes) and $5 (12 hours) for Sol, and $10 and $20 for Astra. The estimator uses these public equivalents. Recorded Responses writes are already part of billed input, and the long-context input multiplier applies to both write rates. [GPT-6.2 Sol API rates](https://developers.openai.com/api/docs/models/gpt-6.2-sol), [GPT-6.2 Astra API rates](https://developers.openai.com/api/docs/models/gpt-6.2-astra)
 
-The native Copilot model catalog reported a 1,050,000-token context window and a 128,000-token output limit for all four entries on November 25, 2026. The sample uses those limits when its context cap is disabled.
+The native Sol probe on November 25, 2026 observed a 30-minute write on a cache miss and an explicit zero write on a repeat cache hit. The 12-hour prices come from OpenAI's API rate cards. Usage with missing write counts at 1,024 billed input tokens or higher, or a positive write count with an invalid or unknown TTL split, keeps a Partial estimate. Rehydration can downgrade an older estimate's completeness for budget checks while retaining its stored amount. [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching), [GitHub OpenAI model prices](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing#openai)
+
+The native Copilot model catalog reported Responses support, a 1,050,000-token context window, and a 128,000-token output limit for all four entries on November 25, 2026. The sample uses those limits when its context cap is disabled. The endpoint requires Copilot authentication. [Native Copilot model catalog](https://api.enterprise.githubcopilot.com/models)
 
 ## Deliberately unpriced
 
@@ -156,9 +161,8 @@ These ids appear in the sample's configuration but have no entry. Their cost res
 
 - Copilot catalog ids not in the table above (for example `gpt-5.5` or `claude-opus-4.8`). Add one from its vendor page when it is used.
 - Claude CLI default `claude-sonnet-4-6` (Anthropic lists the API rate for Sonnet 4.6, but the CLI transport here is subscription-billed; an operator on the API can add it from the same Anthropic page).
-- Codex default `gpt-5.3-codex`.
 
 ## Known limits
 
-- The catalog applies a long-context band only where configured. A usage record cannot select OpenAI's service-tier variants (Fast, Flex, or Batch). The shipped GPT estimates use Standard pricing.
+- The catalog applies a long-context band only where configured. The shipped GPT estimates use Standard pricing. A usage record lacks the service-tier information needed to select Fast, Ultrafast, Flex, or Batch rates. OpenAI renamed Priority processing to Fast on July 30, 2026. [OpenAI API pricing](https://developers.openai.com/api/docs/pricing)
 - When a response has no `cache_creation` split, the Anthropic provider assumes 0 one-hour writes only for a 5-minute request, where that is exact. For a request sent with 1-hour markers the share stays unknown, so the estimate is Partial and flagged `cache_write_ttl_unknown` instead of reading as Complete.

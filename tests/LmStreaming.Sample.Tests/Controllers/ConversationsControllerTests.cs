@@ -1050,6 +1050,28 @@ public class ConversationsControllerTests
         response.SandboxEnv.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task GetCapabilities_ReportsResponsesPricingOnlyWhenBothGpt62EntriesAreConfigured()
+    {
+        await using var pool = CreatePool();
+        var controller = CreateController(new InMemoryConversationStore(), pool, Mock.Of<IChatModeStore>());
+        var pricing = new Mock<IPricingResolver>();
+        var rate = new ModelPricing
+        {
+            ModelId = "gpt-6.2-sol",
+            PromptPerMillion = 2m,
+            CompletionPerMillion = 10m,
+            ResponsesCacheWrite30mPerMillion = 2.5m,
+            ResponsesCacheWrite12hPerMillion = 5m,
+            UnobservedCacheWritesFromInputTokens = 1024,
+        };
+        pricing.Setup(r => r.Resolve("gpt-6.2-sol")).Returns(rate);
+        ReadCapabilities(controller.GetCapabilities(pricing.Object)).ResponsesCacheWritePricing.Should().BeFalse();
+
+        pricing.Setup(r => r.Resolve("gpt-6.2-astra")).Returns(rate with { ModelId = "gpt-6.2-astra" });
+        ReadCapabilities(controller.GetCapabilities(pricing.Object)).ResponsesCacheWritePricing.Should().BeTrue();
+    }
+
     /// <summary>
     /// <c>sandboxEnv</c> reports what the REGISTRY has observed about the live gateway, in both
     /// directions.

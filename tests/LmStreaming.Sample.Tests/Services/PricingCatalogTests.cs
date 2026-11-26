@@ -477,7 +477,7 @@ public class PricingCatalogTests
     [InlineData("gpt-6.2-sol", 2.00, 0.10, 10.00, 2_240)]
     [InlineData("mai-code-2", 0.50, 0.025, 2.50, 560)]
     [InlineData("mai-code-2-flash", 0.05, 0.005, 0.25, 57)]
-    public void ShippedTierModelRatesAndCacheArithmetic_MatchPublishedPrices(
+    public void ShippedTierModels_UsePublishedPricesAndContextLimits(
         string modelId,
         double inputRate,
         double cachedInputRate,
@@ -538,11 +538,19 @@ public class PricingCatalogTests
                 OccurredAtUtc = cutoff.ToOffset(TimeSpan.FromHours(-7)),
             }
         );
+        var afterCutoff = new UsageLedger("conv-1", resolver).UpsertAttempt(
+            observation with
+            {
+                OccurredAtUtc = cutoff.AddDays(1),
+            }
+        );
         var unknown = new UsageLedger("conv-1", resolver).UpsertAttempt(observation);
 
         launch.EstimatedPublicCostMicros.Should().Be(launchMicros);
         regular.EstimatedPublicCostMicros.Should().Be(regularMicros);
         regular.CostCompleteness.Should().Be(CostCompleteness.Complete);
+        afterCutoff.EstimatedPublicCostMicros.Should().Be(regularMicros);
+        afterCutoff.CostCompleteness.Should().Be(CostCompleteness.Complete);
         unknown.EstimatedPublicCostMicros.Should().BeNull();
         unknown.CostCompleteness.Should().Be(CostCompleteness.Unavailable);
     }
@@ -572,10 +580,171 @@ public class PricingCatalogTests
         longTurn.EstimatedPublicCostMicros.Should().Be(longMicros);
         longTurn.CostCompleteness.Should().Be(CostCompleteness.Partial);
 
-        var eligibleTurn = new UsageLedger("conv-1", resolver).UpsertAttempt(
+        var lastCompleteTurn = new UsageLedger("conv-1", resolver).UpsertAttempt(
+            Observation(modelId, input: 1_023, output: 100)
+        );
+        var firstPartialTurn = new UsageLedger("conv-1", resolver).UpsertAttempt(
             Observation(modelId, input: 1_024, output: 100)
         );
-        eligibleTurn.CostCompleteness.Should().Be(CostCompleteness.Partial);
+
+        lastCompleteTurn.CostCompleteness.Should().Be(CostCompleteness.Complete);
+        firstPartialTurn.CostCompleteness.Should().Be(CostCompleteness.Partial);
+    }
+
+    [Theory]
+    [InlineData(1_979, 0, 1_976, 0, 5, 4_996)]
+    [InlineData(1_978, 1_975, 0, 0, 5, 254)]
+    [InlineData(272_001, 1_000, 1_500, 500, 100, 1_089_704)]
+    public void ShippedGpt62ResponsesPricing_UsesInclusiveCacheWriteRates(
+        long input,
+        long cached,
+        long written,
+        long written12h,
+        long output,
+        long expectedMicros
+    )
+    {
+        const string model = "gpt-6.2-sol";
+        var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
+        var ledger = new UsageLedger("conv-1", ResolverFrom(configuration));
+
+        var priced = ledger.UpsertAttempt(
+            Observation(model, input, output) with
+            {
+                CacheReadTokens = cached,
+                ResponsesCacheWriteTokens = written,
+                ResponsesCacheWrite12hTokens = written12h,
+            }
+        );
+
+        priced.TotalTokens.Should().Be(input + output);
+        priced.EstimatedPublicCostMicros.Should().Be(expectedMicros);
+        ledger.Snapshot().EstimatedCostCompleteness.Should().Be(CostCompleteness.Complete);
+    }
+
+    [Theory]
+    [InlineData(null, null, 0)]
+    [InlineData(1_976L, null, 0)]
+    [InlineData(1_976L, 1_977L, 0)]
+    [InlineData(1_980L, 0L, 0)]
+    [InlineData(8L, 0L, 1_975)]
+    [InlineData(0L, 1L, 0)]
+    public void ShippedGpt62ResponsesPricing_LeavesMissingOrMalformedWritesPartial(
+        long? written,
+        long? written12h,
+        long cached
+    )
+    {
+        var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
+        var ledger = new UsageLedger("conv-1", ResolverFrom(configuration));
+
+        var priced = ledger.UpsertAttempt(
+            Observation("gpt-6.2-sol", 1_979, 5) with
+            {
+                CacheReadTokens = cached,
+                ResponsesCacheWriteTokens = written,
+                ResponsesCacheWrite12hTokens = written12h,
+            }
+        );
+
+        priced.EstimatedPublicCostMicros.Should().BeGreaterThan(0);
+        ledger.Snapshot().EstimatedCostCompleteness.Should().Be(CostCompleteness.Partial);
+    }
+
+    [Fact]
+    public void ResponsesCacheWriteDetails_StayWithTheInputAndReadCountsThatReportedThem()
+    {
+        var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
+        var ledger = new UsageLedger("conv-1", ResolverFrom(configuration));
+        var usage = Observation("gpt-6.2-sol", 1_979, 5);
+        _ = ledger.UpsertAttempt(usage with { ResponsesCacheWriteTokens = 1_976, ResponsesCacheWrite12hTokens = 0 });
+
+        var replay = ledger.UpsertAttempt(usage);
+        replay.ResponsesCacheWriteTokens.Should().Be(1_976);
+        replay.EstimatedPublicCostMicros.Should().Be(4_996);
+        replay.CostCompleteness.Should().Be(CostCompleteness.Complete);
+
+        var larger = ledger.UpsertAttempt(usage with { InputTokens = 1_980 });
+        larger.ResponsesCacheWriteTokens.Should().BeNull();
+        larger.ResponsesCacheWrite12hTokens.Should().BeNull();
+        larger.CostCompleteness.Should().Be(CostCompleteness.Partial);
+    }
+
+    [Fact]
+    public void SeededGpt62EstimateWithoutWriteTelemetry_KeepsTheAmountAndBecomesPartial()
+    {
+        var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
+        var ledger = new UsageLedger("conv-1", ResolverFrom(configuration));
+
+        ledger.SeedFromRecords(
+            [
+                Observation("gpt-6.2-sol", 1_979, 5) with
+                {
+                    EstimatedPublicCostMicros = 4_008,
+                    CostCompleteness = CostCompleteness.Complete,
+                },
+            ],
+            foldedRevision: 1
+        );
+
+        var snapshot = ledger.Snapshot();
+        snapshot.EstimatedPublicCostMicros.Should().Be(4_008);
+        snapshot.EstimatedCostCompleteness.Should().Be(CostCompleteness.Partial);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task PersistedGpt62Usage_WithPricingResolverPreservesCostAndDowngradesCompleteness(bool saveRecords)
+    {
+        const string threadId = "conv-1";
+        var configuration = new ConfigurationBuilder().AddJsonFile(FindSampleAppsettings(), optional: false).Build();
+        var store = new InMemoryConversationStore();
+        var oldUsage = Observation("gpt-6.2-sol", 1_979, 5) with
+        {
+            EstimatedPublicCostMicros = 4_008,
+            CostCompleteness = CostCompleteness.Complete,
+        };
+        var oldAggregate = ConversationUsageAggregate.Fold(threadId, [oldUsage], 1, UsageCompleteness.Complete);
+        await ConversationUsageProjection.SaveAsync(store, oldAggregate, saveRecords ? [oldUsage] : null);
+
+        var guarded = await ConversationUsageProjection.LoadAsync(
+            store,
+            threadId,
+            ct: default,
+            pricingResolver: ResolverFrom(configuration)
+        );
+
+        guarded!.EstimatedPublicCostMicros.Should().Be(4_008);
+        guarded.EstimatedCostCompleteness.Should().Be(CostCompleteness.Partial);
+        guarded.PerModel.Should().ContainSingle().Which.EstimatedCostCompleteness.Should().Be(CostCompleteness.Partial);
+
+        var unguarded = await ConversationUsageProjection.LoadAsync(store, threadId);
+        unguarded!.EstimatedCostCompleteness.Should().Be(CostCompleteness.Complete);
+    }
+
+    [Theory]
+    [InlineData("RateChange:EffectiveDate", "not-a-date", "RateChange")]
+    [InlineData("RateChange:Multiplier", "0", "RateChange")]
+    [InlineData("LongContext:InputTokensGreaterThan", "0", "LongContext")]
+    [InlineData("LongContext:OutputMultiplier", "-1", "LongContext")]
+    public void AMalformedPricingModifier_RejectsTheEntry(string key, string value, string malformedSection)
+    {
+        const string prefix = "Pricing:Models:claude:";
+        var configuration = AnthropicShapedConfig(
+            (prefix + "RateChange:EffectiveDate", "2027-05-17"),
+            (prefix + "RateChange:Multiplier", "2"),
+            (prefix + "LongContext:InputTokensGreaterThan", "272000"),
+            (prefix + "LongContext:InputMultiplier", "2"),
+            (prefix + "LongContext:OutputMultiplier", "1.5"),
+            (prefix + key, value)
+        );
+        var rejected = new List<string>();
+
+        _ = PricingCatalog.BuildCatalog(configuration, rejected);
+
+        rejected.Should().ContainSingle(reason => reason.Contains(malformedSection, StringComparison.Ordinal));
+        ResolverFrom(configuration).Resolve("claude").Should().BeNull();
     }
 
     private static bool IsServedOverAnAnthropicShapedEndpoint(string modelId) =>

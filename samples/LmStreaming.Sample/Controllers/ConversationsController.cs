@@ -950,14 +950,18 @@ public class ConversationsController(
     /// it to retrieve spend without a live stream. Returns 404 when no usage has been recorded yet.
     /// </summary>
     [HttpGet("{threadId}/usage")]
-    public async Task<IActionResult> GetUsage(string threadId, CancellationToken ct = default)
+    public async Task<IActionResult> GetUsage(
+        string threadId,
+        CancellationToken ct = default,
+        [FromServices] IPricingResolver? pricingResolver = null
+    )
     {
         if (await AuthorizeAsync(threadId, AccessAction.Read, ct) is { } denied)
         {
             return denied;
         }
 
-        var usage = await ConversationUsageProjection.LoadAsync(store, threadId, ct);
+        var usage = await ConversationUsageProjection.LoadAsync(store, threadId, ct, pricingResolver);
         return usage is null ? NotFound() : Ok(usage);
     }
 
@@ -1352,7 +1356,7 @@ public class ConversationsController(
     }
 
     [HttpGet("capabilities")]
-    public IActionResult GetCapabilities() =>
+    public IActionResult GetCapabilities([FromServices] IPricingResolver? pricingResolver = null) =>
         Ok(
             new ConversationCapabilitiesResponse
             {
@@ -1360,6 +1364,9 @@ public class ConversationsController(
                 MessageIdempotency = store is IInputAcceptanceStore,
                 SpawnSuppression = true,
                 RootReasoningEffort = true,
+                ResponsesCacheWritePricing =
+                    HasResponsesCacheWritePricing(pricingResolver, "gpt-6.2-sol")
+                    && HasResponsesCacheWritePricing(pricingResolver, "gpt-6.2-astra"),
                 // Reported, not asserted. The registry trips this to false the first time the gateway
                 // answers that it has no session-env route (a pre-0.1.11 image), which is exactly the
                 // deployment where a client that offered env editors would collect variables the
@@ -1371,6 +1378,15 @@ public class ConversationsController(
                 DedicatedSandbox = sandboxSessionRegistry is not null,
             }
         );
+
+    private static bool HasResponsesCacheWritePricing(IPricingResolver? pricingResolver, string model) =>
+        pricingResolver?.Resolve(model)
+            is {
+                CacheAccounting: CacheAccounting.SubsetOfInput,
+                ResponsesCacheWrite30mPerMillion: not null,
+                ResponsesCacheWrite12hPerMillion: not null,
+                UnobservedCacheWritesFromInputTokens: > 0,
+            };
 
     /// <summary>
     /// True when some route can run in Compact mode and the kill switch is off. A per-agent refusal still

@@ -515,9 +515,10 @@ internal static class JudgeBatch
     {
         var usage = receipt["judgeUsage"];
         var complete = JudgeRunner.IsComplete(usage?["completeness"]);
+        var measured = JudgeRunner.IsMeasuredUsage(usage);
         var lowerBound =
             !complete
-            || usage?["measured"]?.GetValue<bool>() != true
+            || !measured
             || receipt["stage"]?.GetValue<string>() == "capped"
             || receipt["descendantsSettled"]?.GetValue<bool>() == false
             || receipt["finishedAt"] is null;
@@ -529,7 +530,7 @@ internal static class JudgeBatch
             usage?["usd"]?.GetValue<decimal>() ?? 0m,
             lowerBound,
             receipt["caps"]?["maxUsd"]?.GetValue<decimal>() ?? defaultCap,
-            usage?["measured"]?.GetValue<bool>() != true || usage["usd"] is null,
+            !measured || usage?["usd"] is null,
             usage is not null
         );
     }
@@ -681,15 +682,15 @@ internal static class JudgeBatch
                     scan.NeedsYou.Add(new(spend.Label, "cost may be higher than shown; the host has no cost record"));
                 continue;
             }
-            var measured = live["measured"]!.GetValue<bool>();
+            var measured = JudgeRunner.IsMeasuredUsage(live);
             scan.Spends[i] = spend with
             {
                 Usd = Math.Max(spend.Usd, live["usd"]?.GetValue<decimal>() ?? 0m),
-                LowerBound = !JudgeRunner.IsComplete(live["completeness"]),
+                LowerBound = !measured || !JudgeRunner.IsComplete(live["completeness"]),
                 Unknown = !measured,
             };
             if (!measured)
-                Console.Error.WriteLine($"judge batch: {spend.Label}: the host cannot price its model");
+                Console.Error.WriteLine($"judge batch: {spend.Label}: the host did not provide a complete price");
         }
         // Every cost the day cap charges at the cap says so, whatever made it unknown; a refused sign-in says
         // it once for all.

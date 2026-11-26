@@ -141,6 +141,12 @@ public sealed record ModelPricing
     /// <summary>Cost per one million cache-write tokens with a 1-hour TTL, or null when unknown.</summary>
     public decimal? CacheWrite1hPerMillion { get; init; }
 
+    /// <summary>Cost per one million input-inclusive Responses cache writes at 30-minute retention.</summary>
+    public decimal? ResponsesCacheWrite30mPerMillion { get; init; }
+
+    /// <summary>Cost per one million input-inclusive Responses cache writes at 12-hour retention.</summary>
+    public decimal? ResponsesCacheWrite12hPerMillion { get; init; }
+
     /// <summary>
     ///     Cost per one million reasoning tokens, or null when reasoning is billed as ordinary completion
     ///     output (every current provider).
@@ -247,7 +253,26 @@ public sealed record ModelPricing
         var outputMultiplier = rateMultiplier * (longContext?.OutputMultiplier ?? 1m);
 
         var missing = new List<string>();
-        if (UnobservedCacheWritesFromInputTokens is { } minInput && billedInput >= minInput)
+        long? responsesWrites = null;
+        if (record.ResponsesCacheWriteTokens is { } observedWrites)
+        {
+            if (
+                CacheAccounting == CacheAccounting.SubsetOfInput
+                && record.CacheWriteTokens == 0
+                && record.CacheReadTokens >= 0
+                && record.InputTokens >= record.CacheReadTokens
+                && observedWrites >= 0
+                && observedWrites <= record.InputTokens - record.CacheReadTokens
+            )
+            {
+                responsesWrites = observedWrites;
+            }
+            else
+            {
+                missing.Add(CostEstimate.CacheAccountingMismatch);
+            }
+        }
+        else if (UnobservedCacheWritesFromInputTokens is { } minInput && billedInput >= minInput)
         {
             missing.Add(CostEstimate.MissingCacheWriteTelemetry);
         }
@@ -280,7 +305,7 @@ public sealed record ModelPricing
         var uncachedInput = record.InputTokens;
         if (CacheAccounting == CacheAccounting.SubsetOfInput)
         {
-            uncachedInput -= record.CacheReadTokens;
+            uncachedInput -= record.CacheReadTokens + responsesWrites.GetValueOrDefault();
             if (uncachedInput < 0)
             {
                 // The record has more cache reads than input, which a subset cannot. The entry's accounting
@@ -313,6 +338,30 @@ public sealed record ModelPricing
                     CostEstimate.MissingCacheWrite
                 );
                 Price(oneHour, CacheWrite1hPerMillion, inputMultiplier, CostEstimate.MissingCacheWrite);
+            }
+        }
+
+        if (responsesWrites is { } writeTotal)
+        {
+            var write12h = record.ResponsesCacheWrite12hTokens;
+            if (write12h is < 0 || write12h > writeTotal || (writeTotal > 0 && write12h is null))
+            {
+                missing.Add(CostEstimate.CacheWriteTtlUnknown);
+            }
+            else
+            {
+                Price(
+                    writeTotal - write12h.GetValueOrDefault(),
+                    ResponsesCacheWrite30mPerMillion,
+                    inputMultiplier,
+                    CostEstimate.MissingCacheWrite
+                );
+                Price(
+                    write12h.GetValueOrDefault(),
+                    ResponsesCacheWrite12hPerMillion,
+                    inputMultiplier,
+                    CostEstimate.MissingCacheWrite
+                );
             }
         }
 
