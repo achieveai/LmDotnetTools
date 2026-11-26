@@ -42,7 +42,12 @@ def changed_paths(repo: Path) -> set[str]:
 
 
 def source_fingerprint(source: Path) -> dict:
-    """Read-only evidence: hooks are detected after execution, not sandboxed."""
+    """Read-only evidence: hooks are detected after execution, not sandboxed.
+
+    Only this checkout's own state is recorded. The source's refs live in the pool's shared
+    store, so other lanes' fetches move them at any time (#999); the detached HEAD and the
+    current ref already show a hook that moves or switches this checkout.
+    """
     index = Path(observe(source, "rev-parse", "--path-format=absolute", "--git-path", "index").strip())
     paths = changed_paths(source)
     files = {}
@@ -57,7 +62,6 @@ def source_fingerprint(source: Path) -> dict:
     return {
         "head": observe(source, "rev-parse", "HEAD").strip(),
         "ref": current_ref(source, read_only=True),
-        "refs": observe(source, "for-each-ref", "--format=%(refname) %(objectname)"),
         "index": file_hash(index) if index.is_file() else None,
         "stagedDiff": observe(source, "diff", "--cached", "--binary"),
         "diff": observe(source, "diff", "--binary"),
