@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Identity;
@@ -14,6 +15,7 @@ using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.Agents;
 using LmStreaming.Sample.Tests.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
+using Microsoft.Extensions.Configuration;
 
 namespace LmStreaming.Sample.Tests.Controllers;
 
@@ -1042,6 +1044,7 @@ public class ConversationsControllerTests
         response.RootReasoningEffort.Should().BeTrue();
         response.SpawnSuppression.Should().BeTrue();
         response.MessageIdempotency.Should().Be(supportsIdempotency);
+        response.ModelFallbackSourceProviders.Should().BeEmpty();
         // No sandbox registry is wired into this controller, so nothing here could apply env to a
         // session. It used to report true regardless — a claim about the BUILD rather than about the
         // running gateway, which is what a client gates its env editors on. See
@@ -1070,6 +1073,45 @@ public class ConversationsControllerTests
 
         pricing.Setup(r => r.Resolve("gpt-6.2-astra")).Returns(rate with { ModelId = "gpt-6.2-astra" });
         ReadCapabilities(controller.GetCapabilities(pricing.Object)).ResponsesCacheWritePricing.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task GetCapabilities_ReportsConfiguredSourcesWithAvailableTargets()
+    {
+        await using var pool = CreatePool();
+        var registry = new ProviderRegistry(
+            new FakeFileSystemProbe(),
+            () => false,
+            [
+                new CopilotModelInfo(
+                    "gpt-6.2-astra",
+                    "GPT-6.2 Astra",
+                    CopilotModelVendor.OpenAI,
+                    CopilotModelTransport.Responses
+                ),
+            ],
+            copilotTokenAvailable: () => true
+        );
+        var controller = CreateController(
+            new InMemoryConversationStore(),
+            pool,
+            Mock.Of<IChatModeStore>(),
+            providerRegistry: registry
+        );
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["LmStreaming:ModelFallback:gpt-6.2-astra:0"] = "test",
+                    ["LmStreaming:ModelFallback:gpt-6.2-sol:0"] = "unknown-provider",
+                    ["LmStreaming:ModelFallback:gpt-6.2-luna:0"] = "test",
+                }
+            )
+            .Build();
+
+        var response = ReadCapabilities(controller.GetCapabilities(configuration: configuration));
+
+        response.ModelFallbackSourceProviders.Should().Equal("gpt-6.2-astra", "gpt-6.2-luna");
     }
 
     /// <summary>

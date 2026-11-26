@@ -132,6 +132,93 @@ public sealed class ReviewdJudgeTests
     }
 
     [Fact]
+    public async Task Judge_preflight_refuses_a_configured_astra_fallback_before_any_post()
+    {
+        var host = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "api/providers", """{"providers":[{"id":"gpt-6.2-astra","available":true}]}""")
+            .OnJson(HttpMethod.Get, "api/chat-modes/workspace-agent", "{}")
+            .OnJson(
+                HttpMethod.Get,
+                "api/conversations/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"responsesCacheWritePricing":true,"modelFallbackSourceProviders":["gpt-6.2-astra"]}"""
+            );
+        var identity = Identity("gpt-6.2-astra");
+        var review = new JsonObject { ["artifactCommit"] = new JsonObject { ["reviewDirectory"] = "reviews/pr-1" } };
+
+        var act = () =>
+            JudgeRunner.PreflightAsync(
+                Client(host),
+                identity,
+                "Judge it.",
+                review,
+                "org/project/Nova",
+                "1",
+                CancellationToken.None
+            );
+
+        await act.Should()
+            .ThrowAsync<ReviewHostContractException>()
+            .WithMessage("*available fallback target configured for judge provider gpt-6.2-astra*");
+        host.Requests.Should().NotContain(request => request.Method == HttpMethod.Post);
+    }
+
+    [Fact]
+    public async Task Judge_preflight_fails_closed_when_an_older_host_omits_model_fallback_capability()
+    {
+        var host = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "api/providers", """{"providers":[{"id":"gpt-6.2-astra","available":true}]}""")
+            .OnJson(HttpMethod.Get, "api/chat-modes/workspace-agent", "{}")
+            .OnJson(
+                HttpMethod.Get,
+                "api/conversations/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"responsesCacheWritePricing":true}"""
+            );
+        var identity = Identity("gpt-6.2-astra");
+        var review = new JsonObject { ["artifactCommit"] = new JsonObject { ["reviewDirectory"] = "reviews/pr-1" } };
+
+        var act = () =>
+            JudgeRunner.PreflightAsync(
+                Client(host),
+                identity,
+                "Judge it.",
+                review,
+                "org/project/Nova",
+                "1",
+                CancellationToken.None
+            );
+
+        await act.Should().ThrowAsync<ReviewHostContractException>().WithMessage("*modelFallbackSourceProviders*");
+        host.Requests.Should().NotContain(request => request.Method == HttpMethod.Post);
+    }
+
+    [Fact]
+    public async Task Every_judge_send_rechecks_model_fallback_capability_before_posting()
+    {
+        var host = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/capabilities",
+            """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"responsesCacheWritePricing":true,"modelFallbackSourceProviders":["gpt-6.2-astra"]}"""
+        );
+
+        var act = () =>
+            JudgeRunner.SendWithKeyAsync(
+                Client(host),
+                "thread-1",
+                "Judge follow-up.",
+                "judge-nudge-1",
+                FastOutage,
+                "repo #1",
+                CancellationToken.None,
+                judgeProvider: "gpt-6.2-astra"
+            );
+
+        await act.Should()
+            .ThrowAsync<ReviewHostContractException>()
+            .WithMessage("*available fallback target configured for judge provider gpt-6.2-astra*");
+        host.Requests.Should().ContainSingle().Which.Method.Should().Be(HttpMethod.Get);
+    }
+
+    [Fact]
     public async Task An_alternate_judge_send_requires_acknowledged_spawn_suppression()
     {
         var host = new FakeHttpMessageHandler().OnJson(

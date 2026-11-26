@@ -1356,7 +1356,10 @@ public class ConversationsController(
     }
 
     [HttpGet("capabilities")]
-    public IActionResult GetCapabilities([FromServices] IPricingResolver? pricingResolver = null) =>
+    public IActionResult GetCapabilities(
+        [FromServices] IPricingResolver? pricingResolver = null,
+        [FromServices] IConfiguration? configuration = null
+    ) =>
         Ok(
             new ConversationCapabilitiesResponse
             {
@@ -1367,6 +1370,9 @@ public class ConversationsController(
                 ResponsesCacheWritePricing =
                     HasResponsesCacheWritePricing(pricingResolver, "gpt-6.2-sol")
                     && HasResponsesCacheWritePricing(pricingResolver, "gpt-6.2-astra"),
+                ModelFallbackSourceProviders = configuration is null
+                    ? []
+                    : global::Program.GetModelFallbackSourcesWithAvailableTargets(configuration, providerRegistry),
                 // Reported, not asserted. The registry trips this to false the first time the gateway
                 // answers that it has no session-env route (a pre-0.1.11 image), which is exactly the
                 // deployment where a client that offered env editors would collect variables the

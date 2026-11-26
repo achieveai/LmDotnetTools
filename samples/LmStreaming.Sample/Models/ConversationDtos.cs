@@ -367,6 +367,14 @@ public record ConversationCapabilitiesResponse
     public bool ResponsesCacheWritePricing { get; init; }
 
     /// <summary>
+    /// Normalized source provider ids with at least one configured, available and resolvable fallback target.
+    /// This signals a potential model change for fixed-model callers. It does not promise that every target
+    /// can be built or satisfy mode-specific tool requirements at runtime. An empty list means no available,
+    /// resolvable configured targets were found.
+    /// </summary>
+    public IReadOnlyList<string> ModelFallbackSourceProviders { get; init; } = [];
+
+    /// <summary>
     /// True when <see cref="ProvisionConversationRequest.Env"/> is understood and persisted before the
     /// hosted root agent is built, and applied as the provision-layer sandbox env (spec §5). Callers
     /// check this side-effect-free capability before provisioning so an older host cannot mint an

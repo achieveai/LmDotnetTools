@@ -949,7 +949,8 @@ internal static class JudgeRunner
                 WaitOutage,
                 label,
                 ct,
-                suppressSubAgentSpawning: !UsesDefaultProvider(receipt["identity"]!["provider"]!.GetValue<string>())
+                suppressSubAgentSpawning: !UsesDefaultProvider(receipt["identity"]!["provider"]!.GetValue<string>()),
+                judgeProvider: receipt["identity"]!["provider"]!.GetValue<string>()
             );
 
         // Null when the PR is not completed: the message is printed here and the caller exits 4.
@@ -1266,7 +1267,8 @@ internal static class JudgeRunner
         // The effort value itself is checked by the option parser; the host must honour a root effort.
         await client.EnsureHostContractAsync(
             ct,
-            requireResponsesCacheWritePricing: RequiresResponsesCacheWritePricing(provider)
+            requireResponsesCacheWritePricing: RequiresResponsesCacheWritePricing(provider),
+            judgeProvider: provider
         );
         if (string.IsNullOrWhiteSpace(template))
             throw new InvalidOperationException("The judge prompt template is empty; nothing was started.");
@@ -1777,7 +1779,8 @@ internal static class JudgeRunner
         HostOutage outage,
         string label,
         CancellationToken ct,
-        bool suppressSubAgentSpawning = false
+        bool suppressSubAgentSpawning = false,
+        string? judgeProvider = null
     )
     {
         var since = DateTimeOffset.UtcNow;
@@ -1786,6 +1789,15 @@ internal static class JudgeRunner
         {
             try
             {
+                if (judgeProvider is not null)
+                {
+                    await client.EnsureHostContractAsync(
+                        ct,
+                        requireResponsesCacheWritePricing: RequiresResponsesCacheWritePricing(judgeProvider),
+                        judgeProvider: judgeProvider
+                    );
+                }
+
                 return await client.SendMessageAsync(thread, text, suppressSubAgentSpawning, key, ct);
             }
             catch (Exception failure) when (IsHostOutage(failure, ct))

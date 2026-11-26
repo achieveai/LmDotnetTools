@@ -4841,6 +4841,64 @@ public partial class Program
         : registry.TryGetAnthropicCompatModel(providerId, out var compatModel) ? compatModel.ModelName
         : GetModelIdForProvider(providerId);
 
+    internal static IReadOnlyList<string> GetModelFallbackSourcesWithAvailableTargets(
+        IConfiguration configuration,
+        ProviderRegistry registry
+    )
+    {
+        var result = new List<string>();
+        foreach (var source in configuration.GetSection("LmStreaming:ModelFallback").GetChildren())
+        {
+            var sourceId = source.Key.Trim().ToLowerInvariant();
+            if (sourceId.Length == 0)
+            {
+                continue;
+            }
+
+            var fallbackIds = ReadConfiguredModelFallbackProviderIds(configuration, sourceId);
+            if (
+                fallbackIds.Any(targetId =>
+                {
+                    if (!registry.IsAvailable(targetId))
+                    {
+                        return false;
+                    }
+
+                    try
+                    {
+                        return !string.IsNullOrWhiteSpace(ResolveModelIdForProvider(registry, targetId));
+                    }
+                    catch (Exception)
+                    {
+                        return false;
+                    }
+                })
+            )
+            {
+                result.Add(sourceId);
+            }
+        }
+
+        return result;
+    }
+
+    private static string[] ReadConfiguredModelFallbackProviderIds(IConfiguration configuration, string sourceId)
+    {
+        var section = configuration.GetSection($"LmStreaming:ModelFallback:{sourceId}");
+        // Blank, not null, is how a list's parent key reads when the setting comes through host settings.
+        string[]? fallbackIds = string.IsNullOrWhiteSpace(section.Value) ? section.Get<string[]>() : [section.Value];
+        return fallbackIds is not { Length: > 0 }
+            ? []
+            :
+            [
+                .. fallbackIds
+                    .Where(id => !string.IsNullOrWhiteSpace(id))
+                    .Select(id => id.Trim().ToLowerInvariant())
+                    .Where(id => id != sourceId)
+                    .Distinct(StringComparer.OrdinalIgnoreCase),
+            ];
+    }
+
     /// <summary>
     ///     Opt-in model fallback for a conversation's provider (#930 P1 item 8). The array
     ///     <c>LmStreaming:ModelFallback:{providerId}</c> lists provider ids to try, in order, when this one is
@@ -4871,10 +4929,9 @@ public partial class Program
     )
     {
         var configuration = sp.GetRequiredService<IConfiguration>();
-        var section = configuration.GetSection($"LmStreaming:ModelFallback:{providerId}");
-        // Blank, not null, is how a list's parent key reads when the setting comes through host settings.
-        string[]? fallbackIds = string.IsNullOrWhiteSpace(section.Value) ? section.Get<string[]>() : [section.Value];
-        if (fallbackIds is not { Length: > 0 })
+        var normalizedProviderId = providerId.Trim().ToLowerInvariant();
+        var fallbackIds = ReadConfiguredModelFallbackProviderIds(configuration, normalizedProviderId);
+        if (fallbackIds.Length == 0)
         {
             return primary;
         }
@@ -4882,13 +4939,7 @@ public partial class Program
         var registry = sp.GetRequiredService<ProviderRegistry>();
         var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("LmStreaming.Sample.ModelFallback");
         var targets = new List<FallbackTarget>();
-        foreach (
-            var targetId in fallbackIds
-                .Where(id => !string.IsNullOrWhiteSpace(id))
-                .Select(id => id.Trim().ToLowerInvariant())
-                .Where(id => id != providerId)
-                .Distinct()
-        )
+        foreach (var targetId in fallbackIds)
         {
             if (!registry.IsAvailable(targetId))
             {

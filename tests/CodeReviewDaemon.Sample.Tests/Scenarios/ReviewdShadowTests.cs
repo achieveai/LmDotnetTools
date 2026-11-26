@@ -2969,6 +2969,8 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     [InlineData("legacy", "completed", 0)]
     [InlineData("legacy-rejudge", "completed", 0)]
     [InlineData("pending-nudge", "capped", 1)]
+    [InlineData("configured-fallback-nudge", "nudge-send-pending", 1)]
+    [InlineData("missing-fallback-capability-nudge", "nudge-send-pending", 1)]
     [InlineData("draft", "capped", 1)]
     [InlineData("missing-capability", "post-check", 1)]
     [InlineData("fallback", "failed", 1)]
@@ -3094,7 +3096,8 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         const string artifact = "dddddddddddddddddddddddddddddddddddddddd";
         var stage = scenario switch
         {
-            "pending-nudge" => "nudge-send-pending",
+            "pending-nudge" or "configured-fallback-nudge" or "missing-fallback-capability-nudge" =>
+                "nudge-send-pending",
             "alternate-provider" => "thread-created",
             _ => "post-check",
         };
@@ -3163,11 +3166,23 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
                 HttpStatusCode.Accepted
             );
         return scenario == "missing-capability"
-            ? host.OnJson(
-                HttpMethod.Get,
-                "/capabilities",
-                """{"messageIdempotency":true,"rootReasoningEffort":true,"spawnSuppression":true}"""
-            )
+                ? host.OnJson(
+                    HttpMethod.Get,
+                    "/capabilities",
+                    """{"messageIdempotency":true,"rootReasoningEffort":true,"spawnSuppression":true}"""
+                )
+            : scenario == "configured-fallback-nudge"
+                ? host.OnJson(
+                    HttpMethod.Get,
+                    "/capabilities",
+                    """{"schemaVersion":1,"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"responsesCacheWritePricing":true,"modelFallbackSourceProviders":["gpt-6.2-sol"]}"""
+                )
+            : scenario == "missing-fallback-capability-nudge"
+                ? host.OnJson(
+                    HttpMethod.Get,
+                    "/capabilities",
+                    """{"schemaVersion":1,"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"responsesCacheWritePricing":true}"""
+                )
             : host.OnCurrentReviewHostCapabilities();
     }
 
