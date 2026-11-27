@@ -142,6 +142,9 @@ internal sealed record DiscoveryWebhookDto(
     [property: JsonPropertyName("auth_header")] string Auth
 );
 
+/// <summary>Only the <c>session_id</c> of a create reply, read before anything else in it can fail.</summary>
+internal sealed record SandboxSessionIdDto([property: JsonPropertyName("session_id")] string? SessionId);
+
 internal sealed record CreateSandboxResponseDto(
     [property: JsonPropertyName("session_id")] string SessionId,
     [property: JsonPropertyName("container_id")] string? ContainerId,
@@ -167,8 +170,9 @@ internal sealed record CreateSandboxResponseDto(
     [property: JsonPropertyName("sourceVersion")] string? SourceVersion = null,
     [property: JsonPropertyName("resolvedArchiveReceipts")]
         System.Text.Json.JsonElement? ResolvedArchiveReceipts = null,
-    // Source capture echo (create and GET, gateway PR #375): read as raw JSON and parsed by the client.
-    [property: JsonPropertyName("sourceMode")] string? SourceMode = null,
+    // Source capture echo (create and GET, gateway PR #375): read as raw JSON and parsed by the client, so a malformed
+    // echo (sourceMode included) fails inside CreateAsync's cleanup scope rather than while the reply deserializes.
+    [property: JsonPropertyName("sourceMode")] System.Text.Json.JsonElement? SourceMode = null,
     [property: JsonPropertyName("sourceReceipt")] System.Text.Json.JsonElement? SourceReceipt = null,
     [property: JsonPropertyName("resolvedMarketplaceRevisions")]
         System.Text.Json.JsonElement? ResolvedMarketplaceRevisions = null

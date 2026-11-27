@@ -44,14 +44,17 @@ public sealed partial class SandboxClient
             throw await MapErrorResponseAsync(response, "sandbox creation", ct).ConfigureAwait(false);
         }
 
-        var payload = await ReadSandboxResponseOrThrowAsync(response, "sandbox creation", ct).ConfigureAwait(false);
+        // Only session_id must parse before the cleanup scope: without it there is nothing to delete. Every other field,
+        // and every content check (source and archive echoes, inventory, image report, skills, ...), is read inside it,
+        // so a create whose reply is rejected is deleted, not leaked.
         var statusCode = (int)response.StatusCode;
-        IReadOnlyList<SandboxAppMarketplaceArchive> archives;
-        SourceEcho sourceEcho;
+        var reply = await ReadSandboxReplyJsonAsync(response, "sandbox creation", ct).ConfigureAwait(false);
+        var sessionId = ReadSandboxSessionId(reply, "sandbox creation", statusCode);
+        SandboxInfo info;
         try
         {
-            // The source checks run here, so a create whose source echo is rejected is deleted, not leaked.
-            archives = ReadResolvedArchiveReceipts(
+            var payload = ToSandboxReply(reply, "sandbox creation", statusCode)!;
+            var archives = ReadResolvedArchiveReceipts(
                 payload.ResolvedArchiveReceipts,
                 payload.SourceVersion,
                 "creating a sandbox",
@@ -82,22 +85,20 @@ public sealed partial class SandboxClient
                 );
             }
 
-            sourceEcho = ReadSourceEcho(payload, "sandbox creation", statusCode);
+            info = ToSandboxInfo(
+                payload,
+                "sandbox creation",
+                statusCode,
+                archives,
+                ReadSourceEcho(payload, "sandbox creation", statusCode),
+                sentSearchFlags: request.Skills is { SearchTool: not null } or { AgentsSearchTool: not null }
+            );
         }
         catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.Protocol)
         {
-            await DeleteRejectedSandboxAsync(payload.SessionId, ex).ConfigureAwait(false);
+            await DeleteRejectedSandboxAsync(sessionId, ex).ConfigureAwait(false);
             throw;
         }
-
-        var info = ToSandboxInfo(
-            payload,
-            "sandbox creation",
-            statusCode,
-            archives,
-            sourceEcho,
-            sentSearchFlags: request.Skills is { SearchTool: not null } or { AgentsSearchTool: not null }
-        );
 
         if (request.WorkingDir is { } workingDir)
         {
@@ -436,14 +437,15 @@ public sealed partial class SandboxClient
             Mcp = TryToMcpResolvedPolicy(dto.Mcp, statusCode),
             SourceVersion = dto.SourceVersion,
             ResolvedArchiveReceipts = archives,
-            SourceMode = dto.SourceMode,
+            SourceMode = sourceEcho.Mode,
             SourceReceiptSources = sourceEcho.Sources,
             RawSourceReceipt = sourceEcho.RawReceipt,
             ResolvedMarketplaceRevisions = sourceEcho.Revisions,
         };
 
-    /// <summary>The parsed source receipt and marketplace revisions of a create or GET echo.</summary>
+    /// <summary>The parsed source mode, receipt and marketplace revisions of a create or GET echo.</summary>
     private readonly record struct SourceEcho(
+        string? Mode,
         IReadOnlyList<SandboxSourceReceiptEntry>? Sources,
         JsonElement? RawReceipt,
         IReadOnlyList<SandboxResolvedMarketplaceRevision> Revisions
@@ -452,6 +454,16 @@ public sealed partial class SandboxClient
     /// <summary>Reads the source echo, throwing <see cref="SandboxErrorKind.Protocol"/> when it is malformed.</summary>
     private static SourceEcho ReadSourceEcho(CreateSandboxResponseDto dto, string operation, int statusCode) =>
         new(
+            dto.SourceMode switch
+            {
+                null or { ValueKind: JsonValueKind.Null } => null,
+                { ValueKind: JsonValueKind.String } mode => mode.GetString(),
+                _ => throw new SandboxException(
+                    SandboxErrorKind.Protocol,
+                    $"Sandbox gateway returned a non-string 'sourceMode' for {operation}.",
+                    statusCode
+                ),
+            },
             dto.SourceReceipt is { ValueKind: not JsonValueKind.Null } receipt
                 ? ReadReceiptSources(receipt, operation, statusCode)
                 : null,
@@ -734,37 +746,83 @@ public sealed partial class SandboxClient
         return new SandboxInventory(dto.Status, dto.UnavailableReason, items);
     }
 
+    /// <summary>
+    /// Reads a create/GET reply in full, typing it in that order (GET and the mount lookup). A malformed body or a
+    /// missing session id is <see cref="SandboxErrorKind.Protocol"/>.
+    /// </summary>
     private static async Task<CreateSandboxResponseDto> ReadSandboxResponseOrThrowAsync(
         HttpResponseMessage response,
         string operation,
         CancellationToken ct
     )
     {
-        CreateSandboxResponseDto? payload;
-        try
-        {
-            payload = await response
-                .Content.ReadFromJsonAsync<CreateSandboxResponseDto>(SandboxJson.RestOptions, ct)
-                .ConfigureAwait(false);
-        }
-        catch (JsonException)
-        {
-            throw new SandboxException(
-                SandboxErrorKind.Protocol,
-                $"Sandbox gateway returned a malformed response for {operation}.",
-                (int)response.StatusCode
-            );
-        }
-
+        var statusCode = (int)response.StatusCode;
+        var reply = await ReadSandboxReplyJsonAsync(response, operation, ct).ConfigureAwait(false);
+        var payload = ToSandboxReply(reply, operation, statusCode);
         if (payload is null || string.IsNullOrWhiteSpace(payload.SessionId))
         {
-            throw new SandboxException(
-                SandboxErrorKind.Protocol,
-                $"Sandbox gateway returned a success status but no session id for {operation}.",
-                (int)response.StatusCode
-            );
+            throw NoSessionId(operation, statusCode);
         }
 
         return payload;
     }
+
+    /// <summary>The reply as untyped JSON, so its fields can be typed one step at a time.</summary>
+    private static async Task<JsonElement> ReadSandboxReplyJsonAsync(
+        HttpResponseMessage response,
+        string operation,
+        CancellationToken ct
+    )
+    {
+        try
+        {
+            return await response
+                .Content.ReadFromJsonAsync<JsonElement>(SandboxJson.RestOptions, ct)
+                .ConfigureAwait(false);
+        }
+        catch (JsonException)
+        {
+            throw MalformedSandboxReply(operation, (int)response.StatusCode);
+        }
+    }
+
+    /// <summary>Only the reply's <c>session_id</c>, typed alone so no other field can hide it.</summary>
+    private static string ReadSandboxSessionId(JsonElement reply, string operation, int statusCode)
+    {
+        SandboxSessionIdDto? id;
+        try
+        {
+            id = reply.Deserialize<SandboxSessionIdDto>(SandboxJson.RestOptions);
+        }
+        catch (JsonException)
+        {
+            throw MalformedSandboxReply(operation, statusCode);
+        }
+
+        return id?.SessionId is { } sessionId && !string.IsNullOrWhiteSpace(sessionId)
+            ? sessionId
+            : throw NoSessionId(operation, statusCode);
+    }
+
+    private static CreateSandboxResponseDto? ToSandboxReply(JsonElement reply, string operation, int statusCode)
+    {
+        try
+        {
+            return reply.Deserialize<CreateSandboxResponseDto>(SandboxJson.RestOptions);
+        }
+        catch (JsonException)
+        {
+            throw MalformedSandboxReply(operation, statusCode);
+        }
+    }
+
+    private static SandboxException MalformedSandboxReply(string operation, int statusCode) =>
+        new(SandboxErrorKind.Protocol, $"Sandbox gateway returned a malformed response for {operation}.", statusCode);
+
+    private static SandboxException NoSessionId(string operation, int statusCode) =>
+        new(
+            SandboxErrorKind.Protocol,
+            $"Sandbox gateway returned a success status but no session id for {operation}.",
+            statusCode
+        );
 }

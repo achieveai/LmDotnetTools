@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SandboxAppMarketplaceRegistration)` sends an opaque `connectionId`; the old `(alias, url, gitRef, ct)` overload is
   unchanged. `PrepareSourcesAsync` captures a selection's exact commits, `ResumeSourcePreparationAsync` resumes a saved
   operation id with a GET (no new POST), and `SandboxCreateRequest.ExpectedSourceVersion` / `RequireFresh` guard a
-  create. Needs a gateway with PR #375. `SandboxAppMarketplace`, `SandboxAppMarketplaceRegistration` and
+  create. Needs gateway 0.1.23 or later (PR #375). `SandboxAppMarketplace`, `SandboxAppMarketplaceRegistration` and
   `SandboxSourceReceiptEntry` now print their repository URL (and connection id, and `LastError`) as `[REDACTED]` in
   `ToString()`; the properties are unchanged. **Error kinds that change for existing callers:**
   `410 source_snapshot_expired` (a create guarded by an archive preparation) is `Conflict`, was `WorkspacePurged`;
@@ -20,8 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `error_code` (for example `preparation_expired` is `Conflict`, `marketplace_access_denied` is `Authorization`), was
   always `Protocol`; a `403 marketplace_access_denied` carries `ErrorCode` (other `403`s stay code-less). Those two
   selection calls also follow a restored operation id instead of failing with `Protocol`, and their errors carry
-  `OperationId` once the gateway named one. Any SDK body read now takes at most one byte past its cap from the
-  stream.
+  `OperationId` once the gateway named one, including a terminal reply they reject. Any SDK body read now takes at
+  most one byte past its cap from the stream. A control-plane (REST) call whose connection breaks, before the headers
+  or while a success body streams, now throws `SandboxException` `TransportTimeout` with the `IOException` as its
+  inner exception, was a raw `IOException`; a source preparation's error keeps its `OperationId`, and a rejected
+  create whose cleanup `DELETE` breaks keeps the session id and both causes. A create reply that names its
+  `session_id` but has any other field of the wrong JSON type (for example `"sourceVersion":42`, `"sourceMode":42` or
+  `"volumes":42`), or that parses but fails a content check (a null inventory item, an incomplete image report, an
+  invalid skills policy, webhook, partition or plugin resolution), is still `Protocol`, and its sandbox is now deleted
+  first; it used to be left running. A reply whose `session_id` is missing or unreadable deletes nothing.
 
 - **LmStreaming: a sandbox release refuses a mode switch it sees land, and a failed workspace destroy no longer forgets
   a released sandbox.** The release route now checks the conversation's mode again in the same step that stores the

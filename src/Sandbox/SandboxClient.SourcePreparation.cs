@@ -22,7 +22,7 @@ public sealed partial class SandboxClient
     /// Send <see cref="SandboxSourcePreparation.SourceVersion"/> as <see cref="SandboxCreateRequest.ExpectedSourceVersion"/>
     /// with the identical selection. Once the gateway has named an operation, every <see cref="SandboxException"/>
     /// carries it as <see cref="SandboxException.OperationId"/>; pass it to <see cref="ResumeSourcePreparationAsync"/>
-    /// to keep waiting without preparing again. Needs a gateway containing PR #375.
+    /// to keep waiting without preparing again. Needs gateway 0.1.23 or later (PR #375).
     /// </remarks>
     /// <exception cref="SandboxException">
     /// A <c>failed</c> status (an HTTP 200 body) or an error response, with <see cref="SandboxException.ErrorCode"/>

@@ -390,6 +390,185 @@ public sealed class SandboxClientSourcePreparationPollTests
         thrown.OperationId.Should().Be(OperationId);
     }
 
+    [Fact]
+    public async Task PrepareSourcesAsync_AcceptedThenBrokenPollBody_IsTransportFailureWithOperationId()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient(clock: new ScriptedClock());
+        handler.OnJson(HttpMethod.Post, Path, Preparing, HttpStatusCode.Accepted);
+        handler.On(request => request.Method == HttpMethod.Get, _ => BrokenOkBody());
+
+        var thrown = await PrepareAndCatchAsync(client);
+
+        thrown.Kind.Should().Be(SandboxErrorKind.TransportTimeout);
+        thrown.StatusCode.Should().BeNull();
+        thrown.OperationId.Should().Be(OperationId);
+        thrown.Message.Should().NotContain("SECRET");
+        handler.Requests.Select(request => request.Method).Should().Equal(HttpMethod.Post, HttpMethod.Get);
+    }
+
+    [Fact]
+    public async Task ResumeSourcePreparationAsync_BrokenBodyAfterARestoredId_CarriesTheRestoredId()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient(clock: new ScriptedClock());
+        handler.OnJson(
+            HttpMethod.Get,
+            $"{Path}/{OperationId}",
+            $$"""{"status":"preparing","operationId":"{{RestoredOperationId}}"}"""
+        );
+        handler.On(request => request.RequestUri!.AbsolutePath == $"{Path}/{RestoredOperationId}", _ => BrokenOkBody());
+
+        var thrown = await ResumeAndCatchAsync(client);
+
+        thrown.Kind.Should().Be(SandboxErrorKind.TransportTimeout);
+        thrown.OperationId.Should().Be(RestoredOperationId);
+        handler.Requests.Should().OnlyContain(request => request.Method == HttpMethod.Get);
+    }
+
+    [Fact]
+    public async Task ResumeSourcePreparationAsync_TwoFailedWaits_KeepTheSavedIdAndNeverPostAgain()
+    {
+        // Prepare fails on a broken poll body, the first resume on its maxWait, and the second resume finishes: each
+        // failure hands back the id the next resume needs, and only the first call ever POSTs.
+        var clock = new ScriptedClock();
+        var (client, handler) = TestSupport.CreateBorrowedClient(transportTimeout: S_transportTimeout, clock: clock);
+        handler.OnJson(HttpMethod.Post, Path, Preparing, HttpStatusCode.Accepted);
+        var gets = 0;
+        var secondGet = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        handler.OnHang(request =>
+        {
+            if (request.Method != HttpMethod.Get || ++gets != 2)
+            {
+                return false;
+            }
+
+            secondGet.TrySetResult();
+            return true;
+        });
+        handler.On(
+            request => request.Method == HttpMethod.Get,
+            _ =>
+                gets == 1
+                    ? BrokenOkBody()
+                    : new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(Ready, Encoding.UTF8, "application/json"),
+                    }
+        );
+        var maxWait = TimeSpan.FromMinutes(1);
+
+        var first = await PrepareAndCatchAsync(client);
+        var resumed = CatchAsync(() => client.ResumeSourcePreparationAsync(first.OperationId!, maxWait));
+        await secondGet.Task;
+        clock.Fire(maxWait).Should().Be(1, "only the resume's maxWait is due");
+        var second = await resumed;
+        var prepared = await client.ResumeSourcePreparationAsync(second.OperationId!, maxWait);
+
+        first.Kind.Should().Be(SandboxErrorKind.TransportTimeout);
+        first.OperationId.Should().Be(OperationId);
+        second.Kind.Should().Be(SandboxErrorKind.TransportTimeout);
+        second.Message.Should().Contain($"within {maxWait}");
+        second.OperationId.Should().Be(OperationId);
+        prepared.Status.Should().Be(SandboxSourcePreparationStatus.Ready);
+        prepared.OperationId.Should().Be(OperationId);
+        handler
+            .Requests.Select(request => (request.Method, request.Uri.AbsolutePath))
+            .Should()
+            .Equal(
+                (HttpMethod.Post, Path),
+                (HttpMethod.Get, $"{Path}/{OperationId}"),
+                (HttpMethod.Get, $"{Path}/{OperationId}"),
+                (HttpMethod.Get, $"{Path}/{OperationId}")
+            );
+    }
+
+    [Theory]
+    [InlineData("""{"status":"ready","sourceReceipt":{"recipe":{"effective":null}}}""")]
+    [InlineData("""{"status":"ready","sourceReceipt":{"recipe":{"effective":[{"marketplace":"team"}]}}}""")]
+    [InlineData(
+        """{"status":"ready","sourceReceipt":{"recipe":{"effective":[{"marketplace":"team","plugin":"other"}]}}}"""
+    )]
+    [InlineData(
+        """{"status":"ready","sourceReceipt":{"recipe":{"effective":[{"marketplace":"team","plugin":"chosen"},{"marketplace":"team","plugin":"chosen"}]}}}"""
+    )]
+    [InlineData("""{"status":"ready","sourceReceipt":"x"}""")]
+    public async Task PrepareMarketplacePluginSelectionAsync_InvalidReplyAfterARestoredId_CarriesTheRestoredId(
+        string reply
+    )
+    {
+        var (client, handler) = RestoredThen(reply);
+
+        var thrown = await CatchAsync(PrepareSelection(client));
+
+        thrown.Kind.Should().Be(SandboxErrorKind.Protocol);
+        thrown.StatusCode.Should().Be(200);
+        thrown.OperationId.Should().Be(RestoredOperationId);
+        handler.Requests.Should().HaveCount(3);
+    }
+
+    private const string ArchiveDigest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    private const string ArchiveContentDigest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    private const string ArchiveRow = $$"""
+        {"kind":"archive","app_id":"app-1","alias":"team","url":"https://publisher.example/releases/package",
+         "sha256":"{{ArchiveDigest}}","content_sha256":"{{ArchiveContentDigest}}","plugin":"chosen"}
+        """;
+    private const string ArchiveEffective = """
+        "sourceReceipt":{"recipe":{"effective":[{"marketplace":"team","plugin":"chosen"}]}}
+        """;
+
+    [Theory]
+    [InlineData($$"""{"status":"ready","sourceVersion":"v-1",{{ArchiveEffective}}}""")]
+    [InlineData($$"""{"status":"ready","resolvedArchiveReceipts":[{{ArchiveRow}}],{{ArchiveEffective}}}""")]
+    [InlineData($$"""{"status":"unversioned","resolvedArchiveReceipts":[{{ArchiveRow}}],{{ArchiveEffective}}}""")]
+    [InlineData($$"""{"status":"ready","sourceVersion":"v-1","resolvedArchiveReceipts":"x",{{ArchiveEffective}}}""")]
+    [InlineData(
+        $$$$"""{"status":"ready","sourceVersion":"v-1","resolvedArchiveReceipts":[{{{{ArchiveRow}}}}],"sourceReceipt":{"recipe":{"effective":[]}}}"""
+    )]
+    public async Task PrepareMarketplaceArchiveSelectionAsync_InvalidReplyAfterARestoredId_CarriesTheRestoredId(
+        string reply
+    )
+    {
+        var (client, handler) = RestoredThen(reply);
+        var archive = new SandboxAppMarketplaceArchive(
+            "app-1",
+            "team",
+            "https://publisher.example/releases/package",
+            ArchiveDigest,
+            ArchiveContentDigest,
+            "chosen"
+        );
+
+        var thrown = await CatchAsync(() =>
+            client.PrepareMarketplaceArchiveSelectionAsync(["team"], [new("team", "chosen")], [archive])
+        );
+
+        thrown.Kind.Should().Be(SandboxErrorKind.Protocol);
+        thrown.OperationId.Should().Be(RestoredOperationId);
+        handler.Requests.Should().HaveCount(3);
+    }
+
+    /// <summary>A POST accepted as <see cref="OperationId"/>, restored as <see cref="RestoredOperationId"/>, then <paramref name="reply"/>.</summary>
+    private static (SandboxClient Client, FakeGatewayHandler Handler) RestoredThen(string reply)
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient(clock: new ScriptedClock());
+        handler.OnJson(HttpMethod.Post, Path, Preparing, HttpStatusCode.Accepted);
+        handler.OnJson(
+            HttpMethod.Get,
+            $"{Path}/{OperationId}",
+            $$"""{"status":"preparing","operationId":"{{RestoredOperationId}}"}"""
+        );
+        handler.OnJson(HttpMethod.Get, $"{Path}/{RestoredOperationId}", reply);
+        return (client, handler);
+    }
+
+    /// <summary>A 200 whose body breaks after its first bytes, as a reset connection does mid-download.</summary>
+    private static HttpResponseMessage BrokenOkBody() =>
+        new(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(
+                new ScriptedBodyStream("{\"status\":\"ready\""u8.ToArray(), chunkSize: 8) { FailAfterBytes = 8 }
+            ),
+        };
+
     /// <summary>Hangs every GET until its token fires; the returned task completes once a GET has arrived.</summary>
     private static TaskCompletionSource HangOnGet(FakeGatewayHandler handler)
     {

@@ -11,7 +11,7 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 /// gateway response status code, the closed-vocabulary <c>error_code</c>, and the local operation being
 /// attempted. It never echoes a REST error body's free-text <c>error</c> field, never reads a <c>401</c>
 /// body or a direct-API <c>401</c>/<c>403</c> body at all (an auth rejection is the upstream output most likely to
-/// include credential material), reads a control-plane <c>403</c> body only up to 4 KiB and keeps nothing from it
+/// include credential material), reads a control-plane <c>403</c> body only up to 4 KiB plus one overflow probe byte and keeps nothing from it
 /// but an allowlisted <c>error_code</c> (<c>marketplace_access_denied</c>), and never includes any
 /// <see cref="SandboxClientOptions.ClientSecret"/>-derived
 /// value. A JSON-RPC error's <c>message</c> is never included either (<see cref="SandboxErrorKind.McpCallFailed"/>

@@ -22,8 +22,13 @@ public sealed partial class SandboxClient
     )
     {
         var request = CreatePrepareSelectionRequest(marketplaces, pluginSelection, ct);
-        var (reply, status) = await PrepareSelectionAsync(request, ct).ConfigureAwait(false);
-        return ReadEffectivePreparation(reply, request.PluginSelection, PreparationOperation, status);
+        return await PrepareSelectionAsync(
+                request,
+                (reply, status) =>
+                    ReadEffectivePreparation(reply, request.PluginSelection, PreparationOperation, status),
+                ct
+            )
+            .ConfigureAwait(false);
     }
 
     /// <summary>Prepares an explicit selection with exact publisher-archive receipts and returns its source version.</summary>
@@ -39,25 +44,37 @@ public sealed partial class SandboxClient
         var expected = archives.ToArray();
         ValidateArchiveSelection(expected, request.Marketplaces, request.PluginSelection);
 
-        request = request with { ArchiveReceipts = [.. expected.Select(ToArchiveReceiptDto)] };
-        var (reply, status) = await PrepareSelectionAsync(request, ct).ConfigureAwait(false);
-        var resolved = ReadResolvedArchiveReceipts(
-            reply.ResolvedArchiveReceipts,
-            reply.SourceVersion,
-            PreparationOperation,
-            status
-        );
-        if (reply.Status != "ready" || reply.SourceVersion is null || !MatchesArchives(expected, resolved))
-        {
-            throw new SandboxException(
-                SandboxErrorKind.Protocol,
-                "The gateway did not prepare the exact archive selection.",
-                status
-            );
-        }
+        var archiveRequest = request with { ArchiveReceipts = [.. expected.Select(ToArchiveReceiptDto)] };
+        return await PrepareSelectionAsync(
+                archiveRequest,
+                (reply, status) =>
+                {
+                    var resolved = ReadResolvedArchiveReceipts(
+                        reply.ResolvedArchiveReceipts,
+                        reply.SourceVersion,
+                        PreparationOperation,
+                        status
+                    );
+                    if (reply.Status != "ready" || reply.SourceVersion is null || !MatchesArchives(expected, resolved))
+                    {
+                        throw new SandboxException(
+                            SandboxErrorKind.Protocol,
+                            "The gateway did not prepare the exact archive selection.",
+                            status
+                        );
+                    }
 
-        var effective = ReadEffectivePreparation(reply, request.PluginSelection, PreparationOperation, status);
-        return new SandboxArchivePreparation(reply.SourceVersion, effective, resolved);
+                    var effective = ReadEffectivePreparation(
+                        reply,
+                        archiveRequest.PluginSelection,
+                        PreparationOperation,
+                        status
+                    );
+                    return new SandboxArchivePreparation(reply.SourceVersion, effective, resolved);
+                },
+                ct
+            )
+            .ConfigureAwait(false);
     }
 
     private const string PreparationOperation = "preparing marketplace plugin selection";
@@ -85,10 +102,12 @@ public sealed partial class SandboxClient
 
     /// <summary>
     /// Runs the shared prepare/status loop (<see cref="RunSourcePreparationAsync"/>) for a selection, bounded by the
-    /// configured transport timeout as a whole and polling every 100 ms.
+    /// configured transport timeout as a whole and polling every 100 ms. <paramref name="read"/> validates the terminal
+    /// reply inside that loop, so a rejected reply still carries the operation id it belongs to.
     /// </summary>
-    private Task<(PrepareSelectionReply Reply, int Status)> PrepareSelectionAsync(
+    private Task<T> PrepareSelectionAsync<T>(
         PrepareSelectionRequest request,
+        Func<PrepareSelectionReply, int, T> read,
         CancellationToken ct
     ) =>
         RunSourcePreparationAsync(
@@ -97,7 +116,7 @@ public sealed partial class SandboxClient
             _options.TransportTimeout,
             S_pluginPreparationPollDelay,
             PreparationOperation,
-            static prepared => (ReadSelectionReply(prepared), prepared.StatusCode),
+            prepared => read(ReadSelectionReply(prepared), prepared.StatusCode),
             ct
         );
 

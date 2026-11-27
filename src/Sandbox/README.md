@@ -61,9 +61,9 @@ properties, skill tiers and the unified webhook (below) are synced to `origin/ma
 `WorkingDir` fails the create (v0.1.16 echoes only the legacy `home` and does not make the workspace
 read-only). That sync covers:
 
-- REST error bodies (`{ error, code, error_code, retryable }`) read under a 64 KiB bound on every
-  non-2xx except `401`/`403`, surfacing `ErrorCode`, `Retryable`, `Retry-After` (`RetryAfter`), and a
-  backup refusal's `snapshots` (`SnapshotIds`).
+- REST error bodies (`{ error, code, error_code, retryable }`) read under a 4 MiB bound
+  (`SandboxClient.MaxErrorBodyBytes`) on every non-2xx except `401`/`403`, surfacing `ErrorCode`, `Retryable`,
+  `Retry-After` (`RetryAfter`), and a backup refusal's `snapshots` (`SnapshotIds`).
 - New kinds: `WorkspacePurged` (`410` / `workspace_purged`), `ImageRejected` (`image_not_allowed`,
   `image_unsupported_backend`, `image_not_found`, `image_unsupported` — `image_not_found` is not
   `NotFound`), `ExecutableNotRunnable` (operation `error_code`, #198), and `McpCallFailed` (a JSON-RPC
@@ -556,7 +556,7 @@ Not supported upstream: a "cloud" marketplace whose catalog only points at plugi
 
 ### Private marketplaces
 
-Minimum gateway: the first release containing gateway PR #375 (commit `3e1be94f`); not yet tagged.
+Minimum gateway: 0.1.23, the first release containing gateway PR #375 (commit `3e1be94f`).
 
 A private GitHub or Azure DevOps repository registers with an opaque `connectionId`, on the same app-bound
 client and credentials as any other call:
@@ -626,13 +626,14 @@ Errors:
 | any other `403`, or `401` (bad app credentials) | `Authorization` | `null` |
 | `503 marketplace_broker_unavailable` | `Unavailable` | `marketplace_broker_unavailable` |
 
-For a `403` the SDK reads at most 4 KiB of the body and keeps only an allowlisted `error_code`. The free-text
+For a `403` the SDK reads at most 4 KiB of the body plus one overflow probe byte, and keeps only an allowlisted
+`error_code`; a longer body keeps none. The free-text
 `error`, URLs and anything else in the body are dropped. A denied private registration is never retried
 anonymously. An invalid `connectionId` throws `ArgumentException` before any request is sent.
 
 ### Prepare and guarded create
 
-Minimum gateway: the first release containing gateway PR #375 (commit `3e1be94f`); not yet tagged.
+Minimum gateway: 0.1.23, the first release containing gateway PR #375 (commit `3e1be94f`).
 
 `PrepareSourcesAsync` captures the exact Git commits of a selection. `CreateAsync` with
 `ExpectedSourceVersion` then mounts exactly those commits, or fails.
@@ -697,8 +698,9 @@ var info = await client.CreateAsync(
   `PluginSelection` keeps `null` (no restriction) apart from `[]` (no plugins), as on create.
 - Create sends `expectedSourceVersion` and, when set, `requireFresh: true`. It never sends `refresh`. An
   unguarded create (`ExpectedSourceVersion` null) is unchanged. A create the gateway acknowledges with another (or
-  no) `sourceVersion`, or with a malformed `sourceReceipt` or `resolvedMarketplaceRevisions`, is deleted and throws
-  `Protocol`. If that delete fails too, the `Protocol` message names the session id and its `InnerException` is an
+  no) `sourceVersion`, or with any other malformed field (a `sourceReceipt`, a `resolvedMarketplaceRevisions`, a
+  wrong JSON type, a null inventory item, an incomplete image report), is deleted and throws `Protocol`. Only an
+  unreadable `session_id` deletes nothing, since there is no id to delete. If that delete fails too, the `Protocol` message names the session id and its `InnerException` is an
   `AggregateException` holding both the rejection and the delete failure. `ExpectedSourceVersion` and
   `ArchivePreparation` naming different versions, or a version that is blank or contains control characters, throw
   `ArgumentException` before any request.
@@ -878,7 +880,8 @@ fields or the explicit manifest read.
   retryable }` body; only the closed-vocabulary `error_code` is mapped to a `SandboxErrorKind` and
   surfaced on `SandboxException.ErrorCode` (with `Retryable`, `RetryAfter`, `SnapshotIds` beside it) —
   the gateway-controlled free-text `error` message is never copied into the exception (see Security
-  below). A body that is missing, malformed, or over 64 KiB falls back to classification by status.
+  below). A body that is missing, malformed, or over 4 MiB (`SandboxClient.MaxErrorBodyBytes`) falls back to
+  classification by status.
 - An observed `3xx` redirect (which the SDK refuses rather than follows).
 
 ## Security
@@ -890,8 +893,8 @@ fields or the explicit manifest read.
 - The owned transport disables automatic redirects; a borrowed `HttpClient` must do the same
   (`AllowAutoRedirect = false`) — see the borrowed-client note above. The SDK never follows a
   redirect itself and rejects any `3xx` it observes.
-- A `401` response body is never read at all, and a `403` body only up to 4 KiB for an allowlisted
-  `error_code` (`marketplace_access_denied`), with everything else in it dropped (an auth rejection is the
+- A `401` response body is never read at all, and a `403` body only up to 4 KiB plus one overflow probe byte for
+  an allowlisted `error_code` (`marketplace_access_denied`), with everything else in it dropped (an auth rejection is the
   response most likely to echo credential material); and a direct-API error's gateway-controlled free-text `error` message is
   never copied into a `SandboxException`: both are untrusted, potentially secret-bearing content (e.g.
   echoed credential material or captured tool output). Only a `SandboxException.StatusCode` and the

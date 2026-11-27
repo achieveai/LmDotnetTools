@@ -70,8 +70,8 @@ public sealed partial class SandboxClient
     /// Besides the failures listed on the class: <c>403 marketplace_access_denied</c> (the broker refused this app,
     /// connection or repository) is <see cref="SandboxErrorKind.Authorization"/> WITH
     /// <see cref="SandboxException.ErrorCode"/> set, while a rejected app credential is Authorization without one;
-    /// <c>503 marketplace_broker_unavailable</c> is <see cref="SandboxErrorKind.Unavailable"/>. Needs a gateway
-    /// containing PR #375.
+    /// <c>503 marketplace_broker_unavailable</c> is <see cref="SandboxErrorKind.Unavailable"/>. Needs gateway
+    /// 0.1.23 or later (PR #375).
     /// </remarks>
     /// <exception cref="ArgumentException">
     /// <see cref="SandboxAppMarketplaceRegistration.Url"/> is blank or the connection id breaks its character rule

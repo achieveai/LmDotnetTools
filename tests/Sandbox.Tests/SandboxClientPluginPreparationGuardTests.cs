@@ -461,6 +461,17 @@ public sealed class SandboxClientPluginPreparationGuardTests
     [InlineData(""" "sourceReceipt":{"sources":"x"} """)]
     [InlineData(""" "resolvedMarketplaceRevisions":{"team":"abc"} """)]
     [InlineData(""" "resolvedMarketplaceRevisions":[{"marketplace":"team"}] """)]
+    [InlineData(""" "sourceMode":42 """)]
+    [InlineData(""" "sourceVersion":42 """)]
+    [InlineData(""" "resolvedArchiveReceipts":"x" """)]
+    [InlineData(""" "status":42 """)]
+    [InlineData(""" "inventory":7 """)]
+    [InlineData(""" "inventory":{"status":"confirmed","items":[null]} """)]
+    [InlineData(""" "image_report":{} """)]
+    [InlineData(""" "skills":{"default_tier":"bogus","included":[]} """)]
+    [InlineData(""" "webhook":{"url":"","auth_header_set":true} """)]
+    [InlineData(""" "partition":[null] """)]
+    [InlineData(""" "pluginResolution":{"supported":true,"effective":[null]} """)]
     public async Task CreateAsync_MalformedSourceEcho_DeletesSandboxAndThrows(string field)
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
@@ -512,6 +523,134 @@ public sealed class SandboxClientPluginPreparationGuardTests
         deleteFailure.Kind.Should().Be(SandboxErrorKind.Unavailable);
         deleteFailure.ErrorCode.Should().Be("sandbox_busy");
         handler.Requests.Select(request => request.Method).Should().Equal(HttpMethod.Post, HttpMethod.Delete);
+    }
+
+    [Theory]
+    [InlineData(""" "sourceReceipt":{"sources":[{"kind":"marketplace"}]} """, "source receipt entry")]
+    [InlineData(""" "resolvedMarketplaceRevisions":[{"marketplace":"team"}] """, "resolved marketplace revision")]
+    [InlineData(""" "sourceMode":42 """, "non-string 'sourceMode'")]
+    [InlineData(""" "sourceVersion":42 """, "malformed response")]
+    [InlineData(""" "inventory":7 """, "malformed response")]
+    [InlineData(""" "inventory":{"status":"confirmed","items":[null]} """, "the inventory of sandbox creation")]
+    [InlineData(""" "image_report":{} """, "incomplete image report")]
+    public async Task CreateAsync_MalformedSourceEchoAndFailedDelete_KeepsSessionIdAndBothCauses(
+        string field,
+        string rejection
+    )
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", EchoWith(field));
+        handler.OnJson(
+            HttpMethod.Delete,
+            "/api/v1/sandboxes/sess-1",
+            """{"error":"x","code":503,"error_code":"sandbox_busy"}""",
+            HttpStatusCode.ServiceUnavailable
+        );
+
+        var thrown = await CreateAndCatchAsync(client);
+
+        var (echoRejection, deleteFailure) = AssertBothCauses(thrown, handler);
+        echoRejection.Message.Should().Contain(rejection);
+        deleteFailure.Kind.Should().Be(SandboxErrorKind.Unavailable);
+        deleteFailure.ErrorCode.Should().Be("sandbox_busy");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CreateAsync_RejectedEchoAndDeleteConnectionFailure_KeepsSessionIdAndBothCauses(bool afterHeaders)
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", EchoWith(""" "sourceMode":42 """));
+        handler.On(
+            request => request.Method == HttpMethod.Delete,
+            _ =>
+                afterHeaders
+                    ? new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StreamContent(
+                            new ScriptedBodyStream("{\"deleted\":"u8.ToArray(), chunkSize: 4) { FailAfterBytes = 4 }
+                        ),
+                    }
+                    : throw new IOException("connection reset")
+        );
+
+        var thrown = await CreateAndCatchAsync(client);
+
+        var (echoRejection, deleteFailure) = AssertBothCauses(thrown, handler);
+        echoRejection.Message.Should().Contain("non-string 'sourceMode'");
+        deleteFailure.Kind.Should().Be(SandboxErrorKind.TransportTimeout);
+        deleteFailure.StatusCode.Should().BeNull();
+        deleteFailure.InnerException.Should().BeOfType<IOException>();
+    }
+
+    [Theory]
+    [InlineData("""{"session_id":42,"container_id":"c"}""", "malformed response")]
+    [InlineData("""{"session_id":["sess-1"],"sourceVersion":42}""", "malformed response")]
+    [InlineData("""{"container_id":"c","sourceVersion":42}""", "no session id")]
+    [InlineData("""{"session_id":" ","sourceVersion":42}""", "no session id")]
+    [InlineData("null", "no session id")]
+    [InlineData("[]", "malformed response")]
+    [InlineData("not json", "malformed response")]
+    public async Task CreateAsync_UnreadableSessionId_ThrowsWithoutDeleting(string reply, string message)
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", reply);
+
+        var thrown = await CreateAndCatchAsync(client);
+
+        thrown.Kind.Should().Be(SandboxErrorKind.Protocol);
+        thrown.StatusCode.Should().Be(200);
+        thrown.Message.Should().Contain(message);
+        thrown.InnerException.Should().BeNull();
+        handler.Requests.Should().ContainSingle("without a session id there is nothing to delete");
+    }
+
+    [Fact]
+    public async Task CreateAndGet_NullOrAbsentSourceMode_ReadAsNone()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", EchoWith(""" "sourceMode":null """));
+        handler.OnJson(HttpMethod.Get, "/api/v1/sandboxes/sess-1", EchoWith(""" "sourceMode":"exact" """));
+
+        var created = await client.CreateAsync(new SandboxCreateRequest("ws", ["team"]));
+        var read = await client.GetAsync("sess-1");
+
+        created.SourceMode.Should().BeNull();
+        read.SourceMode.Should().Be("exact");
+        handler.Requests.Select(request => request.Method).Should().Equal(HttpMethod.Post, HttpMethod.Get);
+    }
+
+    private static string EchoWith(string field) =>
+        """{"session_id":"sess-1","container_id":"c","volumes":{"workspace":{"container_path":"/w"}},""" + field + "}";
+
+    private static async Task<SandboxException> CreateAndCatchAsync(SandboxClient client) =>
+        (await Record.ExceptionAsync(() => client.CreateAsync(new SandboxCreateRequest("ws", ["team"]))))
+            .Should()
+            .BeOfType<SandboxException>()
+            .Subject;
+
+    /// <summary>
+    /// Asserts the double failure keeps the session id and both causes, in order, after exactly one cleanup DELETE.
+    /// </summary>
+    private static (SandboxException Rejection, SandboxException DeleteFailure) AssertBothCauses(
+        SandboxException thrown,
+        FakeGatewayHandler handler
+    )
+    {
+        thrown.Kind.Should().Be(SandboxErrorKind.Protocol);
+        thrown.StatusCode.Should().Be(200);
+        thrown.Message.Should().Contain("'sess-1'").And.Contain("DeleteAsync");
+        var causes = thrown.InnerException.Should().BeOfType<AggregateException>().Subject.InnerExceptions;
+        causes.Should().HaveCount(2);
+        var rejection = causes[0].Should().BeOfType<SandboxException>().Subject;
+        rejection.Kind.Should().Be(SandboxErrorKind.Protocol);
+        thrown.Message.Should().StartWith(rejection.Message);
+        handler
+            .Requests.Select(request => (request.Method, request.Uri.AbsolutePath))
+            .Should()
+            .Equal((HttpMethod.Post, "/api/v1/sandboxes"), (HttpMethod.Delete, "/api/v1/sandboxes/sess-1"));
+        return (rejection, causes[1].Should().BeOfType<SandboxException>().Subject);
     }
 
     [Fact]
@@ -646,6 +785,9 @@ public sealed class SandboxClientPluginPreparationGuardTests
     [InlineData(""" "sourceReceipt":{"sources":"x"} """)]
     [InlineData(""" "resolvedMarketplaceRevisions":{"team":"abc"} """)]
     [InlineData(""" "resolvedMarketplaceRevisions":[{"marketplace":"team"}] """)]
+    [InlineData(""" "sourceMode":42 """)]
+    [InlineData(""" "sourceMode":{"mode":"exact"} """)]
+    [InlineData(""" "sourceVersion":42 """)]
     public async Task GetAsync_MalformedSourceEcho_IsProtocol(string field)
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();

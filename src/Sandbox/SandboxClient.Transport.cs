@@ -299,6 +299,19 @@ public sealed partial class SandboxClient
                 ex
             );
         }
+        catch (IOException ex)
+        {
+            // The connection broke: before the headers (a raw I/O failure from the transport) or while a success body
+            // was streaming. Either way no usable reply arrived, so it is a transport failure like the one above, never
+            // a raw IOException past every caller's catch (SandboxException).
+            response?.Dispose();
+            throw new SandboxException(
+                SandboxErrorKind.TransportTimeout,
+                $"The connection to the sandbox gateway at '{_options.ServerAddress}' failed during '{relativeUri}'.",
+                statusCode: null,
+                ex
+            );
+        }
         catch
         {
             // Any other failure (an over-cap Protocol throw, or genuine caller cancellation) must not leak
@@ -356,8 +369,8 @@ public sealed partial class SandboxClient
     /// A <c>401</c>/<c>403</c> is classified as <see cref="SandboxErrorKind.Authorization"/> WITHOUT reading
     /// the body: an auth rejection is the upstream output most likely to echo submitted credential material,
     /// and an empty body (e.g. a bare <c>401</c>) must classify identically to one carrying a payload. The one
-    /// exception: a <c>403</c> body is read up to <see cref="MaxForbiddenBodyBytes"/> for an allowlisted
-    /// <c>error_code</c> (<c>marketplace_access_denied</c>), which then rides on
+    /// exception: a <c>403</c> body is read up to <see cref="MaxForbiddenBodyBytes"/> plus one overflow probe byte for
+    /// an allowlisted <c>error_code</c> (<c>marketplace_access_denied</c>), which then rides on
     /// <see cref="SandboxException.ErrorCode"/>; nothing else from that body is kept. Every
     /// other status has its body read — bounded to <see cref="MaxErrorBodyBytes"/> under a fresh transport
     /// budget, see <see cref="TryReadGatewayErrorAsync"/> — so the gateway's closed-vocabulary
@@ -429,9 +442,9 @@ public sealed partial class SandboxClient
     };
 
     /// <summary>
-    /// Reads at most <see cref="MaxForbiddenBodyBytes"/> of a <c>403</c> body and returns its <c>error_code</c> only
-    /// when it is exactly an allowlisted code. Nothing else in the body (the free-text <c>error</c>, URLs, any echoed
-    /// credential) is kept. An empty, oversized, malformed or late body returns <c>null</c>, which leaves the caller on
+    /// Reads at most <see cref="MaxForbiddenBodyBytes"/> plus one overflow probe byte of a <c>403</c> body and returns
+    /// its <c>error_code</c> only when it is exactly an allowlisted code. Nothing else in the body (the free-text
+    /// <c>error</c>, URLs, any echoed credential) is kept. An empty, oversized, malformed or late body returns <c>null</c>, which leaves the caller on
     /// the status-only path. Caller cancellation propagates.
     /// </summary>
     private async Task<string?> TryReadAllowedForbiddenCodeAsync(HttpResponseMessage response, CancellationToken ct)

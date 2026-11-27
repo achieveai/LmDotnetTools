@@ -310,24 +310,36 @@ public sealed class SandboxLiveContractTests
 
             await Client.DeleteOperationAsync(sessionId, opId);
 
-            // The footprint is actually reclaimed — the whole point of the call. The gateway's cleanup is
-            // GENERATION-scoped (it removes `.mcp-gateway/operations/<id>/<generation>/`, which is what
-            // closes the ABA hazard of a delayed delete reaping a re-reservation's artifacts), so the empty
-            // `<id>` directory itself SURVIVES. That residue is asserted rather than ignored: the bytes are
-            // gone, one empty directory per deleted operation is not, and a reader of this test should see
-            // which of the two this call actually promises.
-            (await Client.ListDirectoryAsync(sessionId, $".mcp-gateway/operations/{opId}"))
-                .Should()
-                .BeEmpty("the generation directory holding the artifacts must be gone");
+            // The footprint is actually reclaimed — the whole point of the call. The gateway removes the
+            // generation directory holding the artifacts and then (gateway 0.1.23+, issue #172) the per-operation
+            // `<id>` directory too, because it is now empty and no record holds the id, so a long-lived sandbox
+            // keeps no residue per deleted operation. Before 0.1.23 the empty `<id>` directory survived. The
+            // listing is pinned BY COMPARISON with a never-executed id: the deleted operation's directory must be
+            // refused exactly like one that never existed, so the listing is no existence oracle either.
+            var neverExistentOpId = Guid.NewGuid().ToString("N");
             (await Client.ListDirectoryAsync(sessionId, ".mcp-gateway/operations"))
                 .Should()
-                .Contain(opId, "cleanup is generation-scoped: the empty per-operation directory is left behind");
+                .NotContain(opId, "the empty per-operation directory is removed with the generation directory");
+            var deletedListing = await CaptureAsync(() =>
+                Client.ListDirectoryAsync(sessionId, $".mcp-gateway/operations/{opId}")
+            );
+            var neverExistentListing = await CaptureAsync(() =>
+                Client.ListDirectoryAsync(sessionId, $".mcp-gateway/operations/{neverExistentOpId}")
+            );
+
+            deletedListing
+                .Should()
+                .NotBeNull("the per-operation directory must be gone after the operation is deleted");
+            neverExistentListing.Should().NotBeNull();
+            deletedListing!.Kind.Should().Be(SandboxErrorKind.NotFound);
+            deletedListing.Kind.Should().Be(neverExistentListing!.Kind);
+            deletedListing.ErrorCode.Should().Be(neverExistentListing.ErrorCode);
+            deletedListing.StatusCode.Should().Be(neverExistentListing.StatusCode);
 
             // PIN the artifact-GET refusal, and pin it BY COMPARISON: a path under a never-executed
             // operation id is the "never existed" control. Whatever shape the gateway chooses, the deleted
             // operation's artifact must answer identically — if it ever stopped doing so, the difference
             // would be an existence oracle for another app's operation ids.
-            var neverExistentOpId = Guid.NewGuid().ToString("N");
             var deletedArtifact = await CaptureAsync(() => Client.ReadTextFileAsync(sessionId, stdoutPath));
             var neverExistentArtifact = await CaptureAsync(() =>
                 Client.ReadTextFileAsync(sessionId, $".mcp-gateway/operations/{neverExistentOpId}/{generation}/stdout")
@@ -370,41 +382,51 @@ public sealed class SandboxLiveContractTests
     {
         var sessionId = await CreateSandboxAsync();
         var opId = Guid.NewGuid().ToString("N");
-        // Long enough that the delete lands well inside the run, short enough that the awaited completion
-        // below is not a meaningful cost even when the delete is refused on the first attempt.
-        var running = Client.ExecuteAsync(sessionId, new SandboxCommand(["sh", "-c", "sleep 20"], operationId: opId));
+        var startedMarker = $"op-started-{opId}";
+        // The command announces that it really runs by writing a marker, then holds the operation open. Long
+        // enough that the delete lands well inside the run, short enough that the awaited completion below is
+        // not a meaningful cost.
+        var running = Client.ExecuteAsync(
+            sessionId,
+            new SandboxCommand(["sh", "-c", $"echo up > /workspace/{startedMarker}; sleep 20"], operationId: opId)
+        );
         try
         {
-            // Poll for the refusal rather than sleeping a fixed amount: before the gateway has reserved the
-            // record the delete is a 404, which is a "not yet", not the answer under test. The loop FAILS
-            // LOUDLY if it never observes the conflict — a silent give-up would make every assertion below
-            // vacuous.
-            SandboxException? refusal = null;
-            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+            // Wait for the marker, NOT for the first non-404 delete answer. A record is RESERVED before it is
+            // dispatched, and the gateway deletes a reserved operation by design (it then never dispatches it).
+            // Since 0.1.23 the submit writes a durable claim between reservation and dispatch (upstream #306),
+            // which widens that window enough for a delete poll to land in it and get a 204. Once the command
+            // itself has written the marker, the record is past dispatch and not yet terminal: it is RUNNING.
+            // Only "not there yet" and a transient admission-gate refusal (503 sandbox_busy while a session is
+            // quiescing or the concurrency limiter is full) are tolerated here; the loop fails loudly at its end.
+            string? started = null;
+            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(15);
             while (DateTimeOffset.UtcNow < deadline)
             {
-                var captured = await CaptureAsync(() => Client.DeleteOperationAsync(sessionId, opId));
-                captured
-                    .Should()
-                    .NotBeNull("a RUNNING operation must never be deleted successfully — deletion is not cancellation");
-                if (captured!.Kind == SandboxErrorKind.Conflict)
+                try
                 {
-                    refusal = captured;
+                    started = await Client.ReadTextFileAsync(sessionId, startedMarker);
+                }
+                catch (SandboxException notYet)
+                    when (notYet.Kind is SandboxErrorKind.NotFound or SandboxErrorKind.Unavailable) { }
+
+                // An empty read is the redirect's create seen before echo's write: ask again too.
+                if (started == "up\n")
+                {
                     break;
                 }
 
-                // Two other answers are tolerable, and only inside THIS loop: "no such record yet" (the
-                // submit is still in flight), and a transient admission-gate refusal — the direct API
-                // answers 503 sandbox_busy while a session is quiescing or the concurrency limiter is
-                // full, which is "ask again", not an answer about the operation's state. Every other
-                // call in this test still fails loudly on Unavailable; widening it here would only turn
-                // a real capacity fault into a silent ten-second wait, which the null check below catches.
-                captured.Kind.Should().BeOneOf(SandboxErrorKind.NotFound, SandboxErrorKind.Unavailable);
                 await Task.Delay(TimeSpan.FromMilliseconds(100));
             }
 
-            refusal.Should().NotBeNull("the gateway must refuse the delete while the operation is running");
-            refusal!.ErrorCode.Should().Be("operation_running");
+            started.Should().Be("up\n", "the command must have started before the delete is attempted");
+
+            var refusal = await CaptureAsync(() => Client.DeleteOperationAsync(sessionId, opId));
+            refusal
+                .Should()
+                .NotBeNull("a RUNNING operation must never be deleted successfully — deletion is not cancellation");
+            refusal!.Kind.Should().Be(SandboxErrorKind.Conflict);
+            refusal.ErrorCode.Should().Be("operation_running");
             refusal.StatusCode.Should().Be(409);
             refusal.OperationId.Should().Be(opId);
 

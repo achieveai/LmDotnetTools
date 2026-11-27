@@ -47,7 +47,7 @@ public sealed class SandboxSourcePreparationLiveContractTests
         var alias = "lmprep-" + run;
         var firstMarker = "first-" + run;
         var secondMarker = "second-" + run;
-        var firstCommit = source.CommitVersion(firstMarker);
+        var firstCommit = await source.CommitVersionAsync(firstMarker);
         var sandboxes = new List<string>();
 
         // The older public overload: URL only, no ref, so the alias follows `latest` (the default branch).
@@ -85,7 +85,7 @@ public sealed class SandboxSourcePreparationLiveContractTests
             foreign.StatusCode.Should().Be(404);
 
             // The default branch moves; the guarded create still mounts the prepared commit.
-            var secondCommit = source.CommitVersion(secondMarker);
+            var secondCommit = await source.CommitVersionAsync(secondMarker);
             var atFirst = await CreateGuardedAsync(client, alias, firstVersion, sandboxes);
             atFirst.SourceVersion.Should().Be(firstVersion);
             atFirst.SourceReceiptSources.Should().Contain(s => s.Marketplace == alias && s.Sha == firstCommit);

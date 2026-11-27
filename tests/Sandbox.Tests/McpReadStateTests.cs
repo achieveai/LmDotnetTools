@@ -326,6 +326,7 @@ public sealed class McpReadStateTests
                 create ? "/api/v1/sandboxes" : "/api/v1/sandboxes/s",
                 body
             );
+            handler.OnStatus(HttpMethod.Delete, "/api/v1/sandboxes/s", HttpStatusCode.NoContent);
             var error = (
                 await Record.ExceptionAsync(() =>
                     create ? client.CreateAsync(new SandboxCreateRequest("ws")) : client.GetAsync("s")
@@ -336,7 +337,12 @@ public sealed class McpReadStateTests
                 .Subject;
             error.Kind.Should().Be(SandboxErrorKind.Protocol);
             error.InnerException.Should().BeNull();
-            handler.Requests.Should().ContainSingle();
+            // A create that named its session is deleted when the rest of its reply is unreadable; nothing is retried.
+            HttpMethod[] expected =
+                create && body.Contains("\"s\"", StringComparison.Ordinal) ? [HttpMethod.Post, HttpMethod.Delete]
+                : create ? [HttpMethod.Post]
+                : [HttpMethod.Get];
+            handler.Requests.Select(request => request.Method).Should().Equal(expected);
         }
     }
 

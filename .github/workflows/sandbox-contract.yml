@@ -90,7 +90,8 @@ env:
   # SandboxPrivateMarketplaceLiveContractTests: source preparation (POST/GET /api/v1/apps/self/plugins/prepare),
   # the guarded create (expectedSourceVersion) and private registrations through an app credential broker
   # (connectionId, APP_SECRETS_FILE marketplace_broker) first ship there (upstream PR #375, tagged from master
-  # cab783d6). Below it those tests fail, not skip.
+  # cab783d6). Below it those tests fail, not skip. 0.1.23 also removes the emptied per-operation directory on
+  # operation DELETE (upstream #172), which SandboxLiveContractTests.Operation_Delete_* pins; 0.1.21 left it behind.
   #
   # The external/SandboxedOstoolsMcpServer submodule is pinned to a gateway master commit for
   # development (advance it with `git submodule update --remote`), so it may run ahead of this

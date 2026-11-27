@@ -17,29 +17,29 @@ internal sealed class GitMarketplaceRepo
     public string Path { get; }
 
     /// <summary>Creates a fresh repository on branch <c>main</c>.</summary>
-    public static GitMarketplaceRepo Init(string path)
+    public static async Task<GitMarketplaceRepo> InitAsync(string path)
     {
         _ = Directory.CreateDirectory(path);
         var repo = new GitMarketplaceRepo(path);
-        _ = repo.Git("init", "-q", "-b", "main");
+        _ = await repo.GitAsync("init", "-q", "-b", "main");
         return repo;
     }
 
     /// <summary>Writes the marketplace with <paramref name="marker"/> in the skill file, commits it and returns HEAD.</summary>
-    public string CommitVersion(string marker)
+    public async Task<string> CommitVersionAsync(string marker)
     {
         Write("marketplace.json", """{"name":"lmprobe","plugins":[{"name":"probe","source":"./probe"}]}""");
         Write("probe/.claude-plugin/plugin.json", """{"name":"probe"}""");
         Write(MarkerPath, $"---\nname: marker\ndescription: {marker}\n---\n{marker}\n");
-        _ = Git("add", "-A");
-        _ = Git("commit", "-q", "-m", marker);
-        return Git("rev-parse", "HEAD");
+        _ = await GitAsync("add", "-A");
+        _ = await GitAsync("commit", "-q", "-m", marker);
+        return await GitAsync("rev-parse", "HEAD");
     }
 
     /// <summary>Refreshes the files a dumb-HTTP client reads (<c>info/refs</c>, <c>objects/info/packs</c>).</summary>
-    public void UpdateServerInfo() => _ = Git("update-server-info");
+    public async Task UpdateServerInfoAsync() => _ = await GitAsync("update-server-info");
 
-    public string Git(params string[] args)
+    public async Task<string> GitAsync(params string[] args)
     {
         var start = new ProcessStartInfo("git")
         {
@@ -66,13 +66,14 @@ internal sealed class GitMarketplaceRepo
         }
 
         using var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start git.");
+        // Both pipes are drained concurrently so neither can fill and stall git while the other is read.
         var stdout = process.StandardOutput.ReadToEndAsync();
-        var stderr = process.StandardError.ReadToEnd();
-        process.WaitForExit();
+        var stderr = process.StandardError.ReadToEndAsync();
+        await Task.WhenAll(stdout, stderr, process.WaitForExitAsync());
         return process.ExitCode == 0
-            ? stdout.Result.Trim()
+            ? (await stdout).Trim()
             : throw new InvalidOperationException(
-                $"git {string.Join(' ', args)} failed with exit code {process.ExitCode}: {stderr.Trim()}"
+                $"git {string.Join(' ', args)} failed with exit code {process.ExitCode}: {(await stderr).Trim()}"
             );
     }
 
