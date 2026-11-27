@@ -77,6 +77,37 @@ public class UsageRecordMapperTests
     }
 
     [Fact]
+    public void FromUsageMessage_PreservesInputInclusiveResponsesCacheWrites()
+    {
+        var usage = JsonSerializer.Deserialize<Usage>(
+            """
+            {
+              "prompt_tokens": 1978,
+              "completion_tokens": 5,
+              "input_tokens_details": {
+                "cached_tokens": 71,
+                "responses_cache_write_tokens": 1900,
+                "responses_cache_write_12h_tokens": 25
+              }
+            }
+            """
+        )!;
+        var record = UsageRecordMapper.FromUsageMessage(
+            new UsageMessage { Usage = usage, GenerationId = "responses-1" },
+            "root",
+            UsageExecutionKind.Primary,
+            "gpt-6.2-sol"
+        );
+
+        record.ResponsesCacheWriteTokens.Should().Be(1900);
+        record.ResponsesCacheWrite12hTokens.Should().Be(25);
+        record.CacheReadTokens.Should().Be(71);
+        record.CacheWriteTokens.Should().Be(0);
+        record.InputTokens.Should().Be(1978);
+        record.TotalTokens.Should().Be(1983);
+    }
+
+    [Fact]
     public void FromUsageMessage_StampsProviderReportedProvenance_WhenProviderCostPresent()
     {
         var usage = new Usage

@@ -543,7 +543,7 @@ internal sealed class CliOptions
         Reviewd judge run — judge one merged PR's verified review with a hosted agent
 
         judge run --repo <org/project/repo> --pr <id> --db <path> --session <sandbox-session-id> --workspace <host-workspace-id>
-                  [--provider <id> (default gpt-6.1-sol)] [--reasoning-effort <low|medium|high|xhigh> (default xhigh)]
+                  [--provider <id> (default gpt-6.2-sol)] [--reasoning-effort <low|medium|high|xhigh> (default xhigh)]
                   [--mode <id> (default: the configured mode)] [--prompt-file <path> (default: built-in prompt)]
                   [--max-usd <dollars> (default 15)] [--rejudge] [--execute]
 

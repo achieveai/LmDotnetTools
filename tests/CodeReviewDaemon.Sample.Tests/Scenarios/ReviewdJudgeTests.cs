@@ -62,6 +62,218 @@ public sealed class ReviewdJudgeTests
         JudgeRunner.StillRunning(rootActive: true, frozen: false, null, [], Now).Should().NotBeNull();
     }
 
+    [Fact]
+    public async Task The_default_judge_model_matches_both_delegate_tiers()
+    {
+        var provider = JudgeRunner.ProviderFor(ParseJudgeOptions());
+        provider.Should().Be("gpt-6.2-sol");
+        var settings = JsonNode.Parse(await File.ReadAllTextAsync(FindReviewHostSettings()))!;
+        var tiers = settings["SubAgentIntelligence"]!["Tiers"]!;
+        foreach (var tier in new[] { "3", "4" })
+        {
+            var primaryModel = tiers[tier]![0]!.GetValue<string>().Split(':')[0];
+            provider.Should().Be(primaryModel, $"judge delegates may use the model configured at tier {tier}");
+        }
+
+        var template = await JudgeRunner.ReadResourceAsync("Reviewd.Sample.Prompts.merged-judge.md", default);
+        var prompt = JudgeRunner.ComposePrompt(template, "org/project/repo", "17", "PRs/repo-17/judgment-1", provider);
+        prompt.Should().Contain($"the default judge model, {provider}.");
+        prompt.Should().Contain("When the run disables blind delegation, do not call the Agent tool");
+        prompt.Should().Contain($"Blind delegation requires the Agent tool to advertise your model, `{provider}`.");
+    }
+
+    [Fact]
+    public void An_explicit_alternate_judge_model_disables_blind_delegation()
+    {
+        var provider = JudgeRunner.ProviderFor(ParseJudgeOptions("--provider", "gpt-6.1-sol"));
+        provider.Should().Be("gpt-6.1-sol");
+        var prompt = JudgeRunner.ComposePrompt(
+            "Judge prompt.",
+            "org/project/repo",
+            "17",
+            "PRs/repo-17/judgment-1",
+            provider
+        );
+        prompt.Should().Contain("Blind delegation is disabled for this run. Do not call the Agent tool.");
+    }
+
+    [Theory]
+    [InlineData("gpt-6.2-sol", true, "gpt-6.2-sol", true)]
+    [InlineData("gpt-6.2-sol", true, "gpt-6-sol", false)]
+    [InlineData("gpt-6.2-sol", true, null, false)]
+    [InlineData("gpt-6.1-sol", true, "gpt-6.1-sol", false)]
+    [InlineData("gpt-6.1-sol", false, null, true)]
+    public void Only_verified_same_model_judge_delegates_are_accepted(
+        string provider,
+        bool hasDelegate,
+        string? effectiveModel,
+        bool accepted
+    )
+    {
+        ReviewSubAgentNode[] nodes = hasDelegate
+            ? [Child(ReviewSubAgentStatus.Completed) with { EffectiveModelId = effectiveModel }]
+            : [];
+        (JudgeRunner.JudgeDelegationError(provider, nodes) is null).Should().Be(accepted);
+    }
+
+    [Fact]
+    public async Task The_gpt62_judge_requires_cache_write_accounting_before_a_send()
+    {
+        var host = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/capabilities",
+            """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true}"""
+        );
+        var client = Client(host);
+        var check = () => client.EnsureHostContractAsync(default, requireResponsesCacheWritePricing: true);
+
+        await check.Should().ThrowAsync<ReviewHostContractException>().WithMessage("*responsesCacheWritePricing*");
+        host.CountRequests("/messages").Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Judge_preflight_refuses_a_configured_astra_fallback_before_any_post()
+    {
+        var host = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "api/providers", """{"providers":[{"id":"gpt-6.2-astra","available":true}]}""")
+            .OnJson(HttpMethod.Get, "api/chat-modes/workspace-agent", "{}")
+            .OnJson(
+                HttpMethod.Get,
+                "api/conversations/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"responsesCacheWritePricing":true,"modelFallbackSourceProviders":["gpt-6.2-astra"]}"""
+            );
+        var identity = Identity("gpt-6.2-astra");
+        var review = new JsonObject { ["artifactCommit"] = new JsonObject { ["reviewDirectory"] = "reviews/pr-1" } };
+
+        var act = () =>
+            JudgeRunner.PreflightAsync(
+                Client(host),
+                identity,
+                "Judge it.",
+                review,
+                "org/project/Nova",
+                "1",
+                CancellationToken.None
+            );
+
+        await act.Should()
+            .ThrowAsync<ReviewHostContractException>()
+            .WithMessage("*available fallback target configured for judge provider gpt-6.2-astra*");
+        host.Requests.Should().NotContain(request => request.Method == HttpMethod.Post);
+    }
+
+    [Fact]
+    public async Task Judge_preflight_fails_closed_when_an_older_host_omits_model_fallback_capability()
+    {
+        var host = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "api/providers", """{"providers":[{"id":"gpt-6.2-astra","available":true}]}""")
+            .OnJson(HttpMethod.Get, "api/chat-modes/workspace-agent", "{}")
+            .OnJson(
+                HttpMethod.Get,
+                "api/conversations/capabilities",
+                """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"responsesCacheWritePricing":true}"""
+            );
+        var identity = Identity("gpt-6.2-astra");
+        var review = new JsonObject { ["artifactCommit"] = new JsonObject { ["reviewDirectory"] = "reviews/pr-1" } };
+
+        var act = () =>
+            JudgeRunner.PreflightAsync(
+                Client(host),
+                identity,
+                "Judge it.",
+                review,
+                "org/project/Nova",
+                "1",
+                CancellationToken.None
+            );
+
+        await act.Should().ThrowAsync<ReviewHostContractException>().WithMessage("*modelFallbackSourceProviders*");
+        host.Requests.Should().NotContain(request => request.Method == HttpMethod.Post);
+    }
+
+    [Fact]
+    public async Task Every_judge_send_rechecks_model_fallback_capability_before_posting()
+    {
+        var host = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "/capabilities",
+            """{"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"responsesCacheWritePricing":true,"modelFallbackSourceProviders":["gpt-6.2-astra"]}"""
+        );
+
+        var act = () =>
+            JudgeRunner.SendWithKeyAsync(
+                Client(host),
+                "thread-1",
+                "Judge follow-up.",
+                "judge-nudge-1",
+                FastOutage,
+                "repo #1",
+                CancellationToken.None,
+                judgeProvider: "gpt-6.2-astra"
+            );
+
+        await act.Should()
+            .ThrowAsync<ReviewHostContractException>()
+            .WithMessage("*available fallback target configured for judge provider gpt-6.2-astra*");
+        host.Requests.Should().ContainSingle().Which.Method.Should().Be(HttpMethod.Get);
+    }
+
+    [Fact]
+    public async Task An_alternate_judge_send_requires_acknowledged_spawn_suppression()
+    {
+        var host = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post,
+            "/messages",
+            """{"inputId":"idem:0:judge-1","idempotencyKeyHonored":true,"spawningSuppressed":true}""",
+            HttpStatusCode.Accepted
+        );
+        var input = await JudgeRunner.SendWithKeyAsync(
+            Client(host),
+            "thread-1",
+            "Judge without delegates.",
+            "judge-1",
+            FastOutage,
+            "repo #1",
+            CancellationToken.None,
+            suppressSubAgentSpawning: true
+        );
+
+        input.Should().Be("idem:0:judge-1");
+        JsonNode.Parse(host.Requests.Single().Body!)!["suppressSubAgentSpawning"]!.GetValue<bool>().Should().BeTrue();
+    }
+
+    private static CliOptions ParseJudgeOptions(params string[] extras) =>
+        CliOptions.Parse([
+            "judge",
+            "run",
+            "--repo",
+            "org/project/repo",
+            "--pr",
+            "17",
+            "--db",
+            "review.db",
+            "--session",
+            "judge-session",
+            "--workspace",
+            "workspace",
+            .. extras,
+        ]);
+
+    private static string FindReviewHostSettings()
+    {
+        var relative = Path.Combine("samples", "LmStreaming.Sample", "appsettings.json");
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+        {
+            var settingsPath = Path.Combine(dir.FullName, relative);
+            if (File.Exists(settingsPath))
+            {
+                return settingsPath;
+            }
+        }
+
+        throw new FileNotFoundException($"Could not find {relative} above the test output.", relative);
+    }
+
     // ---- judge run contracts
 
     [Fact]
@@ -779,6 +991,174 @@ public sealed class ReviewdJudgeTests
     }
 
     [Fact]
+    public async Task A_partial_price_estimate_stops_the_judge_and_keeps_the_display_amount()
+    {
+        var host = CappedHost(
+            InProgress(1),
+            (
+                HttpStatusCode.OK,
+                """{"preferredCostMicros":120000,"estimatedCostCompleteness":1,"totalTokens":2000,"completeness":2}"""
+            )
+        );
+        var (watch, receipt, capped) = Watch(host);
+
+        var (outcome, _) = await WaitOnHost(
+            Client(host),
+            FastOutage,
+            watch.DelayAsync,
+            capped.Token,
+            () => watch.Reached
+        );
+
+        outcome.Should().Be("capped");
+        receipt["judgeUsage"]!["measured"]!.GetValue<bool>().Should().BeFalse();
+        receipt["judgeUsage"]!["usd"]!.GetValue<decimal>().Should().Be(0.12m);
+        receipt["caps"]!["reason"]!.GetValue<string>().Should().Contain("partial");
+    }
+
+    [Fact]
+    public async Task An_initial_usage_404_gets_a_bounded_startup_window_before_capping()
+    {
+        var host = CappedHost(
+            InProgress(5),
+            (HttpStatusCode.NotFound, "{}"),
+            (HttpStatusCode.NotFound, "{}"),
+            (HttpStatusCode.NotFound, "{}"),
+            (HttpStatusCode.NotFound, "{}"),
+            (HttpStatusCode.OK, """{"preferredCostMicros":120000,"totalTokens":10,"completeness":2}""")
+        );
+        var (watch, receipt, capped) = Watch(host);
+
+        var (outcome, _) = await WaitOnHost(
+            Client(host),
+            FastOutage,
+            watch.DelayAsync,
+            capped.Token,
+            () => watch.Reached
+        );
+
+        outcome.Should().Be("completed");
+        watch.Reached.Should().BeFalse();
+        receipt["judgeUsage"]!["measured"]!.GetValue<bool>().Should().BeTrue();
+        receipt["judgeUsage"]!["usd"]!.GetValue<decimal>().Should().Be(0.12m);
+        receipt["caps"]!["reason"].Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Repeated_in_progress_usage_404s_cap_after_the_startup_window()
+    {
+        var host = CappedHost(InProgress(int.MaxValue), [.. Enumerable.Repeat((HttpStatusCode.NotFound, "{}"), 5)]);
+        var (watch, receipt, capped) = Watch(host);
+
+        var (outcome, _) = await WaitOnHost(
+            Client(host),
+            FastOutage,
+            watch.DelayAsync,
+            capped.Token,
+            () => watch.Reached
+        );
+
+        outcome.Should().Be("capped");
+        receipt["judgeUsage"]!["measured"]!.GetValue<bool>().Should().BeFalse();
+        receipt["judgeUsage"]!["usd"].Should().BeNull();
+        receipt["caps"]!["reason"]!.GetValue<string>().Should().Contain("no usage recorded yet");
+    }
+
+    [Fact]
+    public async Task A_usage_404_preserves_a_prior_amount_as_partial_until_the_startup_window_expires()
+    {
+        var host = CappedHost(
+            InProgress(int.MaxValue),
+            [
+                (HttpStatusCode.OK, """{"preferredCostMicros":120000,"totalTokens":10,"completeness":2}"""),
+                .. Enumerable.Repeat((HttpStatusCode.NotFound, "{}"), 5),
+            ]
+        );
+        var (watch, receipt, capped) = Watch(host);
+
+        var (outcome, _) = await WaitOnHost(
+            Client(host),
+            FastOutage,
+            watch.DelayAsync,
+            capped.Token,
+            () => watch.Reached
+        );
+
+        outcome.Should().Be("capped");
+        receipt["judgeUsage"]!["measured"]!.GetValue<bool>().Should().BeFalse();
+        receipt["judgeUsage"]!["usd"]!.GetValue<decimal>().Should().Be(0.12m);
+        receipt["judgeUsage"]!["completeness"]!.GetValue<string>().Should().Be("Partial");
+        receipt["caps"]!["reason"]!.GetValue<string>().Should().Contain("no usage recorded yet");
+    }
+
+    [Fact]
+    public void A_saved_partial_estimate_still_reserves_the_full_judge_cap()
+    {
+        var receipt = JsonNode
+            .Parse(
+                """
+                {
+                  "stage": "completed",
+                  "finishedAt": "2026-11-25T21:00:00Z",
+                  "judgeUsage": {
+                    "measured": true,
+                    "usd": 0.12,
+                    "completeness": 2,
+                    "aggregate": { "estimatedCostCompleteness": 1 }
+                  }
+                }
+                """
+            )!
+            .AsObject();
+
+        var spend = JudgeBatch.SpendOf("judge", receipt, 15m);
+        spend.Usd.Should().Be(0.12m);
+        spend.LowerBound.Should().BeTrue();
+        spend.Charged.Should().Be(15m);
+    }
+
+    [Theory]
+    [InlineData(false, 15)]
+    [InlineData(true, 0)]
+    public async Task A_terminal_usage_404_reserves_the_cap_unless_the_root_never_started(
+        bool rootNeverStarted,
+        int expectedCharge
+    )
+    {
+        var host = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/usage", "{}", HttpStatusCode.NotFound);
+        var receipt = new JsonObject { ["stage"] = "failed", ["judgeInputId"] = "root-input" };
+        if (rootNeverStarted)
+            receipt["lost"] = new JsonObject { ["inputId"] = "root-input" };
+
+        await JudgeRunner.FinalUsageAsync(Client(host), "thread-1", receipt, CancellationToken.None);
+
+        JudgeBatch.SpendOf("judge", receipt, 15m).Charged.Should().Be(expectedCharge);
+    }
+
+    [Theory]
+    [InlineData(false, true, 0.12, "partial estimate")]
+    [InlineData(true, true, 15, "cap reached")]
+    [InlineData(true, true, 0.12, null)]
+    [InlineData(true, false, 0, "no usage recorded yet (404)")]
+    public void A_judge_follow_up_requires_measured_budget_headroom(
+        bool measured,
+        bool hasAggregate,
+        double usd,
+        string? reason
+    )
+    {
+        var usage = new JsonObject { ["measured"] = measured, ["usd"] = (decimal)usd };
+        if (!measured)
+            usage["note"] = "partial estimate";
+        if (hasAggregate)
+            usage["aggregate"] = new JsonObject();
+        else
+            usage["note"] = "no usage recorded yet (404)";
+
+        JudgeRunner.BudgetStopReason(usage, 15m, requireAggregate: true).Should().Be(reason);
+    }
+
+    [Fact]
     public async Task Five_definitive_usage_read_failures_still_cap_the_judge_as_before()
     {
         var host = CappedHost(InProgress(int.MaxValue), (HttpStatusCode.Forbidden, "{}"));
@@ -798,6 +1178,30 @@ public sealed class ReviewdJudgeTests
             .Should()
             .StartWith("judge cost is not readable (5 failed /usage reads)");
         receipt["judgeUsage"]!["measured"]!.GetValue<bool>().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task An_initial_missing_usage_does_not_hide_five_later_unreadable_reads()
+    {
+        var host = CappedHost(
+            InProgress(int.MaxValue),
+            [(HttpStatusCode.NotFound, "{}"), .. Enumerable.Repeat((HttpStatusCode.Forbidden, "{}"), 5)]
+        );
+        var (watch, receipt, capped) = Watch(host);
+
+        var (outcome, _) = await WaitOnHost(
+            Client(host),
+            FastOutage,
+            watch.DelayAsync,
+            capped.Token,
+            () => watch.Reached
+        );
+
+        outcome.Should().Be("capped");
+        receipt["caps"]!["reason"]!
+            .GetValue<string>()
+            .Should()
+            .StartWith("judge cost is not readable (5 failed /usage reads)");
     }
 
     // A /usage body that cannot be read as usage counts as a failed read too; it used to end the wait.
@@ -973,7 +1377,7 @@ public sealed class ReviewdJudgeTests
                 .OnJson(
                     HttpMethod.Get,
                     "api/providers",
-                    """{"providers":[{"id":"gpt-6.1-sol","available":true},{"id":"gpt-6-luna","available":false}]}"""
+                    """{"providers":[{"id":"gpt-6.2-sol","available":true},{"id":"gpt-6-luna","available":false}]}"""
                 )
                 .OnJson(HttpMethod.Get, "api/chat-modes/workspace-agent", "{}")
                 .OnJson(HttpMethod.Get, "api/chat-modes/", "{}", HttpStatusCode.NotFound)
@@ -999,12 +1403,12 @@ public sealed class ReviewdJudgeTests
             }
         }
 
-        (await Refusal("gpt-6.1-sol")).Should().BeNull();
+        (await Refusal(JudgeRunner.ProviderFor(ParseJudgeOptions()))).Should().BeNull();
         (await Refusal("no-such-provider")).Should().StartWith("--provider no-such-provider is not a provider");
         (await Refusal("gpt-6-luna")).Should().StartWith("--provider gpt-6-luna is unavailable");
-        (await Refusal("gpt-6.1-sol", mode: "no-such-mode")).Should().StartWith("--mode no-such-mode is not a mode");
-        (await Refusal("gpt-6.1-sol", template: " \n")).Should().StartWith("The judge prompt template is empty");
-        (await Refusal("gpt-6.1-sol", template: new string('x', 100 * 1024)))
+        (await Refusal("gpt-6.2-sol", mode: "no-such-mode")).Should().StartWith("--mode no-such-mode is not a mode");
+        (await Refusal("gpt-6.2-sol", template: " \n")).Should().StartWith("The judge prompt template is empty");
+        (await Refusal("gpt-6.2-sol", template: new string('x', 100 * 1024)))
             .Should()
             .StartWith("The judge prompt is ")
             .And.Contain("(limit 102400)");

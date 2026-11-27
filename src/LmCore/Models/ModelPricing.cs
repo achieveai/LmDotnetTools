@@ -57,7 +57,8 @@ public enum CostCompleteness
 /// <param name="Completeness">Whether every category with tokens was priced.</param>
 /// <param name="MissingCategories">
 ///     Stable identifiers of the unpriced or ambiguous dimensions, each listed once:
-///     <c>cache_read</c>, <c>cache_write</c>, <c>cache_write_ttl_unknown</c>, <c>cache_accounting_mismatch</c>.
+///     <c>cache_read</c>, <c>cache_write</c>, <c>cache_write_ttl_unknown</c>, <c>cache_accounting_mismatch</c>,
+///     <c>cache_write_telemetry</c>.
 ///     Empty when <see cref="Completeness" /> is <see cref="CostCompleteness.Complete" />.
 /// </param>
 public sealed record CostEstimate(long? Micros, CostCompleteness Completeness, IReadOnlyList<string> MissingCategories)
@@ -82,6 +83,9 @@ public sealed record CostEstimate(long? Micros, CostCompleteness Completeness, I
     ///     under <see cref="CacheAccounting.SubsetOfInput" />); uncached input was clamped to zero.
     /// </summary>
     public const string CacheAccountingMismatch = "cache_accounting_mismatch";
+
+    /// <summary>A potential cache write is not represented by the provider usage telemetry.</summary>
+    public const string MissingCacheWriteTelemetry = "cache_write_telemetry";
 }
 
 /// <summary>
@@ -117,6 +121,12 @@ public sealed record ModelPricing
     /// <summary>Cost per one million cache-write tokens with a 1-hour TTL, or null when unknown.</summary>
     public decimal? CacheWrite1hPerMillion { get; init; }
 
+    /// <summary>Cost per one million input-inclusive Responses cache writes at 30-minute retention.</summary>
+    public decimal? ResponsesCacheWrite30mPerMillion { get; init; }
+
+    /// <summary>Cost per one million input-inclusive Responses cache writes at 12-hour retention.</summary>
+    public decimal? ResponsesCacheWrite12hPerMillion { get; init; }
+
     /// <summary>
     ///     Cost per one million reasoning tokens, or null when reasoning is billed as ordinary completion
     ///     output (every current provider).
@@ -133,6 +143,15 @@ public sealed record ModelPricing
     /// <summary>Date the rates were taken from the vendor's published list, for re-verification.</summary>
     public DateOnly? EffectiveDate { get; init; }
 
+    /// <summary>Optional rate change governed by the provider attempt's UTC date.</summary>
+    public PricingRateChange? RateChange { get; init; }
+
+    /// <summary>Optional higher-input rate band for the full request.</summary>
+    public LongContextPricing? LongContext { get; init; }
+
+    /// <summary>Minimum billed input where missing cache-write telemetry can leave a charge unpriced.</summary>
+    public int? UnobservedCacheWritesFromInputTokens { get; init; }
+
     /// <summary>ISO currency code for the rates.</summary>
     public string Currency { get; init; } = "USD";
 
@@ -148,7 +167,8 @@ public sealed record ModelPricing
     ///     <c>input × PromptPerMillion + output × CompletionPerMillion</c>, rounded half-to-even.
     /// </summary>
     /// <remarks>
-    ///     Prices every input token at the base rate and knows nothing about cache or reasoning categories.
+    ///     Prices every input token at the base rate. Scheduled rates, context pricing, cache, and reasoning
+    ///     require a usage record.
     ///     The accounting layer uses <see cref="Estimate" />; this remains for callers that have only two
     ///     counts.
     /// </remarks>
@@ -190,11 +210,61 @@ public sealed record ModelPricing
     {
         ArgumentNullException.ThrowIfNull(record);
 
+        var rateMultiplier = 1m;
+        if (RateChange is { } rateChange)
+        {
+            if (record.OccurredAtUtc is not { } occurredAt)
+            {
+                return CostEstimate.Unavailable;
+            }
+
+            if (DateOnly.FromDateTime(occurredAt.UtcDateTime) >= rateChange.EffectiveDate)
+            {
+                rateMultiplier = rateChange.Multiplier;
+            }
+        }
+
+        var billedInput =
+            CacheAccounting == CacheAccounting.Additive
+                ? (decimal)record.InputTokens + record.CacheReadTokens + record.CacheWriteTokens
+                : record.InputTokens;
+        var longContext = LongContext is { } band && billedInput > band.InputTokensGreaterThan ? band : null;
+        var inputMultiplier = rateMultiplier * (longContext?.InputMultiplier ?? 1m);
+        var outputMultiplier = rateMultiplier * (longContext?.OutputMultiplier ?? 1m);
+
         var missing = new List<string>();
+        long? responsesWrites = null;
+        if (record.ResponsesCacheWriteConflict)
+        {
+            missing.Add(CostEstimate.MissingCacheWriteTelemetry);
+        }
+        else if (record.ResponsesCacheWriteTokens is { } observedWrites)
+        {
+            if (
+                CacheAccounting == CacheAccounting.SubsetOfInput
+                && record.CacheWriteTokens == 0
+                && record.CacheReadTokens >= 0
+                && record.InputTokens >= record.CacheReadTokens
+                && observedWrites >= 0
+                && observedWrites <= record.InputTokens - record.CacheReadTokens
+            )
+            {
+                responsesWrites = observedWrites;
+            }
+            else
+            {
+                missing.Add(CostEstimate.CacheAccountingMismatch);
+            }
+        }
+        else if (UnobservedCacheWritesFromInputTokens is { } minInput && billedInput >= minInput)
+        {
+            missing.Add(CostEstimate.MissingCacheWriteTelemetry);
+        }
+
         var micros = 0m;
         var pricedAny = false;
 
-        void Price(long tokens, decimal? rate, string missingCategory)
+        void Price(long tokens, decimal? rate, decimal multiplier, string missingCategory)
         {
             if (tokens <= 0)
             {
@@ -211,7 +281,7 @@ public sealed record ModelPricing
                 return;
             }
 
-            micros += tokens * rate.Value;
+            micros += tokens * rate.Value * multiplier;
             pricedAny = true;
         }
 
@@ -219,7 +289,7 @@ public sealed record ModelPricing
         var uncachedInput = record.InputTokens;
         if (CacheAccounting == CacheAccounting.SubsetOfInput)
         {
-            uncachedInput -= record.CacheReadTokens;
+            uncachedInput -= record.CacheReadTokens + responsesWrites.GetValueOrDefault();
             if (uncachedInput < 0)
             {
                 // The record has more cache reads than input, which a subset cannot. The entry's accounting
@@ -230,8 +300,8 @@ public sealed record ModelPricing
             }
         }
 
-        Price(uncachedInput, PromptPerMillion, "input");
-        Price(record.CacheReadTokens, CacheReadPerMillion, CostEstimate.MissingCacheRead);
+        Price(uncachedInput, PromptPerMillion, inputMultiplier, "input");
+        Price(record.CacheReadTokens, CacheReadPerMillion, inputMultiplier, CostEstimate.MissingCacheRead);
 
         if (record.CacheWriteTokens > 0)
         {
@@ -239,21 +309,50 @@ public sealed record ModelPricing
             {
                 // The provider did not report the TTL split. The 5m rate is the cheaper of the two, so
                 // pricing everything at it is a lower bound — and the estimate is labelled Partial for it.
-                Price(record.CacheWriteTokens, CacheWrite5mPerMillion, CostEstimate.MissingCacheWrite);
+                Price(record.CacheWriteTokens, CacheWrite5mPerMillion, inputMultiplier, CostEstimate.MissingCacheWrite);
                 missing.Add(CostEstimate.CacheWriteTtlUnknown);
             }
             else
             {
                 var oneHour = Math.Min(Math.Max(record.CacheWrite1hTokens.Value, 0), record.CacheWriteTokens);
-                Price(record.CacheWriteTokens - oneHour, CacheWrite5mPerMillion, CostEstimate.MissingCacheWrite);
-                Price(oneHour, CacheWrite1hPerMillion, CostEstimate.MissingCacheWrite);
+                Price(
+                    record.CacheWriteTokens - oneHour,
+                    CacheWrite5mPerMillion,
+                    inputMultiplier,
+                    CostEstimate.MissingCacheWrite
+                );
+                Price(oneHour, CacheWrite1hPerMillion, inputMultiplier, CostEstimate.MissingCacheWrite);
+            }
+        }
+
+        if (responsesWrites is { } writeTotal)
+        {
+            var write12h = record.ResponsesCacheWrite12hTokens;
+            if (write12h is < 0 || write12h > writeTotal || (writeTotal > 0 && write12h is null))
+            {
+                missing.Add(CostEstimate.CacheWriteTtlUnknown);
+            }
+            else
+            {
+                Price(
+                    writeTotal - write12h.GetValueOrDefault(),
+                    ResponsesCacheWrite30mPerMillion,
+                    inputMultiplier,
+                    CostEstimate.MissingCacheWrite
+                );
+                Price(
+                    write12h.GetValueOrDefault(),
+                    ResponsesCacheWrite12hPerMillion,
+                    inputMultiplier,
+                    CostEstimate.MissingCacheWrite
+                );
             }
         }
 
         // Reasoning is a subset of output; the split only matters when it has its own rate.
         var reasoning = Math.Min(Math.Max(record.ReasoningTokens, 0), record.OutputTokens);
-        Price(record.OutputTokens - reasoning, CompletionPerMillion, "output");
-        Price(reasoning, ReasoningPerMillion ?? CompletionPerMillion, "reasoning");
+        Price(record.OutputTokens - reasoning, CompletionPerMillion, outputMultiplier, "output");
+        Price(reasoning, ReasoningPerMillion ?? CompletionPerMillion, outputMultiplier, "reasoning");
 
         if (missing.Count == 0)
         {

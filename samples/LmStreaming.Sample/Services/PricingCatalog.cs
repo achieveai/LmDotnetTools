@@ -52,6 +52,8 @@ namespace LmStreaming.Sample.Services;
 ///         (Anthropic: <c>input_tokens</c> excludes them); it changes the arithmetic, so a misspelt value
 ///         rejects the entry rather than falling back. <c>EffectiveDate</c> (<c>yyyy-MM-dd</c>) and
 ///         <c>_source</c> (ignored by the binder) are how the next person re-verifies a rate.
+///         <c>RateChange</c> uses the attempt date, <c>LongContext</c> uses its billed input, and
+///         <c>UnobservedCacheWritesFromInputTokens</c> flags a gap in cache-write telemetry.
 ///         <c>MaxContextTokens</c> / <c>MaxOutputTokens</c> (#681) are the model's window and output
 ///         ceiling; they feed <see cref="IModelCapacityResolver" /> so a per-generation context observation
 ///         can carry a utilization. Optional: an entry without them still prices, and gets the
@@ -62,9 +64,9 @@ namespace LmStreaming.Sample.Services;
 ///         operational fact with an expiry date, not a code constant, and a wrong one is worse than an absent
 ///         one because it is summed, reported and believed (#378). So the shipped section carries only public
 ///         list prices copied from a vendor's own pricing page, each dated and cited — a cited, dated rate is
-///         not a guess. The Copilot-served ids the sample runs on carry their vendor's retail API list price
-///         as a public-equivalent estimate: what the same usage would cost on the vendor API, not what the
-///         subscription bills. Claude CLI and Codex defaults stay absent, so their cost resolves null.
+///         not a guess. Most Copilot-served ids use their vendor's retail API price. MAI uses GitHub's
+///         published Copilot rates. These estimates are separate from the subscription bill.
+///         An unlisted model resolves to no public estimate.
 ///         The citation list lives in <c>docs/features/public-pricing-catalog.md</c>. Operators override or
 ///         extend the section in <c>appsettings.&lt;Environment&gt;.json</c> or via environment variables.
 ///     </para>
@@ -77,12 +79,10 @@ namespace LmStreaming.Sample.Services;
 ///         identical to no configuration at all.
 ///     </para>
 ///     <para>
-///         <b>Version.</b> The catalog format carries no effective date, and nothing in this repository
-///         refreshes a configured catalog — a host's rates are exactly as current as its config. So a cost
-///         resolved without a version records where the rate came from but not how old it is.
-///         <c>Pricing:Version</c> is that date, stamped onto every <see cref="ModelPricing" /> this host
-///         resolves. LmConfig's own <c>AddLmConfig</c> cannot supply it (it has no way to know), which is
-///         why the authoritative resolver is registered here rather than left to that call's <c>TryAdd</c>.
+///         <b>Version.</b> <c>Pricing:Version</c> identifies the configuration snapshot. Each model can also
+///         carry its own <c>EffectiveDate</c>. The host stamps the snapshot version onto every
+///         <see cref="ModelPricing" /> it resolves. LmConfig's default registration leaves the snapshot
+///         version unset, so the host registers its own resolver.
 ///     </para>
 ///     <para>
 ///         What a partly-priced catalog does downstream: a conversation total is a STRICT fold
@@ -238,9 +238,19 @@ public static class PricingCatalog
                 !TryReadCategoryRate(entry, "CacheReadPerMillion", rejected, out var cacheRead)
                 || !TryReadCategoryRate(entry, "CacheWrite5mPerMillion", rejected, out var cacheWrite5m)
                 || !TryReadCategoryRate(entry, "CacheWrite1hPerMillion", rejected, out var cacheWrite1h)
+                || !TryReadCategoryRate(entry, "ResponsesCacheWrite30mPerMillion", rejected, out var responsesWrite30m)
+                || !TryReadCategoryRate(entry, "ResponsesCacheWrite12hPerMillion", rejected, out var responsesWrite12h)
                 || !TryReadCategoryRate(entry, "ReasoningPerMillion", rejected, out var reasoning)
                 || !TryReadCacheAccounting(entry, rejected, out var cacheAccounting)
                 || !TryReadEffectiveDate(entry, rejected, out var effectiveDate)
+                || !TryReadRateChange(entry, rejected, out var rateChange)
+                || !TryReadLongContext(entry, rejected, out var longContext)
+                || !TryReadTokenLimit(
+                    entry,
+                    "UnobservedCacheWritesFromInputTokens",
+                    rejected,
+                    out var unobservedCacheWrites
+                )
                 || !TryReadTokenLimit(entry, "MaxContextTokens", rejected, out var maxContextTokens)
                 || !TryReadTokenLimit(entry, "MaxOutputTokens", rejected, out var maxOutputTokens)
             )
@@ -255,9 +265,14 @@ public static class PricingCatalog
                 CacheReadPerMillion = cacheRead,
                 CacheWrite5mPerMillion = cacheWrite5m,
                 CacheWrite1hPerMillion = cacheWrite1h,
+                ResponsesCacheWrite30mPerMillion = responsesWrite30m,
+                ResponsesCacheWrite12hPerMillion = responsesWrite12h,
                 ReasoningPerMillion = reasoning,
                 CacheAccounting = cacheAccounting,
                 EffectiveDate = effectiveDate,
+                RateChange = rateChange,
+                LongContext = longContext,
+                UnobservedCacheWritesFromInputTokens = unobservedCacheWrites,
             };
 
             // One provider entry per name the model answers to, all carrying the SAME rate. The resolver
@@ -306,8 +321,7 @@ public static class PricingCatalog
     }
 
     /// <summary>
-    ///     Reads <c>Pricing:Version</c> — the effective date of the configured rates — or null when the host
-    ///     declares none, in which case a resolved cost records its source but not its age.
+    ///     Reads the configuration snapshot label from <c>Pricing:Version</c>. An omitted label yields null.
     /// </summary>
     public static string? ReadVersion(IConfiguration configuration)
     {
@@ -461,9 +475,7 @@ public static class PricingCatalog
             return true;
         }
 
-        if (
-            DateOnly.TryParseExact(raw, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)
-        )
+        if (TryParseDate(raw, out var parsed))
         {
             effectiveDate = parsed;
             return true;
@@ -472,6 +484,68 @@ public static class PricingCatalog
         rejected?.Add($"'{entry.Key}' has EffectiveDate='{raw}'; expected an ISO date (yyyy-MM-dd)");
         return false;
     }
+
+    private static bool TryReadRateChange(
+        IConfigurationSection entry,
+        ICollection<string>? rejected,
+        out PricingRateChange? rateChange
+    )
+    {
+        rateChange = null;
+        var section = entry.GetSection("RateChange");
+        if (!section.Exists())
+        {
+            return true;
+        }
+
+        if (
+            TryParseDate(section["EffectiveDate"], out var date)
+            && TryParseMultiplier(section["Multiplier"], out var multiplier)
+        )
+        {
+            rateChange = new PricingRateChange(date, multiplier);
+            return true;
+        }
+
+        rejected?.Add($"'{entry.Key}' has invalid RateChange; expected an ISO EffectiveDate and a positive Multiplier");
+        return false;
+    }
+
+    private static bool TryReadLongContext(
+        IConfigurationSection entry,
+        ICollection<string>? rejected,
+        out LongContextPricing? longContext
+    )
+    {
+        longContext = null;
+        var section = entry.GetSection("LongContext");
+        if (!section.Exists())
+        {
+            return true;
+        }
+
+        if (
+            TryReadTokenLimit(section, "InputTokensGreaterThan", null, out var threshold)
+            && threshold is { } inputTokens
+            && TryParseMultiplier(section["InputMultiplier"], out var inputMultiplier)
+            && TryParseMultiplier(section["OutputMultiplier"], out var outputMultiplier)
+        )
+        {
+            longContext = new LongContextPricing(inputTokens, inputMultiplier, outputMultiplier);
+            return true;
+        }
+
+        rejected?.Add(
+            $"'{entry.Key}' has invalid LongContext; expected a positive InputTokensGreaterThan, InputMultiplier, and OutputMultiplier"
+        );
+        return false;
+    }
+
+    private static bool TryParseDate(string? raw, out DateOnly date) =>
+        DateOnly.TryParseExact(raw, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out date);
+
+    private static bool TryParseMultiplier(string? raw, out decimal multiplier) =>
+        decimal.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out multiplier) && multiplier > 0;
 
     /// <summary>Renders a rate for the operator, naming an absent one rather than printing an empty string.</summary>
     private static string Describe(double? rate) =>

@@ -82,6 +82,8 @@ public static class UsageRecordMapper
             // providers surface them via Usage.ExtraProperties; 0 when absent.
             CacheWriteTokens = usage.GetExtraProperty<int>("cache_creation_input_tokens"),
             CacheWrite1hTokens = CacheWrite1hTokensOf(usage),
+            ResponsesCacheWriteTokens = usage.InputTokenDetails?.ResponsesCacheWriteTokens,
+            ResponsesCacheWrite12hTokens = usage.InputTokenDetails?.ResponsesCacheWrite12hTokens,
             ReasoningTokens = usage.TotalReasoningTokens,
             ProviderReportedCostMicros = providerReportedCostMicros,
             CostProvenance = providerReportedCostMicros is not null

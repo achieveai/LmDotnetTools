@@ -658,7 +658,7 @@ public sealed class ReviewdPreparedContextTests
         result["complete"]!.GetValue<bool>().Should().BeTrue();
     }
 
-    private static async Task<(int ExitCode, string Stdout, string Stderr)> RunKitAsync(
+    internal static async Task<(int ExitCode, string Stdout, string Stderr)> RunKitAsync(
         string harness,
         params string[] arguments
     )
