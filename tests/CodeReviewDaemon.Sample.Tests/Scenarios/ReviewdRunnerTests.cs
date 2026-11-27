@@ -7402,6 +7402,9 @@ public sealed class ReviewdRunnerTests
     [InlineData("resume-merged-checkpoint")]
     [InlineData("resume-merged-running")]
     [InlineData("resume-merged-stale-snapshot")]
+    [InlineData("resume-merged-newer-open-snapshot")]
+    [InlineData("resume-abandoned-newer-open-snapshot")]
+    [InlineData("resume-active-newer-open-snapshot")]
     public Task Runner_finishes_a_finished_review_on_the_revision_it_reviewed(string path) =>
         RunFinishedReviewScenarioAsync(path);
 
@@ -7426,6 +7429,7 @@ public sealed class ReviewdRunnerTests
         var liveStatus = "active";
         var sends = 0;
         var resume = path.StartsWith("resume", StringComparison.Ordinal);
+        var newerOpenSnapshot = path.EndsWith("-newer-open-snapshot", StringComparison.Ordinal);
         var failConfirmationInspect = resume;
         var steps = new List<string>();
         const string finding = "Failed jobs keep a slot.";
@@ -7631,13 +7635,16 @@ public sealed class ReviewdRunnerTests
                             .Should()
                             .Contain("recover its decided findings from this conversation")
                             .And.Contain(
-                                "If the PR merged before this review posted its summary and it has actionable findings, file one linked bug"
+                                "file one linked bug if the PR merged before the summary was posted or confirmation first published an"
                             )
+                            .And.Contain("actionable finding after merge, including in a verdict correction")
                             .And.Contain("A clean review or an unmerged closed PR needs no bug.")
                             .And.Contain("POST https://api.github.com/repos/org/Nova/issues")
                             .And.Contain(bugMarker)
-                            .And.Contain("Do not retry a create with an uncertain response")
+                            .And.Contain("Do not retry a create with an uncertain")
+                            .And.Contain("verify the PR link and the actionable published findings")
                             .And.Contain("update that same comment. PATCH issues/comments/<commentId>")
+                            .And.Contain("Before PATCH, save /workspace/reviews/publication-summary-correction.json")
                             .And.Contain("Continue confirming the published review even when bug creation fails");
                         var corrected = $"REQUEST_CHANGES\n\nReviewed commit {reviewed}\n\n- {finding}";
                         using var patch = await github.PatchAsJsonAsync(summaryReadRoute, new { body = corrected });
@@ -7736,7 +7743,10 @@ public sealed class ReviewdRunnerTests
                 await run.Should().ThrowAsync<InvalidOperationException>().WithMessage("gateway hiccup");
                 var stopped = (await store.GetAsync<JsonObject>($"reviewd/review-attempt/{repo.NormalizedKey}/17"))!;
                 stopped["stage"]!.GetValue<string>().Should().Be("review-completed");
-                if (path is "resume-merged-checkpoint" or "resume-merged-running" or "resume-merged-stale-snapshot")
+                if (
+                    newerOpenSnapshot
+                    || path is "resume-merged-checkpoint" or "resume-merged-running" or "resume-merged-stale-snapshot"
+                )
                 {
                     // The controller last saved the running checkpoint; the host is authoritative for completion.
                     stopped["stage"] = "review-running";
@@ -7752,7 +7762,7 @@ public sealed class ReviewdRunnerTests
                 }
                 else
                 {
-                    await SnapshotAsync(liveHead, path == "resume" ? "Open" : "Merged");
+                    await SnapshotAsync(liveHead, newerOpenSnapshot || path == "resume" ? "Open" : "Merged");
                 }
                 steps.Clear();
                 var requestsBeforeResume = handler.Requests.Count;
@@ -7777,8 +7787,18 @@ public sealed class ReviewdRunnerTests
                     sends.Should().Be(1, "the controller must not send a replacement review or confirmation");
                     return;
                 }
+                if (path == "resume-active-newer-open-snapshot")
+                {
+                    await resumeRun
+                        .Should()
+                        .ThrowAsync<InvalidOperationException>()
+                        .WithMessage("Selected PR head changed; no action allowed.");
+                    steps.Should().ContainSingle().Which.Should().StartWith("eligibility ");
+                    sends.Should().Be(1, "an active PR on a new head cannot resume the older input");
+                    return;
+                }
                 await resumeRun();
-                if (path is "resume-merged-checkpoint" or "resume-merged-stale-snapshot")
+                if (newerOpenSnapshot || path is "resume-merged-checkpoint" or "resume-merged-stale-snapshot")
                 {
                     handler
                         .Requests.Skip(requestsBeforeResume)
@@ -7825,6 +7845,10 @@ public sealed class ReviewdRunnerTests
                 steps.TakeLast(3).Select(step => step.Split(' ')[0]).Should().Equal("verify", "commit", "cleanup");
                 var attempt = (await store.GetAsync<JsonObject>($"reviewd/review-attempt/{repo.NormalizedKey}/17"))!;
                 attempt["stage"]!.GetValue<string>().Should().Be("completed-verified");
+                attempt["verifiedPublication"]!["mergedFollowUp"]!["status"]!
+                    .GetValue<string>()
+                    .Should()
+                    .Be(bugDenied ? "denied" : "created");
                 attempt["cleanupState"]!.GetValue<string>().Should().Be("released");
                 var owner = (
                     await store.GetAsync<JsonObject>(SlotRelease.OwnerKey("workspace", repo.NormalizedKey, 2))
@@ -7838,6 +7862,10 @@ public sealed class ReviewdRunnerTests
             if (path == "resume-merged-stale-snapshot")
             {
                 expected.Insert(0, $"inspect-prepared {reviewed} {prepared} reviewing");
+            }
+            if (newerOpenSnapshot)
+            {
+                expected.Insert(0, $"eligibility {reviewed}  reviewing");
             }
             if (!resume)
             {
@@ -7894,6 +7922,17 @@ public sealed class ReviewdRunnerTests
                     ? "prepare " + args["head"]
                     : $"{phase} {args["head"]} {args["merge"]} {(finished ? "finished" : "reviewing")}"
             );
+            if (phase == "eligibility" && newerOpenSnapshot)
+            {
+                return new JsonObject
+                {
+                    ["prId"] = "17",
+                    ["status"] =
+                        path.StartsWith("resume-merged", StringComparison.Ordinal) ? "completed"
+                        : path.StartsWith("resume-abandoned", StringComparison.Ordinal) ? "abandoned"
+                        : "active",
+                };
+            }
             if (phase is "inspect" or "inspect-prepared" or "verify" or "commit")
             {
                 if (phase == "inspect-prepared" && !finished && path == "resume-merged-stale-snapshot")
@@ -7970,11 +8009,17 @@ public sealed class ReviewdRunnerTests
                         "summary_head_matches",
                         "github_verify",
                     ],
-                    "passes(lambda: github_verify(c['comments'], c['live'].get, [], c['closedAt'], c['head']))",
+                    "passes(lambda: github_verify(c['comments'], c['live'].get, [], c['closedAt'], c['head'], merged=True))",
                     new JsonArray(publication).ToJsonString()
                 );
                 verified.Should().Equal(true);
-                return new JsonObject { ["comments"] = publicationReceipts.DeepClone() };
+                return new JsonObject
+                {
+                    ["comments"] = publicationReceipts.DeepClone(),
+                    ["mergedFollowUp"] = bugDenied
+                        ? new JsonObject { ["status"] = "denied" }
+                        : new JsonObject { ["status"] = "created", ["issueId"] = 18 },
+                };
             }
             var json = phase switch
             {
@@ -8043,6 +8088,13 @@ public sealed class ReviewdRunnerTests
         );
 
         results.Should().Equal(true, false, false, true, true, true, true, false, false, false, false);
+        var refused = await ReviewdSummaryReplyTests.RunAsync(
+            python!,
+            ["live_merge"],
+            "refuses(lambda: live_merge(c['current'], c['args']), 'PR_CLOSED:')",
+            new JsonArray(cases[7]!.DeepClone(), cases[8]!.DeepClone()).ToJsonString()
+        );
+        refused.Should().Equal(true, true);
     }
 
     // A conversation provisioned before DisableClientTools still has AskUserQuestion, and a question there

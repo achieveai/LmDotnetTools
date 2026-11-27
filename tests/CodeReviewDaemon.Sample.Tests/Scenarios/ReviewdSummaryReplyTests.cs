@@ -77,6 +77,82 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
     }
 
     [SkippableFact]
+    public async Task Merged_github_verify_checks_the_original_anchor_of_new_inline_findings()
+    {
+        var python = await FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox verifier cannot be run");
+        var reviewed = new string('a', 40);
+        var newer = new string('b', 40);
+        JsonObject Case(string? original, string current, bool reply = false)
+        {
+            var readBack = new JsonObject
+            {
+                ["id"] = 6,
+                ["pull_request_url"] = "https://api.github.test/repos/org/Nova/pulls/17",
+                ["body"] = "A verified finding.",
+                ["original_commit_id"] = original,
+                ["commit_id"] = current,
+            };
+            if (reply)
+                readBack["in_reply_to_id"] = 3;
+
+            return new JsonObject
+            {
+                ["head"] = reviewed,
+                ["comments"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["commentType"] = "issue_comment",
+                        ["commentId"] = 5,
+                        ["kind"] = "summary",
+                        ["content"] = "REQUEST_CHANGES",
+                    },
+                    new JsonObject
+                    {
+                        ["commentType"] = "review_comment",
+                        ["commentId"] = 6,
+                        ["kind"] = reply ? "reply" : "inline",
+                        ["content"] = "A verified finding.",
+                    }
+                ),
+                ["live"] = new JsonObject
+                {
+                    ["issues/comments/5"] = new JsonObject
+                    {
+                        ["id"] = 5,
+                        ["issue_url"] = "https://api.github.test/repos/org/Nova/issues/17",
+                        ["body"] = "REQUEST_CHANGES",
+                    },
+                    ["pulls/comments/6"] = readBack,
+                },
+            };
+        }
+
+        var results = await RunAsync(
+            python!,
+            [
+                "GITHUB_COMMENTS",
+                "github_belongs",
+                "github_reply_wrapper",
+                "same_text",
+                "summary_head_matches",
+                "github_verify",
+            ],
+            "passes(lambda: github_verify(c['comments'], c['live'].get, [], '2026-01-15T12:00:00Z', c['head'], merged=True))",
+            new JsonArray(
+                Case(reviewed, reviewed),
+                Case(reviewed, newer),
+                Case(newer, newer),
+                Case(newer, reviewed),
+                Case(null, reviewed),
+                Case(newer, newer, reply: true)
+            ).ToJsonString()
+        );
+
+        results.Should().Equal(true, true, false, false, false, true);
+    }
+
+    [SkippableFact]
     public async Task Ado_verify_keeps_a_preclosure_summary_when_a_late_reply_corrects_its_verdict()
     {
         var python = await FindPythonAsync();
@@ -109,6 +185,57 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
             new JsonArray(combined, onlyCorrection, lateSummary).ToJsonString()
         );
         verified.Should().Equal(true, false, true);
+    }
+
+    [SkippableFact]
+    public async Task Ado_verify_requires_a_full_head_in_a_late_general_summary()
+    {
+        var python = await FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox verifier cannot be run");
+        var reviewed = new string('a', 40);
+        JsonObject Case(string body, string posted) =>
+            new()
+            {
+                ["head"] = reviewed,
+                ["comments"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["threadId"] = 7,
+                        ["commentId"] = 1,
+                        ["kind"] = "summary",
+                        ["content"] = body,
+                    }
+                ),
+                ["thread"] = new JsonObject
+                {
+                    ["id"] = 7,
+                    ["comments"] = new JsonArray(
+                        new JsonObject
+                        {
+                            ["id"] = 1,
+                            ["content"] = body,
+                            ["publishedDate"] = posted,
+                        }
+                    ),
+                },
+            };
+        const string late = "2026-01-15T12:00:01.1837261Z";
+        var cases = new JsonArray(
+            Case($"REQUEST_CHANGES\nReviewed commit {reviewed}.", late),
+            Case($"REQUEST_CHANGES\nReviewed commit {reviewed[..8]}.", late),
+            Case($"REQUEST_CHANGES\nReviewed commit {new string('b', 40)}.", late),
+            Case("REQUEST_CHANGES", late),
+            Case("APPROVE", "2026-01-15T11:59:59.1837261Z"),
+            Case("REQUEST_CHANGES", "2026-01-15T12:00:00.9Z")
+        );
+
+        var results = await RunAsync(
+            python!,
+            ["summary_reply", "summary_head_matches", "ado_verify"],
+            "passes(lambda: ado_verify(c['comments'], lambda tid: c['thread'], [], set(), '2026-01-15T12:00:00.1837261Z', c['head']))",
+            cases.ToJsonString()
+        );
+        results.Should().Equal(true, false, false, false, true, false);
     }
 
     [Fact]
@@ -496,6 +623,12 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
                 assert sorted(named(n) for n in lifted) == sorted(names), 'not found: ' + str(names)
                 class ReviewError(Exception):
                     pass
+                def refuses(call, marker):
+                    try:
+                        call()
+                    except ReviewError as error:
+                        return str(error).startswith(marker)
+                    return False
                 def passes(call):
                     try:
                         call()
@@ -503,7 +636,7 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
                     except ReviewError:
                         return False
                 scope = {'pr': 17, 'datetime': datetime, 'hashlib': hashlib, 'json': json, 're': re,
-                         'ReviewError': ReviewError, 'passes': passes}
+                         'ReviewError': ReviewError, 'passes': passes, 'refuses': refuses}
                 exec(compile(ast.Module(lifted, []), 'rules', 'exec'), scope)
                 call = eval('lambda c: ' + expression, scope)
                 cases = json.loads(sys.stdin.read())

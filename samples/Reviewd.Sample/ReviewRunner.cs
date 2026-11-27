@@ -762,8 +762,24 @@ internal static class ReviewRunner
         var finishedResume = resume && !cleanupOnly && ReviewFinished(attempt);
         var inputToReconcile = resume && !cleanupOnly ? ReviewInputToReconcile(attempt) : null;
         var currentLifecycle = current["Lifecycle"]?.GetValue<string>();
-        var terminalSnapshot = currentLifecycle is "Merged" or "Abandoned";
-        var pinnedResume = finishedResume || (inputToReconcile is not null && terminalSnapshot);
+        var terminalPr = currentLifecycle is "Merged" or "Abandoned";
+        if (
+            inputToReconcile is not null
+            && options.Has("execute")
+            && currentLifecycle == "Open"
+            && attempt!["headSha"]?.GetValue<string>() is { Length: 40 } retainedHead
+            && current["HeadSha"]?.GetValue<string>() != retainedHead
+            && (options.Get("head") is not { } selectedHead || selectedHead == retainedHead)
+        )
+        {
+            // A newer saved head cannot answer whether the PR closed before this attempt checkpointed completion.
+            // Read live eligibility before rejecting it. Active PRs still cannot resume an older running attempt.
+            var live = await CheckEligibilityAsync(sandbox, repo.DisplayName, pr, slot, retainedHead, ct);
+            terminalPr =
+                live["prId"]?.GetValue<string>() == pr
+                && live["status"]?.GetValue<string>() is "completed" or "abandoned";
+        }
+        var pinnedResume = finishedResume || (inputToReconcile is not null && terminalPr);
         if (
             !cleanupOnly
             && options.Get("head") is { } expectedHead
@@ -1144,7 +1160,7 @@ internal static class ReviewRunner
             throw new ReviewDeferredException("An earlier conversation for this PR is still running; retry deferred.");
         }
 
-        var closedResume = pinnedResume && terminalSnapshot;
+        var closedResume = pinnedResume && terminalPr;
         var currentHeadMatches = attempt?["headSha"]?.GetValue<string>() == current["HeadSha"]?.GetValue<string>();
         if (
             resume
@@ -1594,17 +1610,21 @@ internal static class ReviewRunner
                 ? $"POST https://api.github.com/repos/{repo.OrgOrOwner}/{repo.RepoName}/issues with Content-Type: application/json and title and body fields. Link https://github.com/{repo.OrgOrOwner}/{repo.RepoName}/pull/{pr} in the body. For duplicate lookup, page through repository issues in all states since the merge and match the marker. Ignore pull requests in that list."
                 : $"POST https://dev.azure.com/{repo.OrgOrOwner}/{Uri.EscapeDataString(repo.Project!)}/_apis/wit/workitems/\u0024Bug?api-version=7.1 with Content-Type: application/json-patch+json. Add /fields/System.Title, /fields/System.Description and /relations/- in the same patch. Use the completed PR detail's artifactId for an ArtifactLink named Pull Request. Include the PR URL in the description. If artifactId is missing, record the issue as deferred. For duplicate lookup, read the PR's linked work items and match the marker.";
             var mergedFollowUp = $"""
-                Check the provider's PR state. If the PR merged before this review posted its summary and it has actionable findings, file one linked bug
-                after auditing the review's publication. Use the same authorized sandbox egress route used for PR comments.
+                Check the provider's PR state and audit the published findings. On a merged PR with actionable findings,
+                file one linked bug if the PR merged before the summary was posted or confirmation first published an
+                actionable finding after merge, including in a verdict correction. Use the authorized sandbox egress.
                 Title it "{followUpTitle}". Include the PR link, reviewed commit, links to the published discussion, and the
                 actionable findings as a checklist with their locations. Use only findings from the published review and omit mentions.
                 Add this exact line to its body: "{followUpMarker}".
                 {followUpRoute}
-                Read {directory}/merged-follow-up.json if present. Use its recorded outcome only when its marker matches.
-                Reuse a matching bug. If lookup cannot establish whether one exists, record the outcome and skip creation.
-                Before creating, save pending and the marker in that file. Do not retry a create with an uncertain response.
-                If resuming a matching pending record or if the response is uncertain, reconcile by readback only. Record the final outcome
-                and issue identifier or failure status in merged-follow-up.json. Keep issue creation out of publication_receipts.json.
+                Read {directory}/merged-follow-up.json if present. Check the marker. Before reusing a bug, read it
+                back and verify the PR link and the actionable published findings as well as the exact marker. Ignore
+                unrelated issues and do not edit them. If lookup is inconclusive, record deferred and skip creation.
+                Before creating, save JSON with marker and status set to pending. Do not retry a create with an uncertain
+                response. Reconcile matching pending records and uncertain responses by readback only.
+                For a merged PR, record marker and status (created, reused, denied, deferred, failed or not-needed).
+                For created or reused bugs, include issueId as the issue number or work-item ID. Keep issue creation
+                out of publication_receipts.json.
                 Continue confirming the published review even when bug creation fails. Handle provider or egress errors inside
                 this turn, record the result, and return the review verdict. Respect egress and provider denials.
                 A clean review or an unmerged closed PR needs no bug.
@@ -1740,8 +1760,12 @@ internal static class ReviewRunner
                         If the PR is closed and this review has no posted summary, recover its decided findings from this conversation and post them through the publication route already given. {closedPublication}
                         If this review already posted a closed-PR summary, confirm it without duplicating it. If confirmation
                         verifies a blocker that its summary missed, update that same comment. {closedSummaryEdit}.
-                        Preserve the full reviewed SHA and existing findings. Correct its verdict at the top and record the
-                        exact edited body in publication_receipts.json. Edit only a summary created by this review.
+                        Before PATCH, save {directory}/publication-summary-correction.json with prId, headSha, the
+                        summary's commentType and commentId (GitHub) or threadId and commentId (Azure DevOps),
+                        oldContent and content (the exact intended body). Preserve the full reviewed SHA and findings.
+                        Correct the verdict at the top. After PATCH, read the same comment and record the exact edited
+                        body in publication_receipts.json. The correction file lets verify recover a landed edit after
+                        a lost response or receipt write. Edit only this review's summary and keep the correction file.
                         Report your final verdict on the PR, with a brief rationale and any unresolved blockers. If the review is incomplete or blocked, state that explicitly rather than inferring approval.
                         For an ordinary summary posted while the PR was open: If this review verified a medium or high issue, or a failing required check this PR caused, that the summary you posted does not list as a blocker, reply in that summary thread now (on GitHub, a new PR comment): first "REQUEST_CHANGES (replaces the verdict above)", then each such blocker in one short line; record the reply in publication_receipts.json.
                         {mergedFollowUp}
@@ -1757,7 +1781,24 @@ internal static class ReviewRunner
             // A shadow review posted nothing, so its verify step checks would_post.json instead of the PR. The phase keeps
             // its name so every verify-pending resume rule applies unchanged; the result goes under its own key so
             // nothing that reads verifiedPublication mistakes would-post comments for posted ones.
-            receipt[shadow ? "wouldPost" : "verifiedPublication"] = await StepAsync("verify", verifyArgs);
+            var verification = await StepAsync("verify", verifyArgs);
+            receipt[shadow ? "wouldPost" : "verifiedPublication"] = verification;
+            if (!shadow && verification["mergedFollowUp"] is JsonObject followUp)
+            {
+                if (
+                    followUp["status"]?.GetValue<string>() == "unrecorded"
+                    && receipt["confirmationLost"]?.GetValue<bool>() == true
+                )
+                {
+                    followUp["status"] = "confirmation-unavailable";
+                }
+                if (followUp["status"]?.GetValue<string>() is not ("created" or "reused" or "not-needed"))
+                {
+                    Console.Error.WriteLine(
+                        $"{repo.DisplayName} #{pr}: merged review follow-up status {followUp["status"]}."
+                    );
+                }
+            }
             await WaitAsync(
                 client,
                 thread!,
@@ -2187,7 +2228,9 @@ internal static class ReviewRunner
             var original = await client.GetStatusByInputIdAsync(thread!, input, ct);
             if (!original.Status.Equals("Completed", StringComparison.OrdinalIgnoreCase))
             {
-                throw new ReviewDeferredException("The retained review input has not completed.");
+                throw new ReviewDeferredException(
+                    $"The retained review input has not completed (status: {original.Status})."
+                );
             }
             args["reviewFinished"] = true;
         }
@@ -2296,19 +2339,22 @@ internal static class ReviewRunner
         return false;
     }
 
+    /// <summary>The exact admitted input that an owned running attempt can reconcile after PR closure.</summary>
+    internal static string? ReviewInputToReconcile(JsonNode? attempt) =>
+        attempt?["stage"]?.GetValue<string>() == "review-running"
+        && attempt["cleanupState"]?.GetValue<string>() == "owned"
+        && attempt["claimToken"]?.GetValue<string>() is { Length: > 0 }
+        && attempt["confirmationInputId"] is null
+        && attempt["confirmationIdempotencyKey"] is null
+        && attempt["reviewInputId"]?.GetValue<string>() is { Length: > 0 } input
+            ? input
+            : null;
+
     /// <summary>
     ///     True for a retained attempt whose review turn is over, so only its confirmation, verify and archive remain.
     ///     Those stay on the head and merge it reviewed: a target branch that moved or a new push does not stop them,
     ///     and a new head is reviewed afresh afterwards.
     /// </summary>
-    internal static string? ReviewInputToReconcile(JsonNode? attempt) =>
-        attempt?["stage"]?.GetValue<string>() == "review-running"
-        && attempt["cleanupState"]?.GetValue<string>() == "owned"
-        && attempt["claimToken"]?.GetValue<string>() is { Length: > 0 }
-        && attempt["reviewInputId"]?.GetValue<string>() is { Length: > 0 } input
-            ? input
-            : null;
-
     internal static bool ReviewFinished(JsonNode? attempt) =>
         attempt?["stage"]?.GetValue<string>()
             is "review-completed"

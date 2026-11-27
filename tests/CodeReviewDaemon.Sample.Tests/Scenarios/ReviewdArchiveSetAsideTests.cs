@@ -581,6 +581,151 @@ public sealed class ReviewdArchiveSetAsideTests
         }
     }
 
+    [SkippableTheory]
+    [InlineData("landed")]
+    [InlineData("rejected")]
+    [InlineData("different")]
+    public async Task Verify_reads_back_the_exact_correction_of_a_merged_summary(string outcome)
+    {
+        Skip.IfNot(OperatingSystem.IsLinux(), "the sandbox script scans /proc");
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH");
+        const int pr = 17;
+        var (root, folder) = await PreparedSlotAsync(pr);
+        var head = new string('h', 40);
+        var merge = new string('m', 40);
+        var approval = $"APPROVE\n\nReviewed commit {head}.";
+        var corrected = $"REQUEST_CHANGES\n\nReviewed commit {head}.\n\n- The queue loses work on restart.";
+        try
+        {
+            await File.AppendAllTextAsync(
+                Path.Combine(root, ".claude/skills/review-setup/scripts/review_github.py"),
+                """
+
+
+                import json
+                from pathlib import Path
+
+                def fetch_pr(client, pr):
+                    return {'base': {'repo': {'name': 'Nova', 'owner': {'login': 'org'}}},
+                            'state': 'closed', 'merged': True, 'closed_at': '2026-01-15T12:00:00Z'}
+
+                def live_state(payload):
+                    return {'prId': '17', 'status': 'completed', 'isDraft': False, 'headSha': 'd' * 40, 'mergeSha': None}
+
+                def read_back(self, path):
+                    assert path == 'issues/comments/43', path
+                    return json.loads(Path('posted.json').read_text())
+
+                GitHubClient.request = read_back
+                """
+            );
+            var summary = new JsonObject
+            {
+                ["commentType"] = "issue_comment",
+                ["commentId"] = 43,
+                ["kind"] = "summary",
+                ["content"] = approval,
+            };
+            var receipt = new JsonObject
+            {
+                ["prId"] = "17",
+                ["headSha"] = head,
+                ["mergeSha"] = merge,
+                ["comments"] = new JsonArray(summary),
+            };
+            var receiptPath = Path.Combine(folder, "publication_receipts.json");
+            await File.WriteAllTextAsync(receiptPath, receipt.ToJsonString());
+            await File.WriteAllTextAsync(
+                Path.Combine(folder, "publication-summary-correction.json"),
+                new JsonObject
+                {
+                    ["prId"] = "17",
+                    ["headSha"] = head,
+                    ["commentType"] = "issue_comment",
+                    ["commentId"] = 43,
+                    ["oldContent"] = approval,
+                    ["content"] = corrected,
+                }.ToJsonString()
+            );
+            await File.WriteAllTextAsync(
+                Path.Combine(root, "posted.json"),
+                new JsonObject
+                {
+                    ["id"] = 43,
+                    ["issue_url"] = "https://api.github.test/repos/org/Nova/issues/17",
+                    ["created_at"] = "2026-01-15T12:00:01Z",
+                    ["body"] =
+                        outcome == "landed" ? corrected
+                        : outcome == "rejected" ? approval
+                        : corrected + "\nEdited by someone else.",
+                }.ToJsonString()
+            );
+            await File.WriteAllTextAsync(
+                Path.Combine(folder, "merged-follow-up.json"),
+                new JsonObject
+                {
+                    ["marker"] = $"Reviewd source: PR #{pr}, reviewed head {head}",
+                    ["status"] = "denied",
+                }.ToJsonString()
+            );
+            var args = new JsonObject
+            {
+                ["reviewFinished"] = true,
+                ["merge"] = merge,
+                ["baselineComments"] = new JsonArray(),
+            };
+            var result = await ReviewdAutoSlotTests.NativePhaseAsync(python!, root, "verify", pr, "A", extra: args);
+            (await File.ReadAllTextAsync(receiptPath)).Should().Be(receipt.ToJsonString(), "verification is read-only");
+            if (outcome == "landed")
+            {
+                result.ExitCode.Should().Be(0, result.Stderr);
+                var publication = JsonNode.Parse(result.Stdout)!;
+                publication["mergedFollowUp"]!["status"]!.GetValue<string>().Should().Be("denied");
+                var verified = publication["comments"]!.AsArray().Single()!;
+                verified["commentId"]!.GetValue<int>().Should().Be(43);
+                verified["contentSha256"]!
+                    .GetValue<string>()
+                    .Should()
+                    .Be(
+                        Convert
+                            .ToHexString(
+                                System.Security.Cryptography.SHA256.HashData(
+                                    System.Text.Encoding.UTF8.GetBytes(corrected)
+                                )
+                            )
+                            .ToLowerInvariant()
+                    );
+                var archive = await ReviewdAutoSlotTests.NativePhaseAsync(
+                    python!,
+                    root,
+                    "commit",
+                    pr,
+                    "A",
+                    extra: args
+                );
+                archive.ExitCode.Should().Be(0, archive.Stderr);
+                JsonNode
+                    .Parse(archive.Stdout)!
+                    .AsArray()
+                    .Select(file => file!.GetValue<string>())
+                    .Should()
+                    .Contain("publication_receipts.json");
+                var archived = JsonNode.Parse(await File.ReadAllTextAsync(receiptPath))!;
+                archived["comments"]!.AsArray().Single()!["content"]!.GetValue<string>().Should().Be(corrected);
+            }
+            else
+            {
+                result.ExitCode.Should().NotBe(0);
+                result.Stderr.Should().Contain("Publication could not be independently verified.");
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     // A native slot prepared for Nova PR <pr> in slot 2, with an empty review folder. The source checkout reads as
     // the prepared merge, and commit_review reports what it would commit instead of committing.
     private static async Task<(string Root, string Folder)> PreparedSlotAsync(int pr)
