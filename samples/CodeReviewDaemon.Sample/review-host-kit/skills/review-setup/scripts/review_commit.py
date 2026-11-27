@@ -41,14 +41,35 @@ def changed_paths(repo: Path) -> set[str]:
     return paths
 
 
+def source_worktree_refs(source: Path) -> list[tuple[str, str]]:
+    """Record direct refs by object ID and resolvable aliases by their immediate target."""
+    listing = observe(source, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)",
+                      "refs/bisect", "refs/worktree", "refs/rewritten")
+    refs = []
+    for row in listing.split("\n"):
+        if not row:
+            continue
+        name, oid, resolved_target = row.split("\0")
+        if resolved_target:
+            # for-each-ref reports the final target of a symbolic ref chain.
+            target = run_git_read(source, ["symbolic-ref", "--quiet", "--no-recurse", name], check=False)
+            if target.returncode:
+                raise ReviewError("Source changed during artifact capture or commit hook; "
+                                  f"could not read symbolic ref {name}. Side effects preserved for inspection.")
+            refs.append((name, target.stdout.removesuffix("\n")))
+        else:
+            refs.append((name, oid))
+    return refs
+
+
 def source_fingerprint(source: Path) -> dict:
     """Read-only evidence: hooks are detected after execution, not sandboxed.
 
     Only this checkout's own state is recorded. Most source refs live in the pool's shared
     store, and other lanes' fetches move them at any time (#999), so they are not compared.
     The detached HEAD and the current ref show a hook that moves or switches this checkout.
-    Direct per-worktree refs are tracked by object. Symbolic refs are tracked by target
-    name so a fetch cannot invalidate a checkout merely by advancing their shared target.
+    Direct per-worktree refs are tracked by object ID. Resolvable symbolic refs are tracked
+    by immediate target name, which stays put when another lane updates a shared alias.
     Replace refs are shared, but no lane writes them, and one changes the diff a SHA shows.
     """
     index = Path(observe(source, "rev-parse", "--path-format=absolute", "--git-path", "index").strip())
@@ -65,9 +86,7 @@ def source_fingerprint(source: Path) -> dict:
     return {
         "head": observe(source, "rev-parse", "HEAD").strip(),
         "ref": current_ref(source, read_only=True),
-        "worktreeRefs": observe(source, "for-each-ref",
-                                "--format=%(refname) %(if)%(symref)%(then)%(symref)%(else)%(objectname)%(end)",
-                                "refs/bisect", "refs/worktree", "refs/rewritten"),
+        "worktreeRefs": source_worktree_refs(source),
         "replaceRefs": observe(source, "for-each-ref", "--format=%(refname) %(objectname)", "refs/replace"),
         "index": file_hash(index) if index.is_file() else None,
         "stagedDiff": observe(source, "diff", "--cached", "--binary"),
@@ -177,7 +196,8 @@ def commit_review(root: Path, repo: str, pr: int, slot: int, *,
                     raise ReviewError("Outer slot is not owned by this review repository.")
                 if Path(observe(source, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()).resolve() != pool.store.resolve():
                     raise ReviewError("Nested source is not owned by its configured pool.")
-                # A retry must not take an earlier hook's operation or replacement as its baseline.
+                # Refuse resolvable operation and replacement refs as a retry baseline.
+                # Git's ref listing omits dangling symbolic refs.
                 existing_ref = observe(source, "for-each-ref", "--count=1", "--format=%(refname)",
                                        "refs/bisect", "refs/replace", "refs/rewritten").strip()
                 if existing_ref:

@@ -22,7 +22,7 @@ public sealed class ReviewdSourceFingerprintTests
 
         def git(cwd, *args):
             return subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.com',
-                                   '-C', str(cwd), *args],
+                                   '-c', 'commit.gpgsign=false', '-C', str(cwd), *args],
                                   check=True, capture_output=True, text=True).stdout.strip()
 
         """;
@@ -130,6 +130,31 @@ public sealed class ReviewdSourceFingerprintTests
                     return {'sameResolvedTarget': git(a, 'rev-parse', ref) == before,
                             'newSymbolicTarget': git(a, 'symbolic-ref', ref) == 'refs/remotes/origin/main'}
 
+                def chained_symbolic_ref(a):
+                    symbolic_ref(a)
+                    for alias in ('HEAD', 'alias'):
+                        git(a, 'symbolic-ref', 'refs/remotes/origin/' + alias, 'refs/heads/main')
+                    git(a, 'symbolic-ref', 'refs/worktree/shared-tip', 'refs/remotes/origin/HEAD')
+
+                def alias_targets(a):
+                    ref = 'refs/worktree/shared-tip'
+                    return (git(a, 'symbolic-ref', '--no-recurse', ref), git(a, 'symbolic-ref', ref),
+                            git(a, 'rev-parse', ref))
+
+                def shared_alias_retargeted(a, b, first):
+                    local, leaf, oid = alias_targets(a)
+                    git(b, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
+                    next_local, next_leaf, next_oid = alias_targets(a)
+                    return {'sameLocalTarget': local == next_local, 'differentLeaf': leaf != next_leaf,
+                            'sameResolvedTarget': oid == next_oid}
+
+                def local_alias_retargeted(a, b, first):
+                    local, leaf, oid = alias_targets(a)
+                    git(a, 'symbolic-ref', 'refs/worktree/shared-tip', 'refs/remotes/origin/alias')
+                    next_local, next_leaf, next_oid = alias_targets(a)
+                    return {'differentLocalTarget': local != next_local, 'sameLeaf': leaf == next_leaf,
+                            'sameResolvedTarget': oid == next_oid}
+
                 def replacement(a, message):
                     return git(a, 'commit-tree', 'HEAD^{tree}', '-m', message)
 
@@ -150,6 +175,8 @@ public sealed class ReviewdSourceFingerprintTests
                     'otherLaneFetches': (None, other_lane_fetches),
                     'sharedSymbolicTargetMoves': (symbolic_ref, shared_symbolic_target_moves),
                     'ownSymbolicRefRetargeted': (symbolic_ref, symbolic_ref_retargeted),
+                    'sharedAliasRetargeted': (chained_symbolic_ref, shared_alias_retargeted),
+                    'localAliasRetargeted': (chained_symbolic_ref, local_alias_retargeted),
                     'headMovedToSameTree': (None, same_tree_head),
                     'switchedOntoBranch': (None, lambda a, b, first: git(a, 'switch', '-q', '-c', 'hook-branch')),
                     'assumeUnchanged': (None, lambda a, b, first: git(a, 'update-index', '--assume-unchanged',
@@ -204,6 +231,15 @@ public sealed class ReviewdSourceFingerprintTests
             var ownSymbolicRef = result["ownSymbolicRefRetargeted"]!;
             ownSymbolicRef["sameResolvedTarget"]!.GetValue<bool>().Should().BeTrue();
             ownSymbolicRef["newSymbolicTarget"]!.GetValue<bool>().Should().BeTrue();
+            var sharedAlias = result["sharedAliasRetargeted"]!;
+            sharedAlias["sameLocalTarget"]!.GetValue<bool>().Should().BeTrue();
+            sharedAlias["differentLeaf"]!.GetValue<bool>().Should().BeTrue();
+            sharedAlias["sameResolvedTarget"]!.GetValue<bool>().Should().BeTrue();
+            sharedAlias["outcome"]!.GetValue<string>().Should().Be("unchanged", "only the shared alias changed");
+            var localAlias = result["localAliasRetargeted"]!;
+            localAlias["differentLocalTarget"]!.GetValue<bool>().Should().BeTrue();
+            localAlias["sameLeaf"]!.GetValue<bool>().Should().BeTrue();
+            localAlias["sameResolvedTarget"]!.GetValue<bool>().Should().BeTrue();
             result["replaceRefAdded"]!["replaceRef"]!.GetValue<bool>().Should().BeTrue();
             result["bisectStarted"]!["bisectRef"]!.GetValue<bool>().Should().BeTrue();
             result["replaceRefRetargeted"]!["sameNameNewTarget"]!
@@ -213,10 +249,12 @@ public sealed class ReviewdSourceFingerprintTests
             foreach (var name in new[] { "worktreeRefAdded", "rewrittenRefAdded" })
                 result[name]!["ownRef"]!.GetValue<bool>().Should().BeTrue($"{name} is A's ref alone");
             foreach (var name in new[] { "worktreeRefMoved", "rewrittenRefMoved" })
+            {
                 result[name]!["sameNameNewTarget"]!
                     .GetValue<bool>()
                     .Should()
                     .BeTrue($"{name} changes an existing local ref");
+            }
             foreach (
                 var name in new[]
                 {
@@ -233,6 +271,7 @@ public sealed class ReviewdSourceFingerprintTests
                     "worktreeRefMoved",
                     "rewrittenRefMoved",
                     "ownSymbolicRefRetargeted",
+                    "localAliasRetargeted",
                 }
             )
             {
