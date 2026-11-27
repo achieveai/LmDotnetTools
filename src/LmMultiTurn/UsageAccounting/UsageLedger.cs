@@ -195,22 +195,38 @@ public sealed class UsageLedger : IUsageSink
         return record;
     }
 
-    private static UsageRecord WithDerivedCompleteness(UsageRecord record)
+    private UsageRecord WithDerivedCompleteness(UsageRecord record)
     {
-        // Same shape as WithDerivedProvenance, for #682's field: a row persisted before CostCompleteness
-        // existed deserializes with the Unavailable default beside a populated estimate. That estimate was
-        // computed from two categories (input + output) with every cache category ignored, so it is a
-        // lower bound — Partial — not unavailable and certainly not complete. Only the default is derived
-        // over; an explicitly stamped completeness is trusted as-is.
-        if (record.CostCompleteness != CostCompleteness.Unavailable || record.EstimatedPublicCostMicros is null)
+        // Legacy estimates that predate the completeness field omitted cache categories.
+        if (record.CostCompleteness == CostCompleteness.Unavailable && record.EstimatedPublicCostMicros is not null)
         {
-            return record;
+            return record with { CostCompleteness = CostCompleteness.Partial };
         }
 
-        return record with
+        return WithResponsesCompleteness(record, _pricingResolver);
+    }
+
+    internal static UsageRecord WithResponsesCompleteness(UsageRecord record, IPricingResolver? pricingResolver)
+    {
+        // A stored amount can predate Responses write accounting. Keep the historical amount for display,
+        // and withhold completeness if the current Responses rules cannot price the observed categories.
+        if (
+            record.CostCompleteness == CostCompleteness.Complete
+            && record.EstimatedPublicCostMicros is not null
+            && (
+                record.ResponsesCacheWriteConflict
+                || (
+                    pricingResolver?.Resolve(record.EffectiveModelId)
+                        is { ResponsesCacheWrite30mPerMillion: not null } pricing
+                    && pricing.Estimate(record).Completeness != CostCompleteness.Complete
+                )
+            )
+        )
         {
-            CostCompleteness = CostCompleteness.Partial,
-        };
+            return record with { CostCompleteness = CostCompleteness.Partial };
+        }
+
+        return record;
     }
 
     private UsageRecord WithEstimatedCost(UsageRecord merged, UsageRecord observation)
@@ -223,7 +239,7 @@ public sealed class UsageLedger : IUsageSink
         // first chunk's figure onto the record (#682).
         if (_pricingResolver is null || observation.EstimatedPublicCostMicros is not null)
         {
-            return merged;
+            return WithResponsesCompleteness(merged, _pricingResolver);
         }
 
         var pricing = _pricingResolver.Resolve(merged.EffectiveModelId);
@@ -257,13 +273,40 @@ public sealed class UsageLedger : IUsageSink
             return observation;
         }
 
+        var input = Math.Max(existing.InputTokens, observation.InputTokens);
+        var cached = Math.Max(existing.CacheReadTokens, observation.CacheReadTokens);
+        // Counts form a partition of a particular input observation. A pair from an earlier, smaller
+        // input snapshot cannot establish the write counts for the merged input.
+        var priorResponses = MatchingResponsesWrites(existing);
+        var observedResponses = MatchingResponsesWrites(observation);
+        var responses = observedResponses ?? priorResponses;
+        // Retain a disagreement for this input and read count so replaying either claim cannot settle it.
+        var responsesConflict =
+            priorResponses?.ResponsesCacheWriteConflict == true
+            || observedResponses?.ResponsesCacheWriteConflict == true
+            || (
+                priorResponses?.ResponsesCacheWriteTokens is { } priorWrites
+                && observedResponses?.ResponsesCacheWriteTokens is { } observedWrites
+                && (
+                    priorWrites != observedWrites
+                    || (
+                        priorResponses.ResponsesCacheWrite12hTokens is { } prior12h
+                        && observedResponses.ResponsesCacheWrite12hTokens is { } observed12h
+                        && prior12h != observed12h
+                    )
+                )
+            );
+
         return observation with
         {
-            InputTokens = Math.Max(existing.InputTokens, observation.InputTokens),
+            InputTokens = input,
             OutputTokens = Math.Max(existing.OutputTokens, observation.OutputTokens),
-            CacheReadTokens = Math.Max(existing.CacheReadTokens, observation.CacheReadTokens),
+            CacheReadTokens = cached,
             CacheWriteTokens = Math.Max(existing.CacheWriteTokens, observation.CacheWriteTokens),
             CacheWrite1hTokens = MaxNullable(existing.CacheWrite1hTokens, observation.CacheWrite1hTokens),
+            ResponsesCacheWriteTokens = responsesConflict ? null : responses?.ResponsesCacheWriteTokens,
+            ResponsesCacheWrite12hTokens = responsesConflict ? null : responses?.ResponsesCacheWrite12hTokens,
+            ResponsesCacheWriteConflict = responsesConflict,
             ReasoningTokens = Math.Max(existing.ReasoningTokens, observation.ReasoningTokens),
             EstimatedPublicCostMicros = MaxNullable(
                 existing.EstimatedPublicCostMicros,
@@ -291,6 +334,13 @@ public sealed class UsageLedger : IUsageSink
             OccurredAtUtc = UsageRecord.EarliestOccurredAt(existing.OccurredAtUtc, observation.OccurredAtUtc),
             Finalized = existing.Finalized || observation.Finalized,
         };
+
+        UsageRecord? MatchingResponsesWrites(UsageRecord candidate) =>
+            candidate.InputTokens == input
+            && candidate.CacheReadTokens == cached
+            && (candidate.ResponsesCacheWriteTokens is not null || candidate.ResponsesCacheWriteConflict)
+                ? candidate
+                : null;
     }
 
     private static long? MaxNullable(long? left, long? right)

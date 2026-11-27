@@ -471,7 +471,11 @@ internal sealed class LmStreamingS2SClient
     /// until the governor's clock runs out only delays the same conclusion.
     /// </para>
     /// </summary>
-    public async Task EnsureHostContractAsync(CancellationToken ct)
+    public async Task EnsureHostContractAsync(
+        CancellationToken ct,
+        bool requireResponsesCacheWritePricing = false,
+        string? judgeProvider = null
+    )
     {
         using var response = await ExecuteAsync(HttpMethod.Get, "api/conversations/capabilities", body: null, ct);
 
@@ -513,6 +517,19 @@ internal sealed class LmStreamingS2SClient
         {
             missing.Add("rootReasoningEffort");
         }
+        if (requireResponsesCacheWritePricing && !ReadBoolProperty(body, "responsesCacheWritePricing"))
+        {
+            missing.Add("responsesCacheWritePricing");
+        }
+
+        string[]? fallbackSources = null;
+        if (
+            judgeProvider is not null
+            && !TryReadStringArrayProperty(body, "modelFallbackSourceProviders", out fallbackSources)
+        )
+        {
+            missing.Add("modelFallbackSourceProviders");
+        }
 
         if (missing.Count > 0)
         {
@@ -520,6 +537,15 @@ internal sealed class LmStreamingS2SClient
                 $"The LmStreaming review host at {_baseUrl} does not support "
                     + $"{string.Join(" and ", missing)}, which this review requires before it may send. "
                     + $"Body: {body}"
+            );
+        }
+
+        if (judgeProvider is not null && fallbackSources!.Contains(judgeProvider, StringComparer.OrdinalIgnoreCase))
+        {
+            throw new ReviewHostContractException(
+                $"The LmStreaming review host at {_baseUrl} has an available fallback target configured for judge "
+                    + $"provider {judgeProvider}. This target may change the model used for the judgment, so the "
+                    + "judge requires it to be removed before starting. The runner stopped before sending this request."
             );
         }
     }
@@ -1473,6 +1499,30 @@ internal sealed class LmStreamingS2SClient
     {
         using var doc = JsonDocument.Parse(body);
         return doc.RootElement.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.True;
+    }
+
+    private static bool TryReadStringArrayProperty(string body, string propertyName, out string[]? values)
+    {
+        values = null;
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (
+                !doc.RootElement.TryGetProperty(propertyName, out var value)
+                || value.ValueKind != JsonValueKind.Array
+                || value.EnumerateArray().Any(item => item.ValueKind != JsonValueKind.String)
+            )
+            {
+                return false;
+            }
+
+            values = [.. value.EnumerateArray().Select(item => item.GetString()!)];
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static T Deserialize<T>(string body)

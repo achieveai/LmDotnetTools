@@ -2965,6 +2965,271 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         }
     }
 
+    [Theory]
+    [InlineData("legacy", "completed", 0)]
+    [InlineData("legacy-delegate", "completed", 0)]
+    [InlineData("legacy-rejudge", "completed", 0)]
+    [InlineData("pending-nudge", "capped", 1)]
+    [InlineData("matching-pending-nudge", "completed", 0)]
+    [InlineData("mismatched-pending-nudge", "failed", 1)]
+    [InlineData("unconfirmed-freeze-false", "nudge-send-pending", 1)]
+    [InlineData("unconfirmed-freeze-missing", "nudge-send-pending", 1)]
+    [InlineData("configured-fallback-nudge", "nudge-send-pending", 1)]
+    [InlineData("missing-fallback-capability-nudge", "nudge-send-pending", 1)]
+    [InlineData("draft", "capped", 1)]
+    [InlineData("missing-capability", "post-check", 1)]
+    [InlineData("fallback", "failed", 1)]
+    [InlineData("missing-usage", "failed", 1)]
+    [InlineData("partial-final-usage", "failed", 1)]
+    [InlineData("alternate-provider", "completed", 0)]
+    public async Task A_judge_resume_checks_usage_and_model_before_spending_or_accepting_output(
+        string scenario,
+        string expectedStage,
+        int expectedExit
+    )
+    {
+        var legacy = scenario.StartsWith("legacy", StringComparison.Ordinal);
+        var provider = legacy || scenario == "alternate-provider" ? "gpt-6.1-sol" : "gpt-6.2-sol";
+        Directory.CreateDirectory(_files);
+        var key = await SeedJudgeResumeAsync(scenario, provider);
+        var unconfirmedFreeze = scenario.StartsWith("unconfirmed-freeze-", StringComparison.Ordinal);
+        var servedModel =
+            unconfirmedFreeze || scenario is "fallback" or "mismatched-pending-nudge" ? "gpt-6.2-astra" : provider;
+        var usage = $$"""
+            {"preferredCostMicros":120000,"completeness":"Complete","estimatedCostCompleteness":"Complete",
+             "perModel":[{"modelId":"{{servedModel}}","attemptCount":1}]}
+            """;
+        var partial = usage.Replace(
+            "\"estimatedCostCompleteness\":\"Complete\"",
+            "\"estimatedCostCompleteness\":\"Partial\""
+        );
+        var host = JudgeResumeHost(scenario);
+
+        JsonObject? savedBeforeFinalRead = null;
+        if (scenario == "missing-usage")
+        {
+            var reads = 0;
+            host.OnAsync(
+                req =>
+                    req.Method == HttpMethod.Get
+                    && req.RequestUri!.AbsolutePath.EndsWith("/usage", StringComparison.Ordinal),
+                async _ =>
+                {
+                    if (++reads == 2)
+                        savedBeforeFinalRead = await ReceiptAsync(key);
+                    return new HttpResponseMessage(HttpStatusCode.NotFound);
+                }
+            );
+        }
+        else if (scenario == "partial-final-usage")
+        {
+            host.OnSequence(HttpMethod.Get, "/usage", (HttpStatusCode.OK, usage), (HttpStatusCode.OK, partial));
+        }
+        else
+        {
+            host.OnJson(HttpMethod.Get, "/usage", scenario is "pending-nudge" or "draft" ? partial : usage);
+        }
+
+        using var gateway = new ScriptedSandboxGateway
+        {
+            WorkspaceRelativePath = "workspace",
+            Execute = (_, args) =>
+                Task.FromResult(
+                    args[3] switch
+                    {
+                        "judge-snapshot" => (0, """{"status":"ok","compare":"unchanged"}""", ""),
+                        "judge-outputs" => (
+                            0,
+                            scenario == "draft"
+                                ? """{"status":"ok","stage":"draft"}"""
+                                : """{"status":"ok","stage":"final"}""",
+                            ""
+                        ),
+                        _ => throw new InvalidOperationException($"Unexpected judge phase {args[3]}"),
+                    }
+                ),
+        };
+        using var config = HostConfig(_files, new HostAndGateway(host, gateway));
+        var options = CliOptions.Parse([
+            "judge",
+            "run",
+            "--repo",
+            Repo.DisplayName,
+            "--pr",
+            "17",
+            "--db",
+            _database,
+            "--session",
+            "judge-session",
+            "--workspace",
+            "workspace",
+            "--provider",
+            legacy ? "gpt-6.2-sol" : provider,
+            "--mode",
+            "workspace-agent",
+            "--execute",
+            .. scenario == "legacy-rejudge" ? new[] { "--rejudge" } : [],
+        ]);
+
+        var exit = await JudgeRunner.RunAsync(options, config, default, leaseHeld: true);
+
+        var saved = await ReceiptAsync(key);
+        Logger.LogDebug("Judge scenario {Scenario} exit {Exit}: {Receipt}", scenario, exit, saved.ToJsonString());
+        exit.Should().Be(expectedExit);
+        saved["stage"]!.GetValue<string>().Should().Be(expectedStage);
+        var posts = host.Requests.Where(r =>
+            r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal)
+        );
+        if (scenario == "alternate-provider")
+            JsonNode.Parse(posts.Should().ContainSingle().Subject.Body!)!["suppressSubAgentSpawning"]!
+                .GetValue<bool>()
+                .Should()
+                .BeTrue();
+        else if (scenario == "matching-pending-nudge")
+            JsonNode.Parse(posts.Should().ContainSingle().Subject.Body!)!["idempotencyKey"]!
+                .GetValue<string>()
+                .Should()
+                .Be("pending-nudge");
+        else
+            posts.Should().BeEmpty();
+        if (scenario == "mismatched-pending-nudge")
+        {
+            host.CountRequests("/freeze").Should().Be(1);
+            saved["frozenAt"].Should().NotBeNull();
+            saved["error"]!.GetValue<string>().Should().Contain(servedModel);
+        }
+        if (unconfirmedFreeze)
+        {
+            host.CountRequests("/freeze").Should().Be(1);
+            saved["frozenAt"].Should().BeNull();
+            saved["finishedAt"].Should().BeNull();
+        }
+        if (legacy)
+            host.CountRequests("/status?inputId=root-input").Should().BeGreaterThan(0);
+        if (scenario == "fallback")
+            saved["error"]!.GetValue<string>().Should().Contain(servedModel);
+        if (scenario == "missing-usage")
+        {
+            savedBeforeFinalRead.Should().NotBeNull();
+            savedBeforeFinalRead!["judgeUsage"]!["measured"]!.GetValue<bool>().Should().BeFalse();
+        }
+    }
+
+    private async Task<string> SeedJudgeResumeAsync(string scenario, string provider)
+    {
+        const string artifact = "dddddddddddddddddddddddddddddddddddddddd";
+        var stage = scenario switch
+        {
+            "pending-nudge"
+            or "matching-pending-nudge"
+            or "mismatched-pending-nudge"
+            or "unconfirmed-freeze-false"
+            or "unconfirmed-freeze-missing"
+            or "configured-fallback-nudge"
+            or "missing-fallback-capability-nudge" => "nudge-send-pending",
+            "alternate-provider" => "thread-created",
+            _ => "post-check",
+        };
+        var review = ArmReceipt([], artifact);
+        review.Remove("shadow");
+        await PutAsync($"reviewd/review-run/{Repo.NormalizedKey}/17", review);
+        var identity = new JsonObject
+        {
+            ["reviewArtifactCommit"] = artifact,
+            ["reviewedHeads"] = new JsonArray(JsonValue.Create(Head)),
+            ["finalHeadSha"] = Head,
+            ["promptTemplateSha256"] = scenario.StartsWith("legacy", StringComparison.Ordinal)
+                ? new string('e', 64)
+                : await JudgeRunner.EmbeddedPromptSha256Async(default),
+            ["provider"] = provider,
+            ["effort"] = "xhigh",
+            ["mode"] = "workspace-agent",
+        };
+        if (!scenario.StartsWith("legacy", StringComparison.Ordinal))
+            identity["sendContractVersion"] = 2;
+        var key = $"reviewd/judge-run/{Repo.NormalizedKey}/17/1";
+        await PutAsync(
+            key,
+            new JsonObject
+            {
+                ["stage"] = stage,
+                ["identity"] = identity,
+                ["repository"] = Repo.DisplayName,
+                ["prId"] = "17",
+                ["n"] = 1,
+                ["startedAt"] = Now,
+                ["judgeThreadId"] = "thread-judge",
+                ["judgeInputId"] = stage == "thread-created" ? null : "root-input",
+                ["judgmentDir"] = "PRs/nova-17/judgment-1",
+                ["nudge"] = stage == "nudge-send-pending" ? new JsonObject { ["key"] = "pending-nudge" } : null,
+                ["ado"] = new JsonObject
+                {
+                    ["projectId"] = "project",
+                    ["repositoryId"] = "repo",
+                    ["beforePath"] = "before.json",
+                    ["beforeSha256"] = "before-sha",
+                },
+            }
+        );
+        return key;
+    }
+
+    private static FakeHttpMessageHandler JudgeResumeHost(string scenario)
+    {
+        var host = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "api/workspaces/workspace", """{"id":"workspace","directoryRelPath":"workspace"}""")
+            .OnJson(HttpMethod.Get, "/status?", """{"status":"completed","runId":"run-1"}""")
+            .OnJson(
+                HttpMethod.Get,
+                "/run-state",
+                """{"isInProgress":false}""",
+                scenario is "pending-nudge" or "draft" ? HttpStatusCode.NotFound : HttpStatusCode.OK
+            )
+            .OnJson(
+                HttpMethod.Post,
+                "/freeze",
+                scenario switch
+                {
+                    "unconfirmed-freeze-false" => """{"frozen":false}""",
+                    "unconfirmed-freeze-missing" => "{}",
+                    _ => """{"frozen":true}""",
+                }
+            )
+            .OnJson(HttpMethod.Put, "api/conversations/thread-judge/metadata", "{}")
+            .OnJson(
+                HttpMethod.Get,
+                "/subagents?",
+                scenario == "legacy-delegate"
+                    ? """{"schemaVersion":1,"nodes":[{"agentId":"delegate","threadId":"thread-delegate","parentThreadId":"thread-judge","depth":1,"template":"blind-reviewer","status":"completed","effectiveModelId":"gpt-6.1-sol"}]}"""
+                    : """{"schemaVersion":1,"nodes":[]}"""
+            )
+            .OnJson(
+                HttpMethod.Post,
+                "/messages",
+                """{"inputId":"root-input","idempotencyKeyHonored":true,"spawningSuppressed":true}""",
+                HttpStatusCode.Accepted
+            );
+        return scenario == "missing-capability"
+                ? host.OnJson(
+                    HttpMethod.Get,
+                    "/capabilities",
+                    """{"messageIdempotency":true,"rootReasoningEffort":true,"spawnSuppression":true}"""
+                )
+            : scenario == "configured-fallback-nudge"
+                ? host.OnJson(
+                    HttpMethod.Get,
+                    "/capabilities",
+                    """{"schemaVersion":1,"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"responsesCacheWritePricing":true,"modelFallbackSourceProviders":["gpt-6.2-sol"]}"""
+                )
+            : scenario == "missing-fallback-capability-nudge"
+                ? host.OnJson(
+                    HttpMethod.Get,
+                    "/capabilities",
+                    """{"schemaVersion":1,"messageIdempotency":true,"spawnSuppression":true,"rootReasoningEffort":true,"responsesCacheWritePricing":true}"""
+                )
+            : host.OnCurrentReviewHostCapabilities();
+    }
+
     // judge-inputs over a real store and scripted ADO GETs: ours is the would_post.json at the review's own artifact
     // commit, checked against its verified record, never a publication receipt on another review branch or on main; the
     // live reviewer's [Revobot] comment is context of its own class; and no input file names the arm.
