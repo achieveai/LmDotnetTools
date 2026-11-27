@@ -1,5 +1,3 @@
-using System.Text.Json.Serialization;
-
 namespace AchieveAi.LmDotnetTools.LmCore.Models;
 
 /// <summary>
@@ -89,24 +87,6 @@ public sealed record CostEstimate(long? Micros, CostCompleteness Completeness, I
     /// <summary>A potential cache write is not represented by the provider usage telemetry.</summary>
     public const string MissingCacheWriteTelemetry = "cache_write_telemetry";
 }
-
-/// <summary>A scheduled change to the configured rates.</summary>
-/// <param name="EffectiveDate">First UTC date when the new rates apply.</param>
-/// <param name="Multiplier">Multiplier for every token rate.</param>
-public sealed record PricingRateChange(
-    [property: JsonPropertyName("effective_date")] DateOnly EffectiveDate,
-    [property: JsonPropertyName("multiplier")] decimal Multiplier
-);
-
-/// <summary>Applies a different rate to every token of a request above the input threshold.</summary>
-/// <param name="InputTokensGreaterThan">Exclusive threshold on total billed input, including cached input.</param>
-/// <param name="InputMultiplier">Multiplier for uncached input, reads, and writes.</param>
-/// <param name="OutputMultiplier">Multiplier for output, including reasoning.</param>
-public sealed record LongContextPricing(
-    [property: JsonPropertyName("input_tokens_greater_than")] int InputTokensGreaterThan,
-    [property: JsonPropertyName("input_multiplier")] decimal InputMultiplier,
-    [property: JsonPropertyName("output_multiplier")] decimal OutputMultiplier
-);
 
 /// <summary>
 ///     Immutable per-model public pricing snapshot used to estimate cost from token counts. Captured at

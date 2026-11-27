@@ -665,12 +665,19 @@ internal static class JudgeBatch
             scan.Skipped.Select(skip => new Note($"install {skip.Name}", $"unusable because {skip.Reason}"))
         );
         // The receipt's reading is a lower bound while sub-agents may still spend; re-read those in a guard window.
-        var windows = LastFinished(scan.Spends.Where(spend => spend.Thread is not null)).ToHashSet();
+        var windows = scan
+            .Spends.Select((spend, index) => (Spend: spend, Index: index))
+            .Where(item => item.Spend.Thread is not null && item.Spend.FinishedAt is not null)
+            .OrderByDescending(item => item.Spend.FinishedAt)
+            .Take(AvgWindow)
+            .Select(item => item.Index)
+            .ToHashSet();
+        var averageActive = windows.Count >= AvgMinimum;
         var refusedReads = new HashSet<int>();
         for (var i = 0; i < scan.Spends.Count; i++)
         {
             var spend = scan.Spends[i];
-            if (spend.Thread is null || !spend.LowerBound || !(InDay(spend, now) || windows.Contains(spend)))
+            if (spend.Thread is null || !spend.LowerBound || !(InDay(spend, now) || windows.Contains(i)))
                 continue;
             JsonObject live;
             try
@@ -709,14 +716,29 @@ internal static class JudgeBatch
         // Every cost the day cap charges at the cap says so, whatever made it unknown; a refused sign-in says
         // it once for all.
         scan.NeedsYou.AddRange(
-            scan.Spends.Where(
-                    (spend, i) =>
-                        spend.Thread is not null && spend.Unknown && InDay(spend, now) && !refusedReads.Contains(i)
+            scan.Spends.Select((spend, i) => (Spend: spend, Index: i))
+                .Where(item =>
+                    item.Spend.Thread is not null
+                    && item.Spend.Unknown
+                    && !refusedReads.Contains(item.Index)
+                    && (InDay(item.Spend, now) || (averageActive && windows.Contains(item.Index)))
                 )
-                .Select(spend => new Note(
-                    spend.Label,
-                    $"cost not known; until it is, the daily cap counts its cost cap ({Usd(spend.Charged)})"
-                ))
+                .Select(item =>
+                {
+                    var inDay = InDay(item.Spend, now);
+                    var inAverage = averageActive && windows.Contains(item.Index);
+                    var guardedBy = (inDay, inAverage) switch
+                    {
+                        (true, true) => "the daily cap and average guard count",
+                        (true, false) => "the daily cap counts",
+                        (false, true) => "the average guard counts",
+                        _ => throw new InvalidOperationException("An unknown cost must affect at least one guard."),
+                    };
+                    return new Note(
+                        item.Spend.Label,
+                        $"cost not known; until it is, {guardedBy} its cost cap ({Usd(item.Spend.Charged)})"
+                    );
+                })
         );
         if (scan.SignInRefused is { } code)
             scan.NeedsYou.Insert(

@@ -32,12 +32,22 @@ internal sealed record CreateSandboxRequestDto(
     [property: JsonPropertyName("properties")] IReadOnlyDictionary<string, string>? Properties = null,
     [property: JsonPropertyName("webhook")] SandboxWebhookDto? Webhook = null,
     [property: JsonPropertyName("skills")] SkillsPolicyDto? Skills = null,
-    [property: JsonPropertyName("mcp")] McpPolicyDto? Mcp = null
+    [property: JsonPropertyName("mcp")] McpPolicyDto? Mcp = null,
+    [property: JsonPropertyName("archiveReceipts")]
+        IReadOnlyList<AppMarketplaceArchiveReceiptDto>? ArchiveReceipts = null,
+    [property: JsonPropertyName("expectedSourceVersion")] string? ExpectedSourceVersion = null
 );
 
 internal sealed record McpPolicyDto(
     [property: JsonPropertyName("egress")] string? Egress,
-    [property: JsonPropertyName("servers")] IReadOnlyDictionary<string, McpServerPolicyDto>? Servers
+    [property: JsonPropertyName("servers")] IReadOnlyDictionary<string, McpServerPolicyDto>? Servers,
+    [property: JsonPropertyName("direct")] IReadOnlyList<DirectMcpServerDto>? Direct
+);
+
+internal sealed record DirectMcpServerDto(
+    [property: JsonPropertyName("marketplace")] string Marketplace,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("url")] string Url
 );
 
 internal sealed record McpServerPolicyDto(
@@ -152,7 +162,9 @@ internal sealed record CreateSandboxResponseDto(
     [property: JsonPropertyName("partition")] IReadOnlyList<string?>? Partition = null,
     [property: JsonPropertyName("webhook")] WebhookSummaryDto? Webhook = null,
     [property: JsonPropertyName("skills")] SkillsPolicyDto? Skills = null,
-    [property: JsonPropertyName("mcp")] System.Text.Json.JsonElement? Mcp = null
+    [property: JsonPropertyName("mcp")] System.Text.Json.JsonElement? Mcp = null,
+    [property: JsonPropertyName("sourceVersion")] string? SourceVersion = null,
+    [property: JsonPropertyName("resolvedArchiveReceipts")] System.Text.Json.JsonElement? ResolvedArchiveReceipts = null
 );
 
 /// <summary>
@@ -275,8 +287,22 @@ internal sealed record MarketplacePluginDto(
     [property: JsonPropertyName("version")] string? Version,
     [property: JsonPropertyName("description")] string? Description,
     [property: JsonPropertyName("skills")] IReadOnlyList<MarketplaceSkillDto>? Skills,
-    [property: JsonPropertyName("agents")] IReadOnlyList<MarketplaceAgentDto>? Agents
+    [property: JsonPropertyName("agents")] IReadOnlyList<MarketplaceAgentDto>? Agents,
+    [property: JsonPropertyName("mcp_servers")] IReadOnlyList<MarketplaceMcpServerDto>? McpServers,
+    [property: JsonPropertyName("selectable")] bool? Selectable
 );
+
+internal sealed record MarketplaceMcpServerDto(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("transport")] string? Transport,
+    [property: JsonPropertyName("url")] string? Url,
+    [property: JsonPropertyName("auth")] MarketplaceMcpAuthDto? Auth,
+    [property: JsonPropertyName("unresolved_vars")] IReadOnlyList<string>? UnresolvedVariables,
+    [property: JsonPropertyName("requiresOAuth")] bool RequiresOAuth
+);
+
+internal sealed record MarketplaceMcpAuthDto([property: JsonPropertyName("mode")] string? Mode);
 
 internal sealed record MarketplaceSkillDto(
     [property: JsonPropertyName("name")] string Name,
@@ -421,7 +447,8 @@ internal sealed record McpResolvedServerDto(
     [property: JsonPropertyName("headers")] IReadOnlyList<string?>? Headers,
     [property: JsonPropertyName("provider_id")] string? ProviderId,
     [property: JsonPropertyName("rule_id")] string? RuleId,
-    [property: JsonPropertyName("unresolved_vars")] IReadOnlyList<string?>? UnresolvedVars
+    [property: JsonPropertyName("unresolved_vars")] IReadOnlyList<string?>? UnresolvedVars,
+    [property: JsonPropertyName("direct")] bool Direct
 );
 
 internal sealed record McpManifestDto(

@@ -188,18 +188,18 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
 
         scan.Guard.Spent24h.Should().Be(22m);
         host.CountRequests("thread-ok/usage").Should().Be(0);
-        // Each cost charged at its cap says so, and none is called a lower bound.
+        // Each cost charged at its cap says both active guards count it; none is called a lower bound.
         scan.NeedsYou.Should()
             .HaveCount(4)
             .And.OnlyContain(note =>
-                note.What == "cost not known; until it is, the daily cap counts its cost cap ($5.00)"
+                note.What == "cost not known; until it is, the daily cap and average guard count its cost cap ($5.00)"
             );
         JudgeBatch
             .NeedsYouLines(scan.NeedsYou)
             .Should()
             .ContainSingle()
             .Which.Should()
-            .StartWith("4 × cost not known; until it is, the daily cap counts its cost cap ($5.00): ")
+            .StartWith("4 × cost not known; until it is, the daily cap and average guard count its cost cap ($5.00): ")
             .And.EndWith(" and 1 more");
     }
 
@@ -846,6 +846,84 @@ public sealed class ReviewdJudgeBatchTests : IDisposable
             .Contain("| Nova !7001 #1 | failed | $0.40 | 0 |")
             .And.Contain("- Spent in the last 24 h: $15.00 of the $30.00 daily cap.")
             .And.Contain("- Nova !7001 #1: cost not known; until it is, the daily cap counts its cost cap ($15.00)");
+    }
+
+    [Fact]
+    public async Task An_unknown_cost_in_the_average_window_is_named_even_after_the_day_cap_window()
+    {
+        var reviews = Enumerable.Range(7001, 5).Select(number => Review(number.ToString())).Append(Review("7010"));
+        var changed = Enumerable
+            .Range(7001, 5)
+            .Select(number => (number.ToString(), "Merged", Now.AddDays(-2)))
+            .Append(("7010", "Merged", Now.AddDays(-2)))
+            .ToArray();
+        var rows = new List<(string Key, string Value)>(reviews) { Snapshot(changed) };
+        for (var number = 7001; number <= 7005; number++)
+        {
+            var finishedAt = number == 7001 ? Now.AddHours(-26) : Now.AddHours(-3 - number + 7001);
+            var receipt = Receipt(
+                "completed",
+                thread: $"thread-{number}",
+                usd: number == 7001 ? null : 5m,
+                startedAt: finishedAt.AddHours(-1),
+                finishedAt: finishedAt
+            );
+            rows.Add(Judgment(number.ToString(), 1, receipt));
+        }
+
+        var db = Db("average-window-unknown", [.. rows]);
+        var host = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "thread-7001/usage",
+            """{"preferredCostMicros":500000,"completeness":2,"estimatedCostCompleteness":1}"""
+        );
+
+        var (scan, plan) = await PlanAsync(host, [], Target("alpha", db));
+
+        scan.Guard.Avg10.Should().Be(5m);
+        plan.Should().Contain(entry => entry.Wait == "average guard");
+        scan.NeedsYou.Select(note => note.ToString())
+            .Should()
+            .Contain("Nova !7001 #1: cost not known; until it is, the average guard counts its cost cap ($5.00)");
+    }
+
+    [Fact]
+    public async Task An_old_unknown_cost_does_not_claim_the_average_guard_is_active_below_its_minimum()
+    {
+        var reviews = Enumerable.Range(7001, 4).Select(number => Review(number.ToString())).Append(Review("7010"));
+        var changed = Enumerable
+            .Range(7001, 4)
+            .Select(number => (number.ToString(), "Merged", Now.AddDays(-2)))
+            .Append(("7010", "Merged", Now.AddDays(-2)))
+            .ToArray();
+        var rows = new List<(string Key, string Value)>(reviews) { Snapshot(changed) };
+        for (var number = 7001; number <= 7004; number++)
+        {
+            var finishedAt = number == 7001 ? Now.AddHours(-26) : Now.AddHours(-3 - number + 7001);
+            var receipt = Receipt(
+                "completed",
+                thread: $"thread-{number}",
+                usd: number == 7001 ? null : 5m,
+                startedAt: finishedAt.AddHours(-1),
+                finishedAt: finishedAt
+            );
+            rows.Add(Judgment(number.ToString(), 1, receipt));
+        }
+
+        var db = Db("average-window-under-minimum", [.. rows]);
+        var host = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Get,
+            "thread-7001/usage",
+            "{}",
+            HttpStatusCode.NotFound
+        );
+
+        var (scan, _) = await PlanAsync(host, [], Target("alpha", db));
+
+        scan.Guard.Avg10.Should().BeNull();
+        scan.NeedsYou.Select(note => note.ToString())
+            .Should()
+            .NotContain("Nova !7001 #1: cost not known; until it is, the average guard counts its cost cap ($5.00)");
     }
 
     [Fact]

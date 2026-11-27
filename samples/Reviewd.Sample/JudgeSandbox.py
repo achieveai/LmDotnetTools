@@ -485,6 +485,18 @@ def fetch_final(transport, project_id, repo_id, sha, paths, limitations):
     return final, contents
 
 
+def take_prepared_revisions(rounds, records):
+    """Gives each round the head and merge its runner prepared, from the attempt record that committed it.
+
+    A receipt keeps the head and merge the review copied into it, which can be an earlier round's (#1006): a stale
+    merge measures the wrong diff, and a stale head picks the wrong iteration. A round no record committed keeps them."""
+    prepared = {(r.get("artifactCommit") or {}).get("commit"): r for r in records}
+    for rd in rounds:
+        record = prepared.get(rd["artifactCommit"]) or prepared.get(rd["tip"]) or {}
+        if record.get("headSha") and record.get("mergeSha"):
+            rd["headSha"], rd["mergeSha"] = record["headSha"], record["mergeSha"]
+
+
 def judge_inputs():
     if template is None:
         die("the prompt template argument is missing")
@@ -587,6 +599,7 @@ def judge_inputs():
             sc = json.loads(git(store_git, "show", f"{sha}:{review_dir}/setup-context.json").stdout)
             rd["headSha"], rd["mergeSha"] = sc.get("head_sha") or sc.get("headSha"), sc.get("merge_sha") or sc.get("mergeSha")
         rounds.append(rd)
+    take_prepared_revisions(rounds, [receipt] + [h for _, h in history])
     rounds.sort(key=lambda r: r["artifactCommitTime"])
     for i, rd in enumerate(rounds, 1):
         rd["round"] = i

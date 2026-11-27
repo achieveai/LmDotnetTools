@@ -53,6 +53,7 @@ internal static class JudgeRunner
     private static readonly TimeSpan SettleBudget = TimeSpan.FromMinutes(20);
     private static readonly TimeSpan UsagePollInterval = TimeSpan.FromSeconds(60);
     private const int MaxUsageReadFailures = 5;
+    private const int MaxMissingUsageReads = 5;
 
     // How often a judge's waits read the host: three requests a read, like a review's (ReviewRunner.PollInterval).
     // At 1 s, 15 judges side by side would add ~45 requests a second to the ~18 the host served on 30 October; at
@@ -564,7 +565,7 @@ internal static class JudgeRunner
                 if (JudgedModelError(stored["provider"]!.GetValue<string>(), receipt["judgeUsage"]) is { } error)
                 {
                     receipt["error"] = error;
-                    return await FinishAsync("failed", thread!, 1);
+                    return await FreezeAndPostCheckAsync(thread!, "failed", error);
                 }
                 nudge["inputId"] = await SendAsync(thread!, NudgeText(), nudge["key"]!.GetValue<string>());
                 nudge["sentAt"] = DateTimeOffset.UtcNow;
@@ -667,7 +668,10 @@ internal static class JudgeRunner
             {
                 var provider = receipt["identity"]!["provider"]!.GetValue<string>();
                 var tree = await client.GetSubAgentTreeAsync(thread, ct);
-                if (JudgeDelegationError(provider, tree.Nodes) is { } delegationError)
+                if (
+                    JudgeDelegationError(provider, tree.Nodes, action == Action.ResumeAcceptedLegacy) is
+                    { } delegationError
+                )
                 {
                     receipt["error"] = delegationError;
                     return await FinishAsync("failed", thread, 1);
@@ -688,20 +692,25 @@ internal static class JudgeRunner
             return CapAsync(thread);
         }
 
+        Task<int> CapAsync(string thread) =>
+            FreezeAndPostCheckAsync(thread, "capped", receipt["caps"]?["reason"]?.GetValue<string>() ?? "cap reached");
+
         // Freeze is final: the parked loop never reaches idle, and descendants cannot be frozen (403).
-        async Task<int> CapAsync(string thread)
+        async Task<int> FreezeAndPostCheckAsync(string thread, string stage, string reason)
         {
             var frozen = await client.SetFrozenAsync(thread, frozen: true, ct);
-            if (frozen.Refusal is { } refusal || !frozen.Present)
+            if (frozen.Refusal is not null || !frozen.Present || !frozen.Frozen)
+            {
+                var refusal = frozen.Refusal ?? (frozen.Present ? "freeze not confirmed" : "thread not present");
                 throw new InvalidOperationException(
-                    $"The ${maxUsd.ToString(CultureInfo.InvariantCulture)} cap was reached, but the host did not freeze "
-                        + $"{thread} ({frozen.Refusal ?? "thread not present"}). The judge may still run; rerun to resume."
+                    $"{reason}. The host did not freeze {thread} ({refusal}). The judge may still run; rerun to resume."
                 );
-            receipt["stage"] = "capped";
+            }
+            receipt["stage"] = stage;
             receipt["frozenAt"] = DateTimeOffset.UtcNow;
+            receipt["descendantsSettled"] = false;
             receipt["capCaveat"] = CapCaveat;
             await SaveAsync();
-            var reason = receipt["caps"]?["reason"]?.GetValue<string>() ?? "cap reached";
             Console.Error.WriteLine($"{label}: {reason}; froze {thread} (final, never unfrozen). {CapCaveat}");
             return await CappedPostCheckAsync();
         }
@@ -1307,11 +1316,18 @@ internal static class JudgeRunner
         return null;
     }
 
-    internal static string? JudgeDelegationError(string provider, IReadOnlyList<ReviewSubAgentNode> nodes)
+    internal static string? JudgeDelegationError(
+        string provider,
+        IReadOnlyList<ReviewSubAgentNode> nodes,
+        bool resumeAcceptedLegacy = false
+    )
     {
         if (nodes.Count == 0)
             return null;
-        if (!UsesDefaultProvider(provider))
+        if (
+            !UsesDefaultProvider(provider)
+            && !(resumeAcceptedLegacy && string.Equals(provider, "gpt-6.1-sol", StringComparison.OrdinalIgnoreCase))
+        )
             return "Blind delegation was disabled for this judge, but the host recorded delegates.";
 
         var mismatch = nodes.FirstOrDefault(node =>
@@ -1447,9 +1463,24 @@ internal static class JudgeRunner
     )
     {
         var usage = await ReadUsageAsync(client, thread, ct);
+        var rootInput = receipt["judgeInputId"]?.GetValue<string>();
         if (
             usage["aggregate"] is null
-            && receipt["judgeInputId"]?.GetValue<string>() is { } rootInput
+            && receipt["stage"]?.GetValue<string>() == "failed"
+            && rootInput is not null
+            && receipt["lost"]?["inputId"]?.GetValue<string>() == rootInput
+            && receipt["nudge"] is null
+        )
+        {
+            usage["measured"] = true;
+            usage["usd"] = 0m;
+            usage["completeness"] = "Complete";
+            usage["note"] = "judge input never started; no paid usage";
+            return usage;
+        }
+        if (
+            usage["aggregate"] is null
+            && rootInput is not null
             && (receipt["lost"]?["inputId"]?.GetValue<string>() != rootInput || receipt["nudge"] is not null)
         )
         {
@@ -1611,8 +1642,9 @@ internal static class JudgeRunner
     /// <summary>
     ///     The conversation's cost, one rule for the runner's cap and the batch's day cap:
     ///     <c>{measured, usd, totalTokens, completeness, aggregate, readAt}</c>. A 404 (no usage recorded yet) is
-    ///     measured $0 with no aggregate. An unpriced model or an explicitly incomplete estimate cannot satisfy
-    ///     the cap. Keep any partial amount for display, freeze the judge, and reserve its full cap in the batch.
+    ///     unknown: an accepted input may already be spending before its first usage record is persisted. An
+    ///     unpriced model or an explicitly incomplete estimate cannot satisfy the cap. Keep any partial amount for
+    ///     display, freeze the judge, and reserve its full cap in the batch.
     /// </summary>
     internal static async Task<JsonObject> ReadUsageAsync(
         LmStreamingS2SClient client,
@@ -1623,8 +1655,8 @@ internal static class JudgeRunner
         if (await client.GetUsageAsync(thread, ct) is not { } element)
             return new JsonObject
             {
-                ["measured"] = true,
-                ["usd"] = 0m,
+                ["measured"] = false,
+                ["usd"] = null,
                 ["note"] = "no usage recorded yet (404)",
             };
         var aggregate = JsonNode.Parse(element.GetRawText())!.AsObject();
@@ -1685,6 +1717,7 @@ internal static class JudgeRunner
     {
         private DateTimeOffset _lastRead = DateTimeOffset.MinValue;
         private int _failures;
+        private int _missingUsageReads;
         private DateTimeOffset _quietUntil = DateTimeOffset.MinValue;
         private TimeSpan _noteEvery = WaitOutage.FirstBackoff;
 
@@ -1706,6 +1739,17 @@ internal static class JudgeRunner
                 _failures = 0;
                 _quietUntil = DateTimeOffset.MinValue;
                 _noteEvery = WaitOutage.FirstBackoff;
+                if (usage["aggregate"] is null && usage["note"]?.GetValue<string>() == "no usage recorded yet (404)")
+                {
+                    _missingUsageReads++;
+                    if (receipt["judgeUsage"]?["usd"] is { } previousUsd)
+                    {
+                        usage["usd"] = previousUsd.DeepClone();
+                        usage["completeness"] = "Partial";
+                    }
+                }
+                else
+                    _missingUsageReads = 0;
             }
             catch (Exception failure) when (IsHostOutage(failure, token))
             {
@@ -1741,6 +1785,20 @@ internal static class JudgeRunner
                 };
             }
             receipt["judgeUsage"] = usage;
+            if (unreadable is null && _missingUsageReads is > 0 and < MaxMissingUsageReads)
+            {
+                // A newly accepted input can precede its first usage row. Give the host a bounded
+                // startup window; batch admission still reserves the full cap for this unknown cost.
+                try
+                {
+                    await save(token);
+                }
+                catch (SqliteException failure)
+                {
+                    Console.Error.WriteLine($"{label}: could not save the usage reading: {failure.Message}");
+                }
+                return;
+            }
             var usd = usage["usd"]?.GetValue<decimal>();
             var stopReason = unreadable ?? BudgetStopReason(usage, maxUsd);
             if (stopReason is null)

@@ -2967,8 +2967,13 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
 
     [Theory]
     [InlineData("legacy", "completed", 0)]
+    [InlineData("legacy-delegate", "completed", 0)]
     [InlineData("legacy-rejudge", "completed", 0)]
     [InlineData("pending-nudge", "capped", 1)]
+    [InlineData("matching-pending-nudge", "completed", 0)]
+    [InlineData("mismatched-pending-nudge", "failed", 1)]
+    [InlineData("unconfirmed-freeze-false", "nudge-send-pending", 1)]
+    [InlineData("unconfirmed-freeze-missing", "nudge-send-pending", 1)]
     [InlineData("configured-fallback-nudge", "nudge-send-pending", 1)]
     [InlineData("missing-fallback-capability-nudge", "nudge-send-pending", 1)]
     [InlineData("draft", "capped", 1)]
@@ -2987,7 +2992,9 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         var provider = legacy || scenario == "alternate-provider" ? "gpt-6.1-sol" : "gpt-6.2-sol";
         Directory.CreateDirectory(_files);
         var key = await SeedJudgeResumeAsync(scenario, provider);
-        var servedModel = scenario == "fallback" ? "gpt-6.2-astra" : provider;
+        var unconfirmedFreeze = scenario.StartsWith("unconfirmed-freeze-", StringComparison.Ordinal);
+        var servedModel =
+            unconfirmedFreeze || scenario is "fallback" or "mismatched-pending-nudge" ? "gpt-6.2-astra" : provider;
         var usage = $$"""
             {"preferredCostMicros":120000,"completeness":"Complete","estimatedCostCompleteness":"Complete",
              "perModel":[{"modelId":"{{servedModel}}","attemptCount":1}]}
@@ -3078,8 +3085,25 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
                 .GetValue<bool>()
                 .Should()
                 .BeTrue();
+        else if (scenario == "matching-pending-nudge")
+            JsonNode.Parse(posts.Should().ContainSingle().Subject.Body!)!["idempotencyKey"]!
+                .GetValue<string>()
+                .Should()
+                .Be("pending-nudge");
         else
             posts.Should().BeEmpty();
+        if (scenario == "mismatched-pending-nudge")
+        {
+            host.CountRequests("/freeze").Should().Be(1);
+            saved["frozenAt"].Should().NotBeNull();
+            saved["error"]!.GetValue<string>().Should().Contain(servedModel);
+        }
+        if (unconfirmedFreeze)
+        {
+            host.CountRequests("/freeze").Should().Be(1);
+            saved["frozenAt"].Should().BeNull();
+            saved["finishedAt"].Should().BeNull();
+        }
         if (legacy)
             host.CountRequests("/status?inputId=root-input").Should().BeGreaterThan(0);
         if (scenario == "fallback")
@@ -3096,8 +3120,13 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         const string artifact = "dddddddddddddddddddddddddddddddddddddddd";
         var stage = scenario switch
         {
-            "pending-nudge" or "configured-fallback-nudge" or "missing-fallback-capability-nudge" =>
-                "nudge-send-pending",
+            "pending-nudge"
+            or "matching-pending-nudge"
+            or "mismatched-pending-nudge"
+            or "unconfirmed-freeze-false"
+            or "unconfirmed-freeze-missing"
+            or "configured-fallback-nudge"
+            or "missing-fallback-capability-nudge" => "nudge-send-pending",
             "alternate-provider" => "thread-created",
             _ => "post-check",
         };
@@ -3156,9 +3185,24 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
                 """{"isInProgress":false}""",
                 scenario is "pending-nudge" or "draft" ? HttpStatusCode.NotFound : HttpStatusCode.OK
             )
-            .OnJson(HttpMethod.Post, "/freeze", """{"frozen":true}""")
+            .OnJson(
+                HttpMethod.Post,
+                "/freeze",
+                scenario switch
+                {
+                    "unconfirmed-freeze-false" => """{"frozen":false}""",
+                    "unconfirmed-freeze-missing" => "{}",
+                    _ => """{"frozen":true}""",
+                }
+            )
             .OnJson(HttpMethod.Put, "api/conversations/thread-judge/metadata", "{}")
-            .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""")
+            .OnJson(
+                HttpMethod.Get,
+                "/subagents?",
+                scenario == "legacy-delegate"
+                    ? """{"schemaVersion":1,"nodes":[{"agentId":"delegate","threadId":"thread-delegate","parentThreadId":"thread-judge","depth":1,"template":"blind-reviewer","status":"completed","effectiveModelId":"gpt-6.1-sol"}]}"""
+                    : """{"schemaVersion":1,"nodes":[]}"""
+            )
             .OnJson(
                 HttpMethod.Post,
                 "/messages",

@@ -14,15 +14,16 @@ public sealed class ReviewdPreparedContextTests
 {
     // The runner's rules for writing the prepared report, taken from the sandbox script as it ships.
     private const string RunnerRules = """
-        import ast, json, re, sys
+        import ast, json, os, re, sys, tempfile
         from pathlib import Path
         names = {'render_json', 'split_part', 'context_files', 'write_prepared_context', 'receipt_files', 'read_receipt',
-                 'CONTEXT_PIECE_LIMIT', 'CONTEXT_TEXT_PART', 'ARCHIVE_FILE_LIMIT'}
+                 'replace_file', 'keep_receipts_under_limit', 'STAGING_PREFIX', 'CONTEXT_PIECE_LIMIT', 'CONTEXT_TEXT_PART',
+                 'ARCHIVE_FILE_LIMIT'}
         body = [n for n in ast.parse(Path(sys.argv[1]).read_text(encoding='utf-8')).body
                 if (isinstance(n, ast.FunctionDef) and n.name in names)
                 or (isinstance(n, ast.Assign) and any(getattr(t, 'id', None) in names for t in n.targets))]
         class ReviewError(Exception): pass
-        scope = {'json': json, 're': re, 'ReviewError': ReviewError}
+        scope = {'json': json, 're': re, 'os': os, 'tempfile': tempfile, 'Path': Path, 'ReviewError': ReviewError}
         exec(compile(ast.Module(body, []), 'sandbox', 'exec'), scope)
 
         """;
@@ -256,6 +257,66 @@ public sealed class ReviewdPreparedContextTests
         result["same"]!.GetValue<bool>().Should().BeTrue("read back, the receipt is the one the review wrote");
         result["elsewhere"]!.GetValue<string>().Should().Contain("unexpected file");
         result["revision"]!.GetValue<string>().Should().Contain("another revision");
+    }
+
+    [SkippableFact]
+    public async Task A_receipt_kept_as_several_never_writes_through_a_link_in_the_review_folder()
+    {
+        // The commit keeps a receipt over 1 MiB as several (keep_receipts_under_limit), replacing each file through a
+        // staging file. It once opened <name>.part by name, so a link the review left at that name sent the receipt's
+        // text outside the folder. The staging name was also the receipt's name plus 15 bytes, so a valid 245-byte
+        // recovered receipt could not be staged, and a commit stopped hard could leave a staging file to be archived.
+        const string harness =
+            RunnerRules
+            + """
+                root = Path(tempfile.mkdtemp())
+                folder, sentinel = root / 'PRs' / 'r-7', root / 'sentinel.txt'
+                folder.mkdir(parents=True)
+                sentinel.write_bytes(b'untouched')
+                def receipt(first):
+                    return {'prId': '7', 'headSha': 'h' * 40, 'mergeSha': 'm' * 40,
+                            'comments': [{'commentId': i, 'content': f'{i} ' + 'x' * 9000} for i in range(first, first + 150)]}
+                recovered = 'publication_receipts-' + 'a' * 209 + '-recovered.json'
+                (folder / 'publication_receipts.json').write_text(json.dumps(receipt(0)))
+                (folder / recovered).write_text(json.dumps(receipt(1000)))
+                (folder / '.rcpt-stopped.part').write_text('left by a commit stopped hard')
+                try:
+                    for name in ('publication_receipts.json.part', 'publication_receipts-2.json.part'):
+                        os.symlink(sentinel, folder / name)
+                except OSError:
+                    print(json.dumps({'linked': False}))
+                    raise SystemExit(0)
+                kept = scope['keep_receipts_under_limit'](folder)
+                try:
+                    ours = [c['commentId'] for c in scope['read_receipt'](lambda name: (folder / name).read_text())['comments']]
+                except ReviewError:
+                    ours = None
+                pieces = [p for p in folder.iterdir() if p.name.startswith(recovered[:-5]) and not p.is_symlink()]
+                print(json.dumps({
+                    'linked': True,
+                    'recoveredBytes': len(recovered.encode()),
+                    'sentinel': sentinel.read_bytes().decode(),
+                    'kept': [name for name, count in kept if count > 1],
+                    'ours': ours == list(range(150)),
+                    'recovered': sorted(c['commentId'] for p in pieces
+                                        for c in json.loads(p.read_text())['comments']) == list(range(1000, 1150)),
+                    'largest': max(p.stat().st_size for p in folder.iterdir() if not p.is_symlink()),
+                    'staging': sorted(p.name for p in folder.iterdir() if p.name.startswith('.rcpt-')),
+                }))
+                """;
+
+        var (exitCode, stdout, stderr) = await ReviewdAutoSlotTests.RunSandboxRuleAsync(harness);
+
+        exitCode.Should().Be(0, stderr);
+        var result = JsonNode.Parse(stdout)!;
+        Skip.IfNot(result["linked"]!.GetValue<bool>(), "this account cannot create symbolic links");
+        result["recoveredBytes"]!.GetValue<int>().Should().Be(245);
+        result["sentinel"]!.GetValue<string>().Should().Be("untouched", "no receipt text goes through a planted link");
+        result["kept"]!.AsArray().Should().HaveCount(2, "both receipts are kept as several");
+        result["ours"]!.GetValue<bool>().Should().BeTrue("the receipt reads back with every comment");
+        result["recovered"]!.GetValue<bool>().Should().BeTrue("the recovered receipt keeps every comment");
+        result["largest"]!.GetValue<int>().Should().BeLessThanOrEqualTo(64 * 1024);
+        result["staging"]!.AsArray().Should().BeEmpty("no staging file is left to be archived");
     }
 
     [SkippableTheory]
@@ -597,7 +658,7 @@ public sealed class ReviewdPreparedContextTests
         result["complete"]!.GetValue<bool>().Should().BeTrue();
     }
 
-    private static async Task<(int ExitCode, string Stdout, string Stderr)> RunKitAsync(
+    internal static async Task<(int ExitCode, string Stdout, string Stderr)> RunKitAsync(
         string harness,
         params string[] arguments
     )

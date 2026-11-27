@@ -1017,6 +1017,81 @@ public sealed class ReviewdJudgeTests
     }
 
     [Fact]
+    public async Task An_initial_usage_404_gets_a_bounded_startup_window_before_capping()
+    {
+        var host = CappedHost(
+            InProgress(5),
+            (HttpStatusCode.NotFound, "{}"),
+            (HttpStatusCode.NotFound, "{}"),
+            (HttpStatusCode.NotFound, "{}"),
+            (HttpStatusCode.NotFound, "{}"),
+            (HttpStatusCode.OK, """{"preferredCostMicros":120000,"totalTokens":10,"completeness":2}""")
+        );
+        var (watch, receipt, capped) = Watch(host);
+
+        var (outcome, _) = await WaitOnHost(
+            Client(host),
+            FastOutage,
+            watch.DelayAsync,
+            capped.Token,
+            () => watch.Reached
+        );
+
+        outcome.Should().Be("completed");
+        watch.Reached.Should().BeFalse();
+        receipt["judgeUsage"]!["measured"]!.GetValue<bool>().Should().BeTrue();
+        receipt["judgeUsage"]!["usd"]!.GetValue<decimal>().Should().Be(0.12m);
+        receipt["caps"]!["reason"].Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Repeated_in_progress_usage_404s_cap_after_the_startup_window()
+    {
+        var host = CappedHost(InProgress(int.MaxValue), [.. Enumerable.Repeat((HttpStatusCode.NotFound, "{}"), 5)]);
+        var (watch, receipt, capped) = Watch(host);
+
+        var (outcome, _) = await WaitOnHost(
+            Client(host),
+            FastOutage,
+            watch.DelayAsync,
+            capped.Token,
+            () => watch.Reached
+        );
+
+        outcome.Should().Be("capped");
+        receipt["judgeUsage"]!["measured"]!.GetValue<bool>().Should().BeFalse();
+        receipt["judgeUsage"]!["usd"].Should().BeNull();
+        receipt["caps"]!["reason"]!.GetValue<string>().Should().Contain("no usage recorded yet");
+    }
+
+    [Fact]
+    public async Task A_usage_404_preserves_a_prior_amount_as_partial_until_the_startup_window_expires()
+    {
+        var host = CappedHost(
+            InProgress(int.MaxValue),
+            [
+                (HttpStatusCode.OK, """{"preferredCostMicros":120000,"totalTokens":10,"completeness":2}"""),
+                .. Enumerable.Repeat((HttpStatusCode.NotFound, "{}"), 5),
+            ]
+        );
+        var (watch, receipt, capped) = Watch(host);
+
+        var (outcome, _) = await WaitOnHost(
+            Client(host),
+            FastOutage,
+            watch.DelayAsync,
+            capped.Token,
+            () => watch.Reached
+        );
+
+        outcome.Should().Be("capped");
+        receipt["judgeUsage"]!["measured"]!.GetValue<bool>().Should().BeFalse();
+        receipt["judgeUsage"]!["usd"]!.GetValue<decimal>().Should().Be(0.12m);
+        receipt["judgeUsage"]!["completeness"]!.GetValue<string>().Should().Be("Partial");
+        receipt["caps"]!["reason"]!.GetValue<string>().Should().Contain("no usage recorded yet");
+    }
+
+    [Fact]
     public void A_saved_partial_estimate_still_reserves_the_full_judge_cap()
     {
         var receipt = JsonNode
@@ -1051,7 +1126,7 @@ public sealed class ReviewdJudgeTests
     )
     {
         var host = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/usage", "{}", HttpStatusCode.NotFound);
-        var receipt = new JsonObject { ["judgeInputId"] = "root-input" };
+        var receipt = new JsonObject { ["stage"] = "failed", ["judgeInputId"] = "root-input" };
         if (rootNeverStarted)
             receipt["lost"] = new JsonObject { ["inputId"] = "root-input" };
 
@@ -1103,6 +1178,30 @@ public sealed class ReviewdJudgeTests
             .Should()
             .StartWith("judge cost is not readable (5 failed /usage reads)");
         receipt["judgeUsage"]!["measured"]!.GetValue<bool>().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task An_initial_missing_usage_does_not_hide_five_later_unreadable_reads()
+    {
+        var host = CappedHost(
+            InProgress(int.MaxValue),
+            [(HttpStatusCode.NotFound, "{}"), .. Enumerable.Repeat((HttpStatusCode.Forbidden, "{}"), 5)]
+        );
+        var (watch, receipt, capped) = Watch(host);
+
+        var (outcome, _) = await WaitOnHost(
+            Client(host),
+            FastOutage,
+            watch.DelayAsync,
+            capped.Token,
+            () => watch.Reached
+        );
+
+        outcome.Should().Be("capped");
+        receipt["caps"]!["reason"]!
+            .GetValue<string>()
+            .Should()
+            .StartWith("judge cost is not readable (5 failed /usage reads)");
     }
 
     // A /usage body that cannot be read as usage counts as a failed read too; it used to end the wait.
@@ -1511,6 +1610,60 @@ public sealed class ReviewdJudgeTests
             .ToJsonString()
             .Should()
             .Be($$"""{"round":"review/x-3","status":"UNKNOWN","reason":"merge {{missing}} not in source store"}""");
+    }
+
+    // #1006: the archived receipt keeps the head and merge the review copied into it, and AWB#188 copied an earlier
+    // round's merge. The judge measures each round's diff from its merge and finds its iteration from its head, so a
+    // round takes both from the attempt record that committed it; a round no record committed keeps the receipt's.
+    [SkippableFact]
+    public async Task A_round_takes_its_head_and_merge_from_the_attempt_that_committed_it()
+    {
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no python3 on PATH");
+        string stale = new('d', 40),
+            latest = new('1', 40),
+            earlier = new('2', 40),
+            unrecorded = new('5', 40);
+        static JsonObject Round(string branch, string artifactCommit, string tip, string head, string merge) =>
+            new()
+            {
+                ["branch"] = branch,
+                ["artifactCommit"] = artifactCommit,
+                ["tip"] = tip,
+                ["headSha"] = head,
+                ["mergeSha"] = merge,
+            };
+        static JsonObject Attempt(string commit, string head, string merge) =>
+            new()
+            {
+                ["artifactCommit"] = new JsonObject { ["commit"] = commit },
+                ["headSha"] = head,
+                ["mergeSha"] = merge,
+            };
+
+        var revisions = await SandboxAsync(
+            python!,
+            "(sandbox.take_prepared_revisions(data[0], data[1]), [[r['headSha'], r['mergeSha']] for r in data[0]])[1]",
+            new JsonArray(
+                new JsonArray(
+                    // The AWB#188 round: this round's head, an earlier round's merge.
+                    Round("review/x-1dbdb9dc", latest, latest, "h1", stale),
+                    // A merged branch whose tip is the artifact commit the earlier attempt recorded.
+                    Round("review/x-d5da22a5", new('4', 40), earlier, stale, stale),
+                    Round("review/x-0ld", unrecorded, unrecorded, "h0", "m0")
+                ),
+                new JsonArray(
+                    Attempt(latest, "h1", "m1"),
+                    Attempt(earlier, "h2", "m2"),
+                    new JsonObject { ["headSha"] = "h9", ["mergeSha"] = "m9" }
+                )
+            )
+        );
+
+        revisions
+            .ToJsonString()
+            .Should()
+            .Be("""[["h1","m1"],["h2","m2"],["h0","m0"]]""", "each recorded round takes its runner's revision");
     }
 
     // A review retried many times carries a long attempt history. Its judge-inputs arguments outgrew Linux's 128 KiB

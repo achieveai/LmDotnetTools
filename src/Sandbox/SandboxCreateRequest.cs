@@ -48,6 +48,9 @@ public sealed class SandboxCreateRequest
     /// </summary>
     public IReadOnlyList<SandboxPluginRef>? PluginSelection { get; }
 
+    /// <summary>The exact source preparation to require when creating a sandbox with publisher archives.</summary>
+    public SandboxArchivePreparation? ArchivePreparation { get; init; }
+
     /// <summary>Read-only plugin directory mounts. Empty by default; omitted from the create request.</summary>
     public IReadOnlyList<SandboxPluginMount> PluginMounts { get; }
 
