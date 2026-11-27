@@ -273,19 +273,38 @@ def parse_receipt(text, where):
     return data, None
 
 
+def publication_id(comment):
+    try:
+        return int(comment["threadId"]), int(comment["commentId"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def collect_ours(found, limitations):
     """Our comments from (comment, source, round) triples, keyed by (threadId, commentId). A comment without both ids,
     as in a receipt rebuilt by hand that names rootCommentId, is left out and counted per source as a limitation."""
-    ours, unkeyed = {}, collections.Counter()
+    ours, unkeyed, round_priorities = {}, collections.Counter(), {}
     for c, source, round_name in found:
-        try:
-            k = int(c["threadId"]), int(c["commentId"])
-        except (KeyError, TypeError, ValueError):
+        k = publication_id(c)
+        if k is None:
             unkeyed[source] += 1
             continue
         e = ours.setdefault(k, {"threadId": k[0], "commentId": k[1], "kind": c.get("kind"), "rounds": [], "sources": []})
         e["kind"] = e["kind"] or c.get("kind")
-        if round_name not in e["rounds"]:
+        # Keep every source, but use the best available evidence for the publishing round.
+        if round_name == "UNKNOWN":
+            priority = 0
+        elif source.startswith("store-HEAD:"):
+            priority = 1
+        elif source.startswith("branch:"):
+            priority = 2
+        else:
+            priority = 3
+        previous = round_priorities.get(k, -1)
+        if priority > previous:
+            e["rounds"].clear()
+            round_priorities[k] = priority
+        if priority >= previous and round_name not in e["rounds"]:
             e["rounds"].append(round_name)
         e["sources"].append(source)
     limitations.extend(f"{source}: {n} comment(s) without a threadId and commentId not counted as ours"
@@ -485,16 +504,47 @@ def fetch_final(transport, project_id, repo_id, sha, paths, limitations):
     return final, contents
 
 
-def take_prepared_revisions(rounds, records):
+def primary_receipt_names(receipts):
+    primary = "publication_receipts.json"
+    if primary not in receipts:
+        return []
+    continued = receipts[primary].get("continued_in", [])
+    if not isinstance(continued, list) or any(
+            not isinstance(name, str) or not re.fullmatch(r"publication_receipts-\d+\.json", name)
+            or name not in receipts for name in continued) or len(set(continued)) != len(continued):
+        return []
+    return [primary, *continued]
+
+
+def publication_ids(comments):
+    ids = set()
+    for comment in comments:
+        if not isinstance(comment, dict):
+            return set()
+        pair = comment.get("threadId"), comment.get("commentId")
+        if not all(type(identifier) is int and identifier > 0 for identifier in pair) or pair in ids:
+            return set()
+        ids.add(pair)
+    return ids
+
+
+def take_prepared_revisions(rounds, records, after_correction=None):
     """Gives each round the head and merge its runner prepared, from the attempt record that committed it.
 
     A receipt keeps the head and merge the review copied into it, which can be an earlier round's (#1006): a stale
     merge measures the wrong diff, and a stale head picks the wrong iteration. A round no record committed keeps them."""
     prepared = {(r.get("artifactCommit") or {}).get("commit"): r for r in records}
+    matched = {}
     for rd in rounds:
-        record = prepared.get(rd["artifactCommit"]) or prepared.get(rd["tip"]) or {}
+        record = prepared.get(rd["artifactCommit"]) or prepared.get(rd["tip"])
+        if record is None and after_correction is not None:
+            record = after_correction(rd)
+        record = record or {}
         if record.get("headSha") and record.get("mergeSha"):
             rd["headSha"], rd["mergeSha"] = record["headSha"], record["mergeSha"]
+            saved = record.get("artifactCommit") or {}
+            matched[(saved.get("branch"), saved.get("commit"))] = rd["branch"]
+    return matched
 
 
 def judge_inputs():
@@ -537,7 +587,7 @@ def judge_inputs():
         # One round, the review's own artifact commit. The store's review/<leaf> branches belong to the live reviewer,
         # whose comments are context, never ours.
         record, wp = would_post_ours(store_git, art["commit"], review_dir, verified_would_post)
-        branches = [(art["branch"], art["commit"])]
+        branches = [(art["branch"], art["commit"], art["branch"])]
     else:
         # Local review branches first; a remote-tracking copy counts only when no local branch has that name
         # (merge-review deletes the local branch after integration).
@@ -548,16 +598,16 @@ def judge_inputs():
             name, sha = line.split("\t")
             m = branch_re.match(name)
             if m and m.group(1) == "heads":
-                local[m.group(2)] = (m.group(2), sha)
+                local[m.group(2)] = (m.group(2), sha, m.group(2))
             elif m:
-                remote.setdefault(m.group(2), []).append((name[len("refs/remotes/"):], sha))
+                remote.setdefault(m.group(2), []).append((name[len("refs/remotes/"):], sha, m.group(2)))
             elif re.search(rf"(^|/){re.escape(leaf)}($|[-/])", name):
                 other_refs.append(name)
         branches = []
         for bname in sorted(set(local) | set(remote)):
             if bname in local:
                 branches.append(local[bname])
-                differ = [r for r, sha in remote.get(bname, []) if sha != local[bname][1]]
+                differ = [r for r, sha, _ in remote.get(bname, []) if sha != local[bname][1]]
                 if differ:
                     limitations.append(f"{bname}: remote copies {differ} differ from the local branch; local used")
             else:
@@ -566,8 +616,8 @@ def judge_inputs():
         if other_refs:
             limitations.append(f"refs mentioning {leaf} not used for ours: {other_refs}")
 
-    rounds = []
-    for name, sha in branches:
+    rounds, archive_evidence = [], {}
+    for name, sha, canonical in branches:
         files = [f[len(review_dir) + 1:] for f in git(store_git, "ls-tree", "-r", "--name-only", sha, "--", f"{review_dir}/").stdout.splitlines()]
         base = [os.path.basename(f) for f in files]
         last_touch = git(store_git, "log", "-1", "--format=%H\t%cI", sha, "--", f"{review_dir}/").stdout.strip().split("\t")
@@ -580,6 +630,7 @@ def judge_inputs():
                          "prFindings": [f for f in files if os.path.basename(f).startswith("PR_Findings")],
                          "prBrief": [f for f in files if os.path.basename(f).startswith("PR_Brief")],
                          "reviewMd": [f for f in files if os.path.basename(f) == "review.md"]}}
+        receipts = {}
         for f in files if not would_post else []:
             if re.fullmatch(r"publication_receipts.*\.json", os.path.basename(f)):
                 data, err = read_receipt_file(store_git, sha, f"{review_dir}/{f}")
@@ -587,10 +638,15 @@ def judge_inputs():
                     limitations.append(err)
                     continue
                 rd["receiptFiles"].append(f)
+                receipts[f] = data
                 rd["headSha"] = rd["headSha"] or data.get("headSha")
                 rd["mergeSha"] = rd["mergeSha"] or data.get("mergeSha")
-                for c in data["comments"]:
-                    found.append((c, f"branch:{name}:{review_dir}/{f}", name))
+        primary_names = primary_receipt_names(receipts)
+        ids = publication_ids(c for f in primary_names for c in receipts[f]["comments"])
+        archive_evidence[name] = canonical, ids
+        for f, data in receipts.items():
+            for c in data["comments"]:
+                found.append((c, f"branch:{name}:{review_dir}/{f}", name if f in primary_names else "UNKNOWN"))
         if would_post:
             rd["headSha"], rd["mergeSha"] = record.get("headSha"), record.get("mergeSha")
         elif not rd["receiptFiles"]:
@@ -599,16 +655,44 @@ def judge_inputs():
             sc = json.loads(git(store_git, "show", f"{sha}:{review_dir}/setup-context.json").stdout)
             rd["headSha"], rd["mergeSha"] = sc.get("head_sha") or sc.get("headSha"), sc.get("merge_sha") or sc.get("mergeSha")
         rounds.append(rd)
-    take_prepared_revisions(rounds, [receipt] + [h for _, h in history])
+    records = [receipt] + [h for _, h in history]
+
+    def prepared_after_correction(rd):
+        # A standalone artifact correction can advance the branch and its last touch. Ancestry
+        # alone could pick an older review. First require this branch, folder and publication.
+        branch, ids = archive_evidence[rd["branch"]]
+        if not ids:
+            return None
+        candidates = {}
+        for record in records:
+            saved = record.get("artifactCommit") or {}
+            revisions = saved.get("commit"), record.get("headSha"), record.get("mergeSha")
+            if (saved.get("branch") == branch and saved.get("reviewDirectory") == review_dir
+                    and all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) for sha in revisions)
+                    and publication_ids((record.get("verifiedPublication") or {}).get("comments") or []) == ids):
+                candidates[revisions] = record
+        matches = [item for (commit, _, _), item in candidates.items()
+                   if git(store_git, "merge-base", "--is-ancestor", commit, rd["tip"], check=False).returncode == 0]
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            limitations.append(f'{rd["branch"]}: more than one runner attempt matches the archived publication')
+        return None
+
+    matched_attempts = take_prepared_revisions(rounds, records, prepared_after_correction)
     rounds.sort(key=lambda r: r["artifactCommitTime"])
     for i, rd in enumerate(rounds, 1):
         rd["round"] = i
     round_of_head = {r["headSha"]: r["branch"] for r in rounds if r["headSha"]}
+    display_branch = {canonical: name for name, _, canonical in branches}
     for c in (receipt.get("verifiedPublication") or {}).get("comments", []):
-        found.append((c, "receipt:latest", art["branch"]))
+        found.append((c, "receipt:latest", display_branch.get(art["branch"], "UNKNOWN")))
     for k, h in history:
+        saved = h.get("artifactCommit") or {}
+        round_name = matched_attempts.get((saved.get("branch"), saved.get("commit")))
+        round_name = round_name or round_of_head.get(h.get("headSha"), "UNKNOWN")
         for c in (h.get("verifiedPublication") or {}).get("comments", []):
-            found.append((c, f"attempt-history:{k.rsplit('/', 1)[1][:16]}", round_of_head.get(h.get("headSha"), "UNKNOWN")))
+            found.append((c, f"attempt-history:{k.rsplit('/', 1)[1][:16]}", round_name))
     main_receipts = [] if would_post else [
         f for f in git(store_git, "ls-tree", "-r", "--name-only", "HEAD", "--", f"{review_dir}/").stdout.splitlines()
         if re.fullmatch(r"publication_receipts.*\.json", os.path.basename(f))]

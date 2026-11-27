@@ -3411,13 +3411,22 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         Directory.Exists(Path.Combine(root, "PRs", "nova-17", "judgment-2")).Should().BeFalse("nothing is written");
     }
 
-    [SkippableFact]
-    public async Task Judge_inputs_take_a_live_rounds_revision_from_the_attempt_that_archived_it()
+    [SkippableTheory]
+    [InlineData("exact")]
+    [InlineData("corrected")]
+    [InlineData("remote-corrected")]
+    [InlineData("different-publication")]
+    [InlineData("ambiguous")]
+    [InlineData("malformed-publication")]
+    public async Task Judge_inputs_take_a_live_rounds_revision_from_the_attempt_that_archived_it(string path)
     {
         var python = await ReviewdSummaryReplyTests.FindPythonAsync();
         Skip.If(python is null, "no Python interpreter on PATH, so the judge input script cannot run");
         const string directory = "PRs/nova-17";
         const string branch = "review/nova-17";
+        var remoteOnly = path == "remote-corrected";
+        var fixtureBranch = remoteOnly ? "fixture-current" : branch;
+        var packetBranch = remoteOnly ? $"origin/{branch}" : branch;
         var root = Path.Combine(_files, "live-store");
         Directory.CreateDirectory(Path.Combine(root, directory));
         var staleHead = new string('b', 40);
@@ -3431,23 +3440,60 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
                 ["kind"] = "summary",
             }
         );
-        await File.WriteAllTextAsync(
-            Path.Combine(root, directory, "publication_receipts.json"),
-            new JsonObject
-            {
-                ["prId"] = "17",
-                ["headSha"] = staleHead,
-                ["mergeSha"] = staleMerge,
-                ["comments"] = published.DeepClone(),
-            }.ToJsonString()
-        );
         await GitAsync(root, "init", "-q", "-b", "main");
         await GitAsync(root, "config", "user.email", "t@example.com");
         await GitAsync(root, "config", "user.name", "t");
+        await WriteArchivedReceiptAsync(102, 1);
+        await GitAsync(root, "add", directory);
+        await GitAsync(root, "commit", "-q", "-m", "Earlier archived review");
+        await GitAsync(root, "branch", "review/nova-17-bbbbbbbb");
+        await GitAsync(root, "switch", "-q", "-c", fixtureBranch);
+        await WriteArchivedReceiptAsync(101, 1);
         await GitAsync(root, "add", directory);
         await GitAsync(root, "commit", "-q", "-m", "Archived live review");
-        await GitAsync(root, "branch", branch);
         var commit = await GitAsync(root, "rev-parse", "HEAD");
+        if (path != "exact")
+        {
+            await File.WriteAllTextAsync(Path.Combine(root, directory, "review.md"), "Archive correction.\n");
+            if (path == "different-publication")
+            {
+                await WriteArchivedReceiptAsync(101, 2);
+            }
+            else if (path == "malformed-publication")
+            {
+                var primaryPath = Path.Combine(root, directory, "publication_receipts.json");
+                var primary = JsonNode.Parse(await File.ReadAllTextAsync(primaryPath))!;
+                primary["comments"]![0]!["commentId"] = "1";
+                await File.WriteAllTextAsync(primaryPath, primary.ToJsonString());
+            }
+            else if (path is "corrected" or "remote-corrected")
+            {
+                var primaryPath = Path.Combine(root, directory, "publication_receipts.json");
+                var primary = JsonNode.Parse(await File.ReadAllTextAsync(primaryPath))!.AsObject();
+                await File.WriteAllTextAsync(
+                    Path.Combine(root, directory, "publication_receipts-2.json"),
+                    primary.ToJsonString()
+                );
+                var olderCopy = primary.DeepClone();
+                olderCopy["comments"]![0]!["threadId"] = 102;
+                await File.WriteAllTextAsync(
+                    Path.Combine(root, directory, "publication_receipts-9.json"),
+                    olderCopy.ToJsonString()
+                );
+                primary["comments"] = new JsonArray();
+                primary["continued_in"] = new JsonArray("publication_receipts-2.json");
+                await File.WriteAllTextAsync(primaryPath, primary.ToJsonString());
+            }
+            await GitAsync(root, "add", directory);
+            await GitAsync(root, "commit", "-q", "-m", "Corrected archive");
+        }
+        var tip = await GitAsync(root, "rev-parse", "HEAD");
+        if (remoteOnly)
+        {
+            await GitAsync(root, "update-ref", $"refs/remotes/{packetBranch}", tip);
+        }
+        await GitAsync(root, "switch", "-q", "main");
+        await GitAsync(root, "merge", "-q", "--ff-only", fixtureBranch);
         var artifact = new JsonObject
         {
             ["commit"] = commit,
@@ -3462,6 +3508,11 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             ["artifactCommit"] = artifact,
             ["verifiedPublication"] = new JsonObject { ["comments"] = published },
         };
+        if (path == "ambiguous")
+        {
+            receipt["headSha"] = new string('d', 40);
+            receipt["mergeSha"] = new string('f', 40);
+        }
         var result = await JudgeInputsAsync(
             python!,
             root,
@@ -3482,6 +3533,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
                             ["artifactCommit"] = artifact.DeepClone(),
                             ["headSha"] = Head,
                             ["mergeSha"] = reviewedMerge,
+                            ["verifiedPublication"] = new JsonObject { ["comments"] = published.DeepClone() },
                         }
                     ),
                     ["threads"] = new JsonArray(),
@@ -3495,11 +3547,58 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         var packet = JsonNode.Parse(
             await File.ReadAllTextAsync(Path.Combine(root, directory, "judgment-1/inputs/packet.json"))
         )!;
-        var round = packet["review"]!["rounds"]!.AsArray().Single()!;
-        round["artifactCommit"]!.GetValue<string>().Should().Be(commit);
+        var round = packet["review"]!["rounds"]!
+            .AsArray()
+            .Single(r => r!["branch"]!.GetValue<string>() == packetBranch)!;
+        round["artifactCommit"]!.GetValue<string>().Should().Be(tip);
+        if (path is "different-publication" or "ambiguous" or "malformed-publication")
+        {
+            round["mergeSha"]!
+                .GetValue<string>()
+                .Should()
+                .Be(staleMerge, "ancestry alone does not establish the round");
+            if (path == "ambiguous")
+            {
+                packet["limitations"]!
+                    .AsArray()
+                    .Select(r => r!.GetValue<string>())
+                    .Should()
+                    .ContainMatch("*more than one runner attempt*");
+            }
+            return;
+        }
         round["mergeSha"]!.GetValue<string>().Should().Be(reviewedMerge);
         round["headSha"]!.GetValue<string>().Should().Be(Head);
         round["iteration"]!.GetValue<int>().Should().Be(1);
+        var current = packet["ours"]!["posted"]!.AsArray().Single(r => r!["threadId"]!.GetValue<int>() == 101)!;
+        current["rounds"]!.AsArray().Select(r => r!.GetValue<string>()).Should().Equal(packetBranch);
+        var rawCopy = path is "corrected" or "remote-corrected"
+            ? "publication_receipts-2.json"
+            : "publication_receipts.json";
+        current["sources"]!
+            .AsArray()
+            .Select(r => r!.GetValue<string>())
+            .Should()
+            .Contain($"store-HEAD:PRs/nova-17/{rawCopy}", "the stale copy stays visible as evidence");
+
+        Task WriteArchivedReceiptAsync(int thread, int comment) =>
+            File.WriteAllTextAsync(
+                Path.Combine(root, directory, "publication_receipts.json"),
+                new JsonObject
+                {
+                    ["prId"] = "17",
+                    ["headSha"] = staleHead,
+                    ["mergeSha"] = staleMerge,
+                    ["comments"] = new JsonArray(
+                        new JsonObject
+                        {
+                            ["threadId"] = thread,
+                            ["commentId"] = comment,
+                            ["kind"] = "summary",
+                        }
+                    ),
+                }.ToJsonString()
+            );
     }
 
     private static async Task<string> ResourceAsync(string name)
