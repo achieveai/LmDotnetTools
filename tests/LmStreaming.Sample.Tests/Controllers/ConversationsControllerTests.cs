@@ -349,9 +349,13 @@ public class ConversationsControllerTests
     }
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task Delete_WithoutSandboxRegistry_RespectsCallerCancellationAfterAuthorization(bool callerCancels)
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task Delete_CallerCancellation_StopsBeforeCommitAndFinishesAfterAnEmptyRegistryCommits(
+        bool callerCancels,
+        bool hostHasRegistry
+    )
     {
         const string threadId = "thread-delete-without-registry";
         var backing = new InMemoryConversationStore();
@@ -373,7 +377,7 @@ public class ConversationsControllerTests
                 async (string id, CancellationToken token) =>
                 {
                     var loaded = await backing.LoadMetadataAsync(id, token);
-                    if (callerCancels && token == caller.Token)
+                    if (callerCancels && !hostHasRegistry)
                     {
                         await caller.CancelAsync();
                     }
@@ -384,16 +388,34 @@ public class ConversationsControllerTests
         store
             .Setup(s => s.ListThreadsAsync(int.MaxValue, 0, null, It.IsAny<CancellationToken>()))
             .Returns(
-                (int limit, int offset, ConversationListOptions? options, CancellationToken token) =>
-                    backing.ListThreadsAsync(limit, offset, options, token)
+                async (int limit, int offset, ConversationListOptions? options, CancellationToken token) =>
+                {
+                    // With the registry configured, this lookup begins only after its delete has committed.
+                    if (callerCancels && hostHasRegistry)
+                    {
+                        await caller.CancelAsync();
+                    }
+
+                    token.ThrowIfCancellationRequested();
+                    return await backing.ListThreadsAsync(limit, offset, options, token);
+                }
             );
         store
             .Setup(s => s.DeleteThreadAsync(threadId, It.IsAny<CancellationToken>()))
             .Returns((string id, CancellationToken token) => backing.DeleteThreadAsync(id, token));
         await using var pool = CreatePool();
-        var controller = CreateController(store.Object, pool, ModeStoreResolvingSystemModes());
+        using var workspace = hostHasRegistry ? new SandboxEnvTestSupport.TempWorkspaceBase() : null;
+        await using var registry = workspace is null
+            ? null
+            : SandboxEnvTestSupport.CreateRegistry(workspace.Path, out _);
+        var controller = CreateController(
+            store.Object,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            sandboxSessionRegistry: registry
+        );
 
-        if (callerCancels)
+        if (callerCancels && !hostHasRegistry)
         {
             await FluentActions
                 .Awaiting(() => controller.Delete(threadId, caller.Token))
@@ -410,6 +432,7 @@ public class ConversationsControllerTests
         else
         {
             (await controller.Delete(threadId, caller.Token)).Should().BeOfType<NoContentResult>();
+            caller.IsCancellationRequested.Should().Be(callerCancels);
             store.Verify(s => s.ListThreadsAsync(int.MaxValue, 0, null, It.IsAny<CancellationToken>()), Times.Once);
             (await backing.LoadMetadataAsync(threadId)).Should().BeNull();
             (await backing.LoadMessagesAsync(threadId)).Should().BeEmpty();
