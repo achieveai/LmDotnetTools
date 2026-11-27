@@ -3411,6 +3411,97 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
         Directory.Exists(Path.Combine(root, "PRs", "nova-17", "judgment-2")).Should().BeFalse("nothing is written");
     }
 
+    [SkippableFact]
+    public async Task Judge_inputs_take_a_live_rounds_revision_from_the_attempt_that_archived_it()
+    {
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the judge input script cannot run");
+        const string directory = "PRs/nova-17";
+        const string branch = "review/nova-17";
+        var root = Path.Combine(_files, "live-store");
+        Directory.CreateDirectory(Path.Combine(root, directory));
+        var staleHead = new string('b', 40);
+        var staleMerge = new string('c', 40);
+        var reviewedMerge = new string('e', 40);
+        var published = new JsonArray(
+            new JsonObject
+            {
+                ["threadId"] = 101,
+                ["commentId"] = 1,
+                ["kind"] = "summary",
+            }
+        );
+        await File.WriteAllTextAsync(
+            Path.Combine(root, directory, "publication_receipts.json"),
+            new JsonObject
+            {
+                ["prId"] = "17",
+                ["headSha"] = staleHead,
+                ["mergeSha"] = staleMerge,
+                ["comments"] = published.DeepClone(),
+            }.ToJsonString()
+        );
+        await GitAsync(root, "init", "-q", "-b", "main");
+        await GitAsync(root, "config", "user.email", "t@example.com");
+        await GitAsync(root, "config", "user.name", "t");
+        await GitAsync(root, "add", directory);
+        await GitAsync(root, "commit", "-q", "-m", "Archived live review");
+        await GitAsync(root, "branch", branch);
+        var commit = await GitAsync(root, "rev-parse", "HEAD");
+        var artifact = new JsonObject
+        {
+            ["commit"] = commit,
+            ["branch"] = branch,
+            ["reviewDirectory"] = directory,
+        };
+        var receipt = new JsonObject
+        {
+            ["repository"] = Repo.DisplayName,
+            ["stage"] = "completed-verified",
+            ["startedAt"] = "2026-10-07T18:30:00Z",
+            ["artifactCommit"] = artifact,
+            ["verifiedPublication"] = new JsonObject { ["comments"] = published },
+        };
+        var result = await JudgeInputsAsync(
+            python!,
+            root,
+            new JsonObject
+            {
+                ["pr"] = "17",
+                ["minN"] = 1,
+                ["nonce"] = new string('1', 32),
+                ["dryRun"] = false,
+                ["host"] = new JsonObject
+                {
+                    ["receiptKey"] = $"reviewd/review-run/{Repo.NormalizedKey}/17",
+                    ["receipt"] = receipt,
+                    ["attemptHistory"] = new JsonArray(
+                        new JsonObject
+                        {
+                            ["key"] = "reviewd/attempt-history/matching",
+                            ["artifactCommit"] = artifact.DeepClone(),
+                            ["headSha"] = Head,
+                            ["mergeSha"] = reviewedMerge,
+                        }
+                    ),
+                    ["threads"] = new JsonArray(),
+                    ["priorJudgments"] = new JsonArray(),
+                },
+            },
+            await ResourceAsync("merged-judge.md")
+        );
+
+        result.Exit.Should().Be(0, result.Error);
+        var packet = JsonNode.Parse(
+            await File.ReadAllTextAsync(Path.Combine(root, directory, "judgment-1/inputs/packet.json"))
+        )!;
+        var round = packet["review"]!["rounds"]!.AsArray().Single()!;
+        round["artifactCommit"]!.GetValue<string>().Should().Be(commit);
+        round["mergeSha"]!.GetValue<string>().Should().Be(reviewedMerge);
+        round["headSha"]!.GetValue<string>().Should().Be(Head);
+        round["iteration"]!.GetValue<int>().Should().Be(1);
+    }
+
     private static async Task<string> ResourceAsync(string name)
     {
         using var stream = typeof(JudgeRunner).Assembly.GetManifestResourceStream($"Reviewd.Sample.Prompts.{name}")!;

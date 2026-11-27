@@ -802,6 +802,9 @@ def keep_receipts_under_limit(folder):
     # stopped hard can leave a staging file, which is no part of the review, so it goes first. Returns
     # [(receipt name, files kept as)].
     for leftover in folder.glob(f'{STAGING_PREFIX}*.part'):
+        # CPython mkstemp adds eight lowercase letters, digits or underscores to the prefix.
+        if not re.fullmatch(rf'{re.escape(STAGING_PREFIX)}[a-z0-9_]{{8}}[.]part', leftover.name):
+            continue
         if not leftover.is_dir() or leftover.is_symlink():
             leftover.unlink()
     kept = []
