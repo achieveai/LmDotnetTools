@@ -58,6 +58,25 @@ public sealed class SandboxInfo
     /// <summary>The source version acknowledged by the gateway when it resolved an exact package selection.</summary>
     public string? SourceVersion { get; init; }
 
+    /// <summary>
+    /// The gateway's source mode for this sandbox (<c>exact</c>, <c>unversioned</c> or <c>unavailable</c>), as sent;
+    /// <see langword="null"/> when the gateway sent none.
+    /// </summary>
+    public string? SourceMode { get; init; }
+
+    /// <summary>
+    /// The sources of the sandbox's source receipt (same shape as <see cref="SandboxSourcePreparation.Sources"/>), so a
+    /// caller can compare the commits it mounted with the ones it prepared. <see langword="null"/> when the gateway
+    /// sent no receipt (an older gateway, or a GET of a sandbox recorded without one).
+    /// </summary>
+    public IReadOnlyList<SandboxSourceReceiptEntry>? SourceReceiptSources { get; init; }
+
+    /// <summary>The whole <c>sourceReceipt</c> object as sent, or <see langword="null"/> when absent.</summary>
+    public System.Text.Json.JsonElement? RawSourceReceipt { get; init; }
+
+    /// <summary>The Git catalog commit each marketplace resolved to (<c>resolvedMarketplaceRevisions</c>); empty when none.</summary>
+    public IReadOnlyList<SandboxResolvedMarketplaceRevision> ResolvedMarketplaceRevisions { get; init; } = [];
+
     /// <summary>The app-owned publisher archive receipts acknowledged for this sandbox.</summary>
     public IReadOnlyList<SandboxAppMarketplaceArchive> ResolvedArchiveReceipts { get; init; } = [];
 

@@ -60,6 +60,50 @@ public sealed partial class SandboxClient
         await PutAppMarketplaceAsync(alias, url, string.IsNullOrWhiteSpace(gitRef) ? null : gitRef, null, ct)
             .ConfigureAwait(false);
 
+    /// <summary>
+    /// Registers <paramref name="alias"/> from a <see cref="SandboxAppMarketplaceRegistration"/>, which can name a
+    /// private repository through an opaque <see cref="SandboxAppMarketplaceRegistration.ConnectionId"/>. The gateway
+    /// asks the app's credential broker (configured by the gateway operator, owned by the host) for a short-lived read
+    /// credential; this SDK never sees it. A private registration is never retried anonymously.
+    /// </summary>
+    /// <remarks>
+    /// Besides the failures listed on the class: <c>403 marketplace_access_denied</c> (the broker refused this app,
+    /// connection or repository) is <see cref="SandboxErrorKind.Authorization"/> WITH
+    /// <see cref="SandboxException.ErrorCode"/> set, while a rejected app credential is Authorization without one;
+    /// <c>503 marketplace_broker_unavailable</c> is <see cref="SandboxErrorKind.Unavailable"/>. Needs a gateway
+    /// containing PR #375.
+    /// </remarks>
+    /// <exception cref="ArgumentException">The URL is blank or the connection id breaks its character rule.</exception>
+    public async Task<SandboxAppMarketplace> RegisterAppMarketplaceAsync(
+        string alias,
+        SandboxAppMarketplaceRegistration registration,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentNullException.ThrowIfNull(registration);
+        if (registration.ConnectionId is { } connectionId && !IsConnectionId(connectionId))
+        {
+            throw new ArgumentException(
+                "A connection id is 1 to 128 characters of letters, digits, '_', '.' or '-'.",
+                nameof(registration)
+            );
+        }
+
+        return await PutAppMarketplaceAsync(
+                alias,
+                registration.Url,
+                string.IsNullOrWhiteSpace(registration.Ref) ? null : registration.Ref,
+                plugin: null,
+                ct,
+                registration.ConnectionId
+            )
+            .ConfigureAwait(false);
+    }
+
+    private static bool IsConnectionId(string value) =>
+        value.Length is >= 1 and <= 128
+        && value.All(static c => char.IsAsciiLetterOrDigit(c) || c is '_' or '.' or '-');
+
     /// <summary>Registers only one catalog package at a full Git commit.</summary>
     public async Task<SandboxAppMarketplace> RegisterAppMarketplacePackageAsync(
         string alias,
@@ -102,7 +146,8 @@ public sealed partial class SandboxClient
         string url,
         string? gitRef,
         string? plugin,
-        CancellationToken ct
+        CancellationToken ct,
+        string? connectionId = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(alias);
@@ -112,7 +157,7 @@ public sealed partial class SandboxClient
         using var response = await SendRestAsync(
                 HttpMethod.Put,
                 AppMarketplaceUri(alias, suffix: plugin is null ? null : "/package"),
-                new AppMarketplaceRegisterDto(url, gitRef, plugin),
+                new AppMarketplaceRegisterDto(url, gitRef, plugin, connectionId),
                 sessionId: null,
                 ct
             )

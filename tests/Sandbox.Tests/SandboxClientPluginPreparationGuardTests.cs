@@ -1,0 +1,455 @@
+using System.Net;
+using System.Text;
+using System.Text.Json;
+using FluentAssertions;
+using Xunit;
+
+namespace AchieveAi.LmDotnetTools.Sandbox.Tests;
+
+/// <summary>
+/// Source preparation and guarded create (LmDotnetTools #1005, gateway Docs/app-marketplaces.md "Source preparation
+/// and polling"): prepare → poll → create with <c>expectedSourceVersion</c>, and the actionable failures.
+/// </summary>
+public sealed class SandboxClientPluginPreparationGuardTests
+{
+    private const string Path = "/api/v1/apps/self/plugins/prepare";
+    private const string OperationId = "2276472b-0b6e-4db9-8c50-0cb8c93b07aa";
+    private const string RestoredOperationId = "6a0d1d55-5c3d-4f0e-9a43-7d1a2bb0c001";
+    private const string Sha = "8ca22dba9a94f28898bbce59f2537ff4d87c747d";
+
+    private const string Ready = $$$"""
+        {"status":"ready","sourceVersion":"v-123","sourceMode":"exact",
+         "sourceReceipt":{"sources":[{"kind":"marketplace","marketplace":"team","plugin":null,"origin":"app",
+           "url":"https://github.com/acme/plugins.git","repo_key":"plugins-0a1b","sha":"{{{Sha}}}","subdir":null,
+           "container_root":"/marketplaces/team"}],"exactRepeatSupported":true},
+         "preparation":{"refresh":true,"requireFresh":false}}
+        """;
+
+    private const string Preparing = $$"""{"status":"preparing","operationId":"{{OperationId}}"}""";
+
+    private const string CreateResponse = """
+        {"session_id":"sess-1","container_id":"container-1","sourceVersion":"v-123",
+         "volumes":{"workspace":{"container_path":"/workspace","read_only":false}}}
+        """;
+
+    [Fact]
+    public async Task PrepareSourcesAsync_ReadyAtOnce_ReturnsVersionReceiptAndSendsSelection()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, Path, Ready);
+
+        var prepared = await client.PrepareSourcesAsync(
+            new SandboxSourcePreparationRequest(["team"], [new("team", "chosen")]) { Refresh = true }
+        );
+
+        prepared.Status.Should().Be(SandboxSourcePreparationStatus.Ready);
+        prepared.SourceVersion.Should().Be("v-123");
+        prepared.OperationId.Should().BeNull();
+        prepared.ErrorCode.Should().BeNull();
+        prepared
+            .Sources.Should()
+            .Equal(
+                new SandboxSourceReceiptEntry(
+                    "marketplace",
+                    "team",
+                    null,
+                    "https://github.com/acme/plugins.git",
+                    "plugins-0a1b",
+                    null,
+                    Sha
+                )
+            );
+        prepared.RawSourceReceipt.GetProperty("exactRepeatSupported").GetBoolean().Should().BeTrue();
+
+        var sent = handler.Requests.Single();
+        sent.Uri.PathAndQuery.Should().Be($"{Path}?app_id=app-1");
+        sent.SbxAppKey.Should().Be(TestSupport.ValidSecret);
+        using var body = JsonDocument.Parse(sent.Body!);
+        body.RootElement.EnumerateObject()
+            .Select(property => property.Name)
+            .Should()
+            .BeEquivalentTo("marketplaces", "pluginSelection", "refresh");
+        body.RootElement.GetProperty("refresh").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task PrepareSourcesAsync_ExplicitEmptyVersusOmitted_IsPreserved()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, Path, Ready);
+
+        await client.PrepareSourcesAsync(new SandboxSourcePreparationRequest([], []) { ExplicitMarketplaces = true });
+        await client.PrepareSourcesAsync(new SandboxSourcePreparationRequest());
+
+        using var explicitBody = JsonDocument.Parse(handler.Requests[0].Body!);
+        explicitBody.RootElement.GetProperty("marketplaces").GetArrayLength().Should().Be(0);
+        explicitBody.RootElement.GetProperty("pluginSelection").GetArrayLength().Should().Be(0);
+        handler.Requests[1].Body.Should().Be("{}");
+    }
+
+    [Fact]
+    public async Task PrepareSourcesAsync_Accepted_PollsOwnGatewayUntilReady()
+    {
+        var (client, handler, gateway) = TestSupport.CreateBorrowedClientWithBaseAddress(
+            new Uri("https://unrelated.example/")
+        );
+        handler.On(
+            request => request.Method == HttpMethod.Post && request.RequestUri?.AbsolutePath == Path,
+            _ => new HttpResponseMessage(HttpStatusCode.Accepted)
+            {
+                Headers = { Location = new Uri("https://evil.example/api/v1/apps/self/plugins/prepare/x") },
+                Content = new StringContent(Preparing, Encoding.UTF8, "application/json"),
+            }
+        );
+        handler.OnJson(HttpMethod.Get, $"{Path}/{OperationId}", Preparing.Replace(OperationId, RestoredOperationId));
+        handler.OnJson(HttpMethod.Get, $"{Path}/{RestoredOperationId}", Ready);
+
+        var prepared = await client.PrepareSourcesAsync(new SandboxSourcePreparationRequest(["team"]));
+
+        prepared.Status.Should().Be(SandboxSourcePreparationStatus.Ready);
+        prepared.SourceVersion.Should().Be("v-123");
+        prepared.OperationId.Should().Be(RestoredOperationId);
+        handler
+            .Requests.Select(request => (request.Method, request.Uri.AbsolutePath))
+            .Should()
+            .Equal(
+                (HttpMethod.Post, Path),
+                (HttpMethod.Get, $"{Path}/{OperationId}"),
+                (HttpMethod.Get, $"{Path}/{RestoredOperationId}")
+            );
+        handler
+            .Requests.Should()
+            .OnlyContain(request =>
+                request.Uri.Authority == gateway.Authority
+                && request.Uri.Query == "?app_id=app-1"
+                && request.SbxAppKey == TestSupport.ValidSecret
+            );
+    }
+
+    [Fact]
+    public async Task PrepareSourcesAsync_Unversioned_ReturnsWithoutVersion()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            Path,
+            """
+            {"status":"unversioned","error_code":"source_snapshot_unsupported",
+             "sourceReceipt":{"sources":[{"kind":"marketplace","marketplace":"ops","origin":"operator","url":null,
+               "repo_key":null,"sha":null,"subdir":null,"container_root":"/marketplaces/ops"}]}}
+            """
+        );
+
+        var prepared = await client.PrepareSourcesAsync(new SandboxSourcePreparationRequest(["ops"]));
+
+        prepared.Status.Should().Be(SandboxSourcePreparationStatus.Unversioned);
+        prepared.SourceVersion.Should().BeNull();
+        prepared.ErrorCode.Should().Be("source_snapshot_unsupported");
+        prepared.Sources.Single().Sha.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("sources_changed", SandboxErrorKind.Conflict)]
+    [InlineData("source_snapshot_expired", SandboxErrorKind.Conflict)]
+    [InlineData("marketplace_access_denied", SandboxErrorKind.Authorization)]
+    [InlineData("marketplace_broker_unavailable", SandboxErrorKind.Unavailable)]
+    [InlineData("version_not_found", SandboxErrorKind.Protocol)]
+    public async Task PrepareSourcesAsync_FailedOnHttp200_ThrowsWithCode(string code, SandboxErrorKind kind)
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, Path, Preparing, HttpStatusCode.Accepted);
+        handler.OnJson(
+            HttpMethod.Get,
+            $"{Path}/{OperationId}",
+            $$"""{"status":"failed","error_code":"{{code}}","error":"token=SECRET"}"""
+        );
+
+        var thrown = (
+            await Record.ExceptionAsync(() => client.PrepareSourcesAsync(new SandboxSourcePreparationRequest(["team"])))
+        )
+            .Should()
+            .BeOfType<SandboxException>()
+            .Subject;
+
+        thrown.Kind.Should().Be(kind);
+        thrown.ErrorCode.Should().Be(code);
+        thrown.OperationId.Should().Be(OperationId);
+        thrown.Message.Should().NotContain("SECRET");
+        handler.Requests.Should().HaveCount(2, "a failed preparation is never retried");
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Conflict, "preparation_in_progress", SandboxErrorKind.Conflict)]
+    [InlineData(HttpStatusCode.Gone, "source_snapshot_expired", SandboxErrorKind.Conflict)]
+    [InlineData((HttpStatusCode)429, "preparation_capacity", SandboxErrorKind.Unavailable)]
+    [InlineData(HttpStatusCode.Forbidden, "marketplace_access_denied", SandboxErrorKind.Authorization)]
+    public async Task PrepareSourcesAsync_ErrorStatus_ThrowsWithCode(
+        HttpStatusCode status,
+        string code,
+        SandboxErrorKind kind
+    )
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            Path,
+            $$"""{"error":"x","code":{{(int)status}},"error_code":"{{code}}"}""",
+            status
+        );
+
+        var thrown = (
+            await Record.ExceptionAsync(() => client.PrepareSourcesAsync(new SandboxSourcePreparationRequest(["team"])))
+        )
+            .Should()
+            .BeOfType<SandboxException>()
+            .Subject;
+
+        thrown.Kind.Should().Be(kind);
+        thrown.ErrorCode.Should().Be(code);
+    }
+
+    [Theory]
+    [InlineData("""{"status":"ready","sourceReceipt":{"sources":[]}}""")]
+    [InlineData("""{"status":"ready","sourceVersion":"v-1"}""")]
+    [InlineData("""{"status":"unversioned","sourceVersion":"v-1","sourceReceipt":{"sources":[]}}""")]
+    [InlineData("""{"status":"ready","sourceVersion":"v-1","sourceReceipt":{"sources":[{"kind":"marketplace"}]}}""")]
+    [InlineData("""{"status":"preparing","operationId":"../other"}""")]
+    [InlineData("""{"status":"mystery"}""")]
+    public async Task PrepareSourcesAsync_InvalidReply_IsProtocol(string reply)
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, Path, reply);
+
+        var act = () => client.PrepareSourcesAsync(new SandboxSourcePreparationRequest(["team"]));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+        handler.Requests.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task PrepareSourcesAsync_CancelledWhilePolling_PropagatesCancellation()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, Path, Preparing, HttpStatusCode.Accepted);
+        handler.OnJson(HttpMethod.Get, $"{Path}/{OperationId}", Preparing);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(250));
+
+        var act = () => client.PrepareSourcesAsync(new SandboxSourcePreparationRequest(["team"]), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        handler.Requests.Should().HaveCountGreaterThan(1);
+    }
+
+    [Fact]
+    public async Task PrepareSourcesAsync_MaxWaitElapsed_IsTransportTimeoutWithOperationId()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, Path, Preparing, HttpStatusCode.Accepted);
+        handler.OnJson(HttpMethod.Get, $"{Path}/{OperationId}", Preparing);
+
+        var act = () =>
+            client.PrepareSourcesAsync(
+                new SandboxSourcePreparationRequest(["team"]) { MaxWait = TimeSpan.FromMilliseconds(250) }
+            );
+
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown.Kind.Should().Be(SandboxErrorKind.TransportTimeout);
+        thrown.OperationId.Should().Be(OperationId);
+    }
+
+    [Fact]
+    public async Task CreateAsync_ExpectedSourceVersion_SendsGuardAndExplicitEmptyMarketplaces()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreateResponse);
+
+        var info = await client.CreateAsync(
+            new SandboxCreateRequest("ws", marketplaces: [], pluginSelection: [])
+            {
+                ExplicitMarketplaces = true,
+                ExpectedSourceVersion = "v-123",
+                RequireFresh = true,
+            }
+        );
+
+        info.SourceVersion.Should().Be("v-123");
+        using var body = JsonDocument.Parse(handler.Requests.Single().Body!);
+        body.RootElement.GetProperty("expectedSourceVersion").GetString().Should().Be("v-123");
+        body.RootElement.GetProperty("requireFresh").GetBoolean().Should().BeTrue();
+        body.RootElement.GetProperty("marketplaces").GetArrayLength().Should().Be(0);
+        body.RootElement.GetProperty("pluginSelection").GetArrayLength().Should().Be(0);
+        body.RootElement.TryGetProperty("refresh", out _).Should().BeFalse("preparation consumes refresh");
+    }
+
+    [Fact]
+    public async Task CreateAsync_Unguarded_SendsNoGuardFields()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreateResponse);
+
+        await client.CreateAsync(new SandboxCreateRequest("ws", marketplaces: ["team"]));
+
+        using var body = JsonDocument.Parse(handler.Requests.Single().Body!);
+        body.RootElement.TryGetProperty("expectedSourceVersion", out _).Should().BeFalse();
+        body.RootElement.TryGetProperty("requireFresh", out _).Should().BeFalse();
+        body.RootElement.TryGetProperty("refresh", out _).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Conflict, "sources_changed")]
+    [InlineData(HttpStatusCode.Conflict, "sources_not_prepared")]
+    [InlineData(HttpStatusCode.Conflict, "sources_not_fresh")]
+    [InlineData(HttpStatusCode.Gone, "source_snapshot_expired")]
+    public async Task CreateAsync_StaleGuard_SurfacesCodeWithoutUnguardedRetry(HttpStatusCode status, string code)
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            $$"""{"error":"x","code":{{(int)status}},"error_code":"{{code}}"}""",
+            status
+        );
+
+        var act = () =>
+            client.CreateAsync(new SandboxCreateRequest("ws", ["team"]) { ExpectedSourceVersion = "v-123" });
+
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown.Kind.Should().Be(SandboxErrorKind.Conflict);
+        thrown.ErrorCode.Should().Be(code);
+        handler.Requests.Should().ContainSingle("a guarded create is never retried unguarded");
+    }
+
+    [Fact]
+    public async Task CreateAsync_GatewayAcknowledgesOtherVersion_DeletesSandboxAndThrows()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreateResponse.Replace("v-123", "v-999"));
+        handler.OnStatus(HttpMethod.Delete, "/api/v1/sandboxes/sess-1", HttpStatusCode.NoContent);
+
+        var act = () =>
+            client.CreateAsync(new SandboxCreateRequest("ws", ["team"]) { ExpectedSourceVersion = "v-123" });
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+        handler.Requests.Select(request => request.Method).Should().Equal(HttpMethod.Post, HttpMethod.Delete);
+    }
+
+    [Fact]
+    public async Task CreateAsync_ExpectedSourceVersionDisagreesWithArchivePreparation_ThrowsWithoutSending()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        var archive = new SandboxAppMarketplaceArchive(
+            "app-1",
+            "team",
+            "https://publisher.example/releases/selected",
+            new string('a', 64),
+            new string('b', 64),
+            "selected"
+        );
+        var request = new SandboxCreateRequest("ws", ["team"], pluginSelection: [new("team", "selected")])
+        {
+            ArchivePreparation = new SandboxArchivePreparation("v-archive", [new("team", "selected")], [archive]),
+            ExpectedSourceVersion = "v-other",
+        };
+
+        var act = () => client.CreateAsync(request);
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        handler.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task CreateAsync_BlankExpectedSourceVersion_ThrowsWithoutSending()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+
+        var act = () => client.CreateAsync(new SandboxCreateRequest("ws", ["team"]) { ExpectedSourceVersion = " " });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        handler.Requests.Should().BeEmpty();
+    }
+
+    private const string MixedReceipt = $$$"""
+        {"sources":[
+          {"kind":"marketplace","marketplace":"team","plugin":null,"origin":"app",
+           "url":"https://dev.azure.com/acme/p/_git/team.git","repo_key":"team-0a1b","sha":"{{{Sha}}}",
+           "subdir":null,"container_root":"/marketplaces/team"},
+          {"kind":"local_plugin","marketplace":"ops","plugin":"tool","origin":"operator","url":null,
+           "repo_key":null,"sha":null,"subdir":"plugins/tool","container_root":"/marketplaces/ops"}]}
+        """;
+
+    [Fact]
+    public async Task CreateAndGet_UnversionedMixedSet_ExposeReceiptComparableWithPreparation()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            Path,
+            $$$"""{"status":"unversioned","error_code":"source_snapshot_unsupported","sourceReceipt":{{{MixedReceipt}}}"""
+                + "}"
+        );
+        var echo =
+            $$$"""
+                {"session_id":"sess-1","container_id":"container-1","sourceMode":"unversioned","sourceVersion":null,
+                 "sourceReceipt":{{{MixedReceipt}}},
+                 "resolvedMarketplaceRevisions":[{"marketplace":"team","commit":"{{{Sha}}}"}],
+                 "volumes":{"workspace":{"container_path":"/workspace","read_only":false}}
+                """ + "}";
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", echo);
+        handler.OnJson(HttpMethod.Get, "/api/v1/sandboxes/sess-1", echo);
+
+        var prepared = await client.PrepareSourcesAsync(new SandboxSourcePreparationRequest(["team", "ops"]));
+        var created = await client.CreateAsync(new SandboxCreateRequest("ws", ["team", "ops"]));
+        var read = await client.GetAsync("sess-1");
+
+        foreach (var info in new[] { created, read })
+        {
+            info.SourceMode.Should().Be("unversioned");
+            info.SourceVersion.Should().BeNull();
+            info.SourceReceiptSources.Should().Equal(prepared.Sources);
+            info.SourceReceiptSources![1]
+                .Should()
+                .Be(new SandboxSourceReceiptEntry("local_plugin", "ops", "tool", null, null, "plugins/tool", null));
+            info.RawSourceReceipt!.Value.GetProperty("sources").GetArrayLength().Should().Be(2);
+            info.ResolvedMarketplaceRevisions.Should().Equal(new SandboxResolvedMarketplaceRevision("team", Sha));
+        }
+    }
+
+    [Fact]
+    public async Task CreateAsync_NoSourceReceipt_LeavesReceiptFieldsEmpty()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            """{"session_id":"sess-1","container_id":"c","volumes":{"workspace":{"container_path":"/workspace"}}}"""
+        );
+
+        var info = await client.CreateAsync(new SandboxCreateRequest("ws"));
+
+        info.SourceMode.Should().BeNull();
+        info.SourceReceiptSources.Should().BeNull();
+        info.RawSourceReceipt.Should().BeNull();
+        info.ResolvedMarketplaceRevisions.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(""" "sourceReceipt":{"sources":[{"kind":"marketplace"}]} """)]
+    [InlineData(""" "sourceReceipt":{"sources":"x"} """)]
+    [InlineData(""" "resolvedMarketplaceRevisions":{"team":"abc"} """)]
+    [InlineData(""" "resolvedMarketplaceRevisions":[{"marketplace":"team"}] """)]
+    public async Task GetAsync_MalformedSourceEcho_IsProtocol(string field)
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/sandboxes/sess-1",
+            """{"session_id":"sess-1","container_id":"c","volumes":{"workspace":{"container_path":"/w"}},"""
+                + field
+                + "}"
+        );
+
+        var act = () => client.GetAsync("sess-1");
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+}

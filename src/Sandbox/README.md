@@ -554,6 +554,108 @@ Error codes: `marketplaces_disabled` (404), `git_failed` (502), `store_failed` /
 Not supported upstream: a "cloud" marketplace whose catalog only points at plugins in other git repos
 (`github` / `url` / `git-subdir` plugin sources are skipped). Tracked as gateway issue #202.
 
+### Private marketplaces
+
+Minimum gateway: the first release containing gateway PR #375 (commit `3e1be94f`); not yet tagged.
+
+A private GitHub or Azure DevOps repository registers with an opaque `connectionId`, on the same app-bound
+client and credentials as any other call:
+
+```csharp
+var row = await client.RegisterAppMarketplaceAsync(
+    "team",
+    new SandboxAppMarketplaceRegistration
+    {
+        // Sent exactly as given: keep a literal ".git" if the Azure repo name has one.
+        Url = "https://dev.azure.com/acme/plugins/_git/team-plugins.git",
+        Ref = "main",                       // null = latest
+        ConnectionId = "publishing-team",   // 1-128 chars of [A-Za-z0-9_.-]
+    },
+    ct);
+```
+
+- The request carries only `url`, `ref` and `connectionId`. The connection id is a reference, never a token.
+- The broker is the host's. The host authenticates its publisher, stores the provider refresh credential and
+  runs the broker endpoint. The gateway operator names that endpoint and its separate bearer in the app's
+  `APP_SECRETS_FILE` entry (`marketplace_broker`). The gateway calls the broker for a short-lived read token;
+  neither the token nor the broker URL passes through this SDK. Service registration and tenant consent stay
+  under the host's control.
+- The old `RegisterAppMarketplaceAsync(alias, url, gitRef, ct)` is unchanged and sends no `connectionId`.
+
+Errors:
+
+| Gateway answer | `Kind` | `ErrorCode` |
+|---|---|---|
+| `403 marketplace_access_denied` (the broker refused this app, connection or repository) | `Authorization` | `marketplace_access_denied` |
+| any other `403`, or `401` (bad app credentials) | `Authorization` | `null` |
+| `503 marketplace_broker_unavailable` | `Unavailable` | `marketplace_broker_unavailable` |
+
+For a `403` the SDK reads at most 4 KiB of the body and keeps only an allowlisted `error_code`. The free-text
+`error`, URLs and anything else in the body are dropped. A denied private registration is never retried
+anonymously. An invalid `connectionId` throws `ArgumentException` before any request is sent.
+
+### Prepare and guarded create
+
+Minimum gateway: the first release containing gateway PR #375 (commit `3e1be94f`); not yet tagged.
+
+`PrepareSourcesAsync` captures the exact Git commits of a selection. `CreateAsync` with
+`ExpectedSourceVersion` then mounts exactly those commits, or fails.
+
+```csharp
+var selection = new SandboxSourcePreparationRequest(marketplaces: ["team"], pluginSelection: null)
+{
+    Refresh = true,                     // fetch first; consumed here, never sent to create
+    MaxWait = TimeSpan.FromMinutes(2),  // bound on submission + polling (default 5 min)
+};
+using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(3)); // the caller's own bound
+SandboxSourcePreparation prepared = await client.PrepareSourcesAsync(selection, cts.Token);
+
+foreach (var source in prepared.Sources)
+    Console.WriteLine($"{source.Marketplace} {source.Url} @ {source.Sha}");
+
+var info = await client.CreateAsync(
+    new SandboxCreateRequest("ws", marketplaces: ["team"]) // the SAME selection
+    {
+        ExpectedSourceVersion = prepared.SourceVersion,
+    },
+    cts.Token);
+```
+
+- `PrepareSourcesAsync` POSTs `api/v1/apps/self/plugins/prepare`. On `202 preparing` it polls
+  `GET .../prepare/{operationId}` on the configured gateway only; the `Location` header is never followed.
+  Polling backs off from 100 ms to 2 s. It stops at `MaxWait` (`TransportTimeout`, with `OperationId`) or on
+  caller cancellation (`OperationCanceledException`). Set `MaxWait` per call to fit your own budget (for
+  example 15 s inside a chat turn).
+- The result: `Status` (`Ready` or `Unversioned`), `OperationId`, `SourceVersion`, `ErrorCode`, `Sources`
+  (`Kind`, `Marketplace`, `Plugin`, `Url`, `RepoKey`, `Subdir`, `Sha`) and `RawSourceReceipt`. `Unversioned`
+  (a mutable operator marketplace) has no version: `ErrorCode` is `source_snapshot_unsupported`.
+- A `failed` status is a failure even on HTTP 200: it throws `SandboxException` with `ErrorCode`. A failed
+  preparation is never retried; call `PrepareSourcesAsync` again to retry on purpose.
+- `Marketplaces` empty omits the field (gateway default set) unless `ExplicitMarketplaces` sends `[]`.
+  `PluginSelection` keeps `null` (no restriction) apart from `[]` (no plugins), as on create.
+- Create sends `expectedSourceVersion` and, when set, `requireFresh: true`. It never sends `refresh`. An
+  unguarded create (`ExpectedSourceVersion` null) is unchanged. A create the gateway acknowledges with another
+  `sourceVersion` is deleted and throws `Protocol`. `ExpectedSourceVersion` and `ArchivePreparation` naming
+  different versions throw `ArgumentException`.
+- `SandboxInfo` (from `CreateAsync` and `GetAsync`) echoes what the gateway mounted: `SourceMode`
+  (`exact`, `unversioned` or `unavailable`), `SourceVersion`, `SourceReceiptSources` (the same
+  `SandboxSourceReceiptEntry` type as the preparation's `Sources`), `RawSourceReceipt` and
+  `ResolvedMarketplaceRevisions` (`Marketplace`, `Commit`). For an unversioned set, compare these with the
+  preparation's receipt. A gateway that sends none leaves them null (revisions empty); a malformed echo throws
+  `Protocol`.
+
+Errors (prepare, poll and guarded create). The SDK never retries a guarded create unguarded.
+
+| `ErrorCode` | HTTP | `Kind` | What to do |
+|---|---|---|---|
+| `sources_changed`, `sources_not_prepared`, `sources_not_fresh`, `preparation_in_progress` | 409 | `Conflict` | Prepare again, create with the new version |
+| `source_snapshot_expired` | 410 | `Conflict` | Prepare again |
+| `marketplace_access_denied` | 403 | `Authorization` | Fix the host's grant |
+| `marketplace_broker_unavailable` | 503 | `Unavailable` | Retry later |
+| `preparation_capacity` | 429 | `Unavailable` | Retry later |
+| `preparation_not_found`, `baseline_not_found` | 404 | `NotFound` | Prepare again |
+| `version_mismatch`, `version_not_found`, `version_ambiguous`, `source_snapshot_unavailable` | 422 | `Protocol` | Fix the selection |
+
 ## Per-agent state
 
 Several agents can share one sandbox session (gateway ADR 0040). Each MCP call names its agent in
@@ -722,8 +824,9 @@ fields or the explicit manifest read.
 - The owned transport disables automatic redirects; a borrowed `HttpClient` must do the same
   (`AllowAutoRedirect = false`) — see the borrowed-client note above. The SDK never follows a
   redirect itself and rejects any `3xx` it observes.
-- A `401`/`403` response body is never read at all (an auth rejection is the response most likely to
-  echo credential material), and a direct-API error's gateway-controlled free-text `error` message is
+- A `401` response body is never read at all, and a `403` body only up to 4 KiB for an allowlisted
+  `error_code` (`marketplace_access_denied`), with everything else in it dropped (an auth rejection is the
+  response most likely to echo credential material); and a direct-API error's gateway-controlled free-text `error` message is
   never copied into a `SandboxException`: both are untrusted, potentially secret-bearing content (e.g.
   echoed credential material or captured tool output). Only a `SandboxException.StatusCode` and the
   closed-vocabulary `error_code` (plus `retryable`, `Retry-After`, and snapshot ids) are surfaced from a

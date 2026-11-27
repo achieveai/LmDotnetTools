@@ -346,7 +346,10 @@ public sealed partial class SandboxClient
     /// Classifies a non-success control-plane (REST) response into a <see cref="SandboxException"/>.
     /// A <c>401</c>/<c>403</c> is classified as <see cref="SandboxErrorKind.Authorization"/> WITHOUT reading
     /// the body: an auth rejection is the upstream output most likely to echo submitted credential material,
-    /// and an empty body (e.g. a bare <c>401</c>) must classify identically to one carrying a payload. Every
+    /// and an empty body (e.g. a bare <c>401</c>) must classify identically to one carrying a payload. The one
+    /// exception: a <c>403</c> body is read up to <see cref="MaxForbiddenBodyBytes"/> for an allowlisted
+    /// <c>error_code</c> (<c>marketplace_access_denied</c>), which then rides on
+    /// <see cref="SandboxException.ErrorCode"/>; nothing else from that body is kept. Every
     /// other status has its body read — bounded to <see cref="MaxErrorBodyBytes"/> under a fresh transport
     /// budget, see <see cref="TryReadGatewayErrorAsync"/> — so the gateway's closed-vocabulary
     /// <c>error_code</c>, <c>retryable</c>, and structured fields drive the classification (for example
@@ -374,6 +377,22 @@ public sealed partial class SandboxClient
             return RedirectRefused(statusCode, operation, operationId: null);
         }
 
+        if (response.StatusCode is HttpStatusCode.Forbidden)
+        {
+            var allowedCode = await TryReadAllowedForbiddenCodeAsync(response, ct).ConfigureAwait(false);
+            if (allowedCode is not null)
+            {
+                return new SandboxException(
+                    SandboxErrorKind.Authorization,
+                    $"Sandbox gateway returned {statusCode} for {operation} (error_code {allowedCode}).",
+                    statusCode
+                )
+                {
+                    ErrorCode = allowedCode,
+                };
+            }
+        }
+
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {
             return new SandboxException(
@@ -386,6 +405,64 @@ public sealed partial class SandboxClient
         using var budgetCts = StartTransportBudget();
         var error = await TryReadGatewayErrorAsync(response, ct, budgetCts.Token).ConfigureAwait(false);
         return ToGatewayException(response, operation, error, operationId: null);
+    }
+
+    /// <summary>The most a <c>403</c> body is read to look for an allowlisted <c>error_code</c>.</summary>
+    internal const int MaxForbiddenBodyBytes = 4 * 1024;
+
+    /// <summary>
+    /// The <c>403</c> codes a caller may see. A repository-grant denial (<c>marketplace_access_denied</c>) must stay
+    /// distinguishable from a rejected app credential; every other <c>403</c> keeps the status-only classification.
+    /// </summary>
+    private static readonly HashSet<string> S_allowedForbiddenCodes = new(StringComparer.Ordinal)
+    {
+        "marketplace_access_denied",
+    };
+
+    /// <summary>
+    /// Reads at most <see cref="MaxForbiddenBodyBytes"/> of a <c>403</c> body and returns its <c>error_code</c> only
+    /// when it is exactly an allowlisted code. Nothing else in the body (the free-text <c>error</c>, URLs, any echoed
+    /// credential) is kept. An empty, oversized, malformed or late body returns <c>null</c>, which leaves the caller on
+    /// the status-only path. Caller cancellation propagates.
+    /// </summary>
+    private async Task<string?> TryReadAllowedForbiddenCodeAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        using var budgetCts = StartTransportBudget();
+        using var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct, budgetCts.Token);
+        try
+        {
+            var body = await ReadStreamCappedAsync(response, "error body", null, MaxForbiddenBodyBytes, readCts.Token)
+                .ConfigureAwait(false);
+            if (body.Length == 0)
+            {
+                return null;
+            }
+
+            using var document = JsonDocument.Parse(body);
+            return
+                document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("error_code", out var code)
+                && code.ValueKind == JsonValueKind.String
+                && code.GetString() is { } value
+                && S_allowedForbiddenCodes.Contains(value)
+                ? value
+                : null;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+            when (ex
+                    is JsonException
+                        or OperationCanceledException
+                        or HttpRequestException
+                        or IOException
+                        or SandboxException { IsDirectReadCapExceeded: true }
+            )
+        {
+            return null;
+        }
     }
 
     private static SandboxException RedirectRefused(int statusCode, string operation, string? operationId) =>
@@ -727,6 +804,17 @@ public sealed partial class SandboxClient
             "alias_taken" => SandboxErrorKind.Conflict,
             "marketplaces_disabled" or "git_failed" or "store_failed" or "registry_failed" =>
                 SandboxErrorKind.Unavailable,
+            // Private marketplaces and source preparation (api/plugin_preparation.rs). The 409 family and the 410
+            // expiry all mean "prepare again, then create with the new version"; 410 here is not a purged workspace.
+            "marketplace_access_denied" => SandboxErrorKind.Authorization,
+            "marketplace_broker_unavailable" or "preparation_capacity" => SandboxErrorKind.Unavailable,
+            "sources_not_prepared"
+            or "sources_changed"
+            or "sources_not_fresh"
+            or "preparation_in_progress"
+            or "source_snapshot_expired"
+            or "preparation_expired" => SandboxErrorKind.Conflict,
+            "preparation_not_found" or "baseline_not_found" => SandboxErrorKind.NotFound,
             "workspace_purged" => SandboxErrorKind.WorkspacePurged,
             "image_not_allowed" or "image_unsupported_backend" or "image_not_found" or "image_unsupported" =>
                 SandboxErrorKind.ImageRejected,

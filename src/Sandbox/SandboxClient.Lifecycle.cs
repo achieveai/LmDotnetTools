@@ -70,6 +70,15 @@ public sealed partial class SandboxClient
                     statusCode
                 );
             }
+
+            if (dto.ExpectedSourceVersion is { } expectedVersion && payload.SourceVersion != expectedVersion)
+            {
+                throw new SandboxException(
+                    SandboxErrorKind.Protocol,
+                    "The gateway did not acknowledge the expected source version.",
+                    statusCode
+                );
+            }
         }
         catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.Protocol)
         {
@@ -321,8 +330,31 @@ public sealed partial class SandboxClient
                 )
                 : null,
             ArchiveReceipts: request.ArchivePreparation?.Archives.Select(ToArchiveReceiptDto).ToArray(),
-            ExpectedSourceVersion: request.ArchivePreparation?.SourceVersion
+            ExpectedSourceVersion: ExpectedSourceVersionOf(request),
+            // Never `refresh`: preparation consumes it. Omitted when false.
+            RequireFresh: request.RequireFresh ? true : null
         );
+
+    private static string? ExpectedSourceVersionOf(SandboxCreateRequest request)
+    {
+        var archiveVersion = request.ArchivePreparation?.SourceVersion;
+        if (request.ExpectedSourceVersion is not { } expected)
+        {
+            return archiveVersion;
+        }
+
+        if (string.IsNullOrWhiteSpace(expected) || expected.Any(char.IsControl))
+        {
+            throw new ArgumentException("ExpectedSourceVersion cannot be blank.", nameof(request));
+        }
+
+        return archiveVersion is null || archiveVersion == expected
+            ? expected
+            : throw new ArgumentException(
+                "ExpectedSourceVersion and ArchivePreparation name different source versions.",
+                nameof(request)
+            );
+    }
 
     private static PluginRefDto ToPluginRefDto(SandboxPluginRef pluginRef) =>
         new(pluginRef.Marketplace, pluginRef.Plugin);
@@ -381,7 +413,57 @@ public sealed partial class SandboxClient
             Mcp = TryToMcpResolvedPolicy(dto.Mcp, statusCode),
             SourceVersion = dto.SourceVersion,
             ResolvedArchiveReceipts = archives,
+            SourceMode = dto.SourceMode,
+            SourceReceiptSources = dto.SourceReceipt is { ValueKind: not JsonValueKind.Null } receipt
+                ? ReadReceiptSources(receipt, operation, statusCode)
+                : null,
+            RawSourceReceipt = dto.SourceReceipt is { ValueKind: not JsonValueKind.Null } raw ? raw.Clone() : null,
+            ResolvedMarketplaceRevisions = ReadResolvedMarketplaceRevisions(
+                dto.ResolvedMarketplaceRevisions,
+                operation,
+                statusCode
+            ),
         };
+
+    private static IReadOnlyList<SandboxResolvedMarketplaceRevision> ReadResolvedMarketplaceRevisions(
+        JsonElement? echo,
+        string operation,
+        int statusCode
+    )
+    {
+        if (echo is not { ValueKind: not JsonValueKind.Null } revisions)
+        {
+            return [];
+        }
+
+        if (revisions.ValueKind != JsonValueKind.Array)
+        {
+            throw new SandboxException(
+                SandboxErrorKind.Protocol,
+                $"Sandbox gateway returned a non-array 'resolvedMarketplaceRevisions' for {operation}.",
+                statusCode
+            );
+        }
+
+        var result = new List<SandboxResolvedMarketplaceRevision>();
+        foreach (var revision in revisions.EnumerateArray())
+        {
+            var marketplace = ReadOptionalString(revision, "marketplace", statusCode, operation);
+            var commit = ReadOptionalString(revision, "commit", statusCode, operation);
+            if (string.IsNullOrEmpty(marketplace) || string.IsNullOrEmpty(commit))
+            {
+                throw new SandboxException(
+                    SandboxErrorKind.Protocol,
+                    $"Sandbox gateway returned a resolved marketplace revision without marketplace or commit for {operation}.",
+                    statusCode
+                );
+            }
+
+            result.Add(new SandboxResolvedMarketplaceRevision(marketplace, commit));
+        }
+
+        return result.AsReadOnly();
+    }
 
     private static SandboxMcpResolvedPolicy? TryToMcpResolvedPolicy(JsonElement? echo, int statusCode)
     {

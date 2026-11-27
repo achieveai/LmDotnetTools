@@ -35,7 +35,8 @@ internal sealed record CreateSandboxRequestDto(
     [property: JsonPropertyName("mcp")] McpPolicyDto? Mcp = null,
     [property: JsonPropertyName("archiveReceipts")]
         IReadOnlyList<AppMarketplaceArchiveReceiptDto>? ArchiveReceipts = null,
-    [property: JsonPropertyName("expectedSourceVersion")] string? ExpectedSourceVersion = null
+    [property: JsonPropertyName("expectedSourceVersion")] string? ExpectedSourceVersion = null,
+    [property: JsonPropertyName("requireFresh")] bool? RequireFresh = null
 );
 
 internal sealed record McpPolicyDto(
@@ -164,7 +165,13 @@ internal sealed record CreateSandboxResponseDto(
     [property: JsonPropertyName("skills")] SkillsPolicyDto? Skills = null,
     [property: JsonPropertyName("mcp")] System.Text.Json.JsonElement? Mcp = null,
     [property: JsonPropertyName("sourceVersion")] string? SourceVersion = null,
-    [property: JsonPropertyName("resolvedArchiveReceipts")] System.Text.Json.JsonElement? ResolvedArchiveReceipts = null
+    [property: JsonPropertyName("resolvedArchiveReceipts")]
+        System.Text.Json.JsonElement? ResolvedArchiveReceipts = null,
+    // Source capture echo (create and GET, gateway PR #375): read as raw JSON and parsed by the client.
+    [property: JsonPropertyName("sourceMode")] string? SourceMode = null,
+    [property: JsonPropertyName("sourceReceipt")] System.Text.Json.JsonElement? SourceReceipt = null,
+    [property: JsonPropertyName("resolvedMarketplaceRevisions")]
+        System.Text.Json.JsonElement? ResolvedMarketplaceRevisions = null
 );
 
 /// <summary>
