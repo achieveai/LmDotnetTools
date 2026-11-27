@@ -46,6 +46,15 @@ public sealed record SandboxAppMarketplace
     /// The previous commit stays in use while this is set.
     /// </summary>
     public string? LastError { get; init; }
+
+    /// <summary>
+    /// Redacted rendering — never prints <see cref="Url"/> (a private repository's URL names the private team or
+    /// project) or the gateway's free-text <see cref="LastError"/>. The properties themselves are unchanged.
+    /// </summary>
+    public override string ToString() =>
+        $"SandboxAppMarketplace {{ AppId = {AppId}, Alias = {Alias}, Url = [REDACTED], RepoKey = {RepoKey}, "
+        + $"Ref = {Ref}, ResolvedSha = {ResolvedSha}, Plugin = {Plugin}, CreatedAt = {CreatedAt}, "
+        + $"UpdatedAt = {UpdatedAt}, LastError = {(LastError is null ? null : "[REDACTED]")} }}";
 }
 
 /// <summary>
@@ -68,6 +77,11 @@ public sealed record SandboxAppMarketplaceRegistration
     /// <see langword="null"/> for a public repository (the field is then omitted).
     /// </summary>
     public string? ConnectionId { get; init; }
+
+    /// <summary>Redacted rendering — never prints <see cref="Url"/> or <see cref="ConnectionId"/>.</summary>
+    public override string ToString() =>
+        $"SandboxAppMarketplaceRegistration {{ Url = [REDACTED], Ref = {Ref}, "
+        + $"ConnectionId = {(ConnectionId is null ? null : "[REDACTED]")} }}";
 }
 
 /// <summary>A signed app's registration of one publisher archive, with the download and staged content digests.</summary>

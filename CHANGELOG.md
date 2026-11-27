@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Sandbox: private app marketplaces and source preparation (#1004, #1005).** `RegisterAppMarketplaceAsync(alias,
+  SandboxAppMarketplaceRegistration)` sends an opaque `connectionId`; the old `(alias, url, gitRef, ct)` overload is
+  unchanged. `PrepareSourcesAsync` captures a selection's exact commits, `ResumeSourcePreparationAsync` resumes a saved
+  operation id with a GET (no new POST), and `SandboxCreateRequest.ExpectedSourceVersion` / `RequireFresh` guard a
+  create. Needs a gateway with PR #375. `SandboxAppMarketplace`, `SandboxAppMarketplaceRegistration` and
+  `SandboxSourceReceiptEntry` now print their repository URL (and connection id, and `LastError`) as `[REDACTED]` in
+  `ToString()`; the properties are unchanged. **Error kinds that change for existing callers:**
+  `410 source_snapshot_expired` (a create guarded by an archive preparation) is `Conflict`, was `WorkspacePurged`;
+  `429 preparation_capacity` is `Unavailable`, was `Protocol`; a `failed` status from
+  `PrepareMarketplacePluginSelectionAsync` / `PrepareMarketplaceArchiveSelectionAsync` now takes the kind of its
+  `error_code` (for example `preparation_expired` is `Conflict`, `marketplace_access_denied` is `Authorization`), was
+  always `Protocol`; a `403 marketplace_access_denied` carries `ErrorCode` (other `403`s stay code-less). Those two
+  selection calls also follow a restored operation id instead of failing with `Protocol`, and their errors carry
+  `OperationId` once the gateway named one. Any SDK body read now takes at most one byte past its cap from the
+  stream.
+
 - **LmStreaming: a sandbox release refuses a mode switch it sees land, and a failed workspace destroy no longer forgets
   a released sandbox.** The release route now checks the conversation's mode again in the same step that stores the
   move (a compare-and-set on the stored mode id, up to three tries). When a switch into a Mini App debugging or browser

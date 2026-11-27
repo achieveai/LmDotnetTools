@@ -126,9 +126,10 @@ public sealed partial class SandboxClient
     /// <summary>
     /// Reads <paramref name="response"/>'s body stream into a byte array, throwing
     /// <see cref="SandboxErrorKind.Protocol"/> the instant the running byte count exceeds
-    /// <see cref="MaxDirectReadBytes"/> — so a chunked or under-declared body that streams past the cap is
-    /// rejected mid-read rather than buffered whole. All reads run under the caller's (transport-timeout)
-    /// token, so time stays bounded too.
+    /// <paramref name="cap"/> — so a chunked or under-declared body that streams past the cap is
+    /// rejected mid-read rather than buffered whole. No read asks for more than the remaining allowance plus one
+    /// probe byte, so at most <paramref name="cap"/> + 1 bytes are ever taken from the stream. All reads run under
+    /// the caller's (transport-timeout) token, so time stays bounded too.
     /// </summary>
     private static async Task<byte[]> ReadStreamCappedAsync(
         HttpResponseMessage response,
@@ -146,10 +147,18 @@ public sealed partial class SandboxClient
         var initialCapacity = declaredLength is > 0 && declaredLength <= cap ? (int)declaredLength.Value : 0;
         using var buffer = new MemoryStream(initialCapacity);
 
-        var chunk = new byte[81920];
+        // Each read asks for at most the remaining allowance plus one byte, so a body is never consumed more than one
+        // probe byte past the cap (the probe is what proves it is oversized).
+        var chunk = new byte[(int)Math.Min(81920, cap + 1)];
         long total = 0;
         int read;
-        while ((read = await stream.ReadAsync(chunk.AsMemory(), ct).ConfigureAwait(false)) > 0)
+        while (
+            (
+                read = await stream
+                    .ReadAsync(chunk.AsMemory(0, (int)Math.Min(chunk.Length, cap - total + 1)), ct)
+                    .ConfigureAwait(false)
+            ) > 0
+        )
         {
             total += read;
             if (total > cap)

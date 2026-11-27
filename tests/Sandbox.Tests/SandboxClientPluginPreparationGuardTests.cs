@@ -59,7 +59,7 @@ public sealed class SandboxClientPluginPreparationGuardTests
                     Sha
                 )
             );
-        prepared.RawSourceReceipt.GetProperty("exactRepeatSupported").GetBoolean().Should().BeTrue();
+        prepared.RawSourceReceipt!.Value.GetProperty("exactRepeatSupported").GetBoolean().Should().BeTrue();
 
         var sent = handler.Requests.Single();
         sent.Uri.PathAndQuery.Should().Be($"{Path}?app_id=app-1");
@@ -69,7 +69,60 @@ public sealed class SandboxClientPluginPreparationGuardTests
             .Select(property => property.Name)
             .Should()
             .BeEquivalentTo("marketplaces", "pluginSelection", "refresh");
+        body.RootElement.GetProperty("marketplaces")
+            .EnumerateArray()
+            .Select(alias => alias.GetString())
+            .Should()
+            .Equal("team");
+        body.RootElement.GetProperty("pluginSelection")
+            .EnumerateArray()
+            .Select(reference =>
+                (reference.GetProperty("marketplace").GetString(), reference.GetProperty("plugin").GetString())
+            )
+            .Should()
+            .Equal(("team", "chosen"));
         body.RootElement.GetProperty("refresh").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task PrepareSourcesAsync_RequireFresh_SendsRequireFreshOnThePrepareRequest()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, Path, Ready);
+
+        await client.PrepareSourcesAsync(new SandboxSourcePreparationRequest(["team"]) { RequireFresh = true });
+
+        using var body = JsonDocument.Parse(handler.Requests.Single().Body!);
+        body.RootElement.GetProperty("requireFresh").GetBoolean().Should().BeTrue();
+        body.RootElement.TryGetProperty("refresh", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task PrepareSourcesAsync_NoStoreUnversionedReply_ReturnsWithoutReceipt()
+    {
+        // The store-disabled gateway's actual reply (preparation.rs unversioned_reply): capabilities, status,
+        // error_code and the input recipe, with no sourceReceipt and no sourceVersion.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            Path,
+            """
+            {"sourceMode":"unversioned","exactRepeatSupported":false,
+             "unversionedSources":[{"marketplace":"ops","plugin":null}],
+             "status":"unversioned","error_code":"source_snapshot_unsupported",
+             "recipe":{"marketplaces":["ops"],"itemFilters":{},"pluginSelection":null,"pluginRevisions":[],
+               "marketplaceRevisions":[]}}
+            """
+        );
+
+        var prepared = await client.PrepareSourcesAsync(new SandboxSourcePreparationRequest(["ops"]));
+
+        prepared.Status.Should().Be(SandboxSourcePreparationStatus.Unversioned);
+        prepared.ErrorCode.Should().Be("source_snapshot_unsupported");
+        prepared.SourceVersion.Should().BeNull();
+        prepared.OperationId.Should().BeNull();
+        prepared.Sources.Should().BeNull();
+        prepared.RawSourceReceipt.Should().BeNull();
     }
 
     [Fact]
@@ -145,7 +198,7 @@ public sealed class SandboxClientPluginPreparationGuardTests
         prepared.Status.Should().Be(SandboxSourcePreparationStatus.Unversioned);
         prepared.SourceVersion.Should().BeNull();
         prepared.ErrorCode.Should().Be("source_snapshot_unsupported");
-        prepared.Sources.Single().Sha.Should().BeNull();
+        prepared.Sources!.Single().Sha.Should().BeNull();
     }
 
     [Theory]
@@ -154,6 +207,9 @@ public sealed class SandboxClientPluginPreparationGuardTests
     [InlineData("marketplace_access_denied", SandboxErrorKind.Authorization)]
     [InlineData("marketplace_broker_unavailable", SandboxErrorKind.Unavailable)]
     [InlineData("version_not_found", SandboxErrorKind.Protocol)]
+    [InlineData("preparation_expired", SandboxErrorKind.Conflict)]
+    [InlineData("preparation_not_found", SandboxErrorKind.NotFound)]
+    [InlineData("baseline_not_found", SandboxErrorKind.NotFound)]
     public async Task PrepareSourcesAsync_FailedOnHttp200_ThrowsWithCode(string code, SandboxErrorKind kind)
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
@@ -183,6 +239,8 @@ public sealed class SandboxClientPluginPreparationGuardTests
     [InlineData(HttpStatusCode.Gone, "source_snapshot_expired", SandboxErrorKind.Conflict)]
     [InlineData((HttpStatusCode)429, "preparation_capacity", SandboxErrorKind.Unavailable)]
     [InlineData(HttpStatusCode.Forbidden, "marketplace_access_denied", SandboxErrorKind.Authorization)]
+    [InlineData(HttpStatusCode.ServiceUnavailable, "marketplace_broker_unavailable", SandboxErrorKind.Unavailable)]
+    [InlineData(HttpStatusCode.NotFound, "baseline_not_found", SandboxErrorKind.NotFound)]
     public async Task PrepareSourcesAsync_ErrorStatus_ThrowsWithCode(
         HttpStatusCode status,
         string code,
@@ -206,11 +264,56 @@ public sealed class SandboxClientPluginPreparationGuardTests
 
         thrown.Kind.Should().Be(kind);
         thrown.ErrorCode.Should().Be(code);
+        thrown.StatusCode.Should().Be((int)status);
+        thrown.OperationId.Should().BeNull("the initial POST named no operation");
+        handler.Requests.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task PrepareSourcesAsync_CodelessFailedPost_ThrowsProtocolWithoutCodeOrOperation()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, Path, """{"status":"failed","error":"token=SECRET"}""");
+
+        var thrown = (
+            await Record.ExceptionAsync(() => client.PrepareSourcesAsync(new SandboxSourcePreparationRequest(["team"])))
+        )
+            .Should()
+            .BeOfType<SandboxException>()
+            .Subject;
+
+        thrown.Kind.Should().Be(SandboxErrorKind.Protocol);
+        thrown.ErrorCode.Should().BeNull();
+        thrown.OperationId.Should().BeNull();
+        thrown.Message.Should().NotContain("SECRET");
+        handler.Requests.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task PrepareSourcesAsync_CodelessFailedPoll_ThrowsProtocolWithOperationButNoCode()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, Path, Preparing, HttpStatusCode.Accepted);
+        handler.OnJson(HttpMethod.Get, $"{Path}/{OperationId}", """{"status":"failed"}""");
+
+        var thrown = (
+            await Record.ExceptionAsync(() => client.PrepareSourcesAsync(new SandboxSourcePreparationRequest(["team"])))
+        )
+            .Should()
+            .BeOfType<SandboxException>()
+            .Subject;
+
+        thrown.Kind.Should().Be(SandboxErrorKind.Protocol);
+        thrown.ErrorCode.Should().BeNull();
+        thrown.OperationId.Should().Be(OperationId);
+        handler.Requests.Should().HaveCount(2);
     }
 
     [Theory]
     [InlineData("""{"status":"ready","sourceReceipt":{"sources":[]}}""")]
     [InlineData("""{"status":"ready","sourceVersion":"v-1"}""")]
+    [InlineData("""{"status":"ready","sourceVersion":"v-1","sourceReceipt":null}""")]
+    [InlineData("""{"status":"unversioned","sourceReceipt":"x"}""")]
     [InlineData("""{"status":"unversioned","sourceVersion":"v-1","sourceReceipt":{"sources":[]}}""")]
     [InlineData("""{"status":"ready","sourceVersion":"v-1","sourceReceipt":{"sources":[{"kind":"marketplace"}]}}""")]
     [InlineData("""{"status":"preparing","operationId":"../other"}""")]
@@ -334,6 +437,84 @@ public sealed class SandboxClientPluginPreparationGuardTests
     }
 
     [Fact]
+    public async Task CreateAsync_GatewayEchoesNoVersion_DeletesSandboxAndThrows()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            CreateResponse.Replace("\"sourceVersion\":\"v-123\",", "")
+        );
+        handler.OnStatus(HttpMethod.Delete, "/api/v1/sandboxes/sess-1", HttpStatusCode.NoContent);
+
+        var act = () =>
+            client.CreateAsync(new SandboxCreateRequest("ws", ["team"]) { ExpectedSourceVersion = "v-123" });
+
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown.Kind.Should().Be(SandboxErrorKind.Protocol);
+        thrown.Message.Should().Be("The gateway did not acknowledge the expected source version.");
+        handler.Requests.Select(request => request.Method).Should().Equal(HttpMethod.Post, HttpMethod.Delete);
+    }
+
+    [Theory]
+    [InlineData(""" "sourceReceipt":{"sources":[{"kind":"marketplace"}]} """)]
+    [InlineData(""" "sourceReceipt":{"sources":"x"} """)]
+    [InlineData(""" "resolvedMarketplaceRevisions":{"team":"abc"} """)]
+    [InlineData(""" "resolvedMarketplaceRevisions":[{"marketplace":"team"}] """)]
+    public async Task CreateAsync_MalformedSourceEcho_DeletesSandboxAndThrows(string field)
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/api/v1/sandboxes",
+            """{"session_id":"sess-1","container_id":"c","volumes":{"workspace":{"container_path":"/w"}},"""
+                + field
+                + "}"
+        );
+        handler.OnStatus(HttpMethod.Delete, "/api/v1/sandboxes/sess-1", HttpStatusCode.NoContent);
+
+        var act = () => client.CreateAsync(new SandboxCreateRequest("ws", ["team"]));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+        handler
+            .Requests.Select(request => (request.Method, request.Uri.AbsolutePath))
+            .Should()
+            .Equal((HttpMethod.Post, "/api/v1/sandboxes"), (HttpMethod.Delete, "/api/v1/sandboxes/sess-1"));
+    }
+
+    [Fact]
+    public async Task CreateAsync_RejectedEchoAndFailedDelete_KeepsSessionIdAndBothCauses()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreateResponse.Replace("v-123", "v-999"));
+        handler.OnJson(
+            HttpMethod.Delete,
+            "/api/v1/sandboxes/sess-1",
+            """{"error":"x","code":503,"error_code":"sandbox_busy"}""",
+            HttpStatusCode.ServiceUnavailable
+        );
+
+        var act = () =>
+            client.CreateAsync(new SandboxCreateRequest("ws", ["team"]) { ExpectedSourceVersion = "v-123" });
+
+        var thrown = (await act.Should().ThrowAsync<SandboxException>()).Which;
+        thrown.Kind.Should().Be(SandboxErrorKind.Protocol);
+        thrown.StatusCode.Should().Be(200);
+        thrown.Message.Should().Contain("did not acknowledge the expected source version").And.Contain("'sess-1'");
+        var causes = thrown.InnerException.Should().BeOfType<AggregateException>().Subject.InnerExceptions;
+        causes.Should().HaveCount(2);
+        causes[0]
+            .Should()
+            .BeOfType<SandboxException>()
+            .Which.Message.Should()
+            .Be("The gateway did not acknowledge the expected source version.");
+        var deleteFailure = causes[1].Should().BeOfType<SandboxException>().Subject;
+        deleteFailure.Kind.Should().Be(SandboxErrorKind.Unavailable);
+        deleteFailure.ErrorCode.Should().Be("sandbox_busy");
+        handler.Requests.Select(request => request.Method).Should().Equal(HttpMethod.Post, HttpMethod.Delete);
+    }
+
+    [Fact]
     public async Task CreateAsync_ExpectedSourceVersionDisagreesWithArchivePreparation_ThrowsWithoutSending()
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
@@ -366,6 +547,34 @@ public sealed class SandboxClientPluginPreparationGuardTests
 
         await act.Should().ThrowAsync<ArgumentException>();
         handler.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task CreateAsync_ControlCharacterInExpectedSourceVersion_ThrowsWithoutSending()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+
+        var act = () =>
+            client.CreateAsync(new SandboxCreateRequest("ws", ["team"]) { ExpectedSourceVersion = "v-123\nx" });
+
+        var thrown = (await act.Should().ThrowAsync<ArgumentException>()).Which;
+        thrown.ParamName.Should().Be("request");
+        thrown.Message.Should().Contain("blank").And.Contain("control characters");
+        handler.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void SandboxSourceReceiptEntry_ToString_RedactsUrlAndKeepsProperty()
+    {
+        const string sentinel = "https://dev.azure.com/secret-team/p/_git/private-repo.git";
+        var entry = new SandboxSourceReceiptEntry("marketplace", "team", null, sentinel, "team-0a1b", null, Sha);
+
+        var text = entry.ToString();
+
+        text.Should().NotContain("secret-team").And.NotContain("private-repo").And.Contain("[REDACTED]");
+        text.Should().Contain("team-0a1b").And.Contain(Sha);
+        entry.Url.Should().Be(sentinel);
+        $"{entry}".Should().Be(text);
     }
 
     private const string MixedReceipt = $$$"""

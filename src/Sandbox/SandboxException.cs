@@ -9,9 +9,11 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 /// <remarks>
 /// The message is always built from information that is safe to surface to callers/logs: the
 /// gateway response status code, the closed-vocabulary <c>error_code</c>, and the local operation being
-/// attempted. It never echoes a REST error body's free-text <c>error</c> field, never reads a
-/// <c>401</c>/<c>403</c> body at all (an auth rejection is the upstream output most likely to include
-/// credential material), and never includes any <see cref="SandboxClientOptions.ClientSecret"/>-derived
+/// attempted. It never echoes a REST error body's free-text <c>error</c> field, never reads a <c>401</c>
+/// body or a direct-API <c>401</c>/<c>403</c> body at all (an auth rejection is the upstream output most likely to
+/// include credential material), reads a control-plane <c>403</c> body only up to 4 KiB and keeps nothing from it
+/// but an allowlisted <c>error_code</c> (<c>marketplace_access_denied</c>), and never includes any
+/// <see cref="SandboxClientOptions.ClientSecret"/>-derived
 /// value. A JSON-RPC error's <c>message</c> is never included either (<see cref="SandboxErrorKind.McpCallFailed"/>
 /// carries only <see cref="JsonRpcCode"/>), and neither is a failed operation's free-text <c>error</c>
 /// (<see cref="SandboxErrorKind.OperationFailed"/> / <see cref="SandboxErrorKind.ExecutableNotRunnable"/> carry
@@ -52,8 +54,8 @@ public sealed class SandboxException : Exception
     /// The gateway's stable, machine-readable <c>error_code</c> from a non-2xx error body (e.g.
     /// <c>path_not_found</c>, <c>session_not_found</c>, <c>image_not_found</c>, <c>workspace_purged</c>) or
     /// from a failed operation's status (e.g. <c>executable_not_runnable</c>), when the gateway sent one.
-    /// <c>null</c> for auth rejections (whose body is deliberately never read) and any response with no
-    /// machine-readable body.
+    /// <c>null</c> for auth rejections (a <c>401</c> body is never read, and a <c>403</c> keeps only the
+    /// allowlisted <c>marketplace_access_denied</c>) and any response with no machine-readable body.
     /// It is a closed, gateway-defined vocabulary — safe to surface and branch on, like a JSON-RPC error
     /// <c>code</c> — so a caller can distinguish, for example, a genuinely missing PATH from an evicted
     /// SESSION even though both classify as <see cref="SandboxErrorKind.NotFound"/>. Never the gateway's

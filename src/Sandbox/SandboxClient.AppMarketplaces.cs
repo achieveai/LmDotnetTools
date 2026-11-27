@@ -73,7 +73,10 @@ public sealed partial class SandboxClient
     /// <c>503 marketplace_broker_unavailable</c> is <see cref="SandboxErrorKind.Unavailable"/>. Needs a gateway
     /// containing PR #375.
     /// </remarks>
-    /// <exception cref="ArgumentException">The URL is blank or the connection id breaks its character rule.</exception>
+    /// <exception cref="ArgumentException">
+    /// <see cref="SandboxAppMarketplaceRegistration.Url"/> is blank or the connection id breaks its character rule
+    /// (<see cref="ArgumentException.ParamName"/> is <c>registration</c>).
+    /// </exception>
     public async Task<SandboxAppMarketplace> RegisterAppMarketplaceAsync(
         string alias,
         SandboxAppMarketplaceRegistration registration,
@@ -81,6 +84,11 @@ public sealed partial class SandboxClient
     )
     {
         ArgumentNullException.ThrowIfNull(registration);
+        if (string.IsNullOrWhiteSpace(registration.Url))
+        {
+            throw new ArgumentException("A registration needs a repository URL.", nameof(registration));
+        }
+
         if (registration.ConnectionId is { } connectionId && !IsConnectionId(connectionId))
         {
             throw new ArgumentException(

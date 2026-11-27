@@ -47,8 +47,10 @@ public sealed partial class SandboxClient
         var payload = await ReadSandboxResponseOrThrowAsync(response, "sandbox creation", ct).ConfigureAwait(false);
         var statusCode = (int)response.StatusCode;
         IReadOnlyList<SandboxAppMarketplaceArchive> archives;
+        SourceEcho sourceEcho;
         try
         {
+            // The source checks run here, so a create whose source echo is rejected is deleted, not leaked.
             archives = ReadResolvedArchiveReceipts(
                 payload.ResolvedArchiveReceipts,
                 payload.SourceVersion,
@@ -79,10 +81,12 @@ public sealed partial class SandboxClient
                     statusCode
                 );
             }
+
+            sourceEcho = ReadSourceEcho(payload, "sandbox creation", statusCode);
         }
         catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.Protocol)
         {
-            await DeleteUnverifiedArchiveSandboxAsync(payload.SessionId, statusCode).ConfigureAwait(false);
+            await DeleteRejectedSandboxAsync(payload.SessionId, ex).ConfigureAwait(false);
             throw;
         }
 
@@ -91,8 +95,10 @@ public sealed partial class SandboxClient
             "sandbox creation",
             statusCode,
             archives,
+            sourceEcho,
             sentSearchFlags: request.Skills is { SearchTool: not null } or { AgentsSearchTool: not null }
         );
+
         if (request.WorkingDir is { } workingDir)
         {
             // Before seeding the mount cache: a sandbox whose working directory was not honored is deleted, not used.
@@ -104,19 +110,26 @@ public sealed partial class SandboxClient
         return info;
     }
 
-    private async Task DeleteUnverifiedArchiveSandboxAsync(string sessionId, int createStatus)
+    /// <summary>
+    /// Deletes a sandbox whose create echo was rejected. When the delete fails too, the thrown exception keeps both
+    /// causes (the rejection and the delete failure, as an <see cref="AggregateException"/>) and names the session id,
+    /// because nothing else holds it any more.
+    /// </summary>
+    private async Task DeleteRejectedSandboxAsync(string sessionId, SandboxException rejection)
     {
         try
         {
+            // Not the caller's token: a cancellation here would orphan the sandbox. The transport budget bounds it.
             await DeleteAsync(sessionId, CancellationToken.None).ConfigureAwait(false);
         }
-        catch (SandboxException ex)
+        catch (SandboxException deleteFailure)
         {
             throw new SandboxException(
                 SandboxErrorKind.Protocol,
-                $"The gateway did not acknowledge the archive selection, and cleanup of sandbox '{sessionId}' failed.",
-                createStatus,
-                ex
+                $"{rejection.Message} Deleting sandbox '{sessionId}' failed ({deleteFailure.Kind}, status "
+                    + $"{deleteFailure.StatusCode?.ToString() ?? "none"}); delete it with DeleteAsync.",
+                rejection.StatusCode,
+                new AggregateException(rejection, deleteFailure)
             );
         }
     }
@@ -162,7 +175,13 @@ public sealed partial class SandboxClient
             );
         }
 
-        var info = ToSandboxInfo(payload, operation, statusCode, archives);
+        var info = ToSandboxInfo(
+            payload,
+            operation,
+            statusCode,
+            archives,
+            ReadSourceEcho(payload, operation, statusCode)
+        );
         SeedWorkspaceMountId(info);
         return info;
     }
@@ -345,7 +364,10 @@ public sealed partial class SandboxClient
 
         if (string.IsNullOrWhiteSpace(expected) || expected.Any(char.IsControl))
         {
-            throw new ArgumentException("ExpectedSourceVersion cannot be blank.", nameof(request));
+            throw new ArgumentException(
+                "ExpectedSourceVersion cannot be blank or contain control characters.",
+                nameof(request)
+            );
         }
 
         return archiveVersion is null || archiveVersion == expected
@@ -387,6 +409,7 @@ public sealed partial class SandboxClient
         string operation,
         int statusCode,
         IReadOnlyList<SandboxAppMarketplaceArchive> archives,
+        SourceEcho sourceEcho,
         bool sentSearchFlags = false
     ) =>
         new(
@@ -414,16 +437,27 @@ public sealed partial class SandboxClient
             SourceVersion = dto.SourceVersion,
             ResolvedArchiveReceipts = archives,
             SourceMode = dto.SourceMode,
-            SourceReceiptSources = dto.SourceReceipt is { ValueKind: not JsonValueKind.Null } receipt
+            SourceReceiptSources = sourceEcho.Sources,
+            RawSourceReceipt = sourceEcho.RawReceipt,
+            ResolvedMarketplaceRevisions = sourceEcho.Revisions,
+        };
+
+    /// <summary>The parsed source receipt and marketplace revisions of a create or GET echo.</summary>
+    private readonly record struct SourceEcho(
+        IReadOnlyList<SandboxSourceReceiptEntry>? Sources,
+        JsonElement? RawReceipt,
+        IReadOnlyList<SandboxResolvedMarketplaceRevision> Revisions
+    );
+
+    /// <summary>Reads the source echo, throwing <see cref="SandboxErrorKind.Protocol"/> when it is malformed.</summary>
+    private static SourceEcho ReadSourceEcho(CreateSandboxResponseDto dto, string operation, int statusCode) =>
+        new(
+            dto.SourceReceipt is { ValueKind: not JsonValueKind.Null } receipt
                 ? ReadReceiptSources(receipt, operation, statusCode)
                 : null,
-            RawSourceReceipt = dto.SourceReceipt is { ValueKind: not JsonValueKind.Null } raw ? raw.Clone() : null,
-            ResolvedMarketplaceRevisions = ReadResolvedMarketplaceRevisions(
-                dto.ResolvedMarketplaceRevisions,
-                operation,
-                statusCode
-            ),
-        };
+            dto.SourceReceipt is { ValueKind: not JsonValueKind.Null } raw ? raw.Clone() : null,
+            ReadResolvedMarketplaceRevisions(dto.ResolvedMarketplaceRevisions, operation, statusCode)
+        );
 
     private static IReadOnlyList<SandboxResolvedMarketplaceRevision> ReadResolvedMarketplaceRevisions(
         JsonElement? echo,

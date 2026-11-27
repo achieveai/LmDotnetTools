@@ -1,4 +1,3 @@
-using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.Sandbox.Wire;
@@ -12,7 +11,9 @@ public sealed partial class SandboxClient
 
     /// <summary>
     /// Prepares an explicit same-app marketplace selection and returns the gateway's dependency-expanded references.
-    /// The configured transport timeout covers submission and any polling together.
+    /// The configured transport timeout covers submission and any polling together. Status, operation id and failure
+    /// handling are those of <see cref="PrepareSourcesAsync"/>: a <c>failed</c> status throws with the same
+    /// <see cref="SandboxErrorKind"/> for its <c>error_code</c>, and a restored operation id is followed.
     /// </summary>
     public async Task<IReadOnlyList<SandboxPluginRef>> PrepareMarketplacePluginSelectionAsync(
         IReadOnlyList<string> marketplaces,
@@ -82,96 +83,38 @@ public sealed partial class SandboxClient
         return new PrepareSelectionRequest([.. marketplaces], [.. pluginSelection.Select(ToPluginRefDto)]);
     }
 
-    private async Task<(PrepareSelectionReply Reply, int Status)> PrepareSelectionAsync(
+    /// <summary>
+    /// Runs the shared prepare/status loop (<see cref="RunSourcePreparationAsync"/>) for a selection, bounded by the
+    /// configured transport timeout as a whole and polling every 100 ms.
+    /// </summary>
+    private Task<(PrepareSelectionReply Reply, int Status)> PrepareSelectionAsync(
         PrepareSelectionRequest request,
         CancellationToken ct
-    )
+    ) =>
+        RunSourcePreparationAsync(
+            request,
+            resumeOperationId: null,
+            _options.TransportTimeout,
+            S_pluginPreparationPollDelay,
+            PreparationOperation,
+            static prepared => (ReadSelectionReply(prepared), prepared.StatusCode),
+            ct
+        );
+
+    private static PrepareSelectionReply ReadSelectionReply(PreparationReply prepared)
     {
-        ct.ThrowIfCancellationRequested();
-        using var budget = StartTransportBudget();
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct, budget.Token);
-        const string operation = PreparationOperation;
-        Guid? operationId = null;
         try
         {
-            while (true)
-            {
-                var path = operationId is { } id ? $"{PluginPreparationPath}/{id:D}" : PluginPreparationPath;
-                using (
-                    var response = await SendRestAsync(
-                            operationId.HasValue ? HttpMethod.Get : HttpMethod.Post,
-                            $"{path}?{AppIdQuery()}",
-                            operationId.HasValue ? null : request,
-                            sessionId: null,
-                            deadline.Token
-                        )
-                        .ConfigureAwait(false)
-                )
-                {
-                    var status = response.StatusCode;
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        throw await MapErrorResponseAsync(response, operation, deadline.Token).ConfigureAwait(false);
-                    }
-                    if (status is not (HttpStatusCode.OK or HttpStatusCode.Accepted))
-                    {
-                        throw new SandboxException(
-                            SandboxErrorKind.Protocol,
-                            $"Unexpected HTTP status while {operation}.",
-                            (int)status
-                        );
-                    }
-
-                    var reply = await ReadAppMarketplaceJsonAsync<PrepareSelectionReply>(
-                            response,
-                            operation,
-                            deadline.Token
-                        )
-                        .ConfigureAwait(false);
-                    deadline.Token.ThrowIfCancellationRequested();
-                    if (status == HttpStatusCode.OK && reply.Status is "ready" or "unversioned")
-                    {
-                        return (reply, (int)status);
-                    }
-                    if (reply.Status == "failed")
-                    {
-                        throw new SandboxException(
-                            SandboxErrorKind.Protocol,
-                            "Sandbox marketplace plugin preparation failed.",
-                            (int)status
-                        )
-                        {
-                            ErrorCode = reply.ErrorCode,
-                        };
-                    }
-                    if (
-                        reply.Status != "preparing"
-                        || (operationId is null && status != HttpStatusCode.Accepted)
-                        || !Guid.TryParseExact(reply.OperationId, "D", out var pendingId)
-                        || pendingId == Guid.Empty
-                        || (operationId is { } expected && pendingId != expected)
-                    )
-                    {
-                        throw new SandboxException(
-                            SandboxErrorKind.Protocol,
-                            "Sandbox gateway returned an invalid plugin preparation status or operation ID.",
-                            (int)status
-                        );
-                    }
-
-                    // The gateway's Location header is deliberately unused. Only this app's fixed path is polled.
-                    operationId = pendingId;
-                }
-
-                await Task.Delay(S_pluginPreparationPollDelay, TransportClock, deadline.Token).ConfigureAwait(false);
-            }
+            return prepared.Body.Deserialize<PrepareSelectionReply>(SandboxJson.RestOptions)
+                ?? throw new JsonException("The preparation reply was null.");
         }
-        catch (OperationCanceledException ex) when (!ct.IsCancellationRequested && budget.IsCancellationRequested)
+        catch (JsonException ex)
         {
             throw new SandboxException(
-                SandboxErrorKind.TransportTimeout,
-                $"Sandbox marketplace plugin preparation did not complete within the configured transport timeout ({_options.TransportTimeout}).",
-                innerException: ex
+                SandboxErrorKind.Protocol,
+                $"Sandbox gateway returned a malformed body {PreparationOperation}.",
+                prepared.StatusCode,
+                ex
             );
         }
     }

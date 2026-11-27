@@ -32,7 +32,9 @@ public sealed class SandboxSourcePreparationRequest
     /// The longest <see cref="SandboxClient.PrepareSourcesAsync"/> waits for a <c>preparing</c> operation, submission
     /// and polling together. Default 5 minutes. Each HTTP call is also bounded by the transport timeout.
     /// </summary>
-    public TimeSpan MaxWait { get; init; } = TimeSpan.FromMinutes(5);
+    public TimeSpan MaxWait { get; init; } = DefaultMaxWait;
+
+    internal static readonly TimeSpan DefaultMaxWait = TimeSpan.FromMinutes(5);
 
     public SandboxSourcePreparationRequest(
         IReadOnlyList<string>? marketplaces = null,
@@ -51,15 +53,18 @@ public enum SandboxSourcePreparationStatus
     Ready,
 
     /// <summary>
-    /// Some source is mutable (an operator filesystem marketplace), so there is no version to guard a create with
-    /// (<see cref="SandboxSourcePreparation.ErrorCode"/> is <c>source_snapshot_unsupported</c>).
+    /// Some source is mutable (an operator filesystem marketplace), or the gateway runs without a marketplace store, so
+    /// there is no version to guard a create with (<see cref="SandboxSourcePreparation.ErrorCode"/> is
+    /// <c>source_snapshot_unsupported</c>). Create unguarded, or stop.
     /// </summary>
     Unversioned,
 }
 
 /// <summary>
-/// What <see cref="SandboxClient.PrepareSourcesAsync"/> captured. A failed preparation is never returned: it throws
-/// <see cref="SandboxException"/> with <see cref="SandboxException.ErrorCode"/> set.
+/// What <see cref="SandboxClient.PrepareSourcesAsync"/> or <see cref="SandboxClient.ResumeSourcePreparationAsync"/>
+/// captured. A failed preparation is never returned: it throws <see cref="SandboxException"/>, with
+/// <see cref="SandboxException.ErrorCode"/> set when the gateway supplied one (a failed body or error response without
+/// an <c>error_code</c> leaves it <see langword="null"/>).
 /// </summary>
 public sealed class SandboxSourcePreparation
 {
@@ -74,17 +79,28 @@ public sealed class SandboxSourcePreparation
     /// <summary>The gateway's <c>error_code</c> on a non-failed reply (<c>source_snapshot_unsupported</c> when unversioned).</summary>
     public string? ErrorCode { get; init; }
 
-    /// <summary>Each captured catalog or plugin root, with the commit it resolved to.</summary>
-    public required IReadOnlyList<SandboxSourceReceiptEntry> Sources { get; init; }
+    /// <summary>
+    /// Each captured catalog or plugin root, with the commit it resolved to. Always set when <see cref="Status"/> is
+    /// <see cref="SandboxSourcePreparationStatus.Ready"/>. <see langword="null"/> only for an
+    /// <see cref="SandboxSourcePreparationStatus.Unversioned"/> reply without a receipt, which a gateway running without
+    /// a marketplace store sends.
+    /// </summary>
+    public IReadOnlyList<SandboxSourceReceiptEntry>? Sources { get; init; }
 
-    /// <summary>The whole <c>sourceReceipt</c> object as the gateway sent it, for fields this SDK does not model.</summary>
-    public required JsonElement RawSourceReceipt { get; init; }
+    /// <summary>
+    /// The whole <c>sourceReceipt</c> object as the gateway sent it, for fields this SDK does not model;
+    /// <see langword="null"/> exactly when <see cref="Sources"/> is.
+    /// </summary>
+    public JsonElement? RawSourceReceipt { get; init; }
 }
 
 /// <summary>A marketplace's resolved Git catalog commit, as a sandbox create or GET reports it.</summary>
 public sealed record SandboxResolvedMarketplaceRevision(string Marketplace, string Commit);
 
-/// <summary>One source of a preparation receipt. Git fields are null for a mutable or archive source.</summary>
+/// <summary>
+/// One source of a preparation receipt. Git fields are null for a mutable or archive source. <see cref="Url"/> may name
+/// a private repository, so <see cref="ToString"/> prints it redacted; the property itself is the gateway's value.
+/// </summary>
 public sealed record SandboxSourceReceiptEntry(
     string Kind,
     string Marketplace,
@@ -93,4 +109,10 @@ public sealed record SandboxSourceReceiptEntry(
     string? RepoKey,
     string? Subdir,
     string? Sha
-);
+)
+{
+    /// <summary>Redacted rendering — never prints <see cref="Url"/>.</summary>
+    public override string ToString() =>
+        $"SandboxSourceReceiptEntry {{ Kind = {Kind}, Marketplace = {Marketplace}, Plugin = {Plugin}, "
+        + $"Url = {(Url is null ? null : "[REDACTED]")}, RepoKey = {RepoKey}, Subdir = {Subdir}, Sha = {Sha} }}";
+}

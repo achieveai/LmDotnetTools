@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using Xunit;
@@ -217,4 +218,254 @@ public sealed class SandboxClientAppMarketplacePrivateTests
             .Should()
             .BeOfType<SandboxException>()
             .Subject;
+
+    [Fact]
+    public async Task RegisterAppMarketplaceAsync_ChunkedOversizedForbiddenBody_ReadsAtMostCapPlusOneByte()
+    {
+        var body = Encoding.UTF8.GetBytes(
+            "{\"error_code\":\"marketplace_access_denied\",\"pad\":\"" + new string('x', 64 * 1024) + "\"}"
+        );
+        var stream = new ScriptedBodyStream(body, chunkSize: 1000);
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RespondForbidden(handler, stream);
+
+        var thrown = await RegisterPrivateAndCatchAsync(client);
+
+        thrown.Kind.Should().Be(SandboxErrorKind.Authorization);
+        thrown.ErrorCode.Should().BeNull();
+        stream.BytesRead.Should().BeLessThanOrEqualTo(SandboxClient.MaxForbiddenBodyBytes + 1);
+        handler.Requests.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task RegisterAppMarketplaceAsync_ForbiddenBodyOfExactlyTheCap_KeepsErrorCode()
+    {
+        const string prefix = "{\"error_code\":\"marketplace_access_denied\",\"pad\":\"";
+        const string suffix = "\"}";
+        var body = Encoding.UTF8.GetBytes(
+            prefix + new string('x', SandboxClient.MaxForbiddenBodyBytes - prefix.Length - suffix.Length) + suffix
+        );
+        body.Should().HaveCount(SandboxClient.MaxForbiddenBodyBytes);
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RespondForbidden(handler, new ScriptedBodyStream(body, chunkSize: 700));
+
+        var thrown = await RegisterPrivateAndCatchAsync(client);
+
+        thrown.Kind.Should().Be(SandboxErrorKind.Authorization);
+        thrown.ErrorCode.Should().Be("marketplace_access_denied");
+    }
+
+    [Fact]
+    public async Task RegisterAppMarketplaceAsync_ForbiddenBodyBreaksMidRead_StaysCodeless()
+    {
+        var body = Encoding.UTF8.GetBytes("{\"error_code\":\"marketplace_access_denied\",\"error\":\"token=SECRET");
+        var stream = new ScriptedBodyStream(body, chunkSize: 16) { FailAfterBytes = 16 };
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RespondForbidden(handler, stream);
+
+        var thrown = await RegisterPrivateAndCatchAsync(client);
+
+        thrown.Kind.Should().Be(SandboxErrorKind.Authorization);
+        thrown.ErrorCode.Should().BeNull();
+        thrown.Message.Should().NotContain("SECRET");
+        thrown.InnerException.Should().BeNull();
+        stream.BytesRead.Should().Be(16, "the body broke after its first chunk");
+        handler.Requests.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task RegisterAppMarketplaceAsync_StalledForbiddenBody_StaysCodelessAtTheTransportBudget()
+    {
+        var clock = new ScriptedClock();
+        var stream = new ScriptedBodyStream([], chunkSize: 1) { Stall = true };
+        var (client, handler) = TestSupport.CreateBorrowedClient(clock: clock);
+        RespondForbidden(handler, stream);
+
+        var call = RegisterPrivateAndCatchAsync(client);
+        await stream.ReadStarted.Task;
+        clock.Fire(TimeSpan.FromSeconds(30)).Should().Be(1, "only the 403 body read's budget is live");
+        var thrown = await call;
+
+        thrown.Kind.Should().Be(SandboxErrorKind.Authorization);
+        thrown.ErrorCode.Should().BeNull();
+        handler.Requests.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task RegisterAppMarketplaceAsync_CancelledWhileReadingForbiddenBody_PropagatesCancellation()
+    {
+        var stream = new ScriptedBodyStream([], chunkSize: 1) { Stall = true };
+        var (client, handler) = TestSupport.CreateBorrowedClient(clock: new ScriptedClock());
+        RespondForbidden(handler, stream);
+        using var cts = new CancellationTokenSource();
+
+        var call = client.RegisterAppMarketplaceAsync(
+            "team",
+            new SandboxAppMarketplaceRegistration { Url = AdoUrl, ConnectionId = "publishing-team" },
+            cts.Token
+        );
+        await stream.ReadStarted.Task;
+        await cts.CancelAsync();
+
+        var thrown = await Record.ExceptionAsync(() => call);
+        thrown.Should().BeAssignableTo<OperationCanceledException>();
+        handler.Requests.Should().ContainSingle();
+    }
+
+    [Fact]
+    public void SandboxAppMarketplace_ToString_RedactsUrlAndLastError()
+    {
+        var row = new SandboxAppMarketplace
+        {
+            AppId = "app-1",
+            Alias = "team",
+            Url = "https://dev.azure.com/secret-org/p/_git/private-repo.git",
+            RepoKey = "plugins-0a1b",
+            Ref = "latest",
+            ResolvedSha = "8ca22dba9a94f28898bbce59f2537ff4d87c747d",
+            CreatedAt = "2026-10-09T22:18:15Z",
+            UpdatedAt = "2026-10-09T22:19:39Z",
+            LastError = "fetch https://secret-org@dev.azure.com failed",
+        };
+
+        var text = row.ToString();
+
+        text.Should().NotContain("secret-org").And.NotContain("private-repo").And.Contain("[REDACTED]");
+        text.Should().Contain("team").And.Contain("plugins-0a1b");
+        row.Url.Should().Contain("secret-org", "only the rendering is redacted");
+        $"{row}".Should().Be(text);
+    }
+
+    [Fact]
+    public void SandboxAppMarketplaceRegistration_ToString_RedactsUrlAndConnectionId()
+    {
+        var registration = new SandboxAppMarketplaceRegistration
+        {
+            Url = "https://dev.azure.com/secret-org/p/_git/private-repo.git",
+            Ref = "main",
+            ConnectionId = "secret-connection",
+        };
+
+        var text = registration.ToString();
+
+        text.Should()
+            .NotContain("secret-org")
+            .And.NotContain("private-repo")
+            .And.NotContain("secret-connection")
+            .And.Contain("main");
+    }
+
+    [Fact]
+    public void RegisterAppMarketplaceAsync_UrlOverload_KeepsItsExactSignature()
+    {
+        // Binary compatibility: callers compiled against the URL overload bind to this exact method.
+        var method = typeof(SandboxClient).GetMethod(
+            nameof(SandboxClient.RegisterAppMarketplaceAsync),
+            [typeof(string), typeof(string), typeof(string), typeof(CancellationToken)]
+        );
+
+        method.Should().NotBeNull();
+        method!.ReturnType.Should().Be(typeof(Task<SandboxAppMarketplace>));
+        method.IsPublic.Should().BeTrue();
+        method.IsStatic.Should().BeFalse();
+        var parameters = method.GetParameters();
+        parameters.Select(parameter => parameter.Name).Should().Equal("alias", "url", "gitRef", "ct");
+        parameters.Select(parameter => parameter.IsOptional).Should().Equal(false, false, true, true);
+        parameters[2].DefaultValue.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("  ")]
+    public async Task RegisterAppMarketplaceAsync_BlankRegistrationUrl_NamesRegistrationAndSendsNothing(string url)
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+
+        var act = () => client.RegisterAppMarketplaceAsync("team", new SandboxAppMarketplaceRegistration { Url = url });
+
+        (await act.Should().ThrowAsync<ArgumentException>()).Which.ParamName.Should().Be("registration");
+        handler.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RegisterAppMarketplaceAsync_BlankUrlOnTheUrlOverload_StillNamesUrl()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+
+        var act = () => client.RegisterAppMarketplaceAsync("team", " ");
+
+        (await act.Should().ThrowAsync<ArgumentException>()).Which.ParamName.Should().Be("url");
+        handler.Requests.Should().BeEmpty();
+    }
+
+    private static void RespondForbidden(FakeGatewayHandler handler, Stream body) =>
+        handler.On(
+            request => request.Method == HttpMethod.Put,
+            _ => new HttpResponseMessage(HttpStatusCode.Forbidden) { Content = new StreamContent(body) }
+        );
+
+    /// <summary>
+    /// A non-seekable body (so no Content-Length) that serves <c>content</c> in chunks, counts what it hands out, and
+    /// can throw part-way (<see cref="FailAfterBytes"/>) or stall until the read's token fires (<see cref="Stall"/>).
+    /// </summary>
+    private sealed class ScriptedBodyStream(byte[] content, int chunkSize) : Stream
+    {
+        public int BytesRead { get; private set; }
+
+        public int? FailAfterBytes { get; init; }
+
+        public bool Stall { get; init; }
+
+        public TaskCompletionSource ReadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default
+        )
+        {
+            _ = ReadStarted.TrySetResult();
+            if (Stall)
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (FailAfterBytes is { } failAt && BytesRead >= failAt)
+            {
+                throw new IOException("connection reset: token=SECRET");
+            }
+
+            var count = Math.Min(Math.Min(buffer.Length, chunkSize), content.Length - BytesRead);
+            content.AsMemory(BytesRead, count).CopyTo(buffer);
+            BytesRead += count;
+            return count;
+        }
+
+        public override Task<int> ReadAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken
+        ) => ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override void Flush() { }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
 }
